@@ -18,6 +18,7 @@ def test_version_is_exposed():
 def test_public_api_surface():
     assert set(flowproof.__all__) == {
         "Flow",
+        "HealResult",
         "RecordResult",
         "RunResult",
         "StepResult",
@@ -144,6 +145,10 @@ def test_run_result_parses_engine_payload():
     assert result.html_path == Path("/tmp/report.html")
 
 
-def test_heal_is_not_wired_yet():
-    with pytest.raises(NotImplementedError):
+def test_public_surface_includes_heal_result():
+    assert "HealResult" in flowproof.__all__
+
+
+def test_heal_missing_spec_is_a_clean_error():
+    with pytest.raises(RuntimeError):
         flowproof.heal("flows/create-order.yaml", "flow.trace.jsonl")

@@ -12,6 +12,7 @@ See https://github.com/automators-com/flowproof
 
 from flowproof.flow import (
     Flow,
+    HealResult,
     RecordResult,
     RunResult,
     StepResult,
@@ -25,6 +26,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Flow",
+    "HealResult",
     "RecordResult",
     "RunResult",
     "StepResult",

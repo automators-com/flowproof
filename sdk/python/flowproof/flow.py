@@ -75,6 +75,32 @@ def _parse_run_result(payload: str) -> RunResult:
 
 
 @dataclass(frozen=True)
+class HealResult:
+    """Outcome of a heal pass: a PROPOSED trace diff, never a silent fix."""
+
+    changed: bool
+    steps_changed: tuple[dict[str, Any], ...]
+    steps_added: int
+    steps_removed: int
+    proposed_path: Path | None
+    applied: bool
+
+
+def _parse_heal_result(payload: str) -> HealResult:
+    data = json.loads(payload)
+    report = data["report"]
+    proposed = report.get("proposed_path")
+    return HealResult(
+        changed=report["changed"],
+        steps_changed=tuple(report["steps_changed"]),
+        steps_added=report["steps_added"],
+        steps_removed=report["steps_removed"],
+        proposed_path=Path(proposed) if proposed else None,
+        applied=data["applied"],
+    )
+
+
+@dataclass(frozen=True)
 class Flow:
     """A flow, defined by a YAML spec with natural-language steps."""
 
@@ -104,11 +130,13 @@ class Flow:
         """Load the recorded trace for inspection: ``{"header": …, "steps": […]}``."""
         return json.loads(_native.get_trace(Path(trace) if trace else self.spec))
 
-    def heal(self, trace: str | Path) -> Path:
-        """Propose a reviewable diff for a trace that no longer replays."""
-        raise NotImplementedError(
-            "healing is not implemented yet; see https://github.com/automators-com/flowproof"
-        )
+    def heal(self, trace: str | Path | None = None, apply: bool = False) -> HealResult:
+        """Re-author the flow against the live app and propose a trace diff.
+
+        Never modifies the trace unless ``apply=True`` is passed explicitly;
+        the proposal lands next to the trace as ``*.proposed.jsonl``.
+        """
+        return _parse_heal_result(_native.heal(self.spec, Path(trace) if trace else None, apply))
 
 
 def record(spec: str | Path, out: str | Path | None = None) -> RecordResult:
@@ -126,6 +154,6 @@ def get_trace(path: str | Path) -> dict[str, Any]:
     return json.loads(_native.get_trace(Path(path)))
 
 
-def heal(spec: str | Path, trace: str | Path) -> Path:
-    """Propose a heal diff for a broken trace. See :meth:`Flow.heal`."""
-    return Flow(spec).heal(trace)
+def heal(spec: str | Path, trace: str | Path | None = None, apply: bool = False) -> HealResult:
+    """Propose a heal diff for a stale trace. See :meth:`Flow.heal`."""
+    return Flow(spec).heal(trace, apply)

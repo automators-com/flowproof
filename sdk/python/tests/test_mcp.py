@@ -37,7 +37,7 @@ async def test_mcp_server_lists_and_calls_tools(tmp_path):
         assert payload["header"]["format"] == "flowproof-trace"
         assert payload["steps"][0]["intent"] == "Type 5"
 
-        # heal reports its unimplemented status as a tool error, not a crash.
+        # heal with a nonexistent spec surfaces a clean tool error, not a crash.
         healed = await session.call_tool(
             "flowproof_heal", {"spec": "x.flow.yaml", "trace": str(trace_path)}
         )

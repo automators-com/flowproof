@@ -84,12 +84,41 @@ fn get_trace(py: Python<'_>, path: PathBuf) -> PyResult<String> {
     })
 }
 
+/// Re-author the flow and propose a trace diff. Returns JSON:
+/// `{"report": <HealReport>, "applied": bool}`. Only replaces the trace
+/// when `apply` is explicitly true and changes were found.
+#[pyfunction]
+#[pyo3(signature = (spec, trace=None, apply=false))]
+fn heal(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>, apply: bool) -> PyResult<String> {
+    py.detach(|| {
+        let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
+        let trace_path = trace.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
+        let mut driver = flowproof_cli::driver_for(&parsed.app).map_err(runtime_err)?;
+        let mut report =
+            flowproof_agent::heal(&parsed, &mut driver, &trace_path).map_err(runtime_err)?;
+        let mut applied = false;
+        if apply && report.changed {
+            if let Some(proposal) = &report.proposed_path {
+                std::fs::copy(proposal, &trace_path).map_err(runtime_err)?;
+                std::fs::remove_file(proposal).map_err(runtime_err)?;
+                report.proposed_path = None;
+                applied = true;
+            }
+        }
+        to_json(&serde_json::json!({
+            "report": report,
+            "applied": applied,
+        }))
+    })
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cli_main, m)?)?;
     m.add_function(wrap_pyfunction!(record, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
     m.add_function(wrap_pyfunction!(get_trace, m)?)?;
+    m.add_function(wrap_pyfunction!(heal, m)?)?;
     m.add("__engine_version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

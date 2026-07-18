@@ -47,13 +47,12 @@ if FastMCP is not None:
         return json.loads(_native.get_trace(path))
 
     @mcp.tool()
-    def flowproof_heal(spec: str, trace: str) -> dict[str, Any]:
-        """Propose a reviewable fix for a trace that no longer replays.
-        Not implemented yet - healing always produces a human-reviewable
-        diff, never a silent mutation."""
-        raise NotImplementedError(
-            "healing is not implemented yet; see https://github.com/automators-com/flowproof"
-        )
+    def flowproof_heal(spec: str, trace: str | None = None, apply: bool = False) -> dict[str, Any]:
+        """Re-author the flow against the live app and propose a reviewable
+        trace diff (written as *.proposed.jsonl). Never modifies the trace
+        unless apply=true is passed explicitly. Returns
+        {"report": {"changed", "steps_changed", ...}, "applied"}."""
+        return json.loads(_native.heal(spec, trace, apply))
 
 
 def main() -> None:

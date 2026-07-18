@@ -86,10 +86,12 @@ Works today:
 - One wheel (PyO3/maturin) shipping the Rust engine, Python API, and CLI
 - MCP server (`pip install flowproof[mcp]`, run `flowproof-mcp`): agents
   drive record/run/get_trace/heal as MCP tools
+- Healing v1: `flowproof heal` re-authors the flow against the live app and
+  proposes a reviewable trace diff — applied only with explicit `--apply`
 
 On the roadmap: LLM authoring agents (Anthropic computer-use + local
-OpenAI-compatible), SAP GUI Scripting adapter, vision mode for Citrix/RDP,
-self-healing diffs. See [docs/design.md](docs/design.md).
+OpenAI-compatible), SAP GUI Scripting adapter, vision mode for Citrix/RDP.
+See [docs/design.md](docs/design.md).
 
 ## Repository layout
 

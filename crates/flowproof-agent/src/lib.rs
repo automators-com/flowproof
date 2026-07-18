@@ -3,10 +3,12 @@
 //! deterministic rule-based resolver for Windows Calculator ([`rules`]).
 //! The replayer never touches this crate.
 
+pub mod heal;
 pub mod recorder;
 pub mod rules;
 pub mod spec;
 
+pub use heal::{heal, HealError, HealReport};
 pub use recorder::{record, RecordError, RecordSummary};
 pub use spec::{FlowSpec, SpecStep};
 

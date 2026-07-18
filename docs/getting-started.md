@@ -146,11 +146,26 @@ Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web E2E
 (`cargo test -p flowproof-cli --test web_e2e`, `FLOWPROOF_E2E=1`) runs in CI
 on ubuntu.
 
+## Healing a stale trace
+
+When the app changes and replay fails, `heal` re-authors the flow from the
+spec against the live app and proposes a reviewable diff — it never touches
+the trace on its own:
+
+```text
+$ flowproof heal calc.flow.yaml
+  [CHANGED] s0002 Press plus (selectors)
+PROPOSED: review calc.proposed.jsonl then re-run with --apply
+$ flowproof heal calc.flow.yaml --apply   # explicit opt-in
+```
+
+Exit codes: `0` healthy (or applied), `1` changes proposed for review,
+`2` error. `--json` emits the structured report; the Python API returns a
+`HealResult` and the MCP tool mirrors it.
+
 ## What's deliberately missing (this is the first slice)
 
-- Only the `calc` app id and the calculator vocabulary (`Type <digits>`,
-  `Press plus|minus|times|divide|equals|clear`, `assert: display shows <n>`)
-  resolve — the rule-based resolver stands in where the AI authoring agent
-  will go.
+- Only `calc`, `notepad`, and `web` resolve, each with a small vocabulary —
+  the rule-based resolver stands in where the AI authoring agent will go
+  (healing re-uses the same authoring seam).
 - Replay walks only the `native_id` rung of the selector ladder.
-- `flowproof heal` is not implemented yet.

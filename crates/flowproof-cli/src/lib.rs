@@ -45,10 +45,20 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Propose a reviewable fix for a trace that no longer replays.
+    /// Re-author the flow against the live app and propose a reviewable
+    /// trace diff. Never modifies the trace unless --apply is passed.
     Heal {
         /// Path to the YAML flow spec.
         spec: PathBuf,
+        /// Trace file (default: the trace `record` wrote for this spec).
+        #[arg(short, long)]
+        trace: Option<PathBuf>,
+        /// Replace the trace with the proposal (explicit opt-in).
+        #[arg(long)]
+        apply: bool,
+        /// Emit the heal report as JSON on stdout (for programmatic callers).
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -161,6 +171,67 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, S
     Ok(if report.passed { EXIT_PASS } else { EXIT_FAIL })
 }
 
+fn cmd_heal(
+    spec_path: &Path,
+    trace: Option<PathBuf>,
+    apply: bool,
+    json: bool,
+) -> Result<u8, String> {
+    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
+    let mut driver = driver_for(&spec.app)?;
+    let mut report =
+        flowproof_agent::heal(&spec, &mut driver, &trace_path).map_err(|e| e.to_string())?;
+
+    let mut applied = false;
+    if apply && report.changed {
+        if let Some(proposal) = &report.proposed_path {
+            std::fs::copy(proposal, &trace_path).map_err(|e| e.to_string())?;
+            std::fs::remove_file(proposal).map_err(|e| e.to_string())?;
+            report.proposed_path = None;
+            applied = true;
+        }
+    }
+
+    if json {
+        let payload = serde_json::json!({ "report": report, "applied": applied });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+        );
+    } else if !report.changed {
+        println!("HEALTHY: {} — trace matches the live app", spec.name);
+    } else {
+        for change in &report.steps_changed {
+            println!(
+                "  [CHANGED] {} {} ({})",
+                change.id,
+                change.intent,
+                change.fields.join(", ")
+            );
+        }
+        if report.steps_added > 0 || report.steps_removed > 0 {
+            println!(
+                "  steps added: {}, removed: {}",
+                report.steps_added, report.steps_removed
+            );
+        }
+        if applied {
+            println!("APPLIED: {} updated in place", trace_path.display());
+        } else if let Some(proposal) = &report.proposed_path {
+            println!(
+                "PROPOSED: review {} then re-run with --apply",
+                proposal.display()
+            );
+        }
+    }
+    Ok(if !report.changed || applied {
+        EXIT_PASS
+    } else {
+        EXIT_FAIL
+    })
+}
+
 /// Run the CLI against `args` (excluding the program name) and return the
 /// process exit code. Never panics on user error.
 pub fn run_cli<I, T>(args: I) -> u8
@@ -188,10 +259,12 @@ where
     let result = match cli.command {
         Command::Record { spec, out, json } => cmd_record(&spec, out, json),
         Command::Run { spec, trace, json } => cmd_run(&spec, trace, json),
-        Command::Heal { spec } => Err(format!(
-            "`flowproof heal` is not implemented yet (spec: {})",
-            spec.display()
-        )),
+        Command::Heal {
+            spec,
+            trace,
+            apply,
+            json,
+        } => cmd_heal(&spec, trace, apply, json),
     };
     match result {
         Ok(code) => code,
