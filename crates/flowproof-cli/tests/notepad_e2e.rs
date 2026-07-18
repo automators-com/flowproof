@@ -35,9 +35,8 @@ fn records_and_replays_notepad() {
     kill_notepad();
     let record_result = (|| {
         let mut driver = UiaAppDriver::new()?;
-        flowproof_agent::record(&spec, &mut driver, &trace_path).map_err(|e| {
-            flowproof_driver::DriverError::Uia(format!("record failed: {e}"))
-        })
+        flowproof_agent::record(&spec, &mut driver, &trace_path)
+            .map_err(|e| flowproof_driver::DriverError::Uia(format!("record failed: {e}")))
     })();
     kill_notepad();
     let summary = record_result.expect("recording succeeds");
@@ -45,9 +44,8 @@ fn records_and_replays_notepad() {
 
     let replay_result = (|| {
         let mut driver = UiaAppDriver::new()?;
-        flowproof_replay::run_trace(&trace_path, &mut driver).map_err(|e| {
-            flowproof_driver::DriverError::Uia(format!("replay failed: {e}"))
-        })
+        flowproof_replay::run_trace(&trace_path, &mut driver)
+            .map_err(|e| flowproof_driver::DriverError::Uia(format!("replay failed: {e}")))
     })();
     kill_notepad();
     let report = replay_result.expect("replay runs");

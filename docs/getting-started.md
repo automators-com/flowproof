@@ -103,15 +103,22 @@ A failing test is a `RunResult` with `passed=False` (with per-step status
 and failure detail) — not an exception. `RuntimeError` is reserved for runs
 that could not execute at all.
 
-## Running the end-to-end test
+## Running the end-to-end tests
 
-The repo carries an E2E test that drives Calculator for real. It is
-Windows-only and opt-in (CI runners have no Calculator app):
+Two E2E tests drive real apps, both Windows-only and gated on
+`FLOWPROOF_E2E=1`:
 
 ```powershell
 $env:FLOWPROOF_E2E = "1"
-cargo test -p flowproof-cli --test calc_e2e -- --nocapture
+cargo test -p flowproof-cli --test calc_e2e -- --nocapture     # needs a desktop VM
+cargo test -p flowproof-cli --test notepad_e2e -- --nocapture  # also runs in CI
 ```
+
+The Notepad one (`examples/notepad.flow.yaml` — type text, assert the
+document contains it) runs automatically in CI on `windows-latest`, so the
+record→replay spine is proven on every push. Calculator stays a manual VM
+walkthrough because GitHub's Windows Server runners don't ship the
+Calculator app.
 
 ## What's deliberately missing (this is the first slice)
 
