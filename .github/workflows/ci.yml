@@ -45,6 +45,42 @@ jobs:
       - name: test
         run: cargo test --workspace --all-features
 
+  # The real acceptance bar, continuously: record→replay drives Notepad
+  # through UI Automation on the runner itself (Calculator isn't on Windows
+  # Server images; Notepad is).
+  e2e:
+    name: notepad E2E (windows)
+    needs: lint
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: record and replay Notepad via UIA
+        run: cargo test -p flowproof-cli --test notepad_e2e -- --nocapture
+        env:
+          FLOWPROOF_E2E: "1"
+      - name: cleanup stray notepad
+        if: always()
+        shell: pwsh
+        run: taskkill /F /IM notepad.exe; exit 0
+
+  # Cross-platform proof: the same record→replay spine drives a browser via
+  # the web adapter, on the cheap fast runners.
+  e2e-web:
+    name: web E2E (ubuntu)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: record and replay a browser flow in headless Chromium
+        run: cargo test -p flowproof-cli --test web_e2e -- --nocapture
+        env:
+          FLOWPROOF_E2E: "1"
+          CHROME: /usr/bin/google-chrome
+
   python-sdk:
     name: ruff + pytest (sdk/python)
     runs-on: ubuntu-latest

@@ -59,6 +59,32 @@ pub struct Header {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentInfo>,
     pub env: EnvInfo,
+    /// The authoring execution's recording bundle, if one was captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<RecordingRef>,
+    /// Redaction rules copied from the spec at record time, so every replay
+    /// masks identically without needing the spec. Free-form rule objects
+    /// (the driver's redaction layer owns their schema).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redaction: Vec<Value>,
+}
+
+/// Reference to a recording bundle from the artifact that owns it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordingRef {
+    /// Bundle format discriminator (e.g. `filmstrip/1`).
+    pub format: String,
+    /// Bundle directory, relative to the owning artifact's location.
+    pub dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+}
+
+/// A step's time range within its execution's recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepRecording {
+    pub start_ms: u64,
+    pub end_ms: u64,
 }
 
 /// Link back to the YAML flow spec the trace was recorded from.
@@ -77,6 +103,9 @@ pub struct AppInfo {
     pub adapter: Adapter,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_title: Option<String>,
+    /// For `web` traces: the URL the flow was recorded against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
@@ -283,4 +312,7 @@ pub struct Artifacts {
     pub pre_screenshot: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post_screenshot: Option<String>,
+    /// This step's time range in the header's recording bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<StepRecording>,
 }

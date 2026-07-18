@@ -33,3 +33,7 @@ yarn-error.log*
 .env
 .env.*
 !.env.example
+
+# maturin develop artifacts
+*.abi3.so
+*.pyd

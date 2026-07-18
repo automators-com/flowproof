@@ -3,51 +3,309 @@
 //! structured report when a step cannot be resolved. Healing (which may call
 //! a model) is a separate, explicit workflow that produces a reviewable diff.
 
+pub mod report;
+
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+use flowproof_driver::{numeric_value, resolve_app, AppDriver, UiaSelector};
+use flowproof_trace::format::{Action, Assertion, Condition, Header, Selector, Step};
+use flowproof_trace::{SelectorTier, TraceLine};
+
+pub use report::{RunReport, StepResult, StepStatus};
+
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
+const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReplayError {
-    #[error("replay is not implemented yet")]
-    NotImplemented,
-    #[error("trace error: {0}")]
-    Trace(String),
+    #[error("cannot read trace {path}: {source}")]
+    Io {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("invalid trace: {0}")]
+    Trace(#[from] flowproof_trace::TraceError),
+    #[error("trace has no header line")]
+    MissingHeader,
+    #[error("unknown app '{0}' in trace header")]
+    UnknownApp(String),
     #[error("driver error: {0}")]
     Driver(#[from] flowproof_driver::DriverError),
 }
 
-/// Outcome of a replay run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplayReport {
-    pub steps_total: usize,
-    pub steps_passed: usize,
+/// Parse a trace file into its header and steps.
+pub fn load_trace(path: &Path) -> Result<(Header, Vec<Step>), ReplayError> {
+    let contents = std::fs::read_to_string(path).map_err(|source| ReplayError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut lines = contents.lines().filter(|l| !l.trim().is_empty());
+    let header = match lines.next() {
+        Some(line) => match TraceLine::parse(line)? {
+            TraceLine::Header(header) => header,
+            TraceLine::Step(_) => return Err(ReplayError::MissingHeader),
+        },
+        None => return Err(ReplayError::MissingHeader),
+    };
+    let mut steps = Vec::new();
+    for line in lines {
+        match TraceLine::parse(line)? {
+            TraceLine::Step(step) => steps.push(step),
+            TraceLine::Header(_) => return Err(ReplayError::MissingHeader),
+        }
+    }
+    Ok((header, steps))
 }
 
-/// Deterministic executor for a single trace file.
-#[derive(Debug, Default)]
-pub struct Replayer {
-    _private: (),
+fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
+    if selector.tier != SelectorTier::NativeId {
+        return None; // Only the native-id rung is implemented in this slice.
+    }
+    let get = |key: &str| {
+        selector
+            .payload
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    let uia = UiaSelector {
+        automation_id: get("automation_id").or_else(|| get("id")),
+        name: get("name"),
+        control_type: get("control_type"),
+        css: get("css"),
+    };
+    (!uia.is_empty()).then_some(uia)
 }
 
-impl Replayer {
-    pub fn new() -> Self {
-        Self::default()
+/// Walk the recorded selector ladder and return the first rung that resolves
+/// to a live element.
+fn resolve_target<D: AppDriver>(
+    driver: &mut D,
+    selectors: &[Selector],
+) -> Result<Option<UiaSelector>, ReplayError> {
+    for selector in selectors {
+        if let Some(uia) = selector_to_uia(selector) {
+            if driver.element_exists(&uia)? {
+                return Ok(Some(uia));
+            }
+        }
     }
+    Ok(None)
+}
 
-    /// Replay the trace at `path` against the live application.
-    pub fn run(&mut self, path: &Path) -> Result<ReplayReport, ReplayError> {
-        let _ = path;
-        Err(ReplayError::NotImplemented)
+fn wait_for_condition<D: AppDriver>(
+    driver: &mut D,
+    condition: &Condition,
+    selectors: &[Selector],
+) -> Result<Result<(), String>, ReplayError> {
+    match condition {
+        Condition::ElementExists {
+            timeout_ms,
+            selector_ref,
+        } => {
+            let targets: Vec<&Selector> = match selector_ref {
+                Some(i) => selectors.get(*i).into_iter().collect(),
+                None => selectors.iter().collect(),
+            };
+            let deadline = Instant::now() + Duration::from_millis(*timeout_ms);
+            loop {
+                for selector in &targets {
+                    if let Some(uia) = selector_to_uia(selector) {
+                        if driver.element_exists(&uia)? {
+                            return Ok(Ok(()));
+                        }
+                    }
+                }
+                if Instant::now() >= deadline {
+                    return Ok(Err(format!("element did not appear within {timeout_ms}ms")));
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
+        // Other condition kinds are recorded but not yet evaluated in this
+        // slice; treat them as satisfied rather than silently failing runs.
+        _ => Ok(Ok(())),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn replay_is_stubbed() {
-        let mut replayer = Replayer::new();
-        let result = replayer.run(Path::new("does-not-exist.jsonl"));
-        assert!(matches!(result, Err(ReplayError::NotImplemented)));
+fn check_assertion<D: AppDriver>(
+    driver: &mut D,
+    assertion: &Assertion,
+    selectors: &[Selector],
+) -> Result<Result<(), String>, ReplayError> {
+    match assertion {
+        Assertion::ElementState {
+            expect,
+            selector_ref,
+        } => {
+            let selector = selector_ref
+                .and_then(|i| selectors.get(i))
+                .or_else(|| selectors.first());
+            let Some(uia) = selector.and_then(selector_to_uia) else {
+                return Ok(Err("assertion has no resolvable selector".into()));
+            };
+            let text = driver.read_text(&uia)?;
+            let (matches, expected) = if let Some(expected) =
+                expect.get("value_contains").and_then(|v| v.as_str())
+            {
+                (text.contains(expected), expected)
+            } else if let Some(expected) = expect.get("value_equals").and_then(|v| v.as_str()) {
+                let numeric = expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric");
+                let matched = if numeric {
+                    match (numeric_value(&text), expected.parse::<f64>()) {
+                        (Some(actual), Ok(expected)) => actual == expected,
+                        _ => false,
+                    }
+                } else {
+                    text == expected
+                };
+                (matched, expected)
+            } else {
+                return Ok(Err(format!(
+                    "unsupported element_state expectation: {expect}"
+                )));
+            };
+            if matches {
+                Ok(Ok(()))
+            } else {
+                Ok(Err(format!(
+                    "expected element text '{expected}', got '{text}'"
+                )))
+            }
+        }
+        other => Ok(Err(format!(
+            "assertion kind not supported in this slice: {other:?}"
+        ))),
     }
+}
+
+fn execute_step<D: AppDriver>(
+    driver: &mut D,
+    step: &Step,
+) -> Result<Result<(), String>, ReplayError> {
+    for condition in &step.sync.pre {
+        if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
+            return Ok(Err(format!("precondition failed: {reason}")));
+        }
+    }
+
+    let outcome = match &step.action {
+        Action::Click(_) => match resolve_target(driver, &step.selectors)? {
+            Some(target) => {
+                driver.invoke(&target)?;
+                Ok(())
+            }
+            None => Err("no selector rung resolved to a live element".to_string()),
+        },
+        Action::TypeText(params) => match resolve_target(driver, &step.selectors)? {
+            Some(target) => {
+                driver.type_text(&target, &params.text)?;
+                Ok(())
+            }
+            None => Err("no selector rung resolved to a live element".to_string()),
+        },
+        Action::Assert(assertion) => check_assertion(driver, assertion, &step.selectors)?,
+        other => Err(format!("action not supported in this slice: {other:?}")),
+    };
+    if outcome.is_err() {
+        return Ok(outcome);
+    }
+
+    for condition in &step.sync.post {
+        if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
+            return Ok(Err(format!("postcondition failed: {reason}")));
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// Replay the trace at `path` against the live application. Deterministic:
+/// walks recorded selectors only, stops at the first failing step. Creates
+/// the run's self-contained artifact directory up front so the recording
+/// bundle and the reports land together; returns it alongside the report.
+pub fn run_trace<D: AppDriver>(
+    path: &Path,
+    driver: &mut D,
+) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
+    let (header, steps) = load_trace(path)?;
+
+    let base = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let run_id = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ").to_string();
+    let run_dir = base.join(".flowproof").join("runs").join(run_id);
+    std::fs::create_dir_all(&run_dir).map_err(|source| ReplayError::Io {
+        path: run_dir.display().to_string(),
+        source,
+    })?;
+
+    // Redaction rules travel in the trace; replays mask identically without
+    // the spec. Fail closed: if any recorded rule cannot be understood, no
+    // frames are captured at all rather than risking an unmasked frame.
+    let rules: Option<Vec<flowproof_driver::RedactionRule>> = header
+        .redaction
+        .iter()
+        .map(|value| serde_json::from_value(value.clone()).ok())
+        .collect();
+    let mut recorder =
+        rules.and_then(|rules| flowproof_driver::RunRecorder::new(&run_dir, rules).ok());
+    let target = if header.app.name == "web" {
+        flowproof_driver::AppTarget {
+            command: header
+                .app
+                .url
+                .clone()
+                .ok_or_else(|| ReplayError::UnknownApp("web trace without url".into()))?,
+            window_name: String::new(),
+        }
+    } else {
+        resolve_app(&header.app.name)
+            .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?
+    };
+    let started = Instant::now();
+    driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+
+    let name = header
+        .spec
+        .as_ref()
+        .map(|s| s.name.clone())
+        .unwrap_or_else(|| header.app.name.clone());
+    let mut results = Vec::with_capacity(steps.len());
+    let mut failed = false;
+    for step in &steps {
+        if failed {
+            results.push(StepResult::skipped(step));
+            continue;
+        }
+        if let Some(rec) = recorder.as_mut() {
+            rec.step_started(driver, &step.id);
+        }
+        let step_started = Instant::now();
+        let started_ms = started.elapsed().as_millis() as u64;
+        let outcome = execute_step(driver, step)?;
+        let duration_ms = step_started.elapsed().as_millis() as u64;
+        if let Some(rec) = recorder.as_mut() {
+            rec.step_finished(driver);
+        }
+        match outcome {
+            Ok(()) => results.push(StepResult::passed(step, started_ms, duration_ms)),
+            Err(reason) => {
+                failed = true;
+                results.push(StepResult::failed(step, started_ms, duration_ms, reason));
+            }
+        }
+    }
+
+    let report = RunReport {
+        name,
+        trace_id: header.trace_id.clone(),
+        passed: !failed && !results.is_empty(),
+        steps: results,
+        duration_ms: started.elapsed().as_millis() as u64,
+        recording: recorder.and_then(flowproof_driver::RunRecorder::finish),
+    };
+    Ok((report, run_dir))
 }

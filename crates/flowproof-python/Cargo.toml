@@ -1,0 +1,27 @@
+[package]
+name = "flowproof-python"
+description = "Python bindings: the flowproof._native extension module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "flowproof_native"
+crate-type = ["cdylib"]
+# Extension modules get their Python symbols from the host interpreter at
+# import time; don't build a standalone test harness against them.
+test = false
+doctest = false
+
+[dependencies]
+flowproof-agent = { workspace = true }
+flowproof-cli = { workspace = true }
+flowproof-driver = { workspace = true }
+flowproof-replay = { workspace = true }
+pyo3 = { version = "0.26", features = ["abi3-py39", "extension-module"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
