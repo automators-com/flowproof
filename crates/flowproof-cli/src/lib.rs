@@ -30,6 +30,9 @@ enum Command {
         /// Output trace file (default: <spec>.trace.jsonl next to the spec).
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// Emit the result as JSON on stdout (for programmatic callers).
+        #[arg(long)]
+        json: bool,
     },
     /// Deterministically replay a recorded flow (zero LLM calls).
     Run {
@@ -38,6 +41,9 @@ enum Command {
         /// Trace file (default: the trace `record` wrote for this spec).
         #[arg(short, long)]
         trace: Option<PathBuf>,
+        /// Emit the full report as JSON on stdout (for programmatic callers).
+        #[arg(long)]
+        json: bool,
     },
     /// Propose a reviewable fix for a trace that no longer replays.
     Heal {
@@ -60,21 +66,32 @@ pub fn default_trace_path(spec: &Path) -> PathBuf {
     spec.with_file_name(format!("{base}.trace.jsonl"))
 }
 
-fn cmd_record(spec_path: &Path, out: Option<PathBuf>) -> Result<u8, String> {
+fn cmd_record(spec_path: &Path, out: Option<PathBuf>, json: bool) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
     let mut driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
     let summary = flowproof_agent::record(&spec, &mut driver, &out).map_err(|e| e.to_string())?;
-    println!(
-        "Recorded '{}': {} steps -> {}",
-        spec.name,
-        summary.steps,
-        summary.trace_path.display()
-    );
+    if json {
+        let payload = serde_json::json!({
+            "trace_path": summary.trace_path,
+            "steps": summary.steps,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "Recorded '{}': {} steps -> {}",
+            spec.name,
+            summary.steps,
+            summary.trace_path.display()
+        );
+    }
     Ok(EXIT_PASS)
 }
 
-fn cmd_run(spec_path: &Path, trace: Option<PathBuf>) -> Result<u8, String> {
+fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, String> {
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if !trace_path.exists() {
         return Err(format!(
@@ -87,42 +104,47 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>) -> Result<u8, String> {
     let report =
         flowproof_replay::run_trace(&trace_path, &mut driver).map_err(|e| e.to_string())?;
 
-    for step in &report.steps {
-        let (mark, suffix) = match step.status {
-            StepStatus::Passed => ("PASS", String::new()),
-            StepStatus::Failed => (
-                "FAIL",
-                step.detail
-                    .as_deref()
-                    .map(|d| format!(" — {d}"))
-                    .unwrap_or_default(),
-            ),
-            StepStatus::Skipped => ("SKIP", String::new()),
-        };
-        println!("  [{mark}] {} {}{suffix}", step.id, step.intent);
-    }
     let artifacts_base = trace_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     let result_path = report.write(&artifacts_base).map_err(|e| e.to_string())?;
-    if report.passed {
+
+    if json {
+        // The human-readable lines below are a rendering of this same
+        // structure — the JSON is the primary output.
+        let payload = serde_json::json!({
+            "report": report,
+            "report_path": result_path,
+        });
         println!(
-            "PASS: {} ({} ms) -> {}",
-            report.name,
-            report.duration_ms,
-            result_path.display()
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
         );
-        Ok(EXIT_PASS)
     } else {
+        for step in &report.steps {
+            let (mark, suffix) = match step.status {
+                StepStatus::Passed => ("PASS", String::new()),
+                StepStatus::Failed => (
+                    "FAIL",
+                    step.detail
+                        .as_deref()
+                        .map(|d| format!(" — {d}"))
+                        .unwrap_or_default(),
+                ),
+                StepStatus::Skipped => ("SKIP", String::new()),
+            };
+            println!("  [{mark}] {} {}{suffix}", step.id, step.intent);
+        }
         println!(
-            "FAIL: {} ({} ms) -> {}",
+            "{}: {} ({} ms) -> {}",
+            if report.passed { "PASS" } else { "FAIL" },
             report.name,
             report.duration_ms,
             result_path.display()
         );
-        Ok(EXIT_FAIL)
     }
+    Ok(if report.passed { EXIT_PASS } else { EXIT_FAIL })
 }
 
 /// Run the CLI against `args` (excluding the program name) and return the
@@ -150,8 +172,8 @@ where
     };
 
     let result = match cli.command {
-        Command::Record { spec, out } => cmd_record(&spec, out),
-        Command::Run { spec, trace } => cmd_run(&spec, trace),
+        Command::Record { spec, out, json } => cmd_record(&spec, out, json),
+        Command::Run { spec, trace, json } => cmd_run(&spec, trace, json),
         Command::Heal { spec } => Err(format!(
             "`flowproof heal` is not implemented yet (spec: {})",
             spec.display()

@@ -10,8 +10,27 @@ extension module; the `flowproof` command drives it.
 See https://github.com/automators-com/flowproof
 """
 
-from flowproof.flow import Flow, heal, record, run
+from flowproof.flow import (
+    Flow,
+    RecordResult,
+    RunResult,
+    StepResult,
+    get_trace,
+    heal,
+    record,
+    run,
+)
 
 __version__ = "0.1.0"
 
-__all__ = ["Flow", "__version__", "heal", "record", "run"]
+__all__ = [
+    "Flow",
+    "RecordResult",
+    "RunResult",
+    "StepResult",
+    "__version__",
+    "get_trace",
+    "heal",
+    "record",
+    "run",
+]

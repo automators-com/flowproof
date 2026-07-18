@@ -33,6 +33,16 @@ dev = [
     "ruff>=0.8",
 ]
 
+[tool.uv]
+# The wheel embeds the Rust engine: rebuild when any crate changes, not just
+# when pyproject.toml does.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "../../Cargo.lock" },
+    { file = "../../crates/**/*.rs" },
+    { file = "../../crates/**/Cargo.toml" },
+]
+
 [tool.maturin]
 manifest-path = "../../crates/flowproof-python/Cargo.toml"
 module-name = "flowproof._native"

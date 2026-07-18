@@ -21,6 +21,7 @@ flowproof-agent = { workspace = true }
 flowproof-driver = { workspace = true }
 flowproof-replay = { workspace = true }
 flowproof-trace = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

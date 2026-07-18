@@ -289,6 +289,7 @@ dependencies = [
  "flowproof-driver",
  "flowproof-replay",
  "flowproof-trace",
+ "serde_json",
 ]
 
 [[package]]
@@ -308,6 +309,7 @@ dependencies = [
  "flowproof-driver",
  "flowproof-replay",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]

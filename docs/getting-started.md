@@ -69,15 +69,39 @@ PASS: Add two numbers (2154 ms) -> .flowproof\runs\20260718T120000.000Z\result.j
 Exit codes: `0` pass, `1` test failure, `2` error. Each run writes a
 `result.json` artifact under `.flowproof/runs/<timestamp>/`.
 
-## Python API
+Programmatic callers invoking the CLI should pass `--json`: the full
+structured report prints to stdout instead of the human-readable lines —
+never parse the prose output.
+
+```powershell
+flowproof run calc.flow.yaml --json
+```
+
+## Python API (the primary surface)
+
+flowproof is built to be driven by programs — usually AI agents — with the
+CLI as a thin wrapper over the same library. Every call returns structured
+data:
 
 ```python
 from flowproof import Flow
 
 flow = Flow("calc.flow.yaml")
-flow.record()
-assert flow.run()
+
+rec = flow.record()          # RecordResult(trace_path=..., steps=5)
+
+result = flow.run()          # RunResult — truthy iff the flow passed
+result.passed                # True
+result.steps[4].status      # "passed"
+result.steps[4].intent      # "display shows 8"
+result.report_path           # Path to the result.json artifact
+
+trace = flow.get_trace()     # {"header": {...}, "steps": [...]} for inspection
 ```
+
+A failing test is a `RunResult` with `passed=False` (with per-step status
+and failure detail) — not an exception. `RuntimeError` is reserved for runs
+that could not execute at all.
 
 ## Running the end-to-end test
 
