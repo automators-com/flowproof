@@ -1,0 +1,5 @@
+name: Write a note
+app: notepad
+steps:
+  - Type hello from flowproof
+  - assert: document contains hello
