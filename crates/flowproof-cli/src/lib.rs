@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use flowproof_agent::FlowSpec;
-use flowproof_driver::{AppDriver, UiaAppDriver};
+use flowproof_driver::UiaAppDriver;
 use flowproof_replay::StepStatus;
 
 /// Process exit codes: 0 = pass, 1 = test failure, 2 = error.

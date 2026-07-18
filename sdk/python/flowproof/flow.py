@@ -1,18 +1,11 @@
-"""Public API surface of the flowproof SDK.
-
-Every entry point currently raises :class:`NotImplementedError` — the
-engine bindings (PyO3) land later. The signatures are the contract.
-"""
+"""Public API surface of the flowproof SDK, backed by the Rust engine."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
-_NOT_WIRED = (
-    "the flowproof engine bindings are not implemented yet; "
-    "see https://github.com/automators-com/flowproof"
-)
+from flowproof import _native
 
 
 @dataclass(frozen=True)
@@ -25,16 +18,25 @@ class Flow:
         object.__setattr__(self, "spec", Path(spec))
 
     def record(self, out: str | Path | None = None) -> Path:
-        """Have the AI agent perform the flow once and write a trace."""
-        raise NotImplementedError(_NOT_WIRED)
+        """Perform the flow once against the live app and write a trace.
 
-    def run(self, trace: str | Path | None = None) -> None:
-        """Deterministically replay the recorded trace (zero LLM calls)."""
-        raise NotImplementedError(_NOT_WIRED)
+        Returns the trace path. Requires Windows and the target app.
+        """
+        return Path(_native.record(self.spec, Path(out) if out else None))
+
+    def run(self, trace: str | Path | None = None) -> bool:
+        """Deterministically replay the recorded trace (zero LLM calls).
+
+        Returns True when every step passed. Raises RuntimeError when the
+        run cannot execute (missing trace, unsupported platform, ...).
+        """
+        return _native.run(self.spec, Path(trace) if trace else None)
 
     def heal(self, trace: str | Path) -> Path:
         """Propose a reviewable diff for a trace that no longer replays."""
-        raise NotImplementedError(_NOT_WIRED)
+        raise NotImplementedError(
+            "healing is not implemented yet; see https://github.com/automators-com/flowproof"
+        )
 
 
 def record(spec: str | Path, out: str | Path | None = None) -> Path:
@@ -42,9 +44,9 @@ def record(spec: str | Path, out: str | Path | None = None) -> Path:
     return Flow(spec).record(out)
 
 
-def run(spec: str | Path, trace: str | Path | None = None) -> None:
+def run(spec: str | Path, trace: str | Path | None = None) -> bool:
     """Replay a recorded flow deterministically. See :meth:`Flow.run`."""
-    Flow(spec).run(trace)
+    return Flow(spec).run(trace)
 
 
 def heal(spec: str | Path, trace: str | Path) -> Path:

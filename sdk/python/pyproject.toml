@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
 
 [project]
 name = "flowproof"
-version = "0.0.1"
+version = "0.1.0"
 description = "AI-native E2E testing for the apps Selenium can't reach — SAP GUI, Oracle Forms, Citrix, Windows desktop."
 readme = "README.md"
 license = "Apache-2.0"
@@ -13,11 +13,15 @@ authors = [
     { name = "Automators", email = "hello@automators.com" },
 ]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
     "Topic :: Software Development :: Testing",
 ]
+
+[project.scripts]
+flowproof = "flowproof.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/automators-com/flowproof"
@@ -29,8 +33,11 @@ dev = [
     "ruff>=0.8",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["flowproof"]
+[tool.maturin]
+manifest-path = "../../crates/flowproof-python/Cargo.toml"
+module-name = "flowproof._native"
+python-source = "."
+features = ["pyo3/abi3-py39"]
 
 [tool.ruff]
 target-version = "py39"
