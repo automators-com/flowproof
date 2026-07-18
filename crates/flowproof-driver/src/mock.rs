@@ -18,6 +18,8 @@ pub struct MockAppDriver {
     pub texts: HashMap<String, String>,
     /// Automation ids invoked, in order.
     pub invoked: Vec<String>,
+    /// `(automation_id, text)` pairs typed, in order.
+    pub typed: Vec<(String, String)>,
     pub screen: (u32, u32),
 }
 
@@ -55,8 +57,12 @@ impl AppDriver for MockAppDriver {
     }
 
     fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
-        let id = Self::id_of(selector)?;
-        Ok(self.elements.iter().any(|e| e == id))
+        // Ladder rungs without an automation id (e.g. control-type fallbacks)
+        // simply don't match in the mock, rather than erroring.
+        match &selector.automation_id {
+            Some(id) => Ok(self.elements.contains(id)),
+            None => Ok(false),
+        }
     }
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
@@ -74,6 +80,17 @@ impl AppDriver for MockAppDriver {
             .get(id)
             .cloned()
             .ok_or_else(|| DriverError::Uia(format!("mock element '{id}' has no text")))
+    }
+
+    fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
+        let id = Self::id_of(selector)?;
+        if !self.elements.iter().any(|e| e == id) {
+            return Err(DriverError::Uia(format!("mock element '{id}' not found")));
+        }
+        // Typing appends to the element's text, like a real edit control.
+        self.texts.entry(id.to_string()).or_default().push_str(text);
+        self.typed.push((id.to_string(), text.to_string()));
+        Ok(())
     }
 
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {

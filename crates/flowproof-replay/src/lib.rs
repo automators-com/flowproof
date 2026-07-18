@@ -145,24 +145,31 @@ fn check_assertion<D: AppDriver>(
                 return Ok(Err("assertion has no resolvable selector".into()));
             };
             let text = driver.read_text(&uia)?;
-            let Some(expected) = expect.get("value_equals").and_then(|v| v.as_str()) else {
+            let (matches, expected) = if let Some(expected) =
+                expect.get("value_contains").and_then(|v| v.as_str())
+            {
+                (text.contains(expected), expected)
+            } else if let Some(expected) = expect.get("value_equals").and_then(|v| v.as_str()) {
+                let numeric = expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric");
+                let matched = if numeric {
+                    match (numeric_value(&text), expected.parse::<f64>()) {
+                        (Some(actual), Ok(expected)) => actual == expected,
+                        _ => false,
+                    }
+                } else {
+                    text == expected
+                };
+                (matched, expected)
+            } else {
                 return Ok(Err(format!(
                     "unsupported element_state expectation: {expect}"
                 )));
-            };
-            let matches = if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
-                match (numeric_value(&text), expected.parse::<f64>()) {
-                    (Some(actual), Ok(expected)) => actual == expected,
-                    _ => false,
-                }
-            } else {
-                text == expected
             };
             if matches {
                 Ok(Ok(()))
             } else {
                 Ok(Err(format!(
-                    "expected display value '{expected}', got '{text}'"
+                    "expected element text '{expected}', got '{text}'"
                 )))
             }
         }
@@ -186,6 +193,13 @@ fn execute_step<D: AppDriver>(
         Action::Click(_) => match resolve_target(driver, &step.selectors)? {
             Some(target) => {
                 driver.invoke(&target)?;
+                Ok(())
+            }
+            None => Err("no selector rung resolved to a live element".to_string()),
+        },
+        Action::TypeText(params) => match resolve_target(driver, &step.selectors)? {
+            Some(target) => {
+                driver.type_text(&target, &params.text)?;
                 Ok(())
             }
             None => Err("no selector rung resolved to a live element".to_string()),

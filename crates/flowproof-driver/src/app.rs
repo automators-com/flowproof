@@ -70,6 +70,9 @@ pub trait AppDriver {
     /// pattern when available, element Name otherwise).
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError>;
 
+    /// Type `text` into the element matching `selector` (focus + keystrokes).
+    fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError>;
+
     /// Primary screen size in physical pixels (used for trace headers).
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError>;
 }
@@ -97,6 +100,10 @@ pub fn resolve_app(app_id: &str) -> Option<AppTarget> {
         "calc" => Some(AppTarget {
             command: "calc.exe",
             window_name: "Calculator",
+        }),
+        "notepad" => Some(AppTarget {
+            command: "notepad.exe",
+            window_name: "Notepad",
         }),
         _ => None,
     }
@@ -263,6 +270,17 @@ mod windows_impl {
                 .map_err(|e| uia_err(&format!("reading text of [{selector}]"), e))
         }
 
+        fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
+            let element = self.find(selector, 3000)?;
+            element
+                .set_focus()
+                .map_err(|e| uia_err(&format!("focusing [{selector}]"), e))?;
+            // 10ms between keystrokes keeps slow Win32 message pumps reliable.
+            element
+                .send_text(text, 10)
+                .map_err(|e| uia_err(&format!("typing into [{selector}]"), e))
+        }
+
         fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
             let root = self
                 .automation
@@ -318,6 +336,10 @@ mod stub_impl {
         }
 
         fn read_text(&mut self, _selector: &UiaSelector) -> Result<String, DriverError> {
+            Err(DriverError::UnsupportedPlatform)
+        }
+
+        fn type_text(&mut self, _selector: &UiaSelector, _text: &str) -> Result<(), DriverError> {
             Err(DriverError::UnsupportedPlatform)
         }
 

@@ -78,10 +78,50 @@ fn replay_fails_when_display_differs() {
         last.detail
             .as_deref()
             .unwrap_or("")
-            .contains("expected display value '8'"),
+            .contains("expected element text '8'"),
         "detail: {:?}",
         last.detail
     );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+const NOTEPAD_SPEC: &str = "\
+name: Write a note
+app: notepad
+steps:
+  - Type hello from flowproof
+  - assert: document contains hello
+";
+
+#[test]
+fn notepad_round_trip_types_and_checks_contains() {
+    let dir = std::env::temp_dir().join("flowproof-replay-notepad");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(NOTEPAD_SPEC).expect("spec parses");
+    let trace = dir.join("notepad.trace.jsonl");
+    let mut recorder_driver = MockAppDriver::new(&["15"]);
+    record(&spec, &mut recorder_driver, &trace).expect("recording succeeds");
+
+    // Fresh app instance: replay re-types the text, then the contains
+    // assert reads what was typed.
+    let mut driver = MockAppDriver::new(&["15"]);
+    let report = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:?}");
+    assert_eq!(
+        driver.typed,
+        vec![("15".to_string(), "hello from flowproof".to_string())]
+    );
+
+    // Recording a spec whose assert can't hold is caught at record time.
+    let spec_bad = FlowSpec::parse(
+        "name: x\napp: notepad\nsteps:\n  - Type abc\n  - assert: document contains xyz\n",
+    )
+    .expect("parses");
+    let trace_bad = dir.join("notepad-bad.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["15"]);
+    let err = record(&spec_bad, &mut rec, &trace_bad).expect_err("record catches bad assert");
+    assert!(err.to_string().contains("does not hold"));
 
     std::fs::remove_dir_all(&dir).ok();
 }

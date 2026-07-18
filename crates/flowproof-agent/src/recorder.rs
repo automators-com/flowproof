@@ -8,10 +8,11 @@ use std::time::Duration;
 use flowproof_driver::{resolve_app, AppDriver, UiaSelector};
 use flowproof_trace::format::{
     Action, AppInfo, Artifacts, Assertion, Condition, EnvInfo, Header, Selector, Step, Sync,
+    TypeTextParams,
 };
 use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 
-use crate::rules::{resolve_step, ResolvedAction};
+use crate::rules::{resolve_step, ResolvedAction, NOTEPAD_EDITOR_ID};
 use crate::spec::FlowSpec;
 
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -21,12 +22,12 @@ const STEP_TIMEOUT_MS: u64 = 5000;
 pub enum RecordError {
     #[error(transparent)]
     Rules(#[from] crate::rules::RulesError),
-    #[error("unknown app '{0}' (this slice supports: calc)")]
+    #[error("unknown app '{0}' (this slice supports: calc, notepad)")]
     UnknownApp(String),
     #[error("element for step '{intent}' not found: [{selector}]")]
     ElementNotFound { intent: String, selector: String },
     #[error(
-        "assertion '{intent}' does not hold while recording: expected '{expected}', display shows '{actual}'"
+        "assertion '{intent}' does not hold while recording: expected '{expected}', element shows '{actual}'"
     )]
     AssertMismatch {
         intent: String,
@@ -51,12 +52,7 @@ pub struct RecordSummary {
     pub steps: usize,
 }
 
-fn selector_for(automation_id: &str, label: Option<&str>) -> Selector {
-    let mut payload = serde_json::Map::new();
-    payload.insert("automation_id".into(), automation_id.into());
-    if let Some(label) = label {
-        payload.insert("name".into(), label.into());
-    }
+fn native_selector(payload: serde_json::Map<String, serde_json::Value>) -> Selector {
     Selector {
         tier: SelectorTier::NativeId,
         provenance: flowproof_trace::format::Adapter::Uia,
@@ -65,38 +61,76 @@ fn selector_for(automation_id: &str, label: Option<&str>) -> Selector {
     }
 }
 
-fn step_for(id: usize, intent: &str, action: &ResolvedAction) -> Step {
-    let (selector, trace_action) = match action {
+/// The recorded selector ladder for an action target. Notepad's editor gets
+/// a second rung (control type + name) because the Win32 control id `15`
+/// varies across Notepad generations — the first real ladder fallback.
+fn selectors_for(app: &str, automation_id: &str, label: Option<&str>) -> Vec<Selector> {
+    let mut payload = serde_json::Map::new();
+    payload.insert("automation_id".into(), automation_id.into());
+    if let Some(label) = label {
+        payload.insert("name".into(), label.into());
+    }
+    let mut ladder = vec![native_selector(payload)];
+    if app == "notepad" && automation_id == NOTEPAD_EDITOR_ID {
+        let mut fallback = serde_json::Map::new();
+        fallback.insert("control_type".into(), "Edit".into());
+        fallback.insert("name".into(), "Text Editor".into());
+        ladder.push(native_selector(fallback));
+    }
+    ladder
+}
+
+fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step {
+    let (selectors, trace_action) = match action {
         ResolvedAction::Press {
             automation_id,
             label,
         } => (
-            selector_for(automation_id, Some(label)),
+            selectors_for(app, automation_id, Some(label)),
             Action::Click(serde_json::Map::new()),
         ),
-        ResolvedAction::AssertDisplay {
+        ResolvedAction::TypeText {
             automation_id,
-            expected,
+            text,
         } => (
-            selector_for(automation_id, None),
-            Action::Assert(Assertion::ElementState {
-                expect: serde_json::json!({
-                    "value_equals": expected,
-                    "normalize": "numeric",
-                }),
-                selector_ref: Some(0),
+            selectors_for(app, automation_id, None),
+            Action::TypeText(TypeTextParams {
+                text: text.clone(),
+                submit: None,
+                extra: serde_json::Map::new(),
             }),
         ),
+        ResolvedAction::AssertText {
+            automation_id,
+            expected,
+            contains,
+            numeric,
+        } => {
+            let expect = if *contains {
+                serde_json::json!({ "value_contains": expected })
+            } else if *numeric {
+                serde_json::json!({ "value_equals": expected, "normalize": "numeric" })
+            } else {
+                serde_json::json!({ "value_equals": expected })
+            };
+            (
+                selectors_for(app, automation_id, None),
+                Action::Assert(Assertion::ElementState {
+                    expect,
+                    selector_ref: Some(0),
+                }),
+            )
+        }
     };
     Step {
         id: format!("s{id:04}"),
         intent: intent.to_string(),
         action: trace_action,
-        selectors: vec![selector],
+        selectors,
         sync: Sync {
             pre: vec![Condition::ElementExists {
                 timeout_ms: STEP_TIMEOUT_MS,
-                selector_ref: Some(0),
+                selector_ref: None, // any rung of the ladder satisfies it
             }],
             post: vec![],
         },
@@ -107,9 +141,23 @@ fn step_for(id: usize, intent: &str, action: &ResolvedAction) -> Step {
 fn action_selector(action: &ResolvedAction) -> UiaSelector {
     match action {
         ResolvedAction::Press { automation_id, .. }
-        | ResolvedAction::AssertDisplay { automation_id, .. } => {
+        | ResolvedAction::TypeText { automation_id, .. }
+        | ResolvedAction::AssertText { automation_id, .. } => {
             UiaSelector::automation_id(automation_id.clone())
         }
+    }
+}
+
+fn assert_holds(actual: &str, expected: &str, contains: bool, numeric: bool) -> bool {
+    if contains {
+        actual.contains(expected)
+    } else if numeric {
+        matches!(
+            (flowproof_driver::numeric_value(actual), expected.parse::<f64>()),
+            (Some(a), Ok(e)) if a == e
+        )
+    } else {
+        actual == expected
     }
 }
 
@@ -130,7 +178,7 @@ pub fn record<D: AppDriver>(
     // written for a flow that actually worked.
     let mut steps = Vec::new();
     for spec_step in &spec.steps {
-        for action in resolve_step(spec_step)? {
+        for action in resolve_step(&spec.app, spec_step)? {
             let selector = action_selector(&action);
             if !driver.element_exists(&selector)? {
                 return Err(RecordError::ElementNotFound {
@@ -140,13 +188,15 @@ pub fn record<D: AppDriver>(
             }
             match &action {
                 ResolvedAction::Press { .. } => driver.invoke(&selector)?,
-                ResolvedAction::AssertDisplay { expected, .. } => {
+                ResolvedAction::TypeText { text, .. } => driver.type_text(&selector, text)?,
+                ResolvedAction::AssertText {
+                    expected,
+                    contains,
+                    numeric,
+                    ..
+                } => {
                     let actual = driver.read_text(&selector)?;
-                    let holds = matches!(
-                        (flowproof_driver::numeric_value(&actual), expected.parse::<f64>()),
-                        (Some(a), Ok(e)) if a == e
-                    );
-                    if !holds {
+                    if !assert_holds(&actual, expected, *contains, *numeric) {
                         return Err(RecordError::AssertMismatch {
                             intent: spec_step.intent().to_string(),
                             expected: expected.clone(),
@@ -155,7 +205,12 @@ pub fn record<D: AppDriver>(
                     }
                 }
             }
-            steps.push(step_for(steps.len() + 1, spec_step.intent(), &action));
+            steps.push(step_for(
+                steps.len() + 1,
+                spec_step.intent(),
+                &spec.app,
+                &action,
+            ));
         }
     }
 
@@ -289,6 +344,39 @@ steps:
         let out = std::env::temp_dir().join("flowproof-recorder-mismatch.trace.jsonl");
         let err = record(&spec, &mut driver, &out).expect_err("must fail");
         assert!(matches!(err, RecordError::AssertMismatch { .. }));
+    }
+
+    const NOTEPAD_SPEC: &str = "\
+name: Write a note
+app: notepad
+steps:
+  - Type hello from flowproof
+  - assert: document contains hello
+";
+
+    #[test]
+    fn records_the_notepad_flow_against_a_mock() {
+        let spec = FlowSpec::parse(NOTEPAD_SPEC).expect("spec parses");
+        let mut driver = MockAppDriver::new(&["15"]);
+        let dir = std::env::temp_dir().join("flowproof-recorder-notepad");
+        let out = dir.join("notepad.trace.jsonl");
+        let summary = record(&spec, &mut driver, &out).expect("recording succeeds");
+
+        assert_eq!(summary.steps, 2); // one type + one assert
+        assert_eq!(
+            driver.typed,
+            vec![("15".to_string(), "hello from flowproof".to_string())]
+        );
+
+        // The editor step carries the two-rung selector ladder.
+        let contents = std::fs::read_to_string(&out).expect("trace written");
+        let step_line = contents.lines().nth(1).expect("first step");
+        let step: serde_json::Value = serde_json::from_str(step_line).expect("step is JSON");
+        let selectors = step["selectors"].as_array().expect("selectors array");
+        assert_eq!(selectors.len(), 2);
+        assert_eq!(selectors[0]["payload"]["automation_id"], "15");
+        assert_eq!(selectors[1]["payload"]["control_type"], "Edit");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
