@@ -309,8 +309,12 @@ dependencies = [
 name = "flowproof-replay"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "flowproof-agent",
  "flowproof-driver",
  "flowproof-trace",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
