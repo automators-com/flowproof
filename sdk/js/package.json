@@ -1,0 +1,24 @@
+{
+  "name": "flowproof",
+  "version": "0.0.1",
+  "description": "AI-native E2E testing for the apps Selenium can't reach. Placeholder release — see github.com/automators-com/flowproof",
+  "main": "index.js",
+  "files": [
+    "index.js"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/automators-com/flowproof.git"
+  },
+  "homepage": "https://github.com/automators-com/flowproof",
+  "keywords": [
+    "e2e",
+    "testing",
+    "sap-gui",
+    "citrix",
+    "windows",
+    "automation"
+  ],
+  "author": "Automators <hello@automators.com>",
+  "license": "Apache-2.0"
+}
