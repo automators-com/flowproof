@@ -12,5 +12,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+jsonschema = { version = "0.33", default-features = false }
+
 [lints]
 workspace = true

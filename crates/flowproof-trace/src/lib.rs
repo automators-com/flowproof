@@ -6,8 +6,9 @@
 //! JSON Schema in `schema/trace-v1.schema.json`; the serde types in this
 //! crate are implemented against that schema.
 //!
-//! Serde types land once the v1 schema is approved; until then this crate
-//! only exposes the format identity and the selector-ladder ordering.
+pub mod format;
+
+pub use format::{Header, Step, TraceError, TraceLine};
 
 /// Value of the `format` field in the trace header line.
 pub const FORMAT_NAME: &str = "flowproof-trace";
@@ -17,7 +18,10 @@ pub const FORMAT_VERSION: u32 = 1;
 
 /// The selector ladder: strategies tried in order during replay. Lower
 /// discriminant = tried first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum SelectorTier {
     /// Native stable ID (UIA AutomationId, SAP GUI Scripting ID, CSS/DOM id).
     NativeId = 0,
