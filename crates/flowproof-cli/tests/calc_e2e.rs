@@ -34,7 +34,8 @@ fn records_and_replays_calculator() {
     assert_eq!(summary.steps, 5);
 
     let mut driver = UiaAppDriver::new().expect("UIA client initializes");
-    let report = flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
     for step in &report.steps {
         eprintln!("{:?} {} {}", step.status, step.id, step.intent);
     }
