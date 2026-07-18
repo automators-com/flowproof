@@ -54,6 +54,10 @@
             "name": { "type": "string" },
             "adapter": { "$ref": "#/$defs/adapter" },
             "window_title": { "type": "string" },
+            "url": {
+              "type": "string",
+              "description": "For web traces: the URL the flow was recorded against."
+            },
             "version": { "type": "string" }
           }
         },

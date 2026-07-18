@@ -12,7 +12,7 @@ use flowproof_trace::format::{
 };
 use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 
-use crate::rules::{resolve_step, ResolvedAction, NOTEPAD_EDITOR_ID};
+use crate::rules::{resolve_step, ResolvedAction, Target, NOTEPAD_EDITOR_ID};
 use crate::spec::FlowSpec;
 
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -22,8 +22,10 @@ const STEP_TIMEOUT_MS: u64 = 5000;
 pub enum RecordError {
     #[error(transparent)]
     Rules(#[from] crate::rules::RulesError),
-    #[error("unknown app '{0}' (this slice supports: calc, notepad)")]
+    #[error("unknown app '{0}' (this slice supports: calc, notepad, web)")]
     UnknownApp(String),
+    #[error("app 'web' requires a `url:` field in the spec")]
+    MissingUrl,
     #[error("element for step '{intent}' not found: [{selector}]")]
     ElementNotFound { intent: String, selector: String },
     #[error(
@@ -64,36 +66,44 @@ fn native_selector(payload: serde_json::Map<String, serde_json::Value>) -> Selec
 /// The recorded selector ladder for an action target. Notepad's editor gets
 /// a second rung (control type + name) because the Win32 control id `15`
 /// varies across Notepad generations — the first real ladder fallback.
-fn selectors_for(app: &str, automation_id: &str, label: Option<&str>) -> Vec<Selector> {
-    let mut payload = serde_json::Map::new();
-    payload.insert("automation_id".into(), automation_id.into());
-    if let Some(label) = label {
-        payload.insert("name".into(), label.into());
+fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selector> {
+    match target {
+        Target::AutomationId(automation_id) => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("automation_id".into(), automation_id.as_str().into());
+            if let Some(label) = label {
+                payload.insert("name".into(), label.into());
+            }
+            let mut ladder = vec![native_selector(payload)];
+            if app == "notepad" && automation_id == NOTEPAD_EDITOR_ID {
+                let mut fallback = serde_json::Map::new();
+                fallback.insert("control_type".into(), "Edit".into());
+                fallback.insert("name".into(), "Text Editor".into());
+                ladder.push(native_selector(fallback));
+            }
+            ladder
+        }
+        Target::Css(css) => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("css".into(), css.as_str().into());
+            vec![Selector {
+                tier: SelectorTier::NativeId,
+                provenance: flowproof_trace::format::Adapter::Web,
+                confidence: Some(1.0),
+                payload,
+            }]
+        }
     }
-    let mut ladder = vec![native_selector(payload)];
-    if app == "notepad" && automation_id == NOTEPAD_EDITOR_ID {
-        let mut fallback = serde_json::Map::new();
-        fallback.insert("control_type".into(), "Edit".into());
-        fallback.insert("name".into(), "Text Editor".into());
-        ladder.push(native_selector(fallback));
-    }
-    ladder
 }
 
 fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step {
     let (selectors, trace_action) = match action {
-        ResolvedAction::Press {
-            automation_id,
-            label,
-        } => (
-            selectors_for(app, automation_id, Some(label)),
+        ResolvedAction::Press { target, label } => (
+            selectors_for(app, target, Some(label)),
             Action::Click(serde_json::Map::new()),
         ),
-        ResolvedAction::TypeText {
-            automation_id,
-            text,
-        } => (
-            selectors_for(app, automation_id, None),
+        ResolvedAction::TypeText { target, text } => (
+            selectors_for(app, target, None),
             Action::TypeText(TypeTextParams {
                 text: text.clone(),
                 submit: None,
@@ -101,7 +111,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             }),
         ),
         ResolvedAction::AssertText {
-            automation_id,
+            target,
             expected,
             contains,
             numeric,
@@ -114,7 +124,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 serde_json::json!({ "value_equals": expected })
             };
             (
-                selectors_for(app, automation_id, None),
+                selectors_for(app, target, None),
                 Action::Assert(Assertion::ElementState {
                     expect,
                     selector_ref: Some(0),
@@ -139,13 +149,37 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
 }
 
 fn action_selector(action: &ResolvedAction) -> UiaSelector {
-    match action {
-        ResolvedAction::Press { automation_id, .. }
-        | ResolvedAction::TypeText { automation_id, .. }
-        | ResolvedAction::AssertText { automation_id, .. } => {
-            UiaSelector::automation_id(automation_id.clone())
-        }
+    let target = match action {
+        ResolvedAction::Press { target, .. }
+        | ResolvedAction::TypeText { target, .. }
+        | ResolvedAction::AssertText { target, .. } => target,
+    };
+    match target {
+        Target::AutomationId(id) => UiaSelector::automation_id(id.clone()),
+        Target::Css(css) => UiaSelector::css(css.clone()),
     }
+}
+
+/// Resolve where to launch: registry apps by id, `web` from the spec URL
+/// (relative paths become absolute `file://` URLs).
+fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordError> {
+    if spec.app == "web" {
+        let url = spec.url.as_deref().ok_or(RecordError::MissingUrl)?;
+        let url = if url.contains("://") {
+            url.to_string()
+        } else {
+            let absolute = std::fs::canonicalize(url).map_err(|source| RecordError::Io {
+                path: url.to_string(),
+                source,
+            })?;
+            format!("file://{}", absolute.display())
+        };
+        return Ok(flowproof_driver::AppTarget {
+            command: url,
+            window_name: String::new(),
+        });
+    }
+    resolve_app(&spec.app).ok_or_else(|| RecordError::UnknownApp(spec.app.clone()))
 }
 
 fn assert_holds(actual: &str, expected: &str, contains: bool, numeric: bool) -> bool {
@@ -169,8 +203,8 @@ pub fn record<D: AppDriver>(
     driver: &mut D,
     out: &Path,
 ) -> Result<RecordSummary, RecordError> {
-    let target = resolve_app(&spec.app).ok_or_else(|| RecordError::UnknownApp(spec.app.clone()))?;
-    driver.launch(target.command, target.window_name, LAUNCH_TIMEOUT)?;
+    let target = launch_target(spec)?;
+    driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
     let (width, height) = driver.screen_size()?;
 
     // Recording PERFORMS the flow once: buttons are really pressed and the
@@ -226,8 +260,13 @@ pub fn record<D: AppDriver>(
         }),
         app: AppInfo {
             name: spec.app.clone(),
-            adapter: flowproof_trace::format::Adapter::Uia,
-            window_title: Some(target.window_name.to_string()),
+            adapter: if spec.app == "web" {
+                flowproof_trace::format::Adapter::Web
+            } else {
+                flowproof_trace::format::Adapter::Uia
+            },
+            window_title: (!target.window_name.is_empty()).then(|| target.window_name.to_string()),
+            url: (spec.app == "web").then(|| target.command.clone()),
             version: None,
         },
         agent: None, // rule-based recording: no model involved

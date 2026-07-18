@@ -1,0 +1,7 @@
+name: Greet the user
+app: web
+url: examples/web/greeter.html
+steps:
+  - Type Ada into the name field
+  - Press the greet button
+  - assert: page shows Hello, Ada

@@ -1,6 +1,6 @@
 [package]
 name = "flowproof-adapters"
-description = "Native application adapters (SAP GUI Scripting COM, WebDriver/CDP) behind feature flags"
+description = "Native application adapters (SAP GUI Scripting COM, browser via CDP) behind feature flags"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,9 +10,11 @@ authors.workspace = true
 [features]
 default = []
 sap-com = []
-web = []
+web = ["dep:headless_chrome"]
 
 [dependencies]
+flowproof-driver = { workspace = true }
+headless_chrome = { version = "1", optional = true }
 thiserror = { workspace = true }
 
 [lints]

@@ -12,7 +12,6 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use flowproof_agent::FlowSpec;
-use flowproof_driver::UiaAppDriver;
 
 fn runtime_err(message: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(message.to_string())
@@ -37,7 +36,7 @@ fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<Strin
     py.detach(|| {
         let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
         let out = out.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
-        let mut driver = UiaAppDriver::new().map_err(runtime_err)?;
+        let mut driver = flowproof_cli::driver_for(&parsed.app).map_err(runtime_err)?;
         let summary = flowproof_agent::record(&parsed, &mut driver, &out).map_err(runtime_err)?;
         to_json(&serde_json::json!({
             "trace_path": summary.trace_path,
@@ -54,7 +53,8 @@ fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<Strin
 fn run(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>) -> PyResult<String> {
     py.detach(|| {
         let trace_path = trace.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
-        let mut driver = UiaAppDriver::new().map_err(runtime_err)?;
+        let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(runtime_err)?;
+        let mut driver = flowproof_cli::driver_for(&header.app.name).map_err(runtime_err)?;
         let report = flowproof_replay::run_trace(&trace_path, &mut driver).map_err(runtime_err)?;
         let base = trace_path.parent().unwrap_or_else(|| Path::new("."));
         let report_path = report.write(base).map_err(runtime_err)?;

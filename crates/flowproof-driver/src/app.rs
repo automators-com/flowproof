@@ -10,13 +10,16 @@ use std::time::Duration;
 
 use crate::DriverError;
 
-/// A native element selector: any combination of UIA properties; all set
-/// fields must match.
+/// A native element selector. UIA drivers match the UIA properties (all set
+/// fields must match); browser drivers match `css` (falling back to
+/// `#automation_id`). A rename to `ElementSelector` is planned once the
+/// surface settles.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UiaSelector {
     pub automation_id: Option<String>,
     pub name: Option<String>,
     pub control_type: Option<String>,
+    pub css: Option<String>,
 }
 
 impl UiaSelector {
@@ -27,8 +30,25 @@ impl UiaSelector {
         }
     }
 
+    pub fn css(selector: impl Into<String>) -> Self {
+        Self {
+            css: Some(selector.into()),
+            ..Self::default()
+        }
+    }
+
+    /// The CSS selector a browser driver should use, if any.
+    pub fn css_selector(&self) -> Option<String> {
+        self.css
+            .clone()
+            .or_else(|| self.automation_id.as_ref().map(|id| format!("#{id}")))
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.automation_id.is_none() && self.name.is_none() && self.control_type.is_none()
+        self.automation_id.is_none()
+            && self.name.is_none()
+            && self.control_type.is_none()
+            && self.css.is_none()
     }
 }
 
@@ -43,6 +63,9 @@ impl std::fmt::Display for UiaSelector {
         }
         if let Some(ct) = &self.control_type {
             parts.push(format!("control_type={ct}"));
+        }
+        if let Some(css) = &self.css {
+            parts.push(format!("css={css}"));
         }
         write!(f, "{}", parts.join(","))
     }
@@ -77,11 +100,12 @@ pub trait AppDriver {
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError>;
 }
 
-/// How to launch a known application id from a flow spec.
+/// How to launch a known application id from a flow spec. For the `web`
+/// pseudo-app, `command` is the URL to open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppTarget {
-    pub command: &'static str,
-    pub window_name: &'static str,
+    pub command: String,
+    pub window_name: String,
 }
 
 /// Extract the trailing numeric value from display text like
@@ -98,14 +122,46 @@ pub fn numeric_value(text: &str) -> Option<f64> {
 pub fn resolve_app(app_id: &str) -> Option<AppTarget> {
     match app_id {
         "calc" => Some(AppTarget {
-            command: "calc.exe",
-            window_name: "Calculator",
+            command: "calc.exe".into(),
+            window_name: "Calculator".into(),
         }),
         "notepad" => Some(AppTarget {
-            command: "notepad.exe",
-            window_name: "Notepad",
+            command: "notepad.exe".into(),
+            window_name: "Notepad".into(),
         }),
         _ => None,
+    }
+}
+
+// Allow callers to select a driver implementation at runtime.
+impl AppDriver for Box<dyn AppDriver> {
+    fn launch(
+        &mut self,
+        command: &str,
+        window_name: &str,
+        timeout: Duration,
+    ) -> Result<(), DriverError> {
+        (**self).launch(command, window_name, timeout)
+    }
+
+    fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        (**self).element_exists(selector)
+    }
+
+    fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        (**self).invoke(selector)
+    }
+
+    fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
+        (**self).read_text(selector)
+    }
+
+    fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
+        (**self).type_text(selector, text)
+    }
+
+    fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
+        (**self).screen_size()
     }
 }
 
@@ -153,6 +209,14 @@ mod windows_impl {
         }
 
         fn find(&self, selector: &UiaSelector, timeout_ms: u64) -> Result<UIElement, DriverError> {
+            if selector.automation_id.is_none()
+                && selector.name.is_none()
+                && selector.control_type.is_none()
+            {
+                return Err(DriverError::Uia(format!(
+                    "selector [{selector}] has no UIA-matchable fields"
+                )));
+            }
             let window = self.window()?;
             let mut matcher = self
                 .automation
@@ -359,10 +423,16 @@ mod tests {
             automation_id: Some("num5Button".into()),
             name: Some("Five".into()),
             control_type: None,
+            css: None,
         };
         assert_eq!(sel.to_string(), "automation_id=num5Button,name=Five");
         assert!(!sel.is_empty());
         assert!(UiaSelector::default().is_empty());
+        assert_eq!(sel.css_selector().as_deref(), Some("#num5Button"));
+        assert_eq!(
+            UiaSelector::css("#name").css_selector().as_deref(),
+            Some("#name")
+        );
     }
 
     #[test]

@@ -127,6 +127,39 @@ fn notepad_round_trip_types_and_checks_contains() {
 }
 
 #[test]
+fn web_round_trip_via_mock_uses_css_selectors() {
+    let dir = std::env::temp_dir().join("flowproof-replay-web");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec {
+        url: Some("https://example.test/greeter".into()),
+        ..FlowSpec::parse(
+            "name: Greet\napp: web\nurl: x\nsteps:\n  - Type Ada into the name field\n  - Press the greet button\n  - assert: page shows Hello, Ada\n",
+        )
+        .expect("spec parses")
+    };
+    let trace = dir.join("web.trace.jsonl");
+
+    // Mock "page": elements keyed by css; body already shows the greeting so
+    // the record-time assert holds.
+    let mut rec =
+        MockAppDriver::new(&["#name", "#greet", "body"]).with_text("body", "Greeter Hello, Ada!");
+    record(&spec, &mut rec, &trace).expect("recording succeeds");
+    assert_eq!(
+        rec.launched.as_ref().map(|l| l.0.as_str()),
+        Some("https://example.test/greeter")
+    );
+    assert_eq!(rec.typed, vec![("#name".to_string(), "Ada".to_string())]);
+    assert_eq!(rec.invoked, vec!["#greet"]);
+
+    let mut driver =
+        MockAppDriver::new(&["#name", "#greet", "body"]).with_text("body", "Greeter Hello, Ada!");
+    let report = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn replay_skips_remaining_steps_after_a_missing_element() {
     let dir = std::env::temp_dir().join("flowproof-replay-skip");
     std::fs::create_dir_all(&dir).expect("temp dir");

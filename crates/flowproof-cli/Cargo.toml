@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+flowproof-adapters = { workspace = true, features = ["web"] }
 flowproof-agent = { workspace = true }
 flowproof-driver = { workspace = true }
 flowproof-replay = { workspace = true }
