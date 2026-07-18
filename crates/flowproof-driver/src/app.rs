@@ -69,6 +69,28 @@ pub trait AppDriver {
     /// Read the visible text of the element matching `selector` (Value
     /// pattern when available, element Name otherwise).
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError>;
+
+    /// Primary screen size in physical pixels (used for trace headers).
+    fn screen_size(&mut self) -> Result<(u32, u32), DriverError>;
+}
+
+/// How to launch a known application id from a flow spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppTarget {
+    pub command: &'static str,
+    pub window_name: &'static str,
+}
+
+/// Resolve a spec `app:` id to a launch target. Shared by record and replay
+/// so a trace only needs to carry the app id.
+pub fn resolve_app(app_id: &str) -> Option<AppTarget> {
+    match app_id {
+        "calc" => Some(AppTarget {
+            command: "calc.exe",
+            window_name: "Calculator",
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(windows)]
@@ -231,6 +253,20 @@ mod windows_impl {
                 .get_name()
                 .map_err(|e| uia_err(&format!("reading text of [{selector}]"), e))
         }
+
+        fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
+            let root = self
+                .automation
+                .get_root_element()
+                .map_err(|e| uia_err("getting desktop root element", e))?;
+            let rect = root
+                .get_bounding_rectangle()
+                .map_err(|e| uia_err("reading desktop bounds", e))?;
+            Ok((
+                rect.get_width().unsigned_abs(),
+                rect.get_height().unsigned_abs(),
+            ))
+        }
     }
 }
 
@@ -273,6 +309,10 @@ mod stub_impl {
         }
 
         fn read_text(&mut self, _selector: &UiaSelector) -> Result<String, DriverError> {
+            Err(DriverError::UnsupportedPlatform)
+        }
+
+        fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
             Err(DriverError::UnsupportedPlatform)
         }
     }
