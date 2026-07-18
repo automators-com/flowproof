@@ -157,6 +157,41 @@ impl AppDriver for WebAppDriver {
         )))
     }
 
+    fn scene(&mut self) -> Result<Option<String>, DriverError> {
+        // Enumerate visible interactable elements with stable selectors —
+        // the grounding set an authoring model must choose targets from.
+        const SCENE_JS: &str = r#"
+            JSON.stringify(Array.from(document.querySelectorAll(
+                'input, button, a, select, textarea, [role=button], [id]'
+            )).filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            }).slice(0, 100).map((el, i) => {
+                const css = el.id ? '#' + el.id
+                    : el.tagName.toLowerCase() + ':nth-of-type(' +
+                      (Array.from(document.querySelectorAll(el.tagName)).indexOf(el) + 1) + ')';
+                const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
+                    : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+                return {
+                    css,
+                    tag: el.tagName.toLowerCase(),
+                    type: el.getAttribute('type') || undefined,
+                    text: (el.textContent || '').trim().slice(0, 80) || undefined,
+                    label: label || undefined,
+                };
+            }))
+        "#;
+        let value = self
+            .tab()?
+            .evaluate(SCENE_JS, false)
+            .map_err(|e| web_err("evaluating scene script", e))?;
+        let json = value
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .ok_or_else(|| DriverError::Uia("web: scene script returned no value".into()))?;
+        Ok(Some(json))
+    }
+
     fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError> {
         let tab = self.tab()?;
         let fields = tab

@@ -1,31 +1,35 @@
 //! The recording agent: performs a flow once from a natural-language spec
-//! and records a trace. Model backends are pluggable; this slice ships a
-//! deterministic rule-based resolver for Windows Calculator ([`rules`]).
-//! The replayer never touches this crate.
+//! and records a trace. Authoring backends are pluggable: the deterministic
+//! rules resolver ([`rules`]) handles known app vocabularies, and the LLM
+//! author ([`author`]) handles arbitrary steps by observing the live app's
+//! scene graph. The replayer never touches this crate.
 
+pub mod author;
 pub mod heal;
+pub mod llm;
 pub mod recorder;
 pub mod rules;
 pub mod spec;
 
-pub use heal::{heal, HealError, HealReport};
-pub use recorder::{record, RecordError, RecordSummary};
+pub use heal::{heal, heal_with_author, HealError, HealReport};
+pub use llm::{HttpModelClient, ModelClient};
+pub use recorder::{record, record_with_author, Author, RecordError, RecordSummary};
 pub use spec::{FlowSpec, SpecStep};
 
 use std::env;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
-    #[error("agent loop is not implemented yet")]
-    NotImplemented,
     #[error("backend configuration error: {0}")]
     Config(String),
+    #[error("authoring failed for step '{step}': {reason}")]
+    Authoring { step: String, reason: String },
 }
 
-/// Which model backend drives the computer-use loop.
+/// Which model backend drives the authoring loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendKind {
-    /// Anthropic computer-use API.
+    /// Anthropic Messages API.
     Anthropic,
     /// Any OpenAI-compatible endpoint (e.g. vLLM serving a local model).
     OpenAiCompatible,
@@ -36,12 +40,13 @@ pub enum BackendKind {
 /// Env names mirror the conventions used across Automators products:
 /// `FLOWPROOF_AI_PROVIDER` (`anthropic` | `openai-compatible`),
 /// `FLOWPROOF_AI_BASE_URL`, `FLOWPROOF_AI_API_KEY`, `FLOWPROOF_AI_MODEL`.
-/// With nothing set, defaults to Anthropic (key read at call time).
+/// The API key falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConfig {
     pub kind: BackendKind,
     pub base_url: Option<String>,
     pub model: Option<String>,
+    pub api_key: Option<String>,
 }
 
 impl BackendConfig {
@@ -50,9 +55,26 @@ impl BackendConfig {
         Self::from_provider_name(&provider, env::var("FLOWPROOF_AI_BASE_URL").ok()).map(
             |mut config| {
                 config.model = env::var("FLOWPROOF_AI_MODEL").ok();
+                config.api_key =
+                    env::var("FLOWPROOF_AI_API_KEY")
+                        .ok()
+                        .or_else(|| match config.kind {
+                            BackendKind::Anthropic => env::var("ANTHROPIC_API_KEY").ok(),
+                            BackendKind::OpenAiCompatible => env::var("OPENAI_API_KEY").ok(),
+                        });
                 config
             },
         )
+    }
+
+    /// Whether this configuration can actually make calls: Anthropic needs a
+    /// key; an OpenAI-compatible endpoint needs a base url (key optional —
+    /// local vLLM commonly runs without one).
+    pub fn is_usable(&self) -> bool {
+        match self.kind {
+            BackendKind::Anthropic => self.api_key.is_some(),
+            BackendKind::OpenAiCompatible => self.base_url.is_some(),
+        }
     }
 
     fn from_provider_name(provider: &str, base_url: Option<String>) -> Result<Self, AgentError> {
@@ -74,24 +96,8 @@ impl BackendConfig {
             kind,
             base_url,
             model: None,
+            api_key: None,
         })
-    }
-}
-
-/// The planner loop: observe (screenshot + scene graph) -> plan -> act via
-/// the driver -> record a trace step. Stub until the trace format lands.
-#[derive(Debug)]
-pub struct Recorder {
-    pub config: BackendConfig,
-}
-
-impl Recorder {
-    pub fn new(config: BackendConfig) -> Self {
-        Self { config }
-    }
-
-    pub fn record(&mut self, _spec_intent: &str) -> Result<(), AgentError> {
-        Err(AgentError::NotImplemented)
     }
 }
 
@@ -103,6 +109,7 @@ mod tests {
     fn default_provider_is_anthropic() {
         let config = BackendConfig::from_provider_name("", None).expect("default config");
         assert_eq!(config.kind, BackendKind::Anthropic);
+        assert!(!config.is_usable(), "no key -> not usable");
     }
 
     #[test]
@@ -117,6 +124,7 @@ mod tests {
         )
         .expect("config with base url");
         assert_eq!(ok.kind, BackendKind::OpenAiCompatible);
+        assert!(ok.is_usable(), "local endpoints need no key");
     }
 
     #[test]

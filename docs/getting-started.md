@@ -151,6 +151,25 @@ Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web E2E
 (`cargo test -p flowproof-cli --test web_e2e`, `FLOWPROOF_E2E=1`) runs in CI
 on ubuntu.
 
+## Authoring with a model (arbitrary steps)
+
+The rules only know the demo vocabularies. With a model backend configured,
+`record` falls back to the **LLM author** for any step the rules can't parse
+(web flows today; the model picks targets from the live page's element list
+and can never invent a selector):
+
+```bash
+export FLOWPROOF_AI_PROVIDER=anthropic        # or openai-compatible
+export FLOWPROOF_AI_API_KEY=sk-...            # falls back to ANTHROPIC_API_KEY
+flowproof record shop.flow.yaml               # steps in your own words
+flowproof run shop.flow.yaml                  # replays with ZERO model calls
+```
+
+`--author rules|llm|auto` controls the mode (default auto). The trace header
+records `agent: {backend, model}` whenever a model authored steps — reviewers
+always know. For a local model: `FLOWPROOF_AI_PROVIDER=openai-compatible`
+plus `FLOWPROOF_AI_BASE_URL=http://localhost:8000/v1` (vLLM).
+
 ## Healing a stale trace
 
 When the app changes and replay fails, `heal` re-authors the flow from the

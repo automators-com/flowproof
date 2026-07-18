@@ -13,7 +13,7 @@ use flowproof_trace::format::Step;
 use flowproof_trace::TraceLine;
 use serde::{Deserialize, Serialize};
 
-use crate::recorder::{record, RecordError};
+use crate::recorder::{record_with_author, Author, RecordError};
 use crate::spec::FlowSpec;
 
 #[derive(Debug, thiserror::Error)]
@@ -114,10 +114,20 @@ pub fn heal<D: AppDriver>(
     driver: &mut D,
     trace_path: &Path,
 ) -> Result<HealReport, HealError> {
+    heal_with_author(spec, driver, trace_path, Author::Auto)
+}
+
+/// [`heal`] with an explicit authoring mode (the CLI's `--author`).
+pub fn heal_with_author<D: AppDriver>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    trace_path: &Path,
+    author: Author,
+) -> Result<HealReport, HealError> {
     let old_steps = load_steps(trace_path)?;
 
     let proposal = proposed_path(trace_path);
-    record(spec, driver, &proposal)?;
+    record_with_author(spec, driver, &proposal, author)?;
     let new_steps = load_steps(&proposal)?;
 
     let (steps_changed, steps_added, steps_removed) = diff_steps(&old_steps, &new_steps);
@@ -139,6 +149,7 @@ mod tests {
     use flowproof_driver::mock::MockAppDriver;
 
     use super::*;
+    use crate::recorder::record;
 
     const CALC_SPEC: &str = "\
 name: Add two numbers

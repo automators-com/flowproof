@@ -29,6 +29,8 @@ pub struct MockAppDriver {
     pub password_fields: Vec<PixelRect>,
     /// When set, `element_rect` fails — exercises fail-closed redaction.
     pub fail_element_rect: bool,
+    /// Scene JSON returned by `scene` (None = authoring unavailable).
+    pub scene: Option<String>,
 }
 
 impl MockAppDriver {
@@ -126,6 +128,10 @@ impl AppDriver for MockAppDriver {
 
     fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError> {
         Ok(self.password_fields.clone())
+    }
+
+    fn scene(&mut self) -> Result<Option<String>, DriverError> {
+        Ok(self.scene.clone())
     }
 }
 
