@@ -31,8 +31,12 @@ pub enum SpecError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlowSpec {
     pub name: String,
-    /// App id resolved via `flowproof_driver::resolve_app` (e.g. `calc`).
+    /// App id resolved via `flowproof_driver::resolve_app` (e.g. `calc`),
+    /// or `web` for browser flows.
     pub app: String,
+    /// For `app: web`: the URL to open (relative paths become `file://`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     pub steps: Vec<SpecStep>,
 }
 

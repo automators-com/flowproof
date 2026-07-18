@@ -77,6 +77,9 @@ pub struct AppInfo {
     pub adapter: Adapter,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_title: Option<String>,
+    /// For `web` traces: the URL the flow was recorded against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }

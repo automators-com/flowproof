@@ -11,25 +11,42 @@ use crate::spec::SpecStep;
 pub enum RulesError {
     #[error("cannot resolve step '{step}': {reason}")]
     Unresolvable { step: String, reason: String },
-    #[error("no rules for app '{0}' (supported: calc, notepad)")]
+    #[error("no rules for app '{0}' (supported: calc, notepad, web)")]
     UnsupportedApp(String),
+}
+
+/// What an action targets: a UIA automation id or a CSS selector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    AutomationId(String),
+    Css(String),
+}
+
+impl Target {
+    pub fn id(id: impl Into<String>) -> Self {
+        Target::AutomationId(id.into())
+    }
+
+    pub fn css(css: impl Into<String>) -> Self {
+        Target::Css(css.into())
+    }
 }
 
 /// A concrete action planned from one natural-language step. One step may
 /// expand to several actions (e.g. `Type 53` in calc → two button presses).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedAction {
-    /// Press (invoke) a button.
+    /// Press (invoke/click) an element.
     Press {
-        automation_id: String,
+        target: Target,
         /// Human-readable label (recorded as the selector name hint).
         label: String,
     },
     /// Type literal text into an element.
-    TypeText { automation_id: String, text: String },
+    TypeText { target: Target, text: String },
     /// Assert on an element's visible text.
     AssertText {
-        automation_id: String,
+        target: Target,
         expected: String,
         /// Substring match instead of equality.
         contains: bool,
@@ -66,6 +83,7 @@ pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, R
     match app {
         "calc" => calc::resolve(step),
         "notepad" => notepad::resolve(step),
+        "web" => web::resolve(step),
         other => Err(RulesError::UnsupportedApp(other.to_string())),
     }
 }
@@ -119,7 +137,7 @@ mod calc {
                     unresolvable(trimmed, format!("'{c}' is not a digit or decimal point"))
                 })?;
                 actions.push(ResolvedAction::Press {
-                    automation_id,
+                    target: Target::AutomationId(automation_id),
                     label,
                 });
             }
@@ -131,7 +149,7 @@ mod calc {
             let (automation_id, label) = operator_button(&word)
                 .ok_or_else(|| unresolvable(trimmed, format!("unknown calculator key '{word}'")))?;
             return Ok(vec![ResolvedAction::Press {
-                automation_id: automation_id.into(),
+                target: Target::id(automation_id),
                 label: label.into(),
             }]);
         }
@@ -150,7 +168,7 @@ mod calc {
                 return Err(unresolvable(trimmed, "no expected value"));
             }
             return Ok(ResolvedAction::AssertText {
-                automation_id: CALC_DISPLAY_ID.into(),
+                target: Target::id(CALC_DISPLAY_ID),
                 expected: expected.to_string(),
                 contains: false,
                 numeric: true,
@@ -173,7 +191,7 @@ mod notepad {
                         return Err(unresolvable(trimmed, "nothing to type"));
                     }
                     return Ok(vec![ResolvedAction::TypeText {
-                        automation_id: NOTEPAD_EDITOR_ID.into(),
+                        target: Target::id(NOTEPAD_EDITOR_ID),
                         text: value.to_string(),
                     }]);
                 }
@@ -187,7 +205,7 @@ mod notepad {
                         return Err(unresolvable(trimmed, "no expected text"));
                     }
                     return Ok(vec![ResolvedAction::AssertText {
-                        automation_id: NOTEPAD_EDITOR_ID.into(),
+                        target: Target::id(NOTEPAD_EDITOR_ID),
                         expected: expected.to_string(),
                         contains: true,
                         numeric: false,
@@ -196,6 +214,81 @@ mod notepad {
                 Err(unresolvable(trimmed, "expected 'document contains <text>'"))
             }
         }
+    }
+}
+
+mod web {
+    use super::*;
+
+    /// Where "page shows …" asserts look: the whole document body.
+    pub(super) const PAGE_TEXT_CSS: &str = "body";
+
+    pub(super) fn resolve(step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
+        match step {
+            SpecStep::Plain(text) => resolve_plain(text),
+            SpecStep::Assert { assert } => {
+                let trimmed = assert.trim();
+                if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
+                    let expected = rest.trim();
+                    if expected.is_empty() {
+                        return Err(unresolvable(trimmed, "no expected text"));
+                    }
+                    return Ok(vec![ResolvedAction::AssertText {
+                        target: Target::css(PAGE_TEXT_CSS),
+                        expected: expected.to_string(),
+                        contains: true,
+                        numeric: false,
+                    }]);
+                }
+                Err(unresolvable(trimmed, "expected 'page shows <text>'"))
+            }
+        }
+    }
+
+    fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        let trimmed = text.trim();
+
+        // `Type <text> into the <id> field` → type into `#<id>`.
+        if let Some(rest) = strip_prefix_ci(trimmed, "type ") {
+            let lower = rest.to_lowercase();
+            if let Some(pos) = lower.rfind(" into the ") {
+                let value = rest[..pos].trim();
+                let field = lower[pos + " into the ".len()..].trim();
+                if let Some(id) = field.strip_suffix(" field").map(str::trim) {
+                    if value.is_empty() || id.is_empty() {
+                        return Err(unresolvable(trimmed, "missing text or field name"));
+                    }
+                    return Ok(vec![ResolvedAction::TypeText {
+                        target: Target::css(format!("#{id}")),
+                        text: value.to_string(),
+                    }]);
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'Type <text> into the <id> field'",
+            ));
+        }
+
+        // `Press the <id> button` → click `#<id>`.
+        if let Some(rest) = strip_prefix_ci(trimmed, "press the ") {
+            let lower = rest.to_lowercase();
+            if let Some(id) = lower.strip_suffix(" button").map(str::trim) {
+                if id.is_empty() {
+                    return Err(unresolvable(trimmed, "missing button name"));
+                }
+                return Ok(vec![ResolvedAction::Press {
+                    target: Target::css(format!("#{id}")),
+                    label: id.to_string(),
+                }]);
+            }
+            return Err(unresolvable(trimmed, "expected 'Press the <id> button'"));
+        }
+
+        Err(unresolvable(
+            trimmed,
+            "expected 'Type <text> into the <id> field' or 'Press the <id> button'",
+        ))
     }
 }
 
@@ -211,11 +304,11 @@ mod tests {
             actions,
             vec![
                 ResolvedAction::Press {
-                    automation_id: "num5Button".into(),
+                    target: Target::id("num5Button"),
                     label: "Five".into()
                 },
                 ResolvedAction::Press {
-                    automation_id: "num3Button".into(),
+                    target: Target::id("num3Button"),
                     label: "Three".into()
                 },
             ]
@@ -229,7 +322,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::Press {
-                automation_id: "plusButton".into(),
+                target: Target::id("plusButton"),
                 label: "Plus".into()
             }]
         );
@@ -247,7 +340,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::AssertText {
-                automation_id: CALC_DISPLAY_ID.into(),
+                target: Target::id(CALC_DISPLAY_ID),
                 expected: "8".into(),
                 contains: false,
                 numeric: true,
@@ -265,7 +358,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::TypeText {
-                automation_id: NOTEPAD_EDITOR_ID.into(),
+                target: Target::id(NOTEPAD_EDITOR_ID),
                 text: "Hello from FlowProof".into(),
             }]
         );
@@ -283,8 +376,54 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::AssertText {
-                automation_id: NOTEPAD_EDITOR_ID.into(),
+                target: Target::id(NOTEPAD_EDITOR_ID),
                 expected: "Hello".into(),
+                contains: true,
+                numeric: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn web_type_and_press_map_to_css() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain("Type Ada into the name field".into()),
+        )
+        .expect("type resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::TypeText {
+                target: Target::css("#name"),
+                text: "Ada".into(),
+            }]
+        );
+
+        let actions = resolve_step("web", &SpecStep::Plain("Press the greet button".into()))
+            .expect("press resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::Press {
+                target: Target::css("#greet"),
+                label: "greet".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn web_assert_is_contains_on_body() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "page shows Hello, Ada".into(),
+            },
+        )
+        .expect("assert resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertText {
+                target: Target::css("body"),
+                expected: "Hello, Ada".into(),
                 contains: true,
                 numeric: false,
             }]

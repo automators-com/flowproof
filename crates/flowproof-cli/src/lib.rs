@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use flowproof_agent::FlowSpec;
-use flowproof_driver::UiaAppDriver;
+use flowproof_driver::{AppDriver, UiaAppDriver};
 use flowproof_replay::StepStatus;
 
 /// Process exit codes: 0 = pass, 1 = test failure, 2 = error.
@@ -66,10 +66,22 @@ pub fn default_trace_path(spec: &Path) -> PathBuf {
     spec.with_file_name(format!("{base}.trace.jsonl"))
 }
 
+/// Pick the driver implementation for an app id — the browser driver for
+/// `web`, the platform UIA driver otherwise.
+pub fn driver_for(app: &str) -> Result<Box<dyn AppDriver>, String> {
+    if app == "web" {
+        let driver = flowproof_adapters::WebAppDriver::new().map_err(|e| e.to_string())?;
+        Ok(Box::new(driver))
+    } else {
+        let driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
+        Ok(Box::new(driver))
+    }
+}
+
 fn cmd_record(spec_path: &Path, out: Option<PathBuf>, json: bool) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
-    let mut driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
+    let mut driver = driver_for(&spec.app)?;
     let summary = flowproof_agent::record(&spec, &mut driver, &out).map_err(|e| e.to_string())?;
     if json {
         let payload = serde_json::json!({
@@ -100,7 +112,9 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, S
             spec_path.display()
         ));
     }
-    let mut driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
+    // Peek the header to pick the right driver for the recorded app.
+    let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
+    let mut driver = driver_for(&header.app.name)?;
     let report =
         flowproof_replay::run_trace(&trace_path, &mut driver).map_err(|e| e.to_string())?;
 

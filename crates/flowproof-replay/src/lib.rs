@@ -73,6 +73,7 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
         automation_id: get("automation_id").or_else(|| get("id")),
         name: get("name"),
         control_type: get("control_type"),
+        css: get("css"),
     };
     (!uia.is_empty()).then_some(uia)
 }
@@ -223,10 +224,21 @@ fn execute_step<D: AppDriver>(
 /// walks recorded selectors only, stops at the first failing step.
 pub fn run_trace<D: AppDriver>(path: &Path, driver: &mut D) -> Result<RunReport, ReplayError> {
     let (header, steps) = load_trace(path)?;
-    let target = resolve_app(&header.app.name)
-        .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?;
+    let target = if header.app.name == "web" {
+        flowproof_driver::AppTarget {
+            command: header
+                .app
+                .url
+                .clone()
+                .ok_or_else(|| ReplayError::UnknownApp("web trace without url".into()))?,
+            window_name: String::new(),
+        }
+    } else {
+        resolve_app(&header.app.name)
+            .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?
+    };
     let started = Instant::now();
-    driver.launch(target.command, target.window_name, LAUNCH_TIMEOUT)?;
+    driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
 
     let name = header
         .spec

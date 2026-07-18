@@ -41,7 +41,10 @@ impl MockAppDriver {
         selector
             .automation_id
             .as_deref()
-            .ok_or_else(|| DriverError::Uia("mock driver only matches automation ids".into()))
+            .or(selector.css.as_deref())
+            .ok_or_else(|| {
+                DriverError::Uia("mock driver only matches automation ids or css".into())
+            })
     }
 }
 
@@ -57,9 +60,9 @@ impl AppDriver for MockAppDriver {
     }
 
     fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
-        // Ladder rungs without an automation id (e.g. control-type fallbacks)
+        // Ladder rungs without a matchable key (e.g. control-type fallbacks)
         // simply don't match in the mock, rather than erroring.
-        match &selector.automation_id {
+        match selector.automation_id.as_ref().or(selector.css.as_ref()) {
             Some(id) => Ok(self.elements.contains(id)),
             None => Ok(false),
         }

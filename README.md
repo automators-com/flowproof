@@ -77,7 +77,9 @@ Windows desktop.
 
 Works today:
 
-- Windows UIA driver (find, invoke, read), rule-based NL step resolution
+- Windows UIA driver (find, invoke, type, read), rule-based NL step resolution
+- Web adapter: the same record→replay spine drives browsers via headless
+  Chromium — cross-platform, E2E-tested in CI on Linux
 - Versioned JSON-lines [trace format](docs/trace-format.md) with a
   provenance-tagged selector ladder
 - Deterministic replayer with structured run reports and artifacts

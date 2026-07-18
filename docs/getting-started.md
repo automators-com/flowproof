@@ -120,6 +120,31 @@ record→replay spine is proven on every push. Calculator stays a manual VM
 walkthrough because GitHub's Windows Server runners don't ship the
 Calculator app.
 
+## Web flows (any OS)
+
+The same spine drives browsers through the `web` adapter — this works on
+Linux and macOS too, since it runs on headless Chromium rather than Windows
+UIA. Specs add a `url:` and use the web vocabulary
+([`examples/web.flow.yaml`](../examples/web.flow.yaml)):
+
+```yaml
+name: Greet the user
+app: web
+url: examples/web/greeter.html   # or any http(s):// URL
+steps:
+  - Type Ada into the name field
+  - Press the greet button
+  - assert: page shows Hello, Ada
+```
+
+```bash
+flowproof record web.flow.yaml && flowproof run web.flow.yaml
+```
+
+Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web E2E
+(`cargo test -p flowproof-cli --test web_e2e`, `FLOWPROOF_E2E=1`) runs in CI
+on ubuntu.
+
 ## What's deliberately missing (this is the first slice)
 
 - Only the `calc` app id and the calculator vocabulary (`Type <digits>`,
