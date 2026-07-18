@@ -44,6 +44,17 @@ impl SelectorTier {
         SelectorTier::VisualTemplate,
         SelectorTier::AiRelocation,
     ];
+
+    /// The tier's wire name (matches the serde/schema encoding).
+    pub fn name(self) -> &'static str {
+        match self {
+            SelectorTier::NativeId => "native_id",
+            SelectorTier::Structural => "structural",
+            SelectorTier::TextAnchor => "text_anchor",
+            SelectorTier::VisualTemplate => "visual_template",
+            SelectorTier::AiRelocation => "ai_relocation",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -57,6 +68,14 @@ mod tests {
         assert_eq!(sorted, SelectorTier::LADDER);
         assert_eq!(sorted[0], SelectorTier::NativeId);
         assert_eq!(sorted[4], SelectorTier::AiRelocation);
+    }
+
+    #[test]
+    fn tier_names_match_the_wire_encoding() {
+        for tier in SelectorTier::LADDER {
+            let wire = serde_json::to_value(tier).expect("tier serializes");
+            assert_eq!(wire, serde_json::Value::String(tier.name().to_string()));
+        }
     }
 
     #[test]

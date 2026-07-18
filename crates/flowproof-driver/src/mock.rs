@@ -47,13 +47,17 @@ impl MockAppDriver {
         self
     }
 
+    /// The key a selector matches in the fake UI tree: automation id, css,
+    /// or — like the real UIA driver's find-by-name — the accessible name
+    /// (used by structural / text-anchor ladder rungs).
     fn id_of(selector: &UiaSelector) -> Result<&str, DriverError> {
         selector
             .automation_id
             .as_deref()
             .or(selector.css.as_deref())
+            .or(selector.name.as_deref())
             .ok_or_else(|| {
-                DriverError::Uia("mock driver only matches automation ids or css".into())
+                DriverError::Uia("mock driver only matches automation ids, css, or names".into())
             })
     }
 }
@@ -70,9 +74,14 @@ impl AppDriver for MockAppDriver {
     }
 
     fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
-        // Ladder rungs without a matchable key (e.g. control-type fallbacks)
-        // simply don't match in the mock, rather than erroring.
-        match selector.automation_id.as_ref().or(selector.css.as_ref()) {
+        // Ladder rungs without any matchable key simply don't match in the
+        // mock, rather than erroring.
+        match selector
+            .automation_id
+            .as_ref()
+            .or(selector.css.as_ref())
+            .or(selector.name.as_ref())
+        {
             Some(id) => Ok(self.elements.contains(id)),
             None => Ok(false),
         }

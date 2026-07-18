@@ -124,7 +124,14 @@ def test_run_result_parses_engine_payload():
                 "passed": False,
                 "duration_ms": 1200,
                 "steps": [
-                    {"id": "s0001", "intent": "Type 5", "status": "passed", "duration_ms": 30},
+                    {
+                        "id": "s0001",
+                        "intent": "Type 5",
+                        "status": "passed",
+                        "duration_ms": 30,
+                        "selector_tier": "structural",
+                        "degraded": True,
+                    },
                     {
                         "id": "s0002",
                         "intent": "display shows 8",
@@ -133,6 +140,7 @@ def test_run_result_parses_engine_payload():
                         "detail": "expected display value '8', got 'Display is 9'",
                     },
                 ],
+                "degraded": True,
             },
             "report_path": "/tmp/result.json",
         }
@@ -146,6 +154,12 @@ def test_run_result_parses_engine_payload():
     assert result.junit_path == Path("/tmp/junit.xml")
     assert result.recording is None
     assert result.steps[1].started_ms == 0
+    # Ladder-fallback drift signals: per step and for the whole run.
+    assert result.degraded
+    assert result.steps[0].degraded
+    assert result.steps[0].selector_tier == "structural"
+    assert not result.steps[1].degraded
+    assert result.steps[1].selector_tier is None
 
 
 def test_public_surface_includes_heal_result():

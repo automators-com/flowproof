@@ -59,9 +59,6 @@ pub fn load_trace(path: &Path) -> Result<(Header, Vec<Step>), ReplayError> {
 }
 
 fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
-    if selector.tier != SelectorTier::NativeId {
-        return None; // Only the native-id rung is implemented in this slice.
-    }
     let get = |key: &str| {
         selector
             .payload
@@ -69,25 +66,40 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             .and_then(|v| v.as_str())
             .map(str::to_string)
     };
-    let uia = UiaSelector {
-        automation_id: get("automation_id").or_else(|| get("id")),
-        name: get("name"),
-        control_type: get("control_type"),
-        css: get("css"),
+    let uia = match selector.tier {
+        // Both deterministic element-property tiers share the same driver
+        // query surface; they differ in what the payload anchors on.
+        SelectorTier::NativeId | SelectorTier::Structural => UiaSelector {
+            automation_id: get("automation_id").or_else(|| get("id")),
+            name: get("name"),
+            control_type: get("control_type"),
+            css: get("css"),
+        },
+        // A text anchor resolves by visible label (UIA Name / element text).
+        SelectorTier::TextAnchor => UiaSelector {
+            name: get("text").or_else(|| get("name")),
+            css: get("css"),
+            ..UiaSelector::default()
+        },
+        // Visual matching needs the vision mode (not yet built); AI
+        // relocation NEVER runs at replay time by design — it is the heal
+        // workflow, which proposes a reviewable diff instead.
+        SelectorTier::VisualTemplate | SelectorTier::AiRelocation => return None,
     };
     (!uia.is_empty()).then_some(uia)
 }
 
 /// Walk the recorded selector ladder and return the first rung that resolves
-/// to a live element.
+/// to a live element, with its index — index > 0 means the primary selector
+/// no longer matches and the run is degraded (the app drifted; heal).
 fn resolve_target<D: AppDriver>(
     driver: &mut D,
     selectors: &[Selector],
-) -> Result<Option<UiaSelector>, ReplayError> {
-    for selector in selectors {
+) -> Result<Option<(UiaSelector, usize)>, ReplayError> {
+    for (rung, selector) in selectors.iter().enumerate() {
         if let Some(uia) = selector_to_uia(selector) {
             if driver.element_exists(&uia)? {
-                return Ok(Some(uia));
+                return Ok(Some((uia, rung)));
             }
         }
     }
@@ -133,17 +145,32 @@ fn check_assertion<D: AppDriver>(
     driver: &mut D,
     assertion: &Assertion,
     selectors: &[Selector],
-) -> Result<Result<(), String>, ReplayError> {
+) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
     match assertion {
         Assertion::ElementState {
             expect,
             selector_ref,
         } => {
-            let selector = selector_ref
-                .and_then(|i| selectors.get(i))
-                .or_else(|| selectors.first());
-            let Some(uia) = selector.and_then(selector_to_uia) else {
-                return Ok(Err("assertion has no resolvable selector".into()));
+            // Prefer the recorded rung, then fall through the rest of the
+            // ladder — same degradation semantics as action targets.
+            let primary = selector_ref.unwrap_or(0);
+            let order =
+                std::iter::once(primary).chain((0..selectors.len()).filter(|&i| i != primary));
+            let mut resolved = None;
+            for rung in order {
+                let Some(uia) = selectors.get(rung).and_then(selector_to_uia) else {
+                    continue;
+                };
+                if driver.element_exists(&uia)? {
+                    resolved = Some((uia, rung));
+                    break;
+                }
+            }
+            let Some((uia, rung)) = resolved else {
+                return Ok((
+                    Err("no selector rung resolved to a live element".into()),
+                    None,
+                ));
             };
             let text = driver.read_text(&uia)?;
             let (matches, expected) = if let Some(expected) =
@@ -162,62 +189,106 @@ fn check_assertion<D: AppDriver>(
                 };
                 (matched, expected)
             } else {
-                return Ok(Err(format!(
-                    "unsupported element_state expectation: {expect}"
-                )));
+                return Ok((
+                    Err(format!("unsupported element_state expectation: {expect}")),
+                    Some(rung),
+                ));
             };
             if matches {
-                Ok(Ok(()))
+                Ok((Ok(()), Some(rung)))
             } else {
-                Ok(Err(format!(
-                    "expected element text '{expected}', got '{text}'"
-                )))
+                Ok((
+                    Err(format!("expected element text '{expected}', got '{text}'")),
+                    Some(rung),
+                ))
             }
         }
-        other => Ok(Err(format!(
-            "assertion kind not supported in this slice: {other:?}"
-        ))),
+        other => Ok((
+            Err(format!(
+                "assertion kind not supported in this slice: {other:?}"
+            )),
+            None,
+        )),
+    }
+}
+
+/// How a step's target was found: which ladder tier matched, and whether
+/// that was a fallback below the recorded primary rung (drift signal).
+#[derive(Debug, Clone, Copy, Default)]
+struct StepMatch {
+    tier: Option<SelectorTier>,
+    degraded: bool,
+}
+
+impl StepMatch {
+    fn from_rung(selectors: &[Selector], rung: Option<usize>, primary: usize) -> Self {
+        Self {
+            tier: rung.and_then(|r| selectors.get(r)).map(|s| s.tier),
+            degraded: rung.is_some_and(|r| r != primary),
+        }
     }
 }
 
 fn execute_step<D: AppDriver>(
     driver: &mut D,
     step: &Step,
-) -> Result<Result<(), String>, ReplayError> {
+) -> Result<(Result<(), String>, StepMatch), ReplayError> {
     for condition in &step.sync.pre {
         if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
-            return Ok(Err(format!("precondition failed: {reason}")));
+            return Ok((
+                Err(format!("precondition failed: {reason}")),
+                StepMatch::default(),
+            ));
         }
     }
 
-    let outcome = match &step.action {
+    let (outcome, matched) = match &step.action {
         Action::Click(_) => match resolve_target(driver, &step.selectors)? {
-            Some(target) => {
+            Some((target, rung)) => {
                 driver.invoke(&target)?;
-                Ok(())
+                (Ok(()), StepMatch::from_rung(&step.selectors, Some(rung), 0))
             }
-            None => Err("no selector rung resolved to a live element".to_string()),
+            None => (
+                Err("no selector rung resolved to a live element".to_string()),
+                StepMatch::default(),
+            ),
         },
         Action::TypeText(params) => match resolve_target(driver, &step.selectors)? {
-            Some(target) => {
+            Some((target, rung)) => {
                 driver.type_text(&target, &params.text)?;
-                Ok(())
+                (Ok(()), StepMatch::from_rung(&step.selectors, Some(rung), 0))
             }
-            None => Err("no selector rung resolved to a live element".to_string()),
+            None => (
+                Err("no selector rung resolved to a live element".to_string()),
+                StepMatch::default(),
+            ),
         },
-        Action::Assert(assertion) => check_assertion(driver, assertion, &step.selectors)?,
-        other => Err(format!("action not supported in this slice: {other:?}")),
+        Action::Assert(assertion) => {
+            let (outcome, rung) = check_assertion(driver, assertion, &step.selectors)?;
+            let primary = match assertion {
+                Assertion::ElementState { selector_ref, .. } => selector_ref.unwrap_or(0),
+                _ => 0,
+            };
+            (
+                outcome,
+                StepMatch::from_rung(&step.selectors, rung, primary),
+            )
+        }
+        other => (
+            Err(format!("action not supported in this slice: {other:?}")),
+            StepMatch::default(),
+        ),
     };
     if outcome.is_err() {
-        return Ok(outcome);
+        return Ok((outcome, matched));
     }
 
     for condition in &step.sync.post {
         if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
-            return Ok(Err(format!("postcondition failed: {reason}")));
+            return Ok((Err(format!("postcondition failed: {reason}")), matched));
         }
     }
-    Ok(Ok(()))
+    Ok((Ok(()), matched))
 }
 
 /// Replay the trace at `path` against the live application. Deterministic:
@@ -285,24 +356,29 @@ pub fn run_trace<D: AppDriver>(
         }
         let step_started = Instant::now();
         let started_ms = started.elapsed().as_millis() as u64;
-        let outcome = execute_step(driver, step)?;
+        let (outcome, matched) = execute_step(driver, step)?;
         let duration_ms = step_started.elapsed().as_millis() as u64;
         if let Some(rec) = recorder.as_mut() {
             rec.step_finished(driver);
         }
-        match outcome {
-            Ok(()) => results.push(StepResult::passed(step, started_ms, duration_ms)),
+        let mut result = match outcome {
+            Ok(()) => StepResult::passed(step, started_ms, duration_ms),
             Err(reason) => {
                 failed = true;
-                results.push(StepResult::failed(step, started_ms, duration_ms, reason));
+                StepResult::failed(step, started_ms, duration_ms, reason)
             }
-        }
+        };
+        result.selector_tier = matched.tier.map(|t| t.name().to_string());
+        result.degraded = matched.degraded;
+        results.push(result);
     }
 
+    let degraded = results.iter().any(|s| s.degraded);
     let report = RunReport {
         name,
         trace_id: header.trace_id.clone(),
         passed: !failed && !results.is_empty(),
+        degraded,
         steps: results,
         duration_ms: started.elapsed().as_millis() as u64,
         recording: recorder.and_then(flowproof_driver::RunRecorder::finish),

@@ -174,6 +174,23 @@ records `agent: {backend, model}` whenever a model authored steps — reviewers
 always know. For a local model: `FLOWPROOF_AI_PROVIDER=openai-compatible`
 plus `FLOWPROOF_AI_BASE_URL=http://localhost:8000/v1` (vLLM).
 
+## When the app drifts: fallback selectors and `degraded`
+
+Replay walks each step's recorded selector ladder in order: the native id
+first, then structural (control type + accessible name), then a text
+anchor. If the primary selector is dead but a fallback rung still finds the
+element, the step runs and the flow stays green — but the step and the run
+are marked `degraded` in `result.json` (with the matched tier in
+`selector_tier`), the CLI prints a `DEGRADED:` line pointing at `heal`, and
+`RunResult.degraded` is set in Python. Degraded-but-passing is the signal
+to heal the trace *before* the remaining rungs die too:
+
+```text
+  [PASS] s0002 Press plus (matched via structural fallback)
+PASS: Add two numbers (2154 ms) -> .flowproof\runs\...\result.json
+DEGRADED: fallback selectors were needed — the app drifted; run `flowproof heal calc.flow.yaml`
+```
+
 ## Healing a stale trace
 
 When the app changes and replay fails, `heal` re-authors the flow from the
@@ -205,4 +222,3 @@ MCP tool mirrors it.
 - Only `calc`, `notepad`, and `web` resolve, each with a small vocabulary —
   the rule-based resolver stands in where the AI authoring agent will go
   (healing re-uses the same authoring seam).
-- Replay walks only the `native_id` rung of the selector ladder.

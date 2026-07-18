@@ -54,9 +54,43 @@ fn records_and_replays_notepad() {
         eprintln!("{:?} {} {}", step.status, step.id, step.intent);
     }
     assert!(report.passed, "notepad flow must pass: {report:#?}");
+    assert!(
+        !report.degraded,
+        "primary selectors must match: {report:#?}"
+    );
     // GDI keyframe capture on the runner: the run must carry its recording.
     let recording = report.recording.as_ref().expect("run is recorded via GDI");
     assert_eq!(recording.steps.len(), report.steps.len());
+
+    // Ladder fallback against REAL UIA: kill the recorded automation id (as
+    // if the app renamed its control) — replay must still pass by matching
+    // the editor's structural rung (control type + name), and report the
+    // drift as degraded.
+    let contents = std::fs::read_to_string(&trace_path).expect("trace readable");
+    std::fs::write(
+        &trace_path,
+        contents.replace("\"automation_id\":\"15\"", "\"automation_id\":\"99999\""),
+    )
+    .expect("trace rewritten");
+    let degraded_result = (|| {
+        let mut driver = UiaAppDriver::new()?;
+        flowproof_replay::run_trace(&trace_path, &mut driver)
+            .map(|(report, _)| report)
+            .map_err(|e| flowproof_driver::DriverError::Uia(format!("replay failed: {e}")))
+    })();
+    kill_notepad();
+    let report = degraded_result.expect("degraded replay runs");
+    assert!(
+        report.passed,
+        "fallback must keep the run green: {report:#?}"
+    );
+    assert!(report.degraded, "drift must be reported: {report:#?}");
+    let typed = report
+        .steps
+        .iter()
+        .find(|s| s.intent.starts_with("Type"))
+        .expect("type step present");
+    assert_eq!(typed.selector_tier.as_deref(), Some("structural"));
 
     std::fs::remove_dir_all(&dir).ok();
 }

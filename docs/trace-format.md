@@ -90,6 +90,15 @@ has `format != "flowproof-trace"` or an unsupported `version`.
   A step records only the tiers its perception sources could produce (a
   Citrix recording may have tiers 3–5 only). `confidence` is optional,
   `[0.0, 1.0]`.
+
+  **Replay semantics**: the engine walks rungs in order and acts on the
+  first one that resolves to a live element. Tiers 1–3 execute today
+  (`text_anchor` currently via accessible-name matching; OCR arrives with
+  the vision mode, as does `visual_template`). Matching on any rung other
+  than the recorded primary keeps the run green but marks the step — and
+  the run — `degraded` in `result.json`, with the matched tier in
+  `selector_tier`: the flow still works, the app has drifted, heal the
+  trace.
 - `sync.pre` / `sync.post` — conditions gating the action / confirming its
   effect. Kinds: `element_exists`, `element_state`, `window_title`,
   `ocr_text_present`, `visual_stable`. Each carries `timeout_ms`.

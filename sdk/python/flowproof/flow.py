@@ -35,6 +35,12 @@ class StepResult:
     started_ms: int = 0
     """Offset from run start — with duration_ms, the step→time mapping into
     the run's recording."""
+    selector_tier: str | None = None
+    """Selector-ladder tier that resolved the target (native_id,
+    structural, text_anchor)."""
+    degraded: bool = False
+    """True when a fallback rung matched instead of the recorded primary
+    selector — the step ran, but the trace should be healed."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +58,9 @@ class RunResult:
     recording: dict[str, Any] | None = None
     """The run's recording bundle: format, frame refs, per-step time ranges
     (None when the driver cannot capture)."""
+    degraded: bool = False
+    """True when any step resolved via a fallback selector rung: the run
+    passed, but the app drifted from the trace — schedule a heal."""
 
     def __bool__(self) -> bool:
         return self.passed
@@ -80,12 +89,15 @@ def _parse_run_result(payload: str) -> RunResult:
                 duration_ms=s["duration_ms"],
                 detail=s.get("detail"),
                 started_ms=s.get("started_ms", 0),
+                selector_tier=s.get("selector_tier"),
+                degraded=s.get("degraded", False),
             )
             for s in report["steps"]
         ),
         report_path=Path(data["report_path"]),
         html_path=Path(data["report_path"]).with_name("report.html"),
         recording=report.get("recording"),
+        degraded=report.get("degraded", False),
     )
 
 

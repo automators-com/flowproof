@@ -177,7 +177,7 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, S
         );
     } else {
         for step in &report.steps {
-            let (mark, suffix) = match step.status {
+            let (mark, mut suffix) = match step.status {
                 StepStatus::Passed => ("PASS", String::new()),
                 StepStatus::Failed => (
                     "FAIL",
@@ -188,6 +188,10 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, S
                 ),
                 StepStatus::Skipped => ("SKIP", String::new()),
             };
+            if step.degraded {
+                let tier = step.selector_tier.as_deref().unwrap_or("fallback");
+                suffix.push_str(&format!(" (matched via {tier} fallback)"));
+            }
             println!("  [{mark}] {} {}{suffix}", step.id, step.intent);
         }
         println!(
@@ -197,6 +201,13 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, S
             report.duration_ms,
             result_path.display()
         );
+        if report.degraded {
+            println!(
+                "DEGRADED: fallback selectors were needed — the app drifted; \
+                 run `flowproof heal {}`",
+                spec_path.display()
+            );
+        }
     }
     Ok(if report.passed { EXIT_PASS } else { EXIT_FAIL })
 }

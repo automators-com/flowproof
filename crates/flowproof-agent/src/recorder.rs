@@ -86,9 +86,23 @@ fn native_selector(payload: serde_json::Map<String, serde_json::Value>) -> Selec
     }
 }
 
-/// The recorded selector ladder for an action target. Notepad's editor gets
-/// a second rung (control type + name) because the Win32 control id `15`
-/// varies across Notepad generations — the first real ladder fallback.
+fn fallback_selector(
+    tier: SelectorTier,
+    confidence: f64,
+    payload: serde_json::Map<String, serde_json::Value>,
+) -> Selector {
+    Selector {
+        tier,
+        provenance: flowproof_trace::format::Adapter::Uia,
+        confidence: Some(confidence),
+        payload,
+    }
+}
+
+/// The recorded selector ladder for an action target. The primary rung is
+/// always the native id; UIA targets with a known label also get structural
+/// (control type + name) and text-anchor rungs, so replay survives an id
+/// rename by degrading down the ladder (and reporting that it did).
 fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selector> {
     match target {
         Target::AutomationId(automation_id) => {
@@ -99,10 +113,23 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
             }
             let mut ladder = vec![native_selector(payload)];
             if app == "notepad" && automation_id == NOTEPAD_EDITOR_ID {
+                // The Win32 control id `15` varies across Notepad
+                // generations — the editor's structural identity does not.
                 let mut fallback = serde_json::Map::new();
                 fallback.insert("control_type".into(), "Edit".into());
                 fallback.insert("name".into(), "Text Editor".into());
-                ladder.push(native_selector(fallback));
+                ladder.push(fallback_selector(SelectorTier::Structural, 0.7, fallback));
+            }
+            if let Some(label) = label {
+                // A labelled press target is a button; its accessible name
+                // outlives automation-id refactors.
+                let mut structural = serde_json::Map::new();
+                structural.insert("control_type".into(), "Button".into());
+                structural.insert("name".into(), label.into());
+                ladder.push(fallback_selector(SelectorTier::Structural, 0.7, structural));
+                let mut anchor = serde_json::Map::new();
+                anchor.insert("text".into(), label.into());
+                ladder.push(fallback_selector(SelectorTier::TextAnchor, 0.5, anchor));
             }
             ladder
         }
