@@ -1,0 +1,69 @@
+# flowproof design
+
+> Status: skeleton. The full design doc will be pasted in here; the sections
+> below capture the decisions already fixed so the scaffold has a home for
+> them.
+
+## Core principle
+
+**AI authors, deterministic engine executes.** A computer-use agent performs a
+flow once from a natural-language YAML spec and records a trace; the trace
+compiles to a deterministic script replayed in CI with **zero LLM calls**.
+Self-healing on failure proposes a reviewable diff — never a silent mutation.
+
+## Architecture
+
+- **Rust driver** (`flowproof-driver`): DXGI capture, SendInput, UIA client.
+  Native adapters over pixels wherever possible: SAP GUI Scripting COM,
+  WebDriver/CDP, Java Access Bridge later (`flowproof-adapters`).
+- **Perception**: scene graph = UIA tree + screenshot + OCR + local grounding
+  model. Citrix/RDP mode is vision-only.
+- **Selector ladder** per step (deterministic first): 1) native ID
+  2) structural 3) OCR/text anchor + spatial relation 4) visual template
+  5) AI relocation. See `docs/trace-format.md`.
+- **Agent backends** (`flowproof-agent`): pluggable — Anthropic computer-use
+  API and any OpenAI-compatible endpoint (e.g. vLLM). Configured via
+  `FLOWPROOF_AI_PROVIDER`, `FLOWPROOF_AI_BASE_URL`, `FLOWPROOF_AI_API_KEY`,
+  `FLOWPROOF_AI_MODEL` (mirrors the `AI_PROVIDER`/`AI_BASE_URL`/`AI_API_KEY`
+  convention used across Automators products).
+- **Assertions**: element state, OCR, visual diff, out-of-band SQL/API.
+- **SDKs**: Python-first (`sdk/python`, later PyO3/maturin bindings to the
+  engine); YAML specs with natural-language steps.
+
+## Relationship to DataMaker
+
+flowproof is a sibling of DataMaker, not a component of it.
+
+- **No opencode dependency.** DataMaker's agent runtime wraps
+  `@opencode-ai/sdk` (`apps/datamaker-opencode`) — the right harness for a
+  chat/codegen agent. flowproof's recording agent is a *computer-use* loop
+  (screenshot → ground → act via driver → record step); it talks to model
+  APIs directly through its pluggable backends and stays a single Rust
+  binary with no Node sidecar.
+- **Planned MCP surface** (future `flowproof-mcp` crate/feature): expose
+  `record` / `run` / `heal` as MCP tools, following the
+  `datamaker-mcp` / `datamaker-api` MCP patterns. That is the integration
+  path by which DataMaker's agent — or any coding agent — can drive
+  flowproof. Large tool results (screenshots, traces) should follow the
+  spill-to-object-storage + presigned URL + summary idiom used by
+  datamaker-mcp.
+- **Shared philosophy with `datamaker-sap-cli`'s AI inference:** static,
+  deterministic resolution first; call a model only when genuinely
+  ambiguous. In flowproof this is the selector ladder; healing is the only
+  place a model re-enters after recording, and it always outputs a diff for
+  human review.
+- **Possible future reuse:** DataMaker's eval-harness pattern
+  (`packages/evals`) for grading the AI author, and the
+  YAML-spec-drives-artifacts pattern (`packages/content`) for docs generated
+  from flow specs.
+
+## Trace format
+
+See [`trace-format.md`](trace-format.md) and the JSON Schema in
+`crates/flowproof-trace/schema/trace-v1.schema.json`.
+
+## Open questions
+
+- Grounding model choice and packaging for the local perception stack.
+- Artifact store layout and retention (`.flowproof/artifacts/`).
+- Heal-diff UX: trace-line diff vs. side-by-side screenshot review.
