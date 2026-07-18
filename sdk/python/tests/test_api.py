@@ -163,9 +163,7 @@ def test_heal_result_parses_engine_payload():
         {
             "report": {
                 "changed": True,
-                "steps_changed": [
-                    {"id": "s0002", "intent": "Press plus", "fields": ["selectors"]}
-                ],
+                "steps_changed": [{"id": "s0002", "intent": "Press plus", "fields": ["selectors"]}],
                 "steps_added": 0,
                 "steps_removed": 0,
                 "proposed_path": "/tmp/calc.proposed.jsonl",
