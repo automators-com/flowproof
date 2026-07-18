@@ -67,7 +67,8 @@ PASS: Add two numbers (2154 ms) -> .flowproof\runs\20260718T120000.000Z\result.j
 ```
 
 Exit codes: `0` pass, `1` test failure, `2` error. Each run writes a
-`result.json` artifact under `.flowproof/runs/<timestamp>/`.
+`result.json` artifact under `.flowproof/runs/<timestamp>/`, plus a
+self-contained `report.html` rendered from it for human review.
 
 Programmatic callers invoking the CLI should pass `--json`: the full
 structured report prints to stdout instead of the human-readable lines —

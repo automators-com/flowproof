@@ -44,6 +44,8 @@ class RunResult:
     duration_ms: int
     steps: tuple[StepResult, ...]
     report_path: Path
+    html_path: Path
+    """Human-readable rendering generated from the JSON report."""
 
     def __bool__(self) -> bool:
         return self.passed
@@ -68,6 +70,7 @@ def _parse_run_result(payload: str) -> RunResult:
             for s in report["steps"]
         ),
         report_path=Path(data["report_path"]),
+        html_path=Path(data["report_path"]).with_name("report.html"),
     )
 
 
