@@ -41,7 +41,7 @@ fn replay_passes_when_display_matches() {
 
     let mut driver =
         MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
-    let report = run_trace(&trace, &mut driver).expect("replay runs");
+    let (report, run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
 
     assert!(report.passed, "report: {report:?}");
     assert_eq!(report.steps.len(), 5);
@@ -52,7 +52,7 @@ fn replay_passes_when_display_matches() {
         vec!["num5Button", "plusButton", "num3Button", "equalButton"]
     );
 
-    let result_path = report.write(&dir).expect("artifact written");
+    let result_path = report.write_into(&run_dir).expect("artifact written");
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(result_path).expect("read artifact"))
             .expect("valid JSON artifact");
@@ -69,7 +69,7 @@ fn replay_fails_when_display_differs() {
 
     let mut driver =
         MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 9");
-    let report = run_trace(&trace, &mut driver).expect("replay runs");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
 
     assert!(!report.passed);
     let last = report.steps.last().expect("has steps");
@@ -106,7 +106,7 @@ fn notepad_round_trip_types_and_checks_contains() {
     // Fresh app instance: replay re-types the text, then the contains
     // assert reads what was typed.
     let mut driver = MockAppDriver::new(&["15"]);
-    let report = run_trace(&trace, &mut driver).expect("replay runs");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
     assert!(report.passed, "report: {report:?}");
     assert_eq!(
         driver.typed,
@@ -153,7 +153,7 @@ fn web_round_trip_via_mock_uses_css_selectors() {
 
     let mut driver =
         MockAppDriver::new(&["#name", "#greet", "body"]).with_text("body", "Greeter Hello, Ada!");
-    let report = run_trace(&trace, &mut driver).expect("replay runs");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
     assert!(report.passed, "report: {report:?}");
 
     std::fs::remove_dir_all(&dir).ok();
@@ -172,7 +172,7 @@ fn replay_skips_remaining_steps_after_a_missing_element() {
         "equalButton",
         "CalculatorResults",
     ]);
-    let report = run_trace(&trace, &mut driver).expect("replay runs");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
 
     assert!(!report.passed);
     assert_eq!(report.steps[0].status, StepStatus::Passed); // Type 5

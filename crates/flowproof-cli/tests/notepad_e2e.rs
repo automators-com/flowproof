@@ -45,6 +45,7 @@ fn records_and_replays_notepad() {
     let replay_result = (|| {
         let mut driver = UiaAppDriver::new()?;
         flowproof_replay::run_trace(&trace_path, &mut driver)
+            .map(|(report, _)| report)
             .map_err(|e| flowproof_driver::DriverError::Uia(format!("replay failed: {e}")))
     })();
     kill_notepad();
@@ -53,6 +54,9 @@ fn records_and_replays_notepad() {
         eprintln!("{:?} {} {}", step.status, step.id, step.intent);
     }
     assert!(report.passed, "notepad flow must pass: {report:#?}");
+    // GDI keyframe capture on the runner: the run must carry its recording.
+    let recording = report.recording.as_ref().expect("run is recorded via GDI");
+    assert_eq!(recording.steps.len(), report.steps.len());
 
     std::fs::remove_dir_all(&dir).ok();
 }

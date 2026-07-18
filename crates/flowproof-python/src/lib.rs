@@ -6,7 +6,7 @@
 //! (usually an agent), never a human parsing stdout. `cli_main` reuses the
 //! same library code for the `flowproof` console script.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -55,9 +55,9 @@ fn run(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>) -> PyResult<String
         let trace_path = trace.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
         let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(runtime_err)?;
         let mut driver = flowproof_cli::driver_for(&header.app.name).map_err(runtime_err)?;
-        let report = flowproof_replay::run_trace(&trace_path, &mut driver).map_err(runtime_err)?;
-        let base = trace_path.parent().unwrap_or_else(|| Path::new("."));
-        let report_path = report.write(base).map_err(runtime_err)?;
+        let (report, run_dir) =
+            flowproof_replay::run_trace(&trace_path, &mut driver).map_err(runtime_err)?;
+        let report_path = report.write_into(&run_dir).map_err(runtime_err)?;
         to_json(&serde_json::json!({
             "report": report,
             "report_path": report_path,

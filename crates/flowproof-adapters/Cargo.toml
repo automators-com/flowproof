@@ -15,6 +15,7 @@ web = ["dep:headless_chrome"]
 [dependencies]
 flowproof-driver = { workspace = true }
 headless_chrome = { version = "1", optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 thiserror = { workspace = true }
 
 [lints]

@@ -207,12 +207,29 @@ pub fn record<D: AppDriver>(
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
     let (width, height) = driver.screen_size()?;
 
+    // The authoring execution is itself recorded (review surface): frames
+    // land in a self-contained bundle keyed by trace_id, referenced from
+    // the header. Recording being unavailable never blocks authoring.
+    let trace_id = uuid::Uuid::new_v4().to_string();
+    let bundle_rel = format!(".flowproof/recordings/{trace_id}");
+    let bundle_base = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(&bundle_rel);
+    let mut recorder = flowproof_driver::RunRecorder::new(&bundle_base, spec.redact.clone()).ok();
+
     // Recording PERFORMS the flow once: buttons are really pressed and the
     // assert is checked against the live display, so a trace is only ever
     // written for a flow that actually worked.
     let mut steps = Vec::new();
     for spec_step in &spec.steps {
         for action in resolve_step(&spec.app, spec_step)? {
+            let step_id = format!("s{:04}", steps.len() + 1);
+            if let Some(rec) = recorder.as_mut() {
+                rec.step_started(driver, &step_id);
+            }
             let selector = action_selector(&action);
             if !driver.element_exists(&selector)? {
                 return Err(RecordError::ElementNotFound {
@@ -239,6 +256,9 @@ pub fn record<D: AppDriver>(
                     }
                 }
             }
+            if let Some(rec) = recorder.as_mut() {
+                rec.step_finished(driver);
+            }
             steps.push(step_for(
                 steps.len() + 1,
                 spec_step.intent(),
@@ -248,11 +268,35 @@ pub fn record<D: AppDriver>(
         }
     }
 
+    let recording = recorder.and_then(flowproof_driver::RunRecorder::finish);
+    if let Some(recording) = &recording {
+        for step in &mut steps {
+            if let Some(timing) = recording.steps.iter().find(|t| t.id == step.id) {
+                step.artifacts.recording = Some(flowproof_trace::format::StepRecording {
+                    start_ms: timing.start_ms,
+                    end_ms: timing.end_ms,
+                });
+            }
+        }
+    }
+
     let header = Header {
         format: FORMAT_NAME.to_string(),
         version: FORMAT_VERSION,
-        trace_id: uuid::Uuid::new_v4().to_string(),
+        trace_id: trace_id.clone(),
         recorded_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        recording: recording
+            .as_ref()
+            .map(|r| flowproof_trace::format::RecordingRef {
+                format: r.format.clone(),
+                dir: format!("{bundle_rel}/{}", r.dir),
+                started_at: None,
+            }),
+        redaction: spec
+            .redact
+            .iter()
+            .filter_map(|rule| serde_json::to_value(rule).ok())
+            .collect(),
         spec: Some(flowproof_trace::format::SpecRef {
             name: spec.name.clone(),
             path: None,

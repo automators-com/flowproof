@@ -221,9 +221,37 @@ fn execute_step<D: AppDriver>(
 }
 
 /// Replay the trace at `path` against the live application. Deterministic:
-/// walks recorded selectors only, stops at the first failing step.
-pub fn run_trace<D: AppDriver>(path: &Path, driver: &mut D) -> Result<RunReport, ReplayError> {
+/// walks recorded selectors only, stops at the first failing step. Creates
+/// the run's self-contained artifact directory up front so the recording
+/// bundle and the reports land together; returns it alongside the report.
+pub fn run_trace<D: AppDriver>(
+    path: &Path,
+    driver: &mut D,
+) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
     let (header, steps) = load_trace(path)?;
+
+    let base = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let run_id = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ").to_string();
+    let run_dir = base.join(".flowproof").join("runs").join(run_id);
+    std::fs::create_dir_all(&run_dir).map_err(|source| ReplayError::Io {
+        path: run_dir.display().to_string(),
+        source,
+    })?;
+
+    // Redaction rules travel in the trace; replays mask identically without
+    // the spec. Fail closed: if any recorded rule cannot be understood, no
+    // frames are captured at all rather than risking an unmasked frame.
+    let rules: Option<Vec<flowproof_driver::RedactionRule>> = header
+        .redaction
+        .iter()
+        .map(|value| serde_json::from_value(value.clone()).ok())
+        .collect();
+    let mut recorder =
+        rules.and_then(|rules| flowproof_driver::RunRecorder::new(&run_dir, rules).ok());
     let target = if header.app.name == "web" {
         flowproof_driver::AppTarget {
             command: header
@@ -252,23 +280,32 @@ pub fn run_trace<D: AppDriver>(path: &Path, driver: &mut D) -> Result<RunReport,
             results.push(StepResult::skipped(step));
             continue;
         }
+        if let Some(rec) = recorder.as_mut() {
+            rec.step_started(driver, &step.id);
+        }
         let step_started = Instant::now();
+        let started_ms = started.elapsed().as_millis() as u64;
         let outcome = execute_step(driver, step)?;
         let duration_ms = step_started.elapsed().as_millis() as u64;
+        if let Some(rec) = recorder.as_mut() {
+            rec.step_finished(driver);
+        }
         match outcome {
-            Ok(()) => results.push(StepResult::passed(step, duration_ms)),
+            Ok(()) => results.push(StepResult::passed(step, started_ms, duration_ms)),
             Err(reason) => {
                 failed = true;
-                results.push(StepResult::failed(step, duration_ms, reason));
+                results.push(StepResult::failed(step, started_ms, duration_ms, reason));
             }
         }
     }
 
-    Ok(RunReport {
+    let report = RunReport {
         name,
         trace_id: header.trace_id.clone(),
         passed: !failed && !results.is_empty(),
         steps: results,
         duration_ms: started.elapsed().as_millis() as u64,
-    })
+        recording: recorder.and_then(flowproof_driver::RunRecorder::finish),
+    };
+    Ok((report, run_dir))
 }

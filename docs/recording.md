@@ -1,7 +1,7 @@
 # Run recording as a review surface — design
 
-Status: **proposed, pending review**. No implementation until this note and
-the trace-schema changes in §5 are approved.
+Status: **approved and implemented** (v1 keyframe filmstrip; continuous
+capture sources remain follow-ups per §3).
 
 ## 1. Why and what
 

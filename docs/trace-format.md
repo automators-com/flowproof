@@ -39,6 +39,11 @@ has `format != "flowproof-trace"` or an unsupported `version`.
 - `adapter` is the *primary* perception/adapter mode: `uia`, `sap-com`,
   `web`, or `vision` (vision = Citrix/RDP mode where only pixels exist).
 - `agent` records provenance of authorship only; replay never uses it.
+- Optional `recording` references the authoring execution's recording bundle
+  (`{"format": "filmstrip/1", "dir": "...", "started_at"?}`); each step's
+  `artifacts.recording {start_ms, end_ms}` maps it into that bundle. Optional
+  `redaction` carries the masking rules copied from the spec at record time,
+  so every replay masks identically without the spec (see docs/recording.md).
 
 ## Step line
 

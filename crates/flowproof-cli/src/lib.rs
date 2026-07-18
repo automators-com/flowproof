@@ -125,14 +125,10 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, S
     // Peek the header to pick the right driver for the recorded app.
     let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
     let mut driver = driver_for(&header.app.name)?;
-    let report =
+    let (report, run_dir) =
         flowproof_replay::run_trace(&trace_path, &mut driver).map_err(|e| e.to_string())?;
 
-    let artifacts_base = trace_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let result_path = report.write(&artifacts_base).map_err(|e| e.to_string())?;
+    let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;
 
     if json {
         // The human-readable lines below are a rendering of this same
