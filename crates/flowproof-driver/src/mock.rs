@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::app::{AppDriver, UiaSelector};
+use crate::app::{AppDriver, PixelRect, UiaSelector};
 use crate::DriverError;
 
 #[derive(Debug, Default)]
@@ -21,6 +21,14 @@ pub struct MockAppDriver {
     /// `(automation_id, text)` pairs typed, in order.
     pub typed: Vec<(String, String)>,
     pub screen: (u32, u32),
+    /// Frame returned by `capture` (None = capture unsupported).
+    pub frame: Option<image::RgbaImage>,
+    /// Element rects by automation id / css key, for redaction tests.
+    pub rects: HashMap<String, PixelRect>,
+    /// Password-field rects, always masked.
+    pub password_fields: Vec<PixelRect>,
+    /// When set, `element_rect` fails — exercises fail-closed redaction.
+    pub fail_element_rect: bool,
 }
 
 impl MockAppDriver {
@@ -98,6 +106,26 @@ impl AppDriver for MockAppDriver {
 
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
         Ok(self.screen)
+    }
+
+    fn capture(&mut self) -> Result<Option<image::RgbaImage>, DriverError> {
+        Ok(self.frame.clone())
+    }
+
+    fn element_rect(&mut self, selector: &UiaSelector) -> Result<Option<PixelRect>, DriverError> {
+        if self.fail_element_rect {
+            return Err(DriverError::Uia("mock element_rect failure".into()));
+        }
+        let key = selector
+            .automation_id
+            .as_deref()
+            .or(selector.css.as_deref())
+            .unwrap_or_default();
+        Ok(self.rects.get(key).copied())
+    }
+
+    fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError> {
+        Ok(self.password_fields.clone())
     }
 }
 

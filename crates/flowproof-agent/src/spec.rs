@@ -37,6 +37,11 @@ pub struct FlowSpec {
     /// For `app: web`: the URL to open (relative paths become `file://`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Regions to mask in every persisted frame (password fields are always
+    /// masked, with or without rules here). Copied into the trace header at
+    /// record time so replays redact identically without the spec.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redact: Vec<flowproof_driver::RedactionRule>,
     pub steps: Vec<SpecStep>,
 }
 

@@ -26,3 +26,6 @@ serde_json = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }

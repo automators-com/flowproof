@@ -9,8 +9,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use flowproof_driver::{AppDriver, DriverError, UiaSelector};
+use flowproof_driver::{AppDriver, DriverError, PixelRect, UiaSelector};
 use headless_chrome::browser::tab::Tab;
+use headless_chrome::protocol::cdp::Page;
 use headless_chrome::{Browser, LaunchOptions};
 
 use crate::AdapterError;
@@ -123,5 +124,57 @@ impl AppDriver for WebAppDriver {
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
         // Headless default viewport; good enough for trace metadata.
         Ok((1280, 720))
+    }
+
+    fn capture(&mut self) -> Result<Option<image::RgbaImage>, DriverError> {
+        let png = self
+            .tab()?
+            .capture_screenshot(Page::CaptureScreenshotFormatOption::Png, None, None, true)
+            .map_err(|e| web_err("capturing screenshot", e))?;
+        let frame = image::load_from_memory(&png)
+            .map_err(|e| web_err("decoding screenshot", e))?
+            .to_rgba8();
+        Ok(Some(frame))
+    }
+
+    fn element_rect(&mut self, selector: &UiaSelector) -> Result<Option<PixelRect>, DriverError> {
+        let Some(css) = selector.css_selector() else {
+            return Ok(None);
+        };
+        let tab = self.tab()?;
+        let Ok(element) = tab.find_element(&css) else {
+            return Ok(None);
+        };
+        let quad = element
+            .get_box_model()
+            .map_err(|e| web_err(&format!("box model of {css}"), e))?
+            .content;
+        Ok(Some((
+            quad.most_left().floor() as i32,
+            quad.most_top().floor() as i32,
+            quad.width().ceil() as u32,
+            quad.height().ceil() as u32,
+        )))
+    }
+
+    fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError> {
+        let tab = self.tab()?;
+        let fields = tab
+            .find_elements("input[type=password]")
+            .unwrap_or_default();
+        let mut rects = Vec::new();
+        for field in fields {
+            let quad = field
+                .get_box_model()
+                .map_err(|e| web_err("box model of password field", e))?
+                .content;
+            rects.push((
+                quad.most_left().floor() as i32,
+                quad.most_top().floor() as i32,
+                quad.width().ceil() as u32,
+                quad.height().ceil() as u32,
+            ));
+        }
+        Ok(rects)
     }
 }

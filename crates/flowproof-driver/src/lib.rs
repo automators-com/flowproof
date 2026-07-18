@@ -7,10 +7,18 @@
 
 pub mod app;
 mod backend;
+#[cfg(windows)]
+mod gdi;
 pub mod mock;
+pub mod recording;
+pub mod redact;
 
-pub use app::{numeric_value, resolve_app, AppDriver, AppTarget, UiaAppDriver, UiaSelector};
+pub use app::{
+    numeric_value, resolve_app, AppDriver, AppTarget, PixelRect, UiaAppDriver, UiaSelector,
+};
 pub use backend::PlatformBackend;
+pub use recording::{FrameRef, Recording, RunRecorder, StepTiming};
+pub use redact::{RedactMode, RedactTarget, RedactionRule};
 
 /// A captured frame of the target screen or window.
 #[derive(Debug, Clone, PartialEq, Eq)]

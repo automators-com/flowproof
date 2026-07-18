@@ -143,6 +143,8 @@ def test_run_result_parses_engine_payload():
     assert result.steps[1].detail is not None
     assert result.report_path == Path("/tmp/result.json")
     assert result.html_path == Path("/tmp/report.html")
+    assert result.recording is None
+    assert result.steps[1].started_ms == 0
 
 
 def test_public_surface_includes_heal_result():

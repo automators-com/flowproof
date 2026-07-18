@@ -27,6 +27,16 @@
     "adapter": {
       "enum": ["uia", "sap-com", "web", "vision"]
     },
+    "recording_ref": {
+      "type": "object",
+      "required": ["format", "dir"],
+      "additionalProperties": false,
+      "properties": {
+        "format": { "type": "string" },
+        "dir": { "type": "string" },
+        "started_at": { "type": "string", "format": "date-time" }
+      }
+    },
     "header": {
       "type": "object",
       "required": ["format", "version", "trace_id", "recorded_at", "app", "env"],
@@ -34,6 +44,12 @@
       "properties": {
         "format": { "const": "flowproof-trace" },
         "version": { "const": 1 },
+        "recording": { "$ref": "#/$defs/recording_ref" },
+        "redaction": {
+          "type": "array",
+          "description": "Redaction rules copied from the spec at record time; the driver's redaction layer owns their schema.",
+          "items": { "type": "object" }
+        },
         "trace_id": { "type": "string", "format": "uuid" },
         "recorded_at": { "type": "string", "format": "date-time" },
         "spec": {
@@ -118,7 +134,16 @@
           "additionalProperties": false,
           "properties": {
             "pre_screenshot": { "$ref": "#/$defs/sha256" },
-            "post_screenshot": { "$ref": "#/$defs/sha256" }
+            "post_screenshot": { "$ref": "#/$defs/sha256" },
+            "recording": {
+              "type": "object",
+              "required": ["start_ms", "end_ms"],
+              "additionalProperties": false,
+              "properties": {
+                "start_ms": { "type": "integer", "minimum": 0 },
+                "end_ms": { "type": "integer", "minimum": 0 }
+              }
+            }
           }
         }
       }

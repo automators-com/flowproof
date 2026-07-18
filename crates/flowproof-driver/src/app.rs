@@ -98,7 +98,27 @@ pub trait AppDriver {
 
     /// Primary screen size in physical pixels (used for trace headers).
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError>;
+
+    /// Capture the current frame. `Ok(None)` means this driver cannot
+    /// capture (recording is skipped gracefully, never silently faked).
+    fn capture(&mut self) -> Result<Option<image::RgbaImage>, DriverError> {
+        Ok(None)
+    }
+
+    /// Screen rectangle of the element matching `selector`, if present.
+    fn element_rect(&mut self, _selector: &UiaSelector) -> Result<Option<PixelRect>, DriverError> {
+        Ok(None)
+    }
+
+    /// Screen rectangles of every password field currently on screen —
+    /// these are ALWAYS masked in persisted frames.
+    fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError> {
+        Ok(Vec::new())
+    }
 }
+
+/// `(x, y, width, height)` in frame pixels.
+pub type PixelRect = (i32, i32, u32, u32);
 
 /// How to launch a known application id from a flow spec. For the `web`
 /// pseudo-app, `command` is the URL to open.
@@ -162,6 +182,18 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
         (**self).screen_size()
+    }
+
+    fn capture(&mut self) -> Result<Option<image::RgbaImage>, DriverError> {
+        (**self).capture()
+    }
+
+    fn element_rect(&mut self, selector: &UiaSelector) -> Result<Option<PixelRect>, DriverError> {
+        (**self).element_rect(selector)
+    }
+
+    fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError> {
+        (**self).password_rects()
     }
 }
 
@@ -357,6 +389,58 @@ mod windows_impl {
                 rect.get_width().unsigned_abs(),
                 rect.get_height().unsigned_abs(),
             ))
+        }
+
+        fn capture(&mut self) -> Result<Option<image::RgbaImage>, DriverError> {
+            crate::gdi::capture_screen().map(Some)
+        }
+
+        fn element_rect(
+            &mut self,
+            selector: &UiaSelector,
+        ) -> Result<Option<crate::app::PixelRect>, DriverError> {
+            match self.find(selector, 0) {
+                Ok(element) => {
+                    let rect = element
+                        .get_bounding_rectangle()
+                        .map_err(|e| uia_err(&format!("bounds of [{selector}]"), e))?;
+                    Ok(Some((
+                        rect.get_left(),
+                        rect.get_top(),
+                        rect.get_width().unsigned_abs(),
+                        rect.get_height().unsigned_abs(),
+                    )))
+                }
+                Err(_) => Ok(None),
+            }
+        }
+
+        fn password_rects(&mut self) -> Result<Vec<crate::app::PixelRect>, DriverError> {
+            let Some(window) = self.window.as_ref() else {
+                return Ok(Vec::new());
+            };
+            let fields = self
+                .automation
+                .create_matcher()
+                .from_ref(window)
+                .depth(16)
+                .timeout(0)
+                .filter_fn(Box::new(|e: &UIElement| e.is_password()))
+                .find_all()
+                .unwrap_or_default();
+            let mut rects = Vec::new();
+            for field in fields {
+                let rect = field
+                    .get_bounding_rectangle()
+                    .map_err(|e| uia_err("bounds of password field", e))?;
+                rects.push((
+                    rect.get_left(),
+                    rect.get_top(),
+                    rect.get_width().unsigned_abs(),
+                    rect.get_height().unsigned_abs(),
+                ));
+            }
+            Ok(rects)
         }
     }
 }

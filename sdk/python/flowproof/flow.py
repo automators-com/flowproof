@@ -32,6 +32,9 @@ class StepResult:
     status: str
     duration_ms: int
     detail: str | None = None
+    started_ms: int = 0
+    """Offset from run start — with duration_ms, the step→time mapping into
+    the run's recording."""
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,9 @@ class RunResult:
     report_path: Path
     html_path: Path
     """Human-readable rendering generated from the JSON report."""
+    recording: dict[str, Any] | None = None
+    """The run's recording bundle: format, frame refs, per-step time ranges
+    (None when the driver cannot capture)."""
 
     def __bool__(self) -> bool:
         return self.passed
@@ -66,11 +72,13 @@ def _parse_run_result(payload: str) -> RunResult:
                 status=s["status"],
                 duration_ms=s["duration_ms"],
                 detail=s.get("detail"),
+                started_ms=s.get("started_ms", 0),
             )
             for s in report["steps"]
         ),
         report_path=Path(data["report_path"]),
         html_path=Path(data["report_path"]).with_name("report.html"),
+        recording=report.get("recording"),
     )
 
 

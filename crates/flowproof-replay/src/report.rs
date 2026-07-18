@@ -20,26 +20,32 @@ pub struct StepResult {
     pub status: StepStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Offset from run start — with `duration_ms` this is the step→time
+    /// mapping into the run's recording.
+    #[serde(default)]
+    pub started_ms: u64,
     pub duration_ms: u64,
 }
 
 impl StepResult {
-    pub fn passed(step: &Step, duration_ms: u64) -> Self {
+    pub fn passed(step: &Step, started_ms: u64, duration_ms: u64) -> Self {
         Self {
             id: step.id.clone(),
             intent: step.intent.clone(),
             status: StepStatus::Passed,
             detail: None,
+            started_ms,
             duration_ms,
         }
     }
 
-    pub fn failed(step: &Step, duration_ms: u64, reason: String) -> Self {
+    pub fn failed(step: &Step, started_ms: u64, duration_ms: u64, reason: String) -> Self {
         Self {
             id: step.id.clone(),
             intent: step.intent.clone(),
             status: StepStatus::Failed,
             detail: Some(reason),
+            started_ms,
             duration_ms,
         }
     }
@@ -50,6 +56,7 @@ impl StepResult {
             intent: step.intent.clone(),
             status: StepStatus::Skipped,
             detail: Some("previous step failed".into()),
+            started_ms: 0,
             duration_ms: 0,
         }
     }
@@ -62,20 +69,22 @@ pub struct RunReport {
     pub passed: bool,
     pub steps: Vec<StepResult>,
     pub duration_ms: u64,
+    /// The run's recording bundle: format, frame refs, and per-step time
+    /// ranges — the complete step→time mapping, embedded (no sidecar).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<flowproof_driver::Recording>,
 }
 
 impl RunReport {
-    /// Write `result.json` (plus a `report.html` rendering of it) into a
-    /// fresh run directory under `<base>/.flowproof/runs/<timestamp>/` and
-    /// return the JSON file path. The JSON is the primary artifact; the
-    /// HTML is generated FROM it for human review.
-    pub fn write(&self, base: &Path) -> std::io::Result<PathBuf> {
-        let run_id = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ").to_string();
-        let dir = base.join(".flowproof").join("runs").join(run_id);
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join("result.json");
+    /// Write `result.json` (plus a `report.html` rendering of it) into the
+    /// run directory `run_trace` created — the same bundle that holds the
+    /// recording. Returns the JSON file path. The JSON is the primary
+    /// artifact; the HTML is generated FROM it for human review.
+    pub fn write_into(&self, run_dir: &Path) -> std::io::Result<PathBuf> {
+        std::fs::create_dir_all(run_dir)?;
+        let path = run_dir.join("result.json");
         std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
-        std::fs::write(dir.join("report.html"), self.to_html())?;
+        std::fs::write(run_dir.join("report.html"), self.to_html())?;
         Ok(path)
     }
 
@@ -117,6 +126,8 @@ impl RunReport {
              th,td{{text-align:left;padding:.45rem .6rem;border-bottom:1px solid #d1d9e0}}\
              .num{{text-align:right;white-space:nowrap}}\
              .meta{{color:#59636e;font-size:.9rem}}\
+             .frames img{{max-width:20rem;margin:.4rem .4rem 0 0;border:1px solid #d1d9e0}}\
+             details{{margin:.5rem 0}}summary{{cursor:pointer}}\
              </style></head><body>\n\
              <h1>{name}</h1>\n\
              <p><span class=\"verdict\">{verdict}</span></p>\n\
@@ -124,11 +135,66 @@ impl RunReport {
              generated from result.json</p>\n\
              <table><thead><tr><th>Step</th><th>Status</th><th>Intent</th>\
              <th>Detail</th><th>Duration</th></tr></thead><tbody>\n{rows}\
-             </tbody></table>\n</body></html>\n",
+             </tbody></table>\n{viewer}</body></html>\n",
             name = escape(&self.name),
             trace_id = escape(&self.trace_id),
             duration = self.duration_ms,
+            viewer = self.viewer_html(),
         )
+    }
+
+    /// The step-synchronized filmstrip viewer: for each step, its captured
+    /// frames, referenced relatively inside the same run bundle. Driven
+    /// entirely by the structured timeline — jumping to a step is a click,
+    /// never manual scrubbing.
+    fn viewer_html(&self) -> String {
+        let Some(recording) = &self.recording else {
+            return String::new();
+        };
+        let mut sections = String::from(
+            "<h2>Recording</h2>\n<p class=\"meta\">step-synchronized keyframes; \
+             sensitive regions are masked before frames are written</p>\n",
+        );
+        for timing in &recording.steps {
+            let intent = self
+                .steps
+                .iter()
+                .find(|s| s.id == timing.id)
+                .map(|s| s.intent.as_str())
+                .unwrap_or("");
+            let mut imgs = String::new();
+            for frame in recording
+                .frames
+                .iter()
+                .filter(|f| f.offset_ms >= timing.start_ms && f.offset_ms <= timing.end_ms)
+            {
+                imgs.push_str(&format!(
+                    "<a href=\"{dir}/{file}\"><img src=\"{dir}/{file}\" \
+                     alt=\"frame at {offset} ms\" loading=\"lazy\"></a>",
+                    dir = escape(&recording.dir),
+                    file = escape(&frame.file),
+                    offset = frame.offset_ms,
+                ));
+            }
+            let note = match &timing.frames_dropped {
+                Some(reason) => format!(
+                    "<p class=\"meta\">some frames were dropped (fail-closed {}).</p>",
+                    escape(reason)
+                ),
+                None if imgs.is_empty() => "<p class=\"meta\">no frames captured.</p>".into(),
+                None => String::new(),
+            };
+            sections.push_str(&format!(
+                "<details><summary><code>{id}</code> {intent} \
+                 <span class=\"meta\">({start}–{end} ms)</span></summary>\
+                 <div class=\"frames\">{imgs}</div>{note}</details>\n",
+                id = escape(&timing.id),
+                intent = escape(intent),
+                start = timing.start_ms,
+                end = timing.end_ms,
+            ));
+        }
+        sections
     }
 }
 
@@ -157,6 +223,7 @@ mod tests {
                     intent: "Type 5 & smile".into(),
                     status: StepStatus::Passed,
                     detail: None,
+                    started_ms: 0,
                     duration_ms: 10,
                 },
                 StepResult {
@@ -164,9 +231,11 @@ mod tests {
                     intent: "display shows 8".into(),
                     status: StepStatus::Failed,
                     detail: Some("expected element text '8', got '<blank>'".into()),
+                    started_ms: 10,
                     duration_ms: 5,
                 },
             ],
+            recording: None,
         };
         let html = report.to_html();
         assert!(html.contains("Add &lt;two&gt; numbers"));
@@ -185,10 +254,11 @@ mod tests {
             passed: true,
             duration_ms: 1,
             steps: vec![],
+            recording: None,
         };
         let base = std::env::temp_dir().join("flowproof-report-write");
         std::fs::create_dir_all(&base).expect("temp dir");
-        let json_path = report.write(&base).expect("write succeeds");
+        let json_path = report.write_into(&base).expect("write succeeds");
         assert!(json_path.ends_with("result.json"));
         assert!(json_path.with_file_name("report.html").exists());
         std::fs::remove_dir_all(&base).ok();

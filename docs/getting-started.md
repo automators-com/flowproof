@@ -67,8 +67,13 @@ PASS: Add two numbers (2154 ms) -> .flowproof\runs\20260718T120000.000Z\result.j
 ```
 
 Exit codes: `0` pass, `1` test failure, `2` error. Each run writes a
-`result.json` artifact under `.flowproof/runs/<timestamp>/`, plus a
-self-contained `report.html` rendered from it for human review.
+self-contained bundle under `.flowproof/runs/<timestamp>/`: `result.json`
+(the machine surface, including the step→time mapping), `report.html`
+(with a step-synchronized frame viewer — click any step to see exactly
+what happened), and `recording/` with the captured keyframes. Sensitive
+regions are masked before frames are written: declare `redact:` rules in
+the spec, and password fields are always masked automatically
+(see [docs/recording.md](recording.md)).
 
 Programmatic callers invoking the CLI should pass `--json`: the full
 structured report prints to stdout instead of the human-readable lines —
