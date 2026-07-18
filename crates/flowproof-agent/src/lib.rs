@@ -1,6 +1,14 @@
-//! The recording agent: a computer-use loop that performs a flow once from a
-//! natural-language spec and records a trace. Model backends are pluggable;
-//! the replayer never touches this crate.
+//! The recording agent: performs a flow once from a natural-language spec
+//! and records a trace. Model backends are pluggable; this slice ships a
+//! deterministic rule-based resolver for Windows Calculator ([`rules`]).
+//! The replayer never touches this crate.
+
+pub mod recorder;
+pub mod rules;
+pub mod spec;
+
+pub use recorder::{record, RecordError, RecordSummary};
+pub use spec::{FlowSpec, SpecStep};
 
 use std::env;
 

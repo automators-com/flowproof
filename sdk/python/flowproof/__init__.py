@@ -5,13 +5,32 @@ Open-source AI-native E2E testing framework for enterprise Windows apps
 natural-language spec and records a trace; a deterministic engine replays
 the trace in CI with zero LLM calls.
 
-This SDK is an early skeleton: the API surface is real, the engine calls
-are not wired up yet (they will bind to the Rust engine via PyO3/maturin).
+The Rust engine ships inside this package as the `flowproof._native`
+extension module; the `flowproof` command drives it.
 See https://github.com/automators-com/flowproof
 """
 
-from flowproof.flow import Flow, heal, record, run
+from flowproof.flow import (
+    Flow,
+    RecordResult,
+    RunResult,
+    StepResult,
+    get_trace,
+    heal,
+    record,
+    run,
+)
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
-__all__ = ["Flow", "__version__", "heal", "record", "run"]
+__all__ = [
+    "Flow",
+    "RecordResult",
+    "RunResult",
+    "StepResult",
+    "__version__",
+    "get_trace",
+    "heal",
+    "record",
+    "run",
+]

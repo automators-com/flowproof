@@ -7,6 +7,7 @@ members = [
     "crates/flowproof-agent",
     "crates/flowproof-adapters",
     "crates/flowproof-cli",
+    "crates/flowproof-python",
 ]
 
 [workspace.package]
@@ -23,12 +24,16 @@ flowproof-trace = { path = "crates/flowproof-trace" }
 flowproof-replay = { path = "crates/flowproof-replay" }
 flowproof-agent = { path = "crates/flowproof-agent" }
 flowproof-adapters = { path = "crates/flowproof-adapters" }
+flowproof-cli = { path = "crates/flowproof-cli" }
 
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.clippy]
 unwrap_used = "warn"

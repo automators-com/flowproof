@@ -7,16 +7,21 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[lib]
+name = "flowproof_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "flowproof"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = { workspace = true }
 clap = { workspace = true }
 flowproof-agent = { workspace = true }
+flowproof-driver = { workspace = true }
 flowproof-replay = { workspace = true }
 flowproof-trace = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

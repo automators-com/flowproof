@@ -5,8 +5,11 @@
 //! compiled so the workspace always builds (e.g. on Linux CI); every
 //! operation on the stub returns [`DriverError::UnsupportedPlatform`].
 
+pub mod app;
 mod backend;
+pub mod mock;
 
+pub use app::{numeric_value, resolve_app, AppDriver, AppTarget, UiaAppDriver, UiaSelector};
 pub use backend::PlatformBackend;
 
 /// A captured frame of the target screen or window.

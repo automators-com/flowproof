@@ -1,0 +1,95 @@
+//! The `flowproof._native` Python extension module. Thin bindings over the
+//! Rust engine.
+//!
+//! Every function returns structured data as a JSON string that the Python
+//! layer parses into typed objects — the caller is expected to be a program
+//! (usually an agent), never a human parsing stdout. `cli_main` reuses the
+//! same library code for the `flowproof` console script.
+
+use std::path::{Path, PathBuf};
+
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::prelude::*;
+
+use flowproof_agent::FlowSpec;
+use flowproof_driver::UiaAppDriver;
+
+fn runtime_err(message: impl std::fmt::Display) -> PyErr {
+    PyRuntimeError::new_err(message.to_string())
+}
+
+fn to_json(value: &serde_json::Value) -> PyResult<String> {
+    serde_json::to_string(value).map_err(runtime_err)
+}
+
+/// Run the flowproof CLI with `args` (excluding the program name) and
+/// return the process exit code (0 pass, 1 fail, 2 error).
+#[pyfunction]
+fn cli_main(py: Python<'_>, args: Vec<String>) -> PyResult<u8> {
+    // The engine drives a UI and blocks; let other Python threads run.
+    Ok(py.detach(|| flowproof_cli::run_cli(args)))
+}
+
+/// Record `spec`. Returns JSON: `{"trace_path": …, "steps": …}`.
+#[pyfunction]
+#[pyo3(signature = (spec, out=None))]
+fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<String> {
+    py.detach(|| {
+        let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
+        let out = out.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
+        let mut driver = UiaAppDriver::new().map_err(runtime_err)?;
+        let summary = flowproof_agent::record(&parsed, &mut driver, &out).map_err(runtime_err)?;
+        to_json(&serde_json::json!({
+            "trace_path": summary.trace_path,
+            "steps": summary.steps,
+        }))
+    })
+}
+
+/// Replay the trace recorded for `spec`. Returns JSON:
+/// `{"report": <RunReport>, "report_path": …}`. Raises RuntimeError only
+/// when the run cannot execute at all; test failures are data, not errors.
+#[pyfunction]
+#[pyo3(signature = (spec, trace=None))]
+fn run(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>) -> PyResult<String> {
+    py.detach(|| {
+        let trace_path = trace.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
+        let mut driver = UiaAppDriver::new().map_err(runtime_err)?;
+        let report = flowproof_replay::run_trace(&trace_path, &mut driver).map_err(runtime_err)?;
+        let base = trace_path.parent().unwrap_or_else(|| Path::new("."));
+        let report_path = report.write(base).map_err(runtime_err)?;
+        to_json(&serde_json::json!({
+            "report": report,
+            "report_path": report_path,
+        }))
+    })
+}
+
+/// Load a recorded trace for inspection. `path` may be the flow spec (the
+/// default trace next to it is used) or a `.jsonl` trace file directly.
+/// Returns JSON: `{"header": …, "steps": […]}`.
+#[pyfunction]
+fn get_trace(py: Python<'_>, path: PathBuf) -> PyResult<String> {
+    py.detach(|| {
+        let trace_path = if path.extension().is_some_and(|e| e == "jsonl") {
+            path
+        } else {
+            flowproof_cli::default_trace_path(&path)
+        };
+        let (header, steps) = flowproof_replay::load_trace(&trace_path).map_err(runtime_err)?;
+        to_json(&serde_json::json!({
+            "header": header,
+            "steps": steps,
+        }))
+    })
+}
+
+#[pymodule]
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(cli_main, m)?)?;
+    m.add_function(wrap_pyfunction!(record, m)?)?;
+    m.add_function(wrap_pyfunction!(run, m)?)?;
+    m.add_function(wrap_pyfunction!(get_trace, m)?)?;
+    m.add("__engine_version__", env!("CARGO_PKG_VERSION"))?;
+    Ok(())
+}
