@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flowproof"
+version = "0.0.1"
+description = "AI-native E2E testing for the apps Selenium can't reach. Placeholder release — see github.com/automators-com/flowproof"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+authors = [
+    { name = "Automators", email = "hello@automators.com" },
+]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/automators-com/flowproof"
+Repository = "https://github.com/automators-com/flowproof"
+
+[tool.hatch.build.targets.wheel]
+packages = ["flowproof"]
