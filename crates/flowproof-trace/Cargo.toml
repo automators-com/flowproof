@@ -1,0 +1,19 @@
+[package]
+name = "flowproof-trace"
+description = "Trace format, selector ladder, and trace-to-script compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+jsonschema = { version = "0.33", default-features = false }
+
+[lints]
+workspace = true

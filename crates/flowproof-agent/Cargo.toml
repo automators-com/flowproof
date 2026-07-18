@@ -1,0 +1,16 @@
+[package]
+name = "flowproof-agent"
+description = "Recording agent: planner loop with pluggable computer-use model backends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+flowproof-driver = { workspace = true }
+flowproof-trace = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

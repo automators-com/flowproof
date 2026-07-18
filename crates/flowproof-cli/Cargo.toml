@@ -1,0 +1,22 @@
+[package]
+name = "flowproof-cli"
+description = "flowproof command line: record, run, heal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "flowproof"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+flowproof-agent = { workspace = true }
+flowproof-replay = { workspace = true }
+flowproof-trace = { workspace = true }
+
+[lints]
+workspace = true

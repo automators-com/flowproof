@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "flowproof"
 version = "0.0.1"
-description = "AI-native E2E testing for the apps Selenium can't reach. Placeholder release — see github.com/automators-com/flowproof"
+description = "AI-native E2E testing for the apps Selenium can't reach — SAP GUI, Oracle Forms, Citrix, Windows desktop."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
@@ -23,5 +23,22 @@ classifiers = [
 Homepage = "https://github.com/automators-com/flowproof"
 Repository = "https://github.com/automators-com/flowproof"
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["flowproof"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
