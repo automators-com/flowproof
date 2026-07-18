@@ -173,32 +173,43 @@ fn check_assertion<D: AppDriver>(
                 ));
             };
             let text = driver.read_text(&uia)?;
-            let (matches, expected) = if let Some(expected) =
-                expect.get("value_contains").and_then(|v| v.as_str())
-            {
-                (text.contains(expected), expected)
-            } else if let Some(expected) = expect.get("value_equals").and_then(|v| v.as_str()) {
-                let numeric = expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric");
-                let matched = if numeric {
-                    match (numeric_value(&text), expected.parse::<f64>()) {
-                        (Some(actual), Ok(expected)) => actual == expected,
-                        _ => false,
-                    }
-                } else {
-                    text == expected
-                };
-                (matched, expected)
+            let raw = if let Some(e) = expect.get("value_contains").and_then(|v| v.as_str()) {
+                e
+            } else if let Some(e) = expect.get("value_equals").and_then(|v| v.as_str()) {
+                e
             } else {
                 return Ok((
                     Err(format!("unsupported element_state expectation: {expect}")),
                     Some(rung),
                 ));
             };
+            // Expectations may reference `${VAR}` secrets: resolve for the
+            // comparison only — messages keep the raw reference, and the
+            // live text is masked too, so a failure never leaks the value.
+            let expected = match flowproof_trace::secret::resolve_refs(raw) {
+                Ok(expected) => expected,
+                Err(e) => return Ok((Err(e.to_string()), Some(rung))),
+            };
+            let matches = if expect.get("value_contains").is_some() {
+                text.contains(&expected)
+            } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
+                matches!(
+                    (numeric_value(&text), expected.parse::<f64>()),
+                    (Some(actual), Ok(wanted)) if actual == wanted
+                )
+            } else {
+                text == expected
+            };
             if matches {
                 Ok((Ok(()), Some(rung)))
             } else {
+                let shown = if flowproof_trace::secret::has_refs(raw) {
+                    "<masked>"
+                } else {
+                    text.as_str()
+                };
                 Ok((
-                    Err(format!("expected element text '{expected}', got '{text}'")),
+                    Err(format!("expected element text '{raw}', got '{shown}'")),
                     Some(rung),
                 ))
             }
@@ -255,8 +266,16 @@ fn execute_step<D: AppDriver>(
         },
         Action::TypeText(params) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
-                driver.type_text(&target, &params.text)?;
-                (Ok(()), StepMatch::from_rung(&step.selectors, Some(rung), 0))
+                let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                // The trace stores `${VAR}` secret references, never values;
+                // they resolve from the environment at the moment of typing.
+                match flowproof_trace::secret::resolve_refs(&params.text) {
+                    Ok(value) => {
+                        driver.type_text(&target, &value)?;
+                        (Ok(()), matched)
+                    }
+                    Err(e) => (Err(e.to_string()), matched),
+                }
             }
             None => (
                 Err("no selector rung resolved to a live element".to_string()),

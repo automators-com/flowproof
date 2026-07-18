@@ -7,6 +7,7 @@
 //! crate are implemented against that schema.
 //!
 pub mod format;
+pub mod secret;
 
 pub use format::{Header, Step, TraceError, TraceLine};
 

@@ -52,6 +52,8 @@ pub enum RecordError {
     },
     #[error("driver error: {0}")]
     Driver(#[from] flowproof_driver::DriverError),
+    #[error(transparent)]
+    Secret(#[from] flowproof_trace::secret::MissingSecret),
     #[error("cannot write trace {path}: {source}")]
     Io {
         path: String,
@@ -372,7 +374,12 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
             }
             match &action {
                 ResolvedAction::Press { .. } => driver.invoke(&selector)?,
-                ResolvedAction::TypeText { text, .. } => driver.type_text(&selector, text)?,
+                ResolvedAction::TypeText { text, .. } => {
+                    // `${VAR}` secrets resolve at the moment of typing; the
+                    // trace only ever stores the reference (see step_for).
+                    let value = flowproof_trace::secret::resolve_refs(text)?;
+                    driver.type_text(&selector, &value)?
+                }
                 ResolvedAction::AssertText {
                     expected,
                     contains,
@@ -380,7 +387,10 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                     ..
                 } => {
                     let actual = driver.read_text(&selector)?;
-                    if !assert_holds(&actual, expected, *contains, *numeric) {
+                    let wanted = flowproof_trace::secret::resolve_refs(expected)?;
+                    if !assert_holds(&actual, &wanted, *contains, *numeric) {
+                        // Error messages carry the RAW expectation — a
+                        // resolved secret must not leak through a failure.
                         return Err(RecordError::AssertMismatch {
                             intent: spec_step.intent().to_string(),
                             expected: expected.clone(),

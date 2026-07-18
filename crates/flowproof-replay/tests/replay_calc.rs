@@ -263,6 +263,86 @@ fn text_anchor_rung_is_the_last_deterministic_resort() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Secret indirection: `${VAR}` in a spec resolves from the environment at
+/// the moment of use — recording AND replay — while the persisted trace
+/// only ever contains the reference, never the value.
+#[test]
+fn secret_values_never_reach_the_persisted_trace() {
+    std::env::set_var("FLOWPROOF_RT_SECRET", "hunter2-super-secret");
+    let dir = std::env::temp_dir().join("flowproof-replay-secret");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Login note\napp: notepad\nsteps:\n  - Type ${FLOWPROOF_RT_SECRET}\n  - assert: document contains ${FLOWPROOF_RT_SECRET}\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("secret.trace.jsonl");
+
+    let mut rec = MockAppDriver::new(&["15"]);
+    record(&spec, &mut rec, &trace).expect("recording succeeds");
+    // The app really received the resolved value...
+    assert_eq!(
+        rec.typed,
+        vec![("15".to_string(), "hunter2-super-secret".to_string())]
+    );
+    // ...but the persisted trace only carries the reference.
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(persisted.contains("${FLOWPROOF_RT_SECRET}"));
+    assert!(
+        !persisted.contains("hunter2-super-secret"),
+        "secret value must never be persisted"
+    );
+
+    // Replay resolves the reference again, against a fresh app instance.
+    let mut driver = MockAppDriver::new(&["15"]);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:?}");
+    assert_eq!(
+        driver.typed,
+        vec![("15".to_string(), "hunter2-super-secret".to_string())]
+    );
+
+    // The run report is persisted too — it must stay value-free.
+    let report_json = serde_json::to_string(&report).expect("serializes");
+    assert!(!report_json.contains("hunter2-super-secret"));
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::env::remove_var("FLOWPROOF_RT_SECRET");
+}
+
+/// A missing secret is a hard, clearly-named error — never typing the
+/// literal reference, and never leaking live app text in the failure.
+#[test]
+fn missing_secret_fails_closed_with_a_clear_error() {
+    std::env::set_var("FLOWPROOF_RT_SECRET2", "tmp");
+    let dir = std::env::temp_dir().join("flowproof-replay-secret-missing");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Login note\napp: notepad\nsteps:\n  - Type ${FLOWPROOF_RT_SECRET2}\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("secret.trace.jsonl");
+    record(&spec, &mut MockAppDriver::new(&["15"]), &trace).expect("recording succeeds");
+    std::env::remove_var("FLOWPROOF_RT_SECRET2");
+
+    // Replay without the variable: the step fails, nothing is typed.
+    let mut driver = MockAppDriver::new(&["15"]);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("${FLOWPROOF_RT_SECRET2}") && detail.contains("not set"),
+        "detail: {detail}"
+    );
+    assert!(driver.typed.is_empty(), "no literal reference typed");
+
+    // Recording without the variable is refused outright.
+    let err = record(&spec, &mut MockAppDriver::new(&["15"]), &trace)
+        .expect_err("record must fail without the secret");
+    assert!(err.to_string().contains("${FLOWPROOF_RT_SECRET2}"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn replay_skips_remaining_steps_after_a_missing_element() {
     let dir = std::env::temp_dir().join("flowproof-replay-skip");
