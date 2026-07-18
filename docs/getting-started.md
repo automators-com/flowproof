@@ -70,7 +70,10 @@ Exit codes: `0` pass, `1` test failure, `2` error. Each run writes a
 self-contained bundle under `.flowproof/runs/<timestamp>/`: `result.json`
 (the machine surface, including the step→time mapping), `report.html`
 (with a step-synchronized frame viewer — click any step to see exactly
-what happened), and `recording/` with the captured keyframes. Sensitive
+what happened), `junit.xml` (one testcase per step, for Jenkins / GitLab /
+Azure DevOps / any CI that ingests JUnit — point your test-report collector
+at `.flowproof/runs/*/junit.xml`), and `recording/` with the captured
+keyframes. Sensitive
 regions are masked before frames are written: declare `redact:` rules in
 the spec, and password fields are always masked automatically
 (see [docs/recording.md](recording.md)).

@@ -76,16 +76,66 @@ pub struct RunReport {
 }
 
 impl RunReport {
-    /// Write `result.json` (plus a `report.html` rendering of it) into the
-    /// run directory `run_trace` created — the same bundle that holds the
-    /// recording. Returns the JSON file path. The JSON is the primary
-    /// artifact; the HTML is generated FROM it for human review.
+    /// Write `result.json` (plus a `report.html` rendering and a
+    /// `junit.xml` for CI systems) into the run directory `run_trace`
+    /// created — the same bundle that holds the recording. Returns the JSON
+    /// file path. The JSON is the primary artifact; the HTML and JUnit
+    /// files are generated FROM it for human review and CI ingestion.
     pub fn write_into(&self, run_dir: &Path) -> std::io::Result<PathBuf> {
         std::fs::create_dir_all(run_dir)?;
         let path = run_dir.join("result.json");
         std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
         std::fs::write(run_dir.join("report.html"), self.to_html())?;
+        std::fs::write(run_dir.join("junit.xml"), self.to_junit_xml())?;
         Ok(path)
+    }
+
+    /// Render the run as JUnit XML — the lingua franca of CI test
+    /// reporting (Jenkins, GitLab, Azure DevOps, Buildkite all ingest it),
+    /// so flowproof slots into an existing test stack without a plugin.
+    /// One `<testsuite>` per run, one `<testcase>` per step.
+    pub fn to_junit_xml(&self) -> String {
+        let failures = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Failed)
+            .count();
+        let skipped = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Skipped)
+            .count();
+        let time = self.duration_ms as f64 / 1000.0;
+        let mut cases = String::new();
+        for step in &self.steps {
+            let case_open = format!(
+                "    <testcase classname=\"{}\" name=\"{} {}\" time=\"{:.3}\"",
+                xml_escape(&self.name),
+                xml_escape(&step.id),
+                xml_escape(&step.intent),
+                step.duration_ms as f64 / 1000.0,
+            );
+            match step.status {
+                StepStatus::Passed => cases.push_str(&format!("{case_open}/>\n")),
+                StepStatus::Failed => cases.push_str(&format!(
+                    "{case_open}>\n      <failure message=\"{}\"/>\n    </testcase>\n",
+                    xml_escape(step.detail.as_deref().unwrap_or("step failed")),
+                )),
+                StepStatus::Skipped => cases.push_str(&format!(
+                    "{case_open}>\n      <skipped/>\n    </testcase>\n"
+                )),
+            }
+        }
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <testsuites name=\"flowproof\" tests=\"{tests}\" failures=\"{failures}\" \
+             skipped=\"{skipped}\" time=\"{time:.3}\">\n\
+             \x20\x20<testsuite name=\"{name}\" tests=\"{tests}\" failures=\"{failures}\" \
+             skipped=\"{skipped}\" time=\"{time:.3}\">\n\
+             {cases}\x20\x20</testsuite>\n</testsuites>\n",
+            name = xml_escape(&self.name),
+            tests = self.steps.len(),
+        )
     }
 
     /// Render a self-contained HTML report (inline CSS, no external
@@ -206,6 +256,15 @@ fn escape(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// XML attribute/text escaping for the JUnit rendering.
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn write_emits_json_and_html_side_by_side() {
+    fn write_emits_json_html_and_junit_side_by_side() {
         let report = RunReport {
             name: "x".into(),
             trace_id: "t".into(),
@@ -261,6 +320,79 @@ mod tests {
         let json_path = report.write_into(&base).expect("write succeeds");
         assert!(json_path.ends_with("result.json"));
         assert!(json_path.with_file_name("report.html").exists());
+        assert!(json_path.with_file_name("junit.xml").exists());
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    fn junit_fixture() -> RunReport {
+        RunReport {
+            name: "Add <two> & \"quote\"".into(),
+            trace_id: "t-1".into(),
+            passed: false,
+            duration_ms: 1234,
+            steps: vec![
+                StepResult {
+                    id: "s0001".into(),
+                    intent: "Type 5".into(),
+                    status: StepStatus::Passed,
+                    detail: None,
+                    started_ms: 0,
+                    duration_ms: 30,
+                },
+                StepResult {
+                    id: "s0002".into(),
+                    intent: "display shows <8>".into(),
+                    status: StepStatus::Failed,
+                    detail: Some("expected '8', got '<blank>'".into()),
+                    started_ms: 30,
+                    duration_ms: 25,
+                },
+                StepResult {
+                    id: "s0003".into(),
+                    intent: "Press equals".into(),
+                    status: StepStatus::Skipped,
+                    detail: Some("previous step failed".into()),
+                    started_ms: 0,
+                    duration_ms: 0,
+                },
+            ],
+            recording: None,
+        }
+    }
+
+    #[test]
+    fn junit_xml_carries_counts_verdicts_and_escapes() {
+        let xml = junit_fixture().to_junit_xml();
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(xml.contains("tests=\"3\" failures=\"1\" skipped=\"1\""));
+        assert!(xml.contains("time=\"1.234\""));
+        assert!(xml.contains("<testsuite name=\"Add &lt;two&gt; &amp; &quot;quote&quot;\""));
+        assert!(xml.contains("name=\"s0001 Type 5\" time=\"0.030\"/>"));
+        assert!(xml.contains(
+            "<failure message=\"expected &apos;8&apos;, got &apos;&lt;blank&gt;&apos;\"/>"
+        ));
+        assert!(xml.contains("<skipped/>"));
+        assert!(!xml.contains("<blank>"), "raw input must never reach XML");
+    }
+
+    #[test]
+    fn junit_xml_is_well_formed() {
+        // A hand-rolled serializer earns a real well-formedness check:
+        // every opened element must close, attributes must stay quoted.
+        let xml = junit_fixture().to_junit_xml();
+        let opens = xml.matches("<testcase").count();
+        let self_closed = xml.matches("/>").count();
+        let closes = xml.matches("</testcase>").count();
+        assert_eq!(opens, 3);
+        assert_eq!(closes, 2, "failed + skipped cases have bodies");
+        assert!(
+            self_closed >= 3,
+            "passed case + failure + skipped self-close"
+        );
+        assert_eq!(xml.matches("<testsuite ").count(), 1);
+        assert_eq!(xml.matches("</testsuite>").count(), 1);
+        assert_eq!(xml.matches("<testsuites ").count(), 1);
+        assert_eq!(xml.matches("</testsuites>").count(), 1);
+        assert_eq!(xml.matches('"').count() % 2, 0, "attribute quotes balance");
     }
 }
