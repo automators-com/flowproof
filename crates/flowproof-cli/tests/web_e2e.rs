@@ -59,6 +59,76 @@ fn records_and_replays_a_browser_flow() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Heal review page against a real browser: an outdated trace produces a
+/// before/after page whose frames come from BOTH executions' bundles.
+#[test]
+fn heal_writes_a_review_page_with_frames_from_both_runs() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web heal-review E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-heal-review-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("greeter.html");
+    std::fs::write(&page, GREETER_HTML).expect("page written");
+    let trace_path = dir.join("web.trace.jsonl");
+
+    let spec = FlowSpec {
+        name: "Greet the user".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
+            .expect("example spec parses")
+            .steps,
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    // The app moved on: the recorded selector no longer matches the page.
+    let contents = std::fs::read_to_string(&trace_path).expect("trace readable");
+    std::fs::write(&trace_path, contents.replace("#greet\"", "#old-greet\""))
+        .expect("trace rewritten");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let report = flowproof_agent::heal(&spec, &mut driver, &trace_path).expect("heal runs");
+    drop(driver);
+    assert!(report.changed, "corrupted selector must be flagged");
+
+    let page_path = report.diff_html.expect("review page written");
+    assert_eq!(page_path, dir.join("web.heal.html"));
+    let html = std::fs::read_to_string(&page_path).expect("review page readable");
+    assert!(html.contains("Before (recorded)"));
+    assert!(html.contains("After (proposed)"));
+    assert!(html.contains("#old-greet"), "shows the stale selector");
+
+    // Both executions were recorded; the page embeds frames from each
+    // bundle, and every referenced frame file really exists next to it.
+    let (old_header, _) = flowproof_replay::load_trace(&trace_path).expect("trace loads");
+    let (new_header, _) =
+        flowproof_replay::load_trace(report.proposed_path.as_ref().expect("proposal written"))
+            .expect("proposal loads");
+    let old_dir = old_header.recording.expect("original run recorded").dir;
+    let new_dir = new_header.recording.expect("proposal run recorded").dir;
+    assert_ne!(old_dir, new_dir, "each execution has its own bundle");
+    for bundle in [&old_dir, &new_dir] {
+        assert!(
+            html.contains(&format!("<img src=\"{bundle}/frame-")),
+            "page must embed frames from bundle {bundle}"
+        );
+    }
+    for src in html.split("<img src=\"").skip(1) {
+        let file = src.split('"').next().expect("img src attr");
+        assert!(dir.join(file).is_file(), "referenced frame missing: {file}");
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Redaction proof against a real browser: a page with a password field and
 /// a css-masked region — the PERSISTED frames must show both as solid black.
 #[test]

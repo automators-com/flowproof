@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use flowproof_driver::AppDriver;
-use flowproof_trace::format::Step;
+use flowproof_trace::format::{Header, Step};
 use flowproof_trace::TraceLine;
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,26 @@ pub struct HealReport {
     pub steps_removed: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposed_path: Option<PathBuf>,
+    /// Human review surface: before/after per changed step, with the frames
+    /// of both executions. Rendered FROM this structured report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_html: Option<PathBuf>,
+}
+
+fn load_trace_parts(path: &Path) -> Result<(Option<Header>, Vec<Step>), HealError> {
+    let contents = std::fs::read_to_string(path).map_err(|source| HealError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut header = None;
+    let mut steps = Vec::new();
+    for line in contents.lines().filter(|l| !l.trim().is_empty()) {
+        match TraceLine::parse(line)? {
+            TraceLine::Header(h) => header = Some(h),
+            TraceLine::Step(step) => steps.push(step),
+        }
+    }
+    Ok((header, steps))
 }
 
 fn load_steps(path: &Path) -> Result<Vec<Step>, HealError> {
@@ -125,13 +145,165 @@ pub fn heal<D: AppDriver>(
     if !changed {
         std::fs::remove_file(&proposal).ok();
     }
-    Ok(HealReport {
+    let mut report = HealReport {
         changed,
         steps_changed,
         steps_added,
         steps_removed,
         proposed_path: changed.then_some(proposal),
-    })
+        diff_html: None,
+    };
+    if report.changed {
+        report.diff_html = write_diff_html(&report, trace_path).ok();
+    }
+    Ok(report)
+}
+
+/// The step time-range → frame files of one execution's recording bundle.
+/// Derivable purely from the structured data plus the content-named files.
+fn frames_for_range(
+    trace_dir: &Path,
+    header: Option<&Header>,
+    range: Option<&flowproof_trace::format::StepRecording>,
+) -> Vec<String> {
+    let (Some(header), Some(range)) = (header, range) else {
+        return Vec::new();
+    };
+    let Some(recording) = &header.recording else {
+        return Vec::new();
+    };
+    let dir = trace_dir.join(&recording.dir);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut frames: Vec<(u64, String)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let offset: u64 = name
+                .strip_prefix("frame-")?
+                .split('-')
+                .next()?
+                .parse()
+                .ok()?;
+            (offset >= range.start_ms && offset <= range.end_ms)
+                .then(|| (offset, format!("{}/{}", recording.dir, name)))
+        })
+        .collect();
+    frames.sort();
+    frames.into_iter().map(|(_, path)| path).collect()
+}
+
+/// Minimal HTML escaping for text content.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn pretty(value: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_default()
+}
+
+fn side_html(title: &str, step: &serde_json::Value, frames: &[String]) -> String {
+    let imgs: String = frames
+        .iter()
+        .map(|f| {
+            format!(
+                "<a href=\"{f}\"><img src=\"{f}\" loading=\"lazy\" alt=\"frame\"></a>",
+                f = escape(f)
+            )
+        })
+        .collect();
+    let frames_note = if frames.is_empty() {
+        "<p class=\"meta\">no frames captured</p>".to_string()
+    } else {
+        format!("<div class=\"frames\">{imgs}</div>")
+    };
+    format!(
+        "<div class=\"side\"><h4>{title}</h4>{frames_note}\
+         <pre>{json}</pre></div>",
+        title = escape(title),
+        json = escape(&pretty(step)),
+    )
+}
+
+/// Write the before/after review page next to the trace as
+/// `<name>.heal.html`. Frames come from each execution's own recording
+/// bundle (the original trace's and the proposal's), referenced relatively.
+pub fn write_diff_html(report: &HealReport, trace_path: &Path) -> std::io::Result<PathBuf> {
+    let trace_dir = trace_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let old_header = load_trace_parts(trace_path).ok().and_then(|(h, _)| h);
+    let new_header = report
+        .proposed_path
+        .as_ref()
+        .and_then(|p| load_trace_parts(p).ok())
+        .and_then(|(h, _)| h);
+
+    let mut sections = String::new();
+    for change in &report.steps_changed {
+        let old_range = serde_json::from_value::<Step>(change.old.clone())
+            .ok()
+            .and_then(|s| s.artifacts.recording);
+        let new_range = serde_json::from_value::<Step>(change.new.clone())
+            .ok()
+            .and_then(|s| s.artifacts.recording);
+        let old_frames = frames_for_range(&trace_dir, old_header.as_ref(), old_range.as_ref());
+        let new_frames = frames_for_range(&trace_dir, new_header.as_ref(), new_range.as_ref());
+        sections.push_str(&format!(
+            "<section><h3><code>{id}</code> {intent}</h3>\
+             <p class=\"meta\">changed: {fields}</p>\
+             <div class=\"pair\">{before}{after}</div></section>\n",
+            id = escape(&change.id),
+            intent = escape(&change.intent),
+            fields = escape(&change.fields.join(", ")),
+            before = side_html("Before (recorded)", &change.old, &old_frames),
+            after = side_html("After (proposed)", &change.new, &new_frames),
+        ));
+    }
+    if report.steps_added > 0 || report.steps_removed > 0 {
+        sections.push_str(&format!(
+            "<p class=\"meta\">steps added: {}, removed: {}</p>",
+            report.steps_added, report.steps_removed
+        ));
+    }
+
+    let html = format!(
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\">\
+         <title>flowproof heal review</title>\n<style>\
+         body{{font:15px/1.5 system-ui,sans-serif;margin:2rem auto;max-width:72rem;\
+         padding:0 1rem;color:#1f2328}}\
+         .meta{{color:#59636e;font-size:.9rem}}\
+         .pair{{display:flex;gap:1rem;align-items:flex-start}}\
+         .side{{flex:1;min-width:0;border:1px solid #d1d9e0;border-radius:.4rem;padding:.6rem}}\
+         .side h4{{margin:.1rem 0 .4rem}}\
+         pre{{overflow-x:auto;background:#f6f8fa;padding:.5rem;border-radius:.3rem;\
+         font-size:.8rem}}\
+         .frames img{{max-width:100%;border:1px solid #d1d9e0;margin-bottom:.4rem}}\
+         section{{margin-bottom:1.5rem}}\
+         </style></head><body>\n<h1>Heal review</h1>\n\
+         <p class=\"meta\">proposed changes to {trace}; apply with \
+         <code>flowproof heal --apply</code>. Generated from the structured \
+         heal report.</p>\n{sections}</body></html>\n",
+        trace = escape(&trace_path.display().to_string()),
+        sections = sections,
+    );
+
+    let out = {
+        let stem = trace_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let base = stem.strip_suffix(".trace.jsonl").unwrap_or(&stem);
+        trace_path.with_file_name(format!("{base}.heal.html"))
+    };
+    std::fs::write(&out, html)?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -174,6 +346,10 @@ steps:
         let report = heal(&spec, &mut calc_mock(), &trace).expect("heal runs");
         assert!(!report.changed, "report: {report:?}");
         assert!(report.proposed_path.is_none());
+        assert!(
+            report.diff_html.is_none(),
+            "no review page for healthy trace"
+        );
         assert!(!proposed_path(&trace).exists(), "no proposal left behind");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -209,6 +385,45 @@ steps:
         assert!(std::fs::read_to_string(proposal)
             .expect("proposal readable")
             .contains("\"plusButton\""));
+
+        // The review page is written next to the trace, rendered from the
+        // structured report: one before/after pair for the changed step.
+        let page = report.diff_html.expect("review page written");
+        assert_eq!(page, dir.join("calc.heal.html"));
+        let html = std::fs::read_to_string(&page).expect("review page readable");
+        assert!(html.contains("Before (recorded)"));
+        assert!(html.contains("After (proposed)"));
+        assert!(
+            html.contains("oldPlusButton"),
+            "shows the recorded selector"
+        );
+        assert!(html.contains("plusButton"), "shows the proposed selector");
+        assert!(html.contains("Press plus"), "labels the step by intent");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn review_page_escapes_untrusted_trace_content() {
+        let dir = std::env::temp_dir().join("flowproof-heal-escape");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
+        let trace = dir.join("calc.trace.jsonl");
+        record(&spec, &mut calc_mock(), &trace).expect("recording succeeds");
+
+        // Selector payloads come from the app under test — hostile markup in
+        // them must not become live HTML in the review page.
+        let contents = std::fs::read_to_string(&trace).expect("trace readable");
+        std::fs::write(
+            &trace,
+            contents.replace("plusButton", "<script>alert(1)</script>"),
+        )
+        .expect("trace rewritten");
+
+        let report = heal(&spec, &mut calc_mock(), &trace).expect("heal runs");
+        let page = report.diff_html.expect("review page written");
+        let html = std::fs::read_to_string(&page).expect("review page readable");
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(html.contains("&lt;script&gt;"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

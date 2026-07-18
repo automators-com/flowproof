@@ -212,6 +212,9 @@ fn cmd_heal(
                 report.steps_added, report.steps_removed
             );
         }
+        if let Some(page) = &report.diff_html {
+            println!("REVIEW: {} (before/after with frames)", page.display());
+        }
         if applied {
             println!("APPLIED: {} updated in place", trace_path.display());
         } else if let Some(proposal) = &report.proposed_path {

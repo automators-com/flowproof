@@ -149,7 +149,7 @@ screenshots when they land):
   is known to be on screen, the affected frames are dropped (not persisted
   unmasked) and the timeline entry records `frames_dropped: "redaction"`.
 
-## 8. Healing diff seam (designed now, built in a follow-up)
+## 8. Healing diff seam (built: `<name>.heal.html`)
 
 Heal already produces a proposed trace whose steps are diffed against the
 original by position with per-field changes. Because *every* authoring
@@ -159,8 +159,9 @@ original keeps its own. A before/after review view is then pure composition:
 for each changed step id, show `old trace bundle[step range]` beside
 `new trace bundle[step range]` — both sides already exist with exact
 step-time mappings. Nothing in this design (content-addressed frames,
-per-trace bundles, step-keyed ranges) needs rework for that; the follow-up
-is UI only.
+per-trace bundles, step-keyed ranges) needed rework for that; heal now
+renders exactly this composition as a self-contained `<name>.heal.html`
+next to the trace (path surfaced as `diff_html` in the heal report).
 
 ## 9. Testing
 

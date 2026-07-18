@@ -160,13 +160,22 @@ the trace on its own:
 ```text
 $ flowproof heal calc.flow.yaml
   [CHANGED] s0002 Press plus (selectors)
+REVIEW: calc.heal.html (before/after with frames)
 PROPOSED: review calc.proposed.jsonl then re-run with --apply
 $ flowproof heal calc.flow.yaml --apply   # explicit opt-in
 ```
 
+Alongside the machine-readable proposal, heal writes `<name>.heal.html` — a
+self-contained review page with a before/after pair per changed step: the
+frames each execution's recording captured for that step (recorded run vs.
+re-authored run) plus the step JSON, rendered entirely from the structured
+report. Open it to see *what the app looked like* when each version of the
+step ran, then decide on `--apply`.
+
 Exit codes: `0` healthy (or applied), `1` changes proposed for review,
-`2` error. `--json` emits the structured report; the Python API returns a
-`HealResult` and the MCP tool mirrors it.
+`2` error. `--json` emits the structured report (including `diff_html`); the
+Python API returns a `HealResult` (with `diff_html: Path | None`) and the
+MCP tool mirrors it.
 
 ## What's deliberately missing (this is the first slice)
 
