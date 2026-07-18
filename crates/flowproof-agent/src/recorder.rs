@@ -25,6 +25,14 @@ pub enum RecordError {
     UnknownApp(String),
     #[error("element for step '{intent}' not found: [{selector}]")]
     ElementNotFound { intent: String, selector: String },
+    #[error(
+        "assertion '{intent}' does not hold while recording: expected '{expected}', display shows '{actual}'"
+    )]
+    AssertMismatch {
+        intent: String,
+        expected: String,
+        actual: String,
+    },
     #[error("driver error: {0}")]
     Driver(#[from] flowproof_driver::DriverError),
     #[error("cannot write trace {path}: {source}")]
@@ -117,6 +125,9 @@ pub fn record<D: AppDriver>(
     driver.launch(target.command, target.window_name, LAUNCH_TIMEOUT)?;
     let (width, height) = driver.screen_size()?;
 
+    // Recording PERFORMS the flow once: buttons are really pressed and the
+    // assert is checked against the live display, so a trace is only ever
+    // written for a flow that actually worked.
     let mut steps = Vec::new();
     for spec_step in &spec.steps {
         for action in resolve_step(spec_step)? {
@@ -126,6 +137,23 @@ pub fn record<D: AppDriver>(
                     intent: spec_step.intent().to_string(),
                     selector: selector.to_string(),
                 });
+            }
+            match &action {
+                ResolvedAction::Press { .. } => driver.invoke(&selector)?,
+                ResolvedAction::AssertDisplay { expected, .. } => {
+                    let actual = driver.read_text(&selector)?;
+                    let holds = matches!(
+                        (flowproof_driver::numeric_value(&actual), expected.parse::<f64>()),
+                        (Some(a), Ok(e)) if a == e
+                    );
+                    if !holds {
+                        return Err(RecordError::AssertMismatch {
+                            intent: spec_step.intent().to_string(),
+                            expected: expected.clone(),
+                            actual,
+                        });
+                    }
+                }
             }
             steps.push(step_for(steps.len() + 1, spec_step.intent(), &action));
         }
@@ -205,7 +233,8 @@ steps:
     #[test]
     fn records_the_calc_flow_against_a_mock() {
         let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
-        let mut driver = MockAppDriver::new(&CALC_ELEMENTS);
+        let mut driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
         let dir = std::env::temp_dir().join("flowproof-recorder-test");
         let out = dir.join("calc.trace.jsonl");
         let summary = record(&spec, &mut driver, &out).expect("recording succeeds");
@@ -214,6 +243,11 @@ steps:
         assert_eq!(
             driver.launched,
             Some(("calc.exe".to_string(), "Calculator".to_string()))
+        );
+        // Recording really performed the flow.
+        assert_eq!(
+            driver.invoked,
+            vec!["num5Button", "plusButton", "num3Button", "equalButton"]
         );
 
         let contents = std::fs::read_to_string(&out).expect("trace written");
@@ -236,11 +270,25 @@ steps:
     fn missing_element_fails_recording() {
         let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
         // No plusButton in the fake UI.
-        let mut driver =
-            MockAppDriver::new(&["num5Button", "num3Button", "equalButton", "CalculatorResults"]);
+        let mut driver = MockAppDriver::new(&[
+            "num5Button",
+            "num3Button",
+            "equalButton",
+            "CalculatorResults",
+        ]);
         let out = std::env::temp_dir().join("flowproof-recorder-missing.trace.jsonl");
         let err = record(&spec, &mut driver, &out).expect_err("must fail");
         assert!(matches!(err, RecordError::ElementNotFound { .. }));
+    }
+
+    #[test]
+    fn failing_assert_aborts_recording() {
+        let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
+        let mut driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 9");
+        let out = std::env::temp_dir().join("flowproof-recorder-mismatch.trace.jsonl");
+        let err = record(&spec, &mut driver, &out).expect_err("must fail");
+        assert!(matches!(err, RecordError::AssertMismatch { .. }));
     }
 
     #[test]

@@ -133,8 +133,7 @@ mod tests {
 
     #[test]
     fn type_expands_per_digit() {
-        let actions =
-            resolve_step(&SpecStep::Plain("Type 53".into())).expect("digits resolve");
+        let actions = resolve_step(&SpecStep::Plain("Type 53".into())).expect("digits resolve");
         assert_eq!(
             actions,
             vec![

@@ -26,7 +26,8 @@ const CALC_ELEMENTS: [&str; 5] = [
 
 fn record_calc_trace(dir: &std::path::Path) -> std::path::PathBuf {
     let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
-    let mut driver = MockAppDriver::new(&CALC_ELEMENTS);
+    let mut driver =
+        MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
     let out = dir.join("calc.trace.jsonl");
     record(&spec, &mut driver, &out).expect("recording succeeds");
     out
@@ -44,10 +45,7 @@ fn replay_passes_when_display_matches() {
 
     assert!(report.passed, "report: {report:?}");
     assert_eq!(report.steps.len(), 5);
-    assert!(report
-        .steps
-        .iter()
-        .all(|s| s.status == StepStatus::Passed));
+    assert!(report.steps.iter().all(|s| s.status == StepStatus::Passed));
     // The four button presses were actually invoked, in order.
     assert_eq!(
         driver.invoked,
@@ -77,7 +75,10 @@ fn replay_fails_when_display_differs() {
     let last = report.steps.last().expect("has steps");
     assert_eq!(last.status, StepStatus::Failed);
     assert!(
-        last.detail.as_deref().unwrap_or("").contains("expected display value '8'"),
+        last.detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("expected display value '8'"),
         "detail: {:?}",
         last.detail
     );

@@ -8,7 +8,7 @@ pub mod report;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use flowproof_driver::{resolve_app, AppDriver, UiaSelector};
+use flowproof_driver::{numeric_value, resolve_app, AppDriver, UiaSelector};
 use flowproof_trace::format::{Action, Assertion, Condition, Header, Selector, Step};
 use flowproof_trace::{SelectorTier, TraceLine};
 
@@ -117,9 +117,7 @@ fn wait_for_condition<D: AppDriver>(
                     }
                 }
                 if Instant::now() >= deadline {
-                    return Ok(Err(format!(
-                        "element did not appear within {timeout_ms}ms"
-                    )));
+                    return Ok(Err(format!("element did not appear within {timeout_ms}ms")));
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
@@ -128,13 +126,6 @@ fn wait_for_condition<D: AppDriver>(
         // slice; treat them as satisfied rather than silently failing runs.
         _ => Ok(Ok(())),
     }
-}
-
-/// Extract the trailing numeric value from display text like `Display is 8`.
-fn numeric_value(text: &str) -> Option<f64> {
-    text.split_whitespace()
-        .rev()
-        .find_map(|token| token.replace(',', "").parse::<f64>().ok())
 }
 
 fn check_assertion<D: AppDriver>(
@@ -181,7 +172,10 @@ fn check_assertion<D: AppDriver>(
     }
 }
 
-fn execute_step<D: AppDriver>(driver: &mut D, step: &Step) -> Result<Result<(), String>, ReplayError> {
+fn execute_step<D: AppDriver>(
+    driver: &mut D,
+    step: &Step,
+) -> Result<Result<(), String>, ReplayError> {
     for condition in &step.sync.pre {
         if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
             return Ok(Err(format!("precondition failed: {reason}")));
@@ -215,8 +209,8 @@ fn execute_step<D: AppDriver>(driver: &mut D, step: &Step) -> Result<Result<(), 
 /// walks recorded selectors only, stops at the first failing step.
 pub fn run_trace<D: AppDriver>(path: &Path, driver: &mut D) -> Result<RunReport, ReplayError> {
     let (header, steps) = load_trace(path)?;
-    let target =
-        resolve_app(&header.app.name).ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?;
+    let target = resolve_app(&header.app.name)
+        .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?;
     let started = Instant::now();
     driver.launch(target.command, target.window_name, LAUNCH_TIMEOUT)?;
 
@@ -251,17 +245,4 @@ pub fn run_trace<D: AppDriver>(path: &Path, driver: &mut D) -> Result<RunReport,
         steps: results,
         duration_ms: started.elapsed().as_millis() as u64,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn numeric_value_parses_display_text() {
-        assert_eq!(numeric_value("Display is 8"), Some(8.0));
-        assert_eq!(numeric_value("Display is 1,234.5"), Some(1234.5));
-        assert_eq!(numeric_value("8"), Some(8.0));
-        assert_eq!(numeric_value("Display is"), None);
-    }
 }

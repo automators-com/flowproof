@@ -81,6 +81,15 @@ pub struct AppTarget {
     pub window_name: &'static str,
 }
 
+/// Extract the trailing numeric value from display text like
+/// `Display is 8` or `1,234.5`. Shared by record and replay so both phases
+/// judge display values identically.
+pub fn numeric_value(text: &str) -> Option<f64> {
+    text.split_whitespace()
+        .rev()
+        .find_map(|token| token.replace(',', "").parse::<f64>().ok())
+}
+
 /// Resolve a spec `app:` id to a launch target. Shared by record and replay
 /// so a trace only needs to carry the app id.
 pub fn resolve_app(app_id: &str) -> Option<AppTarget> {
@@ -332,6 +341,14 @@ mod tests {
         assert_eq!(sel.to_string(), "automation_id=num5Button,name=Five");
         assert!(!sel.is_empty());
         assert!(UiaSelector::default().is_empty());
+    }
+
+    #[test]
+    fn numeric_value_parses_display_text() {
+        assert_eq!(numeric_value("Display is 8"), Some(8.0));
+        assert_eq!(numeric_value("Display is 1,234.5"), Some(1234.5));
+        assert_eq!(numeric_value("8"), Some(8.0));
+        assert_eq!(numeric_value("Display is"), None);
     }
 
     #[cfg(not(windows))]

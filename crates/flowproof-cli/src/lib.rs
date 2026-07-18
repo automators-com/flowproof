@@ -84,7 +84,8 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>) -> Result<u8, String> {
         ));
     }
     let mut driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
-    let report = flowproof_replay::run_trace(&trace_path, &mut driver).map_err(|e| e.to_string())?;
+    let report =
+        flowproof_replay::run_trace(&trace_path, &mut driver).map_err(|e| e.to_string())?;
 
     for step in &report.steps {
         let (mark, suffix) = match step.status {
@@ -106,10 +107,20 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>) -> Result<u8, String> {
         .unwrap_or_else(|| PathBuf::from("."));
     let result_path = report.write(&artifacts_base).map_err(|e| e.to_string())?;
     if report.passed {
-        println!("PASS: {} ({} ms) -> {}", report.name, report.duration_ms, result_path.display());
+        println!(
+            "PASS: {} ({} ms) -> {}",
+            report.name,
+            report.duration_ms,
+            result_path.display()
+        );
         Ok(EXIT_PASS)
     } else {
-        println!("FAIL: {} ({} ms) -> {}", report.name, report.duration_ms, result_path.display());
+        println!(
+            "FAIL: {} ({} ms) -> {}",
+            report.name,
+            report.duration_ms,
+            result_path.display()
+        );
         Ok(EXIT_FAIL)
     }
 }
@@ -128,7 +139,11 @@ where
         Ok(cli) => cli,
         Err(e) => {
             // Clap handles --help/--version as "errors" with exit code 0.
-            let code = if e.use_stderr() { EXIT_ERROR } else { EXIT_PASS };
+            let code = if e.use_stderr() {
+                EXIT_ERROR
+            } else {
+                EXIT_PASS
+            };
             let _ = e.print();
             return code;
         }

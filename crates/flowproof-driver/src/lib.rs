@@ -9,7 +9,7 @@ pub mod app;
 mod backend;
 pub mod mock;
 
-pub use app::{resolve_app, AppDriver, AppTarget, UiaAppDriver, UiaSelector};
+pub use app::{numeric_value, resolve_app, AppDriver, AppTarget, UiaAppDriver, UiaSelector};
 pub use backend::PlatformBackend;
 
 /// A captured frame of the target screen or window.

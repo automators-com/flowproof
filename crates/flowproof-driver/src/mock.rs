@@ -87,11 +87,8 @@ mod tests {
 
     #[test]
     fn mock_scripts_a_ui() {
-        let mut driver =
-            MockAppDriver::new(&["num5Button", "CalculatorResults"]).with_text(
-                "CalculatorResults",
-                "Display is 8",
-            );
+        let mut driver = MockAppDriver::new(&["num5Button", "CalculatorResults"])
+            .with_text("CalculatorResults", "Display is 8");
         driver
             .launch("calc.exe", "Calculator", Duration::from_secs(1))
             .expect("mock launch");

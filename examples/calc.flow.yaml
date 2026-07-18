@@ -1,0 +1,8 @@
+name: Add two numbers
+app: calc
+steps:
+  - Type 5
+  - Press plus
+  - Type 3
+  - Press equals
+  - assert: display shows 8
