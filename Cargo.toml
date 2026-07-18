@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/flowproof-driver",
+    "crates/flowproof-trace",
+    "crates/flowproof-replay",
+    "crates/flowproof-agent",
+    "crates/flowproof-adapters",
+    "crates/flowproof-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/automators-com/flowproof"
+authors = ["Automators <hello@automators.com>"]
+rust-version = "1.80"
+
+[workspace.dependencies]
+flowproof-driver = { path = "crates/flowproof-driver" }
+flowproof-trace = { path = "crates/flowproof-trace" }
+flowproof-replay = { path = "crates/flowproof-replay" }
+flowproof-agent = { path = "crates/flowproof-agent" }
+flowproof-adapters = { path = "crates/flowproof-adapters" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
