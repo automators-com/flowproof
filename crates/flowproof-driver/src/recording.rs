@@ -43,6 +43,11 @@ pub struct Recording {
     pub dir: String,
     pub frames: Vec<FrameRef>,
     pub steps: Vec<StepTiming>,
+    /// Ready-to-play rendering of the whole run (file inside `dir`):
+    /// the keyframes as an animated GIF, paced proportionally to the real
+    /// execution. Absent when GIF assembly failed — never fails the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gif: Option<String>,
 }
 
 /// Captures, redacts, and persists frames for one execution.
@@ -172,13 +177,62 @@ impl RunRecorder {
             std::fs::remove_dir_all(&self.dir).ok();
             return None;
         }
+        let gif = assemble_gif(&self.dir, &self.frames);
         Some(Recording {
             format: FORMAT_FILMSTRIP_V1.to_string(),
             dir: self.rel_dir,
             frames: self.frames,
             steps: self.steps,
+            gif,
         })
     }
+}
+
+/// Width of the whole-run GIF; frames are scaled down to keep it small.
+const GIF_WIDTH: u32 = 880;
+/// Per-frame display time is the real gap to the next frame, clamped so
+/// the playback stays watchable (waits don't drag, actions don't blink).
+const GIF_MIN_MS: u64 = 350;
+const GIF_MAX_MS: u64 = 1400;
+/// The final frame lingers so the end state can actually be read.
+const GIF_LAST_MS: u64 = 2000;
+
+/// Assemble the persisted (already-redacted) keyframes into one animated
+/// GIF — the "watch the whole run" review surface. Returns the file name
+/// inside the bundle dir, or None on any failure: the GIF is a rendering,
+/// never a reason to fail an execution.
+fn assemble_gif(dir: &Path, frames: &[FrameRef]) -> Option<String> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    use image::{imageops, Delay, Frame};
+
+    let name = "recording.gif";
+    let file = std::fs::File::create(dir.join(name)).ok()?;
+    let mut encoder = GifEncoder::new(std::io::BufWriter::new(file));
+    encoder.set_repeat(Repeat::Infinite).ok()?;
+    for (i, frame_ref) in frames.iter().enumerate() {
+        let png = std::fs::read(dir.join(&frame_ref.file)).ok()?;
+        let img = image::load_from_memory(&png).ok()?.to_rgba8();
+        let img = if img.width() > GIF_WIDTH {
+            let height = (img.height() as u64 * GIF_WIDTH as u64 / img.width() as u64) as u32;
+            imageops::resize(
+                &img,
+                GIF_WIDTH,
+                height.max(1),
+                imageops::FilterType::Triangle,
+            )
+        } else {
+            img
+        };
+        let shown_ms = match frames.get(i + 1) {
+            Some(next) => (next.offset_ms - frame_ref.offset_ms).clamp(GIF_MIN_MS, GIF_MAX_MS),
+            None => GIF_LAST_MS,
+        };
+        let delay = Delay::from_saturating_duration(std::time::Duration::from_millis(shown_ms));
+        encoder
+            .encode_frame(Frame::from_parts(img, 0, 0, delay))
+            .ok()?;
+    }
+    Some(name.to_string())
 }
 
 fn short_hash(bytes: &[u8]) -> String {
@@ -293,6 +347,37 @@ mod tests {
         // crucially, nothing unmasked reached disk.
         assert!(recorder.finish().is_none());
         assert!(!base.join("recording").exists());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn finish_writes_a_whole_run_gif() {
+        let base = std::env::temp_dir().join("flowproof-recording-gif");
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::create_dir_all(&base).expect("temp dir");
+        let mut driver = mock_with_frame();
+        let mut recorder = RunRecorder::new(&base, vec![]).expect("recorder");
+        recorder.step_started(&mut driver, "s0001");
+        // Change the screen mid-run so the GIF has distinct frames.
+        driver.frame = Some(image::RgbaImage::from_pixel(
+            20,
+            20,
+            image::Rgba([10, 10, 200, 255]),
+        ));
+        recorder.step_finished(&mut driver);
+        let recording = recorder.finish().expect("recording produced");
+
+        let gif = recording.gif.as_deref().expect("gif rendered");
+        let path = base.join("recording").join(gif);
+        let bytes = std::fs::read(&path).expect("gif readable");
+        assert!(bytes.starts_with(b"GIF89a"), "valid GIF header");
+        // Decodes as an animation with one frame per persisted keyframe.
+        let decoder =
+            image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&bytes)).expect("gif decodes");
+        let frames = image::AnimationDecoder::into_frames(decoder)
+            .collect_frames()
+            .expect("frames decode");
+        assert_eq!(frames.len(), recording.frames.len());
         std::fs::remove_dir_all(&base).ok();
     }
 

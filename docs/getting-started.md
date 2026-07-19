@@ -73,7 +73,8 @@ self-contained bundle under `.flowproof/runs/<timestamp>/`: `result.json`
 what happened), `junit.xml` (one testcase per step, for Jenkins / GitLab /
 Azure DevOps / any CI that ingests JUnit — point your test-report collector
 at `.flowproof/runs/*/junit.xml`), and `recording/` with the captured
-keyframes. Sensitive
+keyframes plus `recording.gif` — the whole run as one animation, paced
+like the real execution, embedded at the top of the report. Sensitive
 regions are masked before frames are written: declare `redact:` rules in
 the spec, and password fields are always masked automatically
 (see [docs/recording.md](recording.md)).
