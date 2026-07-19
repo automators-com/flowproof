@@ -159,6 +159,110 @@ fn web_round_trip_via_mock_uses_css_selectors() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The app renamed an automation id since recording: replay must degrade
+/// down the selector ladder (structural rung: control type + accessible
+/// name), still pass, and report the drift instead of hiding it.
+#[test]
+fn renamed_automation_id_degrades_to_structural_rung_and_reports_it() {
+    let dir = std::env::temp_dir().join("flowproof-replay-degraded");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_calc_trace(&dir);
+
+    // The recorded primary selector is dead; the button still exists under
+    // its accessible name (the mock matches names like UIA find-by-name).
+    let contents = std::fs::read_to_string(&trace).expect("trace readable");
+    std::fs::write(&trace, contents.replace("plusButton", "renamedPlusButton"))
+        .expect("trace rewritten");
+    let mut driver = MockAppDriver::new(&[
+        "num5Button",
+        "num3Button",
+        "Plus",
+        "equalButton",
+        "CalculatorResults",
+    ])
+    .with_text("CalculatorResults", "Display is 8");
+
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "fallback must keep the run green: {report:?}"
+    );
+    assert!(report.degraded, "drift must be reported");
+
+    let plus = report
+        .steps
+        .iter()
+        .find(|s| s.intent == "Press plus")
+        .expect("plus step present");
+    assert!(plus.degraded);
+    assert_eq!(plus.selector_tier.as_deref(), Some("structural"));
+    // The button was really pressed — via its name, not the dead id.
+    assert!(driver.invoked.contains(&"Plus".to_string()));
+
+    // Undrifted steps stay on the primary rung and unflagged.
+    let five = report
+        .steps
+        .iter()
+        .find(|s| s.intent == "Type 5")
+        .expect("type step present");
+    assert!(!five.degraded);
+    assert_eq!(five.selector_tier.as_deref(), Some("native_id"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// With the structural rung gone too, the text-anchor rung is the last
+/// deterministic resort — and is reported as such.
+#[test]
+fn text_anchor_rung_is_the_last_deterministic_resort() {
+    let dir = std::env::temp_dir().join("flowproof-replay-text-anchor");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_calc_trace(&dir);
+
+    // Strip structural rungs from the trace and kill the primary id, so
+    // only the text-anchor rung can match.
+    let contents = std::fs::read_to_string(&trace).expect("trace readable");
+    let rewritten: Vec<String> = contents
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).expect("trace line");
+            if let Some(selectors) = value.get_mut("selectors").and_then(|s| s.as_array_mut()) {
+                selectors.retain(|s| s["tier"] != "structural");
+            }
+            value.to_string()
+        })
+        .collect();
+    std::fs::write(
+        &trace,
+        rewritten
+            .join("\n")
+            .replace("plusButton", "renamedPlusButton"),
+    )
+    .expect("trace rewritten");
+
+    let mut driver = MockAppDriver::new(&[
+        "num5Button",
+        "num3Button",
+        "Plus",
+        "equalButton",
+        "CalculatorResults",
+    ])
+    .with_text("CalculatorResults", "Display is 8");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(report.passed, "report: {report:?}");
+    let plus = report
+        .steps
+        .iter()
+        .find(|s| s.intent == "Press plus")
+        .expect("plus step present");
+    assert!(plus.degraded);
+    assert_eq!(plus.selector_tier.as_deref(), Some("text_anchor"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn replay_skips_remaining_steps_after_a_missing_element() {
     let dir = std::env::temp_dir().join("flowproof-replay-skip");

@@ -25,6 +25,15 @@ pub struct StepResult {
     #[serde(default)]
     pub started_ms: u64,
     pub duration_ms: u64,
+    /// Which selector-ladder tier resolved this step's target
+    /// (`native_id`, `structural`, `text_anchor`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector_tier: Option<String>,
+    /// True when the target matched on a fallback rung instead of the
+    /// recorded primary selector — the step still ran, but the app has
+    /// drifted and the trace should be healed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub degraded: bool,
 }
 
 impl StepResult {
@@ -36,6 +45,8 @@ impl StepResult {
             detail: None,
             started_ms,
             duration_ms,
+            selector_tier: None,
+            degraded: false,
         }
     }
 
@@ -47,6 +58,8 @@ impl StepResult {
             detail: Some(reason),
             started_ms,
             duration_ms,
+            selector_tier: None,
+            degraded: false,
         }
     }
 
@@ -58,6 +71,8 @@ impl StepResult {
             detail: Some("previous step failed".into()),
             started_ms: 0,
             duration_ms: 0,
+            selector_tier: None,
+            degraded: false,
         }
     }
 }
@@ -67,6 +82,10 @@ pub struct RunReport {
     pub name: String,
     pub trace_id: String,
     pub passed: bool,
+    /// True when any step resolved via a fallback selector rung: the run
+    /// passed, but the app drifted from the trace — schedule a heal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub degraded: bool,
     pub steps: Vec<StepResult>,
     pub duration_ms: u64,
     /// The run's recording bundle: format, frame refs, and per-step time
@@ -153,13 +172,21 @@ impl RunReport {
                 StepStatus::Failed => ("FAIL", "#cf222e"),
                 StepStatus::Skipped => ("SKIP", "#6e7781"),
             };
+            let mut detail = step.detail.as_deref().map(escape).unwrap_or_default();
+            if step.degraded {
+                let tier = step.selector_tier.as_deref().unwrap_or("fallback");
+                detail.push_str(&format!(
+                    "<span class=\"meta\">matched via {} fallback — heal the trace</span>",
+                    escape(tier)
+                ));
+            }
             rows.push_str(&format!(
                 "<tr><td><code>{}</code></td>\
                  <td><span class=\"badge\" style=\"background:{badge_color}\">{badge}</span></td>\
                  <td>{}</td><td>{}</td><td class=\"num\">{} ms</td></tr>\n",
                 escape(&step.id),
                 escape(&step.intent),
-                step.detail.as_deref().map(escape).unwrap_or_default(),
+                detail,
                 step.duration_ms,
             ));
         }
@@ -181,7 +208,7 @@ impl RunReport {
              details{{margin:.5rem 0}}summary{{cursor:pointer}}\
              </style></head><body>\n\
              <h1>{name}</h1>\n\
-             <p><span class=\"verdict\">{verdict}</span></p>\n\
+             <p><span class=\"verdict\">{verdict}</span>{degraded}</p>\n\
              <p class=\"meta\">trace {trace_id} &middot; {duration} ms &middot; \
              generated from result.json</p>\n\
              <table><thead><tr><th>Step</th><th>Status</th><th>Intent</th>\
@@ -190,6 +217,11 @@ impl RunReport {
             name = escape(&self.name),
             trace_id = escape(&self.trace_id),
             duration = self.duration_ms,
+            degraded = if self.degraded {
+                " <span class=\"verdict\" style=\"background:#9a6700\">DEGRADED</span>"
+            } else {
+                ""
+            },
             viewer = self.viewer_html(),
         )
     }
@@ -286,6 +318,7 @@ mod tests {
             name: "Add <two> numbers".into(),
             trace_id: "t-1".into(),
             passed: false,
+            degraded: false,
             duration_ms: 42,
             steps: vec![
                 StepResult {
@@ -295,6 +328,8 @@ mod tests {
                     detail: None,
                     started_ms: 0,
                     duration_ms: 10,
+                    selector_tier: Some("native_id".into()),
+                    degraded: false,
                 },
                 StepResult {
                     id: "s0002".into(),
@@ -303,6 +338,8 @@ mod tests {
                     detail: Some("expected element text '8', got '<blank>'".into()),
                     started_ms: 10,
                     duration_ms: 5,
+                    selector_tier: None,
+                    degraded: false,
                 },
             ],
             recording: None,
@@ -314,6 +351,54 @@ mod tests {
         assert!(html.contains(">FAIL<"));
         assert!(!html.contains("<two>"), "raw input must never reach HTML");
         assert!(!html.contains("http"), "report must be self-contained");
+        assert!(
+            !html.contains("DEGRADED"),
+            "healthy run shows no drift chip"
+        );
+    }
+
+    #[test]
+    fn degraded_steps_are_flagged_in_html_and_json() {
+        let report = RunReport {
+            name: "Write a note".into(),
+            trace_id: "t-2".into(),
+            passed: true,
+            degraded: true,
+            duration_ms: 20,
+            steps: vec![StepResult {
+                id: "s0001".into(),
+                intent: "Type hello".into(),
+                status: StepStatus::Passed,
+                detail: None,
+                started_ms: 0,
+                duration_ms: 20,
+                selector_tier: Some("structural".into()),
+                degraded: true,
+            }],
+            recording: None,
+        };
+        let html = report.to_html();
+        assert!(html.contains("DEGRADED"));
+        assert!(html.contains("matched via structural fallback"));
+
+        let json = serde_json::to_value(&report).expect("serializes");
+        assert_eq!(json["degraded"], serde_json::Value::Bool(true));
+        assert_eq!(json["steps"][0]["selector_tier"], "structural");
+        assert_eq!(json["steps"][0]["degraded"], serde_json::Value::Bool(true));
+
+        // The fields stay off the wire entirely for healthy runs.
+        let healthy = RunReport {
+            degraded: false,
+            steps: vec![StepResult {
+                selector_tier: None,
+                degraded: false,
+                ..report.steps[0].clone()
+            }],
+            ..report
+        };
+        let json = serde_json::to_value(&healthy).expect("serializes");
+        assert!(json.get("degraded").is_none());
+        assert!(json["steps"][0].get("degraded").is_none());
     }
 
     #[test]
@@ -329,6 +414,7 @@ mod tests {
             name: "x".into(),
             trace_id: "t".into(),
             passed: true,
+            degraded: false,
             duration_ms: 1,
             steps: vec![],
             recording: Some(recording),
@@ -348,6 +434,7 @@ mod tests {
             name: "x".into(),
             trace_id: "t".into(),
             passed: true,
+            degraded: false,
             duration_ms: 1,
             steps: vec![],
             recording: None,
@@ -366,6 +453,7 @@ mod tests {
             name: "Add <two> & \"quote\"".into(),
             trace_id: "t-1".into(),
             passed: false,
+            degraded: false,
             duration_ms: 1234,
             steps: vec![
                 StepResult {
@@ -375,6 +463,8 @@ mod tests {
                     detail: None,
                     started_ms: 0,
                     duration_ms: 30,
+                    selector_tier: None,
+                    degraded: false,
                 },
                 StepResult {
                     id: "s0002".into(),
@@ -383,6 +473,8 @@ mod tests {
                     detail: Some("expected '8', got '<blank>'".into()),
                     started_ms: 30,
                     duration_ms: 25,
+                    selector_tier: None,
+                    degraded: false,
                 },
                 StepResult {
                     id: "s0003".into(),
@@ -391,6 +483,8 @@ mod tests {
                     detail: Some("previous step failed".into()),
                     started_ms: 0,
                     duration_ms: 0,
+                    selector_tier: None,
+                    degraded: false,
                 },
             ],
             recording: None,
