@@ -1,0 +1,49 @@
+name: site tests (automators.ai)
+
+# Dogfood suite: flowproof driving the real automators.ai site. Runs on
+# pushes to its own branch (runners have open internet + Chrome; the
+# authoring sandbox does not).
+on:
+  push:
+    branches: ['claude/flowproof-site-tests']
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  recon:
+    name: recon (page text + ids)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch and summarize pages
+        run: |
+          set -u
+          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+          fetch() { curl -sSL --max-time 30 -A "$UA" "$1"; }
+          summarize() {
+            local url="$1" html
+            echo "===================================================="
+            echo "PAGE $url"
+            html=$(fetch "$url") || { echo "FETCH FAILED"; return; }
+            echo "-- status/title:"
+            printf '%s' "$html" | grep -o '<title[^>]*>[^<]*' | head -2
+            echo "-- ids:"
+            printf '%s' "$html" | grep -o 'id="[^"]*"' | sort -u | head -60
+            echo "-- forms/inputs/buttons:"
+            printf '%s' "$html" | grep -o '<\(form\|input\|button\|textarea\|select\)[^>]*>' | head -40
+            echo "-- links (same host):"
+            printf '%s' "$html" | grep -o 'href="[^"]*"' | sort -u | head -80
+            echo "-- visible text (tags stripped):"
+            printf '%s' "$html" | sed 's/<script[^>]*>.*<\/script>//g' \
+              | sed 's/<style[^>]*>.*<\/style>//g' \
+              | sed 's/<[^>]*>/ /g' | tr -s ' \n' ' \n' | grep -v '^\s*$' | head -120
+          }
+          summarize "https://automators.ai"
+          echo "==== sitemap ===="
+          fetch "https://automators.ai/sitemap.xml" | head -100 || true
+          # Same-host subpages discovered from the homepage nav:
+          for path in $(fetch "https://automators.ai" | grep -o 'href="/[^"]*"' \
+              | sed 's/href="//;s/"//' | grep -v '^/#' | grep -v '\.\(css\|js\|png\|svg\|ico\|woff2\?\)' \
+              | sort -u | head -8); do
+            summarize "https://automators.ai${path}"
+          done
