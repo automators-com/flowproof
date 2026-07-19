@@ -59,9 +59,12 @@ enum Command {
         #[arg(long, value_enum, default_value_t)]
         author: AuthorArg,
     },
-    /// Deterministically replay a recorded flow (zero LLM calls).
+    /// Deterministically replay a recorded flow (zero LLM calls). Point it
+    /// at a DIRECTORY to run every *.flow.yaml under it as a suite with one
+    /// merged junit.xml.
     Run {
-        /// Path to the YAML flow spec the trace was recorded from.
+        /// Path to the YAML flow spec the trace was recorded from, or a
+        /// directory of specs.
         spec: PathBuf,
         /// Trace file (default: the trace `record` wrote for this spec).
         #[arg(short, long)]
@@ -147,7 +150,122 @@ fn cmd_record(
     Ok(EXIT_PASS)
 }
 
+/// Every `*.flow.yaml` under `dir`, recursively, in stable (sorted) order.
+/// `.flowproof` artifact directories are skipped.
+fn discover_specs(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == ".flowproof") {
+                continue;
+            }
+            discover_specs(&path, found)?;
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".flow.yaml"))
+        {
+            found.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Run every recorded flow under `dir` as one suite: per-flow bundles as
+/// usual, plus a merged `junit.xml` for CI, and a non-zero exit if ANY flow
+/// fails. A failing flow does not stop the suite.
+pub fn run_suite(dir: &Path, json: bool) -> Result<u8, String> {
+    let mut specs = Vec::new();
+    discover_specs(dir, &mut specs)?;
+    if specs.is_empty() {
+        return Err(format!("no *.flow.yaml specs under {}", dir.display()));
+    }
+
+    let mut reports: Vec<flowproof_replay::RunReport> = Vec::new();
+    let mut flows = Vec::new();
+    for spec_path in &specs {
+        let trace_path = default_trace_path(spec_path);
+        if !trace_path.exists() {
+            return Err(format!(
+                "trace {} not found — run `flowproof record {}` first",
+                trace_path.display(),
+                spec_path.display()
+            ));
+        }
+        let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
+        // A fresh driver per flow: full isolation, like Playwright contexts.
+        let mut driver = driver_for(&header.app.name)?;
+        let (report, run_dir) =
+            flowproof_replay::run_trace(&trace_path, &mut driver).map_err(|e| e.to_string())?;
+        let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;
+        if !json {
+            println!(
+                "[{}] {} ({} ms){}",
+                if report.passed { "PASS" } else { "FAIL" },
+                report.name,
+                report.duration_ms,
+                if report.degraded { " DEGRADED" } else { "" },
+            );
+            if !report.passed {
+                for step in report.steps.iter().filter(|s| s.detail.is_some()) {
+                    println!(
+                        "    [FAIL] {} {} — {}",
+                        step.id,
+                        step.intent,
+                        step.detail.as_deref().unwrap_or("")
+                    );
+                }
+            }
+        }
+        flows.push(serde_json::json!({
+            "spec": spec_path,
+            "report": report,
+            "report_path": result_path,
+        }));
+        reports.push(report);
+    }
+
+    let junit_path = dir.join(".flowproof").join("suite-junit.xml");
+    std::fs::create_dir_all(junit_path.parent().expect("suite dir has a parent"))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &junit_path,
+        flowproof_replay::RunReport::suite_junit_xml(reports.iter()),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let passed = reports.iter().filter(|r| r.passed).count();
+    let all_passed = passed == reports.len();
+    if json {
+        let payload = serde_json::json!({
+            "flows": flows,
+            "passed": all_passed,
+            "junit_path": junit_path,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "{}: {passed}/{} flows passed -> {}",
+            if all_passed { "PASS" } else { "FAIL" },
+            reports.len(),
+            junit_path.display()
+        );
+        if reports.iter().any(|r| r.degraded) {
+            println!("DEGRADED: fallback selectors were needed in some flows — heal them");
+        }
+    }
+    Ok(if all_passed { EXIT_PASS } else { EXIT_FAIL })
+}
+
 fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, String> {
+    if spec_path.is_dir() {
+        return run_suite(spec_path, json);
+    }
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if !trace_path.exists() {
         return Err(format!(

@@ -79,6 +79,18 @@ regions are masked before frames are written: declare `redact:` rules in
 the spec, and password fields are always masked automatically
 (see [docs/recording.md](recording.md)).
 
+### Running a whole suite
+
+Point `run` at a **directory** and every `*.flow.yaml` under it (recursive,
+sorted, `.flowproof` artifact dirs skipped) replays as one suite — a failing
+flow doesn't stop the rest, each flow keeps its own run bundle, and a merged
+`<dir>/.flowproof/suite-junit.xml` (one `<testsuite>` per flow) is what CI
+ingests. Exit code is non-zero if ANY flow failed:
+
+```bash
+flowproof run specs/
+```
+
 Programmatic callers invoking the CLI should pass `--json`: the full
 structured report prints to stdout instead of the human-readable lines —
 never parse the prose output.

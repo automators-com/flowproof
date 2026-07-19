@@ -114,6 +114,39 @@ impl RunReport {
     /// so flowproof slots into an existing test stack without a plugin.
     /// One `<testsuite>` per run, one `<testcase>` per step.
     pub fn to_junit_xml(&self) -> String {
+        Self::suite_junit_xml(std::iter::once(self))
+    }
+
+    /// Merge several runs into ONE JUnit document — the artifact a suite
+    /// run (`flowproof run <dir>`) hands to CI: one `<testsuite>` per flow.
+    pub fn suite_junit_xml<'a>(reports: impl IntoIterator<Item = &'a RunReport>) -> String {
+        let mut suites = String::new();
+        let (mut tests, mut failures, mut skipped, mut time) = (0usize, 0usize, 0usize, 0f64);
+        for report in reports {
+            tests += report.steps.len();
+            failures += report
+                .steps
+                .iter()
+                .filter(|s| s.status == StepStatus::Failed)
+                .count();
+            skipped += report
+                .steps
+                .iter()
+                .filter(|s| s.status == StepStatus::Skipped)
+                .count();
+            time += report.duration_ms as f64 / 1000.0;
+            suites.push_str(&report.junit_testsuite());
+        }
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <testsuites name=\"flowproof\" tests=\"{tests}\" failures=\"{failures}\" \
+             skipped=\"{skipped}\" time=\"{time:.3}\">\n\
+             {suites}</testsuites>\n",
+        )
+    }
+
+    /// One `<testsuite>` fragment for this run.
+    fn junit_testsuite(&self) -> String {
         let failures = self
             .steps
             .iter()
@@ -146,12 +179,9 @@ impl RunReport {
             }
         }
         format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-             <testsuites name=\"flowproof\" tests=\"{tests}\" failures=\"{failures}\" \
+            "\x20\x20<testsuite name=\"{name}\" tests=\"{tests}\" failures=\"{failures}\" \
              skipped=\"{skipped}\" time=\"{time:.3}\">\n\
-             \x20\x20<testsuite name=\"{name}\" tests=\"{tests}\" failures=\"{failures}\" \
-             skipped=\"{skipped}\" time=\"{time:.3}\">\n\
-             {cases}\x20\x20</testsuite>\n</testsuites>\n",
+             {cases}\x20\x20</testsuite>\n",
             name = xml_escape(&self.name),
             tests = self.steps.len(),
         )
@@ -504,6 +534,22 @@ mod tests {
         ));
         assert!(xml.contains("<skipped/>"));
         assert!(!xml.contains("<blank>"), "raw input must never reach XML");
+    }
+
+    #[test]
+    fn suite_junit_merges_runs_and_sums_counts() {
+        let mut second = junit_fixture();
+        second.name = "Second flow".into();
+        second.passed = true;
+        second.steps.truncate(1);
+        let xml = RunReport::suite_junit_xml([&junit_fixture(), &second]);
+        assert!(
+            xml.contains("<testsuites name=\"flowproof\" tests=\"4\" failures=\"1\" skipped=\"1\"")
+        );
+        assert_eq!(xml.matches("<testsuite name=").count(), 2);
+        assert!(xml.contains("<testsuite name=\"Second flow\""));
+        // Still exactly one document root.
+        assert_eq!(xml.matches("<testsuites ").count(), 1);
     }
 
     #[test]
