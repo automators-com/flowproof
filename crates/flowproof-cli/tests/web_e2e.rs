@@ -321,6 +321,94 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The assertion vocabulary against a real browser: field values, counts,
+/// an element-scoped assert on a toast that only appears AFTER the assert
+/// starts (resolution is part of the poll), a negative assert that waits
+/// for a deletion to land, and visibility checks.
+#[test]
+fn assertion_forms_wait_and_verify_on_real_pages() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web assertions E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-assert-forms-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("asserts.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body>
+            <input id="searchBox" value="prefilled" />
+            <div>row one</div><div>row two</div><div>row three</div>
+            <div id="conn-row">TestConnection</div>
+            <button onclick="
+                setTimeout(() => {
+                    const t = document.createElement('div');
+                    t.id = 'toast';
+                    t.textContent = 'Copied to clipboard';
+                    document.body.appendChild(t);
+                }, 800);
+            ">Show toast</button>
+            <button onclick="
+                setTimeout(() => document.getElementById('conn-row').remove(), 500);
+            ">Delete connection</button>
+        </body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("asserts.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Assertion forms".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        steps: vec![
+            flowproof_agent::SpecStep::Assert {
+                assert: "the searchBox field contains prefilled".into(),
+            },
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows row 3 times".into(),
+            },
+            flowproof_agent::SpecStep::Plain("Press the \"Show toast\" button".into()),
+            // #toast does not exist yet when this assert starts polling.
+            flowproof_agent::SpecStep::Assert {
+                assert: "the \"css:#toast\" shows Copied within 10s".into(),
+            },
+            flowproof_agent::SpecStep::Plain("Press the \"Delete connection\" button".into()),
+            // The row is still on screen for ~500ms after the click.
+            flowproof_agent::SpecStep::Assert {
+                assert: "page does not show TestConnection within 10s".into(),
+            },
+            flowproof_agent::SpecStep::Assert {
+                assert: "the \"css:#conn-row\" is not visible within 5s".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let persisted = std::fs::read_to_string(&trace_path).expect("trace readable");
+    assert!(
+        persisted.contains("\"value_not_contains\""),
+        "negative encoded"
+    );
+    assert!(persisted.contains("\"count\":3"), "count encoded");
+    assert!(
+        persisted.contains("\"element_present\":false"),
+        "absence encoded"
+    );
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The real-world action vocabulary against a real browser: clear-and-retype
 /// (fill semantics on a framework-style input), Enter submission, focused
 /// typing, a `css:` icon-button target, prefix-matched text anchors, and an

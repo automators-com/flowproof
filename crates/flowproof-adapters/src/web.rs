@@ -227,11 +227,25 @@ impl AppDriver for WebAppDriver {
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
         let locator = Self::locator(selector)?;
         let element = self.find(&locator)?;
-        // Inner text covers most elements; inputs expose their value instead.
-        let text = element
-            .get_inner_text()
+        // Inner text covers most elements; inputs expose their VALUE — the
+        // text a user sees in the box (Playwright's toHaveValue reading).
+        let value = element
+            .call_js_fn(
+                r#"function() {
+                    const tag = this.tagName;
+                    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+                        return this.value;
+                    }
+                    return this.innerText !== undefined ? this.innerText : (this.textContent || '');
+                }"#,
+                vec![],
+                false,
+            )
             .map_err(|e| web_err(&format!("reading text of [{selector}]"), e))?;
-        Ok(text)
+        Ok(value
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
     }
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {

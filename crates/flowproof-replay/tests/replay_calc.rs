@@ -470,3 +470,91 @@ steps:
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn negative_count_value_and_presence_asserts_replay() {
+    let dir = std::env::temp_dir().join("flowproof-replay-assertions");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    let spec = FlowSpec::parse(
+        "name: Assertion forms
+app: web
+url: https://e.test/x
+steps:
+  - Type Street into the \"Field Name\" field
+  - assert: the \"Field Name\" field contains Street
+  - assert: page does not show Deleted item
+  - assert: page shows row 2 times
+  - assert: the \"Field Name\" is visible
+  - assert: the \"Ghost element\" is not visible within 1s
+",
+    )
+    .expect("spec parses");
+    let mut driver =
+        MockAppDriver::new(&["Field Name", "body"]).with_text("body", "row one, row two");
+    let trace = dir.join("assertions.trace.jsonl");
+    record(&spec, &mut driver, &trace).expect("recording succeeds");
+
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(persisted.contains("\"value_not_contains\":\"Deleted item\""));
+    assert!(persisted.contains("\"count\":2"));
+    assert!(persisted.contains("\"element_present\":true"));
+    assert!(persisted.contains("\"element_present\":false"));
+
+    let mut driver =
+        MockAppDriver::new(&["Field Name", "body"]).with_text("body", "row one, row two");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "assertion forms replay: {report:?}");
+
+    // A count mismatch fails deterministically after its timeout.
+    let spec = FlowSpec::parse(
+        "name: Count mismatch
+app: web
+url: https://e.test/x
+steps:
+  - assert: page shows row 3 times within 1s
+",
+    )
+    .expect("spec parses");
+    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "row one, row two");
+    let trace2 = dir.join("count-mismatch.trace.jsonl");
+    let err = record(&spec, &mut driver, &trace2).expect_err("count mismatch must fail");
+    assert!(err.to_string().contains("row"), "err: {err}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn negative_assert_waits_for_text_to_disappear() {
+    let dir = std::env::temp_dir().join("flowproof-replay-negative-wait");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    // The page still shows the row right after the delete click; it
+    // disappears two polls later — the negative assert must wait it out.
+    let spec = FlowSpec::parse(
+        "name: Delete waits
+app: web
+url: https://e.test/x
+steps:
+  - assert: page does not show TestConnection within 5s
+",
+    )
+    .expect("spec parses");
+    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "list");
+    driver.text_sequence.insert(
+        "body".into(),
+        ["TestConnection", "TestConnection", "list"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    );
+    let trace = dir.join("negative.trace.jsonl");
+    let started = std::time::Instant::now();
+    record(&spec, &mut driver, &trace).expect("recording succeeds after the text disappears");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(400),
+        "the assert polled at least twice"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

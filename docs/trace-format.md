@@ -127,6 +127,12 @@ has `format != "flowproof-trace"` or an unsupported `version`.
 `action.type == "assert"` covers checks as first-class steps. `params.kind`:
 
 - `element_state` — selector resolves and matches `{property: value}`.
+  `expect` keys in use: `value_contains`, `value_equals` (+`normalize:
+  numeric`), `value_not_contains` (text must be absent), `count` (with
+  `value_contains`: exact occurrence count), `element_present`
+  (true/false — presence itself is the assertion), and `timeout_ms` (the
+  auto-wait bound; the resolver runs inside the poll, so the target may
+  legitimately appear — or disappear — during the wait).
 - `ocr_text` — OCR of `region` (or the resolved element bounds) matches
   `text` (`equals|contains|regex`).
 - `visual_diff` — region matches `baseline` (a `sha256:` hash) within

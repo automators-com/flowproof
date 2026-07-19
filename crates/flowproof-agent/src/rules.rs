@@ -84,13 +84,33 @@ pub enum ResolvedAction {
     AssertText {
         target: Target,
         expected: String,
-        /// Substring match instead of equality.
-        contains: bool,
-        /// Compare the trailing numeric value instead of raw text.
-        numeric: bool,
+        matcher: TextMatch,
         /// How long the expectation may take to become true.
         timeout_ms: u64,
     },
+    /// Assert that an element is (or is not) present on screen — the
+    /// deterministic reading of "is visible" / "is not visible".
+    AssertPresence {
+        target: Target,
+        present: bool,
+        timeout_ms: u64,
+    },
+}
+
+/// How an [`ResolvedAction::AssertText`] expectation compares against the
+/// element's live text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextMatch {
+    /// Substring present.
+    Contains,
+    /// Substring absent — `page does not show X`.
+    NotContains,
+    /// Substring occurs exactly N times — `page shows X 2 times`.
+    CountEquals(u64),
+    /// Exact equality.
+    Equals,
+    /// Compare the trailing numeric value instead of raw text.
+    NumericEquals,
 }
 
 /// Default auto-wait for assertions (Playwright's expect default).
@@ -246,8 +266,7 @@ mod calc {
             return Ok(ResolvedAction::AssertText {
                 target: Target::id(CALC_DISPLAY_ID),
                 expected: expected.to_string(),
-                contains: false,
-                numeric: true,
+                matcher: TextMatch::NumericEquals,
                 timeout_ms: ASSERT_TIMEOUT_MS,
             });
         }
@@ -284,8 +303,7 @@ mod notepad {
                     return Ok(vec![ResolvedAction::AssertText {
                         target: Target::id(NOTEPAD_EDITOR_ID),
                         expected: expected.to_string(),
-                        contains: true,
-                        numeric: false,
+                        matcher: TextMatch::Contains,
                         timeout_ms: ASSERT_TIMEOUT_MS,
                     }]);
                 }
@@ -304,25 +322,138 @@ mod web {
     pub(super) fn resolve(step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
         match step {
             SpecStep::Plain(text) => resolve_plain(text),
-            SpecStep::Assert { assert } => {
-                let trimmed = assert.trim();
-                let (trimmed, timeout) = split_within(trimmed);
-                if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
-                    let expected = rest.trim();
-                    if expected.is_empty() {
-                        return Err(unresolvable(trimmed, "no expected text"));
-                    }
-                    return Ok(vec![ResolvedAction::AssertText {
-                        target: Target::css(PAGE_TEXT_CSS),
-                        expected: expected.to_string(),
-                        contains: true,
-                        numeric: false,
-                        timeout_ms: timeout.unwrap_or(ASSERT_TIMEOUT_MS),
-                    }]);
-                }
-                Err(unresolvable(trimmed, "expected 'page shows <text>'"))
-            }
+            SpecStep::Assert { assert } => resolve_assert(assert),
         }
+    }
+
+    /// Parse a trailing occurrence count (`… 2 times`) off an expectation.
+    fn split_count(text: &str) -> (&str, Option<u64>) {
+        let stripped = strip_suffix_ci(text, " times").or_else(|| strip_suffix_ci(text, " time"));
+        let Some(stripped) = stripped else {
+            return (text, None);
+        };
+        match stripped.rsplit_once(' ') {
+            Some((rest, digits)) => match digits.parse::<u64>() {
+                Ok(n) => (rest.trim_end(), Some(n)),
+                Err(_) => (text, None),
+            },
+            None => (text, None),
+        }
+    }
+
+    /// The assertion grammar. All forms auto-wait and accept a trailing
+    /// `within <N>s`. Every form starts with a plain word — a YAML scalar
+    /// cannot START with a double quote, so quoted targets always follow
+    /// `the `:
+    ///   page shows <text>
+    ///   page shows <text> <N> times
+    ///   page does not show <text>
+    ///   the "<label>"|<id> field contains <text>
+    ///   the "<text-or-css:sel>" shows <text>
+    ///   the "<text-or-css:sel>" is visible | is not visible
+    fn resolve_assert(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        let trimmed = text.trim();
+        let (trimmed, timeout) = split_within(trimmed);
+        let timeout_ms = timeout.unwrap_or(ASSERT_TIMEOUT_MS);
+
+        if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
+            let (expected, count) = split_count(rest.trim());
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected text"));
+            }
+            let matcher = match count {
+                Some(n) => TextMatch::CountEquals(n),
+                None => TextMatch::Contains,
+            };
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::css(PAGE_TEXT_CSS),
+                expected: expected.to_string(),
+                matcher,
+                timeout_ms,
+            }]);
+        }
+
+        if let Some(rest) = strip_prefix_ci(trimmed, "page does not show ") {
+            let expected = rest.trim();
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected text"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::css(PAGE_TEXT_CSS),
+                expected: expected.to_string(),
+                matcher: TextMatch::NotContains,
+                timeout_ms,
+            }]);
+        }
+
+        // `the …` forms. After the optional ordinal and quoted target the
+        // tail dispatches:
+        //   the "<label>" field contains <text>    (input VALUE)
+        //   the <id> field contains <text>
+        //   the "<target>" shows <text>            (element-scoped contains)
+        //   the "<target>" is visible | is not visible
+        if let Some(rest) = strip_prefix_ci(trimmed, "the ") {
+            let (nth, rest) = split_ordinal(rest.trim());
+            if let Some(quoted) = rest.strip_prefix('"') {
+                if let Some((label, tail)) = quoted_label(quoted) {
+                    let target = with_nth(nth, target_from_label(label));
+                    if let Some(expected) = strip_prefix_ci(tail, "field contains ")
+                        .or_else(|| strip_prefix_ci(tail, "shows "))
+                    {
+                        let expected = expected.trim();
+                        if expected.is_empty() {
+                            return Err(unresolvable(trimmed, "no expected text"));
+                        }
+                        return Ok(vec![ResolvedAction::AssertText {
+                            target,
+                            expected: expected.to_string(),
+                            matcher: TextMatch::Contains,
+                            timeout_ms,
+                        }]);
+                    }
+                    if tail.eq_ignore_ascii_case("is visible") {
+                        return Ok(vec![ResolvedAction::AssertPresence {
+                            target,
+                            present: true,
+                            timeout_ms,
+                        }]);
+                    }
+                    if tail.eq_ignore_ascii_case("is not visible") {
+                        return Ok(vec![ResolvedAction::AssertPresence {
+                            target,
+                            present: false,
+                            timeout_ms,
+                        }]);
+                    }
+                }
+            } else if nth.is_none() {
+                if let Some(pos) = rest.find(" field contains ") {
+                    let id = rest[..pos].trim();
+                    let expected = rest[pos + " field contains ".len()..].trim();
+                    if !id.is_empty() && !expected.is_empty() {
+                        return Ok(vec![ResolvedAction::AssertText {
+                            target: Target::css(format!("#{id}")),
+                            expected: expected.to_string(),
+                            matcher: TextMatch::Contains,
+                            timeout_ms,
+                        }]);
+                    }
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'the \"<label>\" field contains <text>', 'the <id> field \
+                 contains <text>', 'the \"<target>\" shows <text>', or \
+                 'the \"<target>\" is [not] visible'",
+            ));
+        }
+
+        Err(unresolvable(
+            trimmed,
+            "expected 'page shows <text>[ N times]', 'page does not show <text>', \
+             'the \"<label>\" field contains <text>', 'the \"<target>\" shows <text>', \
+             or 'the \"<target>\" is [not] visible'",
+        ))
     }
 
     /// `css:` prefix inside a quoted label targets by CSS selector instead
@@ -423,8 +554,7 @@ mod web {
             return Ok(vec![ResolvedAction::AssertText {
                 target: Target::css(PAGE_TEXT_CSS),
                 expected: expected.trim().to_string(),
-                contains: true,
-                numeric: false,
+                matcher: TextMatch::Contains,
                 timeout_ms: timeout.unwrap_or(WAIT_STEP_TIMEOUT_MS),
             }]);
         }
@@ -626,8 +756,7 @@ mod tests {
             vec![ResolvedAction::AssertText {
                 target: Target::id(CALC_DISPLAY_ID),
                 expected: "8".into(),
-                contains: false,
-                numeric: true,
+                matcher: TextMatch::NumericEquals,
                 timeout_ms: ASSERT_TIMEOUT_MS,
             }]
         );
@@ -663,8 +792,7 @@ mod tests {
             vec![ResolvedAction::AssertText {
                 target: Target::id(NOTEPAD_EDITOR_ID),
                 expected: "Hello".into(),
-                contains: true,
-                numeric: false,
+                matcher: TextMatch::Contains,
                 timeout_ms: ASSERT_TIMEOUT_MS,
             }]
         );
@@ -710,8 +838,7 @@ mod tests {
             vec![ResolvedAction::AssertText {
                 target: Target::css("body"),
                 expected: "Hello, Ada".into(),
-                contains: true,
-                numeric: false,
+                matcher: TextMatch::Contains,
                 timeout_ms: ASSERT_TIMEOUT_MS,
             }]
         );
@@ -729,8 +856,7 @@ mod tests {
             vec![ResolvedAction::AssertText {
                 target: Target::css("body"),
                 expected: "Generation complete".into(),
-                contains: true,
-                numeric: false,
+                matcher: TextMatch::Contains,
                 timeout_ms: WAIT_STEP_TIMEOUT_MS,
             }]
         );
@@ -967,6 +1093,142 @@ mod tests {
             &actions[0],
             ResolvedAction::TypeText { target: Target::Css(css), .. } if css == "#templateName"
         ));
+    }
+
+    #[test]
+    fn negative_and_count_asserts_resolve() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "page does not show TestConnection within 15s".into(),
+            },
+        )
+        .expect("negative assert resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertText {
+                target: Target::css("body"),
+                expected: "TestConnection".into(),
+                matcher: TextMatch::NotContains,
+                timeout_ms: 15_000,
+            }]
+        );
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "page shows playwrightTemplateRoot 2 times".into(),
+            },
+        )
+        .expect("count assert resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertText {
+                target: Target::css("body"),
+                expected: "playwrightTemplateRoot".into(),
+                matcher: TextMatch::CountEquals(2),
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }]
+        );
+
+        // Text that merely ENDS in "times" without a number stays intact.
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "page shows good times".into(),
+            },
+        )
+        .expect("plain assert resolves");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText { expected, matcher: TextMatch::Contains, .. }
+                if expected == "good times"
+        ));
+    }
+
+    #[test]
+    fn element_scoped_and_field_value_asserts_resolve() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the \"css:#live_preview\" shows Street".into(),
+            },
+        )
+        .expect("element-scoped assert resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertText {
+                target: Target::css("#live_preview"),
+                expected: "Street".into(),
+                matcher: TextMatch::Contains,
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }]
+        );
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the templateName field contains playwrightTemplateRoot within 10s".into(),
+            },
+        )
+        .expect("id field-value assert resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertText {
+                target: Target::css("#templateName"),
+                expected: "playwrightTemplateRoot".into(),
+                matcher: TextMatch::Contains,
+                timeout_ms: 10_000,
+            }]
+        );
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the \"Field Name\" field contains Street".into(),
+            },
+        )
+        .expect("labelled field-value assert resolves");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText { target: Target::Text(t), expected, .. }
+                if t == "Field Name" && expected == "Street"
+        ));
+    }
+
+    #[test]
+    fn visibility_asserts_resolve() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the \"css:#live_preview\" is visible".into(),
+            },
+        )
+        .expect("visible assert resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertPresence {
+                target: Target::css("#live_preview"),
+                present: true,
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }]
+        );
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the \"css:#live_preview\" is not visible within 10s".into(),
+            },
+        )
+        .expect("not-visible assert resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertPresence {
+                target: Target::css("#live_preview"),
+                present: false,
+                timeout_ms: 10_000,
+            }]
+        );
     }
 
     #[test]
