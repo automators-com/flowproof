@@ -177,6 +177,7 @@ impl RunReport {
              .num{{text-align:right;white-space:nowrap}}\
              .meta{{color:#59636e;font-size:.9rem}}\
              .frames img{{max-width:20rem;margin:.4rem .4rem 0 0;border:1px solid #d1d9e0}}\
+             .whole-run{{max-width:100%;border:1px solid #d1d9e0;border-radius:.4rem}}\
              details{{margin:.5rem 0}}summary{{cursor:pointer}}\
              </style></head><body>\n\
              <h1>{name}</h1>\n\
@@ -205,6 +206,16 @@ impl RunReport {
             "<h2>Recording</h2>\n<p class=\"meta\">step-synchronized keyframes; \
              sensitive regions are masked before frames are written</p>\n",
         );
+        if let Some(gif) = &recording.gif {
+            sections.push_str(&format!(
+                "<p><img class=\"whole-run\" src=\"{dir}/{gif}\" \
+                 alt=\"the whole run as an animated recording\"></p>\n\
+                 <p class=\"meta\">the whole run, paced like the real \
+                 execution — per-step frames below</p>\n",
+                dir = escape(&recording.dir),
+                gif = escape(gif),
+            ));
+        }
         for timing in &recording.steps {
             let intent = self
                 .steps
@@ -303,6 +314,32 @@ mod tests {
         assert!(html.contains(">FAIL<"));
         assert!(!html.contains("<two>"), "raw input must never reach HTML");
         assert!(!html.contains("http"), "report must be self-contained");
+    }
+
+    #[test]
+    fn whole_run_gif_is_embedded_when_present() {
+        let recording = flowproof_driver::Recording {
+            format: "filmstrip/1".into(),
+            dir: "recording".into(),
+            frames: vec![],
+            steps: vec![],
+            gif: Some("recording.gif".into()),
+        };
+        let report = RunReport {
+            name: "x".into(),
+            trace_id: "t".into(),
+            passed: true,
+            duration_ms: 1,
+            steps: vec![],
+            recording: Some(recording),
+        };
+        let html = report.to_html();
+        assert!(html.contains("src=\"recording/recording.gif\""));
+
+        // Without a rendered GIF the viewer degrades to frames only.
+        let mut report = report;
+        report.recording.as_mut().expect("recording").gif = None;
+        assert!(!report.to_html().contains("recording.gif"));
     }
 
     #[test]

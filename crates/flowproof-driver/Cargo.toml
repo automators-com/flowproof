@@ -8,7 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "gif"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 

@@ -50,6 +50,10 @@ fn records_and_replays_a_browser_flow() {
     for frame in &recording.frames {
         assert!(run_dir.join(&recording.dir).join(&frame.file).exists());
     }
+    // ...and the ready-to-play whole-run GIF next to them.
+    let gif = recording.gif.as_deref().expect("whole-run gif rendered");
+    let gif_bytes = std::fs::read(run_dir.join(&recording.dir).join(gif)).expect("gif readable");
+    assert!(gif_bytes.starts_with(b"GIF89a"));
     // The authoring trace references its own recording bundle.
     let (header, steps) = flowproof_replay::load_trace(&trace_path).expect("trace loads");
     let trace_rec = header.recording.expect("trace records its authoring run");

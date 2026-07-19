@@ -61,7 +61,10 @@ redact→persist path, so upgrading capture never touches sync or redaction:
   Keyframes make step sync *exact by construction* and keep the bundle
   small. The visual result is a step-synchronized filmstrip, not 30fps
   video — an accepted v1 tradeoff, stated in the artifact format so
-  consumers can distinguish it.
+  consumers can distinguish it. For review, the bundle also carries a
+  ready-to-play `recording.gif`: the keyframes as one animation, each
+  frame shown for the real gap to the next (clamped to stay watchable),
+  so a whole run reviews like a video without continuous capture.
 - **Later — continuous source** (follow-up PRs): DXGI desktop duplication on
   Windows, CDP screencast for web, feeding the same sink at N fps and
   assembled into WebM. The bundle format below already carries a `format`
