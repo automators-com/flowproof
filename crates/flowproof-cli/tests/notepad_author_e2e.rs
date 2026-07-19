@@ -25,6 +25,7 @@ fn freeform_spec() -> FlowSpec {
         app: "notepad".into(),
         url: None,
         redact: vec![],
+        connection: None,
         session: None,
         steps: vec![
             SpecStep::Plain("Write hello from flowproof into the editor".into()),
