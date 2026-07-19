@@ -241,19 +241,26 @@ pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, R
         "calc" => calc::resolve(step),
         "notepad" => notepad::resolve(step),
         "web" => web::resolve(step),
+        "sap" => sap::resolve(step),
         other => Err(RulesError::UnsupportedApp(other.to_string())),
     }
 }
 
-/// `css:` prefix inside a quoted label targets by CSS selector instead of
-/// by text — an adapter-specific escape hatch (web today; a SAP profile
-/// would use its own scripting ids the same way). Everything else is a
-/// text anchor, meaningful on every provenance.
+/// `css:` targets by CSS selector, `id:` by native id (UIA automation id,
+/// SAP scripting id) — adapter-specific escape hatches inside a quoted
+/// label. Everything else is a text anchor, meaningful on every provenance.
 fn target_from_label(label: &str) -> Target {
-    match label.strip_prefix("css:") {
-        Some(css) if !css.trim().is_empty() => Target::css(css.trim()),
-        _ => Target::text(label),
+    if let Some(css) = label.strip_prefix("css:") {
+        if !css.trim().is_empty() {
+            return Target::css(css.trim());
+        }
     }
+    if let Some(id) = label.strip_prefix("id:") {
+        if !id.trim().is_empty() {
+            return Target::id(id.trim());
+        }
+    }
+    Target::text(label)
 }
 
 /// Scene TARGET TOKENS, as emitted by each driver's `scene()` and echoed
@@ -581,6 +588,24 @@ mod notepad {
     }
 }
 
+mod sap {
+    use super::*;
+
+    /// SAP GUI shares the generic plain-step grammar (quoted labels are
+    /// text anchors; `"id:wnd[0]/…"` addresses a scripting id directly)
+    /// and the shared assertion grammar. `Go to /nVA01` navigates by
+    /// transaction code — the sap-com driver types it into the command
+    /// field, exactly how a user navigates SAP.
+    pub(super) fn resolve(step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
+        match step {
+            SpecStep::Plain(text) => web::resolve_plain(text),
+            SpecStep::Assert { assert } => assertions::resolve(assert),
+            // Out-of-band steps are dispatched before app resolution.
+            other => Err(unresolvable(&other.intent(), "handled before app dispatch")),
+        }
+    }
+}
+
 mod web {
     use super::*;
 
@@ -644,7 +669,9 @@ mod web {
         None
     }
 
-    fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+    /// The generic plain-step grammar. Nothing here is web-specific — the
+    /// sap module reuses it verbatim; targets resolve per-provenance.
+    pub(super) fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
         let trimmed = text.trim();
 
         // `Go to /path` / `Go to https://…` → navigate mid-flow.
@@ -1356,8 +1383,60 @@ mod tests {
             .expect_err("unknown step must fail");
         assert!(err.to_string().contains("Wave at the screen"));
 
-        let err = resolve_step("sap", &SpecStep::Plain("Type 5".into()))
+        let err = resolve_step("oracle-forms", &SpecStep::Plain("Type 5".into()))
             .expect_err("unknown app must fail");
         assert!(matches!(err, RulesError::UnsupportedApp(_)));
+    }
+
+    #[test]
+    fn sap_shares_the_generic_grammar() {
+        let actions = resolve_step(
+            "sap",
+            &SpecStep::Plain(r#"Type ZOR into the "Order Type" field"#.into()),
+        )
+        .expect("labelled field resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::TypeText {
+                target: Target::text("Order Type"),
+                text: "ZOR".into()
+            }]
+        );
+
+        let actions =
+            resolve_step("sap", &SpecStep::Plain("Go to /nVA01".into())).expect("tcode resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::Navigate {
+                path: "/nVA01".into()
+            }]
+        );
+
+        let actions = resolve_step(
+            "sap",
+            &SpecStep::Assert {
+                assert: "page shows Order 4711 saved".into(),
+            },
+        )
+        .expect("shared assertion grammar");
+        assert!(
+            matches!(&actions[0], ResolvedAction::AssertText { target, .. } if *target == Target::Surface)
+        );
+    }
+
+    #[test]
+    fn id_labels_address_native_ids_directly() {
+        let actions = resolve_step(
+            "sap",
+            &SpecStep::Plain(r#"Type 4711 into the "id:wnd[0]/usr/txtVBAK-KUNNR" field"#.into()),
+        )
+        .expect("id: label resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::TypeText {
+                target: Target::id("wnd[0]/usr/txtVBAK-KUNNR"),
+                text: "4711".into()
+            }]
+        );
     }
 }

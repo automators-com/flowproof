@@ -602,6 +602,14 @@ pub fn run_trace<D: AppDriver>(
             command: flowproof_trace::secret::resolve_refs(&raw)?,
             window_name: String::new(),
         }
+    } else if header.app.name == "sap" {
+        // The header's `url` carries the SAP Logon connection description
+        // (may be a `${VAR}` ref); absent = attach to the running session.
+        let raw = header.app.url.clone().unwrap_or_default();
+        flowproof_driver::AppTarget {
+            command: flowproof_trace::secret::resolve_refs(&raw)?,
+            window_name: "SAP".into(),
+        }
     } else {
         resolve_app(&header.app.name)
             .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?

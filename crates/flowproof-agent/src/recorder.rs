@@ -40,7 +40,7 @@ const ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub enum RecordError {
     #[error(transparent)]
     Rules(#[from] crate::rules::RulesError),
-    #[error("unknown app '{0}' (this slice supports: calc, notepad, web)")]
+    #[error("unknown app '{0}' (this slice supports: calc, notepad, web, sap)")]
     UnknownApp(String),
     #[error("app 'web' requires a `url:` field in the spec")]
     MissingUrl,
@@ -111,6 +111,30 @@ fn fallback_selector(
 /// rename by degrading down the ladder (and reporting that it did).
 fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selector> {
     match target {
+        // A SAP scripting id is that provenance's native rung. Payload key
+        // `id` per the trace format; a text-anchor fallback (the element's
+        // accessible name) survives id drift across transactions/releases.
+        Target::AutomationId(automation_id) if app == "sap" => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("id".into(), automation_id.as_str().into());
+            let mut ladder = vec![Selector {
+                tier: SelectorTier::NativeId,
+                provenance: flowproof_trace::format::Adapter::SapCom,
+                confidence: Some(1.0),
+                payload,
+            }];
+            if let Some(label) = label {
+                let mut anchor = serde_json::Map::new();
+                anchor.insert("text".into(), label.into());
+                ladder.push(Selector {
+                    tier: SelectorTier::TextAnchor,
+                    provenance: flowproof_trace::format::Adapter::SapCom,
+                    confidence: Some(0.5),
+                    payload: anchor,
+                });
+            }
+            ladder
+        }
         Target::AutomationId(automation_id) => {
             let mut payload = serde_json::Map::new();
             payload.insert("automation_id".into(), automation_id.as_str().into());
@@ -156,10 +180,10 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
             payload.insert("text".into(), text.as_str().into());
             vec![Selector {
                 tier: SelectorTier::TextAnchor,
-                provenance: if app == "web" {
-                    flowproof_trace::format::Adapter::Web
-                } else {
-                    flowproof_trace::format::Adapter::Uia
+                provenance: match app {
+                    "web" => flowproof_trace::format::Adapter::Web,
+                    "sap" => flowproof_trace::format::Adapter::SapCom,
+                    _ => flowproof_trace::format::Adapter::Uia,
                 },
                 confidence: Some(1.0),
                 payload,
@@ -409,6 +433,17 @@ fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordE
         return Ok(flowproof_driver::AppTarget {
             command: url,
             window_name: String::new(),
+        });
+    }
+    if spec.app == "sap" {
+        // `command` carries the SAP Logon connection description (empty =
+        // attach to whatever logged-in session exists). Like the web URL it
+        // may hold `${VAR}` references, resolved here and at every launch.
+        let connection = spec.connection.as_deref().unwrap_or_default();
+        let connection = flowproof_trace::secret::resolve_refs(connection)?;
+        return Ok(flowproof_driver::AppTarget {
+            command: connection,
+            window_name: "SAP".into(),
         });
     }
     resolve_app(&spec.app).ok_or_else(|| RecordError::UnknownApp(spec.app.clone()))
@@ -777,22 +812,33 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
         }),
         app: AppInfo {
             name: spec.app.clone(),
-            adapter: if spec.app == "web" {
-                flowproof_trace::format::Adapter::Web
-            } else {
-                flowproof_trace::format::Adapter::Uia
+            adapter: match spec.app.as_str() {
+                "web" => flowproof_trace::format::Adapter::Web,
+                "sap" => flowproof_trace::format::Adapter::SapCom,
+                _ => flowproof_trace::format::Adapter::Uia,
             },
             window_title: (!target.window_name.is_empty()).then(|| target.window_name.to_string()),
-            // If the spec URL carries `${VAR}` refs, the header stores them
-            // RAW (resolved again at each replay); otherwise the resolved
-            // launch URL (absolute file:// paths included).
-            url: (spec.app == "web").then(|| {
-                spec.url
+            // If the spec URL (or SAP connection) carries `${VAR}` refs, the
+            // header stores them RAW (resolved again at each replay);
+            // otherwise the resolved launch value (absolute file:// paths
+            // included). For `app: sap` this field carries the connection
+            // description — how replay reaches the same system.
+            url: match spec.app.as_str() {
+                "web" => Some(
+                    spec.url
+                        .as_ref()
+                        .filter(|u| flowproof_trace::secret::has_refs(u))
+                        .cloned()
+                        .unwrap_or_else(|| target.command.clone()),
+                ),
+                "sap" => spec
+                    .connection
                     .as_ref()
-                    .filter(|u| flowproof_trace::secret::has_refs(u))
+                    .filter(|c| flowproof_trace::secret::has_refs(c))
                     .cloned()
-                    .unwrap_or_else(|| target.command.clone())
-            }),
+                    .or_else(|| (!target.command.is_empty()).then(|| target.command.clone())),
+                _ => None,
+            },
             version: None,
         },
         agent: (llm_used && client.is_some()).then(|| {
@@ -1083,7 +1129,8 @@ steps:
 
     #[test]
     fn unknown_app_is_rejected() {
-        let spec = FlowSpec::parse("name: x\napp: sap\nsteps:\n  - Type 1\n").expect("parses");
+        let spec =
+            FlowSpec::parse("name: x\napp: oracle-forms\nsteps:\n  - Type 1\n").expect("parses");
         let mut driver = MockAppDriver::new(&[]);
         let out = std::env::temp_dir().join("unused.trace.jsonl");
         assert!(matches!(

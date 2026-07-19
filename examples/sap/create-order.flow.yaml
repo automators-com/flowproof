@@ -1,0 +1,19 @@
+# A SAP GUI flow. Requirements on the recording/replaying machine:
+# Windows, SAP GUI for Windows installed, SAP Logon running and logged in,
+# and scripting enabled (RZ11: sapgui/user_scripting = TRUE).
+#
+# `connection` is the SAP Logon connection description to open when no
+# session is running yet (omit it to attach to the current session). Steps
+# use the generic grammar: quoted labels are text anchors (matched against
+# the element's tooltip, visible text, or technical name), and
+# `"id:wnd[0]/…"` addresses a scripting id directly. `Go to /nVA01`
+# navigates by transaction code. Freeform steps work too, with a model
+# backend configured — the driver describes its scene like any other.
+name: Create standard order
+app: sap
+connection: ${SAP_CONNECTION}
+steps:
+  - Go to /nVA01
+  - Type ZOR into the "Order Type" field
+  - Press Enter
+  - assert: page shows Create Standard Order

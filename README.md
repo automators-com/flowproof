@@ -88,13 +88,18 @@ Works today:
   drive record/run/get_trace/heal as MCP tools
 - Healing v1: `flowproof heal` re-authors the flow against the live app and
   proposes a reviewable trace diff — applied only with explicit `--apply`
-- LLM authoring (web): steps in your own words — a model grounds each step
-  to the live page's real elements (it can never invent a selector) and the
-  result replays deterministically with zero model calls. Anthropic or any
+- LLM authoring (web, Windows/UIA, SAP): steps in your own words — a model
+  grounds each step to the live app's real elements via neutral target
+  tokens (it can never invent a selector) and the result replays
+  deterministically with zero model calls. Anthropic or any
   OpenAI-compatible endpoint (vLLM)
+- SAP GUI Scripting adapter (`app: sap`): native scripting ids as the
+  primary selector rung, transaction-code navigation (`Go to /nVA01`),
+  SAP virtual keys — COM on Windows, with an in-memory fake engine keeping
+  the whole pipeline tested on every platform
 
-On the roadmap: LLM authoring for Windows/UIA apps, vision observation,
-SAP GUI Scripting adapter, Citrix/RDP mode. See [docs/design.md](docs/design.md).
+On the roadmap: vision observation, Citrix/RDP mode.
+See [docs/design.md](docs/design.md).
 
 ## Repository layout
 

@@ -108,15 +108,23 @@ pub fn default_trace_path(spec: &Path) -> PathBuf {
 }
 
 /// Pick the driver implementation for an app id — the browser driver for
-/// `web`, the platform UIA driver otherwise.
+/// `web`, SAP GUI Scripting for `sap`, the platform UIA driver otherwise.
 pub fn driver_for(app: &str) -> Result<Box<dyn AppDriver>, String> {
     if app == "web" {
         let driver = flowproof_adapters::WebAppDriver::new().map_err(|e| e.to_string())?;
-        Ok(Box::new(driver))
-    } else {
-        let driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
-        Ok(Box::new(driver))
+        return Ok(Box::new(driver));
     }
+    if app == "sap" {
+        #[cfg(windows)]
+        {
+            let driver = flowproof_adapters::SapAppDriver::new().map_err(|e| e.to_string())?;
+            return Ok(Box::new(driver));
+        }
+        #[cfg(not(windows))]
+        return Err("app 'sap' needs SAP GUI Scripting (COM), which exists only on Windows".into());
+    }
+    let driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
+    Ok(Box::new(driver))
 }
 
 fn cmd_record(
