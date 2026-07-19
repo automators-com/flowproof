@@ -12,21 +12,25 @@ use crate::{AgentError, ModelClient};
 const SYSTEM_PROMPT: &str = "\
 You are the authoring agent of flowproof, an end-to-end UI testing tool. \
 You translate ONE natural-language test step into ONE concrete UI action \
-against the current page. You are given the interactable elements of the \
-page as JSON (each with a `css` selector). Rules:
+against the app under test (a web page, a desktop window, ...). You are \
+given the interactable elements of the current screen as JSON; each \
+carries a `target` token. Rules:
 - Respond with ONLY a JSON object, no prose, no code fences.
 - The JSON shape is: {\"action\": \"click\"|\"type_text\"|\"assert_text\", \
-\"target_css\": \"<css of a listed element>\", \"text\": \"...\" (type_text only), \
+\"target\": \"<target token of a listed element>\", \"text\": \"...\" (type_text only), \
 \"expected\": \"...\" (assert_text only), \"contains\": true|false (assert_text only)}
-- target_css MUST be copied verbatim from one of the listed elements. \
-For assert_text you may also use \"body\" to check the whole page.
+- `target` MUST be copied verbatim from one of the listed elements. \
+For assert_text you may also use \"surface\" to check everything readable \
+on the current screen.
 - Type exactly the text the step asks for; do not add anything.";
 
-/// What the model must return.
+/// What the model must return. `target_css` is accepted as a legacy alias
+/// for `target` so replies shaped for the old web-only contract still parse.
 #[derive(Debug, Deserialize)]
 struct AuthoredAction {
     action: String,
-    target_css: String,
+    #[serde(alias = "target_css")]
+    target: String,
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
@@ -65,17 +69,25 @@ fn user_prompt(ctx: &AuthorContext<'_>) -> String {
     )
 }
 
-fn scene_selectors(scene: &str) -> Vec<String> {
+/// The grounding set: one TARGET TOKEN per scene element. Modern drivers
+/// emit a `target` token directly (`css:…`, `id:…`, `text:…`); a legacy
+/// web scene that only carries a `css` key is lifted into `css:<sel>`.
+fn scene_targets(scene: &str) -> Vec<String> {
     serde_json::from_str::<Vec<serde_json::Value>>(scene)
         .unwrap_or_default()
         .iter()
-        .filter_map(|e| e["css"].as_str().map(str::to_string))
+        .filter_map(|e| {
+            e["target"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| e["css"].as_str().map(|css| format!("css:{css}")))
+        })
         .collect()
 }
 
 fn parse_and_ground(
     reply: &str,
-    selectors: &[String],
+    targets: &[String],
     intent: &str,
 ) -> Result<ResolvedAction, String> {
     // Tolerate models that wrap JSON in a code fence despite instructions.
@@ -88,16 +100,25 @@ fn parse_and_ground(
     let authored: AuthoredAction =
         serde_json::from_str(trimmed).map_err(|e| format!("reply is not valid JSON: {e}"))?;
 
-    let grounded = selectors.iter().any(|s| s == &authored.target_css)
-        || (authored.action == "assert_text" && authored.target_css == "body");
-    if !grounded {
+    let token = authored.target.trim();
+    let asserting = authored.action == "assert_text";
+    // "body" is the legacy web spelling of the whole readable surface.
+    let target = if token == "surface" || (asserting && token == "body") {
+        if !asserting {
+            return Err("'surface' is only a valid target for assert_text".into());
+        }
+        Target::Surface
+    } else if targets.iter().any(|t| t == token) {
+        crate::rules::target_from_token(token)
+            .ok_or_else(|| format!("listed target '{token}' is not a well-formed token"))?
+    } else if targets.iter().any(|t| t == &format!("css:{token}")) {
+        // Old-style reply echoing a bare css selector from a legacy scene.
+        Target::css(token)
+    } else {
         return Err(format!(
-            "target_css '{}' is not one of the listed elements",
-            authored.target_css
+            "target '{token}' is not one of the listed elements"
         ));
-    }
-
-    let target = Target::css(authored.target_css);
+    };
     match authored.action.as_str() {
         "click" => Ok(ResolvedAction::Press {
             target,
@@ -136,8 +157,8 @@ pub fn author_step<C: ModelClient>(
     client: &mut C,
     ctx: &AuthorContext<'_>,
 ) -> Result<ResolvedAction, AgentError> {
-    let selectors = scene_selectors(ctx.scene);
-    if selectors.is_empty() {
+    let targets = scene_targets(ctx.scene);
+    if targets.is_empty() {
         return Err(AgentError::Authoring {
             step: ctx.intent.to_string(),
             reason: "scene has no interactable elements".into(),
@@ -152,7 +173,7 @@ pub fn author_step<C: ModelClient>(
             format!("{prompt}\n\nYour previous reply was rejected: {last_error}. Reply again with ONLY the corrected JSON object.")
         };
         let reply = client.complete(SYSTEM_PROMPT, &user)?;
-        match parse_and_ground(&reply, &selectors, ctx.intent) {
+        match parse_and_ground(&reply, &targets, ctx.intent) {
             Ok(action) => return Ok(action),
             Err(reason) => last_error = reason,
         }
@@ -185,8 +206,14 @@ mod tests {
     }
 
     const SCENE: &str = r##"[
-        {"css":"#name","tag":"input","label":"Your name"},
-        {"css":"#greet","tag":"button","text":"Greet"}
+        {"target":"css:#name","css":"#name","tag":"input","label":"Your name"},
+        {"target":"css:#greet","css":"#greet","tag":"button","text":"Greet"}
+    ]"##;
+
+    /// A desktop (UIA) scene: native ids and text anchors, no css anywhere.
+    const UIA_SCENE: &str = r##"[
+        {"target":"id:15","control_type":"Edit","text":"Text editor"},
+        {"target":"text:Close","control_type":"Button","text":"Close"}
     ]"##;
 
     fn ctx<'a>() -> AuthorContext<'a> {
@@ -203,7 +230,7 @@ mod tests {
     #[test]
     fn happy_path_grounds_to_listed_element() {
         let mut client = Scripted {
-            replies: vec![r##"{"action":"type_text","target_css":"#name","text":"Ada"}"##.into()],
+            replies: vec![r##"{"action":"type_text","target":"css:#name","text":"Ada"}"##.into()],
             calls: 0,
         };
         let action = author_step(&mut client, &ctx()).expect("authored");
@@ -218,12 +245,81 @@ mod tests {
     }
 
     #[test]
+    fn uia_scene_grounds_native_id_and_text_tokens() {
+        let mut client = Scripted {
+            replies: vec![r##"{"action":"type_text","target":"id:15","text":"hello"}"##.into()],
+            calls: 0,
+        };
+        let action = author_step(
+            &mut client,
+            &AuthorContext {
+                app: "notepad",
+                url: None,
+                scene: UIA_SCENE,
+                ..ctx()
+            },
+        )
+        .expect("authored");
+        assert_eq!(
+            action,
+            ResolvedAction::TypeText {
+                target: Target::id("15"),
+                text: "hello".into()
+            }
+        );
+
+        let mut client = Scripted {
+            replies: vec![r##"{"action":"click","target":"text:Close"}"##.into()],
+            calls: 0,
+        };
+        let action = author_step(
+            &mut client,
+            &AuthorContext {
+                app: "notepad",
+                url: None,
+                scene: UIA_SCENE,
+                ..ctx()
+            },
+        )
+        .expect("authored");
+        assert!(
+            matches!(action, ResolvedAction::Press { ref target, .. } if *target == Target::text("Close"))
+        );
+    }
+
+    #[test]
+    fn legacy_reply_and_scene_shapes_still_ground() {
+        // Old-style scene (css key only) + old-style reply (target_css field,
+        // bare selector): both sides of the legacy contract keep working.
+        let mut client = Scripted {
+            replies: vec![r##"{"action":"type_text","target_css":"#name","text":"Ada"}"##.into()],
+            calls: 0,
+        };
+        let legacy_scene = r##"[{"css":"#name","tag":"input"}]"##;
+        let action = author_step(
+            &mut client,
+            &AuthorContext {
+                scene: legacy_scene,
+                ..ctx()
+            },
+        )
+        .expect("authored");
+        assert_eq!(
+            action,
+            ResolvedAction::TypeText {
+                target: Target::css("#name"),
+                text: "Ada".into()
+            }
+        );
+    }
+
+    #[test]
     fn invalid_json_gets_one_retry() {
         let mut client = Scripted {
             replies: vec![
                 "sure! here's the JSON you asked for".into(),
                 r##"```json
-{"action":"click","target_css":"#greet"}
+{"action":"click","target":"css:#greet"}
 ```"##
                     .into(),
             ],
@@ -238,8 +334,8 @@ mod tests {
     fn invented_selectors_are_rejected() {
         let mut client = Scripted {
             replies: vec![
-                r##"{"action":"click","target_css":"#made-up"}"##.into(),
-                r##"{"action":"click","target_css":"#also-made-up"}"##.into(),
+                r##"{"action":"click","target":"css:#made-up"}"##.into(),
+                r##"{"action":"click","target":"id:not-listed"}"##.into(),
             ],
             calls: 0,
         };
@@ -249,10 +345,10 @@ mod tests {
     }
 
     #[test]
-    fn assert_on_body_is_allowed() {
+    fn assert_on_surface_is_allowed() {
         let mut client = Scripted {
             replies: vec![
-                r##"{"action":"assert_text","target_css":"body","expected":"Hello, Ada","contains":true}"##
+                r##"{"action":"assert_text","target":"surface","expected":"Hello, Ada","contains":true}"##
                     .into(),
             ],
             calls: 0,
@@ -261,11 +357,40 @@ mod tests {
         assert_eq!(
             action,
             ResolvedAction::AssertText {
-                target: Target::css("body"),
+                target: Target::Surface,
                 expected: "Hello, Ada".into(),
                 matcher: crate::rules::TextMatch::Contains,
                 timeout_ms: crate::rules::ASSERT_TIMEOUT_MS,
             }
         );
+    }
+
+    #[test]
+    fn legacy_body_alias_maps_to_surface() {
+        let mut client = Scripted {
+            replies: vec![
+                r##"{"action":"assert_text","target_css":"body","expected":"Hello, Ada"}"##.into(),
+            ],
+            calls: 0,
+        };
+        let action = author_step(&mut client, &ctx()).expect("authored");
+        assert!(
+            matches!(action, ResolvedAction::AssertText { ref target, .. } if *target == Target::Surface)
+        );
+    }
+
+    #[test]
+    fn surface_is_assert_only() {
+        let mut client = Scripted {
+            replies: vec![
+                r##"{"action":"click","target":"surface"}"##.into(),
+                r##"{"action":"click","target":"surface"}"##.into(),
+            ],
+            calls: 0,
+        };
+        let err = author_step(&mut client, &ctx()).expect_err("surface click must fail");
+        assert!(err
+            .to_string()
+            .contains("only a valid target for assert_text"));
     }
 }

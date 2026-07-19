@@ -285,9 +285,13 @@ URL.
 ## Authoring with a model (arbitrary steps)
 
 The rules only know the demo vocabularies. With a model backend configured,
-`record` falls back to the **LLM author** for any step the rules can't parse
-(web flows today; the model picks targets from the live page's element list
-and can never invent a selector):
+`record` falls back to the **LLM author** for any step the rules can't
+parse, on web and Windows desktop apps alike. The driver describes its live
+scene — each interactable element tagged with a provenance-neutral *target
+token* (`css:#name` on the web, `id:15` / `text:Close` under UI
+Automation) — and the model must copy one of those tokens verbatim; it can
+never invent a selector. Assertions may also target the literal `surface`
+token: everything readable on the current screen, whatever the driver:
 
 ```bash
 export FLOWPROOF_AI_PROVIDER=anthropic        # or openai-compatible

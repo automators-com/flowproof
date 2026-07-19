@@ -442,6 +442,8 @@ impl AppDriver for WebAppDriver {
     fn scene(&mut self) -> Result<Option<String>, DriverError> {
         // Enumerate visible interactable elements with stable selectors —
         // the grounding set an authoring model must choose targets from.
+        // `target` is the provenance-neutral token the model echoes; the
+        // bare `css` key is kept one release for older agents.
         const SCENE_JS: &str = r#"
             JSON.stringify(Array.from(document.querySelectorAll(
                 'input, button, a, select, textarea, [role=button], [id]'
@@ -455,6 +457,7 @@ impl AppDriver for WebAppDriver {
                 const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
                     : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
                 return {
+                    target: 'css:' + css,
                     css,
                     tag: el.tagName.toLowerCase(),
                     type: el.getAttribute('type') || undefined,

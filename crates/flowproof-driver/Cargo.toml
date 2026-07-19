@@ -10,12 +10,12 @@ authors.workspace = true
 [features]
 default = []
 # Out-of-band probes (SQL / HTTP) for business-data assertions.
-oob = ["dep:ureq", "dep:postgres", "dep:serde_json"]
+oob = ["dep:ureq", "dep:postgres"]
 
 [dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png", "gif"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, optional = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 ureq = { version = "3", features = ["platform-verifier", "json"], optional = true }
 postgres = { version = "0.19", optional = true }
@@ -26,6 +26,3 @@ windows = { version = "0.62", features = ["Win32_Graphics_Gdi", "Win32_UI_Window
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true

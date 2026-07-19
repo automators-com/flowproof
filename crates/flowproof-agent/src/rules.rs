@@ -256,6 +256,27 @@ fn target_from_label(label: &str) -> Target {
     }
 }
 
+/// Scene TARGET TOKENS, as emitted by each driver's `scene()` and echoed
+/// verbatim by the authoring model: `css:<sel>` (web), `id:<automation
+/// id>` (UIA / SAP), `text:<name>` (text anchor, any provenance), and the
+/// literal `surface` (the whole readable surface, assert-only). Returns
+/// None for anything that isn't a well-formed token.
+pub(crate) fn target_from_token(token: &str) -> Option<Target> {
+    if token == "surface" {
+        return Some(Target::Surface);
+    }
+    if let Some(css) = token.strip_prefix("css:") {
+        return (!css.trim().is_empty()).then(|| Target::css(css.trim()));
+    }
+    if let Some(id) = token.strip_prefix("id:") {
+        return (!id.trim().is_empty()).then(|| Target::id(id.trim()));
+    }
+    if let Some(text) = token.strip_prefix("text:") {
+        return (!text.trim().is_empty()).then(|| Target::text(text.trim()));
+    }
+    None
+}
+
 /// Parse an optional leading 1-based ordinal (`2nd `, `3rd `, `10th `)
 /// off `rest`, returning it with the remainder.
 fn split_ordinal(rest: &str) -> (Option<u32>, &str) {

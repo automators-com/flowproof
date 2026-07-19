@@ -555,6 +555,73 @@ mod windows_impl {
             Ok(parts.join("\n"))
         }
 
+        fn scene(&mut self) -> Result<Option<String>, DriverError> {
+            // The desktop grounding set for LLM authoring: the same window
+            // subtree walk as surface_text, filtered to control types a
+            // model can act on. Each entry carries the TARGET TOKEN the
+            // model must echo — the stable automation id when the element
+            // has one, its accessible name otherwise. Elements with
+            // neither cannot be addressed and are skipped.
+            const INTERACTABLE: &[ControlType] = &[
+                ControlType::Button,
+                ControlType::Edit,
+                ControlType::ComboBox,
+                ControlType::CheckBox,
+                ControlType::RadioButton,
+                ControlType::ListItem,
+                ControlType::TabItem,
+                ControlType::MenuItem,
+                ControlType::Hyperlink,
+            ];
+            let window = self.window()?;
+            let elements = self
+                .automation
+                .create_matcher()
+                .from_ref(window)
+                .depth(16)
+                .timeout(0)
+                .filter_fn(Box::new(|e: &UIElement| {
+                    Ok(INTERACTABLE.contains(&e.get_control_type()?))
+                }))
+                .find_all()
+                .unwrap_or_default();
+            let mut entries: Vec<serde_json::Value> = Vec::new();
+            for element in elements {
+                // Same cap as the web scene: enough for any real window,
+                // bounded for the model's context.
+                if entries.len() >= 100 {
+                    break;
+                }
+                let id = element.get_automation_id().unwrap_or_default();
+                let name = element.get_name().unwrap_or_default();
+                let target = if !id.is_empty() {
+                    format!("id:{id}")
+                } else if !name.is_empty() {
+                    format!("text:{name}")
+                } else {
+                    continue;
+                };
+                let mut entry = serde_json::json!({ "target": target });
+                if let Ok(control_type) = element.get_control_type() {
+                    entry["control_type"] = format!("{control_type:?}").into();
+                }
+                if !name.is_empty() {
+                    entry["text"] = name.into();
+                }
+                if let Ok(value) = element.get_pattern::<UIValuePattern>() {
+                    if let Ok(text) = value.get_value() {
+                        if !text.is_empty() {
+                            entry["value"] = text.into();
+                        }
+                    }
+                }
+                entries.push(entry);
+            }
+            serde_json::to_string(&entries)
+                .map(Some)
+                .map_err(|e| DriverError::Uia(format!("serializing scene: {e}")))
+        }
+
         fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
             let element = self.find(selector, 3000)?;
             element
