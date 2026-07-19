@@ -92,12 +92,15 @@ class HealResult:
     steps_removed: int
     proposed_path: Path | None
     applied: bool
+    diff_html: Path | None = None
+    """Human review page: before/after per changed step, with frames."""
 
 
 def _parse_heal_result(payload: str) -> HealResult:
     data = json.loads(payload)
     report = data["report"]
     proposed = report.get("proposed_path")
+    diff_html = report.get("diff_html")
     return HealResult(
         changed=report["changed"],
         steps_changed=tuple(report["steps_changed"]),
@@ -105,6 +108,7 @@ def _parse_heal_result(payload: str) -> HealResult:
         steps_removed=report["steps_removed"],
         proposed_path=Path(proposed) if proposed else None,
         applied=data["applied"],
+        diff_html=Path(diff_html) if diff_html else None,
     )
 
 

@@ -154,3 +154,46 @@ def test_public_surface_includes_heal_result():
 def test_heal_missing_spec_is_a_clean_error():
     with pytest.raises(RuntimeError):
         flowproof.heal("flows/create-order.yaml", "flow.trace.jsonl")
+
+
+def test_heal_result_parses_engine_payload():
+    from flowproof.flow import _parse_heal_result
+
+    payload = json.dumps(
+        {
+            "report": {
+                "changed": True,
+                "steps_changed": [{"id": "s0002", "intent": "Press plus", "fields": ["selectors"]}],
+                "steps_added": 0,
+                "steps_removed": 0,
+                "proposed_path": "/tmp/calc.proposed.jsonl",
+                "diff_html": "/tmp/calc.heal.html",
+            },
+            "applied": False,
+        }
+    )
+    result = _parse_heal_result(payload)
+    assert result.changed
+    assert result.steps_changed[0]["fields"] == ["selectors"]
+    assert result.proposed_path == Path("/tmp/calc.proposed.jsonl")
+    assert result.diff_html == Path("/tmp/calc.heal.html")
+    assert not result.applied
+
+
+def test_heal_result_diff_html_is_optional():
+    from flowproof.flow import _parse_heal_result
+
+    payload = json.dumps(
+        {
+            "report": {
+                "changed": False,
+                "steps_changed": [],
+                "steps_added": 0,
+                "steps_removed": 0,
+            },
+            "applied": False,
+        }
+    )
+    result = _parse_heal_result(payload)
+    assert not result.changed
+    assert result.diff_html is None
