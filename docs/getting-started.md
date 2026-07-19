@@ -142,6 +142,13 @@ record→replay spine is proven on every push. Calculator stays a manual VM
 walkthrough because GitHub's Windows Server runners don't ship the
 Calculator app.
 
+SAP has three tiers: `sap_pipeline` (in-memory fake engine, every
+platform, plain `cargo test`), `sap_sim_e2e` (the REAL COM engine against
+a simulated scripting API — `tests/support/sap_simulator.py` registers
+the `SAPGUI` ProgID and serves SAP's object shapes; needs `pip install
+pywin32`, runs in windows CI), and `sap_e2e` (a real SAP GUI session;
+maintainer-run, `FLOWPROOF_E2E_SAP=1`).
+
 ## Web flows (any OS)
 
 The same spine drives browsers through the `web` adapter — this works on
