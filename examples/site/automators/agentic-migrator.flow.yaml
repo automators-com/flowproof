@@ -1,0 +1,6 @@
+name: Agentic Migrator page pitches the migration path
+app: web
+url: https://automators.ai/agentic-migrator
+steps:
+  - assert: page shows Agentic migration, not a rewrite.
+  - assert: page shows Test steps migrated

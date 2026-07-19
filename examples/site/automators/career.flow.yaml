@@ -1,0 +1,6 @@
+name: Career page shows the hiring pitch and open positions
+app: web
+url: https://automators.ai/career
+steps:
+  - assert: page shows Test the systems the world runs on.
+  - assert: page shows Find your seat, apply in minutes.

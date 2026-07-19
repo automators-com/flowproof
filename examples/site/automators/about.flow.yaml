@@ -1,0 +1,6 @@
+name: About page lists leadership and the Vienna HQ
+app: web
+url: https://automators.ai/about
+steps:
+  - assert: page shows Amin Chirazi
+  - assert: page shows Saturn Tower

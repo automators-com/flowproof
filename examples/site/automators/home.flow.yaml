@@ -1,0 +1,6 @@
+name: Home page carries the value proposition
+app: web
+url: https://automators.ai/
+steps:
+  - assert: page shows Tosca, done right.
+  - assert: page shows Trusted by the world's most innovative teams

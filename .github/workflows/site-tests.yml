@@ -11,6 +11,53 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  suite:
+    name: record + replay against the live site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build CLI
+        run: cargo build -p flowproof-cli
+      - name: run the suite (record proves the flow live, replay proves determinism)
+        env:
+          CHROME: /usr/bin/google-chrome
+        run: |
+          set -u
+          BIN=target/debug/flowproof
+          mkdir -p site-results
+          summary="| spec | record | replay |"$'\n'"|---|---|---|"
+          overall=0
+          for spec in examples/site/automators/*.flow.yaml; do
+            name=$(basename "$spec" .flow.yaml)
+            echo "::group::$name"
+            rec=FAIL; rep=SKIP
+            if "$BIN" record "$spec" --out "site-results/$name.trace.jsonl"; then
+              rec=PASS
+              if "$BIN" run "$spec" --trace "site-results/$name.trace.jsonl"; then
+                rep=PASS
+              else
+                rep=FAIL; overall=1
+              fi
+            else
+              overall=1
+            fi
+            echo "::endgroup::"
+            echo "RESULT $name record=$rec replay=$rep"
+            summary="$summary"$'\n'"| $name | $rec | $rep |"
+          done
+          echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "$summary"
+          exit $overall
+      - name: upload run artifacts (traces, result.json, report.html, frames)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-test-results
+          path: site-results/
+          if-no-files-found: warn
+
   recon:
     name: recon (page text + ids)
     runs-on: ubuntu-latest

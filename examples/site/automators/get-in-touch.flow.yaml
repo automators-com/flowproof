@@ -1,0 +1,6 @@
+name: Contact page exposes the office address and email
+app: web
+url: https://automators.ai/get-in-touch
+steps:
+  - assert: page shows office@automators.com
+  - assert: page shows Operating around the globe

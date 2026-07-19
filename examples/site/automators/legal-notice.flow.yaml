@@ -1,0 +1,6 @@
+name: Legal notice carries the registered company details
+app: web
+url: https://automators.ai/legal-notice
+steps:
+  - assert: page shows ATU73129759
+  - assert: page shows Automators GmbH
