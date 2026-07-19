@@ -1,0 +1,27 @@
+# Migrates: demo-team.test.ts :: "review the team and issue an API key"
+# Reduced coverage: row-scoped asserts (the *new* key's own row, masked
+# stars regex) become page-level asserts on the unique key name and the
+# copy toast; clipboard readback is out of scope (GAPS.md).
+name: Demo - review the team and issue an API key
+app: web
+url: ${DM_BASE_URL}/settings              # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows Personal Information within 30s
+  - Click "Team"
+  - assert: "css:[data-test='teamMembersSection']" is visible within 15s   # GAP-3: visibility
+  - Click "Account"
+  - Press the "Create API Key" button
+  - Wait until page shows Create new API key within 10s
+  - Type CI Pipeline Key into the "Enter key name" field
+  - Press the "Create API key" button
+  - Wait until page shows CI Pipeline Key within 15s
+  - Click "css:button[data-test='showKey']"   # GAP-2: css target
+  - Click "css:button[data-test='copyKey']"   # GAP-2: css target
+  - assert: page shows Copied key to clipboard within 10s

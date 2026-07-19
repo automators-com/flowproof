@@ -1,0 +1,26 @@
+# Migrates: teamSettings.test.ts :: "Invite team member"
+# Playwright picked "any user from users.json that isn't me" dynamically;
+# the migration pins the seeded invitee (playwright-invite@datamaker.test)
+# via env so the spec stays deterministic. Playwright's POST-status +
+# member-count asserts become: the invitee's email appears in the members
+# section.
+name: Team settings - invite a team member
+app: web
+url: ${DM_BASE_URL}/settings              # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows Personal Information within 30s
+  - Click "Select Account"                  # GAP-2: prefix match
+  - Click "PlaywrightTeam"
+  - Reload the page                         # GAP-1: reload
+  - Click "Team"
+  - Wait until page shows Team Information within 10s
+  - Type ${DM_INVITEE_EMAIL} into the "css:input[name='inviteMail']" field   # GAP-2: css target
+  - Press the "Invite" button
+  - assert: page shows ${DM_INVITEE_EMAIL} within 15s

@@ -1,0 +1,23 @@
+# Migrates: connections.test.ts :: "Use Test Connection button in the modal"
+# Only the deterministic half: an invalid connection string must yield
+# "Failed". The valid-URL branch depended on a reachable staging database
+# and was already self-skipping in CI — dropped by design.
+name: Connections - Test Connection reports failure for an invalid string
+app: web
+url: ${DM_BASE_URL}/connections           # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows connections found within 30s
+  - Press the "Add Connection" button
+  - Click "Database"                        # GAP-2: prefix match
+  - Press the "Next step" button
+  - Click "PostgreSQL"
+  - Type invalid connection string into the "Enter the URL for your Database Connection String" field
+  - Press the "Test Connection" button
+  - assert: page shows Failed within 20s

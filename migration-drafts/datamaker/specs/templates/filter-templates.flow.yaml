@@ -1,0 +1,21 @@
+# Migrates: templates.test.ts :: "Filter templates"
+# Fresh seed = exactly 2 templates: playwrightTemplate (inside the folder)
+# and playwrightTemplateRoot (root). Filtering by the root template's full
+# name leaves exactly one visible and the counter follows.
+name: Templates - filter the template list
+app: web
+url: ${DM_BASE_URL}/templates             # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows 2 templates found within 30s
+  - Type playwrightTemplateRoot into the "Search for a templates" field
+  - assert: page shows playwrightTemplateRoot
+  - assert: page shows 1 template found within 10s
+  - Clear the "Search for a templates" field   # GAP-2: clear
+  - assert: page shows 2 templates found within 10s

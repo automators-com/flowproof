@@ -1,0 +1,21 @@
+# Migrates: templateFolders.test.ts :: "Rename template folder"
+# The rename input carries the current folder name as its value attribute —
+# the same anchor the Playwright test used ([value='...']).
+name: Template folders - rename a folder
+app: web
+url: ${DM_BASE_URL}/templates             # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows templates found within 30s
+  - Click "css:[data-test='folderInstance'] [data-test='expand']"   # GAP-2: css target
+  - Click "Rename Folder"
+  - Clear the "css:[value='playwrightTemplateFolder']" field        # GAP-2: clear + css
+  - Type Renamed Folder into the "css:[value='playwrightTemplateFolder']" field
+  - Press Enter                                                     # GAP-2: named key
+  - assert: page shows Renamed Folder within 10s

@@ -1,0 +1,16 @@
+# Migrates: demo-chat.test.ts :: "the chat composer is available"
+# The composer is a textarea with placeholder "Ask the agent or type / for
+# skills..." and a Send button.
+name: Demo - the chat composer is available
+app: web
+url: ${DM_BASE_URL}/chat                  # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows Send within 30s
+  - assert: "Ask the agent" is visible      # GAP-3: visibility + GAP-2: prefix match on placeholder

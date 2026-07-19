@@ -1,0 +1,26 @@
+# Migrates: teamSettings.test.ts :: "Remove team member"
+# Playwright read the team name back from the input; with a fresh seed the
+# name is always PlaywrightTeam (specs assume per-spec seeding — see
+# README). Confirming removal closes the dialog.
+name: Team settings - remove a team member
+app: web
+url: ${DM_BASE_URL}/settings              # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows Personal Information within 30s
+  - Click "Select Account"                  # GAP-2: prefix match
+  - Click "PlaywrightTeam"
+  - Reload the page                         # GAP-1: reload
+  - Click "Team"
+  - Wait until page shows Team Information within 10s
+  - Click "css:[data-test='teamMembersEllipsis']"   # GAP-2: css target
+  - Click "Leave Team"
+  - Type PlaywrightTeam into the "css:input[name='teamName']" field   # GAP-2: css target
+  - Press the "Confirm" button
+  - assert: page does not show Confirm within 15s   # GAP-3: negative (dialog closed)

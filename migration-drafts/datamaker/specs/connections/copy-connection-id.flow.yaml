@@ -1,0 +1,21 @@
+# Migrates: connections.test.ts :: "Copy connection ID"
+# Reduced coverage: Playwright pasted the clipboard back and compared it to
+# the API's connection id. Clipboard readback is out of scope (GAPS.md) —
+# the spec exercises the copy control and keeps the flow healthy. The ID
+# chip's text starts with "ID:".
+name: Connections - copy a connection's ID
+app: web
+url: ${DM_BASE_URL}/connections           # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows connections found within 30s
+  - Click "Playwright API Folder"
+  - Click "TestConnection"
+  - Click "ID:"                             # GAP-2: prefix match on the copy chip
+  - assert: page shows TestConnection

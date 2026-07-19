@@ -1,0 +1,28 @@
+# Migrates: teamSettings.test.ts :: "Create, copy and delete api key"
+# Playwright asserted the POST status; the UI outcomes are the key row
+# appearing (masked), the reveal toggle, and the deletion toast.
+name: Team settings - create, reveal and delete an API key
+app: web
+url: ${DM_BASE_URL}/settings              # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows Personal Information within 30s
+  - Click "Select Account"                  # GAP-2: prefix match
+  - Click "PlaywrightTeam"
+  - Reload the page                         # GAP-1: reload
+  - Click "Team"
+  - Wait until page shows Team Information within 10s
+  - Press the "Create API Key" button
+  - Clear the "Enter key name" field        # GAP-2: clear
+  - Type Playwright Test API Key into the "Enter key name" field
+  - Press the "Create API key" button
+  - Wait until page shows Playwright Test API Key within 15s
+  - Click "css:button[data-test='showKey']"    # GAP-2: css target
+  - Click "css:button[data-test='deleteKey']"  # GAP-2: css target
+  - assert: page shows API key deleted successfully within 10s

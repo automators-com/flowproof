@@ -1,0 +1,24 @@
+# Migrates: connections.test.ts :: "Edit DB connection"
+# Playwright verified via GET /connections; the UI outcome is the renamed
+# row in the list. Seeded connection "TestConnection" lives inside the
+# seeded folder "Playwright API Folder" — expand it first.
+name: Connections - edit a database connection
+app: web
+url: ${DM_BASE_URL}/connections           # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows connections found within 30s
+  - Click "Playwright API Folder"
+  - Click "TestConnection"
+  - Clear the "e.g. My SQL Database" field                    # GAP-2: clear (name input placeholder)
+  - Type Edited connection into the "e.g. My SQL Database" field
+  - Clear the "css:input[name='connectionString']" field      # GAP-2: clear + css
+  - Type Edited connection string into the "css:input[name='connectionString']" field
+  - Press the "Save" button
+  - assert: page shows Edited connection within 15s

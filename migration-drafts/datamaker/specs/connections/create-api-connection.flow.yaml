@@ -1,0 +1,32 @@
+# Migrates: connections.test.ts :: "Create new API connection"
+# The username/password are dummies (mirroring the Playwright literals);
+# password-field pixels are auto-masked in the recording regardless.
+name: Connections - create an API connection
+app: web
+url: ${DM_BASE_URL}/connections           # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows connections found within 30s
+  - Press the "Add Connection" button
+  - Click "REST API"                        # GAP-2: prefix match
+  - Type Playwright API Connection into the "eg. Datamaker Usage Statistics EUW" field
+  - Press the "Next step" button
+  - Click "PUT"
+  - Type ConnectionString into the "css:[name='url']" field          # GAP-2: css target
+  - Press the "Add Parameter" button
+  - Type name into the "css:[name='params.0.name']" field            # GAP-2: css target
+  - Type value into the "css:[name='params.0.value']" field          # GAP-2: css target
+  - Press the "Next step" button
+  - Click "Basic"
+  - Type username into the "API User Name" field
+  - Type password into the "API Password" field
+  - Press the "Next step" button
+  - Wait until page shows Your connection is now ready to use. within 15s
+  - Press the "Close" button
+  - assert: page shows Playwright API Connection within 15s

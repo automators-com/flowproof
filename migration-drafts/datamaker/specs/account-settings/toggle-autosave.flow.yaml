@@ -1,0 +1,20 @@
+# Migrates: accountSettings.test.ts :: "Toggle autosave templates"
+# Playwright asserted the PATCH /users payload; here we assert the visible
+# outcome: the toggle button's label flips Disable -> Enable and back.
+# Seed leaves autosave ON, so the button starts as "Disable".
+name: Account settings - toggle autosave templates
+app: web
+url: ${DM_BASE_URL}/settings              # GAP-1: env ref in url
+session:                                   # GAP-1: session block
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows Personal Information within 40s
+  - Press the "Disable" button
+  - assert: page shows Enable within 10s
+  - Press the "Enable" button
+  - assert: page shows Disable within 10s

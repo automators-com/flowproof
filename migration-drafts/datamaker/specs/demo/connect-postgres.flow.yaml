@@ -1,0 +1,26 @@
+# Migrates: demo-connect.test.ts :: "register a Postgres connection and
+# test it live" — needs a reachable Postgres (E2E_TEST_DB_URL), same gate
+# as the original.
+name: Demo - register a Postgres connection and test it live
+app: web
+url: ${DM_BASE_URL}/connections           # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows connections found within 30s
+  - Press the "Add Connection" button
+  - Click "Database"                        # GAP-2: prefix match
+  - Type Production Postgres into the "eg. Datamaker Usage Statistics EUW" field
+  - Press the "Next step" button
+  - Click "PostgreSQL"
+  - Type ${E2E_TEST_DB_URL} into the "Enter the URL for your Database Connection String" field
+  - Press the "Test Connection" button
+  - assert: page shows Successful within 20s
+  - Press the "Next step" button
+  - Wait until page shows Your connection is now ready to use. within 15s
+  - Press the "Close" button

@@ -1,0 +1,21 @@
+# Migrates: connections.test.ts :: "Export connection to file"
+# The app gives no success indication for this action (same in Playwright,
+# which ended without an assert). The form staying open is the only stable
+# post-condition.
+name: Connections - export a connection to file
+app: web
+url: ${DM_BASE_URL}/connections           # GAP-1
+session:                                   # GAP-1
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+    teamId: ${DM_TEAM_ID}
+steps:
+  - Wait until page shows connections found within 30s
+  - Click "Playwright API Folder"
+  - Click "TestConnection"
+  - Click "css:[name='form_options']"       # GAP-2: css target
+  - Click "Export To File"
+  - assert: page shows Connection Name
