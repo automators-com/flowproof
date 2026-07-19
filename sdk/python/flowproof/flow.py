@@ -56,6 +56,13 @@ class RunResult:
     def __bool__(self) -> bool:
         return self.passed
 
+    @property
+    def junit_path(self) -> Path:
+        """JUnit XML rendering of this run, for CI systems that ingest it
+        (Jenkins, GitLab, Azure DevOps, ...). Written alongside
+        ``result.json``."""
+        return self.report_path.with_name("junit.xml")
+
 
 def _parse_run_result(payload: str) -> RunResult:
     data = json.loads(payload)
