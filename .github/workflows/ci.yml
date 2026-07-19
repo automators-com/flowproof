@@ -60,6 +60,10 @@ jobs:
         run: cargo test -p flowproof-cli --test notepad_e2e -- --nocapture
         env:
           FLOWPROOF_E2E: "1"
+      - name: LLM-author a freeform Notepad flow (UIA scene, fake model server)
+        run: cargo test -p flowproof-cli --test notepad_author_e2e -- --nocapture
+        env:
+          FLOWPROOF_E2E: "1"
       - name: cleanup stray notepad
         if: always()
         shell: pwsh

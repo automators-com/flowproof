@@ -1034,9 +1034,9 @@ steps:
         )
         .expect("spec parses");
         let mut driver = MockAppDriver::new(&["#shiny", "body"]);
-        driver.scene = Some(r##"[{"css":"#shiny","tag":"button","text":"Shiny"}]"##.into());
+        driver.scene = Some(r##"[{"target":"css:#shiny","tag":"button","text":"Shiny"}]"##.into());
         let mut client = CountingClient {
-            reply: r##"{"action":"click","target_css":"#shiny"}"##.into(),
+            reply: r##"{"action":"click","target":"css:#shiny"}"##.into(),
             calls: 0,
         };
         let dir = std::env::temp_dir().join("flowproof-llm-fallback");
@@ -1069,9 +1069,9 @@ steps:
         )
         .expect("parses");
         let mut driver = MockAppDriver::new(&["#shiny"]);
-        driver.scene = Some(r##"[{"css":"#shiny"}]"##.into());
+        driver.scene = Some(r##"[{"target":"css:#shiny"}]"##.into());
         let mut client = CountingClient {
-            reply: r##"{"action":"click","target_css":"#shiny"}"##.into(),
+            reply: r##"{"action":"click","target":"css:#shiny"}"##.into(),
             calls: 0,
         };
         let out = std::env::temp_dir().join("flowproof-rules-only.trace.jsonl");

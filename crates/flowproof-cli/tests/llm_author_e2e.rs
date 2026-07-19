@@ -42,13 +42,13 @@ fn serve_scripted(server: tiny_http::Server) -> std::thread::JoinHandle<Vec<Stri
             let mut body = String::new();
             std::io::Read::read_to_string(request.as_reader(), &mut body).ok();
             let reply = if body.contains("Put Ada into the box") {
-                r##"{"action":"type_text","target_css":"#name","text":"Ada"}"##
+                r##"{"action":"type_text","target":"css:#name","text":"Ada"}"##
             } else if body.contains("Smash the greeting button") {
-                r##"{"action":"click","target_css":"#greet"}"##
+                r##"{"action":"click","target":"css:#greet"}"##
             } else if body.contains("greeting Ada") {
-                r##"{"action":"assert_text","target_css":"#greeting","expected":"Hello, Ada","contains":true}"##
+                r##"{"action":"assert_text","target":"css:#greeting","expected":"Hello, Ada","contains":true}"##
             } else {
-                r##"{"action":"click","target_css":"#nonsense"}"##
+                r##"{"action":"click","target":"css:#nonsense"}"##
             };
             let payload = serde_json::json!({
                 "choices": [{"message": {"role": "assistant", "content": reply}}]
@@ -109,8 +109,8 @@ fn authors_via_openai_compatible_server() {
     assert_eq!(bodies.len(), 3);
     for body in &bodies {
         assert!(
-            body.contains("#name") && body.contains("#greet"),
-            "scene in prompt"
+            body.contains("css:#name") && body.contains("css:#greet"),
+            "scene target tokens in prompt"
         );
     }
 
