@@ -10,6 +10,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# contents: write lets the suite commit its rendered visuals back to this
+# branch, which is the only transport the authoring sandbox can read (the
+# artifact blob store is outside its network policy).
+permissions:
+  contents: write
+
 jobs:
   suite:
     name: record + replay against the live site
@@ -89,11 +95,17 @@ jobs:
               "file://$PWD/$run/report.html" 2>/dev/null || true
           done
           ls -la visuals
-          tar czf visuals.tgz -C visuals .
-          echo "VISUALS SIZE: $(stat -c%s visuals.tgz) bytes"
-          echo "BEGIN-VISUALS-B64"
-          base64 -w 512 visuals.tgz
-          echo "END-VISUALS-B64"
+      - name: commit visuals back to this branch ([skip ci] avoids a loop)
+        if: always()
+        run: |
+          set -u
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          rm -rf site-visuals && mv visuals site-visuals
+          git add -f site-visuals
+          git commit -m "site-tests: rendered visuals from run ${{ github.run_id }} [skip ci]" || exit 0
+          git pull --rebase origin "${{ github.ref_name }}" || true
+          git push origin "HEAD:${{ github.ref_name }}"
 
   recon:
     name: recon (page text + ids)
