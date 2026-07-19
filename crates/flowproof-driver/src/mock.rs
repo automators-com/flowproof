@@ -31,6 +31,10 @@ pub struct MockAppDriver {
     pub fail_element_rect: bool,
     /// Scene JSON returned by `scene` (None = authoring unavailable).
     pub scene: Option<String>,
+    /// Scripted text sequences: each `read_text` on the key pops the next
+    /// entry (falling back to `texts` when drained) — simulates a slow UI
+    /// whose text changes over time, for auto-wait tests.
+    pub text_sequence: HashMap<String, std::collections::VecDeque<String>>,
 }
 
 impl MockAppDriver {
@@ -98,6 +102,11 @@ impl AppDriver for MockAppDriver {
 
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
         let id = Self::id_of(selector)?;
+        if let Some(queue) = self.text_sequence.get_mut(id) {
+            if let Some(next) = queue.pop_front() {
+                return Ok(next);
+            }
+        }
         self.texts
             .get(id)
             .cloned()

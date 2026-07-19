@@ -16,6 +16,8 @@ pub use report::{RunReport, StepResult, StepStatus};
 
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
+/// Auto-wait bound for asserts in traces recorded before timeouts existed.
+const DEFAULT_ASSERT_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReplayError {
@@ -172,7 +174,6 @@ fn check_assertion<D: AppDriver>(
                     None,
                 ));
             };
-            let text = driver.read_text(&uia)?;
             let raw = if let Some(e) = expect.get("value_contains").and_then(|v| v.as_str()) {
                 e
             } else if let Some(e) = expect.get("value_equals").and_then(|v| v.as_str()) {
@@ -190,28 +191,42 @@ fn check_assertion<D: AppDriver>(
                 Ok(expected) => expected,
                 Err(e) => return Ok((Err(e.to_string()), Some(rung))),
             };
-            let matches = if expect.get("value_contains").is_some() {
-                text.contains(&expected)
-            } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
-                matches!(
-                    (numeric_value(&text), expected.parse::<f64>()),
-                    (Some(actual), Ok(wanted)) if actual == wanted
-                )
-            } else {
-                text == expected
-            };
-            if matches {
-                Ok((Ok(()), Some(rung)))
-            } else {
-                let shown = if flowproof_trace::secret::has_refs(raw) {
-                    "<masked>"
+            // Assertions auto-wait: poll until the expectation holds or the
+            // RECORDED timeout elapses — deterministic (bounded, and the
+            // bound travels in the trace), no sleeps in specs.
+            let timeout_ms = expect
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(DEFAULT_ASSERT_TIMEOUT_MS);
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+            let mut text = driver.read_text(&uia)?;
+            loop {
+                let matches = if expect.get("value_contains").is_some() {
+                    text.contains(&expected)
+                } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
+                    matches!(
+                        (numeric_value(&text), expected.parse::<f64>()),
+                        (Some(actual), Ok(wanted)) if actual == wanted
+                    )
                 } else {
-                    text.as_str()
+                    text == expected
                 };
-                Ok((
-                    Err(format!("expected element text '{raw}', got '{shown}'")),
-                    Some(rung),
-                ))
+                if matches {
+                    return Ok((Ok(()), Some(rung)));
+                }
+                if Instant::now() >= deadline {
+                    let shown = if flowproof_trace::secret::has_refs(raw) {
+                        "<masked>"
+                    } else {
+                        text.as_str()
+                    };
+                    return Ok((
+                        Err(format!("expected element text '{raw}', got '{shown}'")),
+                        Some(rung),
+                    ));
+                }
+                std::thread::sleep(POLL_INTERVAL);
+                text = driver.read_text(&uia)?;
             }
         }
         other => Ok((

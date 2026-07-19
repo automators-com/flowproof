@@ -200,6 +200,65 @@ fn secret_reference_types_real_value_but_never_persists_it() {
     std::env::remove_var("FLOWPROOF_E2E_PW");
 }
 
+/// Auto-waiting against a real browser: the page's result text only appears
+/// after an async delay — record and replay both wait it out, no sleeps in
+/// the spec.
+#[test]
+fn assertions_wait_for_async_page_updates() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web auto-wait E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-autowait-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("slow.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body>
+            <button id="start" onclick="
+                document.getElementById('out').textContent = 'Generating…';
+                setTimeout(() => {
+                    document.getElementById('out').textContent = 'Generation complete: 100 rows';
+                }, 3000);
+            ">Start</button>
+            <div id="out"></div>
+        </body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("slow.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Slow generation".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        steps: vec![
+            flowproof_agent::SpecStep::Plain("Press the start button".into()),
+            flowproof_agent::SpecStep::Plain(
+                "Wait until page shows Generation complete within 15s".into(),
+            ),
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let started = std::time::Instant::now();
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording waits");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(3),
+        "record must have actually waited for the async update"
+    );
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Redaction proof against a real browser: a page with a password field and
 /// a css-masked region — the PERSISTED frames must show both as solid black.
 #[test]

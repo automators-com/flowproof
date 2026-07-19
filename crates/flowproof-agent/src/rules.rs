@@ -44,7 +44,10 @@ pub enum ResolvedAction {
     },
     /// Type literal text into an element.
     TypeText { target: Target, text: String },
-    /// Assert on an element's visible text.
+    /// Assert on an element's visible text. Assertions AUTO-WAIT: the
+    /// engine polls until the expectation holds or `timeout_ms` elapses —
+    /// deterministic (bounded, recorded in the trace), and what makes slow
+    /// async UIs testable without sleeps.
     AssertText {
         target: Target,
         expected: String,
@@ -52,7 +55,36 @@ pub enum ResolvedAction {
         contains: bool,
         /// Compare the trailing numeric value instead of raw text.
         numeric: bool,
+        /// How long the expectation may take to become true.
+        timeout_ms: u64,
     },
+}
+
+/// Default auto-wait for assertions (Playwright's expect default).
+pub const ASSERT_TIMEOUT_MS: u64 = 10_000;
+/// Default for explicit `Wait until …` steps — sized for slow backend
+/// operations (a data-generation job, a report build).
+pub const WAIT_STEP_TIMEOUT_MS: u64 = 60_000;
+
+/// Parse a trailing `within <N>s` / `within <N> seconds` qualifier off a
+/// step, returning (rest, timeout override).
+fn split_within(text: &str) -> (&str, Option<u64>) {
+    let lower = text.to_lowercase();
+    let Some(pos) = lower.rfind(" within ") else {
+        return (text, None);
+    };
+    let qualifier = lower[pos + " within ".len()..].trim();
+    let digits = qualifier
+        .strip_suffix(" seconds")
+        .or_else(|| qualifier.strip_suffix(" second"))
+        .or_else(|| qualifier.strip_suffix("sec"))
+        .or_else(|| qualifier.strip_suffix('s'))
+        .map(str::trim)
+        .unwrap_or(qualifier);
+    match digits.parse::<u64>() {
+        Ok(seconds) if seconds > 0 => (text[..pos].trim_end(), Some(seconds * 1000)),
+        _ => (text, None),
+    }
 }
 
 /// AutomationId of the Windows Calculator result display.
@@ -172,6 +204,7 @@ mod calc {
                 expected: expected.to_string(),
                 contains: false,
                 numeric: true,
+                timeout_ms: ASSERT_TIMEOUT_MS,
             });
         }
         Err(unresolvable(trimmed, "expected 'display shows <value>'"))
@@ -209,6 +242,7 @@ mod notepad {
                         expected: expected.to_string(),
                         contains: true,
                         numeric: false,
+                        timeout_ms: ASSERT_TIMEOUT_MS,
                     }]);
                 }
                 Err(unresolvable(trimmed, "expected 'document contains <text>'"))
@@ -228,6 +262,7 @@ mod web {
             SpecStep::Plain(text) => resolve_plain(text),
             SpecStep::Assert { assert } => {
                 let trimmed = assert.trim();
+                let (trimmed, timeout) = split_within(trimmed);
                 if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
                     let expected = rest.trim();
                     if expected.is_empty() {
@@ -238,6 +273,7 @@ mod web {
                         expected: expected.to_string(),
                         contains: true,
                         numeric: false,
+                        timeout_ms: timeout.unwrap_or(ASSERT_TIMEOUT_MS),
                     }]);
                 }
                 Err(unresolvable(trimmed, "expected 'page shows <text>'"))
@@ -247,6 +283,22 @@ mod web {
 
     fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
         let trimmed = text.trim();
+
+        // `Wait until page shows <text> [within <N>s]` → an auto-waiting
+        // assert with a long default, for slow backend operations.
+        if let Some(rest) = strip_prefix_ci(trimmed, "wait until page shows ") {
+            let (expected, timeout) = split_within(rest.trim());
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected text"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::css(PAGE_TEXT_CSS),
+                expected: expected.trim().to_string(),
+                contains: true,
+                numeric: false,
+                timeout_ms: timeout.unwrap_or(WAIT_STEP_TIMEOUT_MS),
+            }]);
+        }
 
         // `Type <text> into the <id> field` → type into `#<id>`.
         if let Some(rest) = strip_prefix_ci(trimmed, "type ") {
@@ -344,6 +396,7 @@ mod tests {
                 expected: "8".into(),
                 contains: false,
                 numeric: true,
+                timeout_ms: ASSERT_TIMEOUT_MS,
             }]
         );
     }
@@ -380,6 +433,7 @@ mod tests {
                 expected: "Hello".into(),
                 contains: true,
                 numeric: false,
+                timeout_ms: ASSERT_TIMEOUT_MS,
             }]
         );
     }
@@ -426,8 +480,70 @@ mod tests {
                 expected: "Hello, Ada".into(),
                 contains: true,
                 numeric: false,
+                timeout_ms: ASSERT_TIMEOUT_MS,
             }]
         );
+    }
+
+    #[test]
+    fn wait_until_maps_to_a_long_auto_waiting_assert() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain("Wait until page shows Generation complete".into()),
+        )
+        .expect("wait resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertText {
+                target: Target::css("body"),
+                expected: "Generation complete".into(),
+                contains: true,
+                numeric: false,
+                timeout_ms: WAIT_STEP_TIMEOUT_MS,
+            }]
+        );
+    }
+
+    #[test]
+    fn within_qualifier_overrides_the_timeout() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain("Wait until page shows Done within 90s".into()),
+        )
+        .expect("wait resolves");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText { expected, timeout_ms: 90_000, .. } if expected == "Done"
+        ));
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "page shows Ready within 3 seconds".into(),
+            },
+        )
+        .expect("assert resolves");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText { expected, timeout_ms: 3000, .. } if expected == "Ready"
+        ));
+    }
+
+    #[test]
+    fn within_only_strips_a_valid_qualifier() {
+        // "within" followed by a non-number stays part of the expectation.
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "page shows delivered within budget".into(),
+            },
+        )
+        .expect("assert resolves");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText { expected, timeout_ms: ASSERT_TIMEOUT_MS, .. }
+                if expected == "delivered within budget"
+        ));
     }
 
     #[test]

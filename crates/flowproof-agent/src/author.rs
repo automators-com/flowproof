@@ -120,6 +120,7 @@ fn parse_and_ground(
                 expected,
                 contains: authored.contains.unwrap_or(true),
                 numeric: false,
+                timeout_ms: crate::rules::ASSERT_TIMEOUT_MS,
             })
         }
         other => Err(format!("unknown action '{other}'")),
@@ -260,6 +261,7 @@ mod tests {
                 expected: "Hello, Ada".into(),
                 contains: true,
                 numeric: false,
+                timeout_ms: crate::rules::ASSERT_TIMEOUT_MS,
             }
         );
     }
