@@ -15,11 +15,14 @@ pub enum RulesError {
     UnsupportedApp(String),
 }
 
-/// What an action targets: a UIA automation id or a CSS selector.
+/// What an action targets: a UIA automation id, a CSS selector, or a text
+/// anchor (visible text / accessible label / placeholder — how elements
+/// without ids are addressed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     AutomationId(String),
     Css(String),
+    Text(String),
 }
 
 impl Target {
@@ -30,6 +33,17 @@ impl Target {
     pub fn css(css: impl Into<String>) -> Self {
         Target::Css(css.into())
     }
+
+    pub fn text(text: impl Into<String>) -> Self {
+        Target::Text(text.into())
+    }
+}
+
+/// Parse a leading `"quoted label"` off `rest`, returning (label, tail).
+fn quoted_label(rest: &str) -> Option<(&str, &str)> {
+    let end = rest.find('"')?;
+    let label = &rest[..end];
+    (!label.is_empty()).then_some((label, rest[end + 1..].trim()))
 }
 
 /// A concrete action planned from one natural-language step. One step may
@@ -300,6 +314,47 @@ mod web {
             }]);
         }
 
+        // `Type <text> into the "<label>" field` → text anchor: the input
+        // whose placeholder / accessible label is <label> (no id needed).
+        if let Some(rest) = strip_prefix_ci(trimmed, "type ") {
+            if let Some(pos) = rest.rfind(" into the \"") {
+                let value = rest[..pos].trim();
+                if let Some((label, tail)) = quoted_label(&rest[pos + " into the \"".len()..]) {
+                    if tail.eq_ignore_ascii_case("field") && !value.is_empty() {
+                        return Ok(vec![ResolvedAction::TypeText {
+                            target: Target::text(label),
+                            text: value.to_string(),
+                        }]);
+                    }
+                }
+            }
+        }
+
+        // `Press the "<label>" button` → the button showing <label>.
+        if let Some(rest) = strip_prefix_ci(trimmed, "press the \"") {
+            if let Some((label, tail)) = quoted_label(rest) {
+                if tail.eq_ignore_ascii_case("button") {
+                    return Ok(vec![ResolvedAction::Press {
+                        target: Target::text(label),
+                        label: label.to_string(),
+                    }]);
+                }
+            }
+        }
+
+        // `Click "<text>"` → any interactable element showing <text>
+        // (tabs, links, menu options, list rows).
+        if let Some(rest) = strip_prefix_ci(trimmed, "click \"") {
+            if let Some((label, tail)) = quoted_label(rest) {
+                if tail.is_empty() {
+                    return Ok(vec![ResolvedAction::Press {
+                        target: Target::text(label),
+                        label: label.to_string(),
+                    }]);
+                }
+            }
+        }
+
         // `Type <text> into the <id> field` → type into `#<id>`.
         if let Some(rest) = strip_prefix_ci(trimmed, "type ") {
             let lower = rest.to_lowercase();
@@ -339,7 +394,9 @@ mod web {
 
         Err(unresolvable(
             trimmed,
-            "expected 'Type <text> into the <id> field' or 'Press the <id> button'",
+            "expected 'Type <text> into the <id> field', 'Press the <id> button', \
+             a quoted-label form ('Press the \"Save\" button', 'Click \"Templates\"', \
+             'Type x into the \"Field Name\" field'), or 'Wait until page shows <text>'",
         ))
     }
 }
@@ -543,6 +600,50 @@ mod tests {
             &actions[0],
             ResolvedAction::AssertText { expected, timeout_ms: ASSERT_TIMEOUT_MS, .. }
                 if expected == "delivered within budget"
+        ));
+    }
+
+    #[test]
+    fn quoted_labels_map_to_text_anchors() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain("Type CI Pipeline Key into the \"Enter key name\" field".into()),
+        )
+        .expect("quoted type resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::TypeText {
+                target: Target::text("Enter key name"),
+                text: "CI Pipeline Key".into(),
+            }]
+        );
+
+        let actions = resolve_step("web", &SpecStep::Plain("Press the \"Save\" button".into()))
+            .expect("quoted press resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::Press {
+                target: Target::text("Save"),
+                label: "Save".into(),
+            }]
+        );
+
+        let actions = resolve_step("web", &SpecStep::Plain("Click \"Templates\"".into()))
+            .expect("click resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::Press {
+                target: Target::text("Templates"),
+                label: "Templates".into(),
+            }]
+        );
+
+        // Unquoted id forms are untouched.
+        let actions = resolve_step("web", &SpecStep::Plain("Press the greet button".into()))
+            .expect("id press resolves");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::Press { target: Target::Css(css), .. } if css == "#greet"
         ));
     }
 

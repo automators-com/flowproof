@@ -147,6 +147,22 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
                 payload,
             }]
         }
+        // A text anchor IS the primary selector here: the element is
+        // addressed the way a user sees it (visible text / placeholder).
+        Target::Text(text) => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("text".into(), text.as_str().into());
+            vec![Selector {
+                tier: SelectorTier::TextAnchor,
+                provenance: if app == "web" {
+                    flowproof_trace::format::Adapter::Web
+                } else {
+                    flowproof_trace::format::Adapter::Uia
+                },
+                confidence: Some(1.0),
+                payload,
+            }]
+        }
     }
 }
 
@@ -213,6 +229,10 @@ fn action_selector(action: &ResolvedAction) -> UiaSelector {
     match target {
         Target::AutomationId(id) => UiaSelector::automation_id(id.clone()),
         Target::Css(css) => UiaSelector::css(css.clone()),
+        Target::Text(text) => UiaSelector {
+            name: Some(text.clone()),
+            ..UiaSelector::default()
+        },
     }
 }
 

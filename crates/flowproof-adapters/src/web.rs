@@ -50,12 +50,76 @@ impl WebAppDriver {
             .ok_or_else(|| DriverError::Uia("web: no page open: call launch first".into()))
     }
 
-    fn css_of(selector: &UiaSelector) -> Result<String, DriverError> {
-        selector.css_selector().ok_or_else(|| {
+    fn locator_of(selector: &UiaSelector) -> Option<WebLocator> {
+        if let Some(css) = selector.css_selector() {
+            return Some(WebLocator::Css(css));
+        }
+        // Text anchor: find by visible text / accessible label / placeholder
+        // — how humans (and Playwright's getByText/getByPlaceholder/getByRole
+        // name matching) address elements on pages without ids.
+        selector
+            .name
+            .as_ref()
+            .map(|text| WebLocator::XPath(text_xpath(text)))
+    }
+
+    fn locator(selector: &UiaSelector) -> Result<WebLocator, DriverError> {
+        Self::locator_of(selector).ok_or_else(|| {
             DriverError::Uia(format!(
-                "web: selector [{selector}] has no css or automation_id"
+                "web: selector [{selector}] has no css, automation_id, or text"
             ))
         })
+    }
+
+    fn find(&self, locator: &WebLocator) -> Result<headless_chrome::Element<'_>, DriverError> {
+        let tab = self.tab()?;
+        match locator {
+            WebLocator::Css(css) => tab
+                .wait_for_element_with_custom_timeout(css, FIND_TIMEOUT)
+                .map_err(|e| web_err(&format!("finding {css}"), e)),
+            WebLocator::XPath(xpath) => tab
+                .wait_for_xpath_with_custom_timeout(xpath, FIND_TIMEOUT)
+                .map_err(|e| web_err(&format!("finding element by text ({xpath})"), e)),
+        }
+    }
+
+    fn exists(&self, locator: &WebLocator) -> Result<bool, DriverError> {
+        let tab = self.tab()?;
+        Ok(match locator {
+            WebLocator::Css(css) => tab.find_element(css).is_ok(),
+            WebLocator::XPath(xpath) => tab.find_element_by_xpath(xpath).is_ok(),
+        })
+    }
+}
+
+/// How a [`UiaSelector`] resolves on a page.
+enum WebLocator {
+    Css(String),
+    XPath(String),
+}
+
+/// XPath matching an interactable element by its visible text, accessible
+/// label, or placeholder — Playwright's text/placeholder addressing.
+fn text_xpath(text: &str) -> String {
+    let lit = xpath_literal(text);
+    format!(
+        "//*[self::button or self::a or self::summary or @role='button' or \
+         @role='tab' or @role='option' or @type='submit']\
+         [normalize-space()={lit} or @aria-label={lit}] | \
+         //input[@placeholder={lit} or @aria-label={lit}] | \
+         //textarea[@placeholder={lit} or @aria-label={lit}]"
+    )
+}
+
+/// Quote `text` as an XPath string literal, handling embedded quotes.
+fn xpath_literal(text: &str) -> String {
+    if !text.contains('\'') {
+        format!("'{text}'")
+    } else if !text.contains('"') {
+        format!("\"{text}\"")
+    } else {
+        let parts: Vec<String> = text.split('\'').map(|p| format!("'{p}'")).collect();
+        format!("concat({})", parts.join(", \"'\", "))
     }
 }
 
@@ -80,44 +144,37 @@ impl AppDriver for WebAppDriver {
     }
 
     fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
-        let Some(css) = selector.css_selector() else {
+        let Some(locator) = Self::locator_of(selector) else {
             return Ok(false); // non-web ladder rungs simply don't match
         };
-        Ok(self.tab()?.find_element(&css).is_ok())
+        self.exists(&locator)
     }
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
-        let css = Self::css_of(selector)?;
-        self.tab()?
-            .wait_for_element_with_custom_timeout(&css, FIND_TIMEOUT)
-            .map_err(|e| web_err(&format!("finding {css}"), e))?
+        let locator = Self::locator(selector)?;
+        self.find(&locator)?
             .click()
-            .map_err(|e| web_err(&format!("clicking {css}"), e))?;
+            .map_err(|e| web_err(&format!("clicking [{selector}]"), e))?;
         Ok(())
     }
 
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
-        let css = Self::css_of(selector)?;
-        let element = self
-            .tab()?
-            .wait_for_element_with_custom_timeout(&css, FIND_TIMEOUT)
-            .map_err(|e| web_err(&format!("finding {css}"), e))?;
+        let locator = Self::locator(selector)?;
+        let element = self.find(&locator)?;
         // Inner text covers most elements; inputs expose their value instead.
         let text = element
             .get_inner_text()
-            .map_err(|e| web_err(&format!("reading text of {css}"), e))?;
+            .map_err(|e| web_err(&format!("reading text of [{selector}]"), e))?;
         Ok(text)
     }
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
-        let css = Self::css_of(selector)?;
-        self.tab()?
-            .wait_for_element_with_custom_timeout(&css, FIND_TIMEOUT)
-            .map_err(|e| web_err(&format!("finding {css}"), e))?
+        let locator = Self::locator(selector)?;
+        self.find(&locator)?
             .click()
-            .map_err(|e| web_err(&format!("focusing {css}"), e))?
+            .map_err(|e| web_err(&format!("focusing [{selector}]"), e))?
             .type_into(text)
-            .map_err(|e| web_err(&format!("typing into {css}"), e))?;
+            .map_err(|e| web_err(&format!("typing into [{selector}]"), e))?;
         Ok(())
     }
 
@@ -138,16 +195,20 @@ impl AppDriver for WebAppDriver {
     }
 
     fn element_rect(&mut self, selector: &UiaSelector) -> Result<Option<PixelRect>, DriverError> {
-        let Some(css) = selector.css_selector() else {
+        let Some(locator) = Self::locator_of(selector) else {
             return Ok(None);
         };
         let tab = self.tab()?;
-        let Ok(element) = tab.find_element(&css) else {
+        let found = match &locator {
+            WebLocator::Css(css) => tab.find_element(css),
+            WebLocator::XPath(xpath) => tab.find_element_by_xpath(xpath),
+        };
+        let Ok(element) = found else {
             return Ok(None);
         };
         let quad = element
             .get_box_model()
-            .map_err(|e| web_err(&format!("box model of {css}"), e))?
+            .map_err(|e| web_err(&format!("box model of [{selector}]"), e))?
             .content;
         Ok(Some((
             quad.most_left().floor() as i32,
