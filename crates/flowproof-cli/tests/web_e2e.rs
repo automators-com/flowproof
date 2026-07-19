@@ -673,3 +673,68 @@ fn persisted_frames_never_contain_masked_data() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Suite mode: `flowproof run <dir>` replays every recorded flow under the
+/// directory, keeps going past failures, merges ONE junit.xml, and exits
+/// non-zero when any flow failed.
+#[test]
+fn suite_run_aggregates_flows_and_merges_junit() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web suite E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-suite-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    let specs_dir = dir.join("specs");
+    std::fs::create_dir_all(specs_dir.join("nested")).expect("temp dirs");
+
+    // Two tiny flows, one nested — recorded through the normal pipeline so
+    // their traces sit next to their specs (the suite pairing contract).
+    for (rel, name, marker) in [
+        ("a-first.flow.yaml", "First flow", "alpha"),
+        ("nested/b-second.flow.yaml", "Second flow", "beta"),
+    ] {
+        let page = dir.join(format!("{marker}.html"));
+        std::fs::write(
+            &page,
+            format!(r#"<!doctype html><html><body><div>{marker} ready</div></body></html>"#),
+        )
+        .expect("page written");
+        let spec_yaml = format!(
+            "name: {name}\napp: web\nurl: file://{}\nsteps:\n  - assert: page shows {marker} ready\n",
+            page.display()
+        );
+        let spec_path = specs_dir.join(rel);
+        std::fs::write(&spec_path, &spec_yaml).expect("spec written");
+        let spec = flowproof_agent::FlowSpec::parse(&spec_yaml).expect("spec parses");
+        let trace_path = flowproof_cli::default_trace_path(&spec_path);
+        let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+        flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    }
+
+    // Green suite: both flows pass, exit 0, one junit with two testsuites.
+    let code = flowproof_cli::run_suite(&specs_dir, false).expect("suite runs");
+    assert_eq!(code, flowproof_cli::EXIT_PASS);
+    let junit_path = specs_dir.join(".flowproof").join("suite-junit.xml");
+    let junit = std::fs::read_to_string(&junit_path).expect("suite junit written");
+    assert_eq!(junit.matches("<testsuite name=").count(), 2);
+    assert!(junit.contains("failures=\"0\""));
+
+    // Break the SECOND flow's trace: the suite must still run the first,
+    // report the failure, and exit non-zero.
+    let broken = specs_dir.join("nested").join("b-second.trace.jsonl");
+    let contents = std::fs::read_to_string(&broken).expect("trace readable");
+    std::fs::write(&broken, contents.replace("beta ready", "beta NEVER")).expect("trace broken");
+    let code = flowproof_cli::run_suite(&specs_dir, false).expect("suite runs");
+    assert_eq!(code, flowproof_cli::EXIT_FAIL);
+    let junit = std::fs::read_to_string(&junit_path).expect("suite junit rewritten");
+    assert!(junit.contains("<failure"), "failure recorded: {junit}");
+    assert_eq!(
+        junit.matches("<testsuite name=").count(),
+        2,
+        "both flows still ran"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
