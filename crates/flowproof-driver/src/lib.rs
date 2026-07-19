@@ -14,6 +14,8 @@ pub mod mock;
 pub mod oob;
 pub mod recording;
 pub mod redact;
+#[cfg(windows)]
+pub mod window;
 
 pub use app::{
     absolute_url, numeric_value, resolve_app, url_origin, AppDriver, AppTarget, KeyMod, PixelRect,
@@ -28,7 +30,7 @@ pub use redact::{RedactMode, RedactTarget, RedactionRule};
 pub struct Frame {
     pub width: u32,
     pub height: u32,
-    /// BGRA8 pixel data, row-major, `width * height * 4` bytes.
+    /// RGBA8 pixel data, row-major, `width * height * 4` bytes.
     pub data: Vec<u8>,
 }
 
@@ -93,9 +95,10 @@ mod tests {
         let mut backend = platform_backend();
         let result = backend.capture_frame();
         if cfg!(windows) {
-            // The Windows backend is still a stub too, but reports its own
-            // not-implemented state rather than UnsupportedPlatform.
-            assert!(result.is_err());
+            // The Windows backend captures via GDI — succeeds on a real
+            // desktop session, errors headless. Either way it must not
+            // claim the platform is unsupported.
+            assert!(!matches!(result, Err(DriverError::UnsupportedPlatform)));
         } else {
             assert!(matches!(result, Err(DriverError::UnsupportedPlatform)));
         }

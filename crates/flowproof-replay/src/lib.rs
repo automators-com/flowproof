@@ -84,12 +84,16 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             control_type: get("control_type"),
             css: get("css"),
             nth,
+            relation: None,
         },
-        // A text anchor resolves by visible label (UIA Name / element text).
+        // A text anchor resolves by visible label (UIA Name / element
+        // text / OCR line). `relation` rides along for pixels-only
+        // drivers, which act NEXT TO the anchor, not on it.
         SelectorTier::TextAnchor => UiaSelector {
             name: get("text").or_else(|| get("name")),
             css: get("css"),
             nth,
+            relation: get("relation"),
             ..UiaSelector::default()
         },
         // Visual matching needs the vision mode (not yet built); AI
