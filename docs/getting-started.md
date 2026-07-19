@@ -191,6 +191,22 @@ PASS: Add two numbers (2154 ms) -> .flowproof\runs\...\result.json
 DEGRADED: fallback selectors were needed — the app drifted; run `flowproof heal calc.flow.yaml`
 ```
 
+## Waiting on slow operations (no sleeps, still deterministic)
+
+Assertions **auto-wait**: the engine polls until the expectation holds or a
+bounded timeout elapses (default 10s), during recording and at every
+replay. The bound is recorded into the trace, so replay waits exactly as
+long as authoring allowed — deterministic, no sleeps in specs. For slow
+backend operations, use an explicit wait step (default bound 60s) or a
+`within` qualifier on either form:
+
+```yaml
+steps:
+  - Press the generate button
+  - Wait until page shows Generation complete within 120s
+  - assert: page shows 100 rows within 5s
+```
+
 ## Secrets: values never enter the trace
 
 Traces are reviewable, diffable artifacts — so sensitive values must never

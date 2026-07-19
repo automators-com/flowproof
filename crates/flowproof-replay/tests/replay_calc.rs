@@ -343,6 +343,66 @@ fn missing_secret_fails_closed_with_a_clear_error() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Auto-waiting assertions: a slow UI whose text only becomes right after
+/// several polls still records and replays green — and the timeout travels
+/// in the trace, so replay waits exactly as long as authoring allowed.
+#[test]
+fn assertions_wait_for_slow_uis_and_time_out_deterministically() {
+    let dir = std::env::temp_dir().join("flowproof-replay-autowait");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Slow op\napp: web\nurl: x\nsteps:\n  - Wait until page shows Done within 5s\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://example.test/slow".into()),
+        ..spec
+    };
+    let trace = dir.join("slow.trace.jsonl");
+
+    // Recording: the page shows "Working…" for the first three reads.
+    let mut rec = MockAppDriver::new(&["body"]).with_text("body", "Done");
+    rec.text_sequence.insert(
+        "body".into(),
+        ["Working…", "Working…", "Working…"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    );
+    record(&spec, &mut rec, &trace).expect("recording waits out the slow op");
+
+    // The recorded step carries the wait bound.
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(persisted.contains("\"timeout_ms\":5000"));
+
+    // Replay: same slow behavior, still passes.
+    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "Done");
+    driver.text_sequence.insert(
+        "body".into(),
+        ["Working…", "Working…"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    );
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:?}");
+
+    // A page that NEVER shows the text fails after the bounded wait —
+    // deterministically, with the real text in the failure detail.
+    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "Working…");
+    let started = std::time::Instant::now();
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(5));
+    assert!(report.steps[0]
+        .detail
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Working…"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn replay_skips_remaining_steps_after_a_missing_element() {
     let dir = std::env::temp_dir().join("flowproof-replay-skip");

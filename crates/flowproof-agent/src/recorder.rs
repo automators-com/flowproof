@@ -31,6 +31,8 @@ pub enum Author {
 
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 const STEP_TIMEOUT_MS: u64 = 5000;
+/// Poll cadence while an auto-waiting assertion is pending.
+const ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
@@ -167,14 +169,16 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             expected,
             contains,
             numeric,
+            timeout_ms,
         } => {
-            let expect = if *contains {
+            let mut expect = if *contains {
                 serde_json::json!({ "value_contains": expected })
             } else if *numeric {
                 serde_json::json!({ "value_equals": expected, "normalize": "numeric" })
             } else {
                 serde_json::json!({ "value_equals": expected })
             };
+            expect["timeout_ms"] = serde_json::json!(timeout_ms);
             (
                 selectors_for(app, target, None),
                 Action::Assert(Assertion::ElementState {
@@ -384,18 +388,27 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                     expected,
                     contains,
                     numeric,
+                    timeout_ms,
                     ..
                 } => {
-                    let actual = driver.read_text(&selector)?;
+                    // Assertions auto-wait while recording too: the flow is
+                    // being performed for real, so a slow backend operation
+                    // takes just as long here as it will at replay.
                     let wanted = flowproof_trace::secret::resolve_refs(expected)?;
-                    if !assert_holds(&actual, &wanted, *contains, *numeric) {
-                        // Error messages carry the RAW expectation — a
-                        // resolved secret must not leak through a failure.
-                        return Err(RecordError::AssertMismatch {
-                            intent: spec_step.intent().to_string(),
-                            expected: expected.clone(),
-                            actual,
-                        });
+                    let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
+                    let mut actual = driver.read_text(&selector)?;
+                    while !assert_holds(&actual, &wanted, *contains, *numeric) {
+                        if std::time::Instant::now() >= deadline {
+                            // Error messages carry the RAW expectation — a
+                            // resolved secret must not leak through a failure.
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: expected.clone(),
+                                actual,
+                            });
+                        }
+                        std::thread::sleep(ASSERT_POLL_INTERVAL);
+                        actual = driver.read_text(&selector)?;
                     }
                 }
             }
