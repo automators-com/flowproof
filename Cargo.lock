@@ -587,6 +587,7 @@ dependencies = [
  "flowproof-driver",
  "headless_chrome",
  "image",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

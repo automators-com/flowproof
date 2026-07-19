@@ -81,6 +81,38 @@ impl std::fmt::Display for UiaSelector {
     }
 }
 
+/// `scheme://host[:port]` of `url`, if it has a scheme.
+pub fn url_origin(url: &str) -> Option<String> {
+    let scheme_end = url.find("://")?;
+    let rest = &url[scheme_end + 3..];
+    let host_end = rest.find('/').unwrap_or(rest.len());
+    Some(format!("{}{}", &url[..scheme_end + 3], &rest[..host_end]))
+}
+
+/// Absolutize `path` against `base`'s origin: `/settings` on
+/// `http://host:3000/templates` → `http://host:3000/settings`. Full URLs
+/// pass through unchanged.
+pub fn absolute_url(path: &str, base: &str) -> String {
+    if path.contains("://") {
+        return path.to_string();
+    }
+    match url_origin(base) {
+        Some(origin) if path.starts_with('/') => format!("{origin}{path}"),
+        Some(origin) => format!("{origin}/{path}"),
+        None => path.to_string(),
+    }
+}
+
+/// Pre-launch session state with RESOLVED values (secret references are
+/// resolved by the caller before staging — the driver never sees `${VAR}`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WebSession {
+    /// `(name, value, domain)` — domain None derives from the launch URL.
+    pub cookies: Vec<(String, String, Option<String>)>,
+    /// Seeded into localStorage before any page script runs.
+    pub local_storage: Vec<(String, String)>,
+}
+
 /// A keyboard modifier held while pressing a key (`Ctrl+V`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyMod {
@@ -146,6 +178,28 @@ pub trait AppDriver {
     fn press_key(&mut self, _key: &str, _modifiers: &[KeyMod]) -> Result<(), DriverError> {
         Err(DriverError::Uia(
             "press_key is not supported by this driver".into(),
+        ))
+    }
+
+    /// Stage session state (cookies, localStorage) to be applied by the
+    /// NEXT `launch` before the page loads.
+    fn stage_session(&mut self, _session: WebSession) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "stage_session is not supported by this driver".into(),
+        ))
+    }
+
+    /// Navigate the current page to `url` (mid-flow `Go to /path`).
+    fn navigate(&mut self, _url: &str) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "navigate is not supported by this driver".into(),
+        ))
+    }
+
+    /// Reload the current page.
+    fn reload(&mut self) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "reload is not supported by this driver".into(),
         ))
     }
 
@@ -251,6 +305,18 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
         (**self).press_key(key, modifiers)
+    }
+
+    fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
+        (**self).stage_session(session)
+    }
+
+    fn navigate(&mut self, url: &str) -> Result<(), DriverError> {
+        (**self).navigate(url)
+    }
+
+    fn reload(&mut self) -> Result<(), DriverError> {
+        (**self).reload()
     }
 
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {

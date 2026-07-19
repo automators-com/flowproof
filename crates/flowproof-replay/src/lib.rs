@@ -34,6 +34,8 @@ pub enum ReplayError {
     UnknownApp(String),
     #[error("driver error: {0}")]
     Driver(#[from] flowproof_driver::DriverError),
+    #[error(transparent)]
+    Secret(#[from] flowproof_trace::secret::MissingSecret),
 }
 
 /// Parse a trace file into its header and steps.
@@ -309,6 +311,7 @@ impl StepMatch {
 fn execute_step<D: AppDriver>(
     driver: &mut D,
     step: &Step,
+    base_url: &str,
 ) -> Result<(Result<(), String>, StepMatch), ReplayError> {
     for condition in &step.sync.pre {
         if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
@@ -320,6 +323,27 @@ fn execute_step<D: AppDriver>(
     }
 
     let (outcome, matched) = match &step.action {
+        // Mid-flow navigation: `url` (relative paths resolve against the
+        // flow's origin; `${VAR}` refs resolve now) or `reload: true`.
+        Action::Launch(params) => {
+            if params.get("reload").and_then(|v| v.as_bool()) == Some(true) {
+                driver.reload()?;
+                (Ok(()), StepMatch::default())
+            } else if let Some(url) = params.get("url").and_then(|v| v.as_str()) {
+                match flowproof_trace::secret::resolve_refs(url) {
+                    Ok(path) => {
+                        driver.navigate(&flowproof_driver::absolute_url(&path, base_url))?;
+                        (Ok(()), StepMatch::default())
+                    }
+                    Err(e) => (Err(e.to_string()), StepMatch::default()),
+                }
+            } else {
+                (
+                    Err("launch step without url or reload".to_string()),
+                    StepMatch::default(),
+                )
+            }
+        }
         Action::Click(_) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
                 driver.invoke(&target)?;
@@ -443,18 +467,30 @@ pub fn run_trace<D: AppDriver>(
     let mut recorder =
         rules.and_then(|rules| flowproof_driver::RunRecorder::new(&run_dir, rules).ok());
     let target = if header.app.name == "web" {
+        let raw = header
+            .app
+            .url
+            .clone()
+            .ok_or_else(|| ReplayError::UnknownApp("web trace without url".into()))?;
         flowproof_driver::AppTarget {
-            command: header
-                .app
-                .url
-                .clone()
-                .ok_or_else(|| ReplayError::UnknownApp("web trace without url".into()))?,
+            // `${VAR}` refs in the recorded URL resolve at every replay.
+            command: flowproof_trace::secret::resolve_refs(&raw)?,
             window_name: String::new(),
         }
     } else {
         resolve_app(&header.app.name)
             .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?
     };
+    // Session state travels in the header (values may be `${VAR}` refs):
+    // stage it so the driver applies it before the page loads — replays
+    // authenticate exactly like the recording did.
+    if let Some(setup) = &header.session {
+        let (cookies, local_storage) = setup.resolved()?;
+        driver.stage_session(flowproof_driver::WebSession {
+            cookies,
+            local_storage,
+        })?;
+    }
     let started = Instant::now();
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
 
@@ -475,7 +511,7 @@ pub fn run_trace<D: AppDriver>(
         }
         let step_started = Instant::now();
         let started_ms = started.elapsed().as_millis() as u64;
-        let (outcome, matched) = execute_step(driver, step)?;
+        let (outcome, matched) = execute_step(driver, step, &target.command)?;
         let duration_ms = step_started.elapsed().as_millis() as u64;
         if let Some(rec) = recorder.as_mut() {
             rec.step_finished(driver);

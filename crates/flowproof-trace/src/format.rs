@@ -67,6 +67,64 @@ pub struct Header {
     /// (the driver's redaction layer owns their schema).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redaction: Vec<Value>,
+    /// Session state applied before the page loads (cookies, localStorage),
+    /// copied from the spec so replays authenticate identically. Values may
+    /// be `${VAR}` secret references — resolved at apply time, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionSetup>,
+}
+
+/// Pre-launch session state: how authenticated app flows start without a
+/// login UI walk (the Playwright storageState / cookie-fixture pattern).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SessionSetup {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cookies: Vec<SessionCookie>,
+    /// Seeded into localStorage before any page script runs.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub local_storage: std::collections::BTreeMap<String, String>,
+}
+
+impl SessionSetup {
+    /// Resolve every `${VAR}` reference for application, returning
+    /// `(cookies as (name, value, domain), local_storage pairs)`. The setup
+    /// itself — and the trace — keeps the references.
+    #[allow(clippy::type_complexity)]
+    pub fn resolved(
+        &self,
+    ) -> Result<
+        (Vec<(String, String, Option<String>)>, Vec<(String, String)>),
+        crate::secret::MissingSecret,
+    > {
+        let cookies = self
+            .cookies
+            .iter()
+            .map(|c| {
+                Ok((
+                    c.name.clone(),
+                    crate::secret::resolve_refs(&c.value)?,
+                    c.domain.clone(),
+                ))
+            })
+            .collect::<Result<Vec<_>, crate::secret::MissingSecret>>()?;
+        let local_storage = self
+            .local_storage
+            .iter()
+            .map(|(k, v)| Ok((k.clone(), crate::secret::resolve_refs(v)?)))
+            .collect::<Result<Vec<_>, crate::secret::MissingSecret>>()?;
+        Ok((cookies, local_storage))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionCookie {
+    pub name: String,
+    /// May be a `${VAR}` reference — resolved from the environment at the
+    /// moment the cookie is set, recording and every replay.
+    pub value: String,
+    /// Defaults to the flow URL's host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 /// Reference to a recording bundle from the artifact that owns it.

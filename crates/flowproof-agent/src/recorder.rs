@@ -221,6 +221,18 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 extra: serde_json::Map::new(),
             }),
         ),
+        // Mid-flow navigation reuses the launch action kind: `url` (raw,
+        // refs unresolved) or `reload: true`.
+        ResolvedAction::Navigate { path } => {
+            let mut params = serde_json::Map::new();
+            params.insert("url".into(), path.as_str().into());
+            (Vec::new(), Action::Launch(params))
+        }
+        ResolvedAction::Reload => {
+            let mut params = serde_json::Map::new();
+            params.insert("reload".into(), true.into());
+            (Vec::new(), Action::Launch(params))
+        }
         ResolvedAction::AssertText {
             target,
             expected,
@@ -306,20 +318,25 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::Clear { target }
         | ResolvedAction::AssertText { target, .. }
         | ResolvedAction::AssertPresence { target, .. } => target,
-        ResolvedAction::TypeFocused { .. } | ResolvedAction::PressKey { .. } => return None,
+        ResolvedAction::TypeFocused { .. }
+        | ResolvedAction::PressKey { .. }
+        | ResolvedAction::Navigate { .. }
+        | ResolvedAction::Reload => return None,
     };
     Some(target_selector(target))
 }
 
 /// Resolve where to launch: registry apps by id, `web` from the spec URL
-/// (relative paths become absolute `file://` URLs).
+/// (`${VAR}` references resolve from the environment; relative paths become
+/// absolute `file://` URLs).
 fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordError> {
     if spec.app == "web" {
         let url = spec.url.as_deref().ok_or(RecordError::MissingUrl)?;
+        let url = flowproof_trace::secret::resolve_refs(url)?;
         let url = if url.contains("://") {
             url.to_string()
         } else {
-            let absolute = std::fs::canonicalize(url).map_err(|source| RecordError::Io {
+            let absolute = std::fs::canonicalize(&url).map_err(|source| RecordError::Io {
                 path: url.to_string(),
                 source,
             })?;
@@ -434,6 +451,13 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
     mut client: Option<&mut C>,
 ) -> Result<RecordSummary, RecordError> {
     let target = launch_target(spec)?;
+    if let Some(setup) = &spec.session {
+        let (cookies, local_storage) = setup.resolved()?;
+        driver.stage_session(flowproof_driver::WebSession {
+            cookies,
+            local_storage,
+        })?;
+    }
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
     let (width, height) = driver.screen_size()?;
 
@@ -510,6 +534,11 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                         modifiers.iter().map(driver_key_mod).collect();
                     driver.press_key(key, &mods)?
                 }
+                ResolvedAction::Navigate { path } => {
+                    let path = flowproof_trace::secret::resolve_refs(path)?;
+                    driver.navigate(&flowproof_driver::absolute_url(&path, &target.command))?
+                }
+                ResolvedAction::Reload => driver.reload()?,
                 ResolvedAction::AssertText {
                     expected,
                     matcher,
@@ -613,6 +642,8 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
             .iter()
             .filter_map(|rule| serde_json::to_value(rule).ok())
             .collect(),
+        // The RAW session setup — cookie values keep their `${VAR}` refs.
+        session: spec.session.clone(),
         spec: Some(flowproof_trace::format::SpecRef {
             name: spec.name.clone(),
             path: None,
@@ -626,7 +657,16 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                 flowproof_trace::format::Adapter::Uia
             },
             window_title: (!target.window_name.is_empty()).then(|| target.window_name.to_string()),
-            url: (spec.app == "web").then(|| target.command.clone()),
+            // If the spec URL carries `${VAR}` refs, the header stores them
+            // RAW (resolved again at each replay); otherwise the resolved
+            // launch URL (absolute file:// paths included).
+            url: (spec.app == "web").then(|| {
+                spec.url
+                    .as_ref()
+                    .filter(|u| flowproof_trace::secret::has_refs(u))
+                    .cloned()
+                    .unwrap_or_else(|| target.command.clone())
+            }),
             version: None,
         },
         agent: (llm_used && client.is_some()).then(|| {

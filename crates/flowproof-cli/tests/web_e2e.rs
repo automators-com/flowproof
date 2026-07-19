@@ -25,6 +25,7 @@ fn records_and_replays_a_browser_flow() {
         app: "web".into(),
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
+        session: None,
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -84,6 +85,7 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
         app: "web".into(),
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
+        session: None,
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -165,6 +167,7 @@ fn secret_reference_types_real_value_but_never_persists_it() {
         app: "web".into(),
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
+        session: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type ${FLOWPROOF_E2E_PW} into the pw field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -234,6 +237,7 @@ fn assertions_wait_for_async_page_updates() {
         app: "web".into(),
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
+        session: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Press the start button".into()),
             flowproof_agent::SpecStep::Plain(
@@ -293,6 +297,7 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
         app: "web".into(),
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
+        session: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain(
                 "Type Customers into the \"Template name\" field".into(),
@@ -363,6 +368,7 @@ fn assertion_forms_wait_and_verify_on_real_pages() {
         app: "web".into(),
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
+        session: None,
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "the searchBox field contains prefilled".into(),
@@ -454,6 +460,7 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
         app: "web".into(),
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
+        session: None,
         steps: vec![
             // Fill semantics: clear the prefilled value, retype, Enter.
             // "Submitted: fresh" (not "…stale textfresh") proves the clear.
@@ -501,6 +508,94 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Session seeding + mid-flow navigation against a real browser: the page
+/// boots ALREADY seeded (localStorage is set before any page script runs),
+/// `Go to` moves between pages, `Reload` re-renders. Cookies use the same
+/// staging path (proven on the mock; file:// pages cannot carry cookies).
+#[test]
+fn session_seeding_and_navigation_drive_real_pages() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web session E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    std::env::set_var("FLOWPROOF_E2E_PROJECT", "proj-e2e-42");
+
+    let dir = std::env::temp_dir().join("flowproof-web-session-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    // Page 1 renders the seeded localStorage value AT LOAD TIME — this only
+    // works if seeding ran before the page script.
+    std::fs::write(
+        dir.join("home.html"),
+        r#"<!doctype html><html><body><div id="who"></div><script>
+            document.getElementById('who').textContent =
+                'project: ' + (localStorage.getItem('projectId') || 'MISSING');
+        </script></body></html>"#,
+    )
+    .expect("page 1 written");
+    // Page 2 counts its own loads via sessionStorage — reload observable.
+    std::fs::write(
+        dir.join("settings.html"),
+        r#"<!doctype html><html><body><div id="loads"></div><script>
+            const n = Number(sessionStorage.getItem('loads') || 0) + 1;
+            sessionStorage.setItem('loads', n);
+            document.getElementById('loads').textContent =
+                'Settings page, load ' + n + ', project ' + (localStorage.getItem('projectId') || 'MISSING');
+        </script></body></html>"#,
+    )
+    .expect("page 2 written");
+    let trace_path = dir.join("session.trace.jsonl");
+
+    let mut local_storage = std::collections::BTreeMap::new();
+    local_storage.insert(
+        "projectId".to_string(),
+        "${FLOWPROOF_E2E_PROJECT}".to_string(),
+    );
+    let spec = flowproof_agent::FlowSpec {
+        name: "Seeded session".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}/home.html", dir.display())),
+        redact: vec![],
+        session: Some(flowproof_trace::format::SessionSetup {
+            cookies: vec![],
+            local_storage,
+        }),
+        steps: vec![
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows project: ${FLOWPROOF_E2E_PROJECT}".into(),
+            },
+            flowproof_agent::SpecStep::Plain(format!(
+                "Go to file://{}/settings.html",
+                dir.display()
+            )),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Settings page, load 1, project ${FLOWPROOF_E2E_PROJECT}".into(),
+            },
+            flowproof_agent::SpecStep::Plain("Reload the page".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows load 2".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    // The trace stores the reference, not the resolved project id.
+    let persisted = std::fs::read_to_string(&trace_path).expect("trace readable");
+    assert!(persisted.contains("${FLOWPROOF_E2E_PROJECT}"));
+    assert!(!persisted.contains("proj-e2e-42"));
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    std::env::remove_var("FLOWPROOF_E2E_PROJECT");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Redaction proof against a real browser: a page with a password field and
 /// a css-masked region — the PERSISTED frames must show both as solid black.
 #[test]
@@ -531,6 +626,7 @@ fn persisted_frames_never_contain_masked_data() {
         app: "web".into(),
         url: Some(format!("file://{}", page.display())),
         redact: vec![flowproof_driver::RedactionRule::css("#ssn")],
+        session: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type bob into the user field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),

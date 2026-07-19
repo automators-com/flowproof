@@ -14,7 +14,8 @@ pub mod recording;
 pub mod redact;
 
 pub use app::{
-    numeric_value, resolve_app, AppDriver, AppTarget, KeyMod, PixelRect, UiaAppDriver, UiaSelector,
+    absolute_url, numeric_value, resolve_app, url_origin, AppDriver, AppTarget, KeyMod, PixelRect,
+    UiaAppDriver, UiaSelector, WebSession,
 };
 pub use backend::PlatformBackend;
 pub use recording::{FrameRef, Recording, RunRecorder, StepTiming};
