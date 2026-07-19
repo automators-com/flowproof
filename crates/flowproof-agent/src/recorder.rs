@@ -14,7 +14,9 @@ use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 
 use crate::author::{author_step, AuthorContext};
 use crate::llm::{HttpModelClient, ModelClient};
-use crate::rules::{resolve_step, ResolvedAction, RulesError, Target, NOTEPAD_EDITOR_ID};
+use crate::rules::{
+    resolve_step, ResolvedAction, RulesError, Target, TextMatch, NOTEPAD_EDITOR_ID,
+};
 use crate::spec::FlowSpec;
 
 /// Which authoring backend records a step.
@@ -222,16 +224,19 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
         ResolvedAction::AssertText {
             target,
             expected,
-            contains,
-            numeric,
+            matcher,
             timeout_ms,
         } => {
-            let mut expect = if *contains {
-                serde_json::json!({ "value_contains": expected })
-            } else if *numeric {
-                serde_json::json!({ "value_equals": expected, "normalize": "numeric" })
-            } else {
-                serde_json::json!({ "value_equals": expected })
+            let mut expect = match matcher {
+                TextMatch::Contains => serde_json::json!({ "value_contains": expected }),
+                TextMatch::NotContains => serde_json::json!({ "value_not_contains": expected }),
+                TextMatch::CountEquals(n) => {
+                    serde_json::json!({ "value_contains": expected, "count": n })
+                }
+                TextMatch::Equals => serde_json::json!({ "value_equals": expected }),
+                TextMatch::NumericEquals => {
+                    serde_json::json!({ "value_equals": expected, "normalize": "numeric" })
+                }
             };
             expect["timeout_ms"] = serde_json::json!(timeout_ms);
             (
@@ -242,10 +247,27 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 }),
             )
         }
+        ResolvedAction::AssertPresence {
+            target,
+            present,
+            timeout_ms,
+        } => (
+            selectors_for(app, target, None),
+            Action::Assert(Assertion::ElementState {
+                expect: serde_json::json!({
+                    "element_present": present,
+                    "timeout_ms": timeout_ms,
+                }),
+                selector_ref: Some(0),
+            }),
+        ),
     };
+    let is_assert = matches!(trace_action, Action::Assert(_));
     // Targetless actions (key press, focused typing) have nothing to wait
-    // for; targeted ones wait for any rung of the ladder.
-    let pre = if selectors.is_empty() {
+    // for, and assertions do their OWN waiting — a presence-absence assert
+    // must not be gated on the element existing first. Targeted actions
+    // wait for any rung of the ladder.
+    let pre = if selectors.is_empty() || is_assert {
         vec![]
     } else {
         vec![Condition::ElementExists {
@@ -282,7 +304,8 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         ResolvedAction::Press { target, .. }
         | ResolvedAction::TypeText { target, .. }
         | ResolvedAction::Clear { target }
-        | ResolvedAction::AssertText { target, .. } => target,
+        | ResolvedAction::AssertText { target, .. }
+        | ResolvedAction::AssertPresence { target, .. } => target,
         ResolvedAction::TypeFocused { .. } | ResolvedAction::PressKey { .. } => return None,
     };
     Some(target_selector(target))
@@ -319,16 +342,16 @@ fn driver_key_mod(m: &flowproof_trace::format::KeyModifier) -> flowproof_driver:
     }
 }
 
-fn assert_holds(actual: &str, expected: &str, contains: bool, numeric: bool) -> bool {
-    if contains {
-        actual.contains(expected)
-    } else if numeric {
-        matches!(
+fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
+    match matcher {
+        TextMatch::Contains => actual.contains(expected),
+        TextMatch::NotContains => !actual.contains(expected),
+        TextMatch::CountEquals(n) => actual.matches(expected).count() as u64 == n,
+        TextMatch::Equals => actual == expected,
+        TextMatch::NumericEquals => matches!(
             (flowproof_driver::numeric_value(actual), expected.parse::<f64>()),
             (Some(a), Ok(e)) if a == e
-        )
-    } else {
-        actual == expected
+        ),
     }
 }
 
@@ -451,12 +474,21 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                 rec.step_started(driver, &step_id);
             }
             let selector = action_selector(&action);
-            if let Some(selector) = &selector {
-                if !driver.element_exists(selector)? {
-                    return Err(RecordError::ElementNotFound {
-                        intent: spec_step.intent().to_string(),
-                        selector: selector.to_string(),
-                    });
+            // Assertions do their own waiting (an element may legitimately
+            // not exist yet — a toast — or be expected to be gone); every
+            // other targeted action requires its element up front.
+            let is_assert = matches!(
+                &action,
+                ResolvedAction::AssertText { .. } | ResolvedAction::AssertPresence { .. }
+            );
+            if !is_assert {
+                if let Some(selector) = &selector {
+                    if !driver.element_exists(selector)? {
+                        return Err(RecordError::ElementNotFound {
+                            intent: spec_step.intent().to_string(),
+                            selector: selector.to_string(),
+                        });
+                    }
                 }
             }
             let targeted = || selector.as_ref().expect("targeted action has a selector");
@@ -480,29 +512,63 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                 }
                 ResolvedAction::AssertText {
                     expected,
-                    contains,
-                    numeric,
+                    matcher,
                     timeout_ms,
                     ..
                 } => {
                     // Assertions auto-wait while recording too: the flow is
                     // being performed for real, so a slow backend operation
-                    // takes just as long here as it will at replay.
+                    // takes just as long here as it will at replay. The
+                    // element itself may also still be appearing (a toast),
+                    // so existence is part of the same poll.
                     let wanted = flowproof_trace::secret::resolve_refs(expected)?;
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
-                    let mut actual = driver.read_text(targeted())?;
-                    while !assert_holds(&actual, &wanted, *contains, *numeric) {
+                    loop {
+                        let actual = if driver.element_exists(targeted())? {
+                            Some(driver.read_text(targeted())?)
+                        } else {
+                            None
+                        };
+                        if let Some(actual) = &actual {
+                            if assert_holds(actual, &wanted, *matcher) {
+                                break;
+                            }
+                        }
                         if std::time::Instant::now() >= deadline {
                             // Error messages carry the RAW expectation — a
                             // resolved secret must not leak through a failure.
                             return Err(RecordError::AssertMismatch {
                                 intent: spec_step.intent().to_string(),
                                 expected: expected.clone(),
-                                actual,
+                                actual: actual.unwrap_or_else(|| "<element not found>".to_string()),
                             });
                         }
                         std::thread::sleep(ASSERT_POLL_INTERVAL);
-                        actual = driver.read_text(targeted())?;
+                    }
+                }
+                ResolvedAction::AssertPresence {
+                    present,
+                    timeout_ms,
+                    ..
+                } => {
+                    let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
+                    while driver.element_exists(targeted())? != *present {
+                        if std::time::Instant::now() >= deadline {
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: if *present {
+                                    "element visible".to_string()
+                                } else {
+                                    "element not visible".to_string()
+                                },
+                                actual: if *present {
+                                    "element never appeared".to_string()
+                                } else {
+                                    "element still on screen".to_string()
+                                },
+                            });
+                        }
+                        std::thread::sleep(ASSERT_POLL_INTERVAL);
                     }
                 }
             }

@@ -115,11 +115,15 @@ fn parse_and_ground(
                 .expected
                 .filter(|t| !t.is_empty())
                 .ok_or("assert_text needs a non-empty 'expected'")?;
+            let matcher = if authored.contains.unwrap_or(true) {
+                crate::rules::TextMatch::Contains
+            } else {
+                crate::rules::TextMatch::Equals
+            };
             Ok(ResolvedAction::AssertText {
                 target,
                 expected,
-                contains: authored.contains.unwrap_or(true),
-                numeric: false,
+                matcher,
                 timeout_ms: crate::rules::ASSERT_TIMEOUT_MS,
             })
         }
@@ -259,8 +263,7 @@ mod tests {
             ResolvedAction::AssertText {
                 target: Target::css("body"),
                 expected: "Hello, Ada".into(),
-                contains: true,
-                numeric: false,
+                matcher: crate::rules::TextMatch::Contains,
                 timeout_ms: crate::rules::ASSERT_TIMEOUT_MS,
             }
         );

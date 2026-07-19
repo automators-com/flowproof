@@ -165,43 +165,23 @@ fn check_assertion<D: AppDriver>(
             expect,
             selector_ref,
         } => {
-            // Prefer the recorded rung, then fall through the rest of the
-            // ladder — same degradation semantics as action targets.
             let primary = selector_ref.unwrap_or(0);
-            let order =
-                std::iter::once(primary).chain((0..selectors.len()).filter(|&i| i != primary));
-            let mut resolved = None;
-            for rung in order {
-                let Some(uia) = selectors.get(rung).and_then(selector_to_uia) else {
-                    continue;
-                };
-                if driver.element_exists(&uia)? {
-                    resolved = Some((uia, rung));
-                    break;
+            // Prefer the recorded rung, then fall through the rest of the
+            // ladder — same degradation semantics as action targets. The
+            // resolver runs INSIDE the poll loop: the target element may
+            // legitimately still be appearing (a toast, a modal).
+            let resolve = |driver: &mut D| -> Result<Option<(UiaSelector, usize)>, ReplayError> {
+                let order =
+                    std::iter::once(primary).chain((0..selectors.len()).filter(|&i| i != primary));
+                for rung in order {
+                    let Some(uia) = selectors.get(rung).and_then(selector_to_uia) else {
+                        continue;
+                    };
+                    if driver.element_exists(&uia)? {
+                        return Ok(Some((uia, rung)));
+                    }
                 }
-            }
-            let Some((uia, rung)) = resolved else {
-                return Ok((
-                    Err("no selector rung resolved to a live element".into()),
-                    None,
-                ));
-            };
-            let raw = if let Some(e) = expect.get("value_contains").and_then(|v| v.as_str()) {
-                e
-            } else if let Some(e) = expect.get("value_equals").and_then(|v| v.as_str()) {
-                e
-            } else {
-                return Ok((
-                    Err(format!("unsupported element_state expectation: {expect}")),
-                    Some(rung),
-                ));
-            };
-            // Expectations may reference `${VAR}` secrets: resolve for the
-            // comparison only — messages keep the raw reference, and the
-            // live text is masked too, so a failure never leaks the value.
-            let expected = match flowproof_trace::secret::resolve_refs(raw) {
-                Ok(expected) => expected,
-                Err(e) => return Ok((Err(e.to_string()), Some(rung))),
+                Ok(None)
             };
             // Assertions auto-wait: poll until the expectation holds or the
             // RECORDED timeout elapses — deterministic (bounded, and the
@@ -211,34 +191,93 @@ fn check_assertion<D: AppDriver>(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(DEFAULT_ASSERT_TIMEOUT_MS);
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-            let mut text = driver.read_text(&uia)?;
-            loop {
-                let matches = if expect.get("value_contains").is_some() {
-                    text.contains(&expected)
-                } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
-                    matches!(
-                        (numeric_value(&text), expected.parse::<f64>()),
-                        (Some(actual), Ok(wanted)) if actual == wanted
-                    )
+
+            // Presence expectations: the element being there (or gone) IS
+            // the assertion — no text involved.
+            if let Some(wanted_present) = expect.get("element_present").and_then(|v| v.as_bool()) {
+                loop {
+                    let resolved = resolve(driver)?;
+                    match (&resolved, wanted_present) {
+                        (Some((_, rung)), true) => return Ok((Ok(()), Some(*rung))),
+                        (None, false) => return Ok((Ok(()), None)),
+                        _ => {}
+                    }
+                    if Instant::now() >= deadline {
+                        let reason = if wanted_present {
+                            "expected element to be visible, but it never appeared".to_string()
+                        } else {
+                            "expected element to be gone, but it is still on screen".to_string()
+                        };
+                        return Ok((Err(reason), resolved.map(|(_, rung)| rung)));
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            }
+
+            let (raw, negated) =
+                if let Some(e) = expect.get("value_not_contains").and_then(|v| v.as_str()) {
+                    (e, true)
+                } else if let Some(e) = expect.get("value_contains").and_then(|v| v.as_str()) {
+                    (e, false)
+                } else if let Some(e) = expect.get("value_equals").and_then(|v| v.as_str()) {
+                    (e, false)
                 } else {
-                    text == expected
+                    return Ok((
+                        Err(format!("unsupported element_state expectation: {expect}")),
+                        None,
+                    ));
                 };
-                if matches {
-                    return Ok((Ok(()), Some(rung)));
+            // Expectations may reference `${VAR}` secrets: resolve for the
+            // comparison only — messages keep the raw reference, and the
+            // live text is masked too, so a failure never leaks the value.
+            let expected = match flowproof_trace::secret::resolve_refs(raw) {
+                Ok(expected) => expected,
+                Err(e) => return Ok((Err(e.to_string()), None)),
+            };
+            let count = expect.get("count").and_then(|v| v.as_u64());
+            let mut last: Option<(String, usize)> = None;
+            loop {
+                if let Some((uia, rung)) = resolve(driver)? {
+                    let text = driver.read_text(&uia)?;
+                    let matches = if negated {
+                        !text.contains(&expected)
+                    } else if let Some(n) = count {
+                        text.matches(expected.as_str()).count() as u64 == n
+                    } else if expect.get("value_contains").is_some() {
+                        text.contains(&expected)
+                    } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
+                        matches!(
+                            (numeric_value(&text), expected.parse::<f64>()),
+                            (Some(actual), Ok(wanted)) if actual == wanted
+                        )
+                    } else {
+                        text == expected
+                    };
+                    if matches {
+                        return Ok((Ok(()), Some(rung)));
+                    }
+                    last = Some((text, rung));
                 }
                 if Instant::now() >= deadline {
-                    let shown = if flowproof_trace::secret::has_refs(raw) {
-                        "<masked>"
-                    } else {
-                        text.as_str()
+                    let (rung, shown) = match &last {
+                        Some((text, rung)) => {
+                            let shown = if flowproof_trace::secret::has_refs(raw) {
+                                "<masked>"
+                            } else {
+                                text.as_str()
+                            };
+                            (Some(*rung), shown)
+                        }
+                        None => (None, "<element not found>"),
                     };
-                    return Ok((
-                        Err(format!("expected element text '{raw}', got '{shown}'")),
-                        Some(rung),
-                    ));
+                    let verb = if negated {
+                        "no element text"
+                    } else {
+                        "element text"
+                    };
+                    return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), rung));
                 }
                 std::thread::sleep(POLL_INTERVAL);
-                text = driver.read_text(&uia)?;
             }
         }
         other => Ok((
