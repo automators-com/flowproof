@@ -51,19 +51,65 @@ pub struct FlowSpec {
     pub steps: Vec<SpecStep>,
 }
 
-/// A step is either a plain natural-language action or an assertion.
+/// A step: a plain natural-language action, a UI assertion, or an
+/// out-of-band business-data assertion (SQL / API) — the posted record is
+/// often the truth an enterprise test must verify, not the pixels.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SpecStep {
+    AssertSql { assert_sql: SqlAssertSpec },
+    AssertApi { assert_api: ApiAssertSpec },
     Assert { assert: String },
     Plain(String),
 }
 
+/// ```yaml
+/// - assert_sql:
+///     connection: reporting            # env FLOWPROOF_SQL_REPORTING
+///     query: SELECT count(*) FROM templates WHERE name = 'X'
+///     equals: "2"                      # first column of first row, as text
+/// ```
+/// The connection NAME travels in the trace; the connection string only
+/// ever lives in the environment. `query`/`equals` may carry `${VAR}` refs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SqlAssertSpec {
+    pub connection: String,
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equals: Option<String>,
+    /// Auto-wait bound override (default 10s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+}
+
+/// ```yaml
+/// - assert_api:
+///     request: GET ${DM_API}/templates
+///     status: 200                      # optional; default = any 2xx
+///     body_contains: TestTemplate      # optional
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApiAssertSpec {
+    /// `METHOD url` — the url may carry `${VAR}` refs (base URLs, tokens).
+    pub request: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_contains: Option<String>,
+    /// Auto-wait bound override (default 10s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+}
+
 impl SpecStep {
-    pub fn intent(&self) -> &str {
+    pub fn intent(&self) -> String {
         match self {
-            SpecStep::Assert { assert } => assert,
-            SpecStep::Plain(text) => text,
+            SpecStep::Assert { assert } => assert.clone(),
+            SpecStep::Plain(text) => text.clone(),
+            SpecStep::AssertSql { assert_sql } => {
+                format!("sql {}: {}", assert_sql.connection, assert_sql.query)
+            }
+            SpecStep::AssertApi { assert_api } => format!("api {}", assert_api.request),
         }
     }
 }

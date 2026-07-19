@@ -669,3 +669,115 @@ steps:
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn api_assertions_probe_a_real_http_server_out_of_band() {
+    let dir = std::env::temp_dir().join("flowproof-replay-oob-api");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    // A real (local) HTTP server: /templates answers 200 with a JSON body,
+    // anything else 404. The probe goes out of band — no UI involved.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let body = r#"[{"name":"playwrightTemplate"},{"name":"playwrightTemplateRoot"}]"#;
+            let response = if request.starts_with("GET /templates") {
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else {
+                "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".into()
+            };
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    std::env::set_var("FLOWPROOF_TEST_API", format!("http://127.0.0.1:{port}"));
+
+    let spec = FlowSpec::parse(
+        "name: Business data flow
+app: web
+url: https://e.test/x
+steps:
+  - assert: page shows Templates
+  - assert_api:
+      request: GET ${FLOWPROOF_TEST_API}/templates
+      status: 200
+      body_contains: playwrightTemplateRoot
+",
+    )
+    .expect("spec parses");
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("Templates");
+    let trace = dir.join("oob.trace.jsonl");
+    record(&spec, &mut driver, &trace).expect("recording succeeds (probe really ran)");
+
+    // The trace stores the RAW url reference and the api kind — no resolved
+    // host, no credentials.
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(persisted.contains("\"kind\":\"api\""));
+    assert!(persisted.contains("${FLOWPROOF_TEST_API}"));
+    assert!(!persisted.contains(&format!("127.0.0.1:{port}")));
+
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("Templates");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "oob assert replays: {report:?}");
+
+    // A wrong expectation fails after its bound with the live reason.
+    let spec = FlowSpec::parse(
+        "name: Business data mismatch
+app: web
+url: https://e.test/x
+steps:
+  - assert_api:
+      request: GET ${FLOWPROOF_TEST_API}/missing
+      status: 200
+      timeout_seconds: 1
+",
+    )
+    .expect("spec parses");
+    let mut driver = MockAppDriver::new(&[]);
+    let trace2 = dir.join("oob-miss.trace.jsonl");
+    let err = record(&spec, &mut driver, &trace2).expect_err("404 must fail the assert");
+    assert!(err.to_string().contains("404"), "err: {err}");
+
+    std::env::remove_var("FLOWPROOF_TEST_API");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn sql_assertions_fail_closed_without_a_configured_connection() {
+    let dir = std::env::temp_dir().join("flowproof-replay-oob-sql");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    let spec = FlowSpec::parse(
+        "name: Posted record
+app: web
+url: https://e.test/x
+steps:
+  - assert_sql:
+      connection: reporting-e2e-unset
+      query: SELECT count(*) FROM templates
+      equals: \"2\"
+",
+    )
+    .expect("spec parses");
+    let mut driver = MockAppDriver::new(&[]);
+    let trace = dir.join("sql.trace.jsonl");
+    // No FLOWPROOF_SQL_REPORTING_E2E_UNSET in the environment: recording
+    // refuses immediately with an error naming the variable — never a
+    // silent pass, never a poll loop against nothing.
+    let err = record(&spec, &mut driver, &trace).expect_err("must fail closed");
+    assert!(
+        err.to_string()
+            .contains("FLOWPROOF_SQL_REPORTING_E2E_UNSET"),
+        "err: {err}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

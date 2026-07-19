@@ -225,6 +225,32 @@ one provenance among four (uia, sap-com, vision/OCR, out-of-band), not
 their definition. `calc` and `notepad` layer their sugar (`display shows`,
 `document contains`) on top of the same shared grammar.
 
+### Out-of-band assertions: the posted record, not the pixel
+
+Enterprise correctness often lives in the database or behind an API, not
+on screen. Structured steps probe it directly — app-independent,
+auto-waiting like every other assertion, and replayed with zero model
+calls:
+
+```yaml
+steps:
+  - Press the "Save" button
+  - assert_sql:
+      connection: reporting            # env FLOWPROOF_SQL_REPORTING holds the
+      query: >                         #   postgres connection string — the
+        SELECT count(*) FROM templates #   trace only ever stores the NAME
+        WHERE name = 'Customers'
+      equals: "1"                      # first column of first row, as text
+  - assert_api:
+      request: GET ${DM_API}/templates # METHOD url; ${VAR} refs resolve at
+      status: 200                      #   run time, never stored
+      body_contains: Customers
+      timeout_seconds: 30              # optional bound override (default 10s)
+```
+
+An unconfigured connection fails closed immediately with an error naming
+the `FLOWPROOF_SQL_<NAME>` variable — never a silent pass.
+
 (YAML note: an `assert:` value cannot *start* with a `"` — that's why
 quoted targets always follow `the `.)
 

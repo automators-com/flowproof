@@ -341,12 +341,78 @@ fn check_assertion<D: AppDriver>(
                 std::thread::sleep(POLL_INTERVAL);
             }
         }
+        // Out-of-band: the posted record / the API response, not the pixel.
+        // The trace stores the connection NAME and raw `${VAR}`-bearing
+        // query/url; both resolve here, at the moment of use.
+        Assertion::Sql {
+            connection,
+            query,
+            expect,
+        } => {
+            let equals = expect
+                .as_ref()
+                .and_then(|e| e.get("equals"))
+                .and_then(|v| v.as_str());
+            let probe = flowproof_driver::oob::OobProbe::Sql {
+                connection: connection.clone(),
+                query: flowproof_trace::secret::resolve_refs(query)?,
+                equals: match equals {
+                    Some(e) => Some(flowproof_trace::secret::resolve_refs(e)?),
+                    None => None,
+                },
+            };
+            poll_oob(&probe, oob_timeout(expect.as_ref()))
+        }
+        Assertion::Api {
+            request,
+            status,
+            expect,
+        } => {
+            let probe = flowproof_driver::oob::OobProbe::Api {
+                method: request.method.clone(),
+                url: flowproof_trace::secret::resolve_refs(&request.url)?,
+                body: request.body.clone(),
+                status: *status,
+                body_contains: expect
+                    .as_ref()
+                    .and_then(|e| e.get("body_contains"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            poll_oob(&probe, oob_timeout(expect.as_ref()))
+        }
         other => Ok((
             Err(format!(
                 "assertion kind not supported in this slice: {other:?}"
             )),
             None,
         )),
+    }
+}
+
+fn oob_timeout(expect: Option<&serde_json::Value>) -> u64 {
+    expect
+        .and_then(|e| e.get("timeout_ms"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_ASSERT_TIMEOUT_MS)
+}
+
+/// Auto-wait an out-of-band probe like any other assertion.
+fn poll_oob(
+    probe: &flowproof_driver::oob::OobProbe,
+    timeout_ms: u64,
+) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        match flowproof_driver::oob::check(probe)? {
+            Ok(()) => return Ok((Ok(()), None)),
+            Err(reason) => {
+                if Instant::now() >= deadline {
+                    return Ok((Err(reason), None));
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
     }
 }
 

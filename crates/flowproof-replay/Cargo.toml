@@ -9,7 +9,7 @@ authors.workspace = true
 
 [dependencies]
 chrono = { workspace = true }
-flowproof-driver = { workspace = true }
+flowproof-driver = { workspace = true, features = ["oob"] }
 flowproof-trace = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
