@@ -37,6 +37,12 @@ pub struct FlowSpec {
     /// For `app: web`: the URL to open (relative paths become `file://`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// For `app: sap`: the SAP Logon connection description to open when no
+    /// session is already running (e.g. `S/4HANA Development`). Omitted =
+    /// attach to whatever logged-in SAP GUI session exists. May carry
+    /// `${VAR}` references, resolved at launch time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
     /// Regions to mask in every persisted frame (password fields are always
     /// masked, with or without rules here). Copied into the trace header at
     /// record time so replays redact identically without the spec.

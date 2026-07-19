@@ -8,6 +8,9 @@ pub mod sap_com;
 #[cfg(feature = "web")]
 pub mod web;
 
+#[cfg(feature = "sap-com")]
+pub use sap_com::SapAppDriver;
+
 #[cfg(feature = "web")]
 pub use web::WebAppDriver;
 

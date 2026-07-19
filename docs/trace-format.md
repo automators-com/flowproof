@@ -38,6 +38,10 @@ has `format != "flowproof-trace"` or an unsupported `version`.
   lets replay detect drift between spec and trace.
 - `adapter` is the *primary* perception/adapter mode: `uia`, `sap-com`,
   `web`, or `vision` (vision = Citrix/RDP mode where only pixels exist).
+- `app.url` is how replay reaches the app again: the URL for `web`, the
+  SAP Logon connection description for `sap` (absent = attach to the
+  running session). Either may be a `${VAR}` reference, stored raw and
+  resolved at every launch.
 - `agent` records provenance of authorship only; replay never uses it.
 - Optional `recording` references the authoring execution's recording bundle
   (`{"format": "filmstrip/1", "dir": "...", "started_at"?}`); each step's

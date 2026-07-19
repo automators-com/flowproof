@@ -196,8 +196,8 @@ real suites.
 ### The assertion vocabulary (shared across every app profile)
 
 Assertions describe **what** to check; **how** each target resolves is the
-adapter's job, so the same forms work for web, desktop (UIA), and — as
-those adapters land — SAP GUI and vision/OCR. All forms auto-wait
+adapter's job, so the same forms work for web, desktop (UIA), SAP GUI —
+and vision/OCR when that adapter lands. All forms auto-wait
 (bounded, recorded timeout; `within <N>s` overrides) — including waiting
 for the *target itself* to appear, so asserting on a toast works:
 
@@ -281,6 +281,37 @@ steps:
 
 `Go to` takes a path (resolved against the flow URL's origin) or a full
 URL.
+
+## SAP GUI flows (Windows)
+
+`app: sap` drives SAP GUI for Windows through **SAP GUI Scripting** — the
+COM automation surface SAP ships — never through pixels or synthetic
+keystrokes. Requirements: SAP Logon running and logged in, scripting
+enabled (`sapgui/user_scripting = TRUE` in RZ11), and flowproof on the
+same Windows machine.
+
+```yaml
+name: Create standard order
+app: sap
+connection: ${SAP_CONNECTION}   # SAP Logon entry to open if no session is
+                                # running yet; omit to attach to the current one
+steps:
+  - Go to /nVA01                                    # navigate by transaction code
+  - Type ZOR into the "Order Type" field            # anchors match the tooltip,
+                                                    #   visible text, or technical
+                                                    #   name (VBAK-AUART)
+  - Type 4711 into the "id:wnd[0]/usr/txtVBAK-KUNNR" field   # scripting id, direct
+  - Press Enter                                     # SAP virtual keys: Enter,
+                                                    #   F1–F12, Shift/Ctrl+F1–F12
+  - assert: page shows Create Standard Order        # the whole session surface
+```
+
+The scripting id (`wnd[0]/usr/ctxtVBAK-AUART`) is this provenance's
+**native selector rung** — recorded with `provenance: sap-com`, replayed
+deterministically, and offered to the LLM author as `id:` target tokens
+like any other scene. Labelled press targets also record the label as a
+text-anchor fallback rung, so those steps survive id drift (degraded,
+reported, healable). See `examples/sap/create-order.flow.yaml`.
 
 ## Authoring with a model (arbitrary steps)
 
@@ -390,6 +421,7 @@ MCP tool mirrors it.
 
 ## What's deliberately missing (this is the first slice)
 
-- Only `calc`, `notepad`, and `web` resolve, each with a small vocabulary —
-  the rule-based resolver stands in where the AI authoring agent will go
-  (healing re-uses the same authoring seam).
+- Only `calc`, `notepad`, `web`, and `sap` resolve, each with a small
+  vocabulary — the rule-based resolver covers the common forms and the AI
+  authoring agent handles everything else through the same seam (healing
+  re-uses it too).
