@@ -57,6 +57,10 @@ jobs:
           name: site-test-results
           path: site-results/
           if-no-files-found: warn
+          # run bundles live under site-results/.flowproof/ — dotted dirs
+          # are skipped unless this is set, which would drop result.json,
+          # report.html and the recorded frames from the artifact
+          include-hidden-files: true
 
   recon:
     name: recon (page text + ids)
