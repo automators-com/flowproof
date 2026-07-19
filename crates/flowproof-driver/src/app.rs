@@ -115,6 +115,14 @@ pub trait AppDriver {
     fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError> {
         Ok(Vec::new())
     }
+
+    /// Structured observation of the current UI for authoring: a JSON array
+    /// of interactable elements (selector, role, label/text). `Ok(None)`
+    /// means this driver cannot describe its scene yet — LLM authoring is
+    /// unavailable on it.
+    fn scene(&mut self) -> Result<Option<String>, DriverError> {
+        Ok(None)
+    }
 }
 
 /// `(x, y, width, height)` in frame pixels.
@@ -194,6 +202,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError> {
         (**self).password_rects()
+    }
+
+    fn scene(&mut self) -> Result<Option<String>, DriverError> {
+        (**self).scene()
     }
 }
 

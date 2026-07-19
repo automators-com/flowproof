@@ -12,8 +12,22 @@ use flowproof_trace::format::{
 };
 use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 
-use crate::rules::{resolve_step, ResolvedAction, Target, NOTEPAD_EDITOR_ID};
+use crate::author::{author_step, AuthorContext};
+use crate::llm::{HttpModelClient, ModelClient};
+use crate::rules::{resolve_step, ResolvedAction, RulesError, Target, NOTEPAD_EDITOR_ID};
 use crate::spec::FlowSpec;
+
+/// Which authoring backend records a step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Author {
+    /// Rules first, model fallback for steps the rules cannot resolve.
+    #[default]
+    Auto,
+    /// Deterministic rules only (today's behavior).
+    Rules,
+    /// Model for every step.
+    Llm,
+}
 
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 const STEP_TIMEOUT_MS: u64 = 5000;
@@ -45,6 +59,15 @@ pub enum RecordError {
     },
     #[error("serialization error: {0}")]
     Serialize(#[from] serde_json::Error),
+    #[error(transparent)]
+    Agent(#[from] crate::AgentError),
+    #[error(
+        "cannot resolve step '{step}' with rules and no model backend is configured \
+         (set FLOWPROOF_AI_PROVIDER / FLOWPROOF_AI_API_KEY to enable LLM authoring): {rules_error}"
+    )]
+    NoAuthor { step: String, rules_error: String },
+    #[error("driver cannot describe its scene; LLM authoring is unavailable for app '{0}'")]
+    NoScene(String),
 }
 
 /// Outcome of a recording session.
@@ -198,10 +221,80 @@ fn assert_holds(actual: &str, expected: &str, contains: bool, numeric: bool) -> 
 /// Record `spec` against the live app via `driver`, writing the trace to
 /// `out`. Every planned action's target element must exist before it is
 /// written — recording is a verification pass, not a transcription.
+/// Uses [`Author::Auto`]: rules first, model fallback when configured.
 pub fn record<D: AppDriver>(
     spec: &FlowSpec,
     driver: &mut D,
     out: &Path,
+) -> Result<RecordSummary, RecordError> {
+    let mut client = HttpModelClient::from_env();
+    record_with_client(spec, driver, out, Author::Auto, client.as_mut())
+}
+
+/// Record with an explicit authoring mode (the CLI's `--author`).
+pub fn record_with_author<D: AppDriver>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+) -> Result<RecordSummary, RecordError> {
+    let mut client = HttpModelClient::from_env();
+    record_with_client(spec, driver, out, author, client.as_mut())
+}
+
+/// Resolve one spec step into actions per the authoring mode.
+fn author_actions<D: AppDriver, C: ModelClient>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    author: Author,
+    client: &mut Option<&mut C>,
+    prior: &[String],
+    spec_step: &crate::spec::SpecStep,
+    llm_used: &mut bool,
+) -> Result<Vec<ResolvedAction>, RecordError> {
+    let intent = spec_step.intent();
+    let rules_result = match author {
+        Author::Llm => Err(RulesError::UnsupportedApp("llm forced".into())),
+        _ => resolve_step(&spec.app, spec_step),
+    };
+    match rules_result {
+        Ok(actions) => Ok(actions),
+        Err(rules_error) => {
+            if author == Author::Rules {
+                return Err(RecordError::Rules(rules_error));
+            }
+            let Some(client) = client.as_mut() else {
+                return Err(RecordError::NoAuthor {
+                    step: intent.to_string(),
+                    rules_error: rules_error.to_string(),
+                });
+            };
+            let scene = driver
+                .scene()?
+                .ok_or_else(|| RecordError::NoScene(spec.app.clone()))?;
+            let ctx = AuthorContext {
+                flow_name: &spec.name,
+                app: &spec.app,
+                url: spec.url.as_deref(),
+                prior_steps: prior,
+                intent,
+                scene: &scene,
+            };
+            let action = author_step(*client, &ctx)?;
+            *llm_used = true;
+            Ok(vec![action])
+        }
+    }
+}
+
+/// Record with an injected model client (used by tests; `record` and
+/// `record_with_author` build one from the environment).
+pub fn record_with_client<D: AppDriver, C: ModelClient>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+    mut client: Option<&mut C>,
 ) -> Result<RecordSummary, RecordError> {
     let target = launch_target(spec)?;
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
@@ -224,8 +317,21 @@ pub fn record<D: AppDriver>(
     // assert is checked against the live display, so a trace is only ever
     // written for a flow that actually worked.
     let mut steps = Vec::new();
+    let mut prior_intents: Vec<String> = Vec::new();
+    let mut llm_used = false;
     for spec_step in &spec.steps {
-        for action in resolve_step(&spec.app, spec_step)? {
+        let intent = spec_step.intent().to_string();
+        let actions = author_actions(
+            spec,
+            driver,
+            author,
+            &mut client,
+            &prior_intents,
+            spec_step,
+            &mut llm_used,
+        )?;
+        prior_intents.push(intent);
+        for action in actions {
             let step_id = format!("s{:04}", steps.len() + 1);
             if let Some(rec) = recorder.as_mut() {
                 rec.step_started(driver, &step_id);
@@ -313,7 +419,17 @@ pub fn record<D: AppDriver>(
             url: (spec.app == "web").then(|| target.command.clone()),
             version: None,
         },
-        agent: None, // rule-based recording: no model involved
+        agent: (llm_used && client.is_some()).then(|| {
+            let (backend, model) = client.as_ref().map(|c| c.identity()).unwrap_or_default();
+            flowproof_trace::format::AgentInfo {
+                backend: if backend == "anthropic" {
+                    flowproof_trace::format::AgentBackend::Anthropic
+                } else {
+                    flowproof_trace::format::AgentBackend::OpenaiCompatible
+                },
+                model: Some(model),
+            }
+        }),
         env: EnvInfo {
             os: std::env::consts::OS.to_string(),
             resolution: (width.max(1), height.max(1)),
@@ -460,6 +576,97 @@ steps:
         assert_eq!(selectors[0]["payload"]["automation_id"], "15");
         assert_eq!(selectors[1]["payload"]["control_type"], "Edit");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    struct CountingClient {
+        reply: String,
+        calls: usize,
+    }
+
+    impl crate::ModelClient for CountingClient {
+        fn complete(&mut self, _system: &str, _user: &str) -> Result<String, crate::AgentError> {
+            self.calls += 1;
+            Ok(self.reply.clone())
+        }
+
+        fn identity(&self) -> (String, String) {
+            ("openai-compatible".into(), "test-model".into())
+        }
+    }
+
+    #[test]
+    fn rules_resolvable_steps_never_call_the_model() {
+        let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
+        let mut driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+        let mut client = CountingClient {
+            reply: String::new(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-rules-first.trace.jsonl");
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("rules author the whole flow");
+        assert_eq!(client.calls, 0, "rules-first: model must not be consulted");
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn unresolvable_step_falls_back_to_the_model_and_stamps_agent() {
+        let spec = FlowSpec::parse(
+            "name: Freeform
+app: web
+url: https://example.test/x
+steps:
+  - Smash that shiny button
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["#shiny", "body"]);
+        driver.scene = Some(r##"[{"css":"#shiny","tag":"button","text":"Shiny"}]"##.into());
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target_css":"#shiny"}"##.into(),
+            calls: 0,
+        };
+        let dir = std::env::temp_dir().join("flowproof-llm-fallback");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("freeform.trace.jsonl");
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("model authors the step");
+        assert_eq!(client.calls, 1);
+        assert_eq!(driver.invoked, vec!["#shiny"]);
+        let header = std::fs::read_to_string(&out)
+            .expect("trace written")
+            .lines()
+            .next()
+            .map(str::to_string)
+            .expect("header line");
+        assert!(header.contains("\"agent\""), "agent stamped: {header}");
+        assert!(header.contains("openai-compatible"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rules_only_mode_refuses_unresolvable_steps() {
+        let spec = FlowSpec::parse(
+            "name: x
+app: web
+url: https://e.test/x
+steps:
+  - Smash that shiny button
+",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["#shiny"]);
+        driver.scene = Some(r##"[{"css":"#shiny"}]"##.into());
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target_css":"#shiny"}"##.into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-rules-only.trace.jsonl");
+        let err = record_with_client(&spec, &mut driver, &out, Author::Rules, Some(&mut client))
+            .expect_err("rules-only must fail");
+        assert!(matches!(err, RecordError::Rules(_)));
+        assert_eq!(client.calls, 0);
     }
 
     #[test]

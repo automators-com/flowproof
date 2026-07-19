@@ -80,6 +80,11 @@ jobs:
         env:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome
+      - name: LLM-author a freeform flow (local fake model server, zero tokens)
+        run: cargo test -p flowproof-cli --test llm_author_e2e -- --nocapture
+        env:
+          FLOWPROOF_E2E: "1"
+          CHROME: /usr/bin/google-chrome
 
   python-sdk:
     name: ruff + pytest (sdk/python)

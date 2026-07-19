@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use flowproof_agent::FlowSpec;
 use flowproof_driver::{AppDriver, UiaAppDriver};
 use flowproof_replay::StepStatus;
@@ -20,6 +20,28 @@ pub struct Cli {
     command: Command,
 }
 
+/// Authoring backend selection for record/heal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+enum AuthorArg {
+    /// Rules first, model fallback for steps the rules cannot resolve.
+    #[default]
+    Auto,
+    /// Deterministic rules only.
+    Rules,
+    /// Model for every step.
+    Llm,
+}
+
+impl From<AuthorArg> for flowproof_agent::Author {
+    fn from(value: AuthorArg) -> Self {
+        match value {
+            AuthorArg::Auto => flowproof_agent::Author::Auto,
+            AuthorArg::Rules => flowproof_agent::Author::Rules,
+            AuthorArg::Llm => flowproof_agent::Author::Llm,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Record a flow from a YAML spec: perform it once against the live app
@@ -33,6 +55,9 @@ enum Command {
         /// Emit the result as JSON on stdout (for programmatic callers).
         #[arg(long)]
         json: bool,
+        /// Authoring backend: rules, llm, or auto (rules with llm fallback).
+        #[arg(long, value_enum, default_value_t)]
+        author: AuthorArg,
     },
     /// Deterministically replay a recorded flow (zero LLM calls).
     Run {
@@ -59,6 +84,9 @@ enum Command {
         /// Emit the heal report as JSON on stdout (for programmatic callers).
         #[arg(long)]
         json: bool,
+        /// Authoring backend: rules, llm, or auto (rules with llm fallback).
+        #[arg(long, value_enum, default_value_t)]
+        author: AuthorArg,
     },
 }
 
@@ -88,11 +116,17 @@ pub fn driver_for(app: &str) -> Result<Box<dyn AppDriver>, String> {
     }
 }
 
-fn cmd_record(spec_path: &Path, out: Option<PathBuf>, json: bool) -> Result<u8, String> {
+fn cmd_record(
+    spec_path: &Path,
+    out: Option<PathBuf>,
+    json: bool,
+    author: AuthorArg,
+) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
     let mut driver = driver_for(&spec.app)?;
-    let summary = flowproof_agent::record(&spec, &mut driver, &out).map_err(|e| e.to_string())?;
+    let summary = flowproof_agent::record_with_author(&spec, &mut driver, &out, author.into())
+        .map_err(|e| e.to_string())?;
     if json {
         let payload = serde_json::json!({
             "trace_path": summary.trace_path,
@@ -172,12 +206,14 @@ fn cmd_heal(
     trace: Option<PathBuf>,
     apply: bool,
     json: bool,
+    author: AuthorArg,
 ) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     let mut driver = driver_for(&spec.app)?;
     let mut report =
-        flowproof_agent::heal(&spec, &mut driver, &trace_path).map_err(|e| e.to_string())?;
+        flowproof_agent::heal_with_author(&spec, &mut driver, &trace_path, author.into())
+            .map_err(|e| e.to_string())?;
 
     let mut applied = false;
     if apply && report.changed {
@@ -253,14 +289,20 @@ where
     };
 
     let result = match cli.command {
-        Command::Record { spec, out, json } => cmd_record(&spec, out, json),
+        Command::Record {
+            spec,
+            out,
+            json,
+            author,
+        } => cmd_record(&spec, out, json, author),
         Command::Run { spec, trace, json } => cmd_run(&spec, trace, json),
         Command::Heal {
             spec,
             trace,
             apply,
             json,
-        } => cmd_heal(&spec, trace, apply, json),
+            author,
+        } => cmd_heal(&spec, trace, apply, json, author),
     };
     match result {
         Ok(code) => code,
