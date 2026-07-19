@@ -61,6 +61,39 @@ jobs:
           # are skipped unless this is set, which would drop result.json,
           # report.html and the recorded frames from the artifact
           include-hidden-files: true
+      # The authoring sandbox can reach api.github.com but not the artifact
+      # blob store, so the human-viewable renderings (filmstrip GIF per
+      # flow + report screenshot) travel base64-encoded through the job log.
+      - name: render filmstrip GIFs + report screenshots, ship via log
+        if: always()
+        run: |
+          set -u
+          mkdir -p visuals
+          # Map each trace to its authoring recording bundle and GIF it.
+          for trace in site-results/*.trace.jsonl; do
+            name=$(basename "$trace" .trace.jsonl)
+            dir=$(python3 -c "import json,sys; print(json.loads(open(sys.argv[1]).readline()).get('recording',{}).get('dir',''))" "$trace")
+            frames="site-results/$dir"
+            if [ -n "$dir" ] && ls "$frames"/frame-*.png >/dev/null 2>&1; then
+              ffmpeg -loglevel error -y -framerate 1.4 -pattern_type glob \
+                -i "$frames/frame-*.png" -vf "scale=900:-1" "visuals/$name.gif" || true
+            fi
+          done
+          # Screenshot each replay run's report.html, named by its flow.
+          for run in site-results/.flowproof/runs/*/; do
+            [ -f "$run/report.html" ] || continue
+            name=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['name'])" "$run/result.json" \
+              | tr ' ' '-' | tr -cd 'A-Za-z0-9-' | cut -c1-40)
+            google-chrome --headless=new --no-sandbox --disable-gpu \
+              --window-size=1000,2400 --screenshot="visuals/report-$name.png" \
+              "file://$PWD/$run/report.html" 2>/dev/null || true
+          done
+          ls -la visuals
+          tar czf visuals.tgz -C visuals .
+          echo "VISUALS SIZE: $(stat -c%s visuals.tgz) bytes"
+          echo "BEGIN-VISUALS-B64"
+          base64 -w 512 visuals.tgz
+          echo "END-VISUALS-B64"
 
   recon:
     name: recon (page text + ids)
