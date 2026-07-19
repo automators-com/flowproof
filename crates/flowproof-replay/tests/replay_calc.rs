@@ -141,18 +141,17 @@ fn web_round_trip_via_mock_uses_css_selectors() {
 
     // Mock "page": elements keyed by css; body already shows the greeting so
     // the record-time assert holds.
-    let mut rec =
-        MockAppDriver::new(&["#name", "#greet", "body"]).with_text("body", "Greeter Hello, Ada!");
+    let mut rec = MockAppDriver::new(&["name", "greet"]).with_surface_text("Greeter Hello, Ada!");
     record(&spec, &mut rec, &trace).expect("recording succeeds");
     assert_eq!(
         rec.launched.as_ref().map(|l| l.0.as_str()),
         Some("https://example.test/greeter")
     );
-    assert_eq!(rec.typed, vec![("#name".to_string(), "Ada".to_string())]);
-    assert_eq!(rec.invoked, vec!["#greet"]);
+    assert_eq!(rec.typed, vec![("name".to_string(), "Ada".to_string())]);
+    assert_eq!(rec.invoked, vec!["greet"]);
 
     let mut driver =
-        MockAppDriver::new(&["#name", "#greet", "body"]).with_text("body", "Greeter Hello, Ada!");
+        MockAppDriver::new(&["name", "greet"]).with_surface_text("Greeter Hello, Ada!");
     let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
     assert!(report.passed, "report: {report:?}");
 
@@ -361,9 +360,9 @@ fn assertions_wait_for_slow_uis_and_time_out_deterministically() {
     let trace = dir.join("slow.trace.jsonl");
 
     // Recording: the page shows "Working…" for the first three reads.
-    let mut rec = MockAppDriver::new(&["body"]).with_text("body", "Done");
+    let mut rec = MockAppDriver::new(&[]).with_surface_text("Done");
     rec.text_sequence.insert(
-        "body".into(),
+        MockAppDriver::SURFACE.into(),
         ["Working…", "Working…", "Working…"]
             .into_iter()
             .map(String::from)
@@ -376,9 +375,9 @@ fn assertions_wait_for_slow_uis_and_time_out_deterministically() {
     assert!(persisted.contains("\"timeout_ms\":5000"));
 
     // Replay: same slow behavior, still passes.
-    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "Done");
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("Done");
     driver.text_sequence.insert(
-        "body".into(),
+        MockAppDriver::SURFACE.into(),
         ["Working…", "Working…"]
             .into_iter()
             .map(String::from)
@@ -389,7 +388,7 @@ fn assertions_wait_for_slow_uis_and_time_out_deterministically() {
 
     // A page that NEVER shows the text fails after the bounded wait —
     // deterministically, with the real text in the failure detail.
-    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "Working…");
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("Working…");
     let started = std::time::Instant::now();
     let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
     assert!(!report.passed);
@@ -490,8 +489,7 @@ steps:
 ",
     )
     .expect("spec parses");
-    let mut driver =
-        MockAppDriver::new(&["Field Name", "body"]).with_text("body", "row one, row two");
+    let mut driver = MockAppDriver::new(&["Field Name"]).with_surface_text("row one, row two");
     let trace = dir.join("assertions.trace.jsonl");
     record(&spec, &mut driver, &trace).expect("recording succeeds");
 
@@ -501,8 +499,7 @@ steps:
     assert!(persisted.contains("\"element_present\":true"));
     assert!(persisted.contains("\"element_present\":false"));
 
-    let mut driver =
-        MockAppDriver::new(&["Field Name", "body"]).with_text("body", "row one, row two");
+    let mut driver = MockAppDriver::new(&["Field Name"]).with_surface_text("row one, row two");
     let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
     assert!(report.passed, "assertion forms replay: {report:?}");
 
@@ -516,7 +513,7 @@ steps:
 ",
     )
     .expect("spec parses");
-    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "row one, row two");
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("row one, row two");
     let trace2 = dir.join("count-mismatch.trace.jsonl");
     let err = record(&spec, &mut driver, &trace2).expect_err("count mismatch must fail");
     assert!(err.to_string().contains("row"), "err: {err}");
@@ -540,9 +537,9 @@ steps:
 ",
     )
     .expect("spec parses");
-    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "list");
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("list");
     driver.text_sequence.insert(
-        "body".into(),
+        MockAppDriver::SURFACE.into(),
         ["TestConnection", "TestConnection", "list"]
             .into_iter()
             .map(String::from)
@@ -583,7 +580,7 @@ steps:
 ",
     )
     .expect("spec parses");
-    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "Settings");
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("Settings");
     let trace = dir.join("session.trace.jsonl");
     record(&spec, &mut driver, &trace).expect("recording succeeds");
 
@@ -616,7 +613,7 @@ steps:
     assert!(persisted.contains("${FLOWPROOF_TEST_BASE}"));
 
     // Replay stages the same session and re-navigates.
-    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "Settings");
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("Settings");
     let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
     assert!(report.passed, "session flow replays: {report:?}");
     let staged = driver
@@ -629,5 +626,46 @@ steps:
 
     std::env::remove_var("FLOWPROOF_TEST_SESSION_JWT");
     std::env::remove_var("FLOWPROOF_TEST_BASE");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn notepad_shares_the_provenance_agnostic_assertion_grammar() {
+    let dir = std::env::temp_dir().join("flowproof-replay-uia-asserts");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    // A desktop (UIA-profile) app using the SHARED assertion grammar:
+    // surface negatives/counts and native-id field values — no web anywhere.
+    let spec = FlowSpec::parse(
+        "name: Desktop assertions
+app: notepad
+steps:
+  - Type status report
+  - assert: document contains status report
+  - assert: page shows saved 2 times
+  - assert: page does not show error
+  - assert: the 15 field contains status report
+",
+    )
+    .expect("spec parses");
+    let mut driver = MockAppDriver::new(&["15"]).with_surface_text("draft saved — autosave saved");
+    let trace = dir.join("desktop.trace.jsonl");
+    record(&spec, &mut driver, &trace).expect("recording succeeds");
+
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    // Surface asserts carry the neutral scope key and NO selector ladder…
+    assert!(persisted.contains("\"scope\":\"surface\""));
+    assert!(
+        !persisted.contains("\"css\":\"body\""),
+        "no web-ism in a desktop trace"
+    );
+    // …and the field assert anchors on the native automation id.
+    assert!(persisted.contains("\"automation_id\":\"15\""));
+
+    let mut driver = MockAppDriver::new(&["15"]).with_surface_text("draft saved — autosave saved");
+    driver.texts.insert("15".into(), "status report".into());
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "desktop assertions replay: {report:?}");
+
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -157,6 +157,80 @@ fn wait_for_condition<D: AppDriver>(
     }
 }
 
+/// Extract the text expectation from an `element_state` expect object:
+/// `(raw expectation, negated)`. None when it carries no text expectation.
+fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
+    if let Some(e) = expect.get("value_not_contains").and_then(|v| v.as_str()) {
+        Some((e, true))
+    } else if let Some(e) = expect.get("value_contains").and_then(|v| v.as_str()) {
+        Some((e, false))
+    } else {
+        expect
+            .get("value_equals")
+            .and_then(|v| v.as_str())
+            .map(|e| (e, false))
+    }
+}
+
+/// Whether `text` satisfies the expectation — one predicate for every
+/// provenance (element text, surface text, later OCR text).
+fn text_matches(expect: &serde_json::Value, expected: &str, negated: bool, text: &str) -> bool {
+    if negated {
+        !text.contains(expected)
+    } else if let Some(n) = expect.get("count").and_then(|v| v.as_u64()) {
+        text.matches(expected).count() as u64 == n
+    } else if expect.get("value_contains").is_some() {
+        text.contains(expected)
+    } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
+        matches!(
+            (numeric_value(text), expected.parse::<f64>()),
+            (Some(actual), Ok(wanted)) if actual == wanted
+        )
+    } else {
+        text == expected
+    }
+}
+
+/// Poll `read` until the text expectation in `expect` holds or `deadline`
+/// passes. Provenance-agnostic: the caller decides what "read the text"
+/// means (an element, the whole surface).
+fn check_text_expectation<F>(
+    expect: &serde_json::Value,
+    deadline: Instant,
+    rung: Option<usize>,
+    mut read: F,
+) -> Result<(Result<(), String>, Option<usize>), ReplayError>
+where
+    F: FnMut() -> Result<String, flowproof_driver::DriverError>,
+{
+    let Some((raw, negated)) = text_expectation(expect) else {
+        return Ok((
+            Err(format!("unsupported element_state expectation: {expect}")),
+            rung,
+        ));
+    };
+    let expected = match flowproof_trace::secret::resolve_refs(raw) {
+        Ok(expected) => expected,
+        Err(e) => return Ok((Err(e.to_string()), rung)),
+    };
+    loop {
+        let text = read()?;
+        if text_matches(expect, &expected, negated, &text) {
+            return Ok((Ok(()), rung));
+        }
+        if Instant::now() >= deadline {
+            let shown = if flowproof_trace::secret::has_refs(raw) {
+                "<masked>"
+            } else {
+                text.as_str()
+            };
+            let verb = if negated { "no text" } else { "text" };
+            return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), rung));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn check_assertion<D: AppDriver>(
     driver: &mut D,
     assertion: &Assertion,
@@ -194,6 +268,13 @@ fn check_assertion<D: AppDriver>(
                 .unwrap_or(DEFAULT_ASSERT_TIMEOUT_MS);
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
+            // Surface-scoped: no selector to resolve — every adapter
+            // answers `surface_text` its own way (page / window subtree /
+            // OCR frame).
+            if expect.get("scope").and_then(|v| v.as_str()) == Some("surface") {
+                return check_text_expectation(expect, deadline, None, || driver.surface_text());
+            }
+
             // Presence expectations: the element being there (or gone) IS
             // the assertion — no text involved.
             if let Some(wanted_present) = expect.get("element_present").and_then(|v| v.as_bool()) {
@@ -216,19 +297,12 @@ fn check_assertion<D: AppDriver>(
                 }
             }
 
-            let (raw, negated) =
-                if let Some(e) = expect.get("value_not_contains").and_then(|v| v.as_str()) {
-                    (e, true)
-                } else if let Some(e) = expect.get("value_contains").and_then(|v| v.as_str()) {
-                    (e, false)
-                } else if let Some(e) = expect.get("value_equals").and_then(|v| v.as_str()) {
-                    (e, false)
-                } else {
-                    return Ok((
-                        Err(format!("unsupported element_state expectation: {expect}")),
-                        None,
-                    ));
-                };
+            let Some((raw, negated)) = text_expectation(expect) else {
+                return Ok((
+                    Err(format!("unsupported element_state expectation: {expect}")),
+                    None,
+                ));
+            };
             // Expectations may reference `${VAR}` secrets: resolve for the
             // comparison only — messages keep the raw reference, and the
             // live text is masked too, so a failure never leaks the value.
@@ -236,26 +310,11 @@ fn check_assertion<D: AppDriver>(
                 Ok(expected) => expected,
                 Err(e) => return Ok((Err(e.to_string()), None)),
             };
-            let count = expect.get("count").and_then(|v| v.as_u64());
             let mut last: Option<(String, usize)> = None;
             loop {
                 if let Some((uia, rung)) = resolve(driver)? {
                     let text = driver.read_text(&uia)?;
-                    let matches = if negated {
-                        !text.contains(&expected)
-                    } else if let Some(n) = count {
-                        text.matches(expected.as_str()).count() as u64 == n
-                    } else if expect.get("value_contains").is_some() {
-                        text.contains(&expected)
-                    } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
-                        matches!(
-                            (numeric_value(&text), expected.parse::<f64>()),
-                            (Some(actual), Ok(wanted)) if actual == wanted
-                        )
-                    } else {
-                        text == expected
-                    };
-                    if matches {
+                    if text_matches(expect, &expected, negated, &text) {
                         return Ok((Ok(()), Some(rung)));
                     }
                     last = Some((text, rung));
