@@ -63,6 +63,14 @@ impl MockAppDriver {
         self
     }
 
+    /// Key under which `surface_text` (and its scripted sequence) is stored.
+    pub const SURFACE: &'static str = "__surface__";
+
+    pub fn with_surface_text(mut self, text: &str) -> Self {
+        self.texts.insert(Self::SURFACE.into(), text.into());
+        self
+    }
+
     /// The key a selector matches in the fake UI tree: automation id, css,
     /// or — like the real UIA driver's find-by-name — the accessible name
     /// (used by structural / text-anchor ladder rungs).
@@ -134,6 +142,18 @@ impl AppDriver for MockAppDriver {
         self.texts.entry(id.to_string()).or_default().push_str(text);
         self.typed.push((id.to_string(), text.to_string()));
         Ok(())
+    }
+
+    fn surface_text(&mut self) -> Result<String, DriverError> {
+        if let Some(queue) = self.text_sequence.get_mut(Self::SURFACE) {
+            if let Some(next) = queue.pop_front() {
+                return Ok(next);
+            }
+        }
+        self.texts
+            .get(Self::SURFACE)
+            .cloned()
+            .ok_or_else(|| DriverError::Uia("mock has no surface text".into()))
     }
 
     fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {

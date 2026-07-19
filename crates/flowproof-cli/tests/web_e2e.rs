@@ -97,8 +97,14 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
 
     // The app moved on: the recorded selector no longer matches the page.
     let contents = std::fs::read_to_string(&trace_path).expect("trace readable");
-    std::fs::write(&trace_path, contents.replace("#greet\"", "#old-greet\""))
-        .expect("trace rewritten");
+    std::fs::write(
+        &trace_path,
+        contents.replace(
+            "\"automation_id\":\"greet\"",
+            "\"automation_id\":\"old-greet\"",
+        ),
+    )
+    .expect("trace rewritten");
 
     let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
     let report = flowproof_agent::heal(&spec, &mut driver, &trace_path).expect("heal runs");
@@ -110,7 +116,7 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
     let html = std::fs::read_to_string(&page_path).expect("review page readable");
     assert!(html.contains("Before (recorded)"));
     assert!(html.contains("After (proposed)"));
-    assert!(html.contains("#old-greet"), "shows the stale selector");
+    assert!(html.contains("old-greet"), "shows the stale selector");
 
     // Both executions were recorded; the page embeds frames from each
     // bundle, and every referenced frame file really exists next to it.

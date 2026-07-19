@@ -25,6 +25,11 @@ pub enum Target {
     AutomationId(String),
     Css(String),
     Text(String),
+    /// The whole readable surface — the page for a browser, the foreground
+    /// window's subtree for a desktop app, the OCR'd frame for a vision
+    /// adapter. `page shows X` asserts against this, not against any
+    /// provenance-specific selector.
+    Surface,
     /// The nth (1-based) element matching the inner css/text target —
     /// `Type email into the 2nd "Field Name" field`.
     Nth(u32, Box<Target>),
@@ -189,6 +194,182 @@ pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, R
     }
 }
 
+/// `css:` prefix inside a quoted label targets by CSS selector instead of
+/// by text — an adapter-specific escape hatch (web today; a SAP profile
+/// would use its own scripting ids the same way). Everything else is a
+/// text anchor, meaningful on every provenance.
+fn target_from_label(label: &str) -> Target {
+    match label.strip_prefix("css:") {
+        Some(css) if !css.trim().is_empty() => Target::css(css.trim()),
+        _ => Target::text(label),
+    }
+}
+
+/// Parse an optional leading 1-based ordinal (`2nd `, `3rd `, `10th `)
+/// off `rest`, returning it with the remainder.
+fn split_ordinal(rest: &str) -> (Option<u32>, &str) {
+    let Some((word, tail)) = rest.split_once(' ') else {
+        return (None, rest);
+    };
+    let digits = word
+        .strip_suffix("st")
+        .or_else(|| word.strip_suffix("nd"))
+        .or_else(|| word.strip_suffix("rd"))
+        .or_else(|| word.strip_suffix("th"));
+    match digits.map(str::parse::<u32>) {
+        Some(Ok(n)) if n >= 1 => (Some(n), tail.trim_start()),
+        _ => (None, rest),
+    }
+}
+
+fn with_nth(nth: Option<u32>, target: Target) -> Target {
+    match nth {
+        Some(n) => Target::nth(n, target),
+        None => target,
+    }
+}
+
+/// The PROVENANCE-AGNOSTIC assertion grammar, shared by every app profile.
+/// Forms describe WHAT to check; how each target resolves is the adapter's
+/// business (surface = page / window subtree / OCR frame; `<id>` = DOM id /
+/// UIA AutomationId; quoted labels = text anchors). Apps layer their own
+/// sugar on top (calc's `display shows`, notepad's `document contains`).
+mod assertions {
+    use super::*;
+
+    /// Parse a trailing occurrence count (`… 2 times`) off an expectation.
+    fn split_count(text: &str) -> (&str, Option<u64>) {
+        let stripped = strip_suffix_ci(text, " times").or_else(|| strip_suffix_ci(text, " time"));
+        let Some(stripped) = stripped else {
+            return (text, None);
+        };
+        match stripped.rsplit_once(' ') {
+            Some((rest, digits)) => match digits.parse::<u64>() {
+                Ok(n) => (rest.trim_end(), Some(n)),
+                Err(_) => (text, None),
+            },
+            None => (text, None),
+        }
+    }
+
+    /// All forms auto-wait and accept a trailing `within <N>s`. Every form
+    /// starts with a plain word — a YAML scalar cannot START with a double
+    /// quote, so quoted targets always follow `the `:
+    ///   page shows <text>                       (the whole surface)
+    ///   page shows <text> <N> times             (occurrences of the TEXT)
+    ///   page does not show <text>
+    ///   the "<label>"|<id> field contains <text>
+    ///   the "<text-or-css:sel>" shows <text>
+    ///   the "<text-or-css:sel>" is visible | is not visible
+    pub(super) fn resolve(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        let trimmed = text.trim();
+        let (trimmed, timeout) = split_within(trimmed);
+        let timeout_ms = timeout.unwrap_or(ASSERT_TIMEOUT_MS);
+
+        if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
+            let (expected, count) = split_count(rest.trim());
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected text"));
+            }
+            let matcher = match count {
+                Some(n) => TextMatch::CountEquals(n),
+                None => TextMatch::Contains,
+            };
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: expected.to_string(),
+                matcher,
+                timeout_ms,
+            }]);
+        }
+
+        if let Some(rest) = strip_prefix_ci(trimmed, "page does not show ") {
+            let expected = rest.trim();
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected text"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: expected.to_string(),
+                matcher: TextMatch::NotContains,
+                timeout_ms,
+            }]);
+        }
+
+        // `the …` forms. After the optional ordinal and quoted target the
+        // tail dispatches:
+        //   the "<label>" field contains <text>    (input VALUE)
+        //   the <id> field contains <text>         (native id: DOM id / UIA)
+        //   the "<target>" shows <text>            (element-scoped contains)
+        //   the "<target>" is visible | is not visible
+        if let Some(rest) = strip_prefix_ci(trimmed, "the ") {
+            let (nth, rest) = split_ordinal(rest.trim());
+            if let Some(quoted) = rest.strip_prefix('"') {
+                if let Some((label, tail)) = quoted_label(quoted) {
+                    let target = with_nth(nth, target_from_label(label));
+                    if let Some(expected) = strip_prefix_ci(tail, "field contains ")
+                        .or_else(|| strip_prefix_ci(tail, "shows "))
+                    {
+                        let expected = expected.trim();
+                        if expected.is_empty() {
+                            return Err(unresolvable(trimmed, "no expected text"));
+                        }
+                        return Ok(vec![ResolvedAction::AssertText {
+                            target,
+                            expected: expected.to_string(),
+                            matcher: TextMatch::Contains,
+                            timeout_ms,
+                        }]);
+                    }
+                    if tail.eq_ignore_ascii_case("is visible") {
+                        return Ok(vec![ResolvedAction::AssertPresence {
+                            target,
+                            present: true,
+                            timeout_ms,
+                        }]);
+                    }
+                    if tail.eq_ignore_ascii_case("is not visible") {
+                        return Ok(vec![ResolvedAction::AssertPresence {
+                            target,
+                            present: false,
+                            timeout_ms,
+                        }]);
+                    }
+                }
+            } else if nth.is_none() {
+                if let Some(pos) = rest.find(" field contains ") {
+                    let id = rest[..pos].trim();
+                    let expected = rest[pos + " field contains ".len()..].trim();
+                    if !id.is_empty() && !expected.is_empty() {
+                        // A NATIVE id, not a web-ism: DOM id on web (the
+                        // adapter derives `#id`), AutomationId on UIA, a
+                        // scripting id on SAP.
+                        return Ok(vec![ResolvedAction::AssertText {
+                            target: Target::id(id),
+                            expected: expected.to_string(),
+                            matcher: TextMatch::Contains,
+                            timeout_ms,
+                        }]);
+                    }
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'the \"<label>\" field contains <text>', 'the <id> field \
+                 contains <text>', 'the \"<target>\" shows <text>', or \
+                 'the \"<target>\" is [not] visible'",
+            ));
+        }
+
+        Err(unresolvable(
+            trimmed,
+            "expected 'page shows <text>[ N times]', 'page does not show <text>', \
+             'the \"<label>\" field contains <text>', 'the \"<target>\" shows <text>', \
+             or 'the \"<target>\" is [not] visible'",
+        ))
+    }
+}
+
 mod calc {
     use super::*;
 
@@ -220,7 +401,11 @@ mod calc {
     pub(super) fn resolve(step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
         match step {
             SpecStep::Plain(text) => resolve_plain(text),
-            SpecStep::Assert { assert } => Ok(vec![resolve_assert(assert)?]),
+            // App sugar first, then the shared provenance-agnostic grammar
+            // (surface / field-value / element-scoped / visibility forms).
+            SpecStep::Assert { assert } => resolve_assert(assert)
+                .map(|a| vec![a])
+                .or_else(|sugar_err| assertions::resolve(assert).map_err(|_| sugar_err)),
         }
     }
 
@@ -312,7 +497,9 @@ mod notepad {
                         timeout_ms: ASSERT_TIMEOUT_MS,
                     }]);
                 }
-                Err(unresolvable(trimmed, "expected 'document contains <text>'"))
+                // Shared grammar: negatives, counts, field values, presence
+                // — the engine evaluates them on UIA like anywhere else.
+                assertions::resolve(trimmed)
             }
         }
     }
@@ -321,177 +508,10 @@ mod notepad {
 mod web {
     use super::*;
 
-    /// Where "page shows …" asserts look: the whole document body.
-    pub(super) const PAGE_TEXT_CSS: &str = "body";
-
     pub(super) fn resolve(step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
         match step {
             SpecStep::Plain(text) => resolve_plain(text),
-            SpecStep::Assert { assert } => resolve_assert(assert),
-        }
-    }
-
-    /// Parse a trailing occurrence count (`… 2 times`) off an expectation.
-    fn split_count(text: &str) -> (&str, Option<u64>) {
-        let stripped = strip_suffix_ci(text, " times").or_else(|| strip_suffix_ci(text, " time"));
-        let Some(stripped) = stripped else {
-            return (text, None);
-        };
-        match stripped.rsplit_once(' ') {
-            Some((rest, digits)) => match digits.parse::<u64>() {
-                Ok(n) => (rest.trim_end(), Some(n)),
-                Err(_) => (text, None),
-            },
-            None => (text, None),
-        }
-    }
-
-    /// The assertion grammar. All forms auto-wait and accept a trailing
-    /// `within <N>s`. Every form starts with a plain word — a YAML scalar
-    /// cannot START with a double quote, so quoted targets always follow
-    /// `the `:
-    ///   page shows <text>
-    ///   page shows <text> <N> times
-    ///   page does not show <text>
-    ///   the "<label>"|<id> field contains <text>
-    ///   the "<text-or-css:sel>" shows <text>
-    ///   the "<text-or-css:sel>" is visible | is not visible
-    fn resolve_assert(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
-        let trimmed = text.trim();
-        let (trimmed, timeout) = split_within(trimmed);
-        let timeout_ms = timeout.unwrap_or(ASSERT_TIMEOUT_MS);
-
-        if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
-            let (expected, count) = split_count(rest.trim());
-            if expected.is_empty() {
-                return Err(unresolvable(trimmed, "no expected text"));
-            }
-            let matcher = match count {
-                Some(n) => TextMatch::CountEquals(n),
-                None => TextMatch::Contains,
-            };
-            return Ok(vec![ResolvedAction::AssertText {
-                target: Target::css(PAGE_TEXT_CSS),
-                expected: expected.to_string(),
-                matcher,
-                timeout_ms,
-            }]);
-        }
-
-        if let Some(rest) = strip_prefix_ci(trimmed, "page does not show ") {
-            let expected = rest.trim();
-            if expected.is_empty() {
-                return Err(unresolvable(trimmed, "no expected text"));
-            }
-            return Ok(vec![ResolvedAction::AssertText {
-                target: Target::css(PAGE_TEXT_CSS),
-                expected: expected.to_string(),
-                matcher: TextMatch::NotContains,
-                timeout_ms,
-            }]);
-        }
-
-        // `the …` forms. After the optional ordinal and quoted target the
-        // tail dispatches:
-        //   the "<label>" field contains <text>    (input VALUE)
-        //   the <id> field contains <text>
-        //   the "<target>" shows <text>            (element-scoped contains)
-        //   the "<target>" is visible | is not visible
-        if let Some(rest) = strip_prefix_ci(trimmed, "the ") {
-            let (nth, rest) = split_ordinal(rest.trim());
-            if let Some(quoted) = rest.strip_prefix('"') {
-                if let Some((label, tail)) = quoted_label(quoted) {
-                    let target = with_nth(nth, target_from_label(label));
-                    if let Some(expected) = strip_prefix_ci(tail, "field contains ")
-                        .or_else(|| strip_prefix_ci(tail, "shows "))
-                    {
-                        let expected = expected.trim();
-                        if expected.is_empty() {
-                            return Err(unresolvable(trimmed, "no expected text"));
-                        }
-                        return Ok(vec![ResolvedAction::AssertText {
-                            target,
-                            expected: expected.to_string(),
-                            matcher: TextMatch::Contains,
-                            timeout_ms,
-                        }]);
-                    }
-                    if tail.eq_ignore_ascii_case("is visible") {
-                        return Ok(vec![ResolvedAction::AssertPresence {
-                            target,
-                            present: true,
-                            timeout_ms,
-                        }]);
-                    }
-                    if tail.eq_ignore_ascii_case("is not visible") {
-                        return Ok(vec![ResolvedAction::AssertPresence {
-                            target,
-                            present: false,
-                            timeout_ms,
-                        }]);
-                    }
-                }
-            } else if nth.is_none() {
-                if let Some(pos) = rest.find(" field contains ") {
-                    let id = rest[..pos].trim();
-                    let expected = rest[pos + " field contains ".len()..].trim();
-                    if !id.is_empty() && !expected.is_empty() {
-                        return Ok(vec![ResolvedAction::AssertText {
-                            target: Target::css(format!("#{id}")),
-                            expected: expected.to_string(),
-                            matcher: TextMatch::Contains,
-                            timeout_ms,
-                        }]);
-                    }
-                }
-            }
-            return Err(unresolvable(
-                trimmed,
-                "expected 'the \"<label>\" field contains <text>', 'the <id> field \
-                 contains <text>', 'the \"<target>\" shows <text>', or \
-                 'the \"<target>\" is [not] visible'",
-            ));
-        }
-
-        Err(unresolvable(
-            trimmed,
-            "expected 'page shows <text>[ N times]', 'page does not show <text>', \
-             'the \"<label>\" field contains <text>', 'the \"<target>\" shows <text>', \
-             or 'the \"<target>\" is [not] visible'",
-        ))
-    }
-
-    /// `css:` prefix inside a quoted label targets by CSS selector instead
-    /// of by text — for elements with no readable text (icon buttons,
-    /// `data-test` hooks).
-    fn target_from_label(label: &str) -> Target {
-        match label.strip_prefix("css:") {
-            Some(css) if !css.trim().is_empty() => Target::css(css.trim()),
-            _ => Target::text(label),
-        }
-    }
-
-    /// Parse an optional leading 1-based ordinal (`2nd `, `3rd `, `10th `)
-    /// off `rest`, returning it with the remainder.
-    fn split_ordinal(rest: &str) -> (Option<u32>, &str) {
-        let Some((word, tail)) = rest.split_once(' ') else {
-            return (None, rest);
-        };
-        let digits = word
-            .strip_suffix("st")
-            .or_else(|| word.strip_suffix("nd"))
-            .or_else(|| word.strip_suffix("rd"))
-            .or_else(|| word.strip_suffix("th"));
-        match digits.map(str::parse::<u32>) {
-            Some(Ok(n)) if n >= 1 => (Some(n), tail.trim_start()),
-            _ => (None, rest),
-        }
-    }
-
-    fn with_nth(nth: Option<u32>, target: Target) -> Target {
-        match nth {
-            Some(n) => Target::nth(n, target),
-            None => target,
+            SpecStep::Assert { assert } => assertions::resolve(assert),
         }
     }
 
@@ -573,7 +593,7 @@ mod web {
                 return Err(unresolvable(trimmed, "no expected text"));
             }
             return Ok(vec![ResolvedAction::AssertText {
-                target: Target::css(PAGE_TEXT_CSS),
+                target: Target::Surface,
                 expected: expected.trim().to_string(),
                 matcher: TextMatch::Contains,
                 timeout_ms: timeout.unwrap_or(WAIT_STEP_TIMEOUT_MS),
@@ -613,7 +633,7 @@ mod web {
                 if let Some(id) = strip_suffix_ci(field, " field").map(str::trim) {
                     if !id.is_empty() {
                         return Ok(vec![ResolvedAction::TypeText {
-                            target: Target::css(format!("#{id}")),
+                            target: Target::id(id),
                             text: value.to_string(),
                         }]);
                     }
@@ -641,7 +661,7 @@ mod web {
                 if let Some(id) = strip_suffix_ci(field, " field").map(str::trim) {
                     if !id.is_empty() {
                         return Ok(vec![ResolvedAction::Clear {
-                            target: Target::css(format!("#{id}")),
+                            target: Target::id(id),
                         }]);
                     }
                 }
@@ -669,7 +689,7 @@ mod web {
                 if let Some(id) = strip_suffix_ci(target_text, " button").map(str::trim) {
                     if !id.is_empty() {
                         return Ok(vec![ResolvedAction::Press {
-                            target: Target::css(format!("#{id}")),
+                            target: Target::id(id),
                             label: id.to_string(),
                         }]);
                     }
@@ -820,7 +840,7 @@ mod tests {
     }
 
     #[test]
-    fn web_type_and_press_map_to_css() {
+    fn web_type_and_press_map_to_native_ids() {
         let actions = resolve_step(
             "web",
             &SpecStep::Plain("Type Ada into the name field".into()),
@@ -829,7 +849,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::TypeText {
-                target: Target::css("#name"),
+                target: Target::id("name"),
                 text: "Ada".into(),
             }]
         );
@@ -839,14 +859,14 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::Press {
-                target: Target::css("#greet"),
+                target: Target::id("greet"),
                 label: "greet".into(),
             }]
         );
     }
 
     #[test]
-    fn web_assert_is_contains_on_body() {
+    fn web_assert_targets_the_surface() {
         let actions = resolve_step(
             "web",
             &SpecStep::Assert {
@@ -857,7 +877,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::AssertText {
-                target: Target::css("body"),
+                target: Target::Surface,
                 expected: "Hello, Ada".into(),
                 matcher: TextMatch::Contains,
                 timeout_ms: ASSERT_TIMEOUT_MS,
@@ -875,7 +895,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::AssertText {
-                target: Target::css("body"),
+                target: Target::Surface,
                 expected: "Generation complete".into(),
                 matcher: TextMatch::Contains,
                 timeout_ms: WAIT_STEP_TIMEOUT_MS,
@@ -965,7 +985,7 @@ mod tests {
             .expect("id press resolves");
         assert!(matches!(
             &actions[0],
-            ResolvedAction::Press { target: Target::Css(css), .. } if css == "#greet"
+            ResolvedAction::Press { target: Target::AutomationId(id), .. } if id == "greet"
         ));
     }
 
@@ -1053,7 +1073,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::Clear {
-                target: Target::css("#templateName"),
+                target: Target::id("templateName"),
             }]
         );
     }
@@ -1112,7 +1132,7 @@ mod tests {
         .expect("camelCase id resolves");
         assert!(matches!(
             &actions[0],
-            ResolvedAction::TypeText { target: Target::Css(css), .. } if css == "#templateName"
+            ResolvedAction::TypeText { target: Target::AutomationId(id), .. } if id == "templateName"
         ));
     }
 
@@ -1128,7 +1148,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::AssertText {
-                target: Target::css("body"),
+                target: Target::Surface,
                 expected: "TestConnection".into(),
                 matcher: TextMatch::NotContains,
                 timeout_ms: 15_000,
@@ -1145,7 +1165,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::AssertText {
-                target: Target::css("body"),
+                target: Target::Surface,
                 expected: "playwrightTemplateRoot".into(),
                 matcher: TextMatch::CountEquals(2),
                 timeout_ms: ASSERT_TIMEOUT_MS,
@@ -1196,7 +1216,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ResolvedAction::AssertText {
-                target: Target::css("#templateName"),
+                target: Target::id("templateName"),
                 expected: "playwrightTemplateRoot".into(),
                 matcher: TextMatch::Contains,
                 timeout_ms: 10_000,

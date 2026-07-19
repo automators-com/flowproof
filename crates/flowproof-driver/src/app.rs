@@ -181,6 +181,16 @@ pub trait AppDriver {
         ))
     }
 
+    /// All text currently readable on the app's surface — the whole page
+    /// for a browser, the foreground window's subtree for a desktop app,
+    /// the OCR'd frame for a vision adapter. Backs surface-level assertions
+    /// (`page shows X`) without tying them to any one provenance.
+    fn surface_text(&mut self) -> Result<String, DriverError> {
+        Err(DriverError::Uia(
+            "surface_text is not supported by this driver".into(),
+        ))
+    }
+
     /// Stage session state (cookies, localStorage) to be applied by the
     /// NEXT `launch` before the page loads.
     fn stage_session(&mut self, _session: WebSession) -> Result<(), DriverError> {
@@ -305,6 +315,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
         (**self).press_key(key, modifiers)
+    }
+
+    fn surface_text(&mut self) -> Result<String, DriverError> {
+        (**self).surface_text()
     }
 
     fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
@@ -507,6 +521,38 @@ mod windows_impl {
             element
                 .get_name()
                 .map_err(|e| uia_err(&format!("reading text of [{selector}]"), e))
+        }
+
+        fn surface_text(&mut self) -> Result<String, DriverError> {
+            // The desktop reading of "the surface": every name and value in
+            // the foreground window's subtree, top-down. The vision adapter
+            // will answer the same question with full-frame OCR.
+            let window = self.window()?;
+            let elements = self
+                .automation
+                .create_matcher()
+                .from_ref(window)
+                .depth(16)
+                .timeout(0)
+                .filter_fn(Box::new(|_: &UIElement| Ok(true)))
+                .find_all()
+                .unwrap_or_default();
+            let mut parts: Vec<String> = Vec::new();
+            for element in elements {
+                if let Ok(name) = element.get_name() {
+                    if !name.is_empty() {
+                        parts.push(name);
+                    }
+                }
+                if let Ok(value) = element.get_pattern::<UIValuePattern>() {
+                    if let Ok(text) = value.get_value() {
+                        if !text.is_empty() {
+                            parts.push(text);
+                        }
+                    }
+                }
+            }
+            Ok(parts.join("\n"))
         }
 
         fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {

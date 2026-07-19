@@ -269,6 +269,17 @@ impl AppDriver for WebAppDriver {
         Ok(())
     }
 
+    fn surface_text(&mut self) -> Result<String, DriverError> {
+        let value = self
+            .tab()?
+            .evaluate("document.body ? document.body.innerText : ''", false)
+            .map_err(|e| web_err("reading page text", e))?;
+        Ok(value
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
+    }
+
     fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
         self.staged_session = Some(session);
         Ok(())

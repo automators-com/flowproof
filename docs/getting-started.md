@@ -193,23 +193,37 @@ finds the card whose label *starts with* "Database" when no element matches
 it exactly, mirroring how Playwright's accessible-name matching is used in
 real suites.
 
-### The assertion vocabulary
+### The assertion vocabulary (shared across every app profile)
 
-All assertion forms auto-wait (bounded, recorded timeout; `within <N>s`
-overrides) — including waiting for the *element itself* to appear, so
-asserting on a toast works:
+Assertions describe **what** to check; **how** each target resolves is the
+adapter's job, so the same forms work for web, desktop (UIA), and — as
+those adapters land — SAP GUI and vision/OCR. All forms auto-wait
+(bounded, recorded timeout; `within <N>s` overrides) — including waiting
+for the *target itself* to appear, so asserting on a toast works:
 
 ```yaml
 steps:
-  - assert: page shows Welcome                       # substring of the page
-  - assert: page shows templates found 2 times       # occurrence count
+  - assert: page shows Welcome                       # the SURFACE: page text on
+                                                     #   web, window subtree on
+                                                     #   UIA, OCR frame later
+  - assert: page shows templates found 2 times       # occurrences of the TEXT
+                                                     #   (not an element count)
   - assert: page does not show TestConnection        # waits for it to be GONE
-  - assert: the templateName field contains Draft    # input VALUE (by #id)
-  - assert: the "Field Name" field contains Street   # input VALUE (by label)
+  - assert: the templateName field contains Draft    # input VALUE, by NATIVE id
+                                                     #   (DOM id / AutomationId)
+  - assert: the "Field Name" field contains Street   # input VALUE, by label
   - assert: the "css:#live_preview" shows Street     # element-scoped substring
-  - assert: the "css:#modal" is visible
-  - assert: the "css:#modal" is not visible within 15s
+                                                     #   (css: is web-specific)
+  - assert: the "css:#modal" is visible              # "visible" = the target
+  - assert: the "css:#modal" is not visible within 15s   # RESOLVES (tree/DOM
+                                                     #   presence, not pixels)
 ```
+
+The Playwright equivalents quoted in the PR history (`toHaveCount`,
+`toHaveValue`, `toBeVisible`, …) are the **web mapping** of these forms —
+one provenance among four (uia, sap-com, vision/OCR, out-of-band), not
+their definition. `calc` and `notepad` layer their sugar (`display shows`,
+`document contains`) on top of the same shared grammar.
 
 (YAML note: an `assert:` value cannot *start* with a `"` — that's why
 quoted targets always follow `the `.)

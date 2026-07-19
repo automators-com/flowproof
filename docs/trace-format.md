@@ -103,7 +103,10 @@ has `format != "flowproof-trace"` or an unsupported `version`.
   Citrix recording may have tiers 3–5 only). `confidence` is optional,
   `[0.0, 1.0]`. Any rung's payload may carry `nth` (1-based) to address
   the nth matching element when a selector legitimately matches several
-  (`Type email into the 2nd "Field Name" field`).
+  (`Type email into the 2nd "Field Name" field`). `nth` indexes the
+  adapter's natural match enumeration — document order on the web,
+  tree-walk order on UIA, reading order for OCR — so the same trace means
+  the same element on every provenance.
 
   **Replay semantics**: the engine walks rungs in order and acts on the
   first one that resolves to a live element. Tiers 1–3 execute today
@@ -129,10 +132,22 @@ has `format != "flowproof-trace"` or an unsupported `version`.
 - `element_state` — selector resolves and matches `{property: value}`.
   `expect` keys in use: `value_contains`, `value_equals` (+`normalize:
   numeric`), `value_not_contains` (text must be absent), `count` (with
-  `value_contains`: exact occurrence count), `element_present`
-  (true/false — presence itself is the assertion), and `timeout_ms` (the
+  `value_contains`: exact occurrence count of the TEXT, not an element
+  count — provenance-neutral, an OCR adapter counts occurrences in the
+  scene the same way), `element_present` (true/false — presence itself is
+  the assertion; note this means "the target resolves", not visual
+  visibility — a tree-present-but-hidden element counts as present until
+  the vision mode adds a true visual check), and `timeout_ms` (the
   auto-wait bound; the resolver runs inside the poll, so the target may
   legitimately appear — or disappear — during the wait).
+
+  `expect.scope: "surface"` marks a **surface-scoped** assertion: no
+  selector ladder (the step's `selectors` is empty, `selector_ref` null) —
+  the expectation runs against everything readable on the app's surface.
+  Each adapter answers its own way: the page text for a browser, the
+  foreground window's subtree for UIA, the OCR'd frame for a vision
+  adapter. This is how `page shows X` serializes without baking any
+  provenance into the trace.
 - `ocr_text` — OCR of `region` (or the resolved element bounds) matches
   `text` (`equals|contains|regex`).
 - `visual_diff` — region matches `baseline` (a `sha256:` hash) within

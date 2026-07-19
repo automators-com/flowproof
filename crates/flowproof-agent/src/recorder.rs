@@ -165,6 +165,9 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
                 payload,
             }]
         }
+        // The surface has no selector — the assertion's `scope` key IS the
+        // encoding (see step_for); every adapter answers `surface_text`.
+        Target::Surface => Vec::new(),
         // An ordinal narrows every rung of the inner ladder to the nth match.
         Target::Nth(n, inner) => {
             let mut ladder = selectors_for(app, inner, label);
@@ -251,11 +254,21 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 }
             };
             expect["timeout_ms"] = serde_json::json!(timeout_ms);
+            let selectors = selectors_for(app, target, None);
+            // Surface-scoped asserts carry no selector: the explicit
+            // `scope` key is the encoding every adapter resolves its own
+            // way (page text / window subtree / OCR frame).
+            let selector_ref = if matches!(target, Target::Surface) {
+                expect["scope"] = serde_json::json!("surface");
+                None
+            } else {
+                Some(0)
+            };
             (
-                selectors_for(app, target, None),
+                selectors,
                 Action::Assert(Assertion::ElementState {
                     expect,
-                    selector_ref: Some(0),
+                    selector_ref,
                 }),
             )
         }
@@ -297,20 +310,22 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
     }
 }
 
-fn target_selector(target: &Target) -> UiaSelector {
+fn target_selector(target: &Target) -> Option<UiaSelector> {
     match target {
-        Target::AutomationId(id) => UiaSelector::automation_id(id.clone()),
-        Target::Css(css) => UiaSelector::css(css.clone()),
-        Target::Text(text) => UiaSelector {
+        Target::AutomationId(id) => Some(UiaSelector::automation_id(id.clone())),
+        Target::Css(css) => Some(UiaSelector::css(css.clone())),
+        Target::Text(text) => Some(UiaSelector {
             name: Some(text.clone()),
             ..UiaSelector::default()
-        },
-        Target::Nth(n, inner) => target_selector(inner).with_nth(Some(*n)),
+        }),
+        // The surface is not an element — it resolves via `surface_text`.
+        Target::Surface => None,
+        Target::Nth(n, inner) => target_selector(inner).map(|s| s.with_nth(Some(*n))),
     }
 }
 
 /// The live-driver selector for an action's target; None for targetless
-/// actions (key press, focused typing).
+/// actions (key press, focused typing) and surface-scoped assertions.
 fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
     let target = match action {
         ResolvedAction::Press { target, .. }
@@ -323,7 +338,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::Navigate { .. }
         | ResolvedAction::Reload => return None,
     };
-    Some(target_selector(target))
+    target_selector(target)
 }
 
 /// Resolve where to launch: registry apps by id, `web` from the spec URL
@@ -549,11 +564,14 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                     // being performed for real, so a slow backend operation
                     // takes just as long here as it will at replay. The
                     // element itself may also still be appearing (a toast),
-                    // so existence is part of the same poll.
+                    // so existence is part of the same poll. A surface-
+                    // scoped assert (no selector) reads the whole surface.
                     let wanted = flowproof_trace::secret::resolve_refs(expected)?;
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
-                        let actual = if driver.element_exists(targeted())? {
+                        let actual = if selector.is_none() {
+                            Some(driver.surface_text()?)
+                        } else if driver.element_exists(targeted())? {
                             Some(driver.read_text(targeted())?)
                         } else {
                             None
