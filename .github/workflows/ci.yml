@@ -64,6 +64,14 @@ jobs:
         run: cargo test -p flowproof-cli --test notepad_author_e2e -- --nocapture
         env:
           FLOWPROOF_E2E: "1"
+      # The REAL SAP COM engine against a simulated scripting API — no SAP
+      # install needed; proves the late-binding layer end to end.
+      - name: SAP scripting E2E (real COM engine, simulator)
+        run: |
+          pip install pywin32
+          cargo test -p flowproof-cli --test sap_sim_e2e -- --nocapture
+        env:
+          FLOWPROOF_E2E: "1"
       - name: cleanup stray notepad
         if: always()
         shell: pwsh
