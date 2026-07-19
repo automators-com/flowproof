@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::app::{AppDriver, PixelRect, UiaSelector};
+use crate::app::{AppDriver, KeyMod, PixelRect, UiaSelector};
 use crate::DriverError;
 
 #[derive(Debug, Default)]
@@ -35,6 +35,12 @@ pub struct MockAppDriver {
     /// entry (falling back to `texts` when drained) — simulates a slow UI
     /// whose text changes over time, for auto-wait tests.
     pub text_sequence: HashMap<String, std::collections::VecDeque<String>>,
+    /// Keys pressed via `press_key`, formatted like `Ctrl+V` / `Enter`.
+    pub keys_pressed: Vec<String>,
+    /// Element keys whose text was cleared, in order.
+    pub cleared: Vec<String>,
+    /// Text typed into the focused element, in order.
+    pub typed_focused: Vec<String>,
 }
 
 impl MockAppDriver {
@@ -121,6 +127,28 @@ impl AppDriver for MockAppDriver {
         // Typing appends to the element's text, like a real edit control.
         self.texts.entry(id.to_string()).or_default().push_str(text);
         self.typed.push((id.to_string(), text.to_string()));
+        Ok(())
+    }
+
+    fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let id = Self::id_of(selector)?;
+        if !self.elements.iter().any(|e| e == id) {
+            return Err(DriverError::Uia(format!("mock element '{id}' not found")));
+        }
+        self.texts.insert(id.to_string(), String::new());
+        self.cleared.push(id.to_string());
+        Ok(())
+    }
+
+    fn type_focused(&mut self, text: &str) -> Result<(), DriverError> {
+        self.typed_focused.push(text.to_string());
+        Ok(())
+    }
+
+    fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
+        let mut chord: Vec<String> = modifiers.iter().map(ToString::to_string).collect();
+        chord.push(key.to_string());
+        self.keys_pressed.push(chord.join("+"));
         Ok(())
     }
 

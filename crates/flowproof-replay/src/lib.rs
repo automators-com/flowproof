@@ -68,6 +68,11 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             .and_then(|v| v.as_str())
             .map(str::to_string)
     };
+    let nth = selector
+        .payload
+        .get("nth")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
     let uia = match selector.tier {
         // Both deterministic element-property tiers share the same driver
         // query surface; they differ in what the payload anchors on.
@@ -76,11 +81,13 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             name: get("name"),
             control_type: get("control_type"),
             css: get("css"),
+            nth,
         },
         // A text anchor resolves by visible label (UIA Name / element text).
         SelectorTier::TextAnchor => UiaSelector {
             name: get("text").or_else(|| get("name")),
             css: get("css"),
+            nth,
             ..UiaSelector::default()
         },
         // Visual matching needs the vision mode (not yet built); AI
@@ -122,6 +129,11 @@ fn wait_for_condition<D: AppDriver>(
                 Some(i) => selectors.get(*i).into_iter().collect(),
                 None => selectors.iter().collect(),
             };
+            // A targetless step (key press, focused typing) has nothing to
+            // wait for.
+            if targets.is_empty() {
+                return Ok(Ok(()));
+            }
             let deadline = Instant::now() + Duration::from_millis(*timeout_ms);
             loop {
                 for selector in &targets {
@@ -279,6 +291,16 @@ fn execute_step<D: AppDriver>(
                 StepMatch::default(),
             ),
         },
+        // An empty selector list means "type into the focused element".
+        Action::TypeText(params) if step.selectors.is_empty() => {
+            match flowproof_trace::secret::resolve_refs(&params.text) {
+                Ok(value) => {
+                    driver.type_focused(&value)?;
+                    (Ok(()), StepMatch::default())
+                }
+                Err(e) => (Err(e.to_string()), StepMatch::default()),
+            }
+        }
         Action::TypeText(params) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
@@ -286,7 +308,17 @@ fn execute_step<D: AppDriver>(
                 // they resolve from the environment at the moment of typing.
                 match flowproof_trace::secret::resolve_refs(&params.text) {
                     Ok(value) => {
-                        driver.type_text(&target, &value)?;
+                        // `replace: true` marks fill semantics: clear the
+                        // current value first (`Clear the … field` records
+                        // this with an empty text).
+                        let replace =
+                            params.extra.get("replace").and_then(|v| v.as_bool()) == Some(true);
+                        if replace {
+                            driver.clear_text(&target)?;
+                        }
+                        if !value.is_empty() {
+                            driver.type_text(&target, &value)?;
+                        }
                         (Ok(()), matched)
                     }
                     Err(e) => (Err(e.to_string()), matched),
@@ -297,6 +329,20 @@ fn execute_step<D: AppDriver>(
                 StepMatch::default(),
             ),
         },
+        Action::PressKey(params) => {
+            let mods: Vec<flowproof_driver::KeyMod> = params
+                .modifiers
+                .iter()
+                .map(|m| match m {
+                    flowproof_trace::format::KeyModifier::Ctrl => flowproof_driver::KeyMod::Ctrl,
+                    flowproof_trace::format::KeyModifier::Alt => flowproof_driver::KeyMod::Alt,
+                    flowproof_trace::format::KeyModifier::Shift => flowproof_driver::KeyMod::Shift,
+                    flowproof_trace::format::KeyModifier::Win => flowproof_driver::KeyMod::Meta,
+                })
+                .collect();
+            driver.press_key(&params.key, &mods)?;
+            (Ok(()), StepMatch::default())
+        }
         Action::Assert(assertion) => {
             let (outcome, rung) = check_assertion(driver, assertion, &step.selectors)?;
             let primary = match assertion {

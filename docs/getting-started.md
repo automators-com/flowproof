@@ -155,6 +155,32 @@ Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web E2E
 (`cargo test -p flowproof-cli --test web_e2e`, `FLOWPROOF_E2E=1`) runs in CI
 on ubuntu.
 
+### The web action vocabulary
+
+Steps address elements the way a user sees them; the engine records a
+selector for exactly what it resolved:
+
+```yaml
+steps:
+  - Type Ada into the name field              # <id> form -> #name
+  - Type Ada into the "Full name" field       # placeholder / accessible label
+  - Type email into the 2nd "Field Name" field   # ordinal when labels repeat
+  - Clear the "Search" field                  # replace semantics (fill)
+  - Type Berlin                               # types into the FOCUSED element
+  - Press the "Save" button                   # button by visible label
+  - Click "Templates"                         # tabs, links, menu options, rows
+  - Click "css:[data-test='expand']"          # css: prefix = CSS selector,
+                                              #   for text-less icon buttons
+  - Press Enter                               # named keys: Enter, Escape, Tab, …
+  - Press Control+V                           # chords: Ctrl/Alt/Shift/Meta + key
+  - Press Alt+Shift+Backspace
+```
+
+Text anchors match exactly first, then by prefix — `Click "Database"`
+finds the card whose label *starts with* "Database" when no element matches
+it exactly, mirroring how Playwright's accessible-name matching is used in
+real suites.
+
 ## Authoring with a model (arbitrary steps)
 
 The rules only know the demo vocabularies. With a model backend configured,

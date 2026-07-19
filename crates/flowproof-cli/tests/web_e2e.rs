@@ -321,6 +321,98 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The real-world action vocabulary against a real browser: clear-and-retype
+/// (fill semantics on a framework-style input), Enter submission, focused
+/// typing, a `css:` icon-button target, prefix-matched text anchors, and an
+/// ordinal — the forms a Playwright migration leans on.
+#[test]
+fn keyboard_css_targets_and_ordinals_drive_real_pages() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web actions E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-actions-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("actions.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body>
+            <form onsubmit="
+                event.preventDefault();
+                submitted.textContent = 'Submitted: ' + this.querySelector('input').value;
+            "><input placeholder="Search box" value="stale text" /></form>
+            <input placeholder="Row value" />
+            <input placeholder="Row value"
+                   oninput="second_row.textContent = 'Second row: ' + this.value" />
+            <button data-test="icon-only" onclick="
+                const focused = document.createElement('input');
+                focused.oninput = () => { focus_sink.textContent = 'Focus got: ' + focused.value; };
+                document.body.appendChild(focused);
+                focused.focus();
+            "></button>
+            <button onclick="card.textContent = 'Card opened'"
+                >Database — connect Postgres, MySQL and more</button>
+            <div id="submitted"></div><div id="second_row"></div>
+            <div id="focus_sink"></div><div id="card"></div>
+        </body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("actions.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Actions vocabulary".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        steps: vec![
+            // Fill semantics: clear the prefilled value, retype, Enter.
+            // "Submitted: fresh" (not "…stale textfresh") proves the clear.
+            flowproof_agent::SpecStep::Plain("Clear the \"Search box\" field".into()),
+            flowproof_agent::SpecStep::Plain("Type fresh into the \"Search box\" field".into()),
+            flowproof_agent::SpecStep::Plain("Press Enter".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Submitted: fresh".into(),
+            },
+            // Ordinal targeting: two identical placeholders.
+            flowproof_agent::SpecStep::Plain("Type second into the 2nd \"Row value\" field".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Second row: second".into(),
+            },
+            // css: target for a text-less icon button; it focuses a fresh
+            // input — focused typing lands there.
+            flowproof_agent::SpecStep::Plain("Click \"css:[data-test='icon-only']\"".into()),
+            flowproof_agent::SpecStep::Plain("Type typed-into-focus".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Focus got: typed-into-focus".into(),
+            },
+            // Prefix match: the card's text goes on beyond "Database".
+            flowproof_agent::SpecStep::Plain("Click \"Database\"".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Card opened".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let persisted = std::fs::read_to_string(&trace_path).expect("trace readable");
+    assert!(persisted.contains("\"replace\":true"), "clear encoded");
+    assert!(persisted.contains("\"nth\":2"), "ordinal encoded");
+    assert!(persisted.contains("\"press_key\""), "press_key encoded");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    assert!(!report.degraded, "report: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Redaction proof against a real browser: a page with a password field and
 /// a css-masked region — the PERSISTED frames must show both as solid black.
 #[test]

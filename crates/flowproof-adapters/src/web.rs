@@ -9,8 +9,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use flowproof_driver::{AppDriver, DriverError, PixelRect, UiaSelector};
-use headless_chrome::browser::tab::Tab;
+use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector};
+use headless_chrome::browser::tab::{ModifierKey, Tab};
 use headless_chrome::protocol::cdp::Page;
 use headless_chrome::{Browser, LaunchOptions};
 
@@ -51,16 +51,22 @@ impl WebAppDriver {
     }
 
     fn locator_of(selector: &UiaSelector) -> Option<WebLocator> {
+        let nth = selector.nth;
         if let Some(css) = selector.css_selector() {
-            return Some(WebLocator::Css(css));
+            return Some(WebLocator {
+                css: Some(css),
+                text: None,
+                nth,
+            });
         }
         // Text anchor: find by visible text / accessible label / placeholder
         // — how humans (and Playwright's getByText/getByPlaceholder/getByRole
         // name matching) address elements on pages without ids.
-        selector
-            .name
-            .as_ref()
-            .map(|text| WebLocator::XPath(text_xpath(text)))
+        selector.name.as_ref().map(|text| WebLocator {
+            css: None,
+            text: Some(text.clone()),
+            nth,
+        })
     }
 
     fn locator(selector: &UiaSelector) -> Result<WebLocator, DriverError> {
@@ -71,43 +77,103 @@ impl WebAppDriver {
         })
     }
 
-    fn find(&self, locator: &WebLocator) -> Result<headless_chrome::Element<'_>, DriverError> {
+    /// One resolution attempt, in preference order: css, then exact text
+    /// anchor, then prefix text anchor (Playwright's name matching accepts
+    /// a leading match when the accessible name carries trailing detail —
+    /// catalog cards, chips like `ID: …`).
+    fn try_find(
+        &self,
+        locator: &WebLocator,
+    ) -> Result<Option<headless_chrome::Element<'_>>, DriverError> {
         let tab = self.tab()?;
-        match locator {
-            WebLocator::Css(css) => tab
-                .wait_for_element_with_custom_timeout(css, FIND_TIMEOUT)
-                .map_err(|e| web_err(&format!("finding {css}"), e)),
-            WebLocator::XPath(xpath) => tab
-                .wait_for_xpath_with_custom_timeout(xpath, FIND_TIMEOUT)
-                .map_err(|e| web_err(&format!("finding element by text ({xpath})"), e)),
+        if let Some(css) = &locator.css {
+            return Ok(match locator.nth {
+                None => tab.find_element(css).ok(),
+                Some(n) => tab
+                    .find_elements(css)
+                    .ok()
+                    .and_then(|found| found.into_iter().nth(n.saturating_sub(1) as usize)),
+            });
+        }
+        if let Some(text) = &locator.text {
+            for xpath in [text_xpath(text, false), text_xpath(text, true)] {
+                let xpath = match locator.nth {
+                    Some(n) => format!("({xpath})[{n}]"),
+                    None => xpath,
+                };
+                if let Ok(element) = tab.find_element_by_xpath(&xpath) {
+                    return Ok(Some(element));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn find(&self, locator: &WebLocator) -> Result<headless_chrome::Element<'_>, DriverError> {
+        let deadline = std::time::Instant::now() + FIND_TIMEOUT;
+        loop {
+            if let Some(element) = self.try_find(locator)? {
+                return Ok(element);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(DriverError::Uia(format!("web: no element for {locator}")));
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 
     fn exists(&self, locator: &WebLocator) -> Result<bool, DriverError> {
-        let tab = self.tab()?;
-        Ok(match locator {
-            WebLocator::Css(css) => tab.find_element(css).is_ok(),
-            WebLocator::XPath(xpath) => tab.find_element_by_xpath(xpath).is_ok(),
-        })
+        Ok(self.try_find(locator)?.is_some())
     }
 }
 
-/// How a [`UiaSelector`] resolves on a page.
-enum WebLocator {
-    Css(String),
-    XPath(String),
+/// How a [`UiaSelector`] resolves on a page: a CSS selector or a text
+/// anchor, optionally narrowed to the nth match (1-based).
+struct WebLocator {
+    css: Option<String>,
+    text: Option<String>,
+    nth: Option<u32>,
+}
+
+impl std::fmt::Display for WebLocator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.css, &self.text) {
+            (Some(css), _) => write!(f, "css '{css}'")?,
+            (None, Some(text)) => write!(f, "text '{text}'")?,
+            (None, None) => write!(f, "empty locator")?,
+        }
+        if let Some(n) = self.nth {
+            write!(f, " (match #{n})")?;
+        }
+        Ok(())
+    }
 }
 
 /// XPath matching an interactable element by its visible text, accessible
-/// label, or placeholder — Playwright's text/placeholder addressing.
-fn text_xpath(text: &str) -> String {
+/// label, or placeholder — Playwright's text/placeholder addressing. With
+/// `prefix`, the text only has to START with the anchor (used as a second
+/// pass when no exact match exists).
+fn text_xpath(text: &str, prefix: bool) -> String {
     let lit = xpath_literal(text);
+    let (by_text, by_label, by_placeholder) = if prefix {
+        (
+            format!("starts-with(normalize-space(), {lit})"),
+            format!("starts-with(@aria-label, {lit})"),
+            format!("starts-with(@placeholder, {lit})"),
+        )
+    } else {
+        (
+            format!("normalize-space()={lit}"),
+            format!("@aria-label={lit}"),
+            format!("@placeholder={lit}"),
+        )
+    };
     format!(
         "//*[self::button or self::a or self::summary or @role='button' or \
          @role='tab' or @role='option' or @type='submit']\
-         [normalize-space()={lit} or @aria-label={lit}] | \
-         //input[@placeholder={lit} or @aria-label={lit}] | \
-         //textarea[@placeholder={lit} or @aria-label={lit}]"
+         [{by_text} or {by_label}] | \
+         //input[{by_placeholder} or {by_label}] | \
+         //textarea[{by_placeholder} or {by_label}]"
     )
 }
 
@@ -178,6 +244,58 @@ impl AppDriver for WebAppDriver {
         Ok(())
     }
 
+    fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let locator = Self::locator(selector)?;
+        let element = self.find(&locator)?;
+        // Go through the native value setter so framework-controlled inputs
+        // (React et al.) see the change, then fire the events they listen to.
+        element
+            .call_js_fn(
+                r#"function() {
+                    this.focus();
+                    if ('value' in this) {
+                        const proto = this.tagName === 'TEXTAREA'
+                            ? HTMLTextAreaElement.prototype
+                            : HTMLInputElement.prototype;
+                        const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+                        if (setter && setter.set) { setter.set.call(this, ''); }
+                        else { this.value = ''; }
+                    } else {
+                        this.textContent = '';
+                    }
+                    this.dispatchEvent(new Event('input', { bubbles: true }));
+                    this.dispatchEvent(new Event('change', { bubbles: true }));
+                }"#,
+                vec![],
+                false,
+            )
+            .map_err(|e| web_err(&format!("clearing [{selector}]"), e))?;
+        Ok(())
+    }
+
+    fn type_focused(&mut self, text: &str) -> Result<(), DriverError> {
+        self.tab()?
+            .type_str(text)
+            .map_err(|e| web_err("typing into the focused element", e))?;
+        Ok(())
+    }
+
+    fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
+        let mods: Vec<ModifierKey> = modifiers
+            .iter()
+            .map(|m| match m {
+                KeyMod::Ctrl => ModifierKey::Ctrl,
+                KeyMod::Alt => ModifierKey::Alt,
+                KeyMod::Shift => ModifierKey::Shift,
+                KeyMod::Meta => ModifierKey::Meta,
+            })
+            .collect();
+        self.tab()?
+            .press_key_with_modifiers(key, (!mods.is_empty()).then_some(mods.as_slice()))
+            .map_err(|e| web_err(&format!("pressing key '{key}'"), e))?;
+        Ok(())
+    }
+
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
         // Headless default viewport; good enough for trace metadata.
         Ok((1280, 720))
@@ -198,12 +316,7 @@ impl AppDriver for WebAppDriver {
         let Some(locator) = Self::locator_of(selector) else {
             return Ok(None);
         };
-        let tab = self.tab()?;
-        let found = match &locator {
-            WebLocator::Css(css) => tab.find_element(css),
-            WebLocator::XPath(xpath) => tab.find_element_by_xpath(xpath),
-        };
-        let Ok(element) = found else {
+        let Some(element) = self.try_find(&locator)? else {
             return Ok(None);
         };
         let quad = element
