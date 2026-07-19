@@ -3,8 +3,8 @@
 # skills..." and a Send button.
 name: Demo - the chat composer is available
 app: web
-url: ${DM_BASE_URL}/chat                  # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/chat                  # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -13,4 +13,4 @@ session:                                   # GAP-1
     teamId: ${DM_TEAM_ID}
 steps:
   - Wait until page shows Send within 30s
-  - assert: "Ask the agent" is visible      # GAP-3: visibility + GAP-2: prefix match on placeholder
+  - assert: the "Ask the agent" is visible      # shipped in PRs #21/#22

@@ -6,8 +6,8 @@
 # three steps work; until then they are the only unmigratable steps here.
 name: Demo - register a public API connection and fire its preview
 app: web
-url: ${DM_BASE_URL}/connections           # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/connections           # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -17,17 +17,17 @@ session:                                   # GAP-1
 steps:
   - Wait until page shows connections found within 30s
   - Press the "Add Connection" button
-  - Click "REST API"                        # GAP-2: prefix match
+  - Click "REST API"                        # shipped in PR #21
   - Type Cat Facts API into the "eg. Datamaker Usage Statistics EUW" field
   - Press the "Next step" button
   - Click "GET"
-  - Type https://catfact.ninja/fact into the "css:[name='url']" field   # GAP-2: css target
+  - Type https://catfact.ninja/fact into the "css:[name='url']" field   # shipped in PR #21
   - Press the "Next step" button
   - Click "None"
   - Press the "Next step" button
   - Wait until page shows Your connection is now ready to use. within 15s
   - Press the "Close" button
   - Click "Cat Facts API"
-  - Click "css:button[data-test='previewToggle']"   # GAP-2 + APP TODO (see header)
+  - Click "css:button[data-test='previewToggle']"   # APP TODO (see header): needs data-test hook
   - Press the "Send" button
   - assert: page shows "fact" within 25s

@@ -6,8 +6,8 @@
 # in a gated lane, not the default suite.
 name: Demo - chat prompt reaches a terminal agent status
 app: web
-url: ${DM_BASE_URL}/chat                  # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/chat                  # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -16,6 +16,6 @@ session:                                   # GAP-1
     teamId: ${DM_TEAM_ID}
 steps:
   - Wait until page shows Send within 30s
-  - Type Generate 5 realistic customer profiles with name, email and country. into the "Ask the agent" field   # GAP-2: prefix match on placeholder
+  - Type Generate 5 realistic customer profiles with name, email and country. into the "Ask the agent" field   # shipped in PR #21
   - Press the "Send" button
   - Wait until page shows idle within 180s

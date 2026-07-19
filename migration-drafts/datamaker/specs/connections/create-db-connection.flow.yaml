@@ -3,8 +3,8 @@
 # success dialog and the new row in the list.
 name: Connections - create a database connection
 app: web
-url: ${DM_BASE_URL}/connections           # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/connections           # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -14,7 +14,7 @@ session:                                   # GAP-1
 steps:
   - Wait until page shows connections found within 30s
   - Press the "Add Connection" button
-  - Click "Database"                        # GAP-2: prefix match (catalog card text starts with "Database")
+  - Click "Database"                        # shipped in PR #21
   - Type TestConnection2 into the "eg. Datamaker Usage Statistics EUW" field
   - Press the "Next step" button
   - Click "PostgreSQL"

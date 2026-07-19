@@ -1,8 +1,8 @@
 # Migrates: connections.test.ts :: "Delete DB connection"
 name: Connections - delete a database connection
 app: web
-url: ${DM_BASE_URL}/connections           # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/connections           # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -13,6 +13,6 @@ steps:
   - Wait until page shows connections found within 30s
   - Click "Playwright API Folder"
   - Click "TestConnection"
-  - Click "css:[name='form_options']"       # GAP-2: css target (form ellipsis)
+  - Click "css:[name='form_options']"       # shipped in PR #21
   - Click "Delete Connection"
-  - assert: page does not show TestConnection within 15s   # GAP-3: negative
+  - assert: page does not show TestConnection within 15s   # shipped in PR #22

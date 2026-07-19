@@ -3,8 +3,8 @@
 # the same anchor the Playwright test used ([value='...']).
 name: Template folders - rename a folder
 app: web
-url: ${DM_BASE_URL}/templates             # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/templates             # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -13,9 +13,9 @@ session:                                   # GAP-1
     teamId: ${DM_TEAM_ID}
 steps:
   - Wait until page shows templates found within 30s
-  - Click "css:[data-test='folderInstance'] [data-test='expand']"   # GAP-2: css target
+  - Click "css:[data-test='folderInstance'] [data-test='expand']"   # shipped in PR #21
   - Click "Rename Folder"
-  - Clear the "css:[value='playwrightTemplateFolder']" field        # GAP-2: clear + css
+  - Clear the "css:[value='playwrightTemplateFolder']" field        # shipped in PR #21
   - Type Renamed Folder into the "css:[value='playwrightTemplateFolder']" field
-  - Press Enter                                                     # GAP-2: named key
+  - Press Enter                                                     # shipped in PR #21
   - assert: page shows Renamed Folder within 10s

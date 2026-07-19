@@ -6,8 +6,8 @@
 # field is the same 4-step block with an ordinal qualifier.
 name: Demo - build a Customers template, preview, save, export CSV
 app: web
-url: ${DM_BASE_URL}/templates             # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/templates             # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -19,16 +19,16 @@ steps:
   - Press the "Add Template" button
   - Type Customers into the templateName field
   - Type firstName into the "Field Name" field
-  - Click "css:[data-test='data-type']"     # GAP-2: css target (react-select anchor)
-  - Type First Name                          # GAP-2: type into focused element
+  - Click "css:[data-test='data-type']"     # shipped in PR #21
+  - Type First Name                          # shipped in PR #21
   - Click "First Name"                       # react-select option (role='option')
   - Press the "Add Field" button
-  - Type email into the 2nd "Field Name" field           # GAP-2: ordinal
-  - Click the 2nd "css:[data-test='data-type']"          # GAP-2: ordinal on css target
+  - Type email into the 2nd "Field Name" field           # shipped in PR #21
+  - Click the 2nd "css:[data-test='data-type']"          # shipped in PR #21
   - Type E-Mail
   - Click "E-Mail"
-  - assert: "css:#live_preview" shows firstName within 15s   # GAP-3: element-scoped
-  - assert: "css:#live_preview" shows email within 15s
+  - assert: the "css:#live_preview" shows firstName within 15s   # shipped in PR #22
+  - assert: the "css:#live_preview" shows email within 15s
   - Press the "Save" button
   - Wait until page shows Customers within 15s
   - Click "Customers"

@@ -3,8 +3,8 @@
 # the seeded root template by name — deterministic against a fresh seed.
 name: Templates - edit a template's fields
 app: web
-url: ${DM_BASE_URL}/templates             # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/templates             # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -14,7 +14,7 @@ session:                                   # GAP-1
 steps:
   - Wait until page shows templates found within 30s
   - Click "playwrightTemplateRoot"
-  - Clear the "Field Name" field           # GAP-2: clear
+  - Clear the "Field Name" field           # shipped in PR #21
   - Type Street into the "Field Name" field
   - Press the "Save" button
-  - assert: "css:#live_preview" shows Street within 10s   # GAP-3: element-scoped
+  - assert: the "css:#live_preview" shows Street within 10s   # shipped in PR #22

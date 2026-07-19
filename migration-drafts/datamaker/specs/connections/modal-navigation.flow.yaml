@@ -1,8 +1,8 @@
 # Migrates: connections.test.ts :: "Use buttons to navigate back in the modal"
 name: Connections - navigate and cancel through the creation modal
 app: web
-url: ${DM_BASE_URL}/connections           # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/connections           # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -14,9 +14,9 @@ steps:
   - Press the "Add Connection" button
   - assert: page shows Cancel
   - Press the "Cancel" button
-  - assert: page does not show Cancel within 10s           # GAP-3: negative
+  - assert: page does not show Cancel within 10s           # shipped in PR #22
   - Press the "Add Connection" button
-  - Click "Database"                        # GAP-2: prefix match
+  - Click "Database"                        # shipped in PR #21
   - Press the "Next step" button
   - assert: page shows Next step
   - Press the "Cancel" button
@@ -25,4 +25,4 @@ steps:
   - Press the "Next step" button
   - Click "DB2"
   - Press the "Cancel" button
-  - assert: page does not show Next step within 10s        # GAP-3: negative
+  - assert: page does not show Next step within 10s        # shipped in PR #22

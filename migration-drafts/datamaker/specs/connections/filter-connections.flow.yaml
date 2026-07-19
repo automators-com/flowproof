@@ -3,8 +3,8 @@
 # (Test Endpoint), both inside "Playwright API Folder".
 name: Connections - filter the connections list
 app: web
-url: ${DM_BASE_URL}/connections           # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/connections           # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -16,8 +16,8 @@ steps:
   - Click "Playwright API Folder"
   - Type TestConnection into the "Search for a connections" field
   - assert: page shows TestConnection
-  - assert: page does not show Test Endpoint within 20s    # GAP-3: negative
-  - Clear the "Search for a connections" field             # GAP-2: clear
+  - assert: page does not show Test Endpoint within 20s    # shipped in PR #22
+  - Clear the "Search for a connections" field             # shipped in PR #21
   - Type Test Endpoint into the "Search for a connections" field
   - assert: page shows Test Endpoint
-  - assert: page does not show TestConnection within 20s   # GAP-3: negative
+  - assert: page does not show TestConnection within 20s   # shipped in PR #22

@@ -1,8 +1,8 @@
 # Migrates: connections.test.ts :: "Click connection Discard button"
 name: Connections - discard the open connection form
 app: web
-url: ${DM_BASE_URL}/connections           # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/connections           # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -15,4 +15,4 @@ steps:
   - Click "TestConnection"
   - assert: page shows Connection Name
   - Press the "Discard" button
-  - assert: page does not show Connection Name within 10s   # GAP-3: negative
+  - assert: page does not show Connection Name within 10s   # shipped in PR #22

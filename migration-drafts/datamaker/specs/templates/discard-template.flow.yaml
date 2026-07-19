@@ -2,8 +2,8 @@
 # Discard is bound to the Alt+Shift+Backspace hotkey (the app's default).
 name: Templates - discard the open template form
 app: web
-url: ${DM_BASE_URL}/templates             # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/templates             # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -13,6 +13,6 @@ session:                                   # GAP-1
 steps:
   - Wait until page shows templates found within 30s
   - Click "playwrightTemplateRoot"
-  - assert: "css:#live_preview" is visible          # GAP-3: visibility
-  - Press Alt+Shift+Backspace                       # GAP-2: chord
-  - assert: "css:#live_preview" is not visible within 10s   # GAP-3: visibility
+  - assert: the "css:#live_preview" is visible          # shipped in PR #22
+  - Press Alt+Shift+Backspace                       # shipped in PR #21
+  - assert: the "css:#live_preview" is not visible within 10s   # shipped in PR #22

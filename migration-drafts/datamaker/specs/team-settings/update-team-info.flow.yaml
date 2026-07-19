@@ -4,8 +4,8 @@
 # (role='tab' is in the text-anchor xpath).
 name: Team settings - update team name
 app: web
-url: ${DM_BASE_URL}/settings              # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/settings              # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -14,12 +14,12 @@ session:                                   # GAP-1
     teamId: ${DM_TEAM_ID}
 steps:
   - Wait until page shows Personal Information within 30s
-  - Click "Select Account"                  # GAP-2: prefix match
+  - Click "Select Account"                  # shipped in PR #21
   - Click "PlaywrightTeam"
-  - Reload the page                         # GAP-1: reload
+  - Reload the page                         # shipped in PR #23
   - Click "Team"
   - Wait until page shows Team Information within 10s
-  - Clear the "css:input[name='name']" field                # GAP-2: clear + css
+  - Clear the "css:input[name='name']" field                # shipped in PR #21
   - Type New Team Name into the "css:input[name='name']" field
   - Press the "Save" button
   - assert: page shows Team updated successfully within 10s

@@ -5,8 +5,8 @@
 # template survives at root.
 name: Template folders - ungroup a folder
 app: web
-url: ${DM_BASE_URL}/templates             # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/templates             # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -15,7 +15,7 @@ session:                                   # GAP-1
     teamId: ${DM_TEAM_ID}
 steps:
   - Wait until page shows 2 templates found within 30s
-  - Click "css:[data-test='folderInstance'] [data-test='expand']"   # GAP-2: css target
+  - Click "css:[data-test='folderInstance'] [data-test='expand']"   # shipped in PR #21
   - Click "Ungroup Folder"
-  - assert: page does not show playwrightTemplateFolder within 15s  # GAP-3: negative
+  - assert: page does not show playwrightTemplateFolder within 15s  # shipped in PR #22
   - assert: page shows playwrightTemplate

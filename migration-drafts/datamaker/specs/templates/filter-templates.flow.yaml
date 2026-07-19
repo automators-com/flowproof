@@ -4,8 +4,8 @@
 # name leaves exactly one visible and the counter follows.
 name: Templates - filter the template list
 app: web
-url: ${DM_BASE_URL}/templates             # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/templates             # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -17,5 +17,5 @@ steps:
   - Type playwrightTemplateRoot into the "Search for a templates" field
   - assert: page shows playwrightTemplateRoot
   - assert: page shows 1 template found within 10s
-  - Clear the "Search for a templates" field   # GAP-2: clear
+  - Clear the "Search for a templates" field   # shipped in PR #21
   - assert: page shows 2 templates found within 10s

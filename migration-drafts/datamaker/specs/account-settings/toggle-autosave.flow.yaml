@@ -4,8 +4,8 @@
 # Seed leaves autosave ON, so the button starts as "Disable".
 name: Account settings - toggle autosave templates
 app: web
-url: ${DM_BASE_URL}/settings              # GAP-1: env ref in url
-session:                                   # GAP-1: session block
+url: ${DM_BASE_URL}/settings              # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}

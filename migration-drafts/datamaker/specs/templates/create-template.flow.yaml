@@ -3,8 +3,8 @@
 # preview picking up the field and the new template appearing in the list.
 name: Templates - create a new template
 app: web
-url: ${DM_BASE_URL}/templates             # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/templates             # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -15,6 +15,6 @@ steps:
   - Wait until page shows templates found within 30s
   - Type TestTemplate into the templateName field
   - Type TemplateField into the "Field Name" field
-  - assert: "css:#live_preview" shows TemplateField within 10s   # GAP-3: element-scoped
+  - assert: the "css:#live_preview" shows TemplateField within 10s   # shipped in PR #22
   - Press the "Save" button
   - Wait until page shows TestTemplate within 15s

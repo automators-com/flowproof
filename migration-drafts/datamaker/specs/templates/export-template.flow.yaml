@@ -1,8 +1,8 @@
 # Migrates: templates.test.ts :: "Export template to file"
 name: Templates - export a template to file
 app: web
-url: ${DM_BASE_URL}/templates             # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/templates             # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -12,6 +12,6 @@ session:                                   # GAP-1
 steps:
   - Wait until page shows templates found within 30s
   - Click "playwrightTemplateRoot"
-  - Click "css:svg.h-7[name='form_options']"   # GAP-2: css target
+  - Click "css:svg.h-7[name='form_options']"   # shipped in PR #21
   - Click "Export To File"
   - assert: page shows Exporting template within 10s

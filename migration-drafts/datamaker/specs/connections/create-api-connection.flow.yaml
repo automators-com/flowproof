@@ -3,8 +3,8 @@
 # password-field pixels are auto-masked in the recording regardless.
 name: Connections - create an API connection
 app: web
-url: ${DM_BASE_URL}/connections           # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/connections           # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -14,14 +14,14 @@ session:                                   # GAP-1
 steps:
   - Wait until page shows connections found within 30s
   - Press the "Add Connection" button
-  - Click "REST API"                        # GAP-2: prefix match
+  - Click "REST API"                        # shipped in PR #21
   - Type Playwright API Connection into the "eg. Datamaker Usage Statistics EUW" field
   - Press the "Next step" button
   - Click "PUT"
-  - Type ConnectionString into the "css:[name='url']" field          # GAP-2: css target
+  - Type ConnectionString into the "css:[name='url']" field          # shipped in PR #21
   - Press the "Add Parameter" button
-  - Type name into the "css:[name='params.0.name']" field            # GAP-2: css target
-  - Type value into the "css:[name='params.0.value']" field          # GAP-2: css target
+  - Type name into the "css:[name='params.0.name']" field            # shipped in PR #21
+  - Type value into the "css:[name='params.0.value']" field          # shipped in PR #21
   - Press the "Next step" button
   - Click "Basic"
   - Type username into the "API User Name" field

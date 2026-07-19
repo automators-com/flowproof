@@ -4,8 +4,8 @@
 # README). Confirming removal closes the dialog.
 name: Team settings - remove a team member
 app: web
-url: ${DM_BASE_URL}/settings              # GAP-1
-session:                                   # GAP-1
+url: ${DM_BASE_URL}/settings              # shipped in PR #23
+session:                                   # shipped in PR #23
   cookies:
     - name: automators.session
       value: ${DM_SESSION_COOKIE}
@@ -14,13 +14,13 @@ session:                                   # GAP-1
     teamId: ${DM_TEAM_ID}
 steps:
   - Wait until page shows Personal Information within 30s
-  - Click "Select Account"                  # GAP-2: prefix match
+  - Click "Select Account"                  # shipped in PR #21
   - Click "PlaywrightTeam"
-  - Reload the page                         # GAP-1: reload
+  - Reload the page                         # shipped in PR #23
   - Click "Team"
   - Wait until page shows Team Information within 10s
-  - Click "css:[data-test='teamMembersEllipsis']"   # GAP-2: css target
+  - Click "css:[data-test='teamMembersEllipsis']"   # shipped in PR #21
   - Click "Leave Team"
-  - Type PlaywrightTeam into the "css:input[name='teamName']" field   # GAP-2: css target
+  - Type PlaywrightTeam into the "css:input[name='teamName']" field   # shipped in PR #21
   - Press the "Confirm" button
-  - assert: page does not show Confirm within 15s   # GAP-3: negative (dialog closed)
+  - assert: page does not show Confirm within 15s   # shipped in PR #22
