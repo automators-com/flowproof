@@ -191,6 +191,30 @@ PASS: Add two numbers (2154 ms) -> .flowproof\runs\...\result.json
 DEGRADED: fallback selectors were needed — the app drifted; run `flowproof heal calc.flow.yaml`
 ```
 
+## Secrets: values never enter the trace
+
+Traces are reviewable, diffable artifacts — so sensitive values must never
+be written into them. Write `${VAR}` references in the spec instead:
+
+```yaml
+steps:
+  - Type ${LOGIN_PASSWORD} into the password field
+  - Press the login button
+  - assert: page shows Welcome, ${LOGIN_USER}
+```
+
+The engine resolves references from the environment **at the moment of
+use** — during recording and again on every replay. The trace (and every
+artifact rendered from it) stores only the literal `${LOGIN_PASSWORD}`
+reference. A reference to an unset variable fails closed: recording is
+refused, and a replay step fails with an error naming the variable —
+flowproof never types the literal reference into the app. Failure messages
+mask live text whenever the expectation contained a reference.
+
+This covers the *trace text*; the *pixels* of secret fields are covered by
+the recording layer (`redact:` rules and always-on password-field masking,
+see [docs/recording.md](recording.md)).
+
 ## Healing a stale trace
 
 When the app changes and replay fails, `heal` re-authors the flow from the

@@ -78,6 +78,11 @@ has `format != "flowproof-trace"` or an unsupported `version`.
 - `action.type` — one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `drag`, `scroll`, `type_text`, `press_key`, `wait`,
   `assert`. `params` is action-specific (see schema `$defs`).
+  Text params (`type_text` text, assert expectations) may contain `${VAR}`
+  **secret references**: the engine resolves them from the environment at
+  execution time — recording and every replay — and the trace only ever
+  stores the reference, never the value. An unset variable fails closed
+  with an error naming it.
 - `selectors` — the ladder, ordered deterministic-first. Tiers:
   1. `native_id` — UIA AutomationId, SAP GUI Scripting ID, DOM id/CSS.
   2. `structural` — path through the accessibility/DOM tree.

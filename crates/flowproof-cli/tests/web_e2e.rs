@@ -133,6 +133,73 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Secret indirection against a real browser: a `${VAR}` password typed
+/// into a live page resolves from the environment; neither the trace nor
+/// the run artifacts ever contain the value.
+#[test]
+fn secret_reference_types_real_value_but_never_persists_it() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web secret E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    std::env::set_var("FLOWPROOF_E2E_PW", "s3cret-e2e-value");
+
+    let dir = std::env::temp_dir().join("flowproof-web-secret-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("login.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body>
+            <input id="pw" type="password" />
+            <button id="go" onclick="document.getElementById('done').textContent =
+                document.getElementById('pw').value.length >= 8 ? 'accepted' : 'rejected'">Go</button>
+            <div id="done"></div>
+        </body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("login.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Password login".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        steps: vec![
+            flowproof_agent::SpecStep::Plain("Type ${FLOWPROOF_E2E_PW} into the pw field".into()),
+            flowproof_agent::SpecStep::Plain("Press the go button".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows accepted".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    // What was typed is proven by the trace-text assertions below plus the
+    // replay's own resolution; the page's length check just gates the flow.
+    let persisted = std::fs::read_to_string(&trace_path).expect("trace readable");
+    assert!(persisted.contains("${FLOWPROOF_E2E_PW}"));
+    assert!(
+        !persisted.contains("s3cret-e2e-value"),
+        "secret value must never reach the trace"
+    );
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    drop(driver);
+    assert!(report.passed, "report: {report:#?}");
+    let result_path = report.write_into(&run_dir).expect("artifacts written");
+    let artifacts = std::fs::read_to_string(&result_path).expect("result readable");
+    assert!(!artifacts.contains("s3cret-e2e-value"));
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::env::remove_var("FLOWPROOF_E2E_PW");
+}
+
 /// Redaction proof against a real browser: a page with a password field and
 /// a css-masked region — the PERSISTED frames must show both as solid black.
 #[test]
