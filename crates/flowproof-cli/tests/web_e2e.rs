@@ -259,6 +259,68 @@ fn assertions_wait_for_async_page_updates() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Text-anchor targeting against a real browser: a page with NO ids at all
+/// — elements addressed by placeholder and visible button text, the way
+/// real-world apps (and Playwright suites) address them.
+#[test]
+fn idless_page_is_driven_by_placeholder_and_button_text() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web text-anchor E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-textanchor-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("noids.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body>
+            <input placeholder="Template name" />
+            <button onclick="
+                const name = document.querySelector('input').value;
+                const div = document.createElement('div');
+                div.textContent = 'Created template: ' + name;
+                document.body.appendChild(div);
+            ">Create template</button>
+        </body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("noids.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Id-less flow".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        steps: vec![
+            flowproof_agent::SpecStep::Plain(
+                "Type Customers into the \"Template name\" field".into(),
+            ),
+            flowproof_agent::SpecStep::Plain("Press the \"Create template\" button".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Created template: Customers".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    // The trace records text anchors — reviewable exactly as written.
+    let persisted = std::fs::read_to_string(&trace_path).expect("trace readable");
+    assert!(persisted.contains("\"tier\":\"text_anchor\""));
+    assert!(persisted.contains("Template name"));
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Redaction proof against a real browser: a page with a password field and
 /// a css-masked region — the PERSISTED frames must show both as solid black.
 #[test]
