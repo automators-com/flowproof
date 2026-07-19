@@ -10,6 +10,8 @@ mod backend;
 #[cfg(windows)]
 mod gdi;
 pub mod mock;
+#[cfg(feature = "oob")]
+pub mod oob;
 pub mod recording;
 pub mod redact;
 

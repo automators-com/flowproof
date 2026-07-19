@@ -286,6 +286,53 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 selector_ref: Some(0),
             }),
         ),
+        // Out-of-band assertions: the connection NAME and the raw (ref-
+        // bearing) query/url travel in the trace; credentials never do.
+        ResolvedAction::AssertSql {
+            connection,
+            query,
+            equals,
+            timeout_ms,
+        } => {
+            let mut expect = serde_json::Map::new();
+            if let Some(equals) = equals {
+                expect.insert("equals".into(), equals.as_str().into());
+            }
+            expect.insert("timeout_ms".into(), (*timeout_ms).into());
+            (
+                Vec::new(),
+                Action::Assert(Assertion::Sql {
+                    connection: connection.clone(),
+                    query: query.clone(),
+                    expect: Some(serde_json::Value::Object(expect)),
+                }),
+            )
+        }
+        ResolvedAction::AssertApi {
+            method,
+            url,
+            status,
+            body_contains,
+            timeout_ms,
+        } => {
+            let mut expect = serde_json::Map::new();
+            if let Some(needle) = body_contains {
+                expect.insert("body_contains".into(), needle.as_str().into());
+            }
+            expect.insert("timeout_ms".into(), (*timeout_ms).into());
+            (
+                Vec::new(),
+                Action::Assert(Assertion::Api {
+                    request: flowproof_trace::format::ApiRequest {
+                        method: method.clone(),
+                        url: url.clone(),
+                        body: None,
+                    },
+                    status: *status,
+                    expect: Some(serde_json::Value::Object(expect)),
+                }),
+            )
+        }
     };
     let is_assert = matches!(trace_action, Action::Assert(_));
     // Targetless actions (key press, focused typing) have nothing to wait
@@ -336,7 +383,9 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         ResolvedAction::TypeFocused { .. }
         | ResolvedAction::PressKey { .. }
         | ResolvedAction::Navigate { .. }
-        | ResolvedAction::Reload => return None,
+        | ResolvedAction::Reload
+        | ResolvedAction::AssertSql { .. }
+        | ResolvedAction::AssertApi { .. } => return None,
     };
     target_selector(target)
 }
@@ -371,6 +420,32 @@ fn driver_key_mod(m: &flowproof_trace::format::KeyModifier) -> flowproof_driver:
         flowproof_trace::format::KeyModifier::Alt => flowproof_driver::KeyMod::Alt,
         flowproof_trace::format::KeyModifier::Shift => flowproof_driver::KeyMod::Shift,
         flowproof_trace::format::KeyModifier::Win => flowproof_driver::KeyMod::Meta,
+    }
+}
+
+/// Poll an out-of-band probe until it holds or the bound elapses — the row
+/// may still be committing, the API still converging. Configuration errors
+/// (missing connection env) fail immediately.
+fn poll_oob(
+    probe: &flowproof_driver::oob::OobProbe,
+    timeout_ms: u64,
+    intent: &str,
+) -> Result<(), RecordError> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        match flowproof_driver::oob::check(probe)? {
+            Ok(()) => return Ok(()),
+            Err(reason) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(RecordError::AssertMismatch {
+                        intent: intent.to_string(),
+                        expected: intent.to_string(),
+                        actual: reason,
+                    });
+                }
+                std::thread::sleep(ASSERT_POLL_INTERVAL);
+            }
+        }
     }
 }
 
@@ -422,6 +497,7 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     llm_used: &mut bool,
 ) -> Result<Vec<ResolvedAction>, RecordError> {
     let intent = spec_step.intent();
+    let intent = intent.as_str();
     let rules_result = match author {
         Author::Llm => Err(RulesError::UnsupportedApp("llm forced".into())),
         _ => resolve_step(&spec.app, spec_step),
@@ -544,6 +620,38 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                     driver.type_focused(&value)?
                 }
                 ResolvedAction::Clear { .. } => driver.clear_text(targeted())?,
+                ResolvedAction::AssertSql {
+                    connection,
+                    query,
+                    equals,
+                    timeout_ms,
+                } => {
+                    let probe = flowproof_driver::oob::OobProbe::Sql {
+                        connection: connection.clone(),
+                        query: flowproof_trace::secret::resolve_refs(query)?,
+                        equals: match equals {
+                            Some(e) => Some(flowproof_trace::secret::resolve_refs(e)?),
+                            None => None,
+                        },
+                    };
+                    poll_oob(&probe, *timeout_ms, &spec_step.intent())?
+                }
+                ResolvedAction::AssertApi {
+                    method,
+                    url,
+                    status,
+                    body_contains,
+                    timeout_ms,
+                } => {
+                    let probe = flowproof_driver::oob::OobProbe::Api {
+                        method: method.clone(),
+                        url: flowproof_trace::secret::resolve_refs(url)?,
+                        body: None,
+                        status: *status,
+                        body_contains: body_contains.clone(),
+                    };
+                    poll_oob(&probe, *timeout_ms, &spec_step.intent())?
+                }
                 ResolvedAction::PressKey { key, modifiers } => {
                     let mods: Vec<flowproof_driver::KeyMod> =
                         modifiers.iter().map(driver_key_mod).collect();
@@ -624,7 +732,7 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
             }
             steps.push(step_for(
                 steps.len() + 1,
-                spec_step.intent(),
+                &spec_step.intent(),
                 &spec.app,
                 &action,
             ));

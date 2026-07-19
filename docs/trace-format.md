@@ -152,12 +152,16 @@ has `format != "flowproof-trace"` or an unsupported `version`.
   `text` (`equals|contains|regex`).
 - `visual_diff` — region matches `baseline` (a `sha256:` hash) within
   `threshold` (0.0–1.0 normalized difference).
-- `sql` — out-of-band DB probe: named `connection`, `query`, expected
-  `equals`/`rows` shape. Credentials are **never** stored in the trace;
-  `connection` is a name resolved from local config at run time.
+- `sql` — out-of-band DB probe: named `connection`, `query`, `expect`
+  (`equals`: first column of the first row as text; `timeout_ms`).
+  Credentials are **never** stored in the trace; `connection` is a name
+  resolved from `FLOWPROOF_SQL_<NAME>` in the environment at run time
+  (recording and every replay), failing closed when unset. The query may
+  carry `${VAR}` references, resolved at execution.
 - `api` — out-of-band HTTP probe: `request {method,url,body?}`, expected
-  `status` and optional `json_path` expectations. Secrets are referenced by
-  name, resolved locally, never inlined.
+  `status` (default: any 2xx) and `expect` (`body_contains`, `timeout_ms`).
+  The url may carry `${VAR}` references — base hosts and tokens resolve at
+  execution and never persist.
 
 ## Versioning
 

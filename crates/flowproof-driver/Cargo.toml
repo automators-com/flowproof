@@ -7,10 +7,18 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# Out-of-band probes (SQL / HTTP) for business-data assertions.
+oob = ["dep:ureq", "dep:postgres", "dep:serde_json"]
+
 [dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png", "gif"] }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
+ureq = { version = "3", features = ["platform-verifier", "json"], optional = true }
+postgres = { version = "0.19", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 uiautomation = "0.24"

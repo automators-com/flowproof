@@ -105,6 +105,21 @@ pub enum ResolvedAction {
         present: bool,
         timeout_ms: u64,
     },
+    /// Out-of-band SQL assertion: the posted record, not the pixel.
+    AssertSql {
+        connection: String,
+        query: String,
+        equals: Option<String>,
+        timeout_ms: u64,
+    },
+    /// Out-of-band HTTP assertion.
+    AssertApi {
+        method: String,
+        url: String,
+        status: Option<u16>,
+        body_contains: Option<String>,
+        timeout_ms: u64,
+    },
 }
 
 /// How an [`ResolvedAction::AssertText`] expectation compares against the
@@ -184,8 +199,44 @@ fn strip_suffix_ci<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
     }
 }
 
-/// Resolve one spec step into concrete actions for `app`.
+/// Resolve one spec step into concrete actions for `app`. Out-of-band
+/// assertions are app-independent — they never touch the UI at all.
 pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
+    match step {
+        SpecStep::AssertSql { assert_sql } => {
+            return Ok(vec![ResolvedAction::AssertSql {
+                connection: assert_sql.connection.clone(),
+                query: assert_sql.query.clone(),
+                equals: assert_sql.equals.clone(),
+                timeout_ms: assert_sql
+                    .timeout_seconds
+                    .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
+            }]);
+        }
+        SpecStep::AssertApi { assert_api } => {
+            let (method, url) = assert_api
+                .request
+                .split_once(' ')
+                .map(|(m, u)| (m.trim(), u.trim()))
+                .filter(|(m, u)| !m.is_empty() && !u.is_empty())
+                .ok_or_else(|| {
+                    unresolvable(
+                        &assert_api.request,
+                        "assert_api request must be '<METHOD> <url>' (e.g. 'GET ${API}/x')",
+                    )
+                })?;
+            return Ok(vec![ResolvedAction::AssertApi {
+                method: method.to_ascii_uppercase(),
+                url: url.to_string(),
+                status: assert_api.status,
+                body_contains: assert_api.body_contains.clone(),
+                timeout_ms: assert_api
+                    .timeout_seconds
+                    .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
+            }]);
+        }
+        _ => {}
+    }
     match app {
         "calc" => calc::resolve(step),
         "notepad" => notepad::resolve(step),
@@ -406,6 +457,8 @@ mod calc {
             SpecStep::Assert { assert } => resolve_assert(assert)
                 .map(|a| vec![a])
                 .or_else(|sugar_err| assertions::resolve(assert).map_err(|_| sugar_err)),
+            // Out-of-band steps are dispatched before app resolution.
+            other => Err(unresolvable(&other.intent(), "handled before app dispatch")),
         }
     }
 
@@ -501,6 +554,8 @@ mod notepad {
                 // — the engine evaluates them on UIA like anywhere else.
                 assertions::resolve(trimmed)
             }
+            // Out-of-band steps are dispatched before app resolution.
+            other => Err(unresolvable(&other.intent(), "handled before app dispatch")),
         }
     }
 }
@@ -512,6 +567,8 @@ mod web {
         match step {
             SpecStep::Plain(text) => resolve_plain(text),
             SpecStep::Assert { assert } => assertions::resolve(assert),
+            // Out-of-band steps are dispatched before app resolution.
+            other => Err(unresolvable(&other.intent(), "handled before app dispatch")),
         }
     }
 
