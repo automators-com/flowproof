@@ -558,3 +558,76 @@ steps:
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn session_and_navigation_record_and_replay() {
+    let dir = std::env::temp_dir().join("flowproof-replay-session-nav");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::env::set_var("FLOWPROOF_TEST_SESSION_JWT", "jwt-value-e2e");
+    std::env::set_var("FLOWPROOF_TEST_BASE", "https://app.test");
+
+    let spec = FlowSpec::parse(
+        "name: Authenticated flow
+app: web
+url: ${FLOWPROOF_TEST_BASE}/templates
+session:
+  cookies:
+    - name: automators.session
+      value: ${FLOWPROOF_TEST_SESSION_JWT}
+  local_storage:
+    projectId: p-123
+steps:
+  - Go to /settings
+  - Reload the page
+  - assert: page shows Settings
+",
+    )
+    .expect("spec parses");
+    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "Settings");
+    let trace = dir.join("session.trace.jsonl");
+    record(&spec, &mut driver, &trace).expect("recording succeeds");
+
+    // The driver received RESOLVED session values and navigations…
+    let staged = driver.staged_session.as_ref().expect("session staged");
+    assert_eq!(
+        staged.cookies,
+        vec![(
+            "automators.session".to_string(),
+            "jwt-value-e2e".to_string(),
+            None
+        )]
+    );
+    assert_eq!(
+        staged.local_storage,
+        vec![("projectId".to_string(), "p-123".to_string())]
+    );
+    assert_eq!(
+        driver.launched.as_ref().map(|l| l.0.as_str()),
+        Some("https://app.test/templates"),
+        "launch URL resolved from the environment"
+    );
+    assert_eq!(driver.navigations, vec!["https://app.test/settings"]);
+    assert_eq!(driver.reloads, 1);
+
+    // …while the trace keeps the references, never the values.
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(persisted.contains("${FLOWPROOF_TEST_SESSION_JWT}"));
+    assert!(!persisted.contains("jwt-value-e2e"));
+    assert!(persisted.contains("${FLOWPROOF_TEST_BASE}"));
+
+    // Replay stages the same session and re-navigates.
+    let mut driver = MockAppDriver::new(&["body"]).with_text("body", "Settings");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "session flow replays: {report:?}");
+    let staged = driver
+        .staged_session
+        .as_ref()
+        .expect("session staged at replay");
+    assert_eq!(staged.cookies[0].1, "jwt-value-e2e");
+    assert_eq!(driver.navigations, vec!["https://app.test/settings"]);
+    assert_eq!(driver.reloads, 1);
+
+    std::env::remove_var("FLOWPROOF_TEST_SESSION_JWT");
+    std::env::remove_var("FLOWPROOF_TEST_BASE");
+    std::fs::remove_dir_all(&dir).ok();
+}

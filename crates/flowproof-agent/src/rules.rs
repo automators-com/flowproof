@@ -77,6 +77,11 @@ pub enum ResolvedAction {
         key: String,
         modifiers: Vec<KeyModifier>,
     },
+    /// Navigate to a path or URL mid-flow (`Go to /settings`). Relative
+    /// paths resolve against the flow URL's origin at execution time.
+    Navigate { path: String },
+    /// Reload the current page.
+    Reload,
     /// Assert on an element's visible text. Assertions AUTO-WAIT: the
     /// engine polls until the expectation holds or `timeout_ms` elapses —
     /// deterministic (bounded, recorded in the trace), and what makes slow
@@ -543,6 +548,22 @@ mod web {
 
     fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
         let trimmed = text.trim();
+
+        // `Go to /path` / `Go to https://…` → navigate mid-flow.
+        if let Some(rest) = strip_prefix_ci(trimmed, "go to ") {
+            let path = rest.trim();
+            if path.is_empty() {
+                return Err(unresolvable(trimmed, "no path or URL to go to"));
+            }
+            return Ok(vec![ResolvedAction::Navigate {
+                path: path.to_string(),
+            }]);
+        }
+
+        // `Reload the page`.
+        if trimmed.eq_ignore_ascii_case("reload the page") {
+            return Ok(vec![ResolvedAction::Reload]);
+        }
 
         // `Wait until page shows <text> [within <N>s]` → an auto-waiting
         // assert with a long default, for slow backend operations.

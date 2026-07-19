@@ -9,9 +9,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector};
+use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector, WebSession};
 use headless_chrome::browser::tab::{ModifierKey, Tab};
-use headless_chrome::protocol::cdp::Page;
+use headless_chrome::protocol::cdp::{Network, Page};
 use headless_chrome::{Browser, LaunchOptions};
 
 use crate::AdapterError;
@@ -26,6 +26,9 @@ fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
 pub struct WebAppDriver {
     browser: Browser,
     tab: Option<Arc<Tab>>,
+    /// Session staged via [`AppDriver::stage_session`], applied by the next
+    /// `launch` before the page loads.
+    staged_session: Option<WebSession>,
 }
 
 impl WebAppDriver {
@@ -41,7 +44,61 @@ impl WebAppDriver {
             .map_err(|e| AdapterError::Web(format!("building launch options: {e}")))?;
         let browser = Browser::new(options)
             .map_err(|e| AdapterError::Web(format!("launching browser: {e}")))?;
-        Ok(Self { browser, tab: None })
+        Ok(Self {
+            browser,
+            tab: None,
+            staged_session: None,
+        })
+    }
+
+    /// Apply staged session state to a fresh tab BEFORE navigation: cookies
+    /// via CDP, localStorage via an on-new-document script (Playwright's
+    /// addInitScript pattern — it runs before any page script on every
+    /// navigation, so the app boots already seeded).
+    fn apply_session(tab: &Arc<Tab>, session: &WebSession, url: &str) -> Result<(), DriverError> {
+        if !session.local_storage.is_empty() {
+            let mut source = String::from("try{");
+            for (key, value) in &session.local_storage {
+                let key = serde_json::to_string(key).unwrap_or_default();
+                let value = serde_json::to_string(value).unwrap_or_default();
+                source.push_str(&format!("localStorage.setItem({key},{value});"));
+            }
+            source.push_str("}catch(e){}");
+            tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+                source,
+                world_name: None,
+                include_command_line_api: None,
+                run_immediately: None,
+            })
+            .map_err(|e| web_err("seeding localStorage", e))?;
+        }
+        if !session.cookies.is_empty() {
+            let cookies = session
+                .cookies
+                .iter()
+                .map(|(name, value, domain)| Network::CookieParam {
+                    name: name.clone(),
+                    value: value.clone(),
+                    // Without an explicit domain the cookie binds to the
+                    // launch URL's host.
+                    url: domain.is_none().then(|| url.to_string()),
+                    domain: domain.clone(),
+                    path: None,
+                    secure: None,
+                    http_only: None,
+                    same_site: None,
+                    expires: None,
+                    priority: None,
+                    same_party: None,
+                    source_scheme: None,
+                    source_port: None,
+                    partition_key: None,
+                })
+                .collect();
+            tab.set_cookies(cookies)
+                .map_err(|e| web_err("setting session cookies", e))?;
+        }
+        Ok(())
     }
 
     fn tab(&self) -> Result<&Arc<Tab>, DriverError> {
@@ -201,11 +258,37 @@ impl AppDriver for WebAppDriver {
             .browser
             .new_tab()
             .map_err(|e| web_err("opening tab", e))?;
+        if let Some(session) = self.staged_session.take() {
+            Self::apply_session(&tab, &session, command)?;
+        }
         tab.navigate_to(command)
             .map_err(|e| web_err(&format!("navigating to {command}"), e))?;
         tab.wait_until_navigated()
             .map_err(|e| web_err("waiting for page load", e))?;
         self.tab = Some(tab);
+        Ok(())
+    }
+
+    fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
+        self.staged_session = Some(session);
+        Ok(())
+    }
+
+    fn navigate(&mut self, url: &str) -> Result<(), DriverError> {
+        let tab = self.tab()?;
+        tab.navigate_to(url)
+            .map_err(|e| web_err(&format!("navigating to {url}"), e))?;
+        tab.wait_until_navigated()
+            .map_err(|e| web_err("waiting for page load", e))?;
+        Ok(())
+    }
+
+    fn reload(&mut self) -> Result<(), DriverError> {
+        let tab = self.tab()?;
+        tab.reload(false, None)
+            .map_err(|e| web_err("reloading the page", e))?;
+        tab.wait_until_navigated()
+            .map_err(|e| web_err("waiting for reload", e))?;
         Ok(())
     }
 

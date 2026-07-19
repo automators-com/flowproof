@@ -41,6 +41,12 @@ pub struct MockAppDriver {
     pub cleared: Vec<String>,
     /// Text typed into the focused element, in order.
     pub typed_focused: Vec<String>,
+    /// Session staged via `stage_session` (resolved values).
+    pub staged_session: Option<crate::app::WebSession>,
+    /// URLs visited via `navigate`, in order.
+    pub navigations: Vec<String>,
+    /// Number of `reload` calls.
+    pub reloads: usize,
 }
 
 impl MockAppDriver {
@@ -149,6 +155,21 @@ impl AppDriver for MockAppDriver {
         let mut chord: Vec<String> = modifiers.iter().map(ToString::to_string).collect();
         chord.push(key.to_string());
         self.keys_pressed.push(chord.join("+"));
+        Ok(())
+    }
+
+    fn stage_session(&mut self, session: crate::app::WebSession) -> Result<(), DriverError> {
+        self.staged_session = Some(session);
+        Ok(())
+    }
+
+    fn navigate(&mut self, url: &str) -> Result<(), DriverError> {
+        self.navigations.push(url.to_string());
+        Ok(())
+    }
+
+    fn reload(&mut self) -> Result<(), DriverError> {
+        self.reloads += 1;
         Ok(())
     }
 

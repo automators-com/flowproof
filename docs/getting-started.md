@@ -202,6 +202,34 @@ steps:
 (YAML note: an `assert:` value cannot *start* with a `"` — that's why
 quoted targets always follow `the `.)
 
+## Authenticated flows: sessions and navigation
+
+Real app suites don't walk the login UI in every test — they inject a
+session and start on the page under test (Playwright's storageState
+pattern). Declare it in the spec; it's applied **before the page loads**
+(cookies via CDP, localStorage before any page script runs), travels in
+the trace with `${VAR}` references intact, and is re-applied identically
+at every replay:
+
+```yaml
+name: Templates workspace
+app: web
+url: ${DM_BASE_URL}/templates          # env refs resolve at launch
+session:
+  cookies:
+    - name: automators.session
+      value: ${DM_SESSION_COOKIE}      # resolved at apply time, never stored
+  local_storage:
+    projectId: ${DM_PROJECT_ID}
+steps:
+  - Wait until page shows templates found within 30s
+  - Go to /settings                    # same-origin navigation mid-flow
+  - Reload the page
+```
+
+`Go to` takes a path (resolved against the flow URL's origin) or a full
+URL.
+
 ## Authoring with a model (arbitrary steps)
 
 The rules only know the demo vocabularies. With a model backend configured,

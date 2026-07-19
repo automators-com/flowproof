@@ -42,6 +42,12 @@ pub struct FlowSpec {
     /// record time so replays redact identically without the spec.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redact: Vec<flowproof_driver::RedactionRule>,
+    /// Session state (cookies, localStorage) applied before the page loads —
+    /// how authenticated flows start without a login walk. Values may be
+    /// `${VAR}` references, resolved at apply time and never stored. Copied
+    /// into the trace header so replays authenticate identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<flowproof_trace::format::SessionSetup>,
     pub steps: Vec<SpecStep>,
 }
 
