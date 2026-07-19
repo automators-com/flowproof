@@ -29,6 +29,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # sdist FIRST: it runs on the host, and the manylinux wheel step below
+      # runs in a container as root — if the container creates dist/ first,
+      # the host user cannot write into it (permission denied).
+      - name: Build sdist
+        if: matrix.os == 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: sdk/python
+          command: sdist
+          args: --out dist
+
       # maturin-action builds the Linux wheel inside a manylinux container —
       # PyPI rejects raw `linux_x86_64` platform tags. On windows/macos it
       # runs maturin natively (the manylinux input is ignored there).
@@ -39,14 +50,6 @@ jobs:
           command: build
           args: --release --out dist
           manylinux: auto
-
-      - name: Build sdist
-        if: matrix.os == 'ubuntu-latest'
-        uses: PyO3/maturin-action@v1
-        with:
-          working-directory: sdk/python
-          command: sdist
-          args: --out dist
 
       - uses: actions/upload-artifact@v4
         with:
