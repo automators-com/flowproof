@@ -20,6 +20,8 @@ pub struct UiaSelector {
     pub name: Option<String>,
     pub control_type: Option<String>,
     pub css: Option<String>,
+    /// 1-based ordinal when several elements match (`the 2nd "Field Name"`).
+    pub nth: Option<u32>,
 }
 
 impl UiaSelector {
@@ -50,6 +52,11 @@ impl UiaSelector {
             && self.control_type.is_none()
             && self.css.is_none()
     }
+
+    pub fn with_nth(mut self, nth: Option<u32>) -> Self {
+        self.nth = nth;
+        self
+    }
 }
 
 impl std::fmt::Display for UiaSelector {
@@ -67,7 +74,30 @@ impl std::fmt::Display for UiaSelector {
         if let Some(css) = &self.css {
             parts.push(format!("css={css}"));
         }
+        if let Some(nth) = self.nth {
+            parts.push(format!("nth={nth}"));
+        }
         write!(f, "{}", parts.join(","))
+    }
+}
+
+/// A keyboard modifier held while pressing a key (`Ctrl+V`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyMod {
+    Ctrl,
+    Alt,
+    Shift,
+    Meta,
+}
+
+impl std::fmt::Display for KeyMod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            KeyMod::Ctrl => "Ctrl",
+            KeyMod::Alt => "Alt",
+            KeyMod::Shift => "Shift",
+            KeyMod::Meta => "Meta",
+        })
     }
 }
 
@@ -95,6 +125,29 @@ pub trait AppDriver {
 
     /// Type `text` into the element matching `selector` (focus + keystrokes).
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError>;
+
+    /// Clear the current value of the input matching `selector`.
+    fn clear_text(&mut self, _selector: &UiaSelector) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "clear_text is not supported by this driver".into(),
+        ))
+    }
+
+    /// Type `text` into whatever element currently has keyboard focus
+    /// (dropdown search boxes, rename inputs that appear pre-focused).
+    fn type_focused(&mut self, _text: &str) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "type_focused is not supported by this driver".into(),
+        ))
+    }
+
+    /// Press a named key (`Enter`, `Escape`, `Backspace`, `V`, …) with the
+    /// given modifiers held.
+    fn press_key(&mut self, _key: &str, _modifiers: &[KeyMod]) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "press_key is not supported by this driver".into(),
+        ))
+    }
 
     /// Primary screen size in physical pixels (used for trace headers).
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError>;
@@ -186,6 +239,18 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
         (**self).type_text(selector, text)
+    }
+
+    fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        (**self).clear_text(selector)
+    }
+
+    fn type_focused(&mut self, text: &str) -> Result<(), DriverError> {
+        (**self).type_focused(text)
+    }
+
+    fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
+        (**self).press_key(key, modifiers)
     }
 
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
@@ -520,6 +585,7 @@ mod tests {
             name: Some("Five".into()),
             control_type: None,
             css: None,
+            nth: None,
         };
         assert_eq!(sel.to_string(), "automation_id=num5Button,name=Five");
         assert!(!sel.is_empty());

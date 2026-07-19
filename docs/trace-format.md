@@ -83,6 +83,13 @@ has `format != "flowproof-trace"` or an unsupported `version`.
   execution time — recording and every replay — and the trace only ever
   stores the reference, never the value. An unset variable fails closed
   with an error naming it.
+
+  `type_text` variants: an **empty `selectors` array** means "type into the
+  element that currently has keyboard focus"; `params.replace: true` marks
+  fill semantics — the input's current value is cleared before typing (a
+  bare `Clear the … field` step is a replace-typing of the empty string).
+  `press_key` carries `{key, modifiers[]}` and never has selectors — it
+  goes to the focused element by definition.
 - `selectors` — the ladder, ordered deterministic-first. Tiers:
   1. `native_id` — UIA AutomationId, SAP GUI Scripting ID, DOM id/CSS.
   2. `structural` — path through the accessibility/DOM tree.
@@ -94,7 +101,9 @@ has `format != "flowproof-trace"` or an unsupported `version`.
      never a silent fix.
   A step records only the tiers its perception sources could produce (a
   Citrix recording may have tiers 3–5 only). `confidence` is optional,
-  `[0.0, 1.0]`.
+  `[0.0, 1.0]`. Any rung's payload may carry `nth` (1-based) to address
+  the nth matching element when a selector legitimately matches several
+  (`Type email into the 2nd "Field Name" field`).
 
   **Replay semantics**: the engine walks rungs in order and acts on the
   first one that resolves to a live element. Tiers 1–3 execute today

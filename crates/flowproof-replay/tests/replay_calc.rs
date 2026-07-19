@@ -427,3 +427,46 @@ fn replay_skips_remaining_steps_after_a_missing_element() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn keyboard_clear_and_focused_typing_replay_deterministically() {
+    let dir = std::env::temp_dir().join("flowproof-replay-keyboard");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    let spec = FlowSpec::parse(
+        "name: Keyboard flow
+app: web
+url: https://e.test/x
+steps:
+  - Type old into the \"Template name\" field
+  - Clear the \"Template name\" field
+  - Type fresh
+  - Press Enter
+  - Press Alt+Shift+Backspace
+",
+    )
+    .expect("spec parses");
+    let mut driver = MockAppDriver::new(&["Template name"]);
+    let trace = dir.join("keyboard.trace.jsonl");
+    record(&spec, &mut driver, &trace).expect("recording succeeds");
+
+    let mut driver = MockAppDriver::new(&["Template name"]);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "keyboard flow replays: {report:?}");
+    assert!(!report.degraded);
+    // Replay re-performed each action through the driver surface.
+    assert_eq!(driver.cleared, vec!["Template name"]);
+    assert_eq!(driver.typed_focused, vec!["fresh"]);
+    assert_eq!(
+        driver.keys_pressed,
+        vec!["Enter", "Alt+Shift+Backspace"],
+        "chords replayed with their modifiers"
+    );
+    // The clear left the field empty (replace semantics, not append).
+    assert_eq!(
+        driver.texts.get("Template name").map(String::as_str),
+        Some("")
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

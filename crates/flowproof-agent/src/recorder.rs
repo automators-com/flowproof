@@ -163,6 +163,14 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
                 payload,
             }]
         }
+        // An ordinal narrows every rung of the inner ladder to the nth match.
+        Target::Nth(n, inner) => {
+            let mut ladder = selectors_for(app, inner, label);
+            for selector in &mut ladder {
+                selector.payload.insert("nth".into(), (*n).into());
+            }
+            ladder
+        }
     }
 }
 
@@ -177,6 +185,37 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             Action::TypeText(TypeTextParams {
                 text: text.clone(),
                 submit: None,
+                extra: serde_json::Map::new(),
+            }),
+        ),
+        // Focused typing has no target: an empty selector list IS the
+        // "type where the focus is" encoding.
+        ResolvedAction::TypeFocused { text } => (
+            Vec::new(),
+            Action::TypeText(TypeTextParams {
+                text: text.clone(),
+                submit: None,
+                extra: serde_json::Map::new(),
+            }),
+        ),
+        // Clear is a replace-with-nothing TypeText, flagged via `replace`.
+        ResolvedAction::Clear { target } => {
+            let mut extra = serde_json::Map::new();
+            extra.insert("replace".into(), true.into());
+            (
+                selectors_for(app, target, None),
+                Action::TypeText(TypeTextParams {
+                    text: String::new(),
+                    submit: None,
+                    extra,
+                }),
+            )
+        }
+        ResolvedAction::PressKey { key, modifiers } => (
+            Vec::new(),
+            Action::PressKey(flowproof_trace::format::PressKeyParams {
+                key: key.clone(),
+                modifiers: modifiers.clone(),
                 extra: serde_json::Map::new(),
             }),
         ),
@@ -204,28 +243,27 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             )
         }
     };
+    // Targetless actions (key press, focused typing) have nothing to wait
+    // for; targeted ones wait for any rung of the ladder.
+    let pre = if selectors.is_empty() {
+        vec![]
+    } else {
+        vec![Condition::ElementExists {
+            timeout_ms: STEP_TIMEOUT_MS,
+            selector_ref: None,
+        }]
+    };
     Step {
         id: format!("s{id:04}"),
         intent: intent.to_string(),
         action: trace_action,
         selectors,
-        sync: Sync {
-            pre: vec![Condition::ElementExists {
-                timeout_ms: STEP_TIMEOUT_MS,
-                selector_ref: None, // any rung of the ladder satisfies it
-            }],
-            post: vec![],
-        },
+        sync: Sync { pre, post: vec![] },
         artifacts: Artifacts::default(),
     }
 }
 
-fn action_selector(action: &ResolvedAction) -> UiaSelector {
-    let target = match action {
-        ResolvedAction::Press { target, .. }
-        | ResolvedAction::TypeText { target, .. }
-        | ResolvedAction::AssertText { target, .. } => target,
-    };
+fn target_selector(target: &Target) -> UiaSelector {
     match target {
         Target::AutomationId(id) => UiaSelector::automation_id(id.clone()),
         Target::Css(css) => UiaSelector::css(css.clone()),
@@ -233,7 +271,21 @@ fn action_selector(action: &ResolvedAction) -> UiaSelector {
             name: Some(text.clone()),
             ..UiaSelector::default()
         },
+        Target::Nth(n, inner) => target_selector(inner).with_nth(Some(*n)),
     }
+}
+
+/// The live-driver selector for an action's target; None for targetless
+/// actions (key press, focused typing).
+fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
+    let target = match action {
+        ResolvedAction::Press { target, .. }
+        | ResolvedAction::TypeText { target, .. }
+        | ResolvedAction::Clear { target }
+        | ResolvedAction::AssertText { target, .. } => target,
+        ResolvedAction::TypeFocused { .. } | ResolvedAction::PressKey { .. } => return None,
+    };
+    Some(target_selector(target))
 }
 
 /// Resolve where to launch: registry apps by id, `web` from the spec URL
@@ -256,6 +308,15 @@ fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordE
         });
     }
     resolve_app(&spec.app).ok_or_else(|| RecordError::UnknownApp(spec.app.clone()))
+}
+
+fn driver_key_mod(m: &flowproof_trace::format::KeyModifier) -> flowproof_driver::KeyMod {
+    match m {
+        flowproof_trace::format::KeyModifier::Ctrl => flowproof_driver::KeyMod::Ctrl,
+        flowproof_trace::format::KeyModifier::Alt => flowproof_driver::KeyMod::Alt,
+        flowproof_trace::format::KeyModifier::Shift => flowproof_driver::KeyMod::Shift,
+        flowproof_trace::format::KeyModifier::Win => flowproof_driver::KeyMod::Meta,
+    }
 }
 
 fn assert_holds(actual: &str, expected: &str, contains: bool, numeric: bool) -> bool {
@@ -390,19 +451,32 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                 rec.step_started(driver, &step_id);
             }
             let selector = action_selector(&action);
-            if !driver.element_exists(&selector)? {
-                return Err(RecordError::ElementNotFound {
-                    intent: spec_step.intent().to_string(),
-                    selector: selector.to_string(),
-                });
+            if let Some(selector) = &selector {
+                if !driver.element_exists(selector)? {
+                    return Err(RecordError::ElementNotFound {
+                        intent: spec_step.intent().to_string(),
+                        selector: selector.to_string(),
+                    });
+                }
             }
+            let targeted = || selector.as_ref().expect("targeted action has a selector");
             match &action {
-                ResolvedAction::Press { .. } => driver.invoke(&selector)?,
+                ResolvedAction::Press { .. } => driver.invoke(targeted())?,
                 ResolvedAction::TypeText { text, .. } => {
                     // `${VAR}` secrets resolve at the moment of typing; the
                     // trace only ever stores the reference (see step_for).
                     let value = flowproof_trace::secret::resolve_refs(text)?;
-                    driver.type_text(&selector, &value)?
+                    driver.type_text(targeted(), &value)?
+                }
+                ResolvedAction::TypeFocused { text } => {
+                    let value = flowproof_trace::secret::resolve_refs(text)?;
+                    driver.type_focused(&value)?
+                }
+                ResolvedAction::Clear { .. } => driver.clear_text(targeted())?,
+                ResolvedAction::PressKey { key, modifiers } => {
+                    let mods: Vec<flowproof_driver::KeyMod> =
+                        modifiers.iter().map(driver_key_mod).collect();
+                    driver.press_key(key, &mods)?
                 }
                 ResolvedAction::AssertText {
                     expected,
@@ -416,7 +490,7 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                     // takes just as long here as it will at replay.
                     let wanted = flowproof_trace::secret::resolve_refs(expected)?;
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
-                    let mut actual = driver.read_text(&selector)?;
+                    let mut actual = driver.read_text(targeted())?;
                     while !assert_holds(&actual, &wanted, *contains, *numeric) {
                         if std::time::Instant::now() >= deadline {
                             // Error messages carry the RAW expectation — a
@@ -428,7 +502,7 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                             });
                         }
                         std::thread::sleep(ASSERT_POLL_INTERVAL);
-                        actual = driver.read_text(&selector)?;
+                        actual = driver.read_text(targeted())?;
                     }
                 }
             }
@@ -645,6 +719,42 @@ steps:
         assert_eq!(selectors.len(), 2);
         assert_eq!(selectors[0]["payload"]["automation_id"], "15");
         assert_eq!(selectors[1]["payload"]["control_type"], "Edit");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn records_keyboard_clear_and_focused_typing() {
+        let spec = FlowSpec::parse(
+            "name: Keyboard flow
+app: web
+url: https://e.test/x
+steps:
+  - Type old into the \"Template name\" field
+  - Clear the \"Template name\" field
+  - Type new
+  - Press Enter
+  - Press Control+V
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["Template name"]);
+        let dir = std::env::temp_dir().join("flowproof-recorder-keyboard");
+        let out = dir.join("keyboard.trace.jsonl");
+        let summary = record(&spec, &mut driver, &out).expect("recording succeeds");
+        assert_eq!(summary.steps, 5);
+        assert_eq!(driver.cleared, vec!["Template name"]);
+        assert_eq!(driver.typed_focused, vec!["new"]);
+        assert_eq!(driver.keys_pressed, vec!["Enter", "Ctrl+v"]);
+
+        let contents = std::fs::read_to_string(&out).expect("trace written");
+        // Clear is a replace-with-nothing TypeText.
+        assert!(contents.contains("\"replace\":true"), "clear encoded");
+        // The key press travels as a first-class press_key action.
+        assert!(contents.contains("\"press_key\""), "press_key encoded");
+        assert!(
+            contents.contains("\"modifiers\":[\"ctrl\"]"),
+            "modifiers encoded"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
