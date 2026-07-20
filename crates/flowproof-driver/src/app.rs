@@ -282,6 +282,54 @@ pub fn numeric_value(text: &str) -> Option<f64> {
         .find_map(|token| token.replace(',', "").parse::<f64>().ok())
 }
 
+/// A driver for `app: api` flows: no UI, ever. `launch` is a no-op and
+/// `screen_size` is nominal; any actual UI operation errors, because an
+/// out-of-band flow that reached for the screen is a spec mistake worth
+/// surfacing. Out-of-band assertions (`assert_sql`/`assert_api`) never
+/// touch the driver — they run through the oob probes — so an api flow
+/// executes entirely without one.
+#[derive(Debug, Default)]
+pub struct NoOpDriver;
+
+impl NoOpDriver {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn no_ui(op: &str) -> DriverError {
+        DriverError::Uia(format!(
+            "app 'api' has no UI: '{op}' is not available — an api flow may only \
+             use out-of-band steps (assert_api / assert_sql)"
+        ))
+    }
+}
+
+impl AppDriver for NoOpDriver {
+    fn launch(&mut self, _command: &str, _window: &str, _t: Duration) -> Result<(), DriverError> {
+        Ok(())
+    }
+
+    fn element_exists(&mut self, _selector: &UiaSelector) -> Result<bool, DriverError> {
+        Ok(false)
+    }
+
+    fn invoke(&mut self, _selector: &UiaSelector) -> Result<(), DriverError> {
+        Err(Self::no_ui("click"))
+    }
+
+    fn read_text(&mut self, _selector: &UiaSelector) -> Result<String, DriverError> {
+        Err(Self::no_ui("read_text"))
+    }
+
+    fn type_text(&mut self, _selector: &UiaSelector, _text: &str) -> Result<(), DriverError> {
+        Err(Self::no_ui("type_text"))
+    }
+
+    fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
+        Ok((1, 1))
+    }
+}
+
 /// Resolve a spec `app:` id to a launch target. Shared by record and replay
 /// so a trace only needs to carry the app id.
 pub fn resolve_app(app_id: &str) -> Option<AppTarget> {

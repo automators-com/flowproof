@@ -176,6 +176,8 @@ pub enum Adapter {
     SapCom,
     Web,
     Vision,
+    /// No UI at all: the flow is out-of-band assertions only (SQL / API).
+    Api,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -1,0 +1,13 @@
+# A UI-less flow: out-of-band assertions only, no browser or window. Runs
+# on any platform. Connection names and ${VAR} hosts resolve at execution
+# time and never enter the trace.
+name: Health checks
+app: api
+steps:
+  - assert_api:
+      request: GET ${API_BASE}/health
+      status: 200
+      body_contains: '"status":"ok"'
+  - assert_api:
+      request: GET ${API_BASE}/missing
+      status: 404

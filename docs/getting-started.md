@@ -89,7 +89,35 @@ ingests. Exit code is non-zero if ANY flow failed:
 
 ```bash
 flowproof run specs/
+flowproof run specs/ --retries 2      # re-run a flow that fails, up to twice
 ```
+
+Deterministic replay is stable, but the infrastructure under it (a dropped
+CDP frame, a momentarily slow backend) is not — `--retries N` re-runs a
+failed flow up to N more times with a fresh driver before calling it
+failed. The web adapter reuses **one browser** across the whole suite (an
+isolated context per flow), so the cold start is paid once, not per flow;
+set `FLOWPROOF_NO_SHARED_BROWSER=1` to force a browser per flow.
+
+**Suite manifest.** A suite usually needs sequencing a bespoke harness
+would otherwise provide — shared env, seed before each flow, cleanup after.
+Declare it in an optional `suite.yaml` next to the specs instead:
+
+```yaml
+# specs/suite.yaml
+env:
+  DM_BASE_URL: http://localhost:3000
+  DM_SESSION_COOKIE: ${DM_SESSION_COOKIE}   # re-map / compose ambient vars
+before_each: pnpm --filter app exec tsx seed.ts   # $FLOWPROOF_SPEC = the spec path
+after_each: pnpm --filter app exec tsx cleanup.ts
+order:                                       # optional; unlisted specs run after, sorted
+  - smoke/login.flow.yaml
+```
+
+`env` is exported to every flow and hook; `before_each`/`after_each` run
+via `sh -c` with the current spec path in `$FLOWPROOF_SPEC`. A hook that
+exits non-zero aborts the suite — silent seed/cleanup failure is exactly
+the fragility to avoid.
 
 Programmatic callers invoking the CLI should pass `--json`: the full
 structured report prints to stdout instead of the human-readable lines —
@@ -346,6 +374,34 @@ steps work through the LLM author — the OCR lines are the scene. OCR
 models (pure-Rust [ocrs](https://github.com/robertknight/ocrs), ~12 MB)
 download on first use to `~/.cache/flowproof/ocrs`. Deliberately not in
 this slice yet: visual-template matching and OCR-region sync conditions.
+
+## API-only flows (no browser, any OS)
+
+Not every test drives a UI. `app: api` runs a flow of **out-of-band
+assertions only** — HTTP status/body and SQL row checks — with no browser
+and no window launched, on any platform:
+
+```yaml
+name: Provisioning API
+app: api
+steps:
+  - assert_api:
+      request: GET ${API}/health
+      status: 200
+      body_contains: '"status":"ok"'
+  - assert_api:
+      request: POST ${API}/teams/${TEAM}/members    # cross-team write must 403
+      status: 403
+  - assert_sql:
+      connection: reporting
+      query: SELECT count(*) FROM members WHERE team_id = '${TEAM}'
+      equals: "1"
+```
+
+These are the tests that assert on HTTP status codes and response bodies
+with no UI to drive — they run through the same deterministic record/replay
+spine (zero model calls), and the connection names and `${VAR}` hosts never
+enter the trace. See `examples/api/health.flow.yaml`.
 
 ## Authoring with a model (arbitrary steps)
 
