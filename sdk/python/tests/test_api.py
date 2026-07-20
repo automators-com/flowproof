@@ -21,6 +21,7 @@ def test_public_api_surface():
         "Flow",
         "HealResult",
         "RecordResult",
+        "RecordSkipped",
         "RunResult",
         "StepResult",
         "__version__",
@@ -29,6 +30,37 @@ def test_public_api_surface():
         "record",
         "run",
     }
+
+
+def test_gated_record_returns_falsy_record_skipped(tmp_path, monkeypatch):
+    """A spec whose skip_unless_env gate is unsatisfied records nothing and
+    returns a falsy RecordSkipped naming the reason."""
+    monkeypatch.delenv("PY_SUE_FLAG", raising=False)
+    spec = tmp_path / "gated.flow.yaml"
+    spec.write_text(
+        "name: Gated\napp: api\nskip_unless_env: [PY_SUE_FLAG]\n"
+        "steps:\n  - assert_api:\n      request: GET http://127.0.0.1:1/x\n"
+        "      timeout_seconds: 1\n"
+    )
+    result = flowproof.record(spec)
+    assert isinstance(result, flowproof.RecordSkipped)
+    assert not result, "RecordSkipped is falsy"
+    assert "PY_SUE_FLAG" in result.reason
+    assert not (tmp_path / "gated.trace.jsonl").exists()
+
+
+def test_gated_run_returns_skipped_run_result(tmp_path, monkeypatch):
+    monkeypatch.delenv("PY_SUE_RUN_FLAG", raising=False)
+    spec = tmp_path / "gated.flow.yaml"
+    spec.write_text(
+        "name: Gated\napp: api\nskip_unless_env: [PY_SUE_RUN_FLAG]\n"
+        "steps:\n  - assert_api:\n      request: GET http://127.0.0.1:1/x\n"
+        "      timeout_seconds: 1\n"
+    )
+    result = flowproof.run(spec)  # no trace exists; the gate wins
+    assert result.passed and bool(result), "a skip is not a failure"
+    assert result.skipped and "PY_SUE_RUN_FLAG" in result.skipped
+    assert result.report_path is None and result.junit_path is None
 
 
 def test_ambiguous_step_raises_clarification_needed(tmp_path, monkeypatch):
@@ -72,8 +104,15 @@ def test_missing_spec_is_a_clean_error():
 
 
 def test_missing_trace_is_a_clean_error(tmp_path):
-    with pytest.raises(RuntimeError, match="cannot read trace"):
+    # run() now loads the spec first (skip gates + parse errors surface on
+    # single runs); a nonexistent spec fails there, cleanly.
+    with pytest.raises(RuntimeError, match="cannot read spec"):
         flowproof.run(tmp_path / "never-recorded.flow.yaml")
+    # A real spec with no recorded trace still names the trace.
+    spec = tmp_path / "real.flow.yaml"
+    spec.write_text("name: r\napp: api\nsteps:\n  - assert_api:\n      request: GET http://x\n")
+    with pytest.raises(RuntimeError, match="cannot read trace"):
+        flowproof.run(spec)
 
 
 @pytest.mark.skipif(WINDOWS, reason="on Windows the engine would actually drive the app")

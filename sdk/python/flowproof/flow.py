@@ -23,6 +23,17 @@ class RecordResult:
     steps: int
 
 
+@dataclass(frozen=True)
+class RecordSkipped:
+    """The flow's ``skip_unless_env`` gate was not satisfied: nothing was
+    recorded. Falsy, so ``if flow.record():`` reads naturally."""
+
+    reason: str
+
+    def __bool__(self) -> bool:
+        return False
+
+
 class ClarificationNeeded(RuntimeError):
     """A step could not be authored and needs the caller's help.
 
@@ -64,15 +75,17 @@ class StepResult:
 
 @dataclass(frozen=True)
 class RunResult:
-    """Structured outcome of a replay. Truthy exactly when the flow passed."""
+    """Structured outcome of a replay. Truthy exactly when the flow passed
+    (a skipped flow counts as passed — it did not fail)."""
 
     name: str
     trace_id: str
     passed: bool
     duration_ms: int
     steps: tuple[StepResult, ...]
-    report_path: Path
-    html_path: Path
+    report_path: Path | None
+    """None when the flow was skipped — nothing ran, no bundle exists."""
+    html_path: Path | None
     """Human-readable rendering generated from the JSON report."""
     recording: dict[str, Any] | None = None
     """The run's recording bundle: format, frame refs, per-step time ranges
@@ -80,21 +93,25 @@ class RunResult:
     degraded: bool = False
     """True when any step resolved via a fallback selector rung: the run
     passed, but the app drifted from the trace — schedule a heal."""
+    skipped: str | None = None
+    """The skip reason when the flow's ``skip_unless_env`` gate was not
+    satisfied — the flow never ran."""
 
     def __bool__(self) -> bool:
         return self.passed
 
     @property
-    def junit_path(self) -> Path:
+    def junit_path(self) -> Path | None:
         """JUnit XML rendering of this run, for CI systems that ingest it
         (Jenkins, GitLab, Azure DevOps, ...). Written alongside
-        ``result.json``."""
-        return self.report_path.with_name("junit.xml")
+        ``result.json``. None for skipped flows."""
+        return None if self.report_path is None else self.report_path.with_name("junit.xml")
 
 
 def _parse_run_result(payload: str) -> RunResult:
     data = json.loads(payload)
     report = data["report"]
+    report_path = Path(data["report_path"]) if data.get("report_path") else None
     return RunResult(
         name=report["name"],
         trace_id=report["trace_id"],
@@ -113,10 +130,11 @@ def _parse_run_result(payload: str) -> RunResult:
             )
             for s in report["steps"]
         ),
-        report_path=Path(data["report_path"]),
-        html_path=Path(data["report_path"]).with_name("report.html"),
+        report_path=report_path,
+        html_path=report_path.with_name("report.html") if report_path else None,
         recording=report.get("recording"),
         degraded=report.get("degraded", False),
+        skipped=data.get("skipped"),
     )
 
 
@@ -159,9 +177,11 @@ class Flow:
     def __init__(self, spec: str | Path) -> None:
         object.__setattr__(self, "spec", Path(spec))
 
-    def record(self, out: str | Path | None = None) -> RecordResult:
+    def record(self, out: str | Path | None = None) -> RecordResult | RecordSkipped:
         """Perform the flow once against the live app and write a trace.
 
+        Returns :class:`RecordSkipped` (falsy) when the spec's
+        ``skip_unless_env`` gate is not satisfied — nothing was recorded.
         Raises :class:`ClarificationNeeded` when a step is too ambiguous to
         author — its ``clarification`` payload tells you what was stuck and
         what the live screen offered, so you can rewrite the step and retry.
@@ -169,6 +189,8 @@ class Flow:
         data = json.loads(_native.record(self.spec, Path(out) if out else None))
         if "needs_clarification" in data:
             raise ClarificationNeeded(data["needs_clarification"])
+        if "skipped" in data:
+            return RecordSkipped(reason=data["skipped"])
         return RecordResult(trace_path=Path(data["trace_path"]), steps=data["steps"])
 
     def run(self, trace: str | Path | None = None) -> RunResult:

@@ -36,14 +36,17 @@ if FastMCP is not None:
         interactable inventory: rewrite the stuck step into concrete grammar
         (docs/authoring.md) targeting a listed element, consulting your data
         source for domain questions (e.g. which fields are required), then
-        call this tool again."""
+        call this tool again. A spec whose skip_unless_env gate is not
+        satisfied returns {"skipped": reason} — nothing was recorded."""
         return json.loads(_native.record(spec, out))
 
     @mcp.tool()
     def flowproof_run(spec: str, trace: str | None = None) -> dict[str, Any]:
         """Deterministically replay a recorded flow (zero LLM calls). A
         failing test is data ({"report": {"passed": false, ...}}), not an
-        error. Returns {"report", "report_path"}."""
+        error. Returns {"report", "report_path"}; a spec whose
+        skip_unless_env gate is not satisfied returns a skipped report with
+        {"report_path": null, "skipped": reason} — the flow never ran."""
         return json.loads(_native.run(spec, trace))
 
     @mcp.tool()

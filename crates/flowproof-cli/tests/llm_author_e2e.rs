@@ -24,6 +24,7 @@ fn freeform_spec(url: String) -> FlowSpec {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: vec![
             SpecStep::Plain("Put Ada into the box labelled with the name".into()),
             SpecStep::Plain("Smash the greeting button".into()),

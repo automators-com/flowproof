@@ -28,6 +28,7 @@ fn records_and_replays_a_browser_flow() {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -90,6 +91,7 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -180,6 +182,7 @@ fn secret_reference_types_real_value_but_never_persists_it() {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type ${FLOWPROOF_E2E_PW} into the pw field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -252,6 +255,7 @@ fn assertions_wait_for_async_page_updates() {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Press the start button".into()),
             flowproof_agent::SpecStep::Plain(
@@ -314,6 +318,7 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Plain(
                 "Type Customers into the \"Template name\" field".into(),
@@ -387,6 +392,7 @@ fn assertion_forms_wait_and_verify_on_real_pages() {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "the searchBox field contains prefilled".into(),
@@ -481,6 +487,7 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: vec![
             // Fill semantics: clear the prefilled value, retype, Enter.
             // "Submitted: fresh" (not "…stale textfresh") proves the clear.
@@ -582,6 +589,7 @@ fn session_seeding_and_navigation_drive_real_pages() {
             cookies: vec![],
             local_storage,
         }),
+        skip_unless_env: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows project: ${FLOWPROOF_E2E_PROJECT}".into(),
@@ -651,6 +659,7 @@ fn persisted_frames_never_contain_masked_data() {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type bob into the user field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -819,6 +828,7 @@ fn select_own_text_anchors_and_state_asserts_work() {
         connection: None,
         window: None,
         session: None,
+        skip_unless_env: Vec::new(),
         steps: FlowSpec::parse(
             "name: x\napp: web\nurl: x\nsteps:\n\
              - assert: the \"Save\" is disabled\n\

@@ -26,6 +26,8 @@ pub enum SpecError {
     Parse(#[from] serde_yaml::Error),
     #[error("spec has no steps")]
     Empty,
+    #[error("invalid foreach: {0}")]
+    Foreach(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -64,7 +66,28 @@ pub struct FlowSpec {
     /// `session:` are not rejected — only spec-owned types deny them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<flowproof_trace::format::SessionSetup>,
+    /// Skip this flow (visible as junit `skipped`, exit 0) unless every
+    /// listed environment variable is set and non-empty — first-class
+    /// env-flag gating (`RUN_AGENT_E2E`-style) instead of invisible bash
+    /// guards. Checked after suite env applies, so `suite.yaml` can
+    /// satisfy it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_unless_env: Vec<String>,
     pub steps: Vec<SpecStep>,
+}
+
+impl FlowSpec {
+    /// The reason to skip this flow, if its `skip_unless_env` gate is not
+    /// satisfied — naming every missing/empty variable.
+    pub fn skip_reason(&self) -> Option<String> {
+        let missing: Vec<&str> = self
+            .skip_unless_env
+            .iter()
+            .filter(|var| std::env::var(var.as_str()).map_or(true, |v| v.is_empty()))
+            .map(String::as_str)
+            .collect();
+        (!missing.is_empty()).then(|| format!("required env not set: {}", missing.join(", ")))
+    }
 }
 
 /// A step: a plain natural-language action, a UI assertion, or an
@@ -88,7 +111,7 @@ pub enum SpecStep {
 
 impl SpecStep {
     const FORMS: &'static str = "a plain string, `assert: <text>`, \
-         `assert_sql: {...}`, or `assert_api: {...}`";
+         `assert_sql: {...}`, `assert_api: {...}`, or `foreach: {...}`";
 
     fn from_yaml(value: serde_yaml::Value) -> Result<Self, String> {
         use serde_yaml::Value;
@@ -125,6 +148,14 @@ impl SpecStep {
                     Some("assert_api") => serde_yaml::from_value(inner)
                         .map(|assert_api| SpecStep::AssertApi { assert_api })
                         .map_err(|e| format!("in `assert_api` step: {e}")),
+                    // A foreach reaching typed parsing means it was not
+                    // expanded — it is only valid as a direct entry in a
+                    // spec's `steps:` (FlowSpec::parse expands it there).
+                    Some("foreach") => {
+                        Err("`foreach:` is only valid as a top-level entry in a spec's \
+                         `steps:` list (nested foreach is not supported)"
+                            .into())
+                    }
                     _ => Err(format!(
                         "unknown step key `{}`; recognized step forms are {}",
                         keys[0],
@@ -248,7 +279,15 @@ impl SpecStep {
 
 impl FlowSpec {
     pub fn parse(yaml: &str) -> Result<Self, SpecError> {
-        let spec: FlowSpec = serde_yaml::from_str(yaml)?;
+        // The Value round-trip costs line/column info in errors (names
+        // still appear); only pay it when a foreach is actually present.
+        let spec: FlowSpec = if yaml.contains("foreach") {
+            let mut doc: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+            expand_foreach(&mut doc)?;
+            serde_yaml::from_value(doc)?
+        } else {
+            serde_yaml::from_str(yaml)?
+        };
         if spec.steps.is_empty() {
             return Err(SpecError::Empty);
         }
@@ -262,6 +301,209 @@ impl FlowSpec {
         })?;
         Self::parse(&yaml)
     }
+}
+
+/// A `foreach:` entry in `steps:` — a values matrix over a step template,
+/// removing the copy-paste class where one block repeats N times with a
+/// single value changing:
+///
+/// ```yaml
+/// steps:
+///   - foreach:
+///       values: [mysql, mssql, oracle]     # scalars, or mappings
+///       steps:
+///         - assert_api:
+///             request: POST ${API}/connections/test
+///             body: { type: "${each}" }
+/// ```
+///
+/// Expansion happens at PARSE time, before typed deserialization and long
+/// before any `${VAR}` env resolution — each iteration becomes ordinary
+/// spec steps (`${each}` for scalar values, `${each.<key>}` for mapping
+/// values), so recording, replay, traces, and step ids are untouched and
+/// `${each}` can never collide with env secret resolution (leftovers are
+/// rejected).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForeachSpec {
+    values: Vec<serde_yaml::Value>,
+    steps: Vec<serde_yaml::Value>,
+}
+
+/// Render a YAML scalar as the text `${each}` interpolates to.
+fn scalar_text(value: &serde_yaml::Value) -> Option<String> {
+    use serde_yaml::Value;
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Substitute `${each}` / `${each.<key>}` tokens in one string for one
+/// iteration value. Whole-string tokens are handled by the caller (node
+/// replacement, preserving YAML types); this does textual interpolation.
+fn substitute_each(text: &str, value: &serde_yaml::Value) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("${each") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let Some(end) = after.find('}') else {
+            return Err(format!("malformed `${{each` token in `{text}`"));
+        };
+        let token = &after[..=end];
+        let key = &token[6..token.len() - 1]; // "" or ".key"
+        let replacement = if key.is_empty() {
+            scalar_text(value).ok_or_else(|| {
+                format!(
+                    "`${{each}}` needs a scalar iteration value, but got a mapping — \
+                     use `${{each.<key>}}` (value: {value:?})"
+                )
+            })?
+        } else if let Some(key) = key.strip_prefix('.') {
+            let serde_yaml::Value::Mapping(map) = value else {
+                return Err(format!(
+                    "`{token}` needs a mapping iteration value, but got a scalar \
+                     — use `${{each}}` (value: {value:?})"
+                ));
+            };
+            let entry = map
+                .get(serde_yaml::Value::String(key.to_string()))
+                .ok_or_else(|| format!("`{token}`: iteration value has no key `{key}`"))?;
+            scalar_text(entry).ok_or_else(|| format!("`{token}`: key `{key}` is not a scalar"))?
+        } else {
+            return Err(format!(
+                "malformed token `{token}` (expected `${{each}}` or `${{each.<key>}}`)"
+            ));
+        };
+        out.push_str(&replacement);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// Deep-substitute one iteration value through a cloned template node.
+/// A string that IS exactly one token is replaced by the value node itself
+/// (numbers stay numbers — `status: ${each.status}` keeps its type).
+fn substitute_node(
+    node: &serde_yaml::Value,
+    value: &serde_yaml::Value,
+) -> Result<serde_yaml::Value, String> {
+    use serde_yaml::Value;
+    Ok(match node {
+        Value::String(s) => {
+            let whole_each = s == "${each}";
+            let whole_key = s.starts_with("${each.")
+                && s.ends_with('}')
+                && s.matches("${").count() == 1
+                && !s[7..s.len() - 1].contains('}');
+            if whole_each {
+                value.clone()
+            } else if whole_key {
+                let key = &s[7..s.len() - 1];
+                let Value::Mapping(map) = value else {
+                    return Err(format!(
+                        "`{s}` needs a mapping iteration value, but got a scalar (value: {value:?})"
+                    ));
+                };
+                map.get(Value::String(key.to_string()))
+                    .cloned()
+                    .ok_or_else(|| format!("`{s}`: iteration value has no key `{key}`"))?
+            } else if s.contains("${each") {
+                Value::String(substitute_each(s, value)?)
+            } else {
+                node.clone()
+            }
+        }
+        Value::Sequence(items) => Value::Sequence(
+            items
+                .iter()
+                .map(|i| substitute_node(i, value))
+                .collect::<Result<_, _>>()?,
+        ),
+        Value::Mapping(map) => Value::Mapping(
+            map.iter()
+                .map(|(k, v)| Ok((k.clone(), substitute_node(v, value)?)))
+                .collect::<Result<_, String>>()?,
+        ),
+        other => other.clone(),
+    })
+}
+
+/// Does any string in this node still carry an (unsubstituted) `${each` token?
+fn has_each_token(node: &serde_yaml::Value) -> bool {
+    use serde_yaml::Value;
+    match node {
+        Value::String(s) => s.contains("${each"),
+        Value::Sequence(items) => items.iter().any(has_each_token),
+        Value::Mapping(map) => map.values().any(has_each_token),
+        _ => false,
+    }
+}
+
+/// Is this node a single-key mapping keyed `foreach`?
+fn is_foreach_entry(node: &serde_yaml::Value) -> bool {
+    matches!(node, serde_yaml::Value::Mapping(map)
+        if map.len() == 1 && map.keys().next().and_then(|k| k.as_str()) == Some("foreach"))
+}
+
+/// Expand every `foreach:` entry in the document's `steps:` sequence into
+/// flat, ordinary steps. Runs before typed deserialization.
+fn expand_foreach(doc: &mut serde_yaml::Value) -> Result<(), SpecError> {
+    use serde_yaml::Value;
+    let Some(steps) = doc
+        .as_mapping_mut()
+        .and_then(|m| m.get_mut(Value::String("steps".into())))
+        .and_then(|s| s.as_sequence_mut())
+    else {
+        return Ok(()); // No steps sequence: the typed parse reports it.
+    };
+    let mut expanded: Vec<Value> = Vec::with_capacity(steps.len());
+    for entry in steps.drain(..) {
+        if !is_foreach_entry(&entry) {
+            expanded.push(entry);
+            continue;
+        }
+        let Value::Mapping(map) = entry else {
+            unreachable!("is_foreach_entry checked the shape")
+        };
+        let inner = map.into_iter().next().expect("single key checked").1;
+        let spec: ForeachSpec = serde_yaml::from_value(inner)
+            .map_err(|e| SpecError::Foreach(format!("in `foreach` step: {e}")))?;
+        if spec.values.is_empty() {
+            return Err(SpecError::Foreach("`values` must not be empty".into()));
+        }
+        if spec.steps.is_empty() {
+            return Err(SpecError::Foreach(
+                "`steps` (the template) must not be empty".into(),
+            ));
+        }
+        if spec.steps.iter().any(is_foreach_entry) {
+            return Err(SpecError::Foreach(
+                "nested foreach is not supported — flatten the matrix into one \
+                 `values` list"
+                    .into(),
+            ));
+        }
+        for value in &spec.values {
+            for template in &spec.steps {
+                let step = substitute_node(template, value)
+                    .map_err(|e| SpecError::Foreach(format!("for value {value:?}: {e}")))?;
+                if has_each_token(&step) {
+                    return Err(SpecError::Foreach(format!(
+                        "unsubstituted `${{each...}}` token remains after expansion \
+                         for value {value:?} — check the token spelling"
+                    )));
+                }
+                expanded.push(step);
+            }
+        }
+    }
+    *steps = expanded;
+    Ok(())
 }
 
 /// Optional `suite.yaml` next to a directory of specs: the sequencing a
@@ -385,6 +627,103 @@ steps:
                 assert: "display shows 8".into()
             }
         );
+    }
+
+    #[test]
+    fn foreach_scalar_values_expand_flat_in_order() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: api\nsteps:\n  - Type start\n  - foreach:\n      values: [mysql, mssql, oracle]\n      steps:\n        - assert_api:\n            request: POST ${API}/connections/test\n            body:\n              type: \"${each}\"\n  - Type end\n",
+        )
+        .expect("parses");
+        assert_eq!(spec.steps.len(), 5, "1 + 3 expanded + 1");
+        assert_eq!(spec.steps[0], SpecStep::Plain("Type start".into()));
+        for (i, ty) in ["mysql", "mssql", "oracle"].iter().enumerate() {
+            let SpecStep::AssertApi { assert_api } = &spec.steps[i + 1] else {
+                panic!("expected expanded assert_api at {}", i + 1);
+            };
+            assert_eq!(assert_api.body.as_ref().expect("body")["type"], *ty);
+            // Non-token text is untouched.
+            assert_eq!(assert_api.request, "POST ${API}/connections/test");
+        }
+        assert_eq!(spec.steps[4], SpecStep::Plain("Type end".into()));
+    }
+
+    #[test]
+    fn foreach_mapping_values_substitute_keys_and_preserve_types() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: api\nsteps:\n  - foreach:\n      values:\n        - {path: health, status: 200}\n        - {path: missing, status: 404}\n      steps:\n        - assert_api:\n            request: GET ${API}/${each.path}\n            status: ${each.status}\n",
+        )
+        .expect("parses");
+        assert_eq!(spec.steps.len(), 2);
+        let SpecStep::AssertApi { assert_api } = &spec.steps[1] else {
+            panic!("expected assert_api");
+        };
+        assert_eq!(assert_api.request, "GET ${API}/missing");
+        // Whole-string token: the NODE was replaced, number stays a number.
+        assert_eq!(assert_api.status, Some(404));
+    }
+
+    #[test]
+    fn foreach_rejects_nested_foreach_and_names_errors() {
+        let err = FlowSpec::parse(
+            "name: x\napp: api\nsteps:\n  - foreach:\n      values: [a]\n      steps:\n        - foreach:\n            values: [b]\n            steps: [Type 1]\n",
+        )
+        .expect_err("nested must fail");
+        assert!(err.to_string().contains("nested"), "{err}");
+
+        let err = FlowSpec::parse(
+            "name: x\napp: api\nsteps:\n  - foreach:\n      values: [{a: 1}]\n      steps:\n        - Type ${each.missing}\n",
+        )
+        .expect_err("missing key must fail");
+        assert!(err.to_string().contains("missing"), "{err}");
+
+        let err = FlowSpec::parse(
+            "name: x\napp: api\nsteps:\n  - foreach:\n      values: []\n      steps: [Type 1]\n",
+        )
+        .expect_err("empty values must fail");
+        assert!(err.to_string().contains("values"), "{err}");
+
+        let err = FlowSpec::parse(
+            "name: x\napp: api\nsteps:\n  - foreach:\n      value: [a]\n      steps: [Type 1]\n",
+        )
+        .expect_err("typo'd foreach field must fail");
+        assert!(err.to_string().contains("value"), "{err}");
+
+        // ${each} against a mapping value is ambiguous — must be named.
+        let err = FlowSpec::parse(
+            "name: x\napp: api\nsteps:\n  - foreach:\n      values: [{a: 1}]\n      steps:\n        - Type prefix ${each}\n",
+        )
+        .expect_err("interpolating a mapping must fail");
+        assert!(err.to_string().contains("${each.<key>}"), "{err}");
+    }
+
+    #[test]
+    fn specs_without_foreach_are_untouched() {
+        // The fast path (no Value round-trip) and the semantic no-op.
+        let spec = FlowSpec::parse("name: x\napp: web\nsteps:\n  - Type hello\n").expect("parses");
+        assert_eq!(spec.steps.len(), 1);
+    }
+
+    #[test]
+    fn skip_unless_env_gates_on_unset_and_empty() {
+        let spec: FlowSpec = FlowSpec::parse(
+            "name: x\napp: web\nskip_unless_env: [SUE_FLAG_A, SUE_FLAG_B]\nsteps:\n  - Type 1\n",
+        )
+        .expect("parses");
+        std::env::remove_var("SUE_FLAG_A");
+        std::env::set_var("SUE_FLAG_B", "");
+        let reason = spec.skip_reason().expect("both missing/empty");
+        assert!(
+            reason.contains("SUE_FLAG_A") && reason.contains("SUE_FLAG_B"),
+            "names all missing vars: {reason}"
+        );
+        std::env::set_var("SUE_FLAG_A", "1");
+        let reason = spec.skip_reason().expect("one still empty");
+        assert!(!reason.contains("SUE_FLAG_A") && reason.contains("SUE_FLAG_B"));
+        std::env::set_var("SUE_FLAG_B", "yes");
+        assert!(spec.skip_reason().is_none(), "satisfied gate runs");
+        std::env::remove_var("SUE_FLAG_A");
+        std::env::remove_var("SUE_FLAG_B");
     }
 
     #[test]
