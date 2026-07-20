@@ -142,6 +142,28 @@ already resolve. Note the trust model: running a spec executes the
 `env_from`/hooks of the suite it belongs to, same as running the suite.
 See [self-help.md](self-help.md) for the authoring loop this enables.
 
+More suite machinery, all from the first external adoption:
+
+- **`min_version: "X.Y.Z"`** in `suite.yaml`: the engine refuses to run
+  when older than the suite demands, naming both versions. Set it when
+  specs use vocabulary an older flowproof would have mishandled (before
+  0.2.2, unknown spec fields were silently ignored; now they are parse
+  errors).
+- **Missing traces skip, not abort**: a committed spec whose trace was
+  never recorded reports as junit `skipped` with the reason, instead of
+  hard-failing everyone's suite run. `--record-missing` records it in
+  place first; `--strict` restores the hard error for CI that must not
+  let coverage silently shrink.
+- **Suite `env:` is lazy per entry**: an unresolvable value warns and is
+  skipped instead of blocking flows that never reference it. A flow that
+  DOES reference it still fails at the moment of use, naming the
+  variable. (`env_from` stays fail-closed — a data command failing is
+  never ignorable.)
+- **`skip_unless_env: [FLAG]`** on a spec: first-class env-flag gating,
+  reported as junit `skipped` with the reason instead of an invisible
+  bash guard. Checked after suite env applies, so `suite.yaml` can
+  satisfy the gate; a gated flow skips even under `--strict`.
+
 Programmatic callers invoking the CLI should pass `--json`: the full
 structured report prints to stdout instead of the human-readable lines —
 never parse the prose output.
@@ -426,6 +448,43 @@ These are the tests that assert on HTTP status codes and response bodies
 with no UI to drive — they run through the same deterministic record/replay
 spine (zero model calls), and the connection names and `${VAR}` hosts never
 enter the trace. See `examples/api/health.flow.yaml`.
+
+A repeated block with one value changing collapses into a `foreach`
+values matrix — scalars use `${each}`, mappings use `${each.<key>}`
+(whole-string tokens keep their YAML type, so `status: ${each.status}`
+stays a number). Expansion happens at parse time: each iteration is an
+ordinary recorded step.
+
+```yaml
+steps:
+  - foreach:
+      values: [mysql, mssql, oracle]
+      steps:
+        - assert_api:
+            request: POST ${API}/connections/test
+            body: { type: "${each}" }
+            status: 500
+            body_contains: "Database not yet supported!"
+```
+
+### Minting traces offline against a contract responder
+
+Traces store only raw `${VAR}` references — verified end to end: no
+resolved host, token, or connection string ever lands in the file. That
+gives `app: api` flows a genuinely useful property: **recording against a
+faithful local responder produces the same trace a live-stack recording
+would** (only `trace_id`/timestamps differ). The official pattern for
+minting api-flow traces without infrastructure:
+
+1. Stand up a tiny local server speaking the endpoint's contract (the
+   right paths, status codes, and body shapes — not the real logic).
+2. Point the spec's `${VAR}`s at it and `flowproof record`.
+3. Commit the trace. At replay, the same `${VAR}`s point at the real
+   stack — the trace neither knows nor cares where it was recorded.
+
+The in-repo proof is `crates/flowproof-cli/tests/api_pipeline.rs`: every
+api-flow trace there is minted against a throwaway `tiny_http` responder
+and replayed cleanly, with leak assertions on the secrets.
 
 ## Authoring with a model (arbitrary steps)
 

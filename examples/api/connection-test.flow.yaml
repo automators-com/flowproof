@@ -7,6 +7,10 @@
 # `body` is any YAML (mapping/list/string), sent as JSON with an automatic
 # `content-type: application/json` — set your own content-type header to
 # override. A body on GET/HEAD/DELETE is rejected at parse time.
+#
+# Illustrative: mirrors DataMaker's real `POST /connections/test` contract
+# (as of Jul 2026) — the field is `type`, and an unsupported provider
+# answers 500 with this body. Adapt the shape to your own API.
 name: Test database providers
 app: api
 steps:
@@ -15,7 +19,7 @@ steps:
       headers:
         Authorization: Bearer ${DM_SESSION_TOKEN}
       body:
-        provider: postgres
+        type: postgres
         connectionString: ${TEST_CONN_STRING}
-      status: 200
+      status: 500
       body_contains: "Database not yet supported!"
