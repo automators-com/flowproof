@@ -153,7 +153,7 @@ impl WebAppDriver {
             });
         }
         if let Some(text) = &locator.text {
-            for xpath in [text_xpath(text, false), text_xpath(text, true)] {
+            for xpath in text_xpaths(text) {
                 let xpath = match locator.nth {
                     Some(n) => format!("({xpath})[{n}]"),
                     None => xpath,
@@ -182,6 +182,38 @@ impl WebAppDriver {
     fn exists(&self, locator: &WebLocator) -> Result<bool, DriverError> {
         Ok(self.try_find(locator)?.is_some())
     }
+
+    /// Run an element operation with ONE retry on a CDP transport fault:
+    /// re-resolve the element (its object id may be gone with the dead
+    /// connection) and try again before failing the step.
+    fn with_element<T>(
+        &self,
+        locator: &WebLocator,
+        context: &str,
+        op: impl Fn(&headless_chrome::Element<'_>) -> Result<T, anyhow::Error>,
+    ) -> Result<T, DriverError> {
+        let mut retried = false;
+        loop {
+            let element = self.find(locator)?;
+            match op(&element) {
+                Ok(value) => return Ok(value),
+                Err(e) if !retried && is_transport_fault(&e.to_string()) => {
+                    retried = true;
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                Err(e) => return Err(web_err(context, e)),
+            }
+        }
+    }
+}
+
+/// Faults of the CDP transport itself (dead websocket, dropped event) —
+/// distinct from "element not found": worth one retry with a fresh handle.
+fn is_transport_fault(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("connection is closed")
+        || m.contains("the event waited for never came")
+        || m.contains("unable to make method calls")
 }
 
 /// How a [`UiaSelector`] resolves on a page: a CSS selector or a text
@@ -206,32 +238,47 @@ impl std::fmt::Display for WebLocator {
     }
 }
 
-/// XPath matching an interactable element by its visible text, accessible
-/// label, or placeholder — Playwright's text/placeholder addressing. With
-/// `prefix`, the text only has to START with the anchor (used as a second
-/// pass when no exact match exists).
-fn text_xpath(text: &str, prefix: bool) -> String {
+/// XPaths matching an interactable element by its visible text, accessible
+/// label, or placeholder — Playwright's text/placeholder addressing —
+/// tried in order: (1) exact match on the element's DIRECT text nodes (its
+/// own text, so a sibling avatar's initials can never fuse with a label
+/// into "ETE2E Test Runner's Team"); (2) exact match on the concatenated
+/// subtree text (covers labels wrapped in spans); (3) and (4) the same two
+/// as prefix matches (a leading match is accepted when the accessible name
+/// carries trailing detail — catalog cards, chips like `ID: …`).
+fn text_xpaths(text: &str) -> [String; 4] {
     let lit = xpath_literal(text);
-    let (by_text, by_label, by_placeholder) = if prefix {
-        (
-            format!("starts-with(normalize-space(), {lit})"),
-            format!("starts-with(@aria-label, {lit})"),
-            format!("starts-with(@placeholder, {lit})"),
+    let build = |by_text: String, by_label: String, by_placeholder: String| {
+        format!(
+            "//*[self::button or self::a or self::summary or @role='button' or \
+             @role='tab' or @role='option' or @type='submit']\
+             [{by_text} or {by_label}] | \
+             //input[{by_placeholder} or {by_label}] | \
+             //textarea[{by_placeholder} or {by_label}]"
         )
-    } else {
-        (
+    };
+    [
+        build(
+            format!("text()[normalize-space(.)={lit}]"),
+            format!("@aria-label={lit}"),
+            format!("@placeholder={lit}"),
+        ),
+        build(
             format!("normalize-space()={lit}"),
             format!("@aria-label={lit}"),
             format!("@placeholder={lit}"),
-        )
-    };
-    format!(
-        "//*[self::button or self::a or self::summary or @role='button' or \
-         @role='tab' or @role='option' or @type='submit']\
-         [{by_text} or {by_label}] | \
-         //input[{by_placeholder} or {by_label}] | \
-         //textarea[{by_placeholder} or {by_label}]"
-    )
+        ),
+        build(
+            format!("text()[starts-with(normalize-space(.), {lit})]"),
+            format!("starts-with(@aria-label, {lit})"),
+            format!("starts-with(@placeholder, {lit})"),
+        ),
+        build(
+            format!("starts-with(normalize-space(), {lit})"),
+            format!("starts-with(@aria-label, {lit})"),
+            format!("starts-with(@placeholder, {lit})"),
+        ),
+    ]
 }
 
 /// Quote `text` as an XPath string literal, handling embedded quotes.
@@ -310,32 +357,54 @@ impl AppDriver for WebAppDriver {
         self.exists(&locator)
     }
 
+    fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        let locator = Self::locator(selector)?;
+        let value = self.with_element(
+            &locator,
+            &format!("reading enabled state of [{selector}]"),
+            |element| {
+                element.call_js_fn(
+                    r#"function() {
+                        if (this.disabled === true) { return false; }
+                        if (this.getAttribute('aria-disabled') === 'true') { return false; }
+                        return !this.closest('fieldset[disabled]');
+                    }"#,
+                    vec![],
+                    false,
+                )
+            },
+        )?;
+        Ok(value.value.and_then(|v| v.as_bool()).unwrap_or(true))
+    }
+
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         let locator = Self::locator(selector)?;
-        self.find(&locator)?
-            .click()
-            .map_err(|e| web_err(&format!("clicking [{selector}]"), e))?;
-        Ok(())
+        self.with_element(&locator, &format!("clicking [{selector}]"), |element| {
+            element.click().map(|_| ())
+        })
     }
 
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
         let locator = Self::locator(selector)?;
-        let element = self.find(&locator)?;
         // Inner text covers most elements; inputs expose their VALUE — the
         // text a user sees in the box (Playwright's toHaveValue reading).
-        let value = element
-            .call_js_fn(
-                r#"function() {
-                    const tag = this.tagName;
-                    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
-                        return this.value;
-                    }
-                    return this.innerText !== undefined ? this.innerText : (this.textContent || '');
-                }"#,
-                vec![],
-                false,
-            )
-            .map_err(|e| web_err(&format!("reading text of [{selector}]"), e))?;
+        let value = self.with_element(
+            &locator,
+            &format!("reading text of [{selector}]"),
+            |element| {
+                element.call_js_fn(
+                    r#"function() {
+                        const tag = this.tagName;
+                        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+                            return this.value;
+                        }
+                        return this.innerText !== undefined ? this.innerText : (this.textContent || '');
+                    }"#,
+                    vec![],
+                    false,
+                )
+            },
+        )?;
         Ok(value
             .value
             .and_then(|v| v.as_str().map(str::to_string))
@@ -344,41 +413,71 @@ impl AppDriver for WebAppDriver {
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
         let locator = Self::locator(selector)?;
-        self.find(&locator)?
-            .click()
-            .map_err(|e| web_err(&format!("focusing [{selector}]"), e))?
-            .type_into(text)
-            .map_err(|e| web_err(&format!("typing into [{selector}]"), e))?;
-        Ok(())
+        // A native <select> cannot be committed by clicks or keystrokes in
+        // headless Chromium (and a coordinate click never fires React's
+        // onChange). Committing a value IS a property set + events: match
+        // an option by value, then visible text, set through the native
+        // setter, and fire input+change like a user's selection would.
+        let handled =
+            self.with_element(&locator, &format!("selecting in [{selector}]"), |element| {
+                element.call_js_fn(
+                    r#"function(wanted) {
+                        if (this.tagName !== 'SELECT') { return false; }
+                        const w = String(wanted).trim();
+                        const options = Array.from(this.options);
+                        const match = options.find(o => o.value === w)
+                            || options.find(o => o.textContent.trim() === w)
+                            || options.find(o => o.textContent.trim().startsWith(w));
+                        if (!match) {
+                            throw new Error('no <option> matches "' + w + '"');
+                        }
+                        const desc = Object.getOwnPropertyDescriptor(
+                            HTMLSelectElement.prototype, 'value');
+                        if (desc && desc.set) { desc.set.call(this, match.value); }
+                        else { this.value = match.value; }
+                        this.dispatchEvent(new Event('input', { bubbles: true }));
+                        this.dispatchEvent(new Event('change', { bubbles: true }));
+                        return true;
+                    }"#,
+                    vec![serde_json::json!(text)],
+                    false,
+                )
+            })?;
+        if handled.value.and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(());
+        }
+        self.with_element(&locator, &format!("typing into [{selector}]"), |element| {
+            element.click()?.type_into(text).map(|_| ())
+        })
     }
 
     fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         let locator = Self::locator(selector)?;
-        let element = self.find(&locator)?;
         // Go through the native value setter so framework-controlled inputs
         // (React et al.) see the change, then fire the events they listen to.
-        element
-            .call_js_fn(
-                r#"function() {
-                    this.focus();
-                    if ('value' in this) {
-                        const proto = this.tagName === 'TEXTAREA'
-                            ? HTMLTextAreaElement.prototype
-                            : HTMLInputElement.prototype;
-                        const setter = Object.getOwnPropertyDescriptor(proto, 'value');
-                        if (setter && setter.set) { setter.set.call(this, ''); }
-                        else { this.value = ''; }
-                    } else {
-                        this.textContent = '';
-                    }
-                    this.dispatchEvent(new Event('input', { bubbles: true }));
-                    this.dispatchEvent(new Event('change', { bubbles: true }));
-                }"#,
-                vec![],
-                false,
-            )
-            .map_err(|e| web_err(&format!("clearing [{selector}]"), e))?;
-        Ok(())
+        self.with_element(&locator, &format!("clearing [{selector}]"), |element| {
+            element
+                .call_js_fn(
+                    r#"function() {
+                        this.focus();
+                        if ('value' in this) {
+                            const proto = this.tagName === 'TEXTAREA'
+                                ? HTMLTextAreaElement.prototype
+                                : HTMLInputElement.prototype;
+                            const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+                            if (setter && setter.set) { setter.set.call(this, ''); }
+                            else { this.value = ''; }
+                        } else {
+                            this.textContent = '';
+                        }
+                        this.dispatchEvent(new Event('input', { bubbles: true }));
+                        this.dispatchEvent(new Event('change', { bubbles: true }));
+                    }"#,
+                    vec![],
+                    false,
+                )
+                .map(|_| ())
+        })
     }
 
     fn type_focused(&mut self, text: &str) -> Result<(), DriverError> {

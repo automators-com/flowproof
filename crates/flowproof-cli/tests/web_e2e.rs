@@ -762,3 +762,95 @@ fn suite_run_aggregates_flows_and_merges_junit() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The Playwright-evaluation fixes, against real Chromium: a native
+/// <select> commits through React-style change listeners, text anchors
+/// resolve an element by its OWN text (a sibling avatar's initials must
+/// not fuse with the label), `is disabled`/`is enabled` assert real
+/// element state, and `Replace … with …` is one step.
+#[test]
+fn select_own_text_anchors_and_state_asserts_work() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web eval-fixes E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    const PAGE: &str = r##"<!DOCTYPE html>
+<html><body>
+  <div class="switcher">
+    <span class="avatar">ET</span><button id="team">E2E Test Runner's Team</button>
+  </div>
+  <label>Role
+    <select id="role">
+      <option value="">choose...</option>
+      <option value="member">Member</option>
+      <option value="admin">Administrator</option>
+    </select>
+  </label>
+  <input id="task" value="old name" />
+  <button id="save" disabled>Save</button>
+  <div id="log"></div>
+  <script>
+    // React-style: state only changes via the change EVENT, never by
+    // direct value writes.
+    document.getElementById('role').addEventListener('change', (e) => {
+      document.getElementById('log').textContent = 'role committed: ' + e.target.value;
+      document.getElementById('save').removeAttribute('disabled');
+    });
+    document.getElementById('team').addEventListener('click', () => {
+      document.getElementById('log').textContent += ' | team switched';
+    });
+  </script>
+</body></html>"##;
+
+    let dir = std::env::temp_dir().join("flowproof-web-evalfix-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("panel.html");
+    std::fs::write(&page, PAGE).expect("page written");
+    let trace_path = dir.join("panel.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Eval fixes".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: None,
+        steps: FlowSpec::parse(
+            "name: x\napp: web\nurl: x\nsteps:\n\
+             - assert: the \"Save\" is disabled\n\
+             - Select Administrator from the \"css:#role\" dropdown\n\
+             - assert: \"page shows role committed: admin\"\n\
+             - assert: the \"Save\" is enabled\n\
+             - Click \"E2E Test Runner's Team\"\n\
+             - assert: page shows team switched\n\
+             - Replace the task field with new name\n\
+             - assert: the task field contains new name\n",
+        )
+        .expect("spec parses")
+        .steps,
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    // The team switcher was clicked via its OWN text — the avatar's "ET"
+    // must not have fused into the recorded anchor.
+    let trace = std::fs::read_to_string(&trace_path).expect("trace readable");
+    assert!(
+        trace.contains(r#""text":"E2E Test Runner's Team""#),
+        "anchor text recorded without avatar fusion"
+    );
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    for step in &report.steps {
+        eprintln!("{:?} {} {}", step.status, step.id, step.intent);
+    }
+    assert!(report.passed, "eval-fix flow must pass: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

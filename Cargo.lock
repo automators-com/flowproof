@@ -724,6 +724,7 @@ dependencies = [
 name = "flowproof-adapters"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "flowproof-driver",
  "headless_chrome",
  "image",

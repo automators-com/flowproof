@@ -333,6 +333,20 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 selector_ref: Some(0),
             }),
         ),
+        ResolvedAction::AssertEnabled {
+            target,
+            enabled,
+            timeout_ms,
+        } => (
+            selectors_for(app, target, None),
+            Action::Assert(Assertion::ElementState {
+                expect: serde_json::json!({
+                    "enabled": enabled,
+                    "timeout_ms": timeout_ms,
+                }),
+                selector_ref: Some(0),
+            }),
+        ),
         // Out-of-band assertions: the connection NAME and the raw (ref-
         // bearing) query/url travel in the trace; credentials never do.
         ResolvedAction::AssertSql {
@@ -429,7 +443,8 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::TypeText { target, .. }
         | ResolvedAction::Clear { target }
         | ResolvedAction::AssertText { target, .. }
-        | ResolvedAction::AssertPresence { target, .. } => target,
+        | ResolvedAction::AssertPresence { target, .. }
+        | ResolvedAction::AssertEnabled { target, .. } => target,
         ResolvedAction::TypeFocused { .. }
         | ResolvedAction::PressKey { .. }
         | ResolvedAction::Navigate { .. }
@@ -664,7 +679,9 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
             // other targeted action requires its element up front.
             let is_assert = matches!(
                 &action,
-                ResolvedAction::AssertText { .. } | ResolvedAction::AssertPresence { .. }
+                ResolvedAction::AssertText { .. }
+                    | ResolvedAction::AssertPresence { .. }
+                    | ResolvedAction::AssertEnabled { .. }
             );
             if !is_assert {
                 if let Some(selector) = &selector {
@@ -791,6 +808,29 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                                 } else {
                                     "element still on screen".to_string()
                                 },
+                            });
+                        }
+                        std::thread::sleep(ASSERT_POLL_INTERVAL);
+                    }
+                }
+                ResolvedAction::AssertEnabled {
+                    enabled,
+                    timeout_ms,
+                    ..
+                } => {
+                    let state = |e: bool| if e { "enabled" } else { "disabled" };
+                    let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
+                    loop {
+                        if driver.element_exists(targeted())?
+                            && driver.element_enabled(targeted())? == *enabled
+                        {
+                            break;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: format!("element {}", state(*enabled)),
+                                actual: format!("element {}", state(!*enabled)),
                             });
                         }
                         std::thread::sleep(ASSERT_POLL_INTERVAL);

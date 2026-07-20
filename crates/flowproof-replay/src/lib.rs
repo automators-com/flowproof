@@ -301,6 +301,36 @@ fn check_assertion<D: AppDriver>(
                 }
             }
 
+            // Enabled/disabled expectations: resolve the element, ask the
+            // driver for its interactive state, poll until it matches.
+            if let Some(wanted_enabled) = expect.get("enabled").and_then(|v| v.as_bool()) {
+                let mut last: Option<bool> = None;
+                loop {
+                    if let Some((uia, rung)) = resolve(driver)? {
+                        let enabled = driver.element_enabled(&uia)?;
+                        if enabled == wanted_enabled {
+                            return Ok((Ok(()), Some(rung)));
+                        }
+                        last = Some(enabled);
+                    }
+                    if Instant::now() >= deadline {
+                        let state = |e: bool| if e { "enabled" } else { "disabled" };
+                        let shown = match last {
+                            Some(e) => state(e).to_string(),
+                            None => "<element not found>".to_string(),
+                        };
+                        return Ok((
+                            Err(format!(
+                                "expected element to be {}, got {shown}",
+                                state(wanted_enabled)
+                            )),
+                            None,
+                        ));
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            }
+
             let Some((raw, negated)) = text_expectation(expect) else {
                 return Ok((
                     Err(format!("unsupported element_state expectation: {expect}")),
