@@ -42,3 +42,28 @@ async def test_mcp_server_lists_and_calls_tools(tmp_path):
             "flowproof_heal", {"spec": "x.flow.yaml", "trace": str(trace_path)}
         )
         assert healed.isError
+
+
+async def test_mcp_record_returns_clarification_as_data(tmp_path, monkeypatch):
+    """An unauthorable step must come back as a structured tool RESULT
+    (needs_clarification payload), not a tool error — the calling agent is
+    expected to act on it."""
+    for var in (
+        "FLOWPROOF_AI_PROVIDER",
+        "FLOWPROOF_AI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    spec = tmp_path / "vague.flow.yaml"
+    spec.write_text("name: Vague\napp: api\nsteps:\n  - Frobnicate the widget\n")
+
+    params = StdioServerParameters(command=sys.executable, args=["-m", "flowproof.mcp_server"])
+    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        result = await session.call_tool("flowproof_record", {"spec": str(spec)})
+        assert not result.isError, "clarification is data, not an error"
+        payload = json.loads(result.content[0].text)
+        clarification = payload["needs_clarification"]
+        assert clarification["step"] == "Frobnicate the widget"
+        assert clarification["stage"] == "no_model"

@@ -48,13 +48,22 @@ flowproof is a sibling of DataMaker, not a component of it.
   (screenshot → ground → act via driver → record step); it talks to model
   APIs directly through its pluggable backends and stays a single Rust
   binary with no Node sidecar.
-- **Planned MCP surface** (future `flowproof-mcp` crate/feature): expose
-  `record` / `run` / `heal` as MCP tools, following the
-  `datamaker-mcp` / `datamaker-api` MCP patterns. That is the integration
-  path by which DataMaker's agent — or any coding agent — can drive
-  flowproof. Large tool results (screenshots, traces) should follow the
-  spill-to-object-storage + presigned URL + summary idiom used by
-  datamaker-mcp.
+- **MCP surface** (shipped: `flowproof-mcp` in the Python SDK, `pip
+  install flowproof[mcp]`): `record` / `run` / `get_trace` / `heal` as MCP
+  tools, following the `datamaker-mcp` / `datamaker-api` MCP patterns.
+  This is the integration path by which DataMaker's agent — or any coding
+  agent — drives flowproof. Large tool results (screenshots, traces)
+  should follow the spill-to-object-storage + presigned URL + summary
+  idiom used by datamaker-mcp.
+- **Outside-in self-help** (see [self-help.md](self-help.md)): when a
+  step is too ambiguous to author ("make required field changes"), the
+  record tools return a structured clarification payload — the stuck step
+  plus the live screen's field inventory — and the *driving* agent
+  resolves it: query the system of record (e.g. the DataMaker CLI against
+  SAP) for the domain answer, rewrite the step into concrete grammar,
+  re-record. Externally-minted test data flows in through `suite.yaml`'s
+  `env_from` → `${VAR}`. flowproof deliberately has no in-loop tool use;
+  ambiguity resolution belongs to the agent with the richer context.
 - **Shared philosophy with `datamaker-sap-cli`'s AI inference:** static,
   deterministic resolution first; call a model only when genuinely
   ambiguous. In flowproof this is the selector ladder; healing is the only

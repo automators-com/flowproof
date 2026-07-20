@@ -23,6 +23,25 @@ class RecordResult:
     steps: int
 
 
+class ClarificationNeeded(RuntimeError):
+    """A step could not be authored and needs the caller's help.
+
+    ``clarification`` is the structured payload: the stuck ``step`` and its
+    ``step_index``, the ``stage`` (``no_model`` / ``model``), the diagnostic
+    ``reason``, ``completed_steps`` already performed, and ``scene`` — the
+    live screen's interactable inventory (target token, tag, label, text,
+    type per element). Rewrite the step into concrete grammar (consulting
+    your data source for domain questions) and record again.
+    """
+
+    def __init__(self, clarification: dict[str, Any]) -> None:
+        super().__init__(
+            f"step {clarification.get('step', '?')!r} needs clarification: "
+            f"{clarification.get('reason', 'unknown')}"
+        )
+        self.clarification = clarification
+
+
 @dataclass(frozen=True)
 class StepResult:
     """One replayed step. ``status`` is ``passed``, ``failed`` or ``skipped``."""
@@ -143,9 +162,13 @@ class Flow:
     def record(self, out: str | Path | None = None) -> RecordResult:
         """Perform the flow once against the live app and write a trace.
 
-        Requires Windows and the target app.
+        Raises :class:`ClarificationNeeded` when a step is too ambiguous to
+        author — its ``clarification`` payload tells you what was stuck and
+        what the live screen offered, so you can rewrite the step and retry.
         """
         data = json.loads(_native.record(self.spec, Path(out) if out else None))
+        if "needs_clarification" in data:
+            raise ClarificationNeeded(data["needs_clarification"])
         return RecordResult(trace_path=Path(data["trace_path"]), steps=data["steps"])
 
     def run(self, trace: str | Path | None = None) -> RunResult:

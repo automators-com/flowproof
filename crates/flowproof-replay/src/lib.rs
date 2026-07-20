@@ -407,11 +407,16 @@ fn check_assertion<D: AppDriver>(
                 url: flowproof_trace::secret::resolve_refs(&request.url)?,
                 body: request.body.clone(),
                 status: *status,
-                body_contains: expect
+                // Resolved like `equals` above: the trace carries the raw
+                // ${VAR}; only the live probe sees the value.
+                body_contains: match expect
                     .as_ref()
                     .and_then(|e| e.get("body_contains"))
                     .and_then(|v| v.as_str())
-                    .map(str::to_string),
+                {
+                    Some(needle) => Some(flowproof_trace::secret::resolve_refs(needle)?),
+                    None => None,
+                },
             };
             poll_oob(&probe, oob_timeout(expect.as_ref()))
         }

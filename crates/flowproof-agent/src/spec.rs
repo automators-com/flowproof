@@ -154,6 +154,15 @@ pub struct SuiteManifest {
     /// carry `${VAR}` references, resolved from the ambient environment.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Shell command whose stdout becomes env vars (KEY=VALUE lines) for
+    /// every flow and hook — the bridge from an external data CLI (e.g.
+    /// DataMaker minting a valid Material/Supplier/Plant from SAP) into a
+    /// spec's `${VAR}` references. Runs once, before `env` is applied, so
+    /// `env` can compose or override captured values. Fails closed: a
+    /// non-zero exit or a malformed line aborts instead of running flows
+    /// against half-seeded data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_from: Option<String>,
     /// Shell command run before each flow (seed). Runs via `sh -c` with the
     /// spec path in `FLOWPROOF_SPEC`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,6 +189,25 @@ impl SuiteManifest {
             source,
         })?;
         Ok(Some(serde_yaml::from_str(&yaml)?))
+    }
+
+    /// Find the suite manifest governing a single spec: walk up from the
+    /// spec's directory to the nearest `suite.yaml` (git-style; nearest
+    /// wins). This is how `record` and single-spec `run` share the suite's
+    /// env and data — a flow behaves the same alone as inside its suite.
+    /// Returns the manifest plus the directory it was found in.
+    pub fn discover(spec: &Path) -> Result<Option<(Self, std::path::PathBuf)>, SpecError> {
+        // Canonicalize so a bare `calc.flow.yaml` walks up from the real
+        // directory, not the empty relative parent.
+        let spec = spec.canonicalize().unwrap_or_else(|_| spec.to_path_buf());
+        let mut dir = spec.parent();
+        while let Some(d) = dir {
+            if let Some(manifest) = Self::load_from_dir(d)? {
+                return Ok(Some((manifest, d.to_path_buf())));
+            }
+            dir = d.parent();
+        }
+        Ok(None)
     }
 }
 
@@ -239,6 +267,41 @@ order:
         // A suite.yaml with just env, or an empty one, is valid.
         let manifest: SuiteManifest = serde_yaml::from_str("env: {}\n").expect("parses");
         assert!(manifest.before_each.is_none() && manifest.order.is_empty());
+        assert!(manifest.env_from.is_none());
+    }
+
+    #[test]
+    fn env_from_parses_and_is_optional() {
+        let manifest: SuiteManifest =
+            serde_yaml::from_str("env_from: datamaker sap pick --format env\n").expect("parses");
+        assert_eq!(
+            manifest.env_from.as_deref(),
+            Some("datamaker sap pick --format env")
+        );
+    }
+
+    #[test]
+    fn discover_finds_the_nearest_manifest_walking_up() {
+        let root = std::env::temp_dir().join("flowproof-suite-discover");
+        let nested = root.join("smoke").join("deep");
+        std::fs::create_dir_all(&nested).expect("dirs");
+        std::fs::write(root.join("suite.yaml"), "env: {A: '1'}\n").expect("outer manifest");
+        let spec = nested.join("x.flow.yaml");
+        std::fs::write(&spec, "name: x\napp: web\nsteps:\n  - Type 1\n").expect("spec");
+
+        let (found, dir) = SuiteManifest::discover(&spec)
+            .expect("no error")
+            .expect("manifest found from nested spec");
+        assert_eq!(found.env.get("A").map(String::as_str), Some("1"));
+        assert!(dir.ends_with("flowproof-suite-discover"));
+
+        // Nearest wins: a manifest closer to the spec shadows the outer one.
+        std::fs::write(nested.join("suite.yaml"), "env: {A: '2'}\n").expect("inner manifest");
+        let (found, _) = SuiteManifest::discover(&spec)
+            .expect("no error")
+            .expect("manifest found");
+        assert_eq!(found.env.get("A").map(String::as_str), Some("2"));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

@@ -765,6 +765,7 @@ dependencies = [
  "image",
  "imageproc",
  "serde_json",
+ "serde_yaml",
  "tiny_http",
 ]
 

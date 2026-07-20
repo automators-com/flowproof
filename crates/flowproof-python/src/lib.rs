@@ -29,19 +29,32 @@ fn cli_main(py: Python<'_>, args: Vec<String>) -> PyResult<u8> {
     Ok(py.detach(|| flowproof_cli::run_cli(args)))
 }
 
-/// Record `spec`. Returns JSON: `{"trace_path": …, "steps": …}`.
+/// Record `spec`. Returns JSON: `{"trace_path": …, "steps": …}` on success,
+/// or `{"needs_clarification": …}` when a step could not be authored — the
+/// payload carries the stuck step and the live-screen inventory so the
+/// calling agent can rewrite the step and re-record. Only genuine execution
+/// errors raise.
 #[pyfunction]
 #[pyo3(signature = (spec, out=None))]
 fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<String> {
     py.detach(|| {
         let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
+        // Suite env/data (suite.yaml env_from + env) governs MCP-driven
+        // recording exactly like the CLI.
+        flowproof_cli::apply_suite_context(&spec).map_err(runtime_err)?;
         let out = out.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
         let mut driver = flowproof_cli::driver_for(&parsed.app).map_err(runtime_err)?;
-        let summary = flowproof_agent::record(&parsed, &mut driver, &out).map_err(runtime_err)?;
-        to_json(&serde_json::json!({
-            "trace_path": summary.trace_path,
-            "steps": summary.steps,
-        }))
+        match flowproof_agent::record(&parsed, &mut driver, &out) {
+            Ok(summary) => to_json(&serde_json::json!({
+                "trace_path": summary.trace_path,
+                "steps": summary.steps,
+            })),
+            Err(flowproof_agent::RecordError::NeedsClarification(c)) => {
+                // Ambiguity is data for the driving agent, not an exception.
+                to_json(&serde_json::json!({ "needs_clarification": c }))
+            }
+            Err(err) => Err(runtime_err(err)),
+        }
     })
 }
 
@@ -52,6 +65,7 @@ fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<Strin
 #[pyo3(signature = (spec, trace=None))]
 fn run(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>) -> PyResult<String> {
     py.detach(|| {
+        flowproof_cli::apply_suite_context(&spec).map_err(runtime_err)?;
         let trace_path = trace.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
         let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(runtime_err)?;
         let mut driver = flowproof_cli::driver_for(&header.app.name).map_err(runtime_err)?;

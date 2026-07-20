@@ -29,7 +29,14 @@ if FastMCP is not None:
         """Record a flow: perform it once against the live app and write a
         deterministic trace. Requires the target platform (Windows for UIA
         apps like calc/notepad; any OS for `app: web`). Returns
-        {"trace_path", "steps"}."""
+        {"trace_path", "steps"} on success, OR {"needs_clarification":
+        {step, step_index, stage, reason, rules_error?, completed_steps,
+        scene: [{target, tag?, label?, text?, type?}], hint}} when a step is
+        too ambiguous to author — the scene is the live screen's
+        interactable inventory: rewrite the stuck step into concrete grammar
+        (docs/authoring.md) targeting a listed element, consulting your data
+        source for domain questions (e.g. which fields are required), then
+        call this tool again."""
         return json.loads(_native.record(spec, out))
 
     @mcp.tool()

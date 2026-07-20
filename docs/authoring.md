@@ -78,3 +78,10 @@ backend is configured (`FLOWPROOF_AI_PROVIDER` / `FLOWPROOF_AI_API_KEY`)
 — the model grounds the step against the live scene and can never invent
 a selector; replay stays zero-model either way. See
 [getting-started](getting-started.md#authoring-with-a-model-arbitrary-steps).
+
+When a step is too *ambiguous* to author at all ("make required field
+changes" — which fields?), recording fails with a structured
+**clarification payload**: the stuck step plus the live screen's field
+inventory, via `record --json`, the MCP record tool, or Python's
+`ClarificationNeeded`. The driving agent rewrites the step into concrete
+grammar and re-records — see [self-help.md](self-help.md) for the loop.
