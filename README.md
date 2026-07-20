@@ -97,9 +97,12 @@ Works today:
   primary selector rung, transaction-code navigation (`Go to /nVA01`),
   SAP virtual keys — COM on Windows, with an in-memory fake engine keeping
   the whole pipeline tested on every platform
+- Vision mode (`app: vision`): pixels-only driving for Citrix/RDP —
+  OCR perception (pure-Rust ocrs), spatial text anchors, real SendInput
+  actions; CI proves the pipeline with real OCR over synthetic screens
 
-On the roadmap: vision observation, Citrix/RDP mode.
-See [docs/design.md](docs/design.md).
+On the roadmap: visual-template matching, OCR sync conditions, DXGI
+capture. See [docs/design.md](docs/design.md).
 
 ## Repository layout
 

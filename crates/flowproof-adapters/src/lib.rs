@@ -5,11 +5,17 @@
 #[cfg(feature = "sap-com")]
 pub mod sap_com;
 
+#[cfg(feature = "vision")]
+pub mod vision;
+
 #[cfg(feature = "web")]
 pub mod web;
 
 #[cfg(feature = "sap-com")]
 pub use sap_com::SapAppDriver;
+
+#[cfg(feature = "vision")]
+pub use vision::VisionAppDriver;
 
 #[cfg(feature = "web")]
 pub use web::WebAppDriver;
@@ -29,6 +35,9 @@ pub fn available_adapters() -> Vec<&'static str> {
     let mut adapters = Vec::new();
     if cfg!(feature = "sap-com") {
         adapters.push("sap-com");
+    }
+    if cfg!(feature = "vision") {
+        adapters.push("vision");
     }
     if cfg!(feature = "web") {
         adapters.push("web");

@@ -44,6 +44,8 @@ pub enum RecordError {
     UnknownApp(String),
     #[error("app 'web' requires a `url:` field in the spec")]
     MissingUrl,
+    #[error("app 'vision' requires a `window:` field in the spec (title of the window to drive)")]
+    MissingWindow,
     #[error("element for step '{intent}' not found: [{selector}]")]
     ElementNotFound { intent: String, selector: String },
     #[error(
@@ -183,6 +185,7 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
                 provenance: match app {
                     "web" => flowproof_trace::format::Adapter::Web,
                     "sap" => flowproof_trace::format::Adapter::SapCom,
+                    "vision" => flowproof_trace::format::Adapter::Vision,
                     _ => flowproof_trace::format::Adapter::Uia,
                 },
                 confidence: Some(1.0),
@@ -203,8 +206,28 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
     }
 }
 
+/// Pixels-only steps record WHERE the action lands relative to the matched
+/// text: typing targets the input field beside its label; everything else
+/// acts on the text itself. The vision driver applies the same defaults —
+/// stamping the relation keeps the trace self-describing (and matches the
+/// schema's spatial text_anchor form).
+fn stamp_vision_relation(selectors: &mut [Selector], action: &ResolvedAction) {
+    let relation = match action {
+        ResolvedAction::TypeText { .. } | ResolvedAction::Clear { .. } => "right_of",
+        _ => "inside",
+    };
+    for selector in selectors {
+        if selector.tier == SelectorTier::TextAnchor {
+            selector
+                .payload
+                .entry("relation".to_string())
+                .or_insert_with(|| relation.into());
+        }
+    }
+}
+
 fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step {
-    let (selectors, trace_action) = match action {
+    let (mut selectors, trace_action) = match action {
         ResolvedAction::Press { target, label } => (
             selectors_for(app, target, Some(label)),
             Action::Click(serde_json::Map::new()),
@@ -358,6 +381,9 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             )
         }
     };
+    if app == "vision" {
+        stamp_vision_relation(&mut selectors, action);
+    }
     let is_assert = matches!(trace_action, Action::Assert(_));
     // Targetless actions (key press, focused typing) have nothing to wait
     // for, and assertions do their OWN waiting — a presence-absence assert
@@ -444,6 +470,15 @@ fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordE
         return Ok(flowproof_driver::AppTarget {
             command: connection,
             window_name: "SAP".into(),
+        });
+    }
+    if spec.app == "vision" {
+        // Pixels mode attaches to a window by title — nothing is spawned.
+        let window = spec.window.as_deref().ok_or(RecordError::MissingWindow)?;
+        let window = flowproof_trace::secret::resolve_refs(window)?;
+        return Ok(flowproof_driver::AppTarget {
+            command: String::new(),
+            window_name: window,
         });
     }
     resolve_app(&spec.app).ok_or_else(|| RecordError::UnknownApp(spec.app.clone()))
@@ -815,6 +850,7 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
             adapter: match spec.app.as_str() {
                 "web" => flowproof_trace::format::Adapter::Web,
                 "sap" => flowproof_trace::format::Adapter::SapCom,
+                "vision" => flowproof_trace::format::Adapter::Vision,
                 _ => flowproof_trace::format::Adapter::Uia,
             },
             window_title: (!target.window_name.is_empty()).then(|| target.window_name.to_string()),

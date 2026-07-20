@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
-flowproof-adapters = { workspace = true, features = ["web", "sap-com"] }
+flowproof-adapters = { workspace = true, features = ["web", "sap-com", "vision"] }
 flowproof-agent = { workspace = true }
 flowproof-driver = { workspace = true }
 flowproof-replay = { workspace = true }
@@ -30,3 +30,6 @@ workspace = true
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tiny_http = "0.12"
+# Synthetic screens for the real-OCR vision pipeline test.
+imageproc = { version = "0.25", default-features = false }
+ab_glyph = "0.2"

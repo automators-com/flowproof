@@ -123,6 +123,19 @@ pub fn driver_for(app: &str) -> Result<Box<dyn AppDriver>, String> {
         #[cfg(not(windows))]
         return Err("app 'sap' needs SAP GUI Scripting (COM), which exists only on Windows".into());
     }
+    if app == "vision" {
+        #[cfg(windows)]
+        {
+            let driver = flowproof_adapters::VisionAppDriver::new().map_err(|e| e.to_string())?;
+            return Ok(Box::new(driver));
+        }
+        #[cfg(not(windows))]
+        return Err(
+            "app 'vision' captures and injects input natively, which exists only on Windows \
+             today"
+                .into(),
+        );
+    }
     let driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
     Ok(Box::new(driver))
 }

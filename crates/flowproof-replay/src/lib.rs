@@ -614,6 +614,16 @@ pub fn run_trace<D: AppDriver>(
             command: flowproof_trace::secret::resolve_refs(&raw)?,
             window_name: "SAP".into(),
         }
+    } else if header.app.name == "vision" {
+        // Pixels mode re-attaches to the window recorded in the header.
+        let raw =
+            header.app.window_title.clone().ok_or_else(|| {
+                ReplayError::UnknownApp("vision trace without window title".into())
+            })?;
+        flowproof_driver::AppTarget {
+            command: String::new(),
+            window_name: flowproof_trace::secret::resolve_refs(&raw)?,
+        }
     } else {
         resolve_app(&header.app.name)
             .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?

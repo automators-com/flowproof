@@ -26,6 +26,7 @@ fn records_and_replays_a_browser_flow() {
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
         connection: None,
+        window: None,
         session: None,
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
@@ -87,6 +88,7 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
         connection: None,
+        window: None,
         session: None,
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
@@ -176,6 +178,7 @@ fn secret_reference_types_real_value_but_never_persists_it() {
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
         connection: None,
+        window: None,
         session: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type ${FLOWPROOF_E2E_PW} into the pw field".into()),
@@ -247,6 +250,7 @@ fn assertions_wait_for_async_page_updates() {
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
         connection: None,
+        window: None,
         session: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Press the start button".into()),
@@ -308,6 +312,7 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
         connection: None,
+        window: None,
         session: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain(
@@ -380,6 +385,7 @@ fn assertion_forms_wait_and_verify_on_real_pages() {
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
         connection: None,
+        window: None,
         session: None,
         steps: vec![
             flowproof_agent::SpecStep::Assert {
@@ -473,6 +479,7 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
         url: Some(format!("file://{}", page.display())),
         redact: vec![],
         connection: None,
+        window: None,
         session: None,
         steps: vec![
             // Fill semantics: clear the prefilled value, retype, Enter.
@@ -570,6 +577,7 @@ fn session_seeding_and_navigation_drive_real_pages() {
         url: Some(format!("file://{}/home.html", dir.display())),
         redact: vec![],
         connection: None,
+        window: None,
         session: Some(flowproof_trace::format::SessionSetup {
             cookies: vec![],
             local_storage,
@@ -641,6 +649,7 @@ fn persisted_frames_never_contain_masked_data() {
         url: Some(format!("file://{}", page.display())),
         redact: vec![flowproof_driver::RedactionRule::css("#ssn")],
         connection: None,
+        window: None,
         session: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type bob into the user field".into()),

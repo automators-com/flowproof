@@ -242,6 +242,9 @@ pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, R
         "notepad" => notepad::resolve(step),
         "web" => web::resolve(step),
         "sap" => sap::resolve(step),
+        // Pixels-only mode shares the generic grammar too: quoted labels
+        // are OCR text anchors, asserts read the OCR'd surface.
+        "vision" => sap::resolve(step),
         other => Err(RulesError::UnsupportedApp(other.to_string())),
     }
 }
