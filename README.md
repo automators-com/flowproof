@@ -10,6 +10,11 @@ and Citrix. Agents author flows from natural-language intent; a
 deterministic engine executes them. Humans shift from authoring to
 reviewing.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lineage-dark.svg">
+  <img alt="Selenium (2004), Robot Framework (2008), Playwright (2020), Flowproof (2026): agents author, a deterministic engine executes — across web, desktop, and Citrix" src="docs/assets/lineage-light.svg" width="880">
+</picture>
+
 ![flowproof demo: record and replay a Calculator flow](docs/assets/flowproof-demo.gif)
 
 ## How it works
@@ -29,8 +34,8 @@ author. The CLI and [MCP server](docs/self-help.md) are thin renderings
 over the same code paths.
 
 Open-source automation has moved in steps: Selenium made browsers
-scriptable, Playwright made web automation reliable, Robot Framework
-widened automation beyond the browser to acceptance testing and RPA.
+scriptable, Robot Framework widened automation beyond the browser to
+acceptance testing and RPA, Playwright made web automation reliable.
 flowproof is built for the next step — the era in which AI agents write
 and maintain the automation, and what matters is that their output is
 **deterministic to execute and cheap to review**.
