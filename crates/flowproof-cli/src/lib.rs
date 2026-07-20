@@ -277,12 +277,23 @@ fn replay_with_retries(
 /// Export the manifest's `env` to the process (inherited by every flow and
 /// hook). Values may carry `${VAR}` references, resolved from the ambient
 /// environment — so a suite can re-map or compose existing variables.
-fn apply_suite_env(manifest: &flowproof_agent::SuiteManifest) -> Result<(), String> {
+///
+/// Resolution is LAZY per entry: an unresolvable value is skipped with a
+/// warning instead of aborting, so a suite-wide var one flow needs never
+/// blocks a flow that doesn't reference it (an `app: api` spec needing
+/// only ${DM_API} must run with ${DM_BASE_URL} unset). Flows that DO
+/// reference the skipped key still fail at moment-of-use, naming the
+/// variable — record and replay both resolve per-use.
+fn apply_suite_env(manifest: &flowproof_agent::SuiteManifest) {
     for (key, value) in &manifest.env {
-        let resolved = flowproof_trace::secret::resolve_refs(value).map_err(|e| e.to_string())?;
-        std::env::set_var(key, resolved);
+        match flowproof_trace::secret::resolve_refs(value) {
+            Ok(resolved) => std::env::set_var(key, resolved),
+            Err(e) => eprintln!(
+                "warning: suite env `{key}` not set — {e}; \
+                 flows that reference ${{{key}}} will fail when they use it"
+            ),
+        }
     }
-    Ok(())
 }
 
 /// Parse a data command's stdout into env pairs. Dotenv-ish and strict:
@@ -369,7 +380,8 @@ pub fn apply_suite_context(spec_path: &Path) -> Result<(), String> {
     );
     manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
     apply_env_from(&manifest, &dir)?;
-    apply_suite_env(&manifest)
+    apply_suite_env(&manifest);
+    Ok(())
 }
 
 /// Reorder discovered specs to honor the manifest's explicit `order`
@@ -451,7 +463,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
         .unwrap_or_default();
     manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
     apply_env_from(&manifest, dir)?;
-    apply_suite_env(&manifest)?;
+    apply_suite_env(&manifest);
     order_specs(&mut specs, dir, &manifest.order);
 
     let mut reports: Vec<flowproof_replay::RunReport> = Vec::new();

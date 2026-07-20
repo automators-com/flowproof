@@ -6,8 +6,34 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Fail in seconds, not after a 7-minute wheel matrix: PyPI versions are
+  # immutable, so dispatching without a version bump can only end in
+  # "400 File already exists" at upload (it burned both the 0.2.0 and
+  # 0.2.1 releases). Also catches Cargo.toml/pyproject version skew.
+  guard:
+    name: version is new on PyPI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail fast if this version is already published
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          py_version=$(grep -m1 '^version = ' sdk/python/pyproject.toml | cut -d'"' -f2)
+          echo "Cargo.toml: $version / pyproject.toml: $py_version"
+          if [ -z "$version" ] || [ "$version" != "$py_version" ]; then
+            echo "::error::version mismatch — Cargo.toml '$version' vs sdk/python/pyproject.toml '$py_version'; bump both together"
+            exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/flowproof/${version}/json")
+          case "$code" in
+            404) echo "flowproof $version is not on PyPI yet — proceeding" ;;
+            200) echo "::error::flowproof $version is already on PyPI (versions are immutable) — bump Cargo.toml + sdk/python/pyproject.toml first"; exit 1 ;;
+            *)   echo "::error::unexpected HTTP $code from PyPI — refusing to guess; re-run when the index answers"; exit 1 ;;
+          esac
+
   # The wheel embeds the Rust engine, so each platform builds its own.
   build:
+    needs: guard
     name: build (${{ matrix.os }})
     strategy:
       fail-fast: false
