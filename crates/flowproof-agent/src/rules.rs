@@ -98,6 +98,13 @@ pub enum ResolvedAction {
         /// How long the expectation may take to become true.
         timeout_ms: u64,
     },
+    /// Assert an element's enabled/disabled state ("the \"Save\" is
+    /// disabled") — a first-class form, not a css attribute-selector trick.
+    AssertEnabled {
+        target: Target,
+        enabled: bool,
+        timeout_ms: u64,
+    },
     /// Assert that an element is (or is not) present on screen — the
     /// deterministic reading of "is visible" / "is not visible".
     AssertPresence {
@@ -348,6 +355,14 @@ mod assertions {
         let (trimmed, timeout) = split_within(trimmed);
         let timeout_ms = timeout.unwrap_or(ASSERT_TIMEOUT_MS);
 
+        // `the page shows X` reads as naturally as `page shows X` — accept
+        // the article rather than teaching people the one true spelling.
+        let trimmed = strip_prefix_ci(trimmed, "the page ")
+            .map(|rest| format!("page {rest}"))
+            .map(std::borrow::Cow::Owned)
+            .unwrap_or(std::borrow::Cow::Borrowed(trimmed));
+        let trimmed = trimmed.as_ref();
+
         if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
             let (expected, count) = split_count(rest.trim());
             if expected.is_empty() {
@@ -417,6 +432,20 @@ mod assertions {
                             timeout_ms,
                         }]);
                     }
+                    if tail.eq_ignore_ascii_case("is disabled") {
+                        return Ok(vec![ResolvedAction::AssertEnabled {
+                            target,
+                            enabled: false,
+                            timeout_ms,
+                        }]);
+                    }
+                    if tail.eq_ignore_ascii_case("is enabled") {
+                        return Ok(vec![ResolvedAction::AssertEnabled {
+                            target,
+                            enabled: true,
+                            timeout_ms,
+                        }]);
+                    }
                 }
             } else if nth.is_none() {
                 if let Some(pos) = rest.find(" field contains ") {
@@ -438,16 +467,18 @@ mod assertions {
             return Err(unresolvable(
                 trimmed,
                 "expected 'the \"<label>\" field contains <text>', 'the <id> field \
-                 contains <text>', 'the \"<target>\" shows <text>', or \
-                 'the \"<target>\" is [not] visible'",
+                 contains <text>', 'the \"<target>\" shows <text>', \
+                 'the \"<target>\" is [not] visible', or 'the \"<target>\" is \
+                 enabled|disabled'",
             ));
         }
 
         Err(unresolvable(
             trimmed,
-            "expected 'page shows <text>[ N times]', 'page does not show <text>', \
-             'the \"<label>\" field contains <text>', 'the \"<target>\" shows <text>', \
-             or 'the \"<target>\" is [not] visible'",
+            "expected '[the ]page shows <text>[ N times]', '[the ]page does not show \
+             <text>', 'the \"<label>\" field contains <text>', 'the \"<target>\" shows \
+             <text>', 'the \"<target>\" is [not] visible', or 'the \"<target>\" is \
+             enabled|disabled' (see docs/authoring.md for the full grammar)",
         ))
     }
 }
@@ -677,8 +708,10 @@ mod web {
     pub(super) fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
         let trimmed = text.trim();
 
-        // `Go to /path` / `Go to https://…` → navigate mid-flow.
-        if let Some(rest) = strip_prefix_ci(trimmed, "go to ") {
+        // `Go to /path` / `Navigate to /path` → navigate mid-flow.
+        if let Some(rest) =
+            strip_prefix_ci(trimmed, "go to ").or_else(|| strip_prefix_ci(trimmed, "navigate to "))
+        {
             let path = rest.trim();
             if path.is_empty() {
                 return Err(unresolvable(trimmed, "no path or URL to go to"));
@@ -751,6 +784,87 @@ mod web {
                 trimmed,
                 "expected 'Type <text> into the [2nd ]\"<label>\" field' or \
                  'Type <text> into the <id> field'",
+            ));
+        }
+
+        // `Select <option> from|in the [Nth ]"<label>" field|dropdown` —
+        // native dropdowns. Encoded as TypeText: each adapter commits the
+        // option its own way (the web driver goes through the select's
+        // native value setter and fires input+change).
+        if let Some(rest) = strip_prefix_ci(trimmed, "select ") {
+            let lower = rest.to_lowercase();
+            let split = lower
+                .rfind(" from the ")
+                .map(|p| (p, " from the ".len()))
+                .or_else(|| lower.rfind(" in the ").map(|p| (p, " in the ".len())));
+            if let Some((pos, sep_len)) = split {
+                let value = rest[..pos].trim();
+                let (nth, field) = split_ordinal(rest[pos + sep_len..].trim());
+                let target = if let Some(quoted) = field.strip_prefix('"') {
+                    quoted_label(quoted).and_then(|(label, tail)| {
+                        (tail.eq_ignore_ascii_case("field")
+                            || tail.eq_ignore_ascii_case("dropdown"))
+                        .then(|| with_nth(nth, target_from_label(label)))
+                    })
+                } else if nth.is_none() {
+                    strip_suffix_ci(field, " field")
+                        .or_else(|| strip_suffix_ci(field, " dropdown"))
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                        .map(Target::id)
+                } else {
+                    None
+                };
+                if let (Some(target), false) = (target, value.is_empty()) {
+                    return Ok(vec![ResolvedAction::TypeText {
+                        target,
+                        text: value.to_string(),
+                    }]);
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'Select <option> from the [2nd ]\"<label>\" field|dropdown' or \
+                 'Select <option> from the <id> field|dropdown'",
+            ));
+        }
+
+        // `Replace the [Nth ]"<label>" field with <text>` — clear + type as
+        // ONE step, because "set this field to X" is one thought.
+        if let Some(rest) = strip_prefix_ci(trimmed, "replace the ") {
+            let (nth, rest) = split_ordinal(rest.trim());
+            let parsed = if let Some(quoted) = rest.strip_prefix('"') {
+                quoted_label(quoted).and_then(|(label, tail)| {
+                    strip_prefix_ci(tail, "field with ")
+                        .map(|value| (with_nth(nth, target_from_label(label)), value))
+                })
+            } else if nth.is_none() {
+                rest.find(" field with ").and_then(|pos| {
+                    let id = rest[..pos].trim();
+                    (!id.is_empty()).then(|| (Target::id(id), &rest[pos + " field with ".len()..]))
+                })
+            } else {
+                None
+            };
+            if let Some((target, value)) = parsed {
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(unresolvable(trimmed, "missing replacement text"));
+                }
+                return Ok(vec![
+                    ResolvedAction::Clear {
+                        target: target.clone(),
+                    },
+                    ResolvedAction::TypeText {
+                        target,
+                        text: value.to_string(),
+                    },
+                ]);
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'Replace the [2nd ]\"<label>\" field with <text>' or \
+                 'Replace the <id> field with <text>'",
             ));
         }
 
@@ -1424,6 +1538,211 @@ mod tests {
         .expect("shared assertion grammar");
         assert!(
             matches!(&actions[0], ResolvedAction::AssertText { target, .. } if *target == Target::Surface)
+        );
+    }
+
+    /// Every example in docs/authoring.md must actually parse — the doc
+    /// and the grammar are not allowed to drift (the evaluation that
+    /// prompted the doc had to recover the grammar from this source file).
+    #[test]
+    fn documented_grammar_examples_all_resolve() {
+        let plain: &[(&str, &str)] = &[
+            ("web", r#"Type Ada into the "Full name" field"#),
+            ("web", r#"Type email into the 2nd "Field Name" field"#),
+            ("web", "Type Ada into the name field"),
+            ("web", "Type Berlin"),
+            ("web", r#"Replace the "Search" field with Berlin"#),
+            ("web", "Replace the taskName field with Weekly report"),
+            ("web", r#"Clear the "Search" field"#),
+            ("web", "Clear the taskName field"),
+            ("web", r#"Select Admin from the "Role" field"#),
+            ("web", r#"Select Admin in the "Role" dropdown"#),
+            ("web", r#"Press the "Save" button"#),
+            ("web", "Press the submitButton button"),
+            ("web", r#"Click "Templates""#),
+            ("web", r#"Click the 2nd "Templates""#),
+            ("web", "Press Enter"),
+            ("web", "Press Control+V"),
+            ("web", "Press Alt+Shift+Backspace"),
+            ("web", "Go to /settings"),
+            ("web", "Navigate to /settings"),
+            ("web", "Reload the page"),
+            ("web", "Wait until page shows templates found within 30s"),
+            ("sap", "Go to /nVA01"),
+            ("sap", r#"Type ZOR into the "Order Type" field"#),
+            ("vision", r#"Press the "Submit" button"#),
+            ("calc", "Type 53"),
+            ("calc", "Press plus"),
+            ("notepad", "Type hello"),
+        ];
+        for (app, step) in plain {
+            resolve_step(app, &SpecStep::Plain((*step).to_string()))
+                .unwrap_or_else(|e| panic!("documented step '{step}' ({app}) must parse: {e}"));
+        }
+        let asserts: &[(&str, &str)] = &[
+            ("web", "page shows Welcome"),
+            ("web", "the page shows Welcome"),
+            ("web", "page shows templates found 2 times"),
+            ("web", "page does not show Error"),
+            ("web", "the page does not show Error"),
+            ("web", r#"the "Field Name" field contains Street"#),
+            ("web", "the templateName field contains Draft"),
+            ("web", r#"the 2nd "Amount" field contains 10"#),
+            ("web", r#"the "css:#live_preview" shows Street"#),
+            ("web", r#"the "css:#modal" is visible"#),
+            ("web", r#"the "css:#modal" is not visible within 15s"#),
+            ("web", r#"the "Save" is enabled"#),
+            ("web", r#"the "Save" is disabled"#),
+            ("calc", "display shows 8"),
+            ("notepad", "document contains hello"),
+        ];
+        for (app, assert) in asserts {
+            resolve_step(
+                app,
+                &SpecStep::Assert {
+                    assert: (*assert).to_string(),
+                },
+            )
+            .unwrap_or_else(|e| panic!("documented assert '{assert}' ({app}) must parse: {e}"));
+        }
+    }
+
+    #[test]
+    fn navigate_synonym_and_page_article_are_accepted() {
+        let actions = resolve_step("web", &SpecStep::Plain("Navigate to /settings".into()))
+            .expect("synonym resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::Navigate {
+                path: "/settings".into()
+            }]
+        );
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the page shows Welcome".into(),
+            },
+        )
+        .expect("article form resolves");
+        assert!(
+            matches!(&actions[0], ResolvedAction::AssertText { target, matcher, .. }
+                if *target == Target::Surface && *matcher == TextMatch::Contains)
+        );
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the page does not show Error".into(),
+            },
+        )
+        .expect("negated article form resolves");
+        assert!(
+            matches!(&actions[0], ResolvedAction::AssertText { matcher, .. }
+                if *matcher == TextMatch::NotContains)
+        );
+    }
+
+    #[test]
+    fn enabled_and_disabled_are_first_class_assertions() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: r#"the "Save" is disabled"#.into(),
+            },
+        )
+        .expect("disabled resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertEnabled {
+                target: Target::text("Save"),
+                enabled: false,
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }]
+        );
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: r#"the "Save" is enabled within 5s"#.into(),
+            },
+        )
+        .expect("enabled with timeout resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::AssertEnabled {
+                target: Target::text("Save"),
+                enabled: true,
+                timeout_ms: 5000,
+            }]
+        );
+    }
+
+    #[test]
+    fn replace_is_one_step_clear_plus_type() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain(r#"Replace the "Search" field with Berlin"#.into()),
+        )
+        .expect("replace resolves");
+        assert_eq!(
+            actions,
+            vec![
+                ResolvedAction::Clear {
+                    target: Target::text("Search")
+                },
+                ResolvedAction::TypeText {
+                    target: Target::text("Search"),
+                    text: "Berlin".into()
+                },
+            ]
+        );
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain("Replace the taskName field with Weekly report".into()),
+        )
+        .expect("id form resolves");
+        assert_eq!(
+            actions,
+            vec![
+                ResolvedAction::Clear {
+                    target: Target::id("taskName")
+                },
+                ResolvedAction::TypeText {
+                    target: Target::id("taskName"),
+                    text: "Weekly report".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn select_resolves_to_type_text_on_the_dropdown() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain(r#"Select Admin from the "Role" dropdown"#.into()),
+        )
+        .expect("select resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::TypeText {
+                target: Target::text("Role"),
+                text: "Admin".into()
+            }]
+        );
+
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain(r#"Select Admin in the "css:#role" field"#.into()),
+        )
+        .expect("css escape hatch works");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::TypeText {
+                target: Target::css("#role"),
+                text: "Admin".into()
+            }]
         );
     }
 

@@ -191,6 +191,16 @@ pub trait AppDriver {
         ))
     }
 
+    /// Whether the element matching `selector` is interactive right now —
+    /// backs `the "<target>" is enabled|disabled` assertions. Disabled
+    /// means the platform's own notion: `disabled`/`aria-disabled` on the
+    /// web, UIA IsEnabled on desktop.
+    fn element_enabled(&mut self, _selector: &UiaSelector) -> Result<bool, DriverError> {
+        Err(DriverError::Uia(
+            "enabled/disabled assertions are not supported by this driver".into(),
+        ))
+    }
+
     /// All text currently readable on the app's surface — the whole page
     /// for a browser, the foreground window's subtree for a desktop app,
     /// the OCR'd frame for a vision adapter. Backs surface-level assertions
@@ -325,6 +335,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
         (**self).press_key(key, modifiers)
+    }
+
+    fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        (**self).element_enabled(selector)
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
@@ -504,6 +518,13 @@ mod windows_impl {
                 Ok(_) => Ok(true),
                 Err(_) => Ok(false),
             }
+        }
+
+        fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+            let element = self.find(selector, 3000)?;
+            element
+                .is_enabled()
+                .map_err(|e| uia_err(&format!("reading enabled state of [{selector}]"), e))
         }
 
         fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {

@@ -16,6 +16,7 @@ web = ["dep:headless_chrome"]
 vision = ["dep:ocrs", "dep:rten", "dep:ureq"]
 
 [dependencies]
+anyhow = { workspace = true }
 flowproof-driver = { workspace = true }
 headless_chrome = { version = "1", optional = true }
 serde_json = "1"

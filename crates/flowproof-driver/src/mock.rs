@@ -31,6 +31,8 @@ pub struct MockAppDriver {
     pub fail_element_rect: bool,
     /// Scene JSON returned by `scene` (None = authoring unavailable).
     pub scene: Option<String>,
+    /// Element keys that report as disabled via `element_enabled`.
+    pub disabled: Vec<String>,
     /// Scripted text sequences: each `read_text` on the key pops the next
     /// entry (falling back to `texts` when drained) — simulates a slow UI
     /// whose text changes over time, for auto-wait tests.
@@ -109,6 +111,16 @@ impl AppDriver for MockAppDriver {
             Some(id) => Ok(self.elements.contains(id)),
             None => Ok(false),
         }
+    }
+
+    fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        let key = selector
+            .automation_id
+            .as_ref()
+            .or(selector.css.as_ref())
+            .or(selector.name.as_ref())
+            .ok_or_else(|| DriverError::Uia("mock: selector has no matchable key".into()))?;
+        Ok(!self.disabled.contains(key))
     }
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
