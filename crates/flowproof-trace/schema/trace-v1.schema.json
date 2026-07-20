@@ -301,7 +301,7 @@
           "then": {
             "properties": {
               "payload": {
-                "required": ["text", "relation"],
+                "required": ["text"],
                 "properties": {
                   "text": { "type": "string" },
                   "relation": {

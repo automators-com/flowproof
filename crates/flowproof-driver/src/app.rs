@@ -22,6 +22,11 @@ pub struct UiaSelector {
     pub css: Option<String>,
     /// 1-based ordinal when several elements match (`the 2nd "Field Name"`).
     pub nth: Option<u32>,
+    /// Spatial hint for pixels-only drivers: where the ACTION POINT sits
+    /// relative to the matched text anchor (`inside`, `right_of`, …).
+    /// Tree-backed drivers (UIA, web, SAP) ignore it — their match IS the
+    /// element.
+    pub relation: Option<String>,
 }
 
 impl UiaSelector {
@@ -55,6 +60,11 @@ impl UiaSelector {
 
     pub fn with_nth(mut self, nth: Option<u32>) -> Self {
         self.nth = nth;
+        self
+    }
+
+    pub fn with_relation(mut self, relation: Option<String>) -> Self {
+        self.relation = relation;
         self
     }
 }
@@ -762,9 +772,7 @@ mod tests {
         let sel = UiaSelector {
             automation_id: Some("num5Button".into()),
             name: Some("Five".into()),
-            control_type: None,
-            css: None,
-            nth: None,
+            ..UiaSelector::default()
         };
         assert_eq!(sel.to_string(), "automation_id=num5Button,name=Five");
         assert!(!sel.is_empty());
