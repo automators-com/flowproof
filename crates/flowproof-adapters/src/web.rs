@@ -6,11 +6,12 @@
 //! interprets `command` as the URL to open. The Chromium binary is found via
 //! the `CHROME` env var or platform auto-detection.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector, WebSession};
 use headless_chrome::browser::tab::{ModifierKey, Tab};
+use headless_chrome::protocol::cdp::Target::CreateTarget;
 use headless_chrome::protocol::cdp::{Network, Page};
 use headless_chrome::{Browser, LaunchOptions};
 
@@ -22,9 +23,57 @@ fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
     DriverError::Uia(format!("web: {context}: {err}"))
 }
 
+/// Launch a fresh headless Chromium (`CHROME` env var overrides the binary).
+fn launch_browser() -> Result<Browser, AdapterError> {
+    let mut options = LaunchOptions::default_builder();
+    options.headless(true).sandbox(false);
+    if let Ok(path) = std::env::var("CHROME") {
+        options.path(Some(path.into()));
+    }
+    let options = options
+        .build()
+        .map_err(|e| AdapterError::Web(format!("building launch options: {e}")))?;
+    Browser::new(options).map_err(|e| AdapterError::Web(format!("launching browser: {e}")))
+}
+
+/// One Chromium process for the whole run, reused across flows. Each flow
+/// gets an isolated incognito CONTEXT (its own cookies/cache), so reuse is
+/// invisible to specs but the ~seconds-long cold start is paid ONCE per
+/// suite instead of once per flow. `Browser` is a cloneable Arc handle;
+/// holding one in the static keeps the process alive until the test binary
+/// exits. Opt out with `FLOWPROOF_NO_SHARED_BROWSER=1`.
+fn shared_browser() -> Result<Browser, AdapterError> {
+    // Hold a keep-alive blank tab forever: headless Chrome exits when its
+    // LAST target closes, so as flows open and close their own tabs this
+    // one keeps the process — and its warm connection — alive (Playwright
+    // keeps the browser independent of pages the same way).
+    type SharedCell = Mutex<Option<(Browser, Arc<Tab>)>>;
+    static SHARED: OnceLock<SharedCell> = OnceLock::new();
+    let cell = SHARED.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+    // Reuse only while the process is actually alive: a cheap CDP round
+    // trip proves the transport. If Chrome exited (or the socket died),
+    // relaunch transparently — the caller never sees a dead handle.
+    if let Some((browser, _keepalive)) = guard.as_ref() {
+        if browser.get_version().is_ok() {
+            return Ok(browser.clone());
+        }
+    }
+    let browser = launch_browser()?;
+    let keepalive = browser
+        .new_tab()
+        .map_err(|e| AdapterError::Web(format!("opening keep-alive tab: {e}")))?;
+    *guard = Some((browser.clone(), keepalive));
+    Ok(browser)
+}
+
 /// Browser-backed [`AppDriver`].
 pub struct WebAppDriver {
     browser: Browser,
+    /// Incognito context isolating this flow on the shared browser; `None`
+    /// when the driver owns a private browser (the opt-out path), where a
+    /// plain tab is already isolated.
+    context_id: Option<String>,
     tab: Option<Arc<Tab>>,
     /// Session staged via [`AppDriver::stage_session`], applied by the next
     /// `launch` before the page loads.
@@ -32,20 +81,25 @@ pub struct WebAppDriver {
 }
 
 impl WebAppDriver {
-    /// Launch headless Chromium (`CHROME` env var overrides the binary).
+    /// A driver on the shared browser (isolated context per flow), or a
+    /// private browser when `FLOWPROOF_NO_SHARED_BROWSER=1`.
     pub fn new() -> Result<Self, AdapterError> {
-        let mut options = LaunchOptions::default_builder();
-        options.headless(true).sandbox(false);
-        if let Ok(path) = std::env::var("CHROME") {
-            options.path(Some(path.into()));
+        if std::env::var_os("FLOWPROOF_NO_SHARED_BROWSER").is_some() {
+            return Ok(Self {
+                browser: launch_browser()?,
+                context_id: None,
+                tab: None,
+                staged_session: None,
+            });
         }
-        let options = options
-            .build()
-            .map_err(|e| AdapterError::Web(format!("building launch options: {e}")))?;
-        let browser = Browser::new(options)
-            .map_err(|e| AdapterError::Web(format!("launching browser: {e}")))?;
+        let browser = shared_browser()?;
+        let context = browser
+            .new_context()
+            .map_err(|e| AdapterError::Web(format!("creating browser context: {e}")))?;
+        let context_id = context.get_id().to_string();
         Ok(Self {
             browser,
+            context_id: Some(context_id),
             tab: None,
             staged_session: None,
         })
@@ -293,6 +347,19 @@ fn xpath_literal(text: &str) -> String {
     }
 }
 
+impl Drop for WebAppDriver {
+    fn drop(&mut self) {
+        // The shared browser outlives this driver: close the tab so pages
+        // don't accumulate across a suite. A private browser (opt-out) is
+        // torn down with its own process, so nothing to do there.
+        if self.context_id.is_some() {
+            if let Some(tab) = self.tab.take() {
+                let _ = tab.close(false);
+            }
+        }
+    }
+}
+
 impl AppDriver for WebAppDriver {
     /// `command` is the URL to open; `window_name` is unused for web.
     fn launch(
@@ -301,10 +368,26 @@ impl AppDriver for WebAppDriver {
         _window_name: &str,
         _timeout: Duration,
     ) -> Result<(), DriverError> {
-        let tab = self
-            .browser
-            .new_tab()
-            .map_err(|e| web_err("opening tab", e))?;
+        // On the shared browser, open the tab INSIDE this flow's isolated
+        // context so its cookies/storage never touch another flow's.
+        let tab = match &self.context_id {
+            Some(id) => self.browser.new_tab_with_options(CreateTarget {
+                url: "about:blank".to_string(),
+                browser_context_id: Some(id.clone()),
+                left: None,
+                top: None,
+                width: None,
+                height: None,
+                window_state: None,
+                enable_begin_frame_control: None,
+                new_window: None,
+                background: None,
+                for_tab: None,
+                hidden: None,
+            }),
+            None => self.browser.new_tab(),
+        }
+        .map_err(|e| web_err("opening tab", e))?;
         if let Some(session) = self.staged_session.take() {
             Self::apply_session(&tab, &session, command)?;
         }

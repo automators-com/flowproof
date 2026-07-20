@@ -72,6 +72,10 @@ enum Command {
         /// Emit the full report as JSON on stdout (for programmatic callers).
         #[arg(long)]
         json: bool,
+        /// Re-run a FAILED flow up to this many extra times before calling
+        /// it failed — absorbs infra flakiness (default 0, no retries).
+        #[arg(long, default_value_t = 0)]
+        retries: u8,
     },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
@@ -194,10 +198,40 @@ fn discover_specs(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
+/// Replay a trace, re-running a FAILED attempt up to `retries` extra times
+/// with a fresh driver each time. Deterministic replay should be stable,
+/// but the infrastructure under it (a dropped CDP frame, a momentarily
+/// slow backend) is not — a flow that passes on a second look should not
+/// fail the suite. Returns the first passing report, else the last
+/// failure, with the attempt count.
+fn replay_with_retries(
+    trace_path: &Path,
+    app_name: &str,
+    retries: u8,
+    announce: bool,
+) -> Result<(flowproof_replay::RunReport, PathBuf, u32), String> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let mut driver = driver_for(app_name)?;
+        let (report, run_dir) =
+            flowproof_replay::run_trace(trace_path, &mut driver).map_err(|e| e.to_string())?;
+        if report.passed || attempt > u32::from(retries) {
+            return Ok((report, run_dir, attempt));
+        }
+        if announce {
+            println!(
+                "  retry {attempt}/{retries}: '{}' failed, re-running",
+                report.name
+            );
+        }
+    }
+}
+
 /// Run every recorded flow under `dir` as one suite: per-flow bundles as
 /// usual, plus a merged `junit.xml` for CI, and a non-zero exit if ANY flow
 /// fails. A failing flow does not stop the suite.
-pub fn run_suite(dir: &Path, json: bool) -> Result<u8, String> {
+pub fn run_suite(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
     let mut specs = Vec::new();
     discover_specs(dir, &mut specs)?;
     if specs.is_empty() {
@@ -217,17 +251,21 @@ pub fn run_suite(dir: &Path, json: bool) -> Result<u8, String> {
         }
         let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
         // A fresh driver per flow: full isolation, like Playwright contexts.
-        let mut driver = driver_for(&header.app.name)?;
-        let (report, run_dir) =
-            flowproof_replay::run_trace(&trace_path, &mut driver).map_err(|e| e.to_string())?;
+        let (report, run_dir, attempts) =
+            replay_with_retries(&trace_path, &header.app.name, retries, !json)?;
         let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;
         if !json {
             println!(
-                "[{}] {} ({} ms){}",
+                "[{}] {} ({} ms){}{}",
                 if report.passed { "PASS" } else { "FAIL" },
                 report.name,
                 report.duration_ms,
                 if report.degraded { " DEGRADED" } else { "" },
+                if attempts > 1 {
+                    format!(" (after {attempts} attempts)")
+                } else {
+                    String::new()
+                },
             );
             if !report.passed {
                 for step in report.steps.iter().filter(|s| s.detail.is_some()) {
@@ -283,9 +321,14 @@ pub fn run_suite(dir: &Path, json: bool) -> Result<u8, String> {
     Ok(if all_passed { EXIT_PASS } else { EXIT_FAIL })
 }
 
-fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, String> {
+fn cmd_run(
+    spec_path: &Path,
+    trace: Option<PathBuf>,
+    json: bool,
+    retries: u8,
+) -> Result<u8, String> {
     if spec_path.is_dir() {
-        return run_suite(spec_path, json);
+        return run_suite(spec_path, json, retries);
     }
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if !trace_path.exists() {
@@ -297,9 +340,8 @@ fn cmd_run(spec_path: &Path, trace: Option<PathBuf>, json: bool) -> Result<u8, S
     }
     // Peek the header to pick the right driver for the recorded app.
     let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
-    let mut driver = driver_for(&header.app.name)?;
-    let (report, run_dir) =
-        flowproof_replay::run_trace(&trace_path, &mut driver).map_err(|e| e.to_string())?;
+    let (report, run_dir, _attempts) =
+        replay_with_retries(&trace_path, &header.app.name, retries, !json)?;
 
     let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;
 
@@ -448,7 +490,12 @@ where
             json,
             author,
         } => cmd_record(&spec, out, json, author),
-        Command::Run { spec, trace, json } => cmd_run(&spec, trace, json),
+        Command::Run {
+            spec,
+            trace,
+            json,
+            retries,
+        } => cmd_run(&spec, trace, json, retries),
         Command::Heal {
             spec,
             trace,

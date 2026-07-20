@@ -738,7 +738,7 @@ fn suite_run_aggregates_flows_and_merges_junit() {
     }
 
     // Green suite: both flows pass, exit 0, one junit with two testsuites.
-    let code = flowproof_cli::run_suite(&specs_dir, false).expect("suite runs");
+    let code = flowproof_cli::run_suite(&specs_dir, false, 0).expect("suite runs");
     assert_eq!(code, flowproof_cli::EXIT_PASS);
     let junit_path = specs_dir.join(".flowproof").join("suite-junit.xml");
     let junit = std::fs::read_to_string(&junit_path).expect("suite junit written");
@@ -750,7 +750,7 @@ fn suite_run_aggregates_flows_and_merges_junit() {
     let broken = specs_dir.join("nested").join("b-second.trace.jsonl");
     let contents = std::fs::read_to_string(&broken).expect("trace readable");
     std::fs::write(&broken, contents.replace("beta ready", "beta NEVER")).expect("trace broken");
-    let code = flowproof_cli::run_suite(&specs_dir, false).expect("suite runs");
+    let code = flowproof_cli::run_suite(&specs_dir, false, 0).expect("suite runs");
     assert_eq!(code, flowproof_cli::EXIT_FAIL);
     let junit = std::fs::read_to_string(&junit_path).expect("suite junit rewritten");
     assert!(junit.contains("<failure"), "failure recorded: {junit}");
