@@ -19,7 +19,7 @@ The screen is a small VA01-ish layout; pressing the Continue button posts
 effect to assert.
 
 Usage: python sap_simulator.py  (prints READY when attachable; exits on
-its own after IDLE_EXIT_SECONDS without a COM call, or on Ctrl+C).
+its own after WATCHDOG_SECONDS as an orphan guard, or on Ctrl+C).
 """
 
 import sys
@@ -35,7 +35,10 @@ from win32com.server.exception import COMException
 CLSID = "{7F3C9B1E-5A44-4D8B-9C2A-F10D8E401001}"
 PROGID = "SAPGUI"
 SESSION_PREFIX = "/app/con[0]/ses[0]/"
-IDLE_EXIT_SECONDS = 180
+# Hard orphan guard only - generous enough that a slow CI runner's
+# record + replay never outlives it (the test kills the process when
+# it finishes; this exists for the case where it could not).
+WATCHDOG_SECONDS = 1200
 
 
 class Component:
@@ -225,7 +228,7 @@ def main():
     sapgui = wrap(SapGui(Engine(screen)))
     handle = pythoncom.RegisterActiveObject(sapgui, pywintypes.IID(CLSID), 0)
     print("READY", flush=True)
-    deadline = time.time() + IDLE_EXIT_SECONDS
+    deadline = time.time() + WATCHDOG_SECONDS
     try:
         while time.time() < deadline:
             pythoncom.PumpWaitingMessages()
