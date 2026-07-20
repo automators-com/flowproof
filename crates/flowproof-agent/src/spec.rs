@@ -29,6 +29,7 @@ pub enum SpecError {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FlowSpec {
     pub name: String,
     /// App id resolved via `flowproof_driver::resolve_app` (e.g. `calc`),
@@ -57,6 +58,10 @@ pub struct FlowSpec {
     /// how authenticated flows start without a login walk. Values may be
     /// `${VAR}` references, resolved at apply time and never stored. Copied
     /// into the trace header so replays authenticate identically.
+    ///
+    /// Accepted strictness gap: `SessionSetup` is the trace-shared type
+    /// (trace v1 allows additive optional fields), so unknown keys INSIDE
+    /// `session:` are not rejected — only spec-owned types deny them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<flowproof_trace::format::SessionSetup>,
     pub steps: Vec<SpecStep>,
@@ -65,13 +70,115 @@ pub struct FlowSpec {
 /// A step: a plain natural-language action, a UI assertion, or an
 /// out-of-band business-data assertion (SQL / API) — the posted record is
 /// often the truth an enterprise test must verify, not the pixels.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Serialize stays derived-untagged (the wire shape specs are written in);
+/// Deserialize is manual so unknown or misspelled fields are PARSE ERRORS
+/// that name the offending key. The untagged derive can't do that: it
+/// would either silently drop unknown fields (a 0.2.1 `assert_api` with
+/// `headers:` ran on 0.2.0 with the auth silently gone) or collapse every
+/// mistake into "did not match any variant".
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum SpecStep {
     AssertSql { assert_sql: SqlAssertSpec },
     AssertApi { assert_api: ApiAssertSpec },
     Assert { assert: String },
     Plain(String),
+}
+
+impl SpecStep {
+    const FORMS: &'static str = "a plain string, `assert: <text>`, \
+         `assert_sql: {...}`, or `assert_api: {...}`";
+
+    fn from_yaml(value: serde_yaml::Value) -> Result<Self, String> {
+        use serde_yaml::Value;
+        match value {
+            Value::String(s) => Ok(SpecStep::Plain(s)),
+            Value::Mapping(map) => {
+                let keys: Vec<String> = map
+                    .keys()
+                    .map(|k| match k.as_str() {
+                        Some(s) => s.to_string(),
+                        None => format!("{k:?}"),
+                    })
+                    .collect();
+                if map.len() != 1 {
+                    return Err(format!(
+                        "a step mapping must have exactly one key, got {}; \
+                         recognized step forms are {}",
+                        keys.iter()
+                            .map(|k| format!("`{k}`"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        Self::FORMS
+                    ));
+                }
+                let (key, inner) = map.into_iter().next().expect("len checked above");
+                match key.as_str() {
+                    Some("assert") => match inner {
+                        Value::String(s) => Ok(SpecStep::Assert { assert: s }),
+                        _ => Err("`assert:` takes a string (the expectation text)".into()),
+                    },
+                    Some("assert_sql") => serde_yaml::from_value(inner)
+                        .map(|assert_sql| SpecStep::AssertSql { assert_sql })
+                        .map_err(|e| format!("in `assert_sql` step: {e}")),
+                    Some("assert_api") => serde_yaml::from_value(inner)
+                        .map(|assert_api| SpecStep::AssertApi { assert_api })
+                        .map_err(|e| format!("in `assert_api` step: {e}")),
+                    _ => Err(format!(
+                        "unknown step key `{}`; recognized step forms are {}",
+                        keys[0],
+                        Self::FORMS
+                    )),
+                }
+            }
+            other => Err(format!(
+                "a step must be {}; got {}",
+                Self::FORMS,
+                yaml_kind(&other)
+            )),
+        }
+    }
+}
+
+/// Parse a strict `X.Y.Z` version into a comparable triple. Deliberately
+/// tiny (no semver dep): flowproof versions are plain triples.
+fn parse_version_triple(v: &str) -> Result<(u64, u64, u64), String> {
+    let parts: Vec<&str> = v.split('.').collect();
+    let parse = |s: &str| -> Option<u64> {
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse().ok())
+            .flatten()
+    };
+    match parts.as_slice() {
+        [a, b, c] => match (parse(a), parse(b), parse(c)) {
+            (Some(a), Some(b), Some(c)) => Ok((a, b, c)),
+            _ => Err(format!("invalid version `{v}` (expected X.Y.Z)")),
+        },
+        _ => Err(format!("invalid version `{v}` (expected X.Y.Z)")),
+    }
+}
+
+/// Human name for a YAML node kind, for error messages.
+fn yaml_kind(value: &serde_yaml::Value) -> &'static str {
+    use serde_yaml::Value;
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Sequence(_) => "a sequence",
+        Value::Mapping(_) => "a mapping",
+        Value::Tagged(_) => "a tagged value",
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SpecStep {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Buffering through Value is safe: specs are always YAML.
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        SpecStep::from_yaml(value).map_err(serde::de::Error::custom)
+    }
 }
 
 /// ```yaml
@@ -83,6 +190,7 @@ pub enum SpecStep {
 /// The connection NAME travels in the trace; the connection string only
 /// ever lives in the environment. `query`/`equals` may carry `${VAR}` refs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SqlAssertSpec {
     pub connection: String,
     pub query: String,
@@ -104,6 +212,7 @@ pub struct SqlAssertSpec {
 ///     body_contains: TestTemplate      # optional
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiAssertSpec {
     /// `METHOD url` — the url may carry `${VAR}` refs (base URLs, tokens).
     pub request: String,
@@ -161,7 +270,15 @@ impl FlowSpec {
 /// the eval's 912-line harness mostly existed to do); `env` is exported to
 /// every flow and every hook; `order` pins spec order when it matters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SuiteManifest {
+    /// Minimum flowproof version this suite's specs need (`X.Y.Z`). The
+    /// CLI refuses to run/record when it is older — the guard against
+    /// silently-weakened behavior when a spec uses vocabulary an older
+    /// engine would have dropped (before 0.2.2, unknown spec fields were
+    /// ignored instead of rejected).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<String>,
     /// Environment variables exported to every flow and hook. Values may
     /// carry `${VAR}` references, resolved from the ambient environment.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -208,6 +325,23 @@ impl SuiteManifest {
     /// wins). This is how `record` and single-spec `run` share the suite's
     /// env and data — a flow behaves the same alone as inside its suite.
     /// Returns the manifest plus the directory it was found in.
+    /// Enforce `min_version:` against the running engine version. Pass
+    /// `env!("CARGO_PKG_VERSION")`; a parameter keeps this unit-testable.
+    pub fn check_min_version(&self, current: &str) -> Result<(), String> {
+        let Some(min) = &self.min_version else {
+            return Ok(());
+        };
+        let min_v = parse_version_triple(min)?;
+        let cur_v = parse_version_triple(current)?;
+        if cur_v < min_v {
+            return Err(format!(
+                "this suite needs flowproof >= {min}, but this is flowproof {current} — \
+                 upgrade flowproof (or lower the suite's min_version)"
+            ));
+        }
+        Ok(())
+    }
+
     pub fn discover(spec: &Path) -> Result<Option<(Self, std::path::PathBuf)>, SpecError> {
         // Canonicalize so a bare `calc.flow.yaml` walks up from the real
         // directory, not the empty relative parent.
@@ -251,6 +385,98 @@ steps:
                 assert: "display shows 8".into()
             }
         );
+    }
+
+    #[test]
+    fn unknown_top_level_field_is_a_named_parse_error() {
+        let err = FlowSpec::parse("name: x\napp: web\nurll: http://x\nsteps:\n  - Type 1\n")
+            .expect_err("typo'd field must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("urll"), "names the field: {msg}");
+    }
+
+    #[test]
+    fn typoed_assert_api_field_error_names_field_and_step_kind() {
+        let err = FlowSpec::parse(
+            "name: x\napp: api\nsteps:\n  - assert_api:\n      request: GET http://x\n      statuss: 200\n",
+        )
+        .expect_err("typo'd inner field must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("statuss"), "names the field: {msg}");
+        assert!(msg.contains("assert_api"), "names the step kind: {msg}");
+    }
+
+    #[test]
+    fn unknown_step_key_error_names_key_and_lists_forms() {
+        let err = FlowSpec::parse("name: x\napp: web\nsteps:\n  - assert_apy:\n      request: x\n")
+            .expect_err("unknown step key must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("assert_apy"), "names the key: {msg}");
+        assert!(msg.contains("assert_api"), "lists recognized forms: {msg}");
+    }
+
+    #[test]
+    fn multi_key_step_mapping_names_all_keys() {
+        let err = FlowSpec::parse(
+            "name: x\napp: web\nsteps:\n  - assert: page shows X\n    timeout: 3\n",
+        )
+        .expect_err("two-key step mapping must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("exactly one key"), "{msg}");
+        assert!(
+            msg.contains("assert") && msg.contains("timeout"),
+            "names both keys: {msg}"
+        );
+    }
+
+    #[test]
+    fn non_string_non_mapping_step_is_rejected() {
+        let err = FlowSpec::parse("name: x\napp: web\nsteps:\n  - 42\n")
+            .expect_err("numeric step must fail");
+        assert!(err.to_string().contains("a number"), "{err}");
+    }
+
+    #[test]
+    fn spec_step_serializes_and_reparses_identically() {
+        // Serialize stays derived-untagged; manual Deserialize must accept
+        // exactly that wire shape.
+        let spec = FlowSpec::parse(
+            "name: x\napp: api\nsteps:\n  - Type 1\n  - assert: page shows X\n  - assert_api:\n      request: GET http://x\n      status: 200\n",
+        )
+        .expect("parses");
+        let yaml = serde_yaml::to_string(&spec.steps).expect("serializes");
+        let back: Vec<SpecStep> = serde_yaml::from_str(&yaml).expect("round-trips");
+        assert_eq!(back, spec.steps);
+    }
+
+    #[test]
+    fn version_triples_parse_strictly() {
+        assert_eq!(parse_version_triple("0.2.1").expect("ok"), (0, 2, 1));
+        assert_eq!(parse_version_triple("10.20.30").expect("ok"), (10, 20, 30));
+        for bad in ["1.2", "v1.2.3", "1.2.3.4", "1.x.3", "", "1..3"] {
+            assert!(parse_version_triple(bad).is_err(), "{bad} must be rejected");
+        }
+    }
+
+    #[test]
+    fn min_version_gate_compares_triples() {
+        let manifest: SuiteManifest =
+            serde_yaml::from_str("min_version: \"0.3.0\"\n").expect("parses");
+        manifest.check_min_version("0.3.0").expect("equal passes");
+        manifest.check_min_version("0.10.0").expect("newer passes");
+        let err = manifest
+            .check_min_version("0.2.1")
+            .expect_err("older engine must be refused");
+        assert!(err.contains("0.3.0") && err.contains("0.2.1"), "{err}");
+        // No min_version = no gate.
+        assert!(SuiteManifest::default().check_min_version("0.0.1").is_ok());
+    }
+
+    #[test]
+    fn unknown_suite_manifest_field_is_rejected() {
+        let err = serde_yaml::from_str::<SuiteManifest>("env_form: echo A=1\n")
+            .expect_err("typo'd manifest key must fail");
+        assert!(err.to_string().contains("env_form"), "{err}");
     }
 
     #[test]

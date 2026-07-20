@@ -75,6 +75,21 @@ impl StepResult {
             degraded: false,
         }
     }
+
+    /// A skipped step with an explicit reason — used for flow-level skips
+    /// (no trace recorded, skip conditions), where nothing ran at all.
+    pub fn skipped_with_reason(id: &str, intent: &str, reason: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            intent: intent.to_string(),
+            status: StepStatus::Skipped,
+            detail: Some(reason.to_string()),
+            started_ms: 0,
+            duration_ms: 0,
+            selector_tier: None,
+            degraded: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +110,26 @@ pub struct RunReport {
 }
 
 impl RunReport {
+    /// A synthetic report for a flow that never ran (no trace recorded,
+    /// skip condition). `passed: true` — a skip is not a failure, matching
+    /// JUnit semantics — with one skipped step carrying the reason, so the
+    /// merged suite junit counts it visibly instead of losing it.
+    pub fn skipped(name: &str, reason: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            trace_id: "skipped".into(),
+            passed: true,
+            degraded: false,
+            steps: vec![StepResult::skipped_with_reason(
+                "s0001",
+                "flow skipped",
+                reason,
+            )],
+            duration_ms: 0,
+            recording: None,
+        }
+    }
+
     /// Write `result.json` (plus a `report.html` rendering and a
     /// `junit.xml` for CI systems) into the run directory `run_trace`
     /// created — the same bundle that holds the recording. Returns the JSON
@@ -173,9 +208,17 @@ impl RunReport {
                     "{case_open}>\n      <failure message=\"{}\"/>\n    </testcase>\n",
                     xml_escape(step.detail.as_deref().unwrap_or("step failed")),
                 )),
-                StepStatus::Skipped => cases.push_str(&format!(
-                    "{case_open}>\n      <skipped/>\n    </testcase>\n"
-                )),
+                // The reason travels into junit: gated/traceless coverage
+                // must be measurable, not invisible.
+                StepStatus::Skipped => match step.detail.as_deref() {
+                    Some(reason) => cases.push_str(&format!(
+                        "{case_open}>\n      <skipped message=\"{}\"/>\n    </testcase>\n",
+                        xml_escape(reason),
+                    )),
+                    None => cases.push_str(&format!(
+                        "{case_open}>\n      <skipped/>\n    </testcase>\n"
+                    )),
+                },
             }
         }
         format!(
@@ -532,7 +575,8 @@ mod tests {
         assert!(xml.contains(
             "<failure message=\"expected &apos;8&apos;, got &apos;&lt;blank&gt;&apos;\"/>"
         ));
-        assert!(xml.contains("<skipped/>"));
+        // Skip reasons travel into junit as the message attribute.
+        assert!(xml.contains("<skipped message=\"previous step failed\"/>"));
         assert!(!xml.contains("<blank>"), "raw input must never reach XML");
     }
 

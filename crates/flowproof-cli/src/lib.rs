@@ -76,6 +76,15 @@ enum Command {
         /// it failed — absorbs infra flakiness (default 0, no retries).
         #[arg(long, default_value_t = 0)]
         retries: u8,
+        /// Suite runs only: record any spec whose trace is missing, then
+        /// replay it (default: traceless specs are reported as skipped).
+        #[arg(long)]
+        record_missing: bool,
+        /// Suite runs only: a missing trace is a hard error (pre-0.2.2
+        /// behavior) instead of a skipped flow. For CI that must not let
+        /// coverage silently shrink. Single-spec runs always error.
+        #[arg(long, conflicts_with = "record_missing")]
+        strict: bool,
     },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
@@ -358,6 +367,7 @@ pub fn apply_suite_context(spec_path: &Path) -> Result<(), String> {
         "using suite context from {}",
         dir.join("suite.yaml").display()
     );
+    manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
     apply_env_from(&manifest, &dir)?;
     apply_suite_env(&manifest)
 }
@@ -399,10 +409,35 @@ fn run_hook(command: &str, spec_path: &Path, phase: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// What a suite run does with a spec whose trace was never recorded.
+/// Adoption reality: a suite's specs land in review before their traces do
+/// (37/38 in the first external consumer) — one traceless spec must not
+/// hard-fail everyone by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MissingTrace {
+    /// Report the flow as junit `skipped` with a reason (default).
+    #[default]
+    Skip,
+    /// Record the missing trace first, then replay (`--record-missing`).
+    Record,
+    /// Hard error, pre-0.2.2 behavior (`--strict`).
+    Error,
+}
+
+/// Record a spec in place (suite env already applied by the caller).
+/// The core of `cmd_record` without its CLI rendering.
+fn record_one(spec_path: &Path, out: &Path) -> Result<(), String> {
+    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    let mut driver = driver_for(&spec.app)?;
+    flowproof_agent::record(&spec, &mut driver, out)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Run every recorded flow under `dir` as one suite: per-flow bundles as
 /// usual, plus a merged `junit.xml` for CI, and a non-zero exit if ANY flow
 /// fails. A failing flow does not stop the suite.
-pub fn run_suite(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
+pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> Result<u8, String> {
     let mut specs = Vec::new();
     discover_specs(dir, &mut specs)?;
     if specs.is_empty() {
@@ -414,6 +449,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
     let manifest = flowproof_agent::SuiteManifest::load_from_dir(dir)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
+    manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
     apply_env_from(&manifest, dir)?;
     apply_suite_env(&manifest)?;
     order_specs(&mut specs, dir, &manifest.order);
@@ -423,11 +459,43 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
     for spec_path in &specs {
         let trace_path = default_trace_path(spec_path);
         if !trace_path.exists() {
-            return Err(format!(
-                "trace {} not found — run `flowproof record {}` first",
-                trace_path.display(),
-                spec_path.display()
-            ));
+            match missing {
+                MissingTrace::Error => {
+                    return Err(format!(
+                        "trace {} not found — run `flowproof record {}` first",
+                        trace_path.display(),
+                        spec_path.display()
+                    ));
+                }
+                MissingTrace::Record => {
+                    if !json {
+                        println!("[RECORD] {} (no trace yet)", spec_path.display());
+                    }
+                    record_one(spec_path, &trace_path)?;
+                    // Fall through to the normal replay below.
+                }
+                MissingTrace::Skip => {
+                    // The flow never ran: no hooks, no run bundle — just a
+                    // visible skipped entry so coverage doesn't silently
+                    // shrink. A parse error here still propagates.
+                    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+                    let reason = format!(
+                        "no trace recorded — flowproof record {}",
+                        spec_path.display()
+                    );
+                    let report = flowproof_replay::RunReport::skipped(&spec.name, &reason);
+                    if !json {
+                        println!("[SKIP] {} ({reason})", report.name);
+                    }
+                    flows.push(serde_json::json!({
+                        "spec": spec_path,
+                        "report": report,
+                        "report_path": null,
+                    }));
+                    reports.push(report);
+                    continue;
+                }
+            }
         }
         // Seed before the flow; a failing hook fails the flow, not the run.
         if let Some(cmd) = &manifest.before_each {
@@ -483,12 +551,15 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
     )
     .map_err(|e| e.to_string())?;
 
-    let passed = reports.iter().filter(|r| r.passed).count();
-    let all_passed = passed == reports.len();
+    let skipped = reports.iter().filter(|r| r.trace_id == "skipped").count();
+    let passed = reports.iter().filter(|r| r.passed).count() - skipped;
+    let ran = reports.len() - skipped;
+    let all_passed = reports.iter().all(|r| r.passed);
     if json {
         let payload = serde_json::json!({
             "flows": flows,
             "passed": all_passed,
+            "skipped": skipped,
             "junit_path": junit_path,
         });
         println!(
@@ -497,9 +568,13 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
         );
     } else {
         println!(
-            "{}: {passed}/{} flows passed -> {}",
+            "{}: {passed}/{ran} flows passed{} -> {}",
             if all_passed { "PASS" } else { "FAIL" },
-            reports.len(),
+            if skipped > 0 {
+                format!(", {skipped} skipped")
+            } else {
+                String::new()
+            },
             junit_path.display()
         );
         if reports.iter().any(|r| r.degraded) {
@@ -514,9 +589,10 @@ fn cmd_run(
     trace: Option<PathBuf>,
     json: bool,
     retries: u8,
+    missing: MissingTrace,
 ) -> Result<u8, String> {
     if spec_path.is_dir() {
-        return run_suite(spec_path, json, retries);
+        return run_suite(spec_path, json, retries, missing);
     }
     // A single flow gets its suite's env/data too — replay resolves ${VAR}
     // at moment-of-use, so the same values must be present as at record.
@@ -686,7 +762,18 @@ where
             trace,
             json,
             retries,
-        } => cmd_run(&spec, trace, json, retries),
+            record_missing,
+            strict,
+        } => {
+            let missing = if record_missing {
+                MissingTrace::Record
+            } else if strict {
+                MissingTrace::Error
+            } else {
+                MissingTrace::Skip
+            };
+            cmd_run(&spec, trace, json, retries, missing)
+        }
         Command::Heal {
             spec,
             trace,
