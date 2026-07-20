@@ -78,6 +78,79 @@ steps:
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A foreach matrix records one real trace step per iteration — the
+/// copy-paste class (the db-providers spec repeated one block five times)
+/// collapses into a values list, with everything downstream unchanged.
+#[test]
+fn foreach_expands_to_real_trace_steps_and_replays() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    std::env::set_var("FE_API_BASE", &base);
+    // 3 probes at record + 3 at replay.
+    let server_thread = std::thread::spawn(move || {
+        for _ in 0..6 {
+            let Ok(mut request) = server.recv() else {
+                break;
+            };
+            let mut body = String::new();
+            std::io::Read::read_to_string(request.as_reader(), &mut body).ok();
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let known = matches!(parsed["type"].as_str(), Some("mysql" | "mssql" | "oracle"));
+            let (code, text) = if known {
+                (200, "connection accepted")
+            } else {
+                (400, "unknown provider")
+            };
+            request
+                .respond(tiny_http::Response::from_string(text).with_status_code(code))
+                .ok();
+        }
+    });
+
+    let spec_yaml = "\
+name: Providers matrix
+app: api
+steps:
+  - foreach:
+      values: [mysql, mssql, oracle]
+      steps:
+        - assert_api:
+            request: POST ${FE_API_BASE}/connections/test
+            body:
+              type: \"${each}\"
+            status: 200
+            body_contains: connection accepted
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+    assert_eq!(spec.steps.len(), 3, "expanded before anything records");
+
+    let dir = std::env::temp_dir().join("flowproof-foreach-pipeline");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("matrix.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("matrix records");
+
+    let trace = std::fs::read_to_string(&trace_path).expect("trace written");
+    // Each iteration is an ordinary dense-id trace step; the base URL ref
+    // survives raw, and the substituted values are literal data.
+    for id in ["s0001", "s0002", "s0003"] {
+        assert!(trace.contains(&format!("\"id\":\"{id}\"")), "{id} present");
+    }
+    assert!(trace.contains("${FE_API_BASE}"), "ref kept raw");
+    assert!(trace.contains("mssql"), "substituted value recorded");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "matrix replays: {report:#?}");
+    assert_eq!(report.steps.len(), 3);
+
+    server_thread.join().ok();
+    std::env::remove_var("FE_API_BASE");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The DataMaker-shaped case: an authenticated JSON POST. The server
 /// returns 200 "Database not yet supported!" ONLY when it received the
 /// exact Authorization header and JSON body — so the flow passing at

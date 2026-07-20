@@ -180,6 +180,14 @@ fn cmd_record(
     // The suite's data (env_from) and env govern recording too — the
     // ${VAR}s a spec references must resolve the same here as in `run`.
     apply_suite_context(spec_path)?;
+    if let Some(reason) = spec.skip_reason() {
+        if json {
+            println!("{}", serde_json::json!({ "skipped": reason }));
+        } else {
+            println!("[SKIP] {} ({reason})", spec.name);
+        }
+        return Ok(EXIT_PASS);
+    }
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
     let mut driver = driver_for(&spec.app)?;
     let summary = match flowproof_agent::record_with_author(&spec, &mut driver, &out, author.into())
@@ -469,6 +477,24 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
     let mut reports: Vec<flowproof_replay::RunReport> = Vec::new();
     let mut flows = Vec::new();
     for spec_path in &specs {
+        // The env-flag gate wins over everything (including --strict's
+        // missing-trace error): a deliberately gated flow with no trace
+        // is a skip, not a failure. Loading here also surfaces spec parse
+        // errors for every suite member.
+        let gated_spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+        if let Some(reason) = gated_spec.skip_reason() {
+            let report = flowproof_replay::RunReport::skipped(&gated_spec.name, &reason);
+            if !json {
+                println!("[SKIP] {} ({reason})", report.name);
+            }
+            flows.push(serde_json::json!({
+                "spec": spec_path,
+                "report": report,
+                "report_path": null,
+            }));
+            reports.push(report);
+            continue;
+        }
         let trace_path = default_trace_path(spec_path);
         if !trace_path.exists() {
             match missing {
@@ -489,13 +515,12 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
                 MissingTrace::Skip => {
                     // The flow never ran: no hooks, no run bundle — just a
                     // visible skipped entry so coverage doesn't silently
-                    // shrink. A parse error here still propagates.
-                    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+                    // shrink.
                     let reason = format!(
                         "no trace recorded — flowproof record {}",
                         spec_path.display()
                     );
-                    let report = flowproof_replay::RunReport::skipped(&spec.name, &reason);
+                    let report = flowproof_replay::RunReport::skipped(&gated_spec.name, &reason);
                     if !json {
                         println!("[SKIP] {} ({reason})", report.name);
                     }
@@ -609,6 +634,26 @@ fn cmd_run(
     // A single flow gets its suite's env/data too — replay resolves ${VAR}
     // at moment-of-use, so the same values must be present as at record.
     apply_suite_context(spec_path)?;
+    // Load the spec for its gate (this also surfaces spec parse errors on
+    // single runs, deliberately — a typo'd spec should not replay).
+    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    if let Some(reason) = spec.skip_reason() {
+        let report = flowproof_replay::RunReport::skipped(&spec.name, &reason);
+        if json {
+            let payload = serde_json::json!({
+                "report": report,
+                "report_path": null,
+                "skipped": reason,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+            );
+        } else {
+            println!("[SKIP] {} ({reason})", report.name);
+        }
+        return Ok(EXIT_PASS);
+    }
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if !trace_path.exists() {
         return Err(format!(
