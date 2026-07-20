@@ -185,14 +185,16 @@ fn records_and_replays_an_authenticated_json_post() {
             let mut body = String::new();
             std::io::Read::read_to_string(request.as_reader(), &mut body).ok();
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-            let body_ok = parsed["provider"] == "postgres"
+            let body_ok = parsed["type"] == "postgres"
                 && parsed["connectionString"] == r#"postgres://u:pa"ss\w@db:5432/x"#;
             let json_ct = request.headers().iter().any(|h| {
                 h.field.equiv("Content-Type") && h.value.as_str().contains("application/json")
             });
+            // Mirrors the real DataMaker contract: an unsupported provider
+            // answers 500 with this body — same shape as examples/api/.
             let (code, text) = if request.url() == "/connections/test" && auth_ok && body_ok {
                 if json_ct {
-                    (200, "Database not yet supported!")
+                    (500, "Database not yet supported!")
                 } else {
                     (415, "missing json content-type")
                 }
@@ -213,9 +215,9 @@ steps:
       headers:
         Authorization: Bearer ${CONN_SESSION_TOKEN}
       body:
-        provider: postgres
+        type: postgres
         connectionString: ${CONN_STRING}
-      status: 200
+      status: 500
       body_contains: Database not yet supported!
 ";
     let spec = FlowSpec::parse(spec_yaml).expect("spec parses");

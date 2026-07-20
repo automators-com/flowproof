@@ -15,7 +15,12 @@ fn connection_test_example_resolves_with_body_and_headers() {
     assert_eq!(spec.app, "api");
     let actions =
         flowproof_agent::rules::resolve_step(&spec.app, &spec.steps[0]).expect("step resolves");
-    let flowproof_agent::rules::ResolvedAction::AssertApi { headers, body, .. } = &actions[0]
+    let flowproof_agent::rules::ResolvedAction::AssertApi {
+        headers,
+        body,
+        status,
+        ..
+    } = &actions[0]
     else {
         panic!("expected AssertApi");
     };
@@ -24,10 +29,13 @@ fn connection_test_example_resolves_with_body_and_headers() {
         headers.get("Authorization").map(String::as_str),
         Some("Bearer ${DM_SESSION_TOKEN}")
     );
-    assert_eq!(
-        body.as_ref().expect("body present")["connectionString"],
-        "${TEST_CONN_STRING}"
-    );
+    let body = body.as_ref().expect("body present");
+    assert_eq!(body["connectionString"], "${TEST_CONN_STRING}");
+    // Pinned to the real DataMaker /connections/test contract the example
+    // mirrors (the api_pipeline mock speaks the same shape): the field is
+    // `type`, and an unsupported provider answers 500. Drift fails here.
+    assert_eq!(body["type"], "postgres");
+    assert_eq!(*status, Some(500));
 }
 
 #[test]

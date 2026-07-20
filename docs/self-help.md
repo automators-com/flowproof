@@ -116,6 +116,11 @@ reach traces only as raw `${VAR}` references, never resolved.
 cannot return values — their stdout is not captured, and a child process
 cannot set its parent's environment.
 
+Related: because traces store only the raw `${VAR}` refs, `app: api`
+flow traces can be minted **offline** against a local contract responder
+and replayed against the real stack — see
+[getting-started](getting-started.md#minting-traces-offline-against-a-contract-responder).
+
 ## Why no in-loop tool use
 
 The authoring model could, in principle, call the DataMaker CLI itself
