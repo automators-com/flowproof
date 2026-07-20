@@ -25,8 +25,9 @@ external evaluation got right.
 **If every app you test is a browser app, and your current tool tests it
 well, flowproof is not an upgrade for that suite.** An external team
 measured exactly this against a Next.js monorepo and recommended staying
-on Playwright — a fair call for their situation. Adopting a second E2E
-framework means two runners and two places to look when something breaks;
+on Playwright — a fair call for their situation. Adopting a second
+test-automation framework means two runners and two places to look when
+something breaks;
 that cost is only worth paying for coverage you don't already have.
 
 ## What that evaluation found, and where it stands now

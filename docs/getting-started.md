@@ -176,10 +176,11 @@ A failing test is a `RunResult` with `passed=False` (with per-step status
 and failure detail) — not an exception. `RuntimeError` is reserved for runs
 that could not execute at all.
 
-## Running the end-to-end tests
+## Running the live-app tests
 
-Two E2E tests drive real apps, both Windows-only and gated on
-`FLOWPROOF_E2E=1`:
+Two live-app tests drive real applications, both Windows-only and gated on
+`FLOWPROOF_E2E=1` (the gate variable's name is a stable interface and
+predates the current naming):
 
 ```powershell
 $env:FLOWPROOF_E2E = "1"
@@ -221,9 +222,9 @@ steps:
 flowproof record web.flow.yaml && flowproof run web.flow.yaml
 ```
 
-Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web E2E
-(`cargo test -p flowproof-cli --test web_e2e`, `FLOWPROOF_E2E=1`) runs in CI
-on ubuntu.
+Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web
+live-app suite (`cargo test -p flowproof-cli --test web_e2e`,
+`FLOWPROOF_E2E=1`) runs in CI on ubuntu.
 
 ### The web action vocabulary
 
