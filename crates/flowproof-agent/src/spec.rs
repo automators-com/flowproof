@@ -43,6 +43,11 @@ pub struct FlowSpec {
     /// `${VAR}` references, resolved at launch time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
+    /// For `app: vision`: the title (substring, case-insensitive) of the
+    /// window to drive as pixels — the Citrix/RDP client, or any window.
+    /// May carry `${VAR}` references, resolved at launch time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
     /// Regions to mask in every persisted frame (password fields are always
     /// masked, with or without rules here). Copied into the trace header at
     /// record time so replays redact identically without the spec.

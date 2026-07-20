@@ -1,0 +1,11 @@
+# A pixels-only flow: drive any window purely by looking at it (OCR) and
+# injecting real input — the mode for Citrix/RDP-published apps. Windows
+# only (screen capture + SendInput). `window` is a title substring of the
+# window to attach to; nothing is launched.
+name: Post order
+app: vision
+window: ${VISION_WINDOW}
+steps:
+  - Type ZOR into the "Order Type" field
+  - Press the "Submit" button
+  - assert: page shows Order saved

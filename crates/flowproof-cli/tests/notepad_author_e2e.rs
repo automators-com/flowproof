@@ -26,6 +26,7 @@ fn freeform_spec() -> FlowSpec {
         url: None,
         redact: vec![],
         connection: None,
+        window: None,
         session: None,
         steps: vec![
             SpecStep::Plain("Write hello from flowproof into the editor".into()),
