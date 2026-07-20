@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "flowproof"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-native E2E testing for the apps Selenium can't reach — SAP GUI, Oracle Forms, Citrix, Windows desktop."
 readme = "README.md"
 license = "Apache-2.0"
