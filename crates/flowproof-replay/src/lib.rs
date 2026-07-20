@@ -654,6 +654,12 @@ pub fn run_trace<D: AppDriver>(
             command: String::new(),
             window_name: flowproof_trace::secret::resolve_refs(&raw)?,
         }
+    } else if header.app.name == "api" {
+        // Out-of-band only: NoOpDriver::launch ignores this.
+        flowproof_driver::AppTarget {
+            command: String::new(),
+            window_name: String::new(),
+        }
     } else {
         resolve_app(&header.app.name)
             .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?

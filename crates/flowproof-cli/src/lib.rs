@@ -140,6 +140,11 @@ pub fn driver_for(app: &str) -> Result<Box<dyn AppDriver>, String> {
                 .into(),
         );
     }
+    if app == "api" {
+        // No UI: out-of-band assertions run without a driver. Works on
+        // every platform.
+        return Ok(Box::new(flowproof_driver::NoOpDriver::new()));
+    }
     let driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
     Ok(Box::new(driver))
 }

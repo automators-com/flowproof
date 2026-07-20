@@ -347,6 +347,34 @@ models (pure-Rust [ocrs](https://github.com/robertknight/ocrs), ~12 MB)
 download on first use to `~/.cache/flowproof/ocrs`. Deliberately not in
 this slice yet: visual-template matching and OCR-region sync conditions.
 
+## API-only flows (no browser, any OS)
+
+Not every test drives a UI. `app: api` runs a flow of **out-of-band
+assertions only** — HTTP status/body and SQL row checks — with no browser
+and no window launched, on any platform:
+
+```yaml
+name: Provisioning API
+app: api
+steps:
+  - assert_api:
+      request: GET ${API}/health
+      status: 200
+      body_contains: '"status":"ok"'
+  - assert_api:
+      request: POST ${API}/teams/${TEAM}/members    # cross-team write must 403
+      status: 403
+  - assert_sql:
+      connection: reporting
+      query: SELECT count(*) FROM members WHERE team_id = '${TEAM}'
+      equals: "1"
+```
+
+These are the tests that assert on HTTP status codes and response bodies
+with no UI to drive — they run through the same deterministic record/replay
+spine (zero model calls), and the connection names and `${VAR}` hosts never
+enter the trace. See `examples/api/health.flow.yaml`.
+
 ## Authoring with a model (arbitrary steps)
 
 The rules only know the demo vocabularies. With a model backend configured,

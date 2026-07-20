@@ -40,7 +40,7 @@ const ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub enum RecordError {
     #[error(transparent)]
     Rules(#[from] crate::rules::RulesError),
-    #[error("unknown app '{0}' (this slice supports: calc, notepad, web, sap)")]
+    #[error("unknown app '{0}' (supports: calc, notepad, web, sap, vision, api)")]
     UnknownApp(String),
     #[error("app 'web' requires a `url:` field in the spec")]
     MissingUrl,
@@ -496,6 +496,14 @@ fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordE
             window_name: window,
         });
     }
+    if spec.app == "api" {
+        // Out-of-band only: nothing to launch. NoOpDriver::launch ignores
+        // this empty target.
+        return Ok(flowproof_driver::AppTarget {
+            command: String::new(),
+            window_name: String::new(),
+        });
+    }
     resolve_app(&spec.app).ok_or_else(|| RecordError::UnknownApp(spec.app.clone()))
 }
 
@@ -891,6 +899,7 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                 "web" => flowproof_trace::format::Adapter::Web,
                 "sap" => flowproof_trace::format::Adapter::SapCom,
                 "vision" => flowproof_trace::format::Adapter::Vision,
+                "api" => flowproof_trace::format::Adapter::Api,
                 _ => flowproof_trace::format::Adapter::Uia,
             },
             window_title: (!target.window_name.is_empty()).then(|| target.window_name.to_string()),
