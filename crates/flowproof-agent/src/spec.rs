@@ -143,6 +143,46 @@ impl FlowSpec {
     }
 }
 
+/// Optional `suite.yaml` next to a directory of specs: the sequencing a
+/// suite otherwise needs a hand-written harness for. `before_each` /
+/// `after_each` shell commands run around every flow (the seed and cleanup
+/// the eval's 912-line harness mostly existed to do); `env` is exported to
+/// every flow and every hook; `order` pins spec order when it matters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuiteManifest {
+    /// Environment variables exported to every flow and hook. Values may
+    /// carry `${VAR}` references, resolved from the ambient environment.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// Shell command run before each flow (seed). Runs via `sh -c` with the
+    /// spec path in `FLOWPROOF_SPEC`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_each: Option<String>,
+    /// Shell command run after each flow (cleanup), pass or fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_each: Option<String>,
+    /// Explicit spec order (paths relative to the suite dir). Specs not
+    /// listed run after, in the default sorted order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<String>,
+}
+
+impl SuiteManifest {
+    /// Load `suite.yaml` from `dir` if present; `Ok(None)` when there is
+    /// none (a suite without a manifest runs exactly as before).
+    pub fn load_from_dir(dir: &Path) -> Result<Option<Self>, SpecError> {
+        let path = dir.join("suite.yaml");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let yaml = std::fs::read_to_string(&path).map_err(|source| SpecError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        Ok(Some(serde_yaml::from_str(&yaml)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +211,34 @@ steps:
                 assert: "display shows 8".into()
             }
         );
+    }
+
+    #[test]
+    fn parses_a_suite_manifest() {
+        let yaml = "\
+env:
+  DM_BASE_URL: http://localhost:3000
+before_each: pnpm seed
+after_each: pnpm cleanup
+order:
+  - smoke/login.flow.yaml
+  - templates/list.flow.yaml
+";
+        let manifest: SuiteManifest = serde_yaml::from_str(yaml).expect("manifest parses");
+        assert_eq!(
+            manifest.env.get("DM_BASE_URL").map(String::as_str),
+            Some("http://localhost:3000")
+        );
+        assert_eq!(manifest.before_each.as_deref(), Some("pnpm seed"));
+        assert_eq!(manifest.after_each.as_deref(), Some("pnpm cleanup"));
+        assert_eq!(manifest.order.len(), 2);
+    }
+
+    #[test]
+    fn empty_manifest_fields_are_all_optional() {
+        // A suite.yaml with just env, or an empty one, is valid.
+        let manifest: SuiteManifest = serde_yaml::from_str("env: {}\n").expect("parses");
+        assert!(manifest.before_each.is_none() && manifest.order.is_empty());
     }
 
     #[test]

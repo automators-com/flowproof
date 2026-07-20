@@ -233,6 +233,54 @@ fn replay_with_retries(
     }
 }
 
+/// Export the manifest's `env` to the process (inherited by every flow and
+/// hook). Values may carry `${VAR}` references, resolved from the ambient
+/// environment — so a suite can re-map or compose existing variables.
+fn apply_suite_env(manifest: &flowproof_agent::SuiteManifest) -> Result<(), String> {
+    for (key, value) in &manifest.env {
+        let resolved = flowproof_trace::secret::resolve_refs(value).map_err(|e| e.to_string())?;
+        std::env::set_var(key, resolved);
+    }
+    Ok(())
+}
+
+/// Reorder discovered specs to honor the manifest's explicit `order`
+/// (paths relative to the suite dir); unlisted specs keep their sorted
+/// position, after the listed ones.
+fn order_specs(specs: &mut [PathBuf], dir: &Path, order: &[String]) {
+    if order.is_empty() {
+        return;
+    }
+    let rank = |path: &PathBuf| -> usize {
+        let rel = path.strip_prefix(dir).unwrap_or(path);
+        order
+            .iter()
+            .position(|o| Path::new(o) == rel)
+            .unwrap_or(order.len())
+    };
+    specs.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+}
+
+/// Run a suite hook via `sh -c`, with the current spec path in
+/// `FLOWPROOF_SPEC`. A non-zero exit aborts the suite: seed/cleanup that
+/// silently failed is exactly the fragility the eval warned about.
+fn run_hook(command: &str, spec_path: &Path, phase: &str) -> Result<(), String> {
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .env("FLOWPROOF_SPEC", spec_path)
+        .status()
+        .map_err(|e| format!("{phase} hook failed to start: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "{phase} hook exited with {} for {}",
+            status.code().unwrap_or(-1),
+            spec_path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Run every recorded flow under `dir` as one suite: per-flow bundles as
 /// usual, plus a merged `junit.xml` for CI, and a non-zero exit if ANY flow
 /// fails. A failing flow does not stop the suite.
@@ -242,6 +290,14 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
     if specs.is_empty() {
         return Err(format!("no *.flow.yaml specs under {}", dir.display()));
     }
+
+    // An optional suite.yaml declares shared env and per-flow seed/cleanup
+    // hooks — the sequencing a hand-written harness otherwise provides.
+    let manifest = flowproof_agent::SuiteManifest::load_from_dir(dir)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    apply_suite_env(&manifest)?;
+    order_specs(&mut specs, dir, &manifest.order);
 
     let mut reports: Vec<flowproof_replay::RunReport> = Vec::new();
     let mut flows = Vec::new();
@@ -254,10 +310,18 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
                 spec_path.display()
             ));
         }
+        // Seed before the flow; a failing hook fails the flow, not the run.
+        if let Some(cmd) = &manifest.before_each {
+            run_hook(cmd, spec_path, "before_each")?;
+        }
         let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
         // A fresh driver per flow: full isolation, like Playwright contexts.
         let (report, run_dir, attempts) =
             replay_with_retries(&trace_path, &header.app.name, retries, !json)?;
+        // Cleanup always runs, pass or fail.
+        if let Some(cmd) = &manifest.after_each {
+            run_hook(cmd, spec_path, "after_each")?;
+        }
         let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;
         if !json {
             println!(
@@ -526,6 +590,43 @@ mod tests {
     fn cli_definition_is_valid() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn order_specs_honors_the_manifest_then_falls_back_to_sorted() {
+        let dir = Path::new("/suite");
+        let mut specs = vec![
+            PathBuf::from("/suite/z/last.flow.yaml"),
+            PathBuf::from("/suite/a/unlisted.flow.yaml"),
+            PathBuf::from("/suite/smoke/login.flow.yaml"),
+        ];
+        order_specs(
+            &mut specs,
+            dir,
+            &[
+                "smoke/login.flow.yaml".to_string(),
+                "z/last.flow.yaml".to_string(),
+            ],
+        );
+        assert_eq!(
+            specs,
+            vec![
+                PathBuf::from("/suite/smoke/login.flow.yaml"), // listed 1st
+                PathBuf::from("/suite/z/last.flow.yaml"),      // listed 2nd
+                PathBuf::from("/suite/a/unlisted.flow.yaml"),  // unlisted, sorted after
+            ]
+        );
+    }
+
+    #[test]
+    fn order_specs_is_a_noop_without_an_order() {
+        let mut specs = vec![
+            PathBuf::from("/s/b.flow.yaml"),
+            PathBuf::from("/s/a.flow.yaml"),
+        ];
+        let before = specs.clone();
+        order_specs(&mut specs, Path::new("/s"), &[]);
+        assert_eq!(specs, before);
     }
 
     #[test]
