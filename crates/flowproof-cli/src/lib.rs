@@ -149,6 +149,18 @@ pub fn driver_for(app: &str) -> Result<Box<dyn AppDriver>, String> {
     Ok(Box::new(driver))
 }
 
+/// JSON rendering of a record failure for `--json` callers: a clarification
+/// becomes a structured payload the driving agent can act on; every other
+/// error stays a plain error (`None`).
+fn record_failure_json(err: &flowproof_agent::RecordError) -> Option<serde_json::Value> {
+    match err {
+        flowproof_agent::RecordError::NeedsClarification(c) => {
+            Some(serde_json::json!({ "needs_clarification": c }))
+        }
+        _ => None,
+    }
+}
+
 fn cmd_record(
     spec_path: &Path,
     out: Option<PathBuf>,
@@ -158,8 +170,25 @@ fn cmd_record(
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
     let mut driver = driver_for(&spec.app)?;
-    let summary = flowproof_agent::record_with_author(&spec, &mut driver, &out, author.into())
-        .map_err(|e| e.to_string())?;
+    let summary = match flowproof_agent::record_with_author(&spec, &mut driver, &out, author.into())
+    {
+        Ok(summary) => summary,
+        Err(err) => {
+            // A clarification is data, not just a message: with --json the
+            // payload goes to stdout so the driving agent can enumerate the
+            // live screen and rewrite the vague step before re-recording.
+            if json {
+                if let Some(payload) = record_failure_json(&err) {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+                    );
+                    return Ok(EXIT_ERROR);
+                }
+            }
+            return Err(err.to_string());
+        }
+    };
     if json {
         let payload = serde_json::json!({
             "trace_path": summary.trace_path,
@@ -590,6 +619,30 @@ mod tests {
     fn cli_definition_is_valid() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn record_failure_json_shapes_only_clarifications() {
+        let c = flowproof_agent::Clarification {
+            step: "make required field changes".into(),
+            step_index: 3,
+            stage: flowproof_agent::ClarifyStage::NoModel,
+            reason: "no model backend".into(),
+            rules_error: Some("no rule matches".into()),
+            completed_steps: vec![],
+            scene: vec![],
+            hint: flowproof_agent::Clarification::HINT.into(),
+        };
+        let err = flowproof_agent::RecordError::NeedsClarification(Box::new(c));
+        let payload = record_failure_json(&err).expect("clarification is structured");
+        assert_eq!(
+            payload["needs_clarification"]["step"],
+            "make required field changes"
+        );
+        assert_eq!(payload["needs_clarification"]["stage"], "no_model");
+
+        let other = flowproof_agent::RecordError::UnknownApp("oracle".into());
+        assert!(record_failure_json(&other).is_none());
     }
 
     #[test]

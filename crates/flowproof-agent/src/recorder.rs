@@ -76,6 +76,12 @@ pub enum RecordError {
     NoAuthor { step: String, rules_error: String },
     #[error("driver cannot describe its scene; LLM authoring is unavailable for app '{0}'")]
     NoScene(String),
+    #[error(
+        "cannot author step '{}' ({}): {} — a structured clarification payload with the \
+         live-screen inventory is available via `record --json` or the MCP record tool",
+        .0.step, .0.stage, .0.reason
+    )]
+    NeedsClarification(Box<crate::clarify::Clarification>),
 }
 
 /// Outcome of a recording session.
@@ -601,11 +607,38 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             if author == Author::Rules {
                 return Err(RecordError::Rules(rules_error));
             }
-            let Some(client) = client.as_mut() else {
-                return Err(RecordError::NoAuthor {
+            // Ambiguity from here on ends in a structured clarification:
+            // the driving agent — not flowproof — resolves it and re-records.
+            // `prior` holds the intents already performed, so its length is
+            // this step's index and the live scene reflects their effects.
+            let clarify = |stage, reason: String, rules_err: Option<String>, scene: Vec<_>| {
+                RecordError::NeedsClarification(Box::new(crate::clarify::Clarification {
                     step: intent.to_string(),
-                    rules_error: rules_error.to_string(),
-                });
+                    step_index: prior.len(),
+                    stage,
+                    reason,
+                    rules_error: rules_err,
+                    completed_steps: prior.to_vec(),
+                    scene,
+                    hint: crate::clarify::Clarification::HINT.into(),
+                }))
+            };
+            let Some(client) = client.as_mut() else {
+                let inventory = driver
+                    .scene()
+                    .ok()
+                    .flatten()
+                    .map(|s| crate::clarify::scene_inventory(&s))
+                    .unwrap_or_default();
+                return Err(clarify(
+                    crate::clarify::ClarifyStage::NoModel,
+                    format!(
+                        "no model backend is configured (set FLOWPROOF_AI_PROVIDER / \
+                         FLOWPROOF_AI_API_KEY to enable LLM authoring): {rules_error}"
+                    ),
+                    Some(rules_error.to_string()),
+                    inventory,
+                ));
             };
             let scene = driver
                 .scene()?
@@ -618,9 +651,21 @@ fn author_actions<D: AppDriver, C: ModelClient>(
                 intent,
                 scene: &scene,
             };
-            let action = author_step(*client, &ctx)?;
-            *llm_used = true;
-            Ok(vec![action])
+            match author_step(*client, &ctx) {
+                Ok(action) => {
+                    *llm_used = true;
+                    Ok(vec![action])
+                }
+                // Grounding failure after the retry = genuine ambiguity.
+                // Config errors (bad key, network) stay plain errors.
+                Err(crate::AgentError::Authoring { reason, .. }) => Err(clarify(
+                    crate::clarify::ClarifyStage::Model,
+                    reason,
+                    Some(rules_error.to_string()),
+                    crate::clarify::scene_inventory(&scene),
+                )),
+                Err(other) => Err(other.into()),
+            }
         }
     }
 }
@@ -743,7 +788,12 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                         url: flowproof_trace::secret::resolve_refs(url)?,
                         body: None,
                         status: *status,
-                        body_contains: body_contains.clone(),
+                        // Resolved like `equals` above: the trace keeps the
+                        // raw ${VAR}; only the live probe sees the value.
+                        body_contains: match body_contains {
+                            Some(needle) => Some(flowproof_trace::secret::resolve_refs(needle)?),
+                            None => None,
+                        },
                     };
                     poll_oob(&probe, *timeout_ms, &spec_step.intent())?
                 }
@@ -1210,6 +1260,80 @@ steps:
             .expect_err("rules-only must fail");
         assert!(matches!(err, RecordError::Rules(_)));
         assert_eq!(client.calls, 0);
+    }
+
+    #[test]
+    fn no_model_backend_yields_clarification_with_scene() {
+        let spec = FlowSpec::parse(
+            "name: Vague
+app: web
+url: https://e.test/x
+steps:
+  - Type acme into the \"Supplier\" field
+  - make required field changes
+",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["Supplier"]);
+        driver.scene = Some(
+            r##"[{"target":"css:#price","tag":"input","type":"text","label":"Net Price"}]"##.into(),
+        );
+        let out = std::env::temp_dir().join("flowproof-clarify-nomodel.trace.jsonl");
+        let err = record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Auto,
+            Option::<&mut CountingClient>::None,
+        )
+        .expect_err("vague step with no model must need clarification");
+        let RecordError::NeedsClarification(c) = err else {
+            panic!("expected NeedsClarification, got: {err}");
+        };
+        assert_eq!(c.step, "make required field changes");
+        assert_eq!(c.step_index, 1);
+        assert_eq!(c.stage, crate::ClarifyStage::NoModel);
+        assert_eq!(
+            c.completed_steps,
+            vec!["Type acme into the \"Supplier\" field"]
+        );
+        // The live inventory reached the payload — the driving agent can
+        // see the "Net Price" field exists and rewrite the step.
+        assert_eq!(c.scene.len(), 1);
+        assert_eq!(c.scene[0].label.as_deref(), Some("Net Price"));
+        assert!(c.rules_error.is_some());
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn ungrounded_model_yields_clarification() {
+        let spec = FlowSpec::parse(
+            "name: Vague
+app: web
+url: https://e.test/x
+steps:
+  - make required field changes
+",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["#price"]);
+        driver.scene = Some(r##"[{"target":"css:#price","tag":"input"}]"##.into());
+        // The model invents a selector on both attempts — grounding fails.
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target":"css:#invented"}"##.into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-clarify-model.trace.jsonl");
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("ungroundable step must need clarification");
+        let RecordError::NeedsClarification(c) = err else {
+            panic!("expected NeedsClarification, got: {err}");
+        };
+        assert_eq!(c.stage, crate::ClarifyStage::Model);
+        assert_eq!(client.calls, 2, "one attempt + one self-correcting retry");
+        assert!(c.rules_error.is_some(), "rules diagnostic travels along");
+        assert_eq!(c.scene[0].target, "css:#price");
+        std::fs::remove_file(&out).ok();
     }
 
     #[test]

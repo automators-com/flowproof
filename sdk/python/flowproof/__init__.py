@@ -11,6 +11,7 @@ See https://github.com/automators-com/flowproof
 """
 
 from flowproof.flow import (
+    ClarificationNeeded,
     Flow,
     HealResult,
     RecordResult,
@@ -25,6 +26,7 @@ from flowproof.flow import (
 __version__ = "0.1.0"
 
 __all__ = [
+    "ClarificationNeeded",
     "Flow",
     "HealResult",
     "RecordResult",
