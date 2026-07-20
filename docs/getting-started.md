@@ -119,6 +119,29 @@ via `sh -c` with the current spec path in `$FLOWPROOF_SPEC`. A hook that
 exits non-zero aborts the suite — silent seed/cleanup failure is exactly
 the fragility to avoid.
 
+**Minted test data: `env_from`.** Hooks are for *effects*; their stdout
+is not captured. When flows need values an external CLI mints (DataMaker
+picking a valid Material/Supplier/Plant out of SAP), declare a data
+command instead:
+
+```yaml
+env_from: datamaker sap info-record pick --plant 1010 --format env
+```
+
+It runs once before any flow (via `sh -c`, from the suite directory); its
+stdout must be `KEY=VALUE` lines (`#` comments and blank lines allowed)
+which become env vars for every flow and hook — reachable from specs as
+`${VAR}`. Precedence: process env < `env_from` < `env:`. It fails closed:
+a non-zero exit or a malformed line aborts the run.
+
+Suite context follows single flows too: `record` and single-spec `run`
+discover the nearest `suite.yaml` walking up from the spec (nearest wins;
+the chosen manifest is named on stderr), so a flow behaves the same alone
+as inside its suite — including at record time, when `${VAR}`s must
+already resolve. Note the trust model: running a spec executes the
+`env_from`/hooks of the suite it belongs to, same as running the suite.
+See [self-help.md](self-help.md) for the authoring loop this enables.
+
 Programmatic callers invoking the CLI should pass `--json`: the full
 structured report prints to stdout instead of the human-readable lines —
 never parse the prose output.

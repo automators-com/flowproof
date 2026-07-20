@@ -17,6 +17,7 @@ def test_version_is_exposed():
 
 def test_public_api_surface():
     assert set(flowproof.__all__) == {
+        "ClarificationNeeded",
         "Flow",
         "HealResult",
         "RecordResult",
@@ -28,6 +29,28 @@ def test_public_api_surface():
         "record",
         "run",
     }
+
+
+def test_ambiguous_step_raises_clarification_needed(tmp_path, monkeypatch):
+    """A step no rule matches, recorded with no model backend, must surface
+    the structured clarification — not a bare error string. app: api works
+    on any OS (no UI is launched)."""
+    for var in (
+        "FLOWPROOF_AI_PROVIDER",
+        "FLOWPROOF_AI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    spec = tmp_path / "vague.flow.yaml"
+    spec.write_text("name: Vague\napp: api\nsteps:\n  - Frobnicate the widget\n")
+    with pytest.raises(flowproof.ClarificationNeeded) as exc:
+        flowproof.record(spec)
+    clarification = exc.value.clarification
+    assert clarification["step"] == "Frobnicate the widget"
+    assert clarification["stage"] == "no_model"
+    assert clarification["step_index"] == 0
+    assert "hint" in clarification and "scene" in clarification
 
 
 def test_flow_normalizes_spec_to_path():

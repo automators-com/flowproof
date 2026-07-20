@@ -1,0 +1,63 @@
+# SAP Fiori: change a purchasing info record and verify it — the classic
+# "PTP Process Area BU Apps → Manage Info Records" test case, expressed in
+# flowproof's ordinary web grammar. Fiori is a browser app, so `app: web`
+# (the CDP driver); `app: sap` is SAP GUI (desktop) only.
+#
+# Every value that is test DATA travels as a ${VAR} reference: it resolves
+# from the environment at record AND replay, and only the raw `${VAR}` is
+# ever stored in the trace. The sibling suite.yaml mints these vars from
+# the DataMaker CLI (env_from) before any flow runs — so the flow always
+# targets a Material/Supplier/Plant combination that really exists in the
+# connected SAP system.
+#
+# Quoted TARGETS ("Material", "Go", …) are text anchors matched against
+# labels/aria-labels/placeholders — they never resolve ${VAR}. Label
+# wording here is representative of a standard Fiori theme; if your
+# system's labels differ, record with --json and the clarification payload
+# will list the real fields on screen (see docs/self-help.md).
+name: Manage info records - edit and verify
+app: web
+url: ${FIORI_BASE_URL}/ui#Shell-home
+steps:
+  # -- Log in on the launchpad's login screen --------------------------
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+
+  # -- Navigate: module tile, then the app -----------------------------
+  - Click "PTP Process Area BU Apps"
+  - Click "Manage Info Records"
+  - assert: page shows Manage Purchasing Info Records
+
+  # -- Search the standard info record by the minted test data ---------
+  - Type ${MATERIAL} into the "Material" field
+  - Type ${SUPPLIER} into the "Supplier" field
+  - Type ${PLANT} into the "Plant" field
+  - Press the "Go" button
+  - assert: page shows ${MATERIAL}
+
+  # -- Open the record and make the field changes ----------------------
+  # This is the expansion of the manual script's vague "make required
+  # field changes": each field is named concretely. The first result row
+  # is addressed via the css escape hatch (targets don't resolve ${VAR},
+  # so the row can't be clicked "by material number").
+  - Click the 1st "css:.sapMListItems .sapMLIB"
+  - Press the "Edit" button
+  - Replace the "Net Price" field with ${NET_PRICE}
+  - Replace the "Minimum Order Quantity" field with 10
+
+  # -- Save ------------------------------------------------------------
+  - Press the "Save" button
+  - assert: page shows saved
+
+  # -- Verify the change back in the Manage Info Records list ----------
+  - Press the "Go" button
+  - assert: the "Net Price" field contains ${NET_PRICE}
+
+  # -- Out-of-band truth: the changed record as SAP's OData sees it -----
+  # UI says saved; the API proves it. body_contains resolves ${VAR} too.
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/API_INFORECORD_PROCESS_SRV/A_PurchasingInfoRecord?$filter=Material%20eq%20'${MATERIAL}'
+      status: 200
+      body_contains: ${NET_PRICE}
