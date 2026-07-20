@@ -104,6 +104,11 @@ Works today:
 On the roadmap: visual-template matching, OCR sync conditions, DXGI
 capture. See [docs/design.md](docs/design.md).
 
+**Considering flowproof next to an existing browser suite?**
+[docs/comparison.md](docs/comparison.md) is an honest read on when it fits,
+when to keep what you have, and where a recent external evaluation's
+findings stand today.
+
 ## Repository layout
 
 | Path | What it is |
