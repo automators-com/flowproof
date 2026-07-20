@@ -47,7 +47,9 @@ fn fixture_lines_parse_and_validate() {
             serde_json::from_value(reserialized).expect("round-trip reparses");
         assert_eq!(reparsed, parsed);
     }
-    assert_eq!(steps, 2, "fixture should contain two steps");
+    // s0003 carries an api request body + headers with raw ${VAR} refs;
+    // s0002 (headerless GET) proves the backward-compat default path.
+    assert_eq!(steps, 3, "fixture should contain three steps");
 }
 
 #[test]

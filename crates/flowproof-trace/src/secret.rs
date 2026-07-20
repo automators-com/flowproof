@@ -68,6 +68,30 @@ pub fn resolve_refs(text: &str) -> Result<String, MissingSecret> {
     Ok(out)
 }
 
+/// Resolve `${VAR}` references inside a JSON value by walking its string
+/// leaves: objects and arrays recurse, every `Value::String` goes through
+/// [`resolve_refs`], keys and non-string scalars pass verbatim. This — not
+/// serialize→resolve→reparse — because a resolved secret containing `"` or
+/// `\` must land as DATA, never corrupt the JSON structure.
+pub fn resolve_refs_in_json(value: &serde_json::Value) -> Result<serde_json::Value, MissingSecret> {
+    use serde_json::Value;
+    Ok(match value {
+        Value::String(s) => Value::String(resolve_refs(s)?),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(resolve_refs_in_json)
+                .collect::<Result<_, _>>()?,
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| Ok((k.clone(), resolve_refs_in_json(v)?)))
+                .collect::<Result<_, MissingSecret>>()?,
+        ),
+        other => other.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +132,44 @@ mod tests {
         assert!(err
             .to_string()
             .contains("${FLOWPROOF_TEST_SECRET_UNSET_XYZ}"));
+    }
+
+    #[test]
+    fn json_refs_resolve_at_string_leaves_only() {
+        std::env::set_var("FLOWPROOF_TEST_JSON_TOKEN", "tok-123");
+        let value = serde_json::json!({
+            "provider": "postgres",
+            "auth": "Bearer ${FLOWPROOF_TEST_JSON_TOKEN}",
+            "nested": {"list": ["${FLOWPROOF_TEST_JSON_TOKEN}", 7, true, null]},
+            "count": 42
+        });
+        let resolved = resolve_refs_in_json(&value).expect("resolves");
+        assert_eq!(resolved["auth"], "Bearer tok-123");
+        assert_eq!(resolved["nested"]["list"][0], "tok-123");
+        // Non-string leaves and keys pass verbatim.
+        assert_eq!(resolved["nested"]["list"][1], 7);
+        assert_eq!(resolved["count"], 42);
+        assert_eq!(resolved["provider"], "postgres");
+    }
+
+    #[test]
+    fn json_resolution_survives_quote_bearing_secrets() {
+        // A secret containing quotes and backslashes must land as data —
+        // the reason resolution walks leaves instead of reparsing text.
+        std::env::set_var("FLOWPROOF_TEST_JSON_QUOTED", r#"pa"ss\word"#);
+        let value = serde_json::json!({"conn": "user:${FLOWPROOF_TEST_JSON_QUOTED}@host"});
+        let resolved = resolve_refs_in_json(&value).expect("resolves");
+        assert_eq!(resolved["conn"], r#"user:pa"ss\word@host"#);
+        // And the result still serializes to valid JSON.
+        let text = serde_json::to_string(&resolved).expect("serializes");
+        let back: serde_json::Value = serde_json::from_str(&text).expect("round-trips");
+        assert_eq!(back, resolved);
+    }
+
+    #[test]
+    fn json_missing_variable_fails_hard() {
+        let value = serde_json::json!(["${FLOWPROOF_TEST_JSON_UNSET_XYZ}"]);
+        let err = resolve_refs_in_json(&value).expect_err("must fail");
+        assert_eq!(err.var, "FLOWPROOF_TEST_JSON_UNSET_XYZ");
     }
 }

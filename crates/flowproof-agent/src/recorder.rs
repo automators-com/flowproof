@@ -378,6 +378,8 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
         ResolvedAction::AssertApi {
             method,
             url,
+            headers,
+            body,
             status,
             body_contains,
             timeout_ms,
@@ -390,10 +392,13 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             (
                 Vec::new(),
                 Action::Assert(Assertion::Api {
+                    // Raw clones: body string leaves and header values keep
+                    // their ${VAR} refs — tokens never enter the trace.
                     request: flowproof_trace::format::ApiRequest {
                         method: method.clone(),
                         url: url.clone(),
-                        body: None,
+                        body: body.clone(),
+                        headers: headers.clone(),
                     },
                     status: *status,
                     expect: Some(serde_json::Value::Object(expect)),
@@ -779,17 +784,29 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
                 ResolvedAction::AssertApi {
                     method,
                     url,
+                    headers,
+                    body,
                     status,
                     body_contains,
                     timeout_ms,
                 } => {
+                    // Resolved like `equals` above: the trace keeps the raw
+                    // ${VAR}; only the live probe sees values — including
+                    // header tokens and body string leaves.
                     let probe = flowproof_driver::oob::OobProbe::Api {
                         method: method.clone(),
                         url: flowproof_trace::secret::resolve_refs(url)?,
-                        body: None,
+                        body: match body {
+                            Some(b) => Some(flowproof_trace::secret::resolve_refs_in_json(b)?),
+                            None => None,
+                        },
+                        headers: headers
+                            .iter()
+                            .map(|(k, v)| {
+                                Ok((k.clone(), flowproof_trace::secret::resolve_refs(v)?))
+                            })
+                            .collect::<Result<_, flowproof_trace::secret::MissingSecret>>()?,
                         status: *status,
-                        // Resolved like `equals` above: the trace keeps the
-                        // raw ${VAR}; only the live probe sees the value.
                         body_contains: match body_contains {
                             Some(needle) => Some(flowproof_trace::secret::resolve_refs(needle)?),
                             None => None,

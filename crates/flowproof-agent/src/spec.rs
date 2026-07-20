@@ -95,7 +95,11 @@ pub struct SqlAssertSpec {
 
 /// ```yaml
 /// - assert_api:
-///     request: GET ${DM_API}/templates
+///     request: POST ${DM_API}/connections/test
+///     headers:                         # optional; values may be ${VAR} refs
+///       Authorization: Bearer ${DM_SESSION_TOKEN}
+///     body:                            # optional JSON (mapping or string);
+///       provider: postgres             # ${VAR} refs resolve in string leaves
 ///     status: 200                      # optional; default = any 2xx
 ///     body_contains: TestTemplate      # optional
 /// ```
@@ -103,6 +107,14 @@ pub struct SqlAssertSpec {
 pub struct ApiAssertSpec {
     /// `METHOD url` — the url may carry `${VAR}` refs (base URLs, tokens).
     pub request: String,
+    /// Request headers (e.g. Authorization). Values may carry `${VAR}`
+    /// refs — the trace stores the raw reference, never the token.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// Request body: any YAML (mapping/list/string), sent as JSON. `${VAR}`
+    /// refs inside string values resolve at probe time. POST/PUT/PATCH only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

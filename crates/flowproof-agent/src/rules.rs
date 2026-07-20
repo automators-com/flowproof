@@ -123,6 +123,10 @@ pub enum ResolvedAction {
     AssertApi {
         method: String,
         url: String,
+        /// Request headers; values may carry raw `${VAR}` refs.
+        headers: std::collections::BTreeMap<String, String>,
+        /// Request body (JSON), `${VAR}` refs in string leaves.
+        body: Option<serde_json::Value>,
         status: Option<u16>,
         body_contains: Option<String>,
         timeout_ms: u64,
@@ -232,9 +236,20 @@ pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, R
                         "assert_api request must be '<METHOD> <url>' (e.g. 'GET ${API}/x')",
                     )
                 })?;
+            let method = method.to_ascii_uppercase();
+            // A body on a bodyless method is a spec mistake — fail here,
+            // before anything records, not with an HTTP surprise later.
+            if assert_api.body.is_some() && matches!(method.as_str(), "GET" | "HEAD" | "DELETE") {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api body is only sent for POST/PUT/PATCH",
+                ));
+            }
             return Ok(vec![ResolvedAction::AssertApi {
-                method: method.to_ascii_uppercase(),
+                method,
                 url: url.to_string(),
+                headers: assert_api.headers.clone(),
+                body: assert_api.body.clone(),
                 status: assert_api.status,
                 body_contains: assert_api.body_contains.clone(),
                 timeout_ms: assert_api
@@ -972,6 +987,52 @@ mod web {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assert_api_threads_body_and_headers_through() {
+        let spec: crate::spec::ApiAssertSpec = serde_yaml::from_str(
+            "request: POST ${API}/connections/test\n\
+             headers:\n  Authorization: Bearer ${TOKEN}\n\
+             body:\n  provider: postgres\n  connectionString: ${CONN}\n\
+             status: 200\nbody_contains: not yet supported\n",
+        )
+        .expect("spec parses");
+        let step = SpecStep::AssertApi { assert_api: spec };
+        let actions = resolve_step("web", &step).expect("resolves");
+        let ResolvedAction::AssertApi {
+            method,
+            url,
+            headers,
+            body,
+            ..
+        } = &actions[0]
+        else {
+            panic!("expected AssertApi");
+        };
+        assert_eq!(method, "POST");
+        assert_eq!(url, "${API}/connections/test");
+        // Raw refs pass through untouched — resolution is probe-time only.
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer ${TOKEN}")
+        );
+        assert_eq!(
+            body.as_ref().expect("body present")["connectionString"],
+            "${CONN}"
+        );
+    }
+
+    #[test]
+    fn assert_api_body_on_get_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec =
+            serde_yaml::from_str("request: GET ${API}/x\nbody:\n  a: 1\n").expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("body on GET must fail early");
+        assert!(
+            err.to_string().contains("POST/PUT/PATCH"),
+            "names the allowed methods: {err}"
+        );
+    }
 
     #[test]
     fn calc_type_expands_per_digit() {

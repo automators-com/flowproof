@@ -1,0 +1,21 @@
+# An authenticated JSON POST with no UI at all (`app: api`) — the
+# "API test in UI clothing" shape: POST a payload, assert on the response.
+# The session token and connection string travel as ${VAR} references:
+# resolved from the environment when the probe fires (record and every
+# replay), never stored in the trace.
+#
+# `body` is any YAML (mapping/list/string), sent as JSON with an automatic
+# `content-type: application/json` — set your own content-type header to
+# override. A body on GET/HEAD/DELETE is rejected at parse time.
+name: Test database providers
+app: api
+steps:
+  - assert_api:
+      request: POST ${DM_API}/connections/test
+      headers:
+        Authorization: Bearer ${DM_SESSION_TOKEN}
+      body:
+        provider: postgres
+        connectionString: ${TEST_CONN_STRING}
+      status: 200
+      body_contains: "Database not yet supported!"

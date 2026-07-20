@@ -61,7 +61,23 @@ append `within <N>s` to any form to change the bound.
     request: GET ${API}/orders/4711
     status: 200
     body_contains: "confirmed"
+- assert_api:                    # authenticated JSON POST
+    request: POST ${API}/connections/test
+    headers:
+      Authorization: Bearer ${SESSION_TOKEN}
+    body:
+      provider: postgres
+      connectionString: ${TEST_CONN_STRING}
+    status: 200
+    body_contains: "Database not yet supported!"
 ```
+
+`headers` values and `body` string values may carry `${VAR}` refs — the
+trace stores only the raw reference; tokens and connection strings resolve
+when the probe fires (record and every replay). `body` is any YAML
+(mapping, list, or string), sent as JSON with `content-type:
+application/json` unless you set your own `content-type` header — yours
+wins. A `body` on GET/HEAD/DELETE is rejected at parse time.
 
 ## App sugar
 

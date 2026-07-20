@@ -405,7 +405,17 @@ fn check_assertion<D: AppDriver>(
             let probe = flowproof_driver::oob::OobProbe::Api {
                 method: request.method.clone(),
                 url: flowproof_trace::secret::resolve_refs(&request.url)?,
-                body: request.body.clone(),
+                // Trace carries raw ${VAR} refs in body leaves and header
+                // values; the probe gets the resolved data.
+                body: match &request.body {
+                    Some(b) => Some(flowproof_trace::secret::resolve_refs_in_json(b)?),
+                    None => None,
+                },
+                headers: request
+                    .headers
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone(), flowproof_trace::secret::resolve_refs(v)?)))
+                    .collect::<Result<_, flowproof_trace::secret::MissingSecret>>()?,
                 status: *status,
                 // Resolved like `equals` above: the trace carries the raw
                 // ${VAR}; only the live probe sees the value.
