@@ -174,7 +174,7 @@ next to the trace (path surfaced as `diff_html` in the heal report).
 - **Redaction proof**: capture against the web greeter page extended with a
   password field + a css-masked region; decode the *persisted* PNGs and
   assert the masked rects are uniform fill (and the same test passes through
-  the real browser path in the ubuntu E2E job). A second test proves the
+  the real browser path in the ubuntu live-app CI job). A second test proves the
   fail-closed path drops frames when a rule can't resolve.
 - **Schema conformance**: extended fixture trace with `recording` +
   `redaction` blocks validates against the updated JSON Schema; round-trip
