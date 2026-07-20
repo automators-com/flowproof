@@ -39,6 +39,9 @@ fn cli_main(py: Python<'_>, args: Vec<String>) -> PyResult<u8> {
 fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<String> {
     py.detach(|| {
         let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
+        // Suite env/data (suite.yaml env_from + env) governs MCP-driven
+        // recording exactly like the CLI.
+        flowproof_cli::apply_suite_context(&spec).map_err(runtime_err)?;
         let out = out.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
         let mut driver = flowproof_cli::driver_for(&parsed.app).map_err(runtime_err)?;
         match flowproof_agent::record(&parsed, &mut driver, &out) {
@@ -62,6 +65,7 @@ fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<Strin
 #[pyo3(signature = (spec, trace=None))]
 fn run(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>) -> PyResult<String> {
     py.detach(|| {
+        flowproof_cli::apply_suite_context(&spec).map_err(runtime_err)?;
         let trace_path = trace.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
         let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(runtime_err)?;
         let mut driver = flowproof_cli::driver_for(&header.app.name).map_err(runtime_err)?;

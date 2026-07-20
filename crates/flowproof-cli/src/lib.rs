@@ -168,6 +168,9 @@ fn cmd_record(
     author: AuthorArg,
 ) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    // The suite's data (env_from) and env govern recording too — the
+    // ${VAR}s a spec references must resolve the same here as in `run`.
+    apply_suite_context(spec_path)?;
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
     let mut driver = driver_for(&spec.app)?;
     let summary = match flowproof_agent::record_with_author(&spec, &mut driver, &out, author.into())
@@ -273,6 +276,92 @@ fn apply_suite_env(manifest: &flowproof_agent::SuiteManifest) -> Result<(), Stri
     Ok(())
 }
 
+/// Parse a data command's stdout into env pairs. Dotenv-ish and strict:
+/// blank lines and `#` comments are skipped; everything else must be
+/// `NAME=VALUE` with a `${VAR}`-legal name; the value is taken verbatim
+/// (no quote stripping). Anything else is an error naming the line —
+/// running flows against half-seeded data is the failure mode to prevent.
+fn parse_env_lines(stdout: &str) -> Result<Vec<(String, String)>, String> {
+    let valid_name = |name: &str| {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let mut pairs = Vec::new();
+    for (i, line) in stdout.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            return Err(format!("env_from output line {} is not NAME=VALUE", i + 1));
+        };
+        let name = name.trim();
+        if !valid_name(name) {
+            return Err(format!(
+                "env_from output line {} has invalid name '{name}' \
+                 (must match [A-Za-z_][A-Za-z0-9_]*)",
+                i + 1
+            ));
+        }
+        pairs.push((name.to_string(), value.to_string()));
+    }
+    Ok(pairs)
+}
+
+/// Run the manifest's `env_from` command (if any) and export its stdout as
+/// env vars — the bridge from an external data CLI (DataMaker minting test
+/// data from SAP) into `${VAR}` references. Runs via `sh -c` from the
+/// suite directory, with stdout captured (`.output()` — the one thing
+/// `before_each` hooks structurally cannot do). Fails closed on a non-zero
+/// exit or malformed output. Runs BEFORE `env:` so declared env can
+/// compose/override captured values.
+fn apply_env_from(manifest: &flowproof_agent::SuiteManifest, dir: &Path) -> Result<(), String> {
+    let Some(command) = &manifest.env_from else {
+        return Ok(());
+    };
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("env_from command failed to start: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "env_from command exited with {}: {}",
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    for (name, value) in parse_env_lines(&String::from_utf8_lossy(&output.stdout))? {
+        std::env::set_var(name, value);
+    }
+    Ok(())
+}
+
+/// Apply the suite context governing a single spec: discover the nearest
+/// `suite.yaml` walking up from the spec (nearest wins), run its
+/// `env_from`, export its `env`. `record` and single-spec `run` call this
+/// so a flow behaves the same alone as inside its suite — the data a
+/// DataMaker CLI mints at suite level reaches `${VAR}` at record time AND
+/// replay time. No manifest = no-op.
+pub fn apply_suite_context(spec_path: &Path) -> Result<(), String> {
+    let Some((manifest, dir)) =
+        flowproof_agent::SuiteManifest::discover(spec_path).map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+    // Name the manifest so a surprising ancestor suite.yaml is visible.
+    eprintln!(
+        "using suite context from {}",
+        dir.join("suite.yaml").display()
+    );
+    apply_env_from(&manifest, &dir)?;
+    apply_suite_env(&manifest)
+}
+
 /// Reorder discovered specs to honor the manifest's explicit `order`
 /// (paths relative to the suite dir); unlisted specs keep their sorted
 /// position, after the listed ones.
@@ -325,6 +414,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
     let manifest = flowproof_agent::SuiteManifest::load_from_dir(dir)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
+    apply_env_from(&manifest, dir)?;
     apply_suite_env(&manifest)?;
     order_specs(&mut specs, dir, &manifest.order);
 
@@ -428,6 +518,9 @@ fn cmd_run(
     if spec_path.is_dir() {
         return run_suite(spec_path, json, retries);
     }
+    // A single flow gets its suite's env/data too — replay resolves ${VAR}
+    // at moment-of-use, so the same values must be present as at record.
+    apply_suite_context(spec_path)?;
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if !trace_path.exists() {
         return Err(format!(
@@ -619,6 +712,30 @@ mod tests {
     fn cli_definition_is_valid() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn parse_env_lines_is_dotenv_ish_and_strict() {
+        let pairs = parse_env_lines(
+            "# minted by datamaker\nMATERIAL=100-100\n\nNET_PRICE=123.45\n  PLANT=1010\n",
+        )
+        .expect("well-formed output parses");
+        assert_eq!(
+            pairs,
+            vec![
+                ("MATERIAL".to_string(), "100-100".to_string()),
+                ("NET_PRICE".to_string(), "123.45".to_string()),
+                ("PLANT".to_string(), "1010".to_string()),
+            ]
+        );
+        // Values are verbatim — an equals sign inside the value survives.
+        let pairs = parse_env_lines("QUERY=a=b\n").expect("parses");
+        assert_eq!(pairs[0].1, "a=b");
+
+        let err = parse_env_lines("MATERIAL=1\nnot key value\n").expect_err("malformed fails");
+        assert!(err.contains("line 2"), "names the line: {err}");
+        let err = parse_env_lines("2BAD=x\n").expect_err("bad name fails");
+        assert!(err.contains("invalid name"), "{err}");
     }
 
     #[test]
