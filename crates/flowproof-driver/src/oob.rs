@@ -31,6 +31,9 @@ pub enum OobProbe {
         method: String,
         url: String,
         body: Option<serde_json::Value>,
+        /// Request headers, already resolved (probes never see `${VAR}`
+        /// refs — the engine owns secret indirection).
+        headers: std::collections::BTreeMap<String, String>,
         status: Option<u16>,
         body_contains: Option<String>,
     },
@@ -98,6 +101,7 @@ pub fn check(probe: &OobProbe) -> Result<Result<(), String>, DriverError> {
             method,
             url,
             body,
+            headers,
             status,
             body_contains,
         } => {
@@ -109,19 +113,38 @@ pub fn check(probe: &OobProbe) -> Result<Result<(), String>, DriverError> {
                 .build()
                 .into();
             let sent = match method.to_ascii_uppercase().as_str() {
-                "GET" => agent.get(url.as_str()).call(),
-                "DELETE" => agent.delete(url.as_str()).call(),
-                "HEAD" => agent.head(url.as_str()).call(),
+                m @ ("GET" | "DELETE" | "HEAD") => {
+                    let mut builder = match m {
+                        "GET" => agent.get(url.as_str()),
+                        "DELETE" => agent.delete(url.as_str()),
+                        _ => agent.head(url.as_str()),
+                    };
+                    for (name, value) in headers {
+                        builder = builder.header(name.as_str(), value.as_str());
+                    }
+                    builder.call()
+                }
                 m @ ("POST" | "PUT" | "PATCH") => {
-                    let builder = match m {
+                    let mut builder = match m {
                         "POST" => agent.post(url.as_str()),
                         "PUT" => agent.put(url.as_str()),
                         _ => agent.patch(url.as_str()),
                     };
+                    for (name, value) in headers {
+                        builder = builder.header(name.as_str(), value.as_str());
+                    }
                     match body {
-                        Some(json) => builder
-                            .header("content-type", "application/json")
-                            .send(json.to_string()),
+                        Some(json) => {
+                            // Auto json content-type only when the user
+                            // didn't set one — their header wins.
+                            if !headers
+                                .keys()
+                                .any(|k| k.eq_ignore_ascii_case("content-type"))
+                            {
+                                builder = builder.header("content-type", "application/json");
+                            }
+                            builder.send(json.to_string())
+                        }
                         None => builder.send(""),
                     }
                 }

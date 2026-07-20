@@ -162,10 +162,13 @@ has `format != "flowproof-trace"` or an unsupported `version`.
   resolved from `FLOWPROOF_SQL_<NAME>` in the environment at run time
   (recording and every replay), failing closed when unset. The query may
   carry `${VAR}` references, resolved at execution.
-- `api` — out-of-band HTTP probe: `request {method,url,body?}`, expected
-  `status` (default: any 2xx) and `expect` (`body_contains`, `timeout_ms`).
-  The url may carry `${VAR}` references — base hosts and tokens resolve at
-  execution and never persist.
+- `api` — out-of-band HTTP probe: `request {method,url,body?,headers?}`,
+  expected `status` (default: any 2xx) and `expect` (`body_contains`,
+  `timeout_ms`). The url, header values, and body string leaves may carry
+  `${VAR}` references — base hosts, tokens, and connection strings resolve
+  at execution and never persist. `body` is any JSON, sent for
+  POST/PUT/PATCH with an auto `application/json` content-type unless a
+  user `content-type` header is present.
 
 ## Versioning
 

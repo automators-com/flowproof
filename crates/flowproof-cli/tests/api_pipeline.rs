@@ -77,3 +77,101 @@ steps:
     std::env::remove_var("API_BASE");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The DataMaker-shaped case: an authenticated JSON POST. The server
+/// returns 200 "Database not yet supported!" ONLY when it received the
+/// exact Authorization header and JSON body — so the flow passing at
+/// record AND replay proves both were sent, with the token and a
+/// quote-bearing connection string travelling via ${VAR} and never
+/// entering the trace.
+#[test]
+fn records_and_replays_an_authenticated_json_post() {
+    // The secret deliberately contains a quote and a backslash: it must
+    // land in the JSON body as data (leaf-walk resolution, not reparse).
+    let token = "tok-p2831-secret";
+    let conn = r#"postgres://u:pa"ss\w@db:5432/x"#;
+    std::env::set_var("CONN_API_BASE", ""); // set below once the server binds
+    std::env::set_var("CONN_SESSION_TOKEN", token);
+    std::env::set_var("CONN_STRING", conn);
+
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    std::env::set_var("CONN_API_BASE", &base);
+
+    let expected_auth = format!("Bearer {token}");
+    // record 1 probe + replay 1 probe.
+    let server_thread = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok(mut request) = server.recv() else {
+                break;
+            };
+            let auth_ok = request
+                .headers()
+                .iter()
+                .any(|h| h.field.equiv("Authorization") && h.value.as_str() == expected_auth);
+            let mut body = String::new();
+            std::io::Read::read_to_string(request.as_reader(), &mut body).ok();
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let body_ok = parsed["provider"] == "postgres"
+                && parsed["connectionString"] == r#"postgres://u:pa"ss\w@db:5432/x"#;
+            let json_ct = request.headers().iter().any(|h| {
+                h.field.equiv("Content-Type") && h.value.as_str().contains("application/json")
+            });
+            let (code, text) = if request.url() == "/connections/test" && auth_ok && body_ok {
+                if json_ct {
+                    (200, "Database not yet supported!")
+                } else {
+                    (415, "missing json content-type")
+                }
+            } else {
+                (401, "unauthorized or wrong body")
+            };
+            let response = tiny_http::Response::from_string(text).with_status_code(code);
+            request.respond(response).ok();
+        }
+    });
+
+    let spec_yaml = "\
+name: Test database providers
+app: api
+steps:
+  - assert_api:
+      request: POST ${CONN_API_BASE}/connections/test
+      headers:
+        Authorization: Bearer ${CONN_SESSION_TOKEN}
+      body:
+        provider: postgres
+        connectionString: ${CONN_STRING}
+      status: 200
+      body_contains: Database not yet supported!
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+
+    let dir = std::env::temp_dir().join("flowproof-api-auth-post");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("connections.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("authenticated POST records");
+
+    // Redaction invariant: refs in the trace, secrets not.
+    let trace = std::fs::read_to_string(&trace_path).expect("trace written");
+    assert!(trace.contains("${CONN_SESSION_TOKEN}"), "header ref kept");
+    assert!(trace.contains("${CONN_STRING}"), "body ref kept");
+    assert!(!trace.contains(token), "token must not leak into the trace");
+    assert!(
+        !trace.contains("pa\\\"ss"),
+        "connection string must not leak into the trace"
+    );
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "authenticated POST must replay: {report:#?}");
+
+    server_thread.join().ok();
+    for var in ["CONN_API_BASE", "CONN_SESSION_TOKEN", "CONN_STRING"] {
+        std::env::remove_var(var);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

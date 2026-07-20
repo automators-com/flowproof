@@ -315,6 +315,10 @@ pub struct ApiRequest {
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<Value>,
+    /// Request headers (e.g. Authorization). Values are stored as raw
+    /// `${VAR}` references and resolved only when the probe fires.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 /// One rung of the selector ladder as recorded for a step.

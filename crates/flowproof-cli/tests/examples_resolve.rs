@@ -1,12 +1,34 @@
-//! The shipped Fiori example must stay honest: every step parses and
-//! resolves through the deterministic web rules — no live SAP needed, no
-//! model backend. This is the same role `documented_grammar_examples_all_
+//! Shipped examples must stay honest: every step parses and resolves
+//! through the deterministic rules — no live system needed, no model
+//! backend. This is the same role `documented_grammar_examples_all_
 //! resolve` plays for docs/authoring.md.
 
 use flowproof_agent::{FlowSpec, SuiteManifest};
 
 const FIORI_SPEC: &str = include_str!("../../../examples/fiori/manage-info-records.flow.yaml");
 const FIORI_SUITE: &str = include_str!("../../../examples/fiori/suite.yaml");
+const CONN_TEST_SPEC: &str = include_str!("../../../examples/api/connection-test.flow.yaml");
+
+#[test]
+fn connection_test_example_resolves_with_body_and_headers() {
+    let spec = FlowSpec::parse(CONN_TEST_SPEC).expect("example parses");
+    assert_eq!(spec.app, "api");
+    let actions =
+        flowproof_agent::rules::resolve_step(&spec.app, &spec.steps[0]).expect("step resolves");
+    let flowproof_agent::rules::ResolvedAction::AssertApi { headers, body, .. } = &actions[0]
+    else {
+        panic!("expected AssertApi");
+    };
+    // Raw refs in the resolved action — resolution is probe-time only.
+    assert_eq!(
+        headers.get("Authorization").map(String::as_str),
+        Some("Bearer ${DM_SESSION_TOKEN}")
+    );
+    assert_eq!(
+        body.as_ref().expect("body present")["connectionString"],
+        "${TEST_CONN_STRING}"
+    );
+}
 
 #[test]
 fn fiori_example_resolves_entirely_via_rules() {

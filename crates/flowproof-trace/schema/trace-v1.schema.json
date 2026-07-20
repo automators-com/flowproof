@@ -268,7 +268,15 @@
                 "required": ["method", "url"],
                 "properties": {
                   "method": { "type": "string" },
-                  "url": { "type": "string" }
+                  "url": { "type": "string" },
+                  "body": {
+                    "description": "Request body (any JSON); ${VAR} refs in string leaves resolve at probe time."
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Request headers; values may be ${VAR} refs, resolved at probe time."
+                  }
                 }
               },
               "status": { "type": "integer" }
