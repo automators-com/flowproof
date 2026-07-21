@@ -84,3 +84,48 @@ See [`trace-format.md`](trace-format.md) and the JSON Schema in
 - Grounding model choice and packaging for the local perception stack.
 - Artifact store layout and retention (`.flowproof/artifacts/`).
 - Heal-diff UX: trace-line diff vs. side-by-side screenshot review.
+
+## Design notes from the Actual migration (round 2, P2)
+
+Three capability questions surfaced by migrating actualbudget/actual
+that are worth designing deliberately rather than shipping fast. The
+first two are tracked as issues; the third is a decision, recorded here.
+
+### Computed assertions (`expect.poll`-style)
+
+Playwright suites often read a value, act, then assert the NEW value
+relative to the old one (`balance == old_balance - 100`). Today a flow
+can only assert against literals or `${VAR}` refs fixed before the run.
+The deterministic-replay-compatible shape is a **named capture**: a step
+that reads an element's text into a run-scoped variable, plus assertion
+grammar that can reference it with simple arithmetic
+(`assert: the "Balance" shows ${captured.balance} - 100`). Capture and
+comparison both happen at execution time on both record and replay, so
+the trace stays value-free (same property the `${VAR}` secret
+indirection has). What needs design care: the expression grammar's size
+(keep it to `+`/`-` and numeric normalization, or it becomes a
+language), and how a captured value interacts with healing.
+
+### Table-cell addressing
+
+"The cell in column X of the row containing Y is empty" — row/column
+coordinates, not flat text anchors. The scene() inventory would need
+table structure (headers + row anchors), the grammar a
+`in the "<column>" column of the "<row>" row` locator suffix, and the
+selector ladder a structural tier that survives column reordering.
+Worth doing as one coherent piece; half of it (row-anchored text) is
+already expressible via `nth` ordinals, which is the workaround today.
+
+### `page.evaluate` escape hatch: rejected
+
+A free-form JavaScript step will not be added. It would puncture every
+invariant the engine is built on: the trace stops being reviewable
+(arbitrary code instead of declarative steps), replay stops being
+deterministic (script results feed back into control flow), redaction
+cannot see what the script touches, and healing cannot reason about it.
+Every concrete case the migration hit has a first-class answer instead:
+seeding state → `session:`; network shaping → `mock:`; environment
+shaping → `browser:`; reading values → assertions (and, when designed,
+named captures above). If a flow genuinely needs custom code, that code
+belongs in the app under test or in a suite hook (`before_each`), where
+it is visible, versioned, and outside the deterministic replay path.
