@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "flowproof"
-version = "0.2.3"
+version = "0.2.4"
 description = "Generic open-source automation framework for the AI-agent era: automated testing and agentic process automation across web, desktop, and Citrix."
 readme = "README.md"
 license = "Apache-2.0"

@@ -357,16 +357,23 @@ fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
 /// provenance (element text, surface text, later OCR text).
 ///
 /// Case-insensitive FALLBACK, mirroring element anchors: an exact match
-/// always wins; when it misses, lowercased comparison decides. The
-/// negative form mirrors the positive — if `shows X` would pass,
-/// `does not show X` must fail.
+/// always wins; when it misses, lowercased comparison decides.
+///
+/// The fallback is deliberately **widening-only**, so it can never turn a
+/// passing trace into a failing one. That means the NEGATIVE form does not
+/// get it: `page does not show friends` passed against a rendered "FRIENDS"
+/// before the fallback existed, and mirroring the positive form there would
+/// start failing it. Symmetry is the lesser property - a recorded trace
+/// that passed must keep passing. Counts widen the same way: a nonzero
+/// case-sensitive count IS the count, and the lowercased count is consulted
+/// only when the case-sensitive one found nothing.
 fn text_matches(expect: &serde_json::Value, expected: &str, negated: bool, text: &str) -> bool {
     let (text_ci, expected_ci) = (text.to_lowercase(), expected.to_lowercase());
     if negated {
-        !text.contains(expected) && !text_ci.contains(&expected_ci)
+        !text.contains(expected)
     } else if let Some(n) = expect.get("count").and_then(|v| v.as_u64()) {
-        text.matches(expected).count() as u64 == n
-            || text_ci.matches(&expected_ci).count() as u64 == n
+        let sensitive = text.matches(expected).count() as u64;
+        sensitive == n || (sensitive == 0 && text_ci.matches(&expected_ci).count() as u64 == n)
     } else if expect.get("value_contains").is_some() {
         text.contains(expected) || text_ci.contains(&expected_ci)
     } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
