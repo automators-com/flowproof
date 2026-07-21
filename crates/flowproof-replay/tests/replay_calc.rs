@@ -86,6 +86,53 @@ fn replay_fails_when_display_differs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A failing step captures the debug bundle into the run dir and suggests
+/// the nearest live text anchor — the two questions a human asks first,
+/// answered without a re-run.
+#[test]
+fn failure_writes_debug_bundle_and_suggests_nearest_anchor() {
+    let dir = std::env::temp_dir().join("flowproof-replay-debug-bundle");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    // Record a web flow pressing "Save change" against a mock that has it.
+    let spec = FlowSpec::parse(
+        "name: Save flow\napp: web\nurl: https://e.test/x\nsteps:\n  - Press the \"Save change\" button\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("save.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Save change"]);
+    record(&spec, &mut rec, &trace).expect("records");
+
+    // Replay against a drifted app: the button is now "Save changes".
+    let mut driver = MockAppDriver::new(&["other"]);
+    driver.scene = Some(
+        r#"[{"target":"css:#s","tag":"button","label":"Save changes"},
+            {"target":"css:#d","tag":"button","label":"Delete"}]"#
+            .into(),
+    );
+    driver.debug = Some(flowproof_driver::DebugBundle {
+        dom_html: Some("<html><body>drifted</body></html>".into()),
+        console: vec!["[error] boom".into()],
+    });
+    let (report, run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.clone().unwrap_or_default();
+    assert!(
+        detail.contains("did you mean 'Save changes'"),
+        "nearest-anchor hint present: {detail}"
+    );
+    assert!(
+        detail.contains("debug/dom.html") && detail.contains("debug/console.log"),
+        "capture note present: {detail}"
+    );
+    let dom = std::fs::read_to_string(run_dir.join("debug/dom.html")).expect("dom written");
+    assert!(dom.contains("drifted"));
+    let console = std::fs::read_to_string(run_dir.join("debug/console.log")).expect("log written");
+    assert!(console.contains("[error] boom"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 const NOTEPAD_SPEC: &str = "\
 name: Write a note
 app: notepad

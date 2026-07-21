@@ -78,7 +78,15 @@ pub struct WebAppDriver {
     /// Session staged via [`AppDriver::stage_session`], applied by the next
     /// `launch` before the page loads.
     staged_session: Option<WebSession>,
+    /// Recent console/log lines from the page (bounded ring buffer),
+    /// filled by a CDP event listener registered at launch — read
+    /// retroactively when a step fails ([`AppDriver::debug_bundle`]).
+    console: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
 }
+
+/// Cap on retained console lines — enough context for a failure, bounded
+/// so a chatty app can't balloon the run bundle.
+const CONSOLE_TAIL_CAP: usize = 100;
 
 impl WebAppDriver {
     /// A driver on the shared browser (isolated context per flow), or a
@@ -90,6 +98,7 @@ impl WebAppDriver {
                 context_id: None,
                 tab: None,
                 staged_session: None,
+                console: Default::default(),
             });
         }
         let browser = shared_browser()?;
@@ -102,6 +111,7 @@ impl WebAppDriver {
             context_id: Some(context_id),
             tab: None,
             staged_session: None,
+            console: Default::default(),
         })
     }
 
@@ -391,12 +401,60 @@ impl AppDriver for WebAppDriver {
         if let Some(session) = self.staged_session.take() {
             Self::apply_session(&tab, &session, command)?;
         }
+        // Console tail: subscribe BEFORE navigation so boot-time errors are
+        // captured too. Best-effort — a page without console history still
+        // yields a DOM snapshot on failure.
+        if tab.enable_log().and_then(|t| t.enable_runtime()).is_ok() {
+            let buffer = self.console.clone();
+            let listener = move |event: &headless_chrome::protocol::cdp::types::Event| {
+                use headless_chrome::protocol::cdp::types::Event;
+                let line = match event {
+                    Event::LogEntryAdded(e) => Some(format!(
+                        "[{:?}] {}",
+                        e.params.entry.level, e.params.entry.text
+                    )),
+                    Event::RuntimeExceptionThrown(e) => {
+                        Some(format!("[exception] {}", e.params.exception_details.text))
+                    }
+                    _ => None,
+                };
+                if let Some(line) = line {
+                    let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    if buf.len() >= CONSOLE_TAIL_CAP {
+                        buf.pop_front();
+                    }
+                    buf.push_back(line);
+                }
+            };
+            tab.add_event_listener(Arc::new(listener)).ok();
+        }
         tab.navigate_to(command)
             .map_err(|e| web_err(&format!("navigating to {command}"), e))?;
         tab.wait_until_navigated()
             .map_err(|e| web_err("waiting for page load", e))?;
         self.tab = Some(tab);
         Ok(())
+    }
+
+    fn debug_bundle(&mut self) -> Result<Option<flowproof_driver::DebugBundle>, DriverError> {
+        // Best-effort by contract: a half-captured bundle still beats none.
+        let dom_html = self
+            .tab()
+            .ok()
+            .and_then(|tab| {
+                tab.evaluate("document.documentElement.outerHTML", false)
+                    .ok()
+            })
+            .and_then(|v| v.value)
+            .and_then(|v| v.as_str().map(str::to_string));
+        let console = self
+            .console
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        Ok(Some(flowproof_driver::DebugBundle { dom_html, console }))
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {

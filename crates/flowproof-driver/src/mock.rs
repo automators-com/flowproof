@@ -31,6 +31,9 @@ pub struct MockAppDriver {
     pub fail_element_rect: bool,
     /// Scene JSON returned by `scene` (None = authoring unavailable).
     pub scene: Option<String>,
+    /// Failure-time diagnostics returned by `debug_bundle` (None = the
+    /// trait default: driver has nothing to add).
+    pub debug: Option<crate::DebugBundle>,
     /// Element keys that report as disabled via `element_enabled`.
     pub disabled: Vec<String>,
     /// Scripted text sequences: each `read_text` on the key pops the next
@@ -231,6 +234,10 @@ impl AppDriver for MockAppDriver {
 
     fn scene(&mut self) -> Result<Option<String>, DriverError> {
         Ok(self.scene.clone())
+    }
+
+    fn debug_bundle(&mut self) -> Result<Option<crate::DebugBundle>, DriverError> {
+        Ok(self.debug.clone())
     }
 }
 

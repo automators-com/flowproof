@@ -18,8 +18,8 @@ pub mod redact;
 pub mod window;
 
 pub use app::{
-    absolute_url, numeric_value, resolve_app, url_origin, AppDriver, AppTarget, KeyMod, NoOpDriver,
-    PixelRect, UiaAppDriver, UiaSelector, WebSession,
+    absolute_url, numeric_value, resolve_app, url_origin, AppDriver, AppTarget, DebugBundle,
+    KeyMod, NoOpDriver, PixelRect, UiaAppDriver, UiaSelector, WebSession,
 };
 pub use backend::PlatformBackend;
 pub use recording::{FrameRef, Recording, RunRecorder, StepTiming};
