@@ -340,11 +340,25 @@ impl std::fmt::Display for WebLocator {
 /// tried in order: (1) exact match on the element's DIRECT text nodes (its
 /// own text, so a sibling avatar's initials can never fuse with a label
 /// into "ETE2E Test Runner's Team"); (2) exact match on the concatenated
-/// subtree text (covers labels wrapped in spans); (3) and (4) the same two
-/// as prefix matches (a leading match is accepted when the accessible name
-/// carries trailing detail — catalog cards, chips like `ID: …`).
-fn text_xpaths(text: &str) -> [String; 4] {
+/// subtree text (covers labels wrapped in spans); (3) `<label>` association
+/// by the label's exact text — both the wrapping form
+/// `<label>Name: <input/></label>` and `<label for>`/`id` pairing; (4) and
+/// (5) the own-text/subtree rungs as prefix matches (a leading match is
+/// accepted when the accessible name carries trailing detail — catalog
+/// cards, chips like `ID: …`); (6) label association as a prefix match
+/// (so `Name` finds the field labelled `Name:`); (7) and (8) ASCII
+/// case-insensitive fallbacks of the exact and prefix rungs — role names
+/// are case-insensitive in Playwright, and real pages disagree with specs
+/// about capitalization ("Close Account" vs "Close account"). A
+/// case-sensitive match always wins over a case-insensitive one.
+fn text_xpaths(text: &str) -> Vec<String> {
+    const UPPER: &str = "'ABCDEFGHIJKLMNOPQRSTUVWXYZ'";
+    const LOWER: &str = "'abcdefghijklmnopqrstuvwxyz'";
     let lit = xpath_literal(text);
+    let lower_lit = xpath_literal(&text.to_ascii_lowercase());
+    let ci = |expr: &str| format!("translate({expr}, {UPPER}, {LOWER})={lower_lit}");
+    let ci_prefix =
+        |expr: &str| format!("starts-with(translate({expr}, {UPPER}, {LOWER}), {lower_lit})");
     let build = |by_text: String, by_label: String, by_placeholder: String| {
         format!(
             "//*[self::button or self::a or self::summary or @role='button' or \
@@ -354,7 +368,20 @@ fn text_xpaths(text: &str) -> [String; 4] {
              //textarea[{by_placeholder} or {by_label}]"
         )
     };
-    [
+    // Fields addressed by their <label>: the wrapping form associates by
+    // containment, the `for` form by id. XPath 1.0 node-set comparison
+    // makes `@id = //label[…]/@for` "any label whose for equals this id".
+    let by_label_assoc = |label_text: String| {
+        ["input", "textarea", "select"]
+            .map(|tag| {
+                format!(
+                    "//label[{label_text}]//{tag} | \
+                     //{tag}[@id = //label[{label_text}]/@for]"
+                )
+            })
+            .join(" | ")
+    };
+    vec![
         build(
             format!("text()[normalize-space(.)={lit}]"),
             format!("@aria-label={lit}"),
@@ -365,6 +392,7 @@ fn text_xpaths(text: &str) -> [String; 4] {
             format!("@aria-label={lit}"),
             format!("@placeholder={lit}"),
         ),
+        by_label_assoc(format!("normalize-space()={lit}")),
         build(
             format!("text()[starts-with(normalize-space(.), {lit})]"),
             format!("starts-with(@aria-label, {lit})"),
@@ -374,6 +402,25 @@ fn text_xpaths(text: &str) -> [String; 4] {
             format!("starts-with(normalize-space(), {lit})"),
             format!("starts-with(@aria-label, {lit})"),
             format!("starts-with(@placeholder, {lit})"),
+        ),
+        by_label_assoc(format!("starts-with(normalize-space(), {lit})")),
+        format!(
+            "{} | {}",
+            build(
+                ci("normalize-space()"),
+                ci("@aria-label"),
+                ci("@placeholder"),
+            ),
+            by_label_assoc(ci("normalize-space()")),
+        ),
+        format!(
+            "{} | {}",
+            build(
+                ci_prefix("normalize-space()"),
+                ci_prefix("@aria-label"),
+                ci_prefix("@placeholder"),
+            ),
+            by_label_assoc(ci_prefix("normalize-space()")),
         ),
     ]
 }
@@ -566,9 +613,25 @@ impl AppDriver for WebAppDriver {
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
+        // Visible text PLUS the accessible names of visible elements:
+        // icon-only buttons (a command palette, an account menu) exist on
+        // the page only as aria-labels, and `page shows` must see them.
         let value = self
             .tab()?
-            .evaluate("document.body ? document.body.innerText : ''", false)
+            .evaluate(
+                r#"(() => {
+                    const text = document.body ? document.body.innerText : '';
+                    const names = [];
+                    for (const el of document.querySelectorAll('[aria-label]')) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) {
+                            names.push(el.getAttribute('aria-label'));
+                        }
+                    }
+                    return names.length ? text + '\n' + names.join('\n') : text;
+                })()"#,
+                false,
+            )
             .map_err(|e| web_err("reading page text", e))?;
         Ok(value
             .value
@@ -879,6 +942,31 @@ impl AppDriver for WebAppDriver {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn text_xpath_ladder_orders_exact_label_prefix_then_case_insensitive() {
+        let rungs = super::text_xpaths("Close Account");
+        assert_eq!(rungs.len(), 8);
+        // Rung 1: exact own-text — unchanged from the original ladder.
+        assert!(rungs[0].contains("text()[normalize-space(.)='Close Account']"));
+        // Rung 3: label association — wrapping form and for/id pairing.
+        assert!(rungs[2].contains("//label[normalize-space()='Close Account']//input"));
+        assert!(rungs[2].contains("//input[@id = //label[normalize-space()='Close Account']/@for]"));
+        assert!(rungs[2].contains("//select"));
+        // Rung 6: label prefix — `Name` finds the field labelled `Name:`.
+        assert!(rungs[5].contains("starts-with(normalize-space(), 'Close Account')"));
+        // Rungs 7-8: case-insensitive fallbacks compare lowercased text.
+        assert!(rungs[6].contains("translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='close account'"));
+        assert!(rungs[6].contains("translate(@aria-label"));
+        assert!(rungs[7].contains("starts-with(translate(normalize-space()"));
+        // No case-sensitive rung mentions translate: exact always wins.
+        for rung in &rungs[..6] {
+            assert!(
+                !rung.contains("translate("),
+                "case-sensitive rung uses translate: {rung}"
+            );
+        }
+    }
+
     #[test]
     fn base64_matches_the_standard_alphabet_and_padding() {
         // RFC 4648 vectors.

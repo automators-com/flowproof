@@ -10,8 +10,15 @@ CI fails).
 
 Conventions: forms are case-insensitive in their keywords. `<text>` is
 literal text (may carry `${VAR}` secret references). A quoted `"<label>"`
-is a **text anchor** — matched against visible text, accessible label, or
-placeholder, exact first then prefix. Two escape hatches work inside any
+is a **text anchor** — matched against visible text, accessible label
+(`aria-label`), placeholder, or an associated `<label>` (both
+`<label>Name: <input/></label>` wrapping and `<label for>`/`id` pairing).
+Matching is exact first, then prefix (`"Name"` finds the field labelled
+`Name:`), then ASCII case-insensitive as a last resort (`"Close Account"`
+still finds the button reading `Close account`) — a case-sensitive match
+always wins. `page shows` reads visible text **plus** the accessible names
+of visible elements, so icon-only buttons that exist purely as an
+`aria-label` count. Two escape hatches work inside any
 quoted label: `"css:<selector>"` (web) and `"id:<native id>"` (DOM id,
 UIA AutomationId, SAP scripting id). `[2nd ]` marks an optional 1-based
 ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
