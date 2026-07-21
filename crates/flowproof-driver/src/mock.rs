@@ -41,6 +41,9 @@ pub struct MockAppDriver {
     /// remaining count is > 0 returns a shifted rect (and decrements), so
     /// stability gates see movement that later settles.
     pub moving: std::collections::HashMap<String, u32>,
+    /// Network mocks captured by `stage_mocks` — the mock stands in for
+    /// the web driver here, so tests can assert the staging happened.
+    pub staged_mocks: Vec<crate::WebMock>,
     /// Element keys that report as disabled via `element_enabled`.
     pub disabled: Vec<String>,
     /// Scripted text sequences: each `read_text` on the key pops the next
@@ -267,6 +270,11 @@ impl AppDriver for MockAppDriver {
             .or(selector.name.as_deref())
             .unwrap_or_default();
         Ok(Some(!self.obscured.iter().any(|k| k == key)))
+    }
+
+    fn stage_mocks(&mut self, rules: Vec<crate::WebMock>) -> Result<(), DriverError> {
+        self.staged_mocks = rules;
+        Ok(())
     }
 }
 

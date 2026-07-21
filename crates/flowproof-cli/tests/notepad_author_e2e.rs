@@ -29,6 +29,7 @@ fn freeform_spec() -> FlowSpec {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: vec![
             SpecStep::Plain("Write hello from flowproof into the editor".into()),
             SpecStep::Assert {

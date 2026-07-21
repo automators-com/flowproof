@@ -79,6 +79,27 @@ when the probe fires (record and every replay). `body` is any YAML
 application/json` unless you set your own `content-type` header — yours
 wins. A `body` on GET/HEAD/DELETE is rejected at parse time.
 
+## Network mocks (web flows; spec-level, not steps)
+
+```yaml
+mock:
+  - url_contains: /api/rates          # substring match on the request URL
+    method: GET                       # optional; any method when absent
+    status: 200                       # optional; default 200
+    body:                             # any YAML: string served verbatim
+      rate: 1.23                      #   (text/plain), anything else as
+      source: mocked                  #   JSON; content_type: overrides
+```
+
+Requests matching a rule are answered inside the browser — the real host
+is never contacted (it need not even exist). The rules travel in the
+trace header and apply **identically at record and replay**: what was
+mocked once is mocked always, which is what keeps the two executions
+equivalent. Mocked responses carry permissive CORS headers and answer
+preflights, so cross-origin `fetch()` calls just work. The tool for
+third-party calls (payments, analytics) and hard-to-provoke server
+states; for asserting on real APIs, use `assert_api` instead.
+
 ## App sugar
 
 - **calc**: `Type <digits>` (one press per digit), `Press

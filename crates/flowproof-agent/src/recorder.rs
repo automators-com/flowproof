@@ -527,6 +527,18 @@ fn driver_key_mod(m: &flowproof_trace::format::KeyModifier) -> flowproof_driver:
     }
 }
 
+/// Trace mock rule → the driver's fully-resolved form (one conversion,
+/// shared shape with replay via `WebMock::from_rule_parts`).
+fn web_mock_from_rule(rule: &flowproof_trace::format::MockRule) -> flowproof_driver::WebMock {
+    flowproof_driver::WebMock::from_rule_parts(
+        &rule.url_contains,
+        rule.method.as_deref(),
+        rule.status,
+        rule.content_type.as_deref(),
+        rule.body.as_ref(),
+    )
+}
+
 /// Poll an out-of-band probe until it holds or the bound elapses — the row
 /// may still be committing, the API still converging. Configuration errors
 /// (missing connection env) fail immediately.
@@ -691,6 +703,9 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
             cookies,
             local_storage,
         })?;
+    }
+    if !spec.mock.is_empty() {
+        driver.stage_mocks(spec.mock.iter().map(web_mock_from_rule).collect())?;
     }
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
     let (width, height) = driver.screen_size()?;
@@ -955,6 +970,9 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
             .collect(),
         // The RAW session setup — cookie values keep their `${VAR}` refs.
         session: spec.session.clone(),
+        // Mock rules travel with the trace: what was mocked at record MUST
+        // be mocked at replay, or the two executions test different things.
+        mock: spec.mock.clone(),
         spec: Some(flowproof_trace::format::SpecRef {
             name: spec.name.clone(),
             path: None,
