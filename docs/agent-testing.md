@@ -105,13 +105,61 @@ Semantics:
   A `strict: true` flow-level flag forbids unlisted calls — both modes
   are needed in practice, and subsequence is the right default for
   multi-step agents.
-- Argument matchers reuse the existing assertion vocabulary
-  (`contains`, `equals`, numeric normalization) against the call's
-  arguments; `${VAR}` refs resolve at execution like everywhere else.
 - `tools:` entries provide the mocked results the trajectory needs to
   continue past each call (a multi-step agent cannot proceed without
   them). In cassette replay these are recorded anyway; the block is what
   lets **record** avoid executing anything real.
+
+## Argument assertions
+
+Which tool was called is half the test; **what it was called with** is
+the other half, and usually where the bugs are.
+
+**Path matchers, partial by default.** Tool arguments are JSON, often
+nested. The prose form takes `where` clauses on dotted paths, reusing
+the existing matcher vocabulary (`equals`, `contains`, numeric
+normalization); the structured form takes an `args:` mapping for
+anything prose reads badly:
+
+```yaml
+- assert_tool_call: create_booking where flight.id equals KQ311
+- assert_tool_call:
+    tool: create_booking
+    args:
+      flight.id: KQ311                # equals
+      passenger.name: { contains: Casey }
+      seat: { matches: "[0-9]+[A-F]" }   # volatile shape, not value
+```
+
+Partial matching is the default — assert the arguments that carry the
+intent, not the whole object. An `args_exact:` form does full deep
+equality when the whole payload IS the contract. `${VAR}` refs resolve
+at execution like everywhere else.
+
+**Chained arguments are statically assertable.** Because tool results
+are spec-authored mocks, the expected arguments of *downstream* calls
+are known when the spec is written: if the `search_flights` mock returns
+`id: KQ311`, asserting `create_booking where flight.id equals KQ311`
+tests that the agent correctly threaded data from one tool's result into
+the next tool's call — the actual behavior multi-step agents get wrong —
+with zero nondeterminism and no capture machinery.
+
+**Volatile arguments** ("tomorrow" rendered as a date, generated
+idempotency keys): assert shape, not value — `matches` a pattern, or
+`exists`. The cassette layer (below) still pins the exact recorded value
+for regression purposes; the spec assertion names only what must hold
+across re-records.
+
+**Two layers, two jobs.** The cassette pins EVERY argument byte-exactly:
+at replay, any argument drift is a cassette mismatch reported as a
+field-level diff of the call's arguments (naming the path that changed),
+so even unasserted arguments are regression-protected by default.
+`assert_tool_call` is the *intent* layer on top: it is checked at record
+time (no trace is minted for a trajectory that fails it — same rule as
+UI flows), re-checked against the new trajectory after every re-record,
+and it documents in the spec which argument properties are meaningful —
+the ones a reviewer should defend in a heal diff, versus incidental
+values the cassette merely happens to pin.
 
 ## Phasing
 
