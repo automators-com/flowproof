@@ -82,11 +82,42 @@ pub struct WebAppDriver {
     /// filled by a CDP event listener registered at launch — read
     /// retroactively when a step fails ([`AppDriver::debug_bundle`]).
     console: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    /// Network mocks staged via [`AppDriver::stage_mocks`], installed by
+    /// the next `launch` before navigation (CDP Fetch interception).
+    staged_mocks: Vec<flowproof_driver::WebMock>,
 }
 
 /// Cap on retained console lines — enough context for a failure, bounded
 /// so a chatty app can't balloon the run bundle.
 const CONSOLE_TAIL_CAP: usize = 100;
+
+/// Standard base64 for CDP `Fetch.fulfillRequest` bodies — hand-rolled
+/// (~15 lines) rather than pulling a crate into the adapter for one call.
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
 
 impl WebAppDriver {
     /// A driver on the shared browser (isolated context per flow), or a
@@ -99,6 +130,7 @@ impl WebAppDriver {
                 tab: None,
                 staged_session: None,
                 console: Default::default(),
+                staged_mocks: Vec::new(),
             });
         }
         let browser = shared_browser()?;
@@ -112,6 +144,7 @@ impl WebAppDriver {
             tab: None,
             staged_session: None,
             console: Default::default(),
+            staged_mocks: Vec::new(),
         })
     }
 
@@ -401,6 +434,81 @@ impl AppDriver for WebAppDriver {
         if let Some(session) = self.staged_session.take() {
             Self::apply_session(&tab, &session, command)?;
         }
+        // Network mocks: install interception BEFORE navigation so even the
+        // first document's subresources are answerable. Unlike the console
+        // listener this is NOT best-effort — a mock that silently failed to
+        // install would change what the flow tests.
+        if !self.staged_mocks.is_empty() {
+            let mocks = std::mem::take(&mut self.staged_mocks);
+            tab.enable_fetch(None, None)
+                .map_err(|e| web_err("enabling network interception", e))?;
+            tab.enable_request_interception(Arc::new(
+                move |_transport: Arc<headless_chrome::browser::transport::Transport>,
+                      _session: headless_chrome::browser::transport::SessionId,
+                      event: headless_chrome::protocol::cdp::Fetch::events::RequestPausedEvent| {
+                    use headless_chrome::browser::tab::RequestPausedDecision;
+                    use headless_chrome::protocol::cdp::Fetch;
+                    let url = &event.params.request.url;
+                    let method = event.params.request.method.to_ascii_uppercase();
+                    // Mocked responses must carry permissive CORS headers:
+                    // the page's origin differs from the mocked host, and a
+                    // fulfilled response is still subject to CORS — without
+                    // them the fetch rejects and the mock looks dead.
+                    let cors = |ct: Option<&str>| {
+                        let mut headers = vec![
+                            Fetch::HeaderEntry {
+                                name: "access-control-allow-origin".into(),
+                                value: "*".into(),
+                            },
+                            Fetch::HeaderEntry {
+                                name: "access-control-allow-methods".into(),
+                                value: "*".into(),
+                            },
+                            Fetch::HeaderEntry {
+                                name: "access-control-allow-headers".into(),
+                                value: "*".into(),
+                            },
+                        ];
+                        if let Some(ct) = ct {
+                            headers.push(Fetch::HeaderEntry {
+                                name: "content-type".into(),
+                                value: ct.to_string(),
+                            });
+                        }
+                        headers
+                    };
+                    let any_match = mocks.iter().any(|m| url.contains(&m.url_contains));
+                    // CORS preflight for a mocked URL: answer it ourselves —
+                    // the real host may not even exist.
+                    if method == "OPTIONS" && any_match {
+                        return RequestPausedDecision::Fulfill(Fetch::FulfillRequest {
+                            request_id: event.params.request_id.clone(),
+                            response_code: 204,
+                            response_headers: Some(cors(None)),
+                            binary_response_headers: None,
+                            body: None,
+                            response_phrase: None,
+                        });
+                    }
+                    let rule = mocks.iter().find(|m| {
+                        url.contains(&m.url_contains)
+                            && m.method.as_ref().is_none_or(|want| *want == method)
+                    });
+                    match rule {
+                        Some(m) => RequestPausedDecision::Fulfill(Fetch::FulfillRequest {
+                            request_id: event.params.request_id.clone(),
+                            response_code: u32::from(m.status),
+                            response_headers: Some(cors(Some(&m.content_type))),
+                            binary_response_headers: None,
+                            body: Some(base64_encode(&m.body)),
+                            response_phrase: None,
+                        }),
+                        None => RequestPausedDecision::Continue(None),
+                    }
+                },
+            ))
+            .map_err(|e| web_err("installing network mocks", e))?;
+        }
         // Console tail: subscribe BEFORE navigation so boot-time errors are
         // captured too. Best-effort — a page without console history still
         // yields a DOM snapshot on failure.
@@ -470,6 +578,11 @@ impl AppDriver for WebAppDriver {
 
     fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
         self.staged_session = Some(session);
+        Ok(())
+    }
+
+    fn stage_mocks(&mut self, rules: Vec<flowproof_driver::WebMock>) -> Result<(), DriverError> {
+        self.staged_mocks = rules;
         Ok(())
     }
 
@@ -761,5 +874,26 @@ impl AppDriver for WebAppDriver {
             ));
         }
         Ok(rects)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn base64_matches_the_standard_alphabet_and_padding() {
+        // RFC 4648 vectors.
+        for (input, want) in [
+            (&b""[..], ""),
+            (b"f", "Zg=="),
+            (b"fo", "Zm8="),
+            (b"foo", "Zm9v"),
+            (b"foob", "Zm9vYg=="),
+            (b"fooba", "Zm9vYmE="),
+            (b"foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(super::base64_encode(input), want);
+        }
+        // Binary-safe (high bytes map into +/ territory).
+        assert_eq!(super::base64_encode(&[0xfb, 0xff, 0xfe]), "+//+");
     }
 }

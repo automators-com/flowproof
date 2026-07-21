@@ -278,6 +278,60 @@ pub trait AppDriver {
     ) -> Result<Option<bool>, DriverError> {
         Ok(None)
     }
+
+    /// Stage network mocks to apply at the next `launch` (before the page
+    /// loads). Drivers without a network layer must REJECT non-empty rules
+    /// — silently ignoring a mock would change what the flow tests.
+    fn stage_mocks(&mut self, rules: Vec<WebMock>) -> Result<(), DriverError> {
+        if rules.is_empty() {
+            return Ok(());
+        }
+        Err(DriverError::Uia(
+            "network mocks are not supported by this driver (web flows only)".into(),
+        ))
+    }
+}
+
+/// One fully-resolved network mock the web driver serves in place of a
+/// live response: match by URL substring (+ optional uppercase method),
+/// answer with the canned status/content-type/body bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebMock {
+    pub url_contains: String,
+    pub method: Option<String>,
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
+}
+
+impl WebMock {
+    /// Build from the trace-format rule parts, applying the body
+    /// conventions once for record AND replay: a JSON string body is
+    /// served verbatim (`text/plain` default), any other JSON serializes
+    /// (`application/json` default); an explicit content type overrides.
+    pub fn from_rule_parts(
+        url_contains: &str,
+        method: Option<&str>,
+        status: u16,
+        content_type: Option<&str>,
+        body: Option<&serde_json::Value>,
+    ) -> Self {
+        let (default_ct, bytes) = match body {
+            None => ("text/plain", Vec::new()),
+            Some(serde_json::Value::String(s)) => ("text/plain", s.clone().into_bytes()),
+            Some(other) => (
+                "application/json",
+                serde_json::to_vec(other).unwrap_or_default(),
+            ),
+        };
+        Self {
+            url_contains: url_contains.to_string(),
+            method: method.map(|m| m.to_ascii_uppercase()),
+            status,
+            content_type: content_type.unwrap_or(default_ct).to_string(),
+            body: bytes,
+        }
+    }
 }
 
 /// Failure-time diagnostics a driver can capture. All fields best-effort.
@@ -463,6 +517,10 @@ impl AppDriver for Box<dyn AppDriver> {
         selector: &UiaSelector,
     ) -> Result<Option<bool>, DriverError> {
         (**self).element_receives_events(selector)
+    }
+
+    fn stage_mocks(&mut self, rules: Vec<WebMock>) -> Result<(), DriverError> {
+        (**self).stage_mocks(rules)
     }
 }
 
@@ -875,6 +933,46 @@ mod stub_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_mock_body_conventions() {
+        // String body: served verbatim as text/plain.
+        let m = WebMock::from_rule_parts(
+            "/api/x",
+            None,
+            200,
+            None,
+            Some(&serde_json::Value::String("hello".into())),
+        );
+        assert_eq!(m.content_type, "text/plain");
+        assert_eq!(m.body, b"hello");
+        // Structured body: serialized as application/json.
+        let m = WebMock::from_rule_parts(
+            "/api/x",
+            Some("post"),
+            503,
+            None,
+            Some(&serde_json::json!({"ok": false})),
+        );
+        assert_eq!(m.content_type, "application/json");
+        assert_eq!(m.body, br#"{"ok":false}"#);
+        assert_eq!(m.method.as_deref(), Some("POST"), "method uppercased");
+        assert_eq!(m.status, 503);
+        // Explicit content type wins; no body = empty.
+        let m = WebMock::from_rule_parts("/x", None, 204, Some("text/event-stream"), None);
+        assert_eq!(m.content_type, "text/event-stream");
+        assert!(m.body.is_empty());
+    }
+
+    #[test]
+    fn non_web_drivers_reject_mocks_loudly() {
+        let mut driver = NoOpDriver::new();
+        assert!(driver.stage_mocks(Vec::new()).is_ok(), "empty is fine");
+        let err = driver
+            .stage_mocks(vec![WebMock::from_rule_parts("/x", None, 200, None, None)])
+            .expect_err("silently ignoring a mock would change the test");
+        assert!(err.to_string().contains("not supported"));
+    }
 
     #[test]
     fn selector_display_lists_set_fields() {

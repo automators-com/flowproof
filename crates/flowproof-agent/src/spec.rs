@@ -73,6 +73,12 @@ pub struct FlowSpec {
     /// satisfy it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_unless_env: Vec<String>,
+    /// Network mock rules (web flows): requests matching `url_contains`
+    /// are answered locally with the canned response — at record AND every
+    /// replay identically (the rules travel in the trace header). The tool
+    /// for third-party calls and hard-to-provoke server states.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mock: Vec<flowproof_trace::format::MockRule>,
     pub steps: Vec<SpecStep>,
 }
 

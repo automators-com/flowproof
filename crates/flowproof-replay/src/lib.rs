@@ -875,6 +875,25 @@ pub fn run_trace<D: AppDriver>(
             local_storage,
         })?;
     }
+    // Mock rules travel in the header: replays intercept exactly what the
+    // recording intercepted, or the two executions test different things.
+    if !header.mock.is_empty() {
+        driver.stage_mocks(
+            header
+                .mock
+                .iter()
+                .map(|m| {
+                    flowproof_driver::WebMock::from_rule_parts(
+                        &m.url_contains,
+                        m.method.as_deref(),
+                        m.status,
+                        m.content_type.as_deref(),
+                        m.body.as_ref(),
+                    )
+                })
+                .collect(),
+        )?;
+    }
     let started = Instant::now();
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
 

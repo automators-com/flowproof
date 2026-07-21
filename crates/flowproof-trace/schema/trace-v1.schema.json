@@ -50,6 +50,26 @@
           "description": "Redaction rules copied from the spec at record time; the driver's redaction layer owns their schema.",
           "items": { "type": "object" }
         },
+        "session": {
+          "type": "object",
+          "description": "Session state (cookies, localStorage) applied before the page loads; values may be ${VAR} refs. Deliberately loose: additive optional fields allowed within v1."
+        },
+        "mock": {
+          "type": "array",
+          "description": "Network mock rules applied identically at record and replay.",
+          "items": {
+            "type": "object",
+            "required": ["url_contains"],
+            "additionalProperties": false,
+            "properties": {
+              "url_contains": { "type": "string" },
+              "method": { "type": "string" },
+              "status": { "type": "integer" },
+              "content_type": { "type": "string" },
+              "body": { "description": "Any JSON: a string is served verbatim, anything else as JSON." }
+            }
+          }
+        },
         "trace_id": { "type": "string", "format": "uuid" },
         "recorded_at": { "type": "string", "format": "date-time" },
         "spec": {

@@ -106,6 +106,41 @@ fn record_press_trace(dir: &std::path::Path, label: &str, timeout_ms: u64) -> st
     trace
 }
 
+/// Mock rules travel spec → trace header → replay staging: what was
+/// mocked at record is mocked at replay, with one shared conversion.
+#[test]
+fn mock_rules_travel_from_spec_through_trace_to_replay_staging() {
+    let dir = std::env::temp_dir().join("flowproof-replay-mocks");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Mocked\napp: web\nurl: https://e.test/x\nmock:\n  - url_contains: /api/rates\n    method: get\n    status: 200\n    body:\n      rate: 1.23\nsteps:\n  - Press the \"Go\" button\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("mocked.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Go"]);
+    record(&spec, &mut rec, &trace).expect("records");
+    // Record-time staging happened...
+    assert_eq!(rec.staged_mocks.len(), 1);
+    assert_eq!(rec.staged_mocks[0].url_contains, "/api/rates");
+    assert_eq!(rec.staged_mocks[0].content_type, "application/json");
+    // ...and the rules landed in the header.
+    let header_line = std::fs::read_to_string(&trace)
+        .expect("trace readable")
+        .lines()
+        .next()
+        .map(str::to_string)
+        .expect("header");
+    assert!(header_line.contains("\"url_contains\":\"/api/rates\""));
+
+    // Replay stages the same mocks from the header alone.
+    let mut driver = MockAppDriver::new(&["Go"]);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "{report:#?}");
+    assert_eq!(driver.staged_mocks.len(), 1);
+    assert_eq!(driver.staged_mocks[0].body, br#"{"rate":1.23}"#);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Issue #42 gate 1: an element that exists but is disabled must not be
 /// clicked — and the failure must NAME the gate.
 #[test]

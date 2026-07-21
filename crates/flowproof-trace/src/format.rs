@@ -72,6 +72,37 @@ pub struct Header {
     /// be `${VAR}` secret references — resolved at apply time, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionSetup>,
+    /// Network mock rules copied from the spec at record time, applied
+    /// identically at record and every replay (web flows): a request whose
+    /// URL matches is answered locally, never leaving the browser. What was
+    /// mocked at record MUST be mocked at replay — that is what keeps the
+    /// two executions equivalent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mock: Vec<MockRule>,
+}
+
+/// One network mock: match by URL substring (and optionally method), answer
+/// with a canned response. `body` is any JSON — a string is served verbatim
+/// (`text/plain` default), anything else serializes to JSON
+/// (`application/json` default); `content_type` overrides either.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MockRule {
+    /// Substring the request URL must contain.
+    pub url_contains: String,
+    /// Uppercase HTTP method filter; absent = any method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default = "default_mock_status")]
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Value>,
+}
+
+fn default_mock_status() -> u16 {
+    200
 }
 
 /// Pre-launch session state: how authenticated app flows start without a

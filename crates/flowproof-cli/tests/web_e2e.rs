@@ -29,6 +29,7 @@ fn records_and_replays_a_browser_flow() {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -92,6 +93,7 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -183,6 +185,7 @@ fn secret_reference_types_real_value_but_never_persists_it() {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type ${FLOWPROOF_E2E_PW} into the pw field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -256,6 +259,7 @@ fn assertions_wait_for_async_page_updates() {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Press the start button".into()),
             flowproof_agent::SpecStep::Plain(
@@ -319,6 +323,7 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Plain(
                 "Type Customers into the \"Template name\" field".into(),
@@ -393,6 +398,7 @@ fn assertion_forms_wait_and_verify_on_real_pages() {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "the searchBox field contains prefilled".into(),
@@ -488,6 +494,7 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: vec![
             // Fill semantics: clear the prefilled value, retype, Enter.
             // "Submitted: fresh" (not "…stale textfresh") proves the clear.
@@ -590,6 +597,7 @@ fn session_seeding_and_navigation_drive_real_pages() {
             local_storage,
         }),
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows project: ${FLOWPROOF_E2E_PROJECT}".into(),
@@ -660,6 +668,7 @@ fn persisted_frames_never_contain_masked_data() {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type bob into the user field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -829,6 +838,7 @@ fn select_own_text_anchors_and_state_asserts_work() {
         window: None,
         session: None,
         skip_unless_env: Vec::new(),
+        mock: Vec::new(),
         steps: FlowSpec::parse(
             "name: x\napp: web\nurl: x\nsteps:\n\
              - assert: the \"Save\" is disabled\n\
@@ -863,6 +873,52 @@ fn select_own_text_anchors_and_state_asserts_work() {
         eprintln!("{:?} {} {}", step.status, step.id, step.intent);
     }
     assert!(report.passed, "eval-fix flow must pass: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Network mocking against real Chromium: the page fetches an absolute URL
+/// on a host that does not exist — only CDP interception can answer it.
+/// The mocked body renders into the DOM at record AND replay, proving the
+/// rules apply identically on both executions.
+#[test]
+fn mock_rules_intercept_real_requests_at_record_and_replay() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web mock E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-mock-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("rates.html");
+    // No such host resolves: without interception this page shows "offline".
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Rates</title><div id="out">loading</div>
+<script>
+fetch('https://rates.invalid.flowproof.test/api/rates')
+  .then(r => r.json())
+  .then(d => { document.getElementById('out').textContent = 'rate ' + d.rate + ' via ' + d.source; })
+  .catch(() => { document.getElementById('out').textContent = 'offline'; });
+</script>"#,
+    )
+    .expect("page written");
+
+    let spec = FlowSpec::parse(&format!(
+        "name: Mocked rates\napp: web\nurl: file://{}\nmock:\n  - url_contains: /api/rates\n    body:\n      rate: 1.23\n      source: mocked\nsteps:\n  - Wait until page shows rate 1.23 via mocked within 10s\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("rates.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("mocked recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "mocked flow must replay: {report:#?}");
 
     std::fs::remove_dir_all(&dir).ok();
 }
