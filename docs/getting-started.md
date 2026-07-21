@@ -87,6 +87,15 @@ found, the failure detail suggests the nearest visible text anchors:
 `element … not found — did you mean 'Save changes'?` — usually the whole
 diagnosis for drifted labels, with `flowproof heal` as the fix.
 
+**Actionability.** Element actions don't fire on an element that merely
+exists: replay gates every click/type on **enabled** (not
+`disabled`/`aria-disabled`), **stable** (bounding box settled — no
+mid-animation clicks), and **receives events** (a click at its center
+actually reaches it, not a toast or modal backdrop), polling within the
+step's auto-wait bound. A gate that never clears fails with its name —
+`element exists but is disabled after 5000ms` — so a flake is a
+diagnosis, not a mystery.
+
 ### Running a whole suite
 
 Point `run` at a **directory** and every `*.flow.yaml` under it (recursive,

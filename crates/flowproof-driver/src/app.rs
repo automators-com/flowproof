@@ -268,6 +268,16 @@ pub trait AppDriver {
     fn debug_bundle(&mut self) -> Result<Option<DebugBundle>, DriverError> {
         Ok(None)
     }
+
+    /// Would a click at the element's center actually reach it (not a
+    /// toast, modal backdrop, or overlay)? `Ok(None)` = this driver cannot
+    /// tell — the actionability gate treats unknown as satisfied.
+    fn element_receives_events(
+        &mut self,
+        _selector: &UiaSelector,
+    ) -> Result<Option<bool>, DriverError> {
+        Ok(None)
+    }
 }
 
 /// Failure-time diagnostics a driver can capture. All fields best-effort.
@@ -446,6 +456,13 @@ impl AppDriver for Box<dyn AppDriver> {
         // Must forward explicitly: a boxed driver otherwise hits the trait
         // DEFAULT (None) and silently drops the web driver's capture.
         (**self).debug_bundle()
+    }
+
+    fn element_receives_events(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<Option<bool>, DriverError> {
+        (**self).element_receives_events(selector)
     }
 }
 
