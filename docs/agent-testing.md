@@ -109,6 +109,14 @@ Semantics:
   continue past each call (a multi-step agent cannot proceed without
   them). In cassette replay these are recorded anyway; the block is what
   lets **record** avoid executing anything real.
+- `assert_no_tool_call: <tool>` asserts a tool was NOT called anywhere
+  in the trajectory (optionally `where` clauses narrow it: "never with
+  amount above X"). This is the guard-path assertion — "the agent must
+  refuse WITHOUT side effects" — and arguably the highest-value one in
+  the feature: the dangerous tool is mocked, so even a buggy agent
+  causes no harm while the test proves it misbehaved. Scoped to the
+  whole trajectory regardless of position; a positional variant can come
+  later if the field demands it.
 
 ## Argument assertions
 
