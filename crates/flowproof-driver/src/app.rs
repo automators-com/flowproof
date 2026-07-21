@@ -441,6 +441,12 @@ impl AppDriver for Box<dyn AppDriver> {
     fn scene(&mut self) -> Result<Option<String>, DriverError> {
         (**self).scene()
     }
+
+    fn debug_bundle(&mut self) -> Result<Option<DebugBundle>, DriverError> {
+        // Must forward explicitly: a boxed driver otherwise hits the trait
+        // DEFAULT (None) and silently drops the web driver's capture.
+        (**self).debug_bundle()
+    }
 }
 
 #[cfg(windows)]
