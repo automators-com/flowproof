@@ -4,19 +4,96 @@ on:
   workflow_dispatch:
 
 jobs:
+  guard:
+    name: version is new on npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail fast if versions skew or the version is already published
+        run: |
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          npm_version=$(node -p "require('./sdk/js/package.json').version")
+          if [ "$cargo_version" != "$npm_version" ]; then
+            echo "::error::version mismatch — Cargo.toml $cargo_version vs sdk/js/package.json $npm_version (also sync optionalDependencies)"; exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/flowproof/$npm_version")
+          case "$code" in
+            404) echo "flowproof $npm_version not on npm yet — proceeding" ;;
+            200) echo "::error::flowproof $npm_version already on npm — bump the version first"; exit 1 ;;
+            *)   echo "::error::unexpected HTTP $code from the npm registry — refusing to guess"; exit 1 ;;
+          esac
+
+  binaries:
+    name: build + publish ${{ matrix.pkg }}
+    needs: guard
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            pkg: flowproof-cli-linux-x64
+            bin: flowproof
+          - os: macos-13
+            pkg: flowproof-cli-darwin-x64
+            bin: flowproof
+          - os: macos-latest
+            pkg: flowproof-cli-darwin-arm64
+            bin: flowproof
+          - os: windows-latest
+            pkg: flowproof-cli-win32-x64
+            bin: flowproof.exe
+    runs-on: ${{ matrix.os }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: Build the CLI binary
+        run: cargo build --release -p flowproof-cli
+      - name: Assemble the platform package
+        shell: bash
+        run: |
+          version=$(node -p "require('./sdk/js/package.json').version")
+          os_field=$(node -p "'${{ matrix.pkg }}'.split('-')[2]")
+          cpu_field=$(node -p "'${{ matrix.pkg }}'.split('-').slice(3).join('-')")
+          mkdir -p dist-npm
+          cp "target/release/${{ matrix.bin }}" dist-npm/
+          node -e "
+            const fs = require('fs');
+            fs.writeFileSync('dist-npm/package.json', JSON.stringify({
+              name: '${{ matrix.pkg }}',
+              version: '$version',
+              description: 'flowproof CLI native binary for ' + '$os_field' + '-' + '$cpu_field',
+              os: ['$os_field'],
+              cpu: ['$cpu_field'],
+              files: ['${{ matrix.bin }}'],
+              repository: { type: 'git', url: 'git+https://github.com/automators-com/flowproof.git' },
+              license: 'Apache-2.0'
+            }, null, 2));
+          "
+      - name: Publish the platform package
+        run: npm publish --access public --provenance
+        working-directory: dist-npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   publish:
+    name: publish flowproof
+    needs: binaries
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-
       - name: Publish to npm
         run: npm publish --access public --provenance
         working-directory: sdk/js

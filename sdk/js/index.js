@@ -1,13 +1,6 @@
-/**
- * FlowProof — AI-native E2E testing for the apps Selenium can't reach.
- *
- * Open-source AI-native E2E testing framework for enterprise Windows apps
- * (SAP GUI, Oracle, Citrix, legacy desktop). AI authors and heals tests;
- * a deterministic engine replays them in CI.
- *
- * This is a placeholder release. See https://github.com/automators-com/flowproof
- */
-
-module.exports = {
-  version: "0.0.1",
-};
+// CLI-only distribution: the `flowproof` command (bin/flowproof.js) runs a
+// platform-native binary from the optional dependencies. For a
+// programmatic API use the Python SDK — `pip install flowproof` — which is
+// the primary SDK.
+"use strict";
+module.exports = {};
