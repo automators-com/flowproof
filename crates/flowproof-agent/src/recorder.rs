@@ -280,6 +280,17 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 extra: serde_json::Map::new(),
             }),
         ),
+        ResolvedAction::Upload { target, path } => (
+            selectors_for(app, target, None),
+            Action::Upload(flowproof_trace::format::UploadParams {
+                path: path.clone(),
+                extra: serde_json::Map::new(),
+            }),
+        ),
+        ResolvedAction::ContextClick { target, label } => (
+            selectors_for(app, target, Some(label)),
+            Action::RightClick(serde_json::Map::new()),
+        ),
         // Mid-flow navigation reuses the launch action kind: `url` (raw,
         // refs unresolved) or `reload: true`.
         ResolvedAction::Navigate { path } => {
@@ -455,6 +466,8 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
     let target = match action {
         ResolvedAction::Press { target, .. }
         | ResolvedAction::TypeText { target, .. }
+        | ResolvedAction::Upload { target, .. }
+        | ResolvedAction::ContextClick { target, .. }
         | ResolvedAction::Clear { target }
         | ResolvedAction::AssertText { target, .. }
         | ResolvedAction::AssertPresence { target, .. }
@@ -527,6 +540,14 @@ fn driver_key_mod(m: &flowproof_trace::format::KeyModifier) -> flowproof_driver:
         flowproof_trace::format::KeyModifier::Alt => flowproof_driver::KeyMod::Alt,
         flowproof_trace::format::KeyModifier::Shift => flowproof_driver::KeyMod::Shift,
         flowproof_trace::format::KeyModifier::Win => flowproof_driver::KeyMod::Meta,
+        // Portable primary modifier, resolved by the OS running the flow.
+        flowproof_trace::format::KeyModifier::Mod => {
+            if cfg!(target_os = "macos") {
+                flowproof_driver::KeyMod::Meta
+            } else {
+                flowproof_driver::KeyMod::Ctrl
+            }
+        }
     }
 }
 
@@ -588,6 +609,14 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
         Action::PressKey(params) => Some(ResolvedAction::PressKey {
             key: params.key.clone(),
             modifiers: params.modifiers.clone(),
+        }),
+        Action::Upload(params) => Some(ResolvedAction::Upload {
+            target: target_from_selector(&step.selectors)?,
+            path: params.path.clone(),
+        }),
+        Action::RightClick(_) => Some(ResolvedAction::ContextClick {
+            target: target_from_selector(&step.selectors)?,
+            label: step.intent.clone(),
         }),
         Action::Launch(params) => {
             if params.get("reload").and_then(|v| v.as_bool()) == Some(true) {
@@ -1048,6 +1077,10 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     driver.type_focused(&value)?
                 }
                 ResolvedAction::Clear { .. } => driver.clear_text(targeted())?,
+                ResolvedAction::Upload { path, .. } => {
+                    driver.set_files(targeted(), std::slice::from_ref(path))?
+                }
+                ResolvedAction::ContextClick { .. } => driver.context_click(targeted())?,
                 ResolvedAction::AssertSql {
                     connection,
                     query,
@@ -1473,6 +1506,80 @@ steps:
             "modifiers encoded"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn upload_right_click_and_portable_modifier_record_and_encode() {
+        let spec = FlowSpec::parse(
+            "name: Import
+app: web
+url: https://e.test/x
+steps:
+  - Upload fixtures/data.qif into the \"Import file\" field
+  - Right-click \"Accounts\"
+  - Press Mod+K
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["Import file", "Accounts"]);
+        let dir = std::env::temp_dir().join("flowproof-recorder-upload");
+        let out = dir.join("upload.trace.jsonl");
+        let summary = record(&spec, &mut driver, &out).expect("recording succeeds");
+        assert_eq!(summary.steps, 3);
+        assert_eq!(
+            driver.uploads,
+            vec![("Import file".to_string(), "fixtures/data.qif".to_string())]
+        );
+        assert_eq!(driver.context_clicked, vec!["Accounts"]);
+        // Mod resolves per-OS at execution (Ctrl here on CI), but the
+        // TRACE stays neutral: the same file replays on any OS.
+        let expected_chord = if cfg!(target_os = "macos") {
+            "Meta+k"
+        } else {
+            "Ctrl+k"
+        };
+        assert_eq!(driver.keys_pressed, vec![expected_chord]);
+
+        let contents = std::fs::read_to_string(&out).expect("trace written");
+        assert!(contents.contains("\"upload\""), "upload action encoded");
+        assert!(
+            contents.contains("\"path\":\"fixtures/data.qif\""),
+            "upload path encoded"
+        );
+        assert!(
+            contents.contains("\"right_click\""),
+            "right_click action encoded"
+        );
+        assert!(
+            contents.contains("\"modifiers\":[\"mod\"]"),
+            "portable modifier stored neutrally, not resolved into the trace"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn upload_and_right_click_decode_back_for_reuse() {
+        // decode_step must be a strict inverse of step_for so `record
+        // --reuse` re-executes these without rules or model involvement.
+        let upload = ResolvedAction::Upload {
+            target: Target::text("Import file"),
+            path: "fixtures/data.qif".into(),
+        };
+        let step = step_for(1, "Upload data", "web", &upload);
+        assert_eq!(decode_step(&step), Some(upload));
+
+        let context_click = ResolvedAction::ContextClick {
+            target: Target::text("Accounts"),
+            label: "Right-click Accounts".into(),
+        };
+        let step = step_for(2, "Right-click Accounts", "web", &context_click);
+        match decode_step(&step) {
+            Some(ResolvedAction::ContextClick { target, .. }) => {
+                assert_eq!(target, Target::text("Accounts"));
+            }
+            other => panic!("right_click must decode to ContextClick, got {other:?}"),
+        }
     }
 
     struct CountingClient {

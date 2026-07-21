@@ -35,8 +35,11 @@ ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 | `Clear the [2nd ]"<label>" field` / `Clear the <id> field` | fill-with-empty semantics |
 | `Select <option> from the [2nd ]"<label>" field` | native `<select>`: committed via the value setter, fires `input`+`change` (React-safe). `in the` and `… dropdown` also accepted |
 | `Press the [2nd ]"<label>" button` / `Press the <id> button` | |
+| `Right-click [the [2nd ]]"<text>"` | opens the element's context menu; `Right click` also accepted |
+| `Upload <path> into the [2nd ]"<label>" field` | sets a file on a file-chooser input (may be hidden behind a styled button); relative paths resolve against the working directory at execution |
+| `Upload <path> into the <id> field` | |
 | `Click [the [2nd ]]"<text>"` | tabs, links, menu options, rows |
-| `Press <Key>` / `Press <Mod>+<Key>` | `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `Space`, arrows, `Home`/`End`, `PageUp`/`PageDown`; chords `Control+V`, `Alt+Shift+Backspace` |
+| `Press <Key>` / `Press <Mod>+<Key>` | `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `Space`, arrows, `Home`/`End`, `PageUp`/`PageDown`; chords `Control+V`, `Alt+Shift+Backspace`. `Mod` (aliases `CtrlOrMeta`, `ControlOrMeta`) is the **portable** primary modifier: stored neutrally in the trace and resolved at execution — Meta on macOS, Ctrl elsewhere — so `Press Mod+K` recorded on a Mac replays on Linux CI |
 | `Go to <path-or-URL>` / `Navigate to <path-or-URL>` | relative paths resolve against the flow URL's origin; on SAP this is transaction navigation (`Go to /nVA01`) |
 | `Reload the page` | web |
 | `Wait until page shows <text> [within <N>s]` | long-bound auto-waiting assert (default 60s) |

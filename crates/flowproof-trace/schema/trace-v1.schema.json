@@ -184,6 +184,7 @@
             "scroll",
             "type_text",
             "press_key",
+            "upload",
             "wait",
             "assert"
           ]
@@ -215,8 +216,21 @@
                   "key": { "type": "string" },
                   "modifiers": {
                     "type": "array",
-                    "items": { "enum": ["ctrl", "alt", "shift", "win"] }
+                    "items": { "enum": ["ctrl", "alt", "shift", "win", "mod"] }
                   }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "upload" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "required": ["path"],
+                "properties": {
+                  "path": { "type": "string" }
                 }
               }
             }

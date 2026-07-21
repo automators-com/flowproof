@@ -72,6 +72,15 @@ pub enum ResolvedAction {
     },
     /// Type literal text into an element.
     TypeText { target: Target, text: String },
+    /// Set a file on a file-chooser input (`Upload logo.png into the
+    /// "Avatar" field`). The input may be hidden behind a styled button.
+    Upload { target: Target, path: String },
+    /// Right-click an element (open its context menu).
+    ContextClick {
+        target: Target,
+        /// Human-readable label (recorded as the selector name hint).
+        label: String,
+    },
     /// Type into whatever currently has keyboard focus (dropdown search
     /// boxes, pre-focused rename inputs).
     TypeFocused { text: String },
@@ -691,6 +700,10 @@ mod web {
             "alt" | "option" => Some(KeyModifier::Alt),
             "shift" => Some(KeyModifier::Shift),
             "meta" | "win" | "cmd" | "command" => Some(KeyModifier::Win),
+            // The portable primary modifier: stored neutrally, resolved to
+            // Meta (macOS) or Ctrl (elsewhere) at execution — a trace
+            // recorded on a Mac replays on Linux CI and vice versa.
+            "mod" | "ctrlormeta" | "controlormeta" => Some(KeyModifier::Mod),
             _ => None,
         }
     }
@@ -799,6 +812,45 @@ mod web {
                 trimmed,
                 "expected 'Type <text> into the [2nd ]\"<label>\" field' or \
                  'Type <text> into the <id> field'",
+            ));
+        }
+
+        // `Upload <path> into the [Nth ]"<label>" field` → set a file on a
+        // file-chooser input. The path is stored as written; relative paths
+        // resolve against the working directory at execution time.
+        if let Some(rest) = strip_prefix_ci(trimmed, "upload ") {
+            let lower = rest.to_lowercase();
+            if let Some(pos) = lower.rfind(" into the ") {
+                let path = rest[..pos].trim().trim_matches('"');
+                let field = rest[pos + " into the ".len()..].trim();
+                if path.is_empty() {
+                    return Err(unresolvable(trimmed, "missing file path to upload"));
+                }
+                let (nth, field) = split_ordinal(field);
+                if let Some(quoted) = field.strip_prefix('"') {
+                    if let Some((label, tail)) = quoted_label(quoted) {
+                        if tail.eq_ignore_ascii_case("field") {
+                            return Ok(vec![ResolvedAction::Upload {
+                                target: with_nth(nth, target_from_label(label)),
+                                path: path.to_string(),
+                            }]);
+                        }
+                    }
+                } else if nth.is_none() {
+                    if let Some(id) = strip_suffix_ci(field, " field").map(str::trim) {
+                        if !id.is_empty() {
+                            return Ok(vec![ResolvedAction::Upload {
+                                target: Target::id(id),
+                                path: path.to_string(),
+                            }]);
+                        }
+                    }
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'Upload <path> into the [2nd ]\"<label>\" field' or \
+                 'Upload <path> into the <id> field'",
             ));
         }
 
@@ -948,6 +1000,32 @@ mod web {
                 trimmed,
                 "expected 'Press the \"<label>\" button' or a key like \
                  'Press Enter' / 'Press Control+V'",
+            ));
+        }
+
+        // `Right-click [the [Nth ]]"<text>"` → open an element's context
+        // menu. `Right click` (no hyphen) also accepted.
+        let right_click_rest = strip_prefix_ci(trimmed, "right-click ")
+            .or_else(|| strip_prefix_ci(trimmed, "right click "));
+        if let Some(rest) = right_click_rest {
+            let rest = rest.trim();
+            let (nth, rest) = match strip_prefix_ci(rest, "the ") {
+                Some(after_the) => split_ordinal(after_the.trim()),
+                None => (None, rest),
+            };
+            if let Some(quoted) = rest.strip_prefix('"') {
+                if let Some((label, tail)) = quoted_label(quoted) {
+                    if tail.is_empty() {
+                        return Ok(vec![ResolvedAction::ContextClick {
+                            target: with_nth(nth, target_from_label(label)),
+                            label: label.to_string(),
+                        }]);
+                    }
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'Right-click \"<text>\"' or 'Right-click the [2nd ]\"<text>\"'",
             ));
         }
 
@@ -1622,9 +1700,15 @@ mod tests {
             ("web", "Press the submitButton button"),
             ("web", r#"Click "Templates""#),
             ("web", r#"Click the 2nd "Templates""#),
+            ("web", r#"Right-click "Accounts""#),
+            ("web", r#"Right click the 2nd "Row actions""#),
+            ("web", r#"Upload logo.png into the "Avatar" field"#),
+            ("web", r#"Upload data/import.qif into the importFile field"#),
             ("web", "Press Enter"),
             ("web", "Press Control+V"),
             ("web", "Press Alt+Shift+Backspace"),
+            ("web", "Press Mod+K"),
+            ("web", "Press CtrlOrMeta+Shift+P"),
             ("web", "Go to /settings"),
             ("web", "Navigate to /settings"),
             ("web", "Reload the page"),

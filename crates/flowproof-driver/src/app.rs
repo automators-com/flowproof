@@ -290,6 +290,23 @@ pub trait AppDriver {
             "network mocks are not supported by this driver (web flows only)".into(),
         ))
     }
+
+    /// Set the files of a file-chooser input (Playwright's
+    /// `setInputFiles`). The input is commonly hidden behind a styled
+    /// button, so implementations must NOT require visibility.
+    fn set_files(&mut self, selector: &UiaSelector, paths: &[String]) -> Result<(), DriverError> {
+        let _ = paths;
+        Err(DriverError::Uia(format!(
+            "file upload is not supported by this driver (web flows only): [{selector}]"
+        )))
+    }
+
+    /// Right-click an element (open its context menu).
+    fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        Err(DriverError::Uia(format!(
+            "right-click is not supported by this driver yet: [{selector}]"
+        )))
+    }
 }
 
 /// One fully-resolved network mock the web driver serves in place of a
@@ -521,6 +538,14 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn stage_mocks(&mut self, rules: Vec<WebMock>) -> Result<(), DriverError> {
         (**self).stage_mocks(rules)
+    }
+
+    fn set_files(&mut self, selector: &UiaSelector, paths: &[String]) -> Result<(), DriverError> {
+        (**self).set_files(selector, paths)
+    }
+
+    fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        (**self).context_click(selector)
     }
 }
 

@@ -923,6 +923,68 @@ fetch('https://rates.invalid.flowproof.test/api/rates')
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Round-2 input capabilities against real Chromium: a hidden file input
+/// behind a wrapping label receives a real file (DOM.setFileInputFiles),
+/// a right-click fires the page's contextmenu handler, and a portable
+/// `Mod+K` chord lands as Ctrl+K on this OS.
+#[test]
+fn upload_right_click_and_portable_chord_work_on_a_real_page() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web input E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-input-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let upload_src = dir.join("import.qif");
+    std::fs::write(&upload_src, "!Type:Bank\n").expect("upload fixture written");
+    let page = dir.join("import.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Import</title>
+<main>
+  <label>Import file <input type="file" style="display:none"
+    onchange="document.getElementById('status').textContent = 'file ' + this.files[0].name"/></label>
+  <button oncontextmenu="event.preventDefault();
+    document.getElementById('status').textContent = 'menu open'; return false;">Accounts</button>
+  <div id="status">waiting</div>
+  <script>
+    document.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        document.getElementById('status').textContent = 'palette';
+      }
+    });
+  </script>
+</main>"#,
+    )
+    .expect("page written");
+
+    let spec = FlowSpec::parse(&format!(
+        "name: Import a file\napp: web\nurl: file://{}\nsteps:\n  \
+         - Upload {} into the \"Import file\" field\n  \
+         - assert: page shows file import.qif\n  \
+         - Right-click \"Accounts\"\n  \
+         - assert: page shows menu open\n  \
+         - Press Mod+K\n  \
+         - assert: page shows palette\n",
+        page.display(),
+        upload_src.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("import.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "input flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Round-2 selector fixes against real Chromium, all three in one flow:
 /// a wrapping `<label>Name: <input/></label>` resolves as a label query,
 /// `Click "Close Account"` lands on a button whose DOM text is
