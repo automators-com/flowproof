@@ -291,6 +291,21 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             selectors_for(app, target, Some(label)),
             Action::RightClick(serde_json::Map::new()),
         ),
+        // Whole-surface capture: no selectors; masks travel as raw
+        // selector strings so replay blanks the SAME regions.
+        ResolvedAction::AssertScreenshot {
+            name,
+            masks,
+            threshold,
+        } => (
+            Vec::new(),
+            Action::Assert(flowproof_trace::format::Assertion::VisualDiff {
+                baseline: format!("{name}.png"),
+                region: None,
+                threshold: *threshold,
+                masks: masks.clone(),
+            }),
+        ),
         // Mid-flow navigation reuses the launch action kind: `url` (raw,
         // refs unresolved) or `reload: true`.
         ResolvedAction::Navigate { path } => {
@@ -477,7 +492,8 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::Navigate { .. }
         | ResolvedAction::Reload
         | ResolvedAction::AssertSql { .. }
-        | ResolvedAction::AssertApi { .. } => return None,
+        | ResolvedAction::AssertApi { .. }
+        | ResolvedAction::AssertScreenshot { .. } => return None,
     };
     target_selector(target)
 }
@@ -617,6 +633,16 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
         Action::RightClick(_) => Some(ResolvedAction::ContextClick {
             target: target_from_selector(&step.selectors)?,
             label: step.intent.clone(),
+        }),
+        Action::Assert(Assertion::VisualDiff {
+            baseline,
+            region: _,
+            threshold,
+            masks,
+        }) => Some(ResolvedAction::AssertScreenshot {
+            name: baseline.strip_suffix(".png")?.to_string(),
+            masks: masks.clone(),
+            threshold: *threshold,
         }),
         Action::Launch(params) => {
             if params.get("reload").and_then(|v| v.as_bool()) == Some(true) {
@@ -795,6 +821,37 @@ fn web_mock_from_rule(rule: &flowproof_trace::format::MockRule) -> flowproof_dri
         rule.content_type.as_deref(),
         rule.body.as_ref(),
     )
+}
+
+/// Capture the live surface, blank the mask rects, write the baseline
+/// PNG next to the trace. Every mask must resolve to a live element — a
+/// silently-unmasked volatile region would mint a flaky baseline.
+fn mint_baseline<D: AppDriver>(
+    driver: &mut D,
+    out: &Path,
+    name: &str,
+    masks: &[String],
+) -> Result<(), RecordError> {
+    let mut frame = driver.capture()?.ok_or_else(|| {
+        flowproof_driver::DriverError::Uia(
+            "assert_screenshot needs a driver that can capture frames".into(),
+        )
+    })?;
+    let mut rects = Vec::with_capacity(masks.len());
+    for mask in masks {
+        let selector = flowproof_driver::visual::mask_selector(mask);
+        let rect = driver.element_rect(&selector)?.ok_or_else(|| {
+            flowproof_driver::DriverError::Uia(format!(
+                "assert_screenshot mask '{mask}' does not resolve to an element"
+            ))
+        })?;
+        rects.push(rect);
+    }
+    flowproof_driver::visual::apply_masks(&mut frame, &rects);
+    let dir = flowproof_driver::visual::baselines_dir(out);
+    flowproof_driver::visual::save_baseline(&dir, name, &frame)
+        .map_err(flowproof_driver::DriverError::Uia)?;
+    Ok(())
 }
 
 /// Trace browser setup → the driver's fully-resolved form (defaults live
@@ -1101,6 +1158,11 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     driver.set_files(targeted(), std::slice::from_ref(path))?
                 }
                 ResolvedAction::ContextClick { .. } => driver.context_click(targeted())?,
+                ResolvedAction::AssertScreenshot { name, masks, .. } => {
+                    // Recording MINTS the masked baseline — re-record (or
+                    // `record --reuse`) is the update path.
+                    mint_baseline(driver, out, name, masks)?;
+                }
                 ResolvedAction::AssertSql {
                     connection,
                     query,

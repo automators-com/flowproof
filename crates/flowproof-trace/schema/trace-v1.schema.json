@@ -294,9 +294,17 @@
           "then": {
             "required": ["baseline"],
             "properties": {
-              "baseline": { "$ref": "#/$defs/sha256" },
+              "baseline": {
+                "type": "string",
+                "description": "Baseline PNG file name inside the trace's sibling <trace-stem>.baselines/ directory."
+              },
               "region": { "$ref": "#/$defs/region" },
-              "threshold": { "type": "number", "minimum": 0, "maximum": 1 }
+              "threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+              "masks": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Selector strings whose element rects are blanked before compare, at record and replay alike."
+              }
             }
           }
         },

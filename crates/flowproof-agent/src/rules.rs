@@ -62,7 +62,8 @@ fn quoted_label(rest: &str) -> Option<(&str, &str)> {
 
 /// A concrete action planned from one natural-language step. One step may
 /// expand to several actions (e.g. `Type 53` in calc → two button presses).
-#[derive(Debug, Clone, PartialEq, Eq)]
+// PartialEq only: AssertScreenshot's threshold is an f64.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedAction {
     /// Press (invoke/click) an element.
     Press {
@@ -80,6 +81,13 @@ pub enum ResolvedAction {
         target: Target,
         /// Human-readable label (recorded as the selector name hint).
         label: String,
+    },
+    /// Screenshot comparison against a named baseline. Record mints the
+    /// masked baseline; replay compares with the same masks.
+    AssertScreenshot {
+        name: String,
+        masks: Vec<String>,
+        threshold: Option<f64>,
     },
     /// Type into whatever currently has keyboard focus (dropdown search
     /// boxes, pre-focused rename inputs).
@@ -264,6 +272,21 @@ pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, R
                 timeout_ms: assert_api
                     .timeout_seconds
                     .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
+            }]);
+        }
+        SpecStep::AssertScreenshot { assert_screenshot } => {
+            if assert_screenshot.name.trim().is_empty()
+                || assert_screenshot.name.contains(['/', '\\'])
+            {
+                return Err(unresolvable(
+                    &assert_screenshot.name,
+                    "assert_screenshot name must be a plain file name (no path separators)",
+                ));
+            }
+            return Ok(vec![ResolvedAction::AssertScreenshot {
+                name: assert_screenshot.name.clone(),
+                masks: assert_screenshot.mask.clone(),
+                threshold: assert_screenshot.threshold,
             }]);
         }
         _ => {}

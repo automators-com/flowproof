@@ -115,15 +115,25 @@ impl FlowSpec {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum SpecStep {
-    AssertSql { assert_sql: SqlAssertSpec },
-    AssertApi { assert_api: ApiAssertSpec },
-    Assert { assert: String },
+    AssertSql {
+        assert_sql: SqlAssertSpec,
+    },
+    AssertApi {
+        assert_api: ApiAssertSpec,
+    },
+    AssertScreenshot {
+        assert_screenshot: ScreenshotAssertSpec,
+    },
+    Assert {
+        assert: String,
+    },
     Plain(String),
 }
 
 impl SpecStep {
     const FORMS: &'static str = "a plain string, `assert: <text>`, \
-         `assert_sql: {...}`, `assert_api: {...}`, or `foreach: {...}`";
+         `assert_sql: {...}`, `assert_api: {...}`, `assert_screenshot: {...}`, \
+         or `foreach: {...}`";
 
     fn from_yaml(value: serde_yaml::Value) -> Result<Self, String> {
         use serde_yaml::Value;
@@ -160,6 +170,9 @@ impl SpecStep {
                     Some("assert_api") => serde_yaml::from_value(inner)
                         .map(|assert_api| SpecStep::AssertApi { assert_api })
                         .map_err(|e| format!("in `assert_api` step: {e}")),
+                    Some("assert_screenshot") => serde_yaml::from_value(inner)
+                        .map(|assert_screenshot| SpecStep::AssertScreenshot { assert_screenshot })
+                        .map_err(|e| format!("in `assert_screenshot` step: {e}")),
                     // A foreach reaching typed parsing means it was not
                     // expanded — it is only valid as a direct entry in a
                     // spec's `steps:` (FlowSpec::parse expands it there).
@@ -225,6 +238,30 @@ impl<'de> serde::Deserialize<'de> for SpecStep {
 }
 
 /// ```yaml
+/// - assert_screenshot:
+///     name: dashboard                  # baseline PNG name (no extension)
+///     mask: ["css:.clock", "Sync"]     # selectors blanked before compare
+///     threshold: 0.001                 # fraction of pixels allowed to differ
+/// ```
+/// Record mints (or refreshes) the masked baseline; replay captures with
+/// the SAME masks and compares. Masks are the tool for timestamps,
+/// avatars, and other legitimately-volatile regions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenshotAssertSpec {
+    /// Baseline name — the file `<name>.png` in the trace's sibling
+    /// baselines directory.
+    pub name: String,
+    /// Selectors (text anchor / `css:` / `id:`) whose element rects are
+    /// blanked before compare, at record and replay alike.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mask: Vec<String>,
+    /// Fraction of pixels allowed to differ (default 0: exact match).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+}
+
+/// ```yaml
 /// - assert_sql:
 ///     connection: reporting            # env FLOWPROOF_SQL_REPORTING
 ///     query: SELECT count(*) FROM templates WHERE name = 'X'
@@ -285,6 +322,9 @@ impl SpecStep {
                 format!("sql {}: {}", assert_sql.connection, assert_sql.query)
             }
             SpecStep::AssertApi { assert_api } => format!("api {}", assert_api.request),
+            SpecStep::AssertScreenshot { assert_screenshot } => {
+                format!("screenshot matches {}", assert_screenshot.name)
+            }
         }
     }
 }

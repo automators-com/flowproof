@@ -177,6 +177,56 @@ fn browser_config_travels_from_spec_through_trace_to_replay_staging() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Visual assertion v1: record mints a masked baseline next to the trace;
+/// replay compares with the SAME masks. A change under the mask (the
+/// volatile clock) passes; a change outside it fails naming the diff and
+/// writing reviewable artifacts into the run dir.
+#[test]
+fn screenshot_baseline_masks_and_diffs_deterministically() {
+    let dir = std::env::temp_dir().join("flowproof-replay-visual");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Visual\napp: web\nurl: https://e.test/x\nsteps:\n  - assert_screenshot:\n      name: dashboard\n      mask: [\"id:clock\"]\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("visual.trace.jsonl");
+
+    let frame = image::RgbaImage::from_pixel(20, 10, image::Rgba([50, 90, 130, 255]));
+    let mut rec = MockAppDriver::new(&["clock"]);
+    rec.frame = Some(frame.clone());
+    rec.rects.insert("clock".into(), (0, 0, 4, 4));
+    record(&spec, &mut rec, &trace).expect("records");
+    let baseline_path = dir.join("visual.baselines/dashboard.png");
+    assert!(baseline_path.is_file(), "baseline minted next to the trace");
+
+    // Unchanged app (clock region differs — masked): passes.
+    let mut changed_under_mask = frame.clone();
+    changed_under_mask.put_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+    let mut driver = MockAppDriver::new(&["clock"]);
+    driver.frame = Some(changed_under_mask);
+    driver.rects.insert("clock".into(), (0, 0, 4, 4));
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "masked change must pass: {report:#?}");
+
+    // A real regression outside the mask: fails, names the diff, and
+    // leaves reviewable artifacts.
+    let mut regressed = frame.clone();
+    regressed.put_pixel(10, 5, image::Rgba([0, 255, 0, 255]));
+    let mut driver = MockAppDriver::new(&["clock"]);
+    driver.frame = Some(regressed);
+    driver.rects.insert("clock".into(), (0, 0, 4, 4));
+    let (report, run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.clone().unwrap_or_default();
+    assert!(detail.contains("visual diff"), "names the check: {detail}");
+    assert!(detail.contains("dashboard"), "names the baseline: {detail}");
+    assert!(run_dir.join("visual/dashboard.actual.png").is_file());
+    assert!(run_dir.join("visual/dashboard.diff.png").is_file());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Round-2 input capabilities replay deterministically: upload sets the
 /// file (skipping actionability — file inputs are conventionally hidden),
 /// right-click opens the context menu through the actionability gate, and
