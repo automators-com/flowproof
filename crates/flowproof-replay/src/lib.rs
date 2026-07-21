@@ -659,10 +659,83 @@ impl StepMatch {
     }
 }
 
+/// Filesystem context for `assert_screenshot`: where baselines live
+/// (next to the trace) and where failure artifacts go (the run dir).
+struct VisualPaths {
+    baselines: std::path::PathBuf,
+    run_dir: std::path::PathBuf,
+}
+
+/// Compare the live (masked) surface against the recorded baseline.
+/// Outer Err = execution failure; inner Err = the assertion verdict.
+fn check_visual<D: AppDriver>(
+    driver: &mut D,
+    baseline_file: &str,
+    threshold: Option<f64>,
+    masks: &[String],
+    paths: &VisualPaths,
+) -> Result<Result<(), String>, ReplayError> {
+    use flowproof_driver::visual;
+    let Some(mut frame) = driver.capture()? else {
+        return Ok(Err(
+            "assert_screenshot needs a driver that can capture frames".into(),
+        ));
+    };
+    let mut rects = Vec::with_capacity(masks.len());
+    for mask in masks {
+        match driver.element_rect(&visual::mask_selector(mask))? {
+            Some(rect) => rects.push(rect),
+            None => {
+                return Ok(Err(format!(
+                    "assert_screenshot mask '{mask}' does not resolve to an element"
+                )))
+            }
+        }
+    }
+    visual::apply_masks(&mut frame, &rects);
+    let name = baseline_file
+        .strip_suffix(".png")
+        .unwrap_or(baseline_file)
+        .to_string();
+    let baseline = match visual::load_baseline(&paths.baselines, &name) {
+        Ok(b) => b,
+        Err(e) => return Ok(Err(e)),
+    };
+    let Some(result) = visual::compare(&baseline, &frame) else {
+        return Ok(Err(format!(
+            "screenshot is {}x{} but baseline '{name}' is {}x{} — \
+             viewport changed? re-record to refresh the baseline",
+            frame.width(),
+            frame.height(),
+            baseline.width(),
+            baseline.height(),
+        )));
+    };
+    let allowed = threshold.unwrap_or(0.0);
+    if result.differing_fraction() <= allowed {
+        return Ok(Ok(()));
+    }
+    // Reviewable failure artifacts beside the report: what we saw, and
+    // where it differs.
+    let dir = paths.run_dir.join("visual");
+    let _ = visual::save_png(&dir.join(format!("{name}.actual.png")), &frame);
+    let _ = visual::save_png(
+        &dir.join(format!("{name}.diff.png")),
+        &visual::diff_image(&baseline, &frame),
+    );
+    Ok(Err(format!(
+        "visual diff {:.3}% exceeds allowed {:.3}% for baseline '{name}' \
+         (see visual/{name}.diff.png)",
+        result.differing_fraction() * 100.0,
+        allowed * 100.0,
+    )))
+}
+
 fn execute_step<D: AppDriver>(
     driver: &mut D,
     step: &Step,
     base_url: &str,
+    visual_paths: &VisualPaths,
 ) -> Result<(Result<(), String>, StepMatch), ReplayError> {
     for condition in &step.sync.pre {
         if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
@@ -805,6 +878,17 @@ fn execute_step<D: AppDriver>(
                 StepMatch::default(),
             ),
         },
+        // Visual assertions need filesystem context the generic checker
+        // doesn't have (baselines + run artifacts) — handled here.
+        Action::Assert(Assertion::VisualDiff {
+            baseline,
+            threshold,
+            masks,
+            region: _,
+        }) => (
+            check_visual(driver, baseline, *threshold, masks, visual_paths)?,
+            StepMatch::default(),
+        ),
         Action::Assert(assertion) => {
             let (outcome, rung) = check_assertion(driver, assertion, &step.selectors)?;
             let primary = match assertion {
@@ -947,6 +1031,10 @@ pub fn run_trace<D: AppDriver>(
             ))?;
         }
     }
+    let visual_paths = VisualPaths {
+        baselines: flowproof_driver::visual::baselines_dir(path),
+        run_dir: run_dir.clone(),
+    };
     let started = Instant::now();
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
 
@@ -967,7 +1055,7 @@ pub fn run_trace<D: AppDriver>(
         }
         let step_started = Instant::now();
         let started_ms = started.elapsed().as_millis() as u64;
-        let (outcome, matched) = execute_step(driver, step, &target.command)?;
+        let (outcome, matched) = execute_step(driver, step, &target.command, &visual_paths)?;
         let duration_ms = step_started.elapsed().as_millis() as u64;
         if let Some(rec) = recorder.as_mut() {
             rec.step_finished(driver);

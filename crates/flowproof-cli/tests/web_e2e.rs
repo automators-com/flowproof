@@ -933,6 +933,56 @@ fetch('https://rates.invalid.flowproof.test/api/rates')
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Visual assertion v1 against real Chromium: record mints a baseline of
+/// the page with the volatile clock masked; replay (a different moment,
+/// so the clock text differs) still matches because the same mask is
+/// applied. The browser-config viewport keeps capture dimensions stable.
+#[test]
+fn masked_screenshot_baseline_survives_a_volatile_clock() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web visual E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-visual-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("home.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Home</title>
+<main>
+  <h1>Stable heading</h1>
+  <div id="clock"></div>
+  <p>Stable body text under the volatile clock.</p>
+  <script>document.getElementById('clock').textContent = 'now ' + Date.now();</script>
+</main>"#,
+    )
+    .expect("page written");
+
+    let spec = FlowSpec::parse(&format!(
+        "name: Home looks right\napp: web\nurl: file://{}\nbrowser:\n  viewport:\n    width: 800\n    height: 600\nsteps:\n  - assert_screenshot:\n      name: home\n      mask: [\"css:#clock\"]\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("home.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+    assert!(
+        dir.join("home.baselines/home.png").is_file(),
+        "baseline minted next to the trace"
+    );
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "masked visual flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Round-2 browser config against real Chromium: the page boots into an
 /// emulated phone viewport (innerWidth 390), sees the overridden
 /// user-agent, and — because extra Chrome flags force a private browser —

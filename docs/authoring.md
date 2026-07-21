@@ -89,6 +89,26 @@ when the probe fires (record and every replay). `body` is any YAML
 application/json` unless you set your own `content-type` header — yours
 wins. A `body` on GET/HEAD/DELETE is rejected at parse time.
 
+## Visual assertions (structured step)
+
+```yaml
+- assert_screenshot:
+    name: dashboard              # baseline PNG name (no path, no extension)
+    mask: ["css:.clock", "Sync"] # optional: selectors blanked before compare
+    threshold: 0.001             # optional: fraction of pixels allowed to differ (default 0)
+```
+
+`record` captures the surface, blanks each mask's element rect, and mints
+`<spec-stem>.baselines/<name>.png` next to the trace — re-recording (or
+`record --reuse`) is how baselines refresh. Replay captures with the
+**same masks** and compares pixel-exact (up to `threshold`); on failure
+the run bundle gains `visual/<name>.actual.png` and `visual/<name>.diff.png`
+(differing pixels in red) and the message names the diff percentage.
+Masks take the same forms as quoted labels (text anchor, `css:`, `id:`)
+and every mask must resolve — a silently-unmasked volatile region would
+mint a flaky baseline. Pin the viewport with `browser:` so capture
+dimensions stay stable across machines.
+
 ## Network mocks (web flows; spec-level, not steps)
 
 ```yaml

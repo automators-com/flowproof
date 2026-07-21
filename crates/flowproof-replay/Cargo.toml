@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 flowproof-agent = { workspace = true }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

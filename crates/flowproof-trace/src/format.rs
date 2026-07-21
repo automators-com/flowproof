@@ -374,12 +374,21 @@ pub enum Assertion {
         #[serde(skip_serializing_if = "Option::is_none")]
         region: Option<Region>,
     },
+    /// Screenshot comparison against a named baseline PNG stored in the
+    /// trace's sibling `<trace-stem>.baselines/` directory (`baseline` is
+    /// the file name — the trace stays relocatable as a bundle). `masks`
+    /// are selector strings (text anchor / `css:` / `id:`) whose element
+    /// rects are blanked before compare, identically at record (baseline
+    /// minting) and replay. `threshold` is the fraction of pixels allowed
+    /// to differ (default 0: exact).
     VisualDiff {
         baseline: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         region: Option<Region>,
         #[serde(skip_serializing_if = "Option::is_none")]
         threshold: Option<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        masks: Vec<String>,
     },
     /// Out-of-band DB probe. `connection` is a name resolved from local
     /// config at run time; credentials never live in the trace.

@@ -14,6 +14,7 @@ pub mod mock;
 pub mod oob;
 pub mod recording;
 pub mod redact;
+pub mod visual;
 #[cfg(windows)]
 pub mod window;
 
