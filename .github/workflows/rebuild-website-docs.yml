@@ -1,0 +1,24 @@
+name: Rebuild website docs
+
+# automators.ai renders /flowproof/docs at BUILD time from this repo's
+# docs/ folder. When docs change on main, poke the website's deploy hook
+# so the site rebuilds with the latest content.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger website deploy hook
+        env:
+          HOOK_URL: ${{ secrets.WEBSITE_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK_URL" ]; then
+            echo "WEBSITE_DEPLOY_HOOK_URL secret not set; skipping."
+            exit 0
+          fi
+          curl -fsSL -X POST "$HOOK_URL"
