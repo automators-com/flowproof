@@ -496,6 +496,30 @@ fn record_one(
 /// Run every recorded flow under `dir` as one suite: per-flow bundles as
 /// usual, plus a merged `junit.xml` for CI, and a non-zero exit if ANY flow
 /// fails. A failing flow does not stop the suite.
+/// Record one flow as ERRORED and keep the suite going. A driver fault, an
+/// unreadable trace or a failing seed hook is one flow's problem: before
+/// this existed, the first such fault aborted the whole run and no merged
+/// junit was written at all, so CI saw nothing (field report, round 3).
+fn errored_flow(
+    spec_path: &Path,
+    name: &str,
+    message: String,
+    json: bool,
+    flows: &mut Vec<serde_json::Value>,
+    reports: &mut Vec<flowproof_replay::RunReport>,
+) {
+    let report = flowproof_replay::RunReport::errored(name, &message);
+    if !json {
+        println!("[ERROR] {name} ({message})");
+    }
+    flows.push(serde_json::json!({
+        "spec": spec_path,
+        "report": report,
+        "report_path": null,
+    }));
+    reports.push(report);
+}
+
 pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> Result<u8, String> {
     let mut specs = Vec::new();
     discover_specs(dir, &mut specs)?;
@@ -520,7 +544,22 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
         // missing-trace error): a deliberately gated flow with no trace
         // is a skip, not a failure. Loading here also surfaces spec parse
         // errors for every suite member.
-        let gated_spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+        let gated_spec = match FlowSpec::load(spec_path).map_err(|e| e.to_string()) {
+            Ok(spec) => spec,
+            // A spec that will not parse is one broken flow, not a broken
+            // suite: record it and keep going.
+            Err(e) => {
+                errored_flow(
+                    spec_path,
+                    &spec_path.display().to_string(),
+                    e,
+                    json,
+                    &mut flows,
+                    &mut reports,
+                );
+                continue;
+            }
+        };
         if let Some(reason) = gated_spec.skip_reason() {
             let report = flowproof_replay::RunReport::skipped(&gated_spec.name, &reason);
             if !json {
@@ -538,17 +577,35 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
         if !trace_path.exists() {
             match missing {
                 MissingTrace::Error => {
-                    return Err(format!(
-                        "trace {} not found — run `flowproof record {}` first",
-                        trace_path.display(),
-                        spec_path.display()
-                    ));
+                    errored_flow(
+                        spec_path,
+                        &gated_spec.name,
+                        format!(
+                            "trace {} not found — run `flowproof record {}` first",
+                            trace_path.display(),
+                            spec_path.display()
+                        ),
+                        json,
+                        &mut flows,
+                        &mut reports,
+                    );
+                    continue;
                 }
                 MissingTrace::Record => {
                     if !json {
                         println!("[RECORD] {} (no trace yet)", spec_path.display());
                     }
-                    record_one(spec_path, &trace_path, manifest.browser.as_ref())?;
+                    if let Err(e) = record_one(spec_path, &trace_path, manifest.browser.as_ref()) {
+                        errored_flow(
+                            spec_path,
+                            &gated_spec.name,
+                            e,
+                            json,
+                            &mut flows,
+                            &mut reports,
+                        );
+                        continue;
+                    }
                     // Fall through to the normal replay below.
                 }
                 MissingTrace::Skip => {
@@ -575,17 +632,61 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
         }
         // Seed before the flow; a failing hook fails the flow, not the run.
         if let Some(cmd) = &manifest.before_each {
-            run_hook(cmd, spec_path, "before_each")?;
+            if let Err(e) = run_hook(cmd, spec_path, "before_each") {
+                errored_flow(
+                    spec_path,
+                    &gated_spec.name,
+                    e,
+                    json,
+                    &mut flows,
+                    &mut reports,
+                );
+                continue;
+            }
         }
-        let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
-        // A fresh driver per flow: full isolation, like Playwright contexts.
-        let (report, run_dir, attempts) =
-            replay_with_retries(&trace_path, &header.app.name, retries, !json)?;
-        // Cleanup always runs, pass or fail.
-        if let Some(cmd) = &manifest.after_each {
-            run_hook(cmd, spec_path, "after_each")?;
-        }
-        let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;
+        let replayed = flowproof_replay::load_trace(&trace_path)
+            .map_err(|e| e.to_string())
+            // A fresh driver per flow: full isolation, like Playwright
+            // contexts. A driver fault here ends THIS flow only.
+            .and_then(|(header, _)| {
+                replay_with_retries(&trace_path, &header.app.name, retries, !json)
+            });
+        // Cleanup always runs, pass, fail or error.
+        let cleanup = match &manifest.after_each {
+            Some(cmd) => run_hook(cmd, spec_path, "after_each"),
+            None => Ok(()),
+        };
+        // Replay first, cleanup second, and only then decide the outcome:
+        // whichever failed, the cleanup has already run.
+        let (report, run_dir, attempts) = match replayed.and_then(|triple| cleanup.map(|()| triple))
+        {
+            Ok(triple) => triple,
+            Err(e) => {
+                errored_flow(
+                    spec_path,
+                    &gated_spec.name,
+                    e,
+                    json,
+                    &mut flows,
+                    &mut reports,
+                );
+                continue;
+            }
+        };
+        let result_path = match report.write_into(&run_dir).map_err(|e| e.to_string()) {
+            Ok(path) => path,
+            Err(e) => {
+                errored_flow(
+                    spec_path,
+                    &gated_spec.name,
+                    e,
+                    json,
+                    &mut flows,
+                    &mut reports,
+                );
+                continue;
+            }
+        };
         if !json {
             println!(
                 "[{}] {} ({} ms){}{}",
@@ -628,6 +729,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
     .map_err(|e| e.to_string())?;
 
     let skipped = reports.iter().filter(|r| r.trace_id == "skipped").count();
+    let errored = reports.iter().filter(|r| r.trace_id == "errored").count();
     let passed = reports.iter().filter(|r| r.passed).count() - skipped;
     let ran = reports.len() - skipped;
     let all_passed = reports.iter().all(|r| r.passed);
@@ -636,6 +738,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
             "flows": flows,
             "passed": all_passed,
             "skipped": skipped,
+            "errored": errored,
             "junit_path": junit_path,
         });
         println!(
@@ -644,10 +747,15 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
         );
     } else {
         println!(
-            "{}: {passed}/{ran} flows passed{} -> {}",
+            "{}: {passed}/{ran} flows passed{}{} -> {}",
             if all_passed { "PASS" } else { "FAIL" },
             if skipped > 0 {
                 format!(", {skipped} skipped")
+            } else {
+                String::new()
+            },
+            if errored > 0 {
+                format!(", {errored} errored")
             } else {
                 String::new()
             },
@@ -657,7 +765,13 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
             println!("DEGRADED: fallback selectors were needed in some flows — heal them");
         }
     }
-    Ok(if all_passed { EXIT_PASS } else { EXIT_FAIL })
+    Ok(if errored > 0 {
+        EXIT_ERROR
+    } else if all_passed {
+        EXIT_PASS
+    } else {
+        EXIT_FAIL
+    })
 }
 
 fn cmd_run(
@@ -731,6 +845,13 @@ fn cmd_run(
                         .unwrap_or_default(),
                 ),
                 StepStatus::Skipped => ("SKIP", String::new()),
+                StepStatus::Errored => (
+                    "ERROR",
+                    step.detail
+                        .as_deref()
+                        .map(|d| format!(" — {d}"))
+                        .unwrap_or_default(),
+                ),
             };
             if step.degraded {
                 let tier = step.selector_tier.as_deref().unwrap_or("fallback");

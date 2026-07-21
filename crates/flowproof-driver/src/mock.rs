@@ -69,6 +69,11 @@ pub struct MockAppDriver {
     /// Browser config captured by `stage_browser` — the mock stands in
     /// for the web driver here, so tests can assert the staging happened.
     pub staged_browser: Option<crate::WebBrowserConfig>,
+    /// Leading `surface_text` calls that fail with a TRANSPORT fault before
+    /// any real answer — a dead CDP socket during an auto-wait poll.
+    /// `u32::MAX` never recovers, which is how the "budget expired without
+    /// a single reading" path is exercised.
+    pub surface_faults: u32,
 }
 
 impl MockAppDriver {
@@ -90,6 +95,14 @@ impl MockAppDriver {
 
     pub fn with_surface_text(mut self, text: &str) -> Self {
         self.texts.insert(Self::SURFACE.into(), text.into());
+        self
+    }
+
+    /// Fail the next `count` surface reads with a transport fault. Models
+    /// the field case behind GAP-A: the socket dies mid-flow while the app
+    /// itself is fine, so a poll learns nothing and must not fail the step.
+    pub fn with_surface_faults(mut self, count: u32) -> Self {
+        self.surface_faults = count;
         self
     }
 
@@ -177,6 +190,15 @@ impl AppDriver for MockAppDriver {
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
+        if self.surface_faults > 0 {
+            // u32::MAX means "never recovers": leave it saturated.
+            if self.surface_faults != u32::MAX {
+                self.surface_faults -= 1;
+            }
+            return Err(DriverError::Transport(
+                "Unable to make method calls because underlying connection is closed".into(),
+            ));
+        }
         if let Some(queue) = self.text_sequence.get_mut(Self::SURFACE) {
             if let Some(next) = queue.pop_front() {
                 return Ok(next);

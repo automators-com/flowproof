@@ -1104,3 +1104,121 @@ steps:
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Field regression (cypress-realworld-app, flowproof 0.2.3): a CDP
+/// transport fault during an auto-waiting assertion aborted the whole run
+/// with `driver error: … underlying connection is closed`, even though the
+/// assertion's own wait budget had barely started. Five of eight migrated
+/// specs died this way at replay while their recording had passed.
+/// A transport fault says nothing about the app, so it is a poll MISS.
+#[test]
+fn transport_fault_during_a_wait_is_a_poll_miss_not_a_failure() {
+    let dir = std::env::temp_dir().join("flowproof-replay-transport-miss");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Post-login\napp: web\nurl: x\nsteps:\n  - Wait until page shows Welcome within 5s\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://example.test/signin".into()),
+        ..spec
+    };
+    let trace = dir.join("nav.trace.jsonl");
+    let mut rec = MockAppDriver::new(&[]).with_surface_text("Welcome");
+    record(&spec, &mut rec, &trace).expect("recording succeeds");
+
+    // Replay: the socket dies for the first three polls (the navigation
+    // window), then the page answers normally.
+    let mut driver = MockAppDriver::new(&[])
+        .with_surface_text("Welcome")
+        .with_surface_faults(3);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(
+        report.passed,
+        "transport blips must not fail a step: {report:?}"
+    );
+    assert_eq!(report.steps[0].status, StepStatus::Passed);
+    assert_eq!(
+        driver.surface_faults, 0,
+        "every scripted fault was consumed"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The other half of the ruling: when the budget expires without a SINGLE
+/// successful reading, the step is a driver error carrying the transport
+/// message — never a fabricated "expected 'X', got ''", which would send a
+/// caller healing a trace that is not broken.
+#[test]
+fn a_wait_that_never_reads_reports_the_transport_fault_not_a_fake_mismatch() {
+    let dir = std::env::temp_dir().join("flowproof-replay-transport-dead");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Post-login\napp: web\nurl: x\nsteps:\n  - Wait until page shows Welcome within 1s\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://example.test/signin".into()),
+        ..spec
+    };
+    let trace = dir.join("dead.trace.jsonl");
+    let mut rec = MockAppDriver::new(&[]).with_surface_text("Welcome");
+    record(&spec, &mut rec, &trace).expect("recording succeeds");
+
+    let mut driver = MockAppDriver::new(&[])
+        .with_surface_text("Welcome")
+        .with_surface_faults(u32::MAX);
+    let err = run_trace(&trace, &mut driver).expect_err("a dead transport is an error");
+    let message = err.to_string();
+    assert!(
+        message.contains("underlying connection is closed"),
+        "the transport fault must survive into the message: {message}"
+    );
+    assert!(
+        !message.contains("expected text"),
+        "an infra fault must never be reported as a failed expectation: {message}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Same bug class, non-ASCII: the tolerated-fault path must not truncate or
+/// mangle multibyte surface text on its way to a passing assertion.
+#[test]
+fn transport_fault_tolerance_preserves_multibyte_surface_text() {
+    let dir = std::env::temp_dir().join("flowproof-replay-transport-utf8");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Quittung\napp: web\nurl: x\nsteps:\n  - Wait until page shows Überweisung ausgeführt 🎉 within 5s\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://example.test/konto".into()),
+        ..spec
+    };
+    let trace = dir.join("utf8.trace.jsonl");
+    let mut rec = MockAppDriver::new(&[]).with_surface_text("Überweisung ausgeführt 🎉");
+    record(&spec, &mut rec, &trace).expect("recording succeeds");
+
+    let mut driver = MockAppDriver::new(&[])
+        .with_surface_text("Überweisung ausgeführt 🎉")
+        .with_surface_faults(2);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:?}");
+
+    // And when it never recovers, the failure text stays intact too.
+    let mut driver = MockAppDriver::new(&[])
+        .with_surface_text("Überweisung fehlgeschlagen ❌")
+        .with_surface_faults(1);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+    assert!(report.steps[0]
+        .detail
+        .as_deref()
+        .unwrap_or_default()
+        .contains("fehlgeschlagen ❌"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}

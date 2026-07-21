@@ -64,6 +64,26 @@ pub enum DriverError {
     Input(String),
     #[error("UIA query failed: {0}")]
     Uia(String),
+    /// A browser-driver fault. Distinct from [`DriverError::Uia`] so a web
+    /// flow never reports the Windows adapter's name (a field report caught
+    /// `UIA query failed` on a headless Chrome run).
+    #[error("browser driver failed: {0}")]
+    Browser(String),
+    /// A fault of the DRIVER TRANSPORT itself (a dead CDP websocket, a
+    /// dropped event) rather than an observation about the app. Callers
+    /// polling inside an auto-wait budget treat this as a MISS and keep
+    /// polling: the app was never asked, so nothing was learned about it.
+    #[error("driver transport fault: {0}")]
+    Transport(String),
+}
+
+impl DriverError {
+    /// Is this a transport fault - one that says nothing about the app and
+    /// may well be gone on the next poll? Assertion loops tolerate these
+    /// within their recorded wait budget; every other error propagates.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, DriverError::Transport(_))
+    }
 }
 
 /// Screen/window capture source.

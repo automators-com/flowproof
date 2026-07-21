@@ -19,8 +19,18 @@ use crate::AdapterError;
 
 const FIND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Wrap a browser-driver failure. Transport faults (a dead CDP websocket,
+/// a dropped event) are classified apart from app observations: an
+/// assertion polling inside its recorded wait budget tolerates the former
+/// as a miss, because a call that never reached the page learned nothing
+/// about it.
 fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
-    DriverError::Uia(format!("web: {context}: {err}"))
+    let message = format!("{context}: {err}");
+    if is_transport_fault(&message) {
+        DriverError::Transport(message)
+    } else {
+        DriverError::Browser(message)
+    }
 }
 
 /// Launch a fresh headless Chromium (`CHROME` env var overrides the
@@ -210,7 +220,7 @@ impl WebAppDriver {
     fn tab(&self) -> Result<&Arc<Tab>, DriverError> {
         self.tab
             .as_ref()
-            .ok_or_else(|| DriverError::Uia("web: no page open: call launch first".into()))
+            .ok_or_else(|| DriverError::Browser("no page open: call launch first".into()))
     }
 
     fn locator_of(selector: &UiaSelector) -> Option<WebLocator> {
@@ -234,8 +244,8 @@ impl WebAppDriver {
 
     fn locator(selector: &UiaSelector) -> Result<WebLocator, DriverError> {
         Self::locator_of(selector).ok_or_else(|| {
-            DriverError::Uia(format!(
-                "web: selector [{selector}] has no css, automation_id, or text"
+            DriverError::Browser(format!(
+                "selector [{selector}] has no css, automation_id, or text"
             ))
         })
     }
@@ -279,7 +289,7 @@ impl WebAppDriver {
                 return Ok(element);
             }
             if std::time::Instant::now() >= deadline {
-                return Err(DriverError::Uia(format!("web: no element for {locator}")));
+                return Err(DriverError::Browser(format!("no element for {locator}")));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -473,8 +483,8 @@ impl AppDriver for WebAppDriver {
         // isolated), paying its cold start instead of sharing.
         if let Some(config) = &staged_browser {
             if !config.args.is_empty() {
-                self.browser =
-                    launch_browser(&config.args).map_err(|e| DriverError::Uia(e.to_string()))?;
+                self.browser = launch_browser(&config.args)
+                    .map_err(|e| DriverError::Browser(e.to_string()))?;
                 self.context_id = None;
             }
         }
@@ -1035,7 +1045,7 @@ impl AppDriver for WebAppDriver {
         let json = value
             .value
             .and_then(|v| v.as_str().map(str::to_string))
-            .ok_or_else(|| DriverError::Uia("web: scene script returned no value".into()))?;
+            .ok_or_else(|| DriverError::Browser("scene script returned no value".into()))?;
         Ok(Some(json))
     }
 
