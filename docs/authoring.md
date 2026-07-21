@@ -58,11 +58,23 @@ append `within <N>s` to any form to change the bound.
 | `page shows <text>` | the whole surface (page text / window subtree / SAP session / OCR frame) contains `<text>` — `the page shows <text>` also accepted |
 | `page shows <text> <N> times` | exact occurrence count of the TEXT |
 | `page does not show <text>` | waits for it to be GONE |
+| `page url is <expected>` | the surface's URL. A `<expected>` starting with `/` compares the PATHNAME exactly, including the query only when `<expected>` carries a `?` and the fragment only when it carries a `#` (so `/orders` ignores `?page=2`); one containing `://` compares the whole URL exactly. Web flows only: a window or an OCR frame has no URL, and the error says so |
+| `page url contains <text>` | substring of the whole URL |
 | `the [2nd ]"<label>" field contains <text>` | input VALUE, by label |
 | `the <id> field contains <text>` | input VALUE, by native id |
 | `the [2nd ]"<target>" shows <text>` | element-scoped substring |
 | `the [2nd ]"<target>" is visible` / `is not visible` | target resolves / does not resolve |
 | `the [2nd ]"<target>" is enabled` / `is disabled` | platform enabled state (`disabled`/`aria-disabled` on web, UIA IsEnabled on desktop) |
+
+The URL forms map `cy.location("pathname").should("equal", "/signin")` and
+`cy.url().should("include", "checkout")`, and they auto-wait like every other
+assertion, because an SPA redirect lands asynchronously:
+
+```yaml
+- assert: page url is /signin
+- assert: page url contains checkout
+- assert: page url is /orders?page=2 within 15s
+```
 
 ## Out-of-band assertions (any app; structured steps, not prose)
 
