@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -13,6 +14,28 @@ WINDOWS = sys.platform == "win32"
 def test_version_is_exposed():
     assert flowproof.__version__
     assert _native.__engine_version__
+
+
+def test_every_version_location_agrees():
+    """A release needs FOUR places bumped in lockstep, and a mismatch is
+    only ever discovered by PyPI rejecting the upload (400 File already
+    exists) or by a wheel whose --version lies. The engine version comes
+    from the Rust workspace Cargo.toml, so comparing all three here covers
+    Cargo.toml, pyproject.toml and __init__.py.
+    """
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    declared = re.search(
+        r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE
+    )
+    assert declared, "pyproject.toml has no version"
+    assert flowproof.__version__ == declared.group(1), (
+        f"__init__.py says {flowproof.__version__}, "
+        f"pyproject.toml says {declared.group(1)}"
+    )
+    assert flowproof.__version__ == _native.__engine_version__, (
+        f"python package says {flowproof.__version__}, "
+        f"rust engine says {_native.__engine_version__}"
+    )
 
 
 def test_public_api_surface():

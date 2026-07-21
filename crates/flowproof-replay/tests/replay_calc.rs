@@ -200,18 +200,41 @@ fn page_shows_matches_case_insensitively_at_record_and_replay() {
         "case-insensitive fallback at replay: {report:#?}"
     );
 
-    // The negative form mirrors the positive: if `shows X` passes
-    // case-insensitively, `does not show X` must FAIL.
+    // The negative form deliberately does NOT mirror the positive. The
+    // fallback is widening-only: `does not show CLOSE ACCOUNT` passed
+    // against a rendered "Close account" before the fallback existed, and
+    // mirroring here would start failing a trace that used to pass.
+    // Symmetry is the lesser property - see the design ruling in
+    // docs/design.md.
     let spec = FlowSpec::parse(
         "name: CI negative\napp: web\nurl: https://e.test/x\nsteps:\n  - assert: page does not show CLOSE ACCOUNT\n",
     )
     .expect("spec parses");
     let trace = dir.join("ci-neg.trace.jsonl");
     let mut rec = MockAppDriver::new(&[]).with_surface_text("Close account");
+    record(&spec, &mut rec, &trace).expect("a negative assert stays case-sensitive");
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("Close account");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
     assert!(
-        record(&spec, &mut rec, &trace).is_err(),
-        "negative assertion must fail against a case-variant match"
+        report.passed,
+        "a trace that passed before the fallback must keep passing: {report:#?}"
     );
+
+    // Counts widen the same way: a NONZERO case-sensitive count is the
+    // answer, so an existing passing count assertion cannot flip.
+    let spec = FlowSpec::parse(
+        "name: CI count\napp: web\nurl: https://e.test/x\nsteps:\n  - assert: page shows item 2 times\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("ci-count.trace.jsonl");
+    // Two exact "item" plus one "ITEM": the case-sensitive count (2) wins,
+    // so this holds; a blanket lowercase count would have seen 3 and failed.
+    let mut rec = MockAppDriver::new(&[]).with_surface_text("item ITEM item");
+    record(&spec, &mut rec, &trace).expect("nonzero case-sensitive count wins");
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("item ITEM item");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "count report: {report:#?}");
+
     std::fs::remove_dir_all(&dir).ok();
 }
 
