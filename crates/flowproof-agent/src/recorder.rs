@@ -896,11 +896,20 @@ fn poll_oob(
 }
 
 fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
+    // Case-insensitive FALLBACK, mirroring element anchors: an exact
+    // match always wins; when it misses, lowercased comparison decides
+    // ("page shows Close Account" against a page reading "Close
+    // account"). The negative form mirrors the positive — if `shows X`
+    // would pass, `does not show X` must fail.
+    let (actual_ci, expected_ci) = (actual.to_lowercase(), expected.to_lowercase());
     match matcher {
-        TextMatch::Contains => actual.contains(expected),
-        TextMatch::NotContains => !actual.contains(expected),
-        TextMatch::CountEquals(n) => actual.matches(expected).count() as u64 == n,
-        TextMatch::Equals => actual == expected,
+        TextMatch::Contains => actual.contains(expected) || actual_ci.contains(&expected_ci),
+        TextMatch::NotContains => !actual.contains(expected) && !actual_ci.contains(&expected_ci),
+        TextMatch::CountEquals(n) => {
+            actual.matches(expected).count() as u64 == n
+                || actual_ci.matches(&expected_ci).count() as u64 == n
+        }
+        TextMatch::Equals => actual == expected || actual_ci == expected_ci,
         TextMatch::NumericEquals => matches!(
             (flowproof_driver::numeric_value(actual), expected.parse::<f64>()),
             (Some(a), Ok(e)) if a == e

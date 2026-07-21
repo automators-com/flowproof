@@ -177,6 +177,44 @@ fn browser_config_travels_from_spec_through_trace_to_replay_staging() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 0.2.3 field regression: element anchors were case-insensitive but
+/// `page shows` was not. Both executions now apply the same exact-first,
+/// case-insensitive-fallback matching — and the negative form mirrors it.
+#[test]
+fn page_shows_matches_case_insensitively_at_record_and_replay() {
+    let dir = std::env::temp_dir().join("flowproof-replay-ci-text");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: CI text\napp: web\nurl: https://e.test/x\nsteps:\n  - assert: page shows Close Account\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("ci-text.trace.jsonl");
+    // The DOM says "Close account" — recording must still verify.
+    let mut rec = MockAppDriver::new(&[]).with_surface_text("Close account");
+    record(&spec, &mut rec, &trace).expect("records despite case drift");
+
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("Close account");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "case-insensitive fallback at replay: {report:#?}"
+    );
+
+    // The negative form mirrors the positive: if `shows X` passes
+    // case-insensitively, `does not show X` must FAIL.
+    let spec = FlowSpec::parse(
+        "name: CI negative\napp: web\nurl: https://e.test/x\nsteps:\n  - assert: page does not show CLOSE ACCOUNT\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("ci-neg.trace.jsonl");
+    let mut rec = MockAppDriver::new(&[]).with_surface_text("Close account");
+    assert!(
+        record(&spec, &mut rec, &trace).is_err(),
+        "negative assertion must fail against a case-variant match"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Visual assertion v1: record mints a masked baseline next to the trace;
 /// replay compares with the SAME masks. A change under the mask (the
 /// volatile clock) passes; a change outside it fails naming the diff and
