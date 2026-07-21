@@ -104,6 +104,111 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
     (!uia.is_empty()).then_some(uia)
 }
 
+/// On the run's first failure, enrich the failure `reason` and the run
+/// bundle with what a human would look for next: nearest live text anchors
+/// ("did you mean …?") when an anchored element wasn't found, and the
+/// driver's debug bundle (DOM snapshot, console tail) written under
+/// `<run_dir>/debug/`. Everything here is best-effort — diagnostics must
+/// never turn one failure into two.
+fn augment_failure<D: AppDriver>(
+    driver: &mut D,
+    step: &flowproof_trace::format::Step,
+    run_dir: &Path,
+    mut reason: String,
+) -> String {
+    // Both element-miss phrasings: direct resolution failure ("not
+    // found") and the sync precondition timing out ("did not appear").
+    if reason.contains("not found") || reason.contains("did not appear") {
+        let wanted = step.selectors.iter().find_map(|s| {
+            (s.tier == SelectorTier::TextAnchor)
+                .then(|| s.payload.get("text").or_else(|| s.payload.get("name")))
+                .flatten()
+                .and_then(|v| v.as_str())
+        });
+        if let Some(wanted) = wanted {
+            if let Ok(Some(scene)) = driver.scene() {
+                let hints = nearest_anchor_hints(wanted, &scene);
+                if !hints.is_empty() {
+                    let list = hints
+                        .iter()
+                        .map(|h| format!("'{h}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    reason.push_str(&format!(" — did you mean {list}?"));
+                }
+            }
+        }
+    }
+    if let Ok(Some(bundle)) = driver.debug_bundle() {
+        let debug_dir = run_dir.join("debug");
+        if std::fs::create_dir_all(&debug_dir).is_ok() {
+            let mut wrote = Vec::new();
+            if let Some(dom) = &bundle.dom_html {
+                if std::fs::write(debug_dir.join("dom.html"), dom).is_ok() {
+                    wrote.push("debug/dom.html");
+                }
+            }
+            if !bundle.console.is_empty() {
+                let text = bundle.console.join("\n") + "\n";
+                if std::fs::write(debug_dir.join("console.log"), text).is_ok() {
+                    wrote.push("debug/console.log");
+                }
+            }
+            if !wrote.is_empty() {
+                reason.push_str(&format!(" (captured: {})", wrote.join(", ")));
+            }
+        }
+    }
+    reason
+}
+
+/// The closest visible text anchors to `wanted`, from the driver's scene:
+/// candidates whose (case-insensitive) edit distance is small relative to
+/// the anchor's length, best first, at most three. Exact matches are
+/// excluded — if the exact text is on screen, "not found" means something
+/// else (ordinal, visibility), and a same-text hint would only confuse.
+fn nearest_anchor_hints(wanted: &str, scene_json: &str) -> Vec<String> {
+    let entries: Vec<serde_json::Value> = serde_json::from_str(scene_json).unwrap_or_default();
+    let wanted_lower = wanted.to_lowercase();
+    let budget = (wanted.chars().count() / 3).max(2);
+    let mut scored: Vec<(usize, String)> = entries
+        .iter()
+        .flat_map(|e| {
+            ["label", "text", "name"]
+                .into_iter()
+                .filter_map(|k| e[k].as_str())
+        })
+        .filter(|c| !c.is_empty() && c.to_lowercase() != wanted_lower)
+        .map(|c| {
+            (
+                edit_distance(&wanted_lower, &c.to_lowercase()),
+                c.to_string(),
+            )
+        })
+        .filter(|(d, _)| *d <= budget)
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    scored.dedup_by(|a, b| a.1 == b.1);
+    scored.into_iter().take(3).map(|(_, c)| c).collect()
+}
+
+/// Plain Levenshtein distance — tiny inputs (labels), no dependency needed.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != cb);
+            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
 /// Walk the recorded selector ladder and return the first rung that resolves
 /// to a live element, with its index — index > 0 means the primary selector
 /// no longer matches and the run is degraded (the app drifted; heal).
@@ -718,6 +823,11 @@ pub fn run_trace<D: AppDriver>(
             Ok(()) => StepResult::passed(step, started_ms, duration_ms),
             Err(reason) => {
                 failed = true;
+                // First failure: capture what the app actually looked like
+                // (DOM + console into the run bundle) and suggest nearest
+                // text anchors — the questions a human asks first, answered
+                // without a re-run. Best-effort by design.
+                let reason = augment_failure(driver, step, &run_dir, reason);
                 StepResult::failed(step, started_ms, duration_ms, reason)
             }
         };
@@ -737,4 +847,45 @@ pub fn run_trace<D: AppDriver>(
         recording: recorder.and_then(flowproof_driver::RunRecorder::finish),
     };
     Ok((report, run_dir))
+}
+
+#[cfg(test)]
+mod failure_hint_tests {
+    use super::*;
+
+    #[test]
+    fn edit_distance_is_levenshtein() {
+        assert_eq!(edit_distance("save", "save"), 0);
+        assert_eq!(edit_distance("save", "sale"), 1);
+        assert_eq!(edit_distance("save", "safes"), 2);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn hints_rank_close_labels_and_skip_exact_and_far() {
+        let scene = r#"[
+            {"label": "Save changes", "tag": "button"},
+            {"text": "Sace change", "tag": "button"},
+            {"label": "Delete everything"},
+            {"label": "Save change"}
+        ]"#;
+        // Exact-equal candidates are excluded; far ones filtered; rest
+        // best-first.
+        let hints = nearest_anchor_hints("Save change", scene);
+        assert_eq!(hints, vec!["Sace change", "Save changes"]);
+        assert!(nearest_anchor_hints("Save change", "not json").is_empty());
+    }
+
+    #[test]
+    fn hints_are_case_insensitive_and_capped_at_three() {
+        let scene = r#"[
+            {"label": "LOGIN"}, {"label": "Logins"}, {"label": "Log in"},
+            {"label": "Loginn"}, {"label": "Logging"}
+        ]"#;
+        let hints = nearest_anchor_hints("login", scene);
+        assert_eq!(hints.len(), 3, "top three only: {hints:?}");
+        // "LOGIN" differs only by case = exact match, excluded.
+        assert!(!hints.iter().any(|h| h == "LOGIN"), "{hints:?}");
+    }
 }

@@ -260,6 +260,23 @@ pub trait AppDriver {
     fn scene(&mut self) -> Result<Option<String>, DriverError> {
         Ok(None)
     }
+
+    /// What the app looked like at the moment a step failed — captured
+    /// best-effort by the replayer into the run bundle so the first
+    /// question ("what was actually on screen?") is answered without a
+    /// re-run. `Ok(None)` = this driver has nothing beyond the recording.
+    fn debug_bundle(&mut self) -> Result<Option<DebugBundle>, DriverError> {
+        Ok(None)
+    }
+}
+
+/// Failure-time diagnostics a driver can capture. All fields best-effort.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DebugBundle {
+    /// Full serialized DOM (web) or equivalent structural dump.
+    pub dom_html: Option<String>,
+    /// Recent console/log lines, oldest first (bounded ring buffer).
+    pub console: Vec<String>,
 }
 
 /// `(x, y, width, height)` in frame pixels.

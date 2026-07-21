@@ -79,6 +79,14 @@ regions are masked before frames are written: declare `redact:` rules in
 the spec, and password fields are always masked automatically
 (see [docs/recording.md](recording.md)).
 
+**When a step fails**, the bundle additionally answers the first two
+questions a human asks. `debug/dom.html` is the full DOM at the moment of
+failure and `debug/console.log` the page's recent console/exception tail
+(web flows; captured best-effort). And when an anchored element wasn't
+found, the failure detail suggests the nearest visible text anchors:
+`element … not found — did you mean 'Save changes'?` — usually the whole
+diagnosis for drifted labels, with `flowproof heal` as the fix.
+
 ### Running a whole suite
 
 Point `run` at a **directory** and every `*.flow.yaml` under it (recursive,
