@@ -379,17 +379,45 @@ fn apply_env_from(manifest: &flowproof_agent::SuiteManifest, dir: &Path) -> Resu
     let Some(command) = &manifest.env_from else {
         return Ok(());
     };
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(dir)
+    // The data command SEES the suite's `env:`. Minting test data almost
+    // always needs the suite's base URL and credentials, and before this
+    // the command ran with none of them: a mint script reading $API_BASE
+    // got an empty string and failed closed downstream, which cost real
+    // diagnosis time in the field.
+    //
+    // Two orderings are easy to conflate, and only the second changes:
+    //   1. which value wins for `${VAR}` at flow time - UNCHANGED, still
+    //      process env < env_from output < `env:`;
+    //   2. what the env_from CHILD PROCESS sees - now `env:` too.
+    // Entries are resolved against the ambient process environment only,
+    // and one that does not resolve yet is skipped rather than fatal: it
+    // may reference this very command's output, and it gets its turn when
+    // `env:` is applied afterwards.
+    let mut child = std::process::Command::new("sh");
+    child.arg("-c").arg(command).current_dir(dir);
+    for (key, value) in &manifest.env {
+        if let Ok(resolved) = flowproof_trace::secret::resolve_refs(value) {
+            child.env(key, resolved);
+        }
+    }
+    let output = child
         .output()
         .map_err(|e| format!("env_from command failed to start: {e}"))?;
+    // The command's stderr is TEED, not swallowed and not merely inherited:
+    // echoed so a mint script that explains itself is audible even when it
+    // succeeds (half the field diagnosis cost was a script with no voice),
+    // AND kept in the error below so a programmatic caller still gets the
+    // reason. Inheriting alone would have made the failure message say only
+    // "see above", which is useless to `--json`.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        eprint!("{stderr}");
+    }
     if !output.status.success() {
         return Err(format!(
             "env_from command exited with {}: {}",
             output.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&output.stderr).trim()
+            stderr.trim()
         ));
     }
     for (name, value) in parse_env_lines(&String::from_utf8_lossy(&output.stdout))? {
