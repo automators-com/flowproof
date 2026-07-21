@@ -51,10 +51,24 @@ fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
 /// flow that logged in recorded fine and then failed to replay, because
 /// the login redirect is exactly a post-idle navigation. Silence is not
 /// evidence of a dead browser - a browser that actually dies closes the
-/// socket, which surfaces immediately and through a different path - so
-/// this reaper only ever fires on healthy long-running flows. Set it well
-/// past any plausible run.
-const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+/// socket, which surfaces immediately and through a different path.
+///
+/// Choosing the value is a genuine trade-off, because headless_chrome
+/// OVERLOADS this one knob across three jobs with opposite needs:
+///
+/// - `Browser`'s event-listener reap and the transport's idle reap want it
+///   LONG (that is the bug above);
+/// - `Transport::call_method` uses it as the bound on waiting for a call's
+///   RESPONSE, which wants it SHORT: a response that never arrives blocks
+///   for exactly this long. Setting it to "effectively never" turned a
+///   failing CI job into one that hung for over three hours.
+///
+/// So: comfortably longer than any real gap between browser-level events
+/// (the field flows idled 30-90 s; `Wait until` defaults to a 60 s bound),
+/// and short enough that a lost response fails visibly instead of hanging.
+/// A flow that deliberately waits longer than this in one step without
+/// touching the browser is the case to revisit if it ever shows up.
+const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Launch a fresh headless Chromium (`CHROME` env var overrides the
 /// binary), optionally with extra command-line flags.
