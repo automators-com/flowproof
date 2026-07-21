@@ -1257,3 +1257,85 @@ fn a_navigation_after_a_long_idle_does_not_kill_the_connection() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Field regression (cypress-realworld-app, round 3): a settings form whose
+/// first field sat below the fold was untestable. The actionability gate
+/// hit-tests `elementFromPoint` at the element's centre, but ran BEFORE any
+/// scrolling - and outside the viewport that returns null, so the gate
+/// reported "obscured (another element would receive the click)" and
+/// blocked a click that would have worked. headless_chrome's own
+/// `Element::click` starts with `scroll_into_view`, so the gate was asking
+/// about a position the click never uses. Cypress and Playwright both
+/// scroll before acting; now so does the gate.
+#[test]
+fn an_element_below_the_fold_is_scrolled_to_rather_than_called_obscured() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web below-the-fold E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-below-fold-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("tall.html");
+    // A tall spacer puts the field far below a pinned 500x300 viewport, so
+    // "below the fold" is a property of the test, not of the runner.
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body style="margin:0">
+            <div style="height:1200px">scroll down</div>
+            <input id="name" placeholder="Full name" />
+            <button id="save" onclick="
+              document.getElementById('out').textContent = 'Saved ' + document.getElementById('name').value;
+            ">Save</button>
+            <div id="out"></div>
+        </body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("tall.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Field below the fold".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: None,
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: Some(flowproof_trace::format::BrowserSetup {
+            viewport: Some(flowproof_trace::format::ViewportSetup {
+                width: 500,
+                height: 300,
+                device_scale_factor: None,
+                mobile: None,
+                touch: None,
+            }),
+            user_agent: None,
+            args: Vec::new(),
+        }),
+        steps: vec![
+            flowproof_agent::SpecStep::Plain("Type Ada into the name field".into()),
+            flowproof_agent::SpecStep::Plain("Press the \"Save\" button".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Saved Ada".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path)
+        .expect("recording reaches a field below the fold");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "below-the-fold element must be scrolled to, not called obscured: {report:#?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
