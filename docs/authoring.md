@@ -110,6 +110,29 @@ preflights, so cross-origin `fetch()` calls just work. The tool for
 third-party calls (payments, analytics) and hard-to-provoke server
 states; for asserting on real APIs, use `assert_api` instead.
 
+## Browser config (web flows; spec-level, not steps)
+
+```yaml
+browser:
+  viewport:                   # device emulation, applied before navigation
+    width: 390
+    height: 844
+    device_scale_factor: 3    # optional; default 1
+    mobile: true              # optional; mobile layout + meta-viewport
+    touch: true               # optional; emulate a touch screen
+  user_agent: my-agent        # optional; navigator.userAgent override
+  args: ["--lang=en-US"]      # optional; extra Chrome flags
+```
+
+The config travels in the trace header and applies **identically at
+record and replay** — a flow recorded on an emulated phone never replays
+on a desktop viewport. This is how `*.mobile` test variants and
+deterministic-seeding user agents (previously an env-var wrapper around
+Chrome) become first-class. `args` forces a private (non-shared) browser
+for the flow, since flags only apply at process start — expect its cold
+start. A suite's `suite.yaml` may carry the same `browser:` block as a
+default for every flow; a flow's own block wins outright.
+
 ## App sugar
 
 - **calc**: `Type <digits>` (one press per digit), `Press

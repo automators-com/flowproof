@@ -79,6 +79,12 @@ pub struct FlowSpec {
     /// for third-party calls and hard-to-provoke server states.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mock: Vec<flowproof_trace::format::MockRule>,
+    /// Browser launch/emulation config (web flows): viewport/mobile
+    /// emulation, user-agent override, extra Chrome flags. Copied into the
+    /// trace header so record and every replay run the same browser shape.
+    /// A suite's `browser:` applies when the spec has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<flowproof_trace::format::BrowserSetup>,
     pub steps: Vec<SpecStep>,
 }
 
@@ -517,7 +523,8 @@ fn expand_foreach(doc: &mut serde_yaml::Value) -> Result<(), SpecError> {
 /// `after_each` shell commands run around every flow (the seed and cleanup
 /// the eval's 912-line harness mostly existed to do); `env` is exported to
 /// every flow and every hook; `order` pins spec order when it matters.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+// PartialEq only: `browser.viewport.device_scale_factor` is an f64.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SuiteManifest {
     /// Minimum flowproof version this suite's specs need (`X.Y.Z`). The
@@ -551,6 +558,10 @@ pub struct SuiteManifest {
     /// listed run after, in the default sorted order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<String>,
+    /// Browser launch/emulation defaults for every flow in the suite
+    /// (web): a flow's own `browser:` wins outright when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<flowproof_trace::format::BrowserSetup>,
 }
 
 impl SuiteManifest {
@@ -738,6 +749,33 @@ steps:
             .expect_err("typo'd field must fail");
         let msg = err.to_string();
         assert!(msg.contains("urll"), "names the field: {msg}");
+    }
+
+    #[test]
+    fn browser_block_parses_and_rejects_typos() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nurl: http://x\nbrowser:\n  viewport:\n    width: 390\n    height: 844\n    mobile: true\n  user_agent: probe\n  args: [\"--lang=fr-FR\"]\nsteps:\n  - Type 1\n",
+        )
+        .expect("browser block parses");
+        let browser = spec.browser.expect("browser present");
+        assert_eq!(browser.viewport.as_ref().map(|v| v.width), Some(390));
+        assert_eq!(browser.args, vec!["--lang=fr-FR"]);
+
+        // A dropped emulation field would change what the flow tests —
+        // typos inside browser: are parse errors naming the field.
+        let err = FlowSpec::parse(
+            "name: x\napp: web\nurl: http://x\nbrowser:\n  viewport:\n    width: 390\n    height: 844\n    mobil: true\nsteps:\n  - Type 1\n",
+        )
+        .expect_err("typo'd viewport field must fail");
+        assert!(err.to_string().contains("mobil"), "names the field: {err}");
+
+        // Suite manifests accept the same block.
+        let manifest: SuiteManifest =
+            serde_yaml::from_str("browser:\n  user_agent: probe\n").expect("manifest parses");
+        assert_eq!(
+            manifest.browser.and_then(|b| b.user_agent).as_deref(),
+            Some("probe")
+        );
     }
 
     #[test]

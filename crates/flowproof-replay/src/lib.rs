@@ -933,6 +933,20 @@ pub fn run_trace<D: AppDriver>(
                 .collect(),
         )?;
     }
+    // The browser shape travels in the header too: a flow recorded on an
+    // emulated phone viewport must not replay on a desktop one.
+    if let Some(browser) = &header.browser {
+        if !browser.is_empty() {
+            driver.stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
+                browser
+                    .viewport
+                    .as_ref()
+                    .map(|v| (v.width, v.height, v.device_scale_factor, v.mobile, v.touch)),
+                browser.user_agent.as_deref(),
+                &browser.args,
+            ))?;
+        }
+    }
     let started = Instant::now();
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
 

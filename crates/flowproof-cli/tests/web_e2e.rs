@@ -30,6 +30,7 @@ fn records_and_replays_a_browser_flow() {
         session: None,
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -94,6 +95,7 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
         session: None,
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -186,6 +188,7 @@ fn secret_reference_types_real_value_but_never_persists_it() {
         session: None,
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type ${FLOWPROOF_E2E_PW} into the pw field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -260,6 +263,7 @@ fn assertions_wait_for_async_page_updates() {
         session: None,
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Press the start button".into()),
             flowproof_agent::SpecStep::Plain(
@@ -324,6 +328,7 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
         session: None,
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain(
                 "Type Customers into the \"Template name\" field".into(),
@@ -399,6 +404,7 @@ fn assertion_forms_wait_and_verify_on_real_pages() {
         session: None,
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "the searchBox field contains prefilled".into(),
@@ -495,6 +501,7 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
         session: None,
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: vec![
             // Fill semantics: clear the prefilled value, retype, Enter.
             // "Submitted: fresh" (not "…stale textfresh") proves the clear.
@@ -598,6 +605,7 @@ fn session_seeding_and_navigation_drive_real_pages() {
         }),
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows project: ${FLOWPROOF_E2E_PROJECT}".into(),
@@ -669,6 +677,7 @@ fn persisted_frames_never_contain_masked_data() {
         session: None,
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type bob into the user field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -839,6 +848,7 @@ fn select_own_text_anchors_and_state_asserts_work() {
         session: None,
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
+        browser: None,
         steps: FlowSpec::parse(
             "name: x\napp: web\nurl: x\nsteps:\n\
              - assert: the \"Save\" is disabled\n\
@@ -919,6 +929,76 @@ fetch('https://rates.invalid.flowproof.test/api/rates')
     let (report, _run_dir) =
         flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
     assert!(report.passed, "mocked flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Round-2 browser config against real Chromium: the page boots into an
+/// emulated phone viewport (innerWidth 390), sees the overridden
+/// user-agent, and — because extra Chrome flags force a private browser —
+/// a `--lang=fr-FR` flag reaches `navigator.language`. Record and replay
+/// both run the same shape (the config travels in the trace header).
+#[test]
+fn viewport_user_agent_and_chrome_args_shape_the_real_browser() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web browser-config E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-browser-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("device.html");
+    // The meta viewport matters: with mobile emulation and no meta tag,
+    // Chrome (like a real phone) lays the page out at its 980px default.
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Device</title>
+<meta name="viewport" content="width=device-width">
+<div id="out"></div>
+<script>
+  const ua = navigator.userAgent.includes('flowproof-probe') ? 'probe-ua'
+    : navigator.userAgent.includes('flag-ua') ? 'flag-ua' : 'default-ua';
+  document.getElementById('out').textContent =
+    'width ' + window.innerWidth + ', ' + ua + ', touch ' + navigator.maxTouchPoints;
+</script>"#,
+    )
+    .expect("page written");
+
+    // Flow 1: viewport/mobile/touch emulation + tab-level UA override.
+    let spec = FlowSpec::parse(&format!(
+        "name: Emulated device\napp: web\nurl: file://{}\nbrowser:\n  viewport:\n    width: 390\n    height: 844\n    mobile: true\n    touch: true\n  user_agent: flowproof-probe\nsteps:\n  - assert: page shows width 390, probe-ua, touch 1\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("device.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "device flow must replay: {report:#?}");
+
+    // Flow 2: extra Chrome flags reach the process — the exact shim case
+    // from the field report (`--user-agent=playwright` via env wrapper),
+    // now first-class. Flags force a private browser for the flow.
+    let spec = FlowSpec::parse(&format!(
+        "name: Flagged browser\napp: web\nurl: file://{}\nbrowser:\n  args: [\"--user-agent=flowproof flag-ua\"]\nsteps:\n  - assert: page shows flag-ua\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("flagged.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("flagged recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "flagged flow must replay: {report:#?}");
 
     std::fs::remove_dir_all(&dir).ok();
 }

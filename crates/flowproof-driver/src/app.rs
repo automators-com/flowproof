@@ -307,6 +307,62 @@ pub trait AppDriver {
             "right-click is not supported by this driver yet: [{selector}]"
         )))
     }
+
+    /// Stage browser launch/emulation config (viewport, user-agent, extra
+    /// flags) to apply at the next `launch`. Drivers without a browser
+    /// must REJECT it — silently ignoring emulation would change what the
+    /// flow tests.
+    fn stage_browser(&mut self, config: WebBrowserConfig) -> Result<(), DriverError> {
+        let _ = config;
+        Err(DriverError::Uia(
+            "browser emulation is not supported by this driver (web flows only)".into(),
+        ))
+    }
+}
+
+/// Fully-resolved browser launch/emulation config for the web driver:
+/// the driver-side mirror of the trace's `BrowserSetup`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WebBrowserConfig {
+    /// `(width, height, device_scale_factor, mobile, touch)`.
+    pub viewport: Option<WebViewport>,
+    pub user_agent: Option<String>,
+    /// Extra Chrome flags — forces a private (non-shared) browser, since
+    /// flags only apply at process start.
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebViewport {
+    pub width: u32,
+    pub height: u32,
+    pub device_scale_factor: f64,
+    pub mobile: bool,
+    pub touch: bool,
+}
+
+impl WebBrowserConfig {
+    /// Build from the trace-format setup parts, applying the defaults ONCE
+    /// for record AND replay: device scale 1.0, desktop, no touch.
+    /// `viewport` is `(width, height, device_scale_factor, mobile, touch)`.
+    #[allow(clippy::type_complexity)]
+    pub fn from_setup_parts(
+        viewport: Option<(u32, u32, Option<f64>, Option<bool>, Option<bool>)>,
+        user_agent: Option<&str>,
+        args: &[String],
+    ) -> Self {
+        Self {
+            viewport: viewport.map(|(width, height, dsf, mobile, touch)| WebViewport {
+                width,
+                height,
+                device_scale_factor: dsf.unwrap_or(1.0),
+                mobile: mobile.unwrap_or(false),
+                touch: touch.unwrap_or(false),
+            }),
+            user_agent: user_agent.map(str::to_string),
+            args: args.to_vec(),
+        }
+    }
 }
 
 /// One fully-resolved network mock the web driver serves in place of a
@@ -546,6 +602,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         (**self).context_click(selector)
+    }
+
+    fn stage_browser(&mut self, config: WebBrowserConfig) -> Result<(), DriverError> {
+        (**self).stage_browser(config)
     }
 }
 
