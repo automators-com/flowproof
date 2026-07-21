@@ -34,6 +34,13 @@ pub struct MockAppDriver {
     /// Failure-time diagnostics returned by `debug_bundle` (None = the
     /// trait default: driver has nothing to add).
     pub debug: Option<crate::DebugBundle>,
+    /// Element keys whose center a click would NOT reach (toast/overlay on
+    /// top) — `element_receives_events` reports Some(false) for these.
+    pub obscured: Vec<String>,
+    /// Element keys still animating: each `element_rect` call while the
+    /// remaining count is > 0 returns a shifted rect (and decrements), so
+    /// stability gates see movement that later settles.
+    pub moving: std::collections::HashMap<String, u32>,
     /// Element keys that report as disabled via `element_enabled`.
     pub disabled: Vec<String>,
     /// Scripted text sequences: each `read_text` on the key pops the next
@@ -225,6 +232,15 @@ impl AppDriver for MockAppDriver {
             .as_deref()
             .or(selector.css.as_deref())
             .unwrap_or_default();
+        // Scripted animation: shift the rect while polls remain.
+        if let Some(remaining) = self.moving.get_mut(key) {
+            if *remaining > 0 {
+                *remaining -= 1;
+                let offset = *remaining as i32 + 1;
+                let (x, y, w, h) = self.rects.get(key).copied().unwrap_or((0, 0, 10, 10));
+                return Ok(Some((x + offset, y, w, h)));
+            }
+        }
         Ok(self.rects.get(key).copied())
     }
 
@@ -238,6 +254,19 @@ impl AppDriver for MockAppDriver {
 
     fn debug_bundle(&mut self) -> Result<Option<crate::DebugBundle>, DriverError> {
         Ok(self.debug.clone())
+    }
+
+    fn element_receives_events(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<Option<bool>, DriverError> {
+        let key = selector
+            .automation_id
+            .as_deref()
+            .or(selector.css.as_deref())
+            .or(selector.name.as_deref())
+            .unwrap_or_default();
+        Ok(Some(!self.obscured.iter().any(|k| k == key)))
     }
 }
 

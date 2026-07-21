@@ -518,6 +518,31 @@ impl AppDriver for WebAppDriver {
         Ok(value.value.and_then(|v| v.as_bool()).unwrap_or(true))
     }
 
+    fn element_receives_events(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<Option<bool>, DriverError> {
+        let locator = Self::locator(selector)?;
+        let value =
+            self.with_element(&locator, &format!("hit-testing [{selector}]"), |element| {
+                // Playwright's obscured check: does elementFromPoint at the
+                // element's center resolve to it (or a relative)? A toast or
+                // modal backdrop on top makes the click land elsewhere.
+                element.call_js_fn(
+                    r#"function() {
+                        const r = this.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) { return false; }
+                        const t = document.elementFromPoint(
+                            r.x + r.width / 2, r.y + r.height / 2);
+                        return !!(t && (t === this || this.contains(t) || t.contains(this)));
+                    }"#,
+                    vec![],
+                    false,
+                )
+            })?;
+        Ok(value.value.and_then(|v| v.as_bool()))
+    }
+
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         let locator = Self::locator(selector)?;
         self.with_element(&locator, &format!("clicking [{selector}]"), |element| {

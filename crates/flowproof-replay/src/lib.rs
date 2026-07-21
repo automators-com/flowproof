@@ -266,6 +266,78 @@ fn wait_for_condition<D: AppDriver>(
     }
 }
 
+/// Spacing between the two rect samples of the stability gate — long
+/// enough that a CSS transition moves the box between samples, short
+/// enough that the fast path costs almost nothing.
+const STABILITY_INTERVAL: Duration = Duration::from_millis(60);
+
+/// An element can exist and still not be actionable: disabled while a
+/// mutation is in flight, mid-animation, or under a toast/modal backdrop.
+/// Gate element actions on enabled → stable → receives-events, polling to
+/// the deadline — the flakiness class auto-waiting eliminates (issue #42).
+/// Unknown answers (driver can't tell) satisfy the gate; the failure
+/// message names the specific gate, which is what makes a flake
+/// debuggable instead of mysterious.
+fn wait_actionable<D: AppDriver>(
+    driver: &mut D,
+    target: &UiaSelector,
+    timeout_ms: u64,
+) -> Result<Result<(), String>, ReplayError> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let gate = actionability_gate(driver, target)?;
+        match gate {
+            None => return Ok(Ok(())),
+            Some(name) => {
+                if Instant::now() >= deadline {
+                    return Ok(Err(format!(
+                        "element exists but is {name} after {timeout_ms}ms"
+                    )));
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
+    }
+}
+
+/// One actionability pass: `None` = actionable, `Some(gate)` names the
+/// first gate that failed.
+fn actionability_gate<D: AppDriver>(
+    driver: &mut D,
+    target: &UiaSelector,
+) -> Result<Option<&'static str>, ReplayError> {
+    // Enabled: an Err means the driver has no enabled concept — satisfied.
+    if !driver.element_enabled(target).unwrap_or(true) {
+        return Ok(Some("disabled"));
+    }
+    // Stable: the bounding box must not move between two samples. None
+    // (driver has no geometry) = satisfied.
+    if let Some(first) = driver.element_rect(target)? {
+        std::thread::sleep(STABILITY_INTERVAL);
+        if driver.element_rect(target)? != Some(first) {
+            return Ok(Some("unstable (still moving/animating)"));
+        }
+    }
+    // Receives events at its center: None = driver can't tell, satisfied.
+    if driver.element_receives_events(target)? == Some(false) {
+        return Ok(Some("obscured (another element would receive the click)"));
+    }
+    Ok(None)
+}
+
+/// The auto-wait bound for the actionability gate: the step's recorded
+/// existence precondition timeout when present, else the assert default.
+fn actionable_timeout(step: &Step) -> u64 {
+    step.sync
+        .pre
+        .iter()
+        .find_map(|c| match c {
+            Condition::ElementExists { timeout_ms, .. } => Some(*timeout_ms),
+            _ => None,
+        })
+        .unwrap_or(DEFAULT_ASSERT_TIMEOUT_MS)
+}
+
 /// Extract the text expectation from an `element_state` expect object:
 /// `(raw expectation, negated)`. None when it carries no text expectation.
 fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
@@ -625,8 +697,14 @@ fn execute_step<D: AppDriver>(
         }
         Action::Click(_) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
-                driver.invoke(&target)?;
-                (Ok(()), StepMatch::from_rung(&step.selectors, Some(rung), 0))
+                let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                match wait_actionable(driver, &target, actionable_timeout(step))? {
+                    Ok(()) => {
+                        driver.invoke(&target)?;
+                        (Ok(()), matched)
+                    }
+                    Err(reason) => (Err(reason), matched),
+                }
             }
             None => (
                 Err("no selector rung resolved to a live element".to_string()),
@@ -646,6 +724,9 @@ fn execute_step<D: AppDriver>(
         Action::TypeText(params) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                if let Err(reason) = wait_actionable(driver, &target, actionable_timeout(step))? {
+                    return Ok((Err(reason), matched));
+                }
                 // The trace stores `${VAR}` secret references, never values;
                 // they resolve from the environment at the moment of typing.
                 match flowproof_trace::secret::resolve_refs(&params.text) {

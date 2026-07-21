@@ -86,6 +86,90 @@ fn replay_fails_when_display_differs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Record a one-press web trace and shrink its recorded existence timeout
+/// so gate-failure tests spend milliseconds, not the 5s default.
+fn record_press_trace(dir: &std::path::Path, label: &str, timeout_ms: u64) -> std::path::PathBuf {
+    let spec = FlowSpec::parse(&format!(
+        "name: Press flow\napp: web\nurl: https://e.test/x\nsteps:\n  - Press the \"{label}\" button\n",
+    ))
+    .expect("spec parses");
+    let trace = dir.join("press.trace.jsonl");
+    let mut rec = MockAppDriver::new(&[label]);
+    record(&spec, &mut rec, &trace).expect("records");
+    let shrunk = std::fs::read_to_string(&trace)
+        .expect("trace readable")
+        .replace(
+            "\"timeout_ms\":5000",
+            &format!("\"timeout_ms\":{timeout_ms}"),
+        );
+    std::fs::write(&trace, shrunk).expect("trace rewritten");
+    trace
+}
+
+/// Issue #42 gate 1: an element that exists but is disabled must not be
+/// clicked — and the failure must NAME the gate.
+#[test]
+fn disabled_element_blocks_the_click_and_names_the_gate() {
+    let dir = std::env::temp_dir().join("flowproof-actionable-disabled");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_press_trace(&dir, "Save", 400);
+
+    let mut driver = MockAppDriver::new(&["Save"]);
+    driver.disabled = vec!["Save".into()];
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.clone().unwrap_or_default();
+    assert!(
+        detail.contains("exists but is disabled after 400ms"),
+        "gate named: {detail}"
+    );
+    assert!(driver.invoked.is_empty(), "the click must not have fired");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Issue #42 gate 2: a mid-animation element is waited out — the click
+/// lands once the bounding box settles.
+#[test]
+fn animation_settles_then_the_click_lands() {
+    let dir = std::env::temp_dir().join("flowproof-actionable-moving");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_press_trace(&dir, "Save", 5000);
+
+    let mut driver = MockAppDriver::new(&["Save"]);
+    driver.moving.insert("Save".into(), 3);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(
+        report.passed,
+        "settled animation must not fail: {report:#?}"
+    );
+    assert_eq!(driver.invoked, vec!["Save"]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Issue #42 gate 3: an element whose center a click would not reach
+/// (toast/overlay) is not clicked blind.
+#[test]
+fn obscured_element_blocks_the_click_and_names_the_gate() {
+    let dir = std::env::temp_dir().join("flowproof-actionable-obscured");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_press_trace(&dir, "Save", 400);
+
+    let mut driver = MockAppDriver::new(&["Save"]);
+    driver.obscured = vec!["Save".into()];
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.clone().unwrap_or_default();
+    assert!(
+        detail.contains("exists but is obscured"),
+        "gate named: {detail}"
+    );
+    assert!(driver.invoked.is_empty(), "the click must not have fired");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A failing step captures the debug bundle into the run dir and suggests
 /// the nearest live text anchor — the two questions a human asks first,
 /// answered without a re-run.
