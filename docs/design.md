@@ -85,6 +85,13 @@ See [`trace-format.md`](trace-format.md) and the JSON Schema in
 - Artifact store layout and retention (`.flowproof/artifacts/`).
 - Heal-diff UX: trace-line diff vs. side-by-side screenshot review.
 
+## Agent-boundary testing
+
+Deterministic testing of AI-based systems — assert a prompt's tool-call
+trajectory against a mocked model boundary, record→replay applied to
+the model API instead of the UI. Full design in
+[agent-testing.md](agent-testing.md).
+
 ## Design notes from the Actual migration (round 2, P2)
 
 Three capability questions surfaced by migrating actualbudget/actual
