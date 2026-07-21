@@ -633,14 +633,13 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
                         Some(n) => (e, TextMatch::CountEquals(n)),
                         None => (e, TextMatch::Contains),
                     }
-                } else if let Some(e) = expect.get("value_equals").and_then(|v| v.as_str()) {
+                } else {
+                    let e = expect.get("value_equals").and_then(|v| v.as_str())?;
                     if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
                         (e, TextMatch::NumericEquals)
                     } else {
                         (e, TextMatch::Equals)
                     }
-                } else {
-                    return None;
                 };
             Some(ResolvedAction::AssertText {
                 target,
