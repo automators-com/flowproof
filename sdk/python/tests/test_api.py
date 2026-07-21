@@ -29,8 +29,7 @@ def test_every_version_location_agrees():
     )
     assert declared, "pyproject.toml has no version"
     assert flowproof.__version__ == declared.group(1), (
-        f"__init__.py says {flowproof.__version__}, "
-        f"pyproject.toml says {declared.group(1)}"
+        f"__init__.py says {flowproof.__version__}, pyproject.toml says {declared.group(1)}"
     )
     assert flowproof.__version__ == _native.__engine_version__, (
         f"python package says {flowproof.__version__}, "
