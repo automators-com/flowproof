@@ -394,12 +394,25 @@ where
         Ok(expected) => expected,
         Err(e) => return Ok((Err(e.to_string()), rung)),
     };
+    let mut fault: Option<flowproof_driver::DriverError> = None;
+    let mut last_text: Option<String> = None;
     loop {
-        let text = read()?;
-        if text_matches(expect, &expected, negated, &text) {
-            return Ok((Ok(()), rung));
+        // A `None` here is a transport fault: the app was never asked, so
+        // nothing was learned about it. Keep polling within the budget.
+        if let Some(text) = tolerate(read(), &mut fault)? {
+            if text_matches(expect, &expected, negated, &text) {
+                return Ok((Ok(()), rung));
+            }
+            last_text = Some(text);
         }
         if Instant::now() >= deadline {
+            let Some(text) = last_text else {
+                // The deadline expired without a single successful read:
+                // this is an infrastructure failure, not a failed
+                // expectation. Reporting it as "expected X, got ''" would
+                // send a caller healing a trace that is not broken.
+                return Err(exhausted(fault));
+            };
             let shown = if flowproof_trace::secret::has_refs(raw) {
                 "<masked>"
             } else {
@@ -409,6 +422,38 @@ where
             return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), rung));
         }
         std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// One reading inside an auto-wait poll loop. A [`DriverError::Transport`]
+/// fault is a MISS (`Ok(None)`) rather than an error: the assertion's
+/// contract is "this holds within N seconds", and a dead socket on one
+/// poll is an observation about the harness, not about the app. Every
+/// other driver error still propagates and fails the step.
+fn tolerate<T>(
+    result: Result<T, flowproof_driver::DriverError>,
+    fault: &mut Option<flowproof_driver::DriverError>,
+) -> Result<Option<T>, ReplayError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(e) if e.is_transient() => {
+            *fault = Some(e);
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The wait budget expired with no successful reading at all - surface the
+/// transport fault that kept eating the polls.
+fn exhausted(fault: Option<flowproof_driver::DriverError>) -> ReplayError {
+    match fault {
+        Some(e) => ReplayError::Driver(e),
+        // Unreachable in practice: a loop only ends with no reading when a
+        // fault was tolerated. Kept total rather than panicking.
+        None => ReplayError::Driver(flowproof_driver::DriverError::Transport(
+            "the assertion never completed a reading".into(),
+        )),
     }
 }
 
@@ -427,14 +472,18 @@ fn check_assertion<D: AppDriver>(
             // ladder — same degradation semantics as action targets. The
             // resolver runs INSIDE the poll loop: the target element may
             // legitimately still be appearing (a toast, a modal).
-            let resolve = |driver: &mut D| -> Result<Option<(UiaSelector, usize)>, ReplayError> {
+            let resolve = |driver: &mut D,
+                           fault: &mut Option<flowproof_driver::DriverError>|
+             -> Result<Option<(UiaSelector, usize)>, ReplayError> {
                 let order =
                     std::iter::once(primary).chain((0..selectors.len()).filter(|&i| i != primary));
                 for rung in order {
                     let Some(uia) = selectors.get(rung).and_then(selector_to_uia) else {
                         continue;
                     };
-                    if driver.element_exists(&uia)? {
+                    // A transport fault here is a miss, not an answer: the
+                    // rung was never actually tested against the app.
+                    if tolerate(driver.element_exists(&uia), fault)?.unwrap_or(false) {
                         return Ok(Some((uia, rung)));
                     }
                 }
@@ -459,14 +508,24 @@ fn check_assertion<D: AppDriver>(
             // Presence expectations: the element being there (or gone) IS
             // the assertion — no text involved.
             if let Some(wanted_present) = expect.get("element_present").and_then(|v| v.as_bool()) {
+                let mut read_ok = false;
                 loop {
-                    let resolved = resolve(driver)?;
+                    // Scoped per iteration: only THIS poll's fault decides
+                    // whether "gone" was actually observed.
+                    let mut fault: Option<flowproof_driver::DriverError> = None;
+                    let resolved = resolve(driver, &mut fault)?;
+                    read_ok |= fault.is_none();
                     match (&resolved, wanted_present) {
                         (Some((_, rung)), true) => return Ok((Ok(()), Some(*rung))),
-                        (None, false) => return Ok((Ok(()), None)),
+                        // "gone" must be proven by a reading that happened,
+                        // not by a fault that prevented one.
+                        (None, false) if fault.is_none() => return Ok((Ok(()), None)),
                         _ => {}
                     }
                     if Instant::now() >= deadline {
+                        if !read_ok {
+                            return Err(exhausted(fault));
+                        }
                         let reason = if wanted_present {
                             "expected element to be visible, but it never appeared".to_string()
                         } else {
@@ -482,15 +541,20 @@ fn check_assertion<D: AppDriver>(
             // driver for its interactive state, poll until it matches.
             if let Some(wanted_enabled) = expect.get("enabled").and_then(|v| v.as_bool()) {
                 let mut last: Option<bool> = None;
+                let mut fault: Option<flowproof_driver::DriverError> = None;
                 loop {
-                    if let Some((uia, rung)) = resolve(driver)? {
-                        let enabled = driver.element_enabled(&uia)?;
-                        if enabled == wanted_enabled {
-                            return Ok((Ok(()), Some(rung)));
+                    if let Some((uia, rung)) = resolve(driver, &mut fault)? {
+                        if let Some(enabled) = tolerate(driver.element_enabled(&uia), &mut fault)? {
+                            if enabled == wanted_enabled {
+                                return Ok((Ok(()), Some(rung)));
+                            }
+                            last = Some(enabled);
                         }
-                        last = Some(enabled);
                     }
                     if Instant::now() >= deadline {
+                        if last.is_none() && fault.is_some() {
+                            return Err(exhausted(fault));
+                        }
                         let state = |e: bool| if e { "enabled" } else { "disabled" };
                         let shown = match last {
                             Some(e) => state(e).to_string(),
@@ -522,15 +586,20 @@ fn check_assertion<D: AppDriver>(
                 Err(e) => return Ok((Err(e.to_string()), None)),
             };
             let mut last: Option<(String, usize)> = None;
+            let mut fault: Option<flowproof_driver::DriverError> = None;
             loop {
-                if let Some((uia, rung)) = resolve(driver)? {
-                    let text = driver.read_text(&uia)?;
-                    if text_matches(expect, &expected, negated, &text) {
-                        return Ok((Ok(()), Some(rung)));
+                if let Some((uia, rung)) = resolve(driver, &mut fault)? {
+                    if let Some(text) = tolerate(driver.read_text(&uia), &mut fault)? {
+                        if text_matches(expect, &expected, negated, &text) {
+                            return Ok((Ok(()), Some(rung)));
+                        }
+                        last = Some((text, rung));
                     }
-                    last = Some((text, rung));
                 }
                 if Instant::now() >= deadline {
+                    if last.is_none() && fault.is_some() {
+                        return Err(exhausted(fault));
+                    }
                     let (rung, shown) = match &last {
                         Some((text, rung)) => {
                             let shown = if flowproof_trace::secret::has_refs(raw) {

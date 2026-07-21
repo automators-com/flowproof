@@ -53,9 +53,17 @@ fn strict_mode_restores_the_hard_error() {
 
     let code = flowproof_cli::run_cli(["run", dir.to_str().expect("utf8"), "--strict"]);
     assert_eq!(code, 2, "--strict makes a missing trace a hard error");
+    // Behavior change (round-3 field ruling): --strict still exits 2, but
+    // the missing trace is now ONE errored flow rather than a run abort,
+    // so the merged junit is still written. `--strict` exists to stop
+    // coverage shrinking silently; suppressing the CI report was never
+    // part of that job, and it is exactly what hid the field failure.
+    let junit = std::fs::read_to_string(dir.join(".flowproof").join("suite-junit.xml"))
+        .expect("strict still reports to CI");
+    assert!(junit.contains("<error message="), "junit: {junit}");
     assert!(
-        !dir.join(".flowproof").join("suite-junit.xml").exists(),
-        "strict aborts before writing suite junit"
+        junit.contains("not found"),
+        "junit names the missing trace: {junit}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

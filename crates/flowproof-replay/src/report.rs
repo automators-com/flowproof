@@ -11,6 +11,10 @@ pub enum StepStatus {
     Passed,
     Failed,
     Skipped,
+    /// The step could not be executed at all: a driver or environment
+    /// fault, not a verdict about the app. Distinct from `Failed` so CI and
+    /// agents can tell "the app is wrong" from "the harness broke".
+    Errored,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -110,6 +114,30 @@ pub struct RunReport {
 }
 
 impl RunReport {
+    /// A flow that could not run: a driver fault, an unreadable trace, a
+    /// failing seed hook. The suite records it and moves on - one broken
+    /// flow must never cost the other flows their run.
+    pub fn errored(name: &str, message: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            trace_id: "errored".into(),
+            passed: false,
+            degraded: false,
+            steps: vec![StepResult {
+                id: "s0001".into(),
+                intent: "flow errored".into(),
+                status: StepStatus::Errored,
+                detail: Some(message.to_string()),
+                started_ms: 0,
+                duration_ms: 0,
+                selector_tier: None,
+                degraded: false,
+            }],
+            duration_ms: 0,
+            recording: None,
+        }
+    }
+
     /// A synthetic report for a flow that never ran (no trace recorded,
     /// skip condition). `passed: true` — a skip is not a failure, matching
     /// JUnit semantics — with one skipped step carrying the reason, so the
@@ -156,7 +184,8 @@ impl RunReport {
     /// run (`flowproof run <dir>`) hands to CI: one `<testsuite>` per flow.
     pub fn suite_junit_xml<'a>(reports: impl IntoIterator<Item = &'a RunReport>) -> String {
         let mut suites = String::new();
-        let (mut tests, mut failures, mut skipped, mut time) = (0usize, 0usize, 0usize, 0f64);
+        let (mut tests, mut failures, mut skipped, mut errors, mut time) =
+            (0usize, 0usize, 0usize, 0usize, 0f64);
         for report in reports {
             tests += report.steps.len();
             failures += report
@@ -169,13 +198,18 @@ impl RunReport {
                 .iter()
                 .filter(|s| s.status == StepStatus::Skipped)
                 .count();
+            errors += report
+                .steps
+                .iter()
+                .filter(|s| s.status == StepStatus::Errored)
+                .count();
             time += report.duration_ms as f64 / 1000.0;
             suites.push_str(&report.junit_testsuite());
         }
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <testsuites name=\"flowproof\" tests=\"{tests}\" failures=\"{failures}\" \
-             skipped=\"{skipped}\" time=\"{time:.3}\">\n\
+             errors=\"{errors}\" skipped=\"{skipped}\" time=\"{time:.3}\">\n\
              {suites}</testsuites>\n",
         )
     }
@@ -191,6 +225,11 @@ impl RunReport {
             .steps
             .iter()
             .filter(|s| s.status == StepStatus::Skipped)
+            .count();
+        let errors = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Errored)
             .count();
         let time = self.duration_ms as f64 / 1000.0;
         let mut cases = String::new();
@@ -219,11 +258,17 @@ impl RunReport {
                         "{case_open}>\n      <skipped/>\n    </testcase>\n"
                     )),
                 },
+                // junit's <error> is exactly this distinction: the test
+                // could not run, as opposed to running and failing.
+                StepStatus::Errored => cases.push_str(&format!(
+                    "{case_open}>\n      <error message=\"{}\"/>\n    </testcase>\n",
+                    xml_escape(step.detail.as_deref().unwrap_or("flow errored")),
+                )),
             }
         }
         format!(
             "\x20\x20<testsuite name=\"{name}\" tests=\"{tests}\" failures=\"{failures}\" \
-             skipped=\"{skipped}\" time=\"{time:.3}\">\n\
+             errors=\"{errors}\" skipped=\"{skipped}\" time=\"{time:.3}\">\n\
              {cases}\x20\x20</testsuite>\n",
             name = xml_escape(&self.name),
             tests = self.steps.len(),
@@ -244,6 +289,8 @@ impl RunReport {
                 StepStatus::Passed => ("PASS", "#1a7f37"),
                 StepStatus::Failed => ("FAIL", "#cf222e"),
                 StepStatus::Skipped => ("SKIP", "#6e7781"),
+                // Amber, not red: the app was never judged.
+                StepStatus::Errored => ("ERROR", "#9a6700"),
             };
             let mut detail = step.detail.as_deref().map(escape).unwrap_or_default();
             if step.degraded {
@@ -568,7 +615,7 @@ mod tests {
     fn junit_xml_carries_counts_verdicts_and_escapes() {
         let xml = junit_fixture().to_junit_xml();
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
-        assert!(xml.contains("tests=\"3\" failures=\"1\" skipped=\"1\""));
+        assert!(xml.contains("tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"1\""));
         assert!(xml.contains("time=\"1.234\""));
         assert!(xml.contains("<testsuite name=\"Add &lt;two&gt; &amp; &quot;quote&quot;\""));
         assert!(xml.contains("name=\"s0001 Type 5\" time=\"0.030\"/>"));
@@ -580,6 +627,31 @@ mod tests {
         assert!(!xml.contains("<blank>"), "raw input must never reach XML");
     }
 
+    /// A flow that could not run reports as junit `<error>`, never as a
+    /// failure: CI must be able to tell "the app is wrong" from "the
+    /// harness broke". Field regression, round 3.
+    #[test]
+    fn an_errored_flow_renders_as_a_junit_error() {
+        let report = RunReport::errored(
+            "Login",
+            "driver transport fault: underlying connection is closed",
+        );
+        assert!(!report.passed);
+        assert_eq!(report.steps[0].status, StepStatus::Errored);
+        let xml = RunReport::suite_junit_xml([&report]);
+        assert!(xml.contains("errors=\"1\""), "xml: {xml}");
+        assert!(
+            xml.contains(
+                "<error message=\"driver transport fault: underlying connection is closed\"/>"
+            ),
+            "xml: {xml}"
+        );
+        assert!(
+            !xml.contains("<failure"),
+            "an error is not a failure: {xml}"
+        );
+    }
+
     #[test]
     fn suite_junit_merges_runs_and_sums_counts() {
         let mut second = junit_fixture();
@@ -587,9 +659,9 @@ mod tests {
         second.passed = true;
         second.steps.truncate(1);
         let xml = RunReport::suite_junit_xml([&junit_fixture(), &second]);
-        assert!(
-            xml.contains("<testsuites name=\"flowproof\" tests=\"4\" failures=\"1\" skipped=\"1\"")
-        );
+        assert!(xml.contains(
+            "<testsuites name=\"flowproof\" tests=\"4\" failures=\"1\" errors=\"0\" skipped=\"1\""
+        ));
         assert_eq!(xml.matches("<testsuite name=").count(), 2);
         assert!(xml.contains("<testsuite name=\"Second flow\""));
         // Still exactly one document root.
