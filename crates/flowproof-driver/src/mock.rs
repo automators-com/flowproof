@@ -62,6 +62,10 @@ pub struct MockAppDriver {
     pub navigations: Vec<String>,
     /// Number of `reload` calls.
     pub reloads: usize,
+    /// `(element key, file path)` pairs from `set_files`, in order.
+    pub uploads: Vec<(String, String)>,
+    /// Element keys right-clicked via `context_click`, in order.
+    pub context_clicked: Vec<String>,
 }
 
 impl MockAppDriver {
@@ -274,6 +278,26 @@ impl AppDriver for MockAppDriver {
 
     fn stage_mocks(&mut self, rules: Vec<crate::WebMock>) -> Result<(), DriverError> {
         self.staged_mocks = rules;
+        Ok(())
+    }
+
+    fn set_files(&mut self, selector: &UiaSelector, paths: &[String]) -> Result<(), DriverError> {
+        let id = Self::id_of(selector)?;
+        if !self.elements.iter().any(|e| e == id) {
+            return Err(DriverError::Uia(format!("mock element '{id}' not found")));
+        }
+        for path in paths {
+            self.uploads.push((id.to_string(), path.clone()));
+        }
+        Ok(())
+    }
+
+    fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let id = Self::id_of(selector)?;
+        if !self.elements.iter().any(|e| e == id) {
+            return Err(DriverError::Uia(format!("mock element '{id}' not found")));
+        }
+        self.context_clicked.push(id.to_string());
         Ok(())
     }
 }

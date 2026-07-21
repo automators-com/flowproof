@@ -761,11 +761,50 @@ fn execute_step<D: AppDriver>(
                     flowproof_trace::format::KeyModifier::Alt => flowproof_driver::KeyMod::Alt,
                     flowproof_trace::format::KeyModifier::Shift => flowproof_driver::KeyMod::Shift,
                     flowproof_trace::format::KeyModifier::Win => flowproof_driver::KeyMod::Meta,
+                    // Portable primary modifier: the same trace presses
+                    // Meta on macOS and Ctrl everywhere else.
+                    flowproof_trace::format::KeyModifier::Mod => {
+                        if cfg!(target_os = "macos") {
+                            flowproof_driver::KeyMod::Meta
+                        } else {
+                            flowproof_driver::KeyMod::Ctrl
+                        }
+                    }
                 })
                 .collect();
             driver.press_key(&params.key, &mods)?;
             (Ok(()), StepMatch::default())
         }
+        Action::Upload(params) => match resolve_target(driver, &step.selectors)? {
+            Some((target, rung)) => {
+                let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                // No actionability gate: file inputs are conventionally
+                // hidden behind styled buttons (Playwright's setInputFiles
+                // does not require visibility either).
+                driver.set_files(&target, std::slice::from_ref(&params.path))?;
+                (Ok(()), matched)
+            }
+            None => (
+                Err("no selector rung resolved to a live element".to_string()),
+                StepMatch::default(),
+            ),
+        },
+        Action::RightClick(_) => match resolve_target(driver, &step.selectors)? {
+            Some((target, rung)) => {
+                let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                match wait_actionable(driver, &target, actionable_timeout(step))? {
+                    Ok(()) => {
+                        driver.context_click(&target)?;
+                        (Ok(()), matched)
+                    }
+                    Err(reason) => (Err(reason), matched),
+                }
+            }
+            None => (
+                Err("no selector rung resolved to a live element".to_string()),
+                StepMatch::default(),
+            ),
+        },
         Action::Assert(assertion) => {
             let (outcome, rung) = check_assertion(driver, assertion, &step.selectors)?;
             let primary = match assertion {

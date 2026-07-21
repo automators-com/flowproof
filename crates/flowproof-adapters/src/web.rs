@@ -12,7 +12,7 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector, WebSession};
 use headless_chrome::browser::tab::{ModifierKey, Tab};
 use headless_chrome::protocol::cdp::Target::CreateTarget;
-use headless_chrome::protocol::cdp::{Network, Page};
+use headless_chrome::protocol::cdp::{Input, Network, Page};
 use headless_chrome::{Browser, LaunchOptions};
 
 use crate::AdapterError;
@@ -724,6 +724,64 @@ impl AppDriver for WebAppDriver {
         self.with_element(&locator, &format!("clicking [{selector}]"), |element| {
             element.click().map(|_| ())
         })
+    }
+
+    fn set_files(&mut self, selector: &UiaSelector, paths: &[String]) -> Result<(), DriverError> {
+        // Absolute paths: Chrome resolves DOM.setFileInputFiles against ITS
+        // working directory, not ours — canonicalize (which also fails
+        // loudly on a missing file, before the step "passes" emptily).
+        let mut absolute = Vec::with_capacity(paths.len());
+        for path in paths {
+            let canonical = std::fs::canonicalize(path)
+                .map_err(|e| web_err(&format!("upload file '{path}'"), e))?;
+            absolute.push(canonical.to_string_lossy().into_owned());
+        }
+        let locator = Self::locator(selector)?;
+        self.with_element(
+            &locator,
+            &format!("setting files on [{selector}]"),
+            |element| {
+                let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
+                element.set_input_files(&refs).map(|_| ())
+            },
+        )
+    }
+
+    fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let locator = Self::locator(selector)?;
+        let tab = self.tab()?.clone();
+        self.with_element(
+            &locator,
+            &format!("right-clicking [{selector}]"),
+            |element| {
+                element.scroll_into_view()?;
+                let point = element.get_midpoint()?;
+                for kind in [
+                    Input::DispatchMouseEventTypeOption::MousePressed,
+                    Input::DispatchMouseEventTypeOption::MouseReleased,
+                ] {
+                    tab.call_method(Input::DispatchMouseEvent {
+                        Type: kind,
+                        x: point.x,
+                        y: point.y,
+                        button: Some(Input::MouseButton::Right),
+                        click_count: Some(1),
+                        modifiers: None,
+                        timestamp: None,
+                        buttons: None,
+                        force: None,
+                        tangential_pressure: None,
+                        tilt_x: None,
+                        tilt_y: None,
+                        twist: None,
+                        delta_x: None,
+                        delta_y: None,
+                        pointer_Type: None,
+                    })?;
+                }
+                Ok(())
+            },
+        )
     }
 
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {

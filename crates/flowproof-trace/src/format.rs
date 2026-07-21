@@ -260,8 +260,19 @@ pub enum Action {
     Scroll(Params),
     TypeText(TypeTextParams),
     PressKey(PressKeyParams),
+    Upload(UploadParams),
     Wait(Params),
     Assert(Assertion),
+}
+
+/// Params for `upload`: set a file on a file-chooser input. The path is
+/// stored as written in the spec; relative paths resolve against the
+/// process working directory at execution time (record and replay alike).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UploadParams {
+    pub path: String,
+    #[serde(flatten)]
+    pub extra: Params,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -289,6 +300,11 @@ pub enum KeyModifier {
     Alt,
     Shift,
     Win,
+    /// The portable primary modifier (Playwright's `ControlOrMeta`):
+    /// stored neutrally in the trace and resolved at EXECUTION time —
+    /// Meta on macOS, Ctrl everywhere else — so a trace recorded on one
+    /// OS replays on another.
+    Mod,
 }
 
 /// First-class assertion steps (`action.type == "assert"`).

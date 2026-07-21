@@ -141,6 +141,39 @@ fn mock_rules_travel_from_spec_through_trace_to_replay_staging() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Round-2 input capabilities replay deterministically: upload sets the
+/// file (skipping actionability — file inputs are conventionally hidden),
+/// right-click opens the context menu through the actionability gate, and
+/// a portable `Mod` chord resolves per-OS at press time.
+#[test]
+fn upload_right_click_and_portable_modifier_replay() {
+    let dir = std::env::temp_dir().join("flowproof-replay-upload");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Import\napp: web\nurl: https://e.test/x\nsteps:\n  - Upload fixtures/data.qif into the \"Import file\" field\n  - Right-click \"Accounts\"\n  - Press Mod+K\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("import.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Import file", "Accounts"]);
+    record(&spec, &mut rec, &trace).expect("records");
+
+    let mut driver = MockAppDriver::new(&["Import file", "Accounts"]);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "{report:#?}");
+    assert_eq!(
+        driver.uploads,
+        vec![("Import file".to_string(), "fixtures/data.qif".to_string())]
+    );
+    assert_eq!(driver.context_clicked, vec!["Accounts"]);
+    let expected_chord = if cfg!(target_os = "macos") {
+        "Meta+k"
+    } else {
+        "Ctrl+k"
+    };
+    assert_eq!(driver.keys_pressed, vec![expected_chord]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Issue #42 gate 1: an element that exists but is disabled must not be
 /// clicked — and the failure must NAME the gate.
 #[test]
