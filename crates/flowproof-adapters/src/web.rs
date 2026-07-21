@@ -823,6 +823,15 @@ impl AppDriver for WebAppDriver {
         let locator = Self::locator(selector)?;
         let value =
             self.with_element(&locator, &format!("hit-testing [{selector}]"), |element| {
+                // Scroll first, exactly as the click itself will: headless
+                // chrome's `Element::click` begins with `scroll_into_view`,
+                // so hit-testing before scrolling asks about a position the
+                // click will never use. An element below the fold then reads
+                // as "obscured" - `elementFromPoint` outside the viewport
+                // returns null - and the gate blocks a click that would have
+                // worked. A whole settings form under the fold was
+                // untestable this way (field report, round 3).
+                element.scroll_into_view()?;
                 // Playwright's obscured check: does elementFromPoint at the
                 // element's center resolve to it (or a relative)? A toast or
                 // modal backdrop on top makes the click land elsewhere.
