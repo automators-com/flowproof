@@ -33,12 +33,50 @@ fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
     }
 }
 
+/// How long the CDP transport may sit without a BROWSER-level event before
+/// headless_chrome reaps its listener thread. Its default is 30 seconds,
+/// which is a live grenade for real test flows:
+///
+/// 1. a flow spends 30+ seconds doing page-level work (typing, polling an
+///    auto-waiting assertion) without producing a single browser-level
+///    event, so the listener thread times out and exits;
+/// 2. the next navigation fires `TargetInfoChanged` - a browser-level
+///    event - and the transport cannot deliver it to the receiver that
+///    just went away;
+/// 3. it treats that undeliverable event as fatal, shuts the whole message
+///    loop down, and every later call fails with "Unable to make method
+///    calls because underlying connection is closed", permanently.
+///
+/// That is the entire mechanism behind the round-3 field blocker: EVERY
+/// flow that logged in recorded fine and then failed to replay, because
+/// the login redirect is exactly a post-idle navigation. Silence is not
+/// evidence of a dead browser - a browser that actually dies closes the
+/// socket, which surfaces immediately and through a different path.
+///
+/// Choosing the value is a genuine trade-off, because headless_chrome
+/// OVERLOADS this one knob across three jobs with opposite needs:
+///
+/// - `Browser`'s event-listener reap and the transport's idle reap want it
+///   LONG (that is the bug above);
+/// - `Transport::call_method` uses it as the bound on waiting for a call's
+///   RESPONSE, which wants it SHORT: a response that never arrives blocks
+///   for exactly this long. Setting it to "effectively never" turned a
+///   failing CI job into one that hung for over three hours.
+///
+/// So: comfortably longer than any real gap between browser-level events
+/// (the field flows idled 30-90 s; `Wait until` defaults to a 60 s bound),
+/// and short enough that a lost response fails visibly instead of hanging.
+/// A flow that deliberately waits longer than this in one step without
+/// touching the browser is the case to revisit if it ever shows up.
+const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Launch a fresh headless Chromium (`CHROME` env var overrides the
 /// binary), optionally with extra command-line flags.
 fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
     let os_args: Vec<std::ffi::OsString> = extra_args.iter().map(Into::into).collect();
     let mut options = LaunchOptions::default_builder();
     options.headless(true).sandbox(false);
+    options.idle_browser_timeout(BROWSER_IDLE_TIMEOUT);
     options.args(os_args.iter().map(AsRef::as_ref).collect());
     if let Ok(path) = std::env::var("CHROME") {
         options.path(Some(path.into()));

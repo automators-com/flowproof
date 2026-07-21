@@ -1166,3 +1166,94 @@ fn label_association_case_fold_and_aria_names_resolve() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Field regression (cypress-realworld-app, round 3): EVERY flow that logged
+/// in recorded fine and then failed to replay with "Unable to make method
+/// calls because underlying connection is closed". The mechanism is a
+/// self-inflicted transport death, and it needs two ingredients this test
+/// reproduces in order:
+///
+/// 1. more than 30 seconds of page-level work with no BROWSER-level event,
+///    which lets headless_chrome's default `idle_browser_timeout` reap the
+///    browser-event listener thread;
+/// 2. a real navigation afterwards, which fires `TargetInfoChanged` - a
+///    browser-level event the transport can no longer deliver, so it treats
+///    it as fatal and shuts the whole connection down permanently.
+///
+/// A login redirect is exactly that shape, which is why the field suite hit
+/// it on every authenticated flow and never on the others. Slow by nature
+/// (it must out-wait the idle reaper); that is the bug.
+#[test]
+fn a_navigation_after_a_long_idle_does_not_kill_the_connection() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web idle-then-navigate E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-idle-nav-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    // Page two is a separate document, so reaching it is a real navigation
+    // rather than a same-document update.
+    std::fs::write(
+        dir.join("two.html"),
+        r#"<!doctype html><html><body><h1>Welcome back</h1></body></html>"#,
+    )
+    .expect("page two written");
+    let page = dir.join("one.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body>
+            <div id="out">waiting</div>
+            <button id="go" onclick="window.location.href = 'two.html'">Continue</button>
+            <script>
+              // Page-level churn only: no browser-level CDP events at all,
+              // so the idle reaper is free to fire while the flow works.
+              setTimeout(() => {
+                document.getElementById('out').textContent = 'ready to continue';
+              }, 35000);
+            </script>
+        </body></html>"#,
+    )
+    .expect("page one written");
+    let trace_path = dir.join("idle-nav.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Navigate after a long idle".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: None,
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        steps: vec![
+            // Out-waits the 30s default idle timeout.
+            flowproof_agent::SpecStep::Plain(
+                "Wait until page shows ready to continue within 60s".into(),
+            ),
+            flowproof_agent::SpecStep::Plain("Press the \"Continue\" button".into()),
+            // The read that used to die: first page-level call after the
+            // navigation's TargetInfoChanged.
+            flowproof_agent::SpecStep::Plain(
+                "Wait until page shows Welcome back within 20s".into(),
+            ),
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording survives the idle");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "a navigation after an idle period must not kill the transport: {report:#?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
