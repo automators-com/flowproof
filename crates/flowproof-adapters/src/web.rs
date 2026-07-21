@@ -33,12 +33,36 @@ fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
     }
 }
 
+/// How long the CDP transport may sit without a BROWSER-level event before
+/// headless_chrome reaps its listener thread. Its default is 30 seconds,
+/// which is a live grenade for real test flows:
+///
+/// 1. a flow spends 30+ seconds doing page-level work (typing, polling an
+///    auto-waiting assertion) without producing a single browser-level
+///    event, so the listener thread times out and exits;
+/// 2. the next navigation fires `TargetInfoChanged` - a browser-level
+///    event - and the transport cannot deliver it to the receiver that
+///    just went away;
+/// 3. it treats that undeliverable event as fatal, shuts the whole message
+///    loop down, and every later call fails with "Unable to make method
+///    calls because underlying connection is closed", permanently.
+///
+/// That is the entire mechanism behind the round-3 field blocker: EVERY
+/// flow that logged in recorded fine and then failed to replay, because
+/// the login redirect is exactly a post-idle navigation. Silence is not
+/// evidence of a dead browser - a browser that actually dies closes the
+/// socket, which surfaces immediately and through a different path - so
+/// this reaper only ever fires on healthy long-running flows. Set it well
+/// past any plausible run.
+const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Launch a fresh headless Chromium (`CHROME` env var overrides the
 /// binary), optionally with extra command-line flags.
 fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
     let os_args: Vec<std::ffi::OsString> = extra_args.iter().map(Into::into).collect();
     let mut options = LaunchOptions::default_builder();
     options.headless(true).sandbox(false);
+    options.idle_browser_timeout(BROWSER_IDLE_TIMEOUT);
     options.args(os_args.iter().map(AsRef::as_ref).collect());
     if let Ok(path) = std::env::var("CHROME") {
         options.path(Some(path.into()));
