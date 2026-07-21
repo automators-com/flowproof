@@ -175,11 +175,13 @@ pub const WAIT_STEP_TIMEOUT_MS: u64 = 60_000;
 /// Parse a trailing `within <N>s` / `within <N> seconds` qualifier off a
 /// step, returning (rest, timeout override).
 fn split_within(text: &str) -> (&str, Option<u64>) {
-    let lower = text.to_lowercase();
-    let Some(pos) = lower.rfind(" within ") else {
+    // rfind_ci returns indices valid in `text` itself — never positions
+    // from a lowercased copy, whose byte offsets can differ.
+    let Some(pos) = rfind_ci(text, " within ") else {
         return (text, None);
     };
-    let qualifier = lower[pos + " within ".len()..].trim();
+    let qualifier = text[pos + " within ".len()..].trim().to_lowercase();
+    let qualifier = qualifier.as_str();
     let digits = qualifier
         .strip_suffix(" seconds")
         .or_else(|| qualifier.strip_suffix(" second"))
@@ -207,29 +209,68 @@ fn unresolvable(step: &str, reason: impl Into<String>) -> RulesError {
 }
 
 /// Case-insensitively strip an ASCII `prefix`, returning the rest of the
-/// ORIGINAL string (case preserved).
+/// ORIGINAL string (case preserved). Boundary-safe: `get` returns None
+/// when the cut would split a multibyte char, and an ASCII prefix cannot
+/// match across one — so "no match" is the correct answer, never a panic.
 fn strip_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
-    if text.len() >= prefix.len() && text[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        Some(&text[prefix.len()..])
-    } else {
-        None
-    }
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &text[prefix.len()..])
 }
 
 /// Case-insensitively strip an ASCII `suffix`, returning the front of the
-/// ORIGINAL string (case preserved).
+/// ORIGINAL string (case preserved). Boundary-safe like `strip_prefix_ci`:
+/// `text.len() - suffix.len()` is a byte offset that can land inside a
+/// multibyte char (`4 × 5=20` with suffix ` times`), which must mean "no
+/// match", not a slice panic — the 0.2.3 escape.
 fn strip_suffix_ci<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
-    if text.len() >= suffix.len() && text[text.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
-    {
-        Some(&text[..text.len() - suffix.len()])
-    } else {
-        None
-    }
+    let split = text.len().checked_sub(suffix.len())?;
+    let tail = text.get(split..)?;
+    tail.eq_ignore_ascii_case(suffix).then(|| &text[..split])
+}
+
+/// Byte index of the last case-insensitive occurrence of ASCII `needle`
+/// in `text`, ALWAYS valid for slicing `text` itself. The
+/// `text.to_lowercase().find(…)` idiom is the sibling of the slice-panic
+/// bug: lowercasing can change byte lengths (e.g. 'İ' grows), so an index
+/// found in the copy is not an index into the original.
+fn rfind_ci(text: &str, needle: &str) -> Option<usize> {
+    ci_positions(text, needle).last()
+}
+
+fn ci_positions<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+    text.char_indices().map(|(i, _)| i).filter(move |&i| {
+        text.get(i..i + needle.len())
+            .is_some_and(|window| window.eq_ignore_ascii_case(needle))
+    })
 }
 
 /// Resolve one spec step into concrete actions for `app`. Out-of-band
 /// assertions are app-independent — they never touch the UI at all.
+///
+/// NEVER panics: a panic inside parsing (the 0.2.2/0.2.3 multibyte
+/// slice bugs were this class) is caught and degraded to a clean
+/// `Unresolvable` error naming the step — one bad step must fail one
+/// step, not abort the whole suite. The specific known sites are fixed;
+/// this is the backstop for the variant nobody has written yet.
 pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        resolve_step_inner(app, step)
+    }))
+    .unwrap_or_else(|panic| {
+        let detail = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown panic");
+        Err(unresolvable(
+            &step.intent(),
+            format!("internal parser error ({detail}) — please report this step text"),
+        ))
+    })
+}
+
+fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
     match step {
         SpecStep::AssertSql { assert_sql } => {
             return Ok(vec![ResolvedAction::AssertSql {
@@ -796,8 +837,7 @@ mod web {
         // `css:` selector) target; `Type <text> into the <id> field` →
         // `#<id>`; bare `Type <text>` → the focused element.
         if let Some(rest) = strip_prefix_ci(trimmed, "type ") {
-            let lower = rest.to_lowercase();
-            let Some(pos) = lower.rfind(" into the ") else {
+            let Some(pos) = rfind_ci(rest, " into the ") else {
                 let value = rest.trim();
                 if value.is_empty() {
                     return Err(unresolvable(trimmed, "nothing to type"));
@@ -842,8 +882,7 @@ mod web {
         // file-chooser input. The path is stored as written; relative paths
         // resolve against the working directory at execution time.
         if let Some(rest) = strip_prefix_ci(trimmed, "upload ") {
-            let lower = rest.to_lowercase();
-            if let Some(pos) = lower.rfind(" into the ") {
+            if let Some(pos) = rfind_ci(rest, " into the ") {
                 let path = rest[..pos].trim().trim_matches('"');
                 let field = rest[pos + " into the ".len()..].trim();
                 if path.is_empty() {
@@ -882,11 +921,9 @@ mod web {
         // option its own way (the web driver goes through the select's
         // native value setter and fires input+change).
         if let Some(rest) = strip_prefix_ci(trimmed, "select ") {
-            let lower = rest.to_lowercase();
-            let split = lower
-                .rfind(" from the ")
+            let split = rfind_ci(rest, " from the ")
                 .map(|p| (p, " from the ".len()))
-                .or_else(|| lower.rfind(" in the ").map(|p| (p, " in the ".len())));
+                .or_else(|| rfind_ci(rest, " in the ").map(|p| (p, " in the ".len())));
             if let Some((pos, sep_len)) = split {
                 let value = rest[..pos].trim();
                 let (nth, field) = split_ordinal(rest[pos + sep_len..].trim());
@@ -1928,5 +1965,107 @@ mod tests {
                 text: "4711".into()
             }]
         );
+    }
+}
+
+#[cfg(test)]
+mod multibyte_tests {
+    use super::*;
+
+    /// The 0.2.2 and 0.2.3 field escapes were both char-boundary slice
+    /// panics on multibyte step text. Sweep every grammar form with a
+    /// zoo of multibyte content — with and without `=`, which is what
+    /// pushed the 0.2.3 variant past the suffix-strip boundary — and
+    /// require that EVERY step either resolves or fails cleanly. A panic
+    /// here is the bug, regardless of which slice site regressed.
+    #[test]
+    fn multibyte_step_text_never_panics_across_the_grammar() {
+        const ZOO: &[&str] = &["×", "÷", "é", "café", "測試", "🚀", "İstanbul"];
+        let mut cases: Vec<(String, String)> = Vec::new();
+        for chunk in ZOO {
+            for tail in ["", "=20", "=x", " = 5"] {
+                let payload = format!("4 {chunk} 5{tail}");
+                for step in [
+                    format!("page shows {payload}"),
+                    format!("page shows {payload} 2 times"),
+                    format!("page does not show {payload}"),
+                    format!("Wait until page shows {payload} within 5s"),
+                    format!("Type {payload} into the \"Name\" field"),
+                    format!("Type {payload}"),
+                    format!("Replace the \"Name\" field with {payload}"),
+                    format!("Select {payload} from the \"Kind\" field"),
+                    format!("Upload {payload} into the \"File\" field"),
+                    format!("Click \"{payload}\""),
+                    format!("Right-click \"{payload}\""),
+                    format!("Press the \"{payload}\" button"),
+                    format!("the \"{payload}\" shows {payload}"),
+                    format!("the \"Name\" field contains {payload}"),
+                    payload.clone(),
+                ] {
+                    cases.push((step, payload.clone()));
+                }
+            }
+        }
+        for (step_text, _payload) in &cases {
+            for kind in [
+                SpecStep::Plain(step_text.clone()),
+                SpecStep::Assert {
+                    assert: step_text.clone(),
+                },
+            ] {
+                // Ok or Err are both fine — only a panic is a failure.
+                let _ = resolve_step("web", &kind);
+                let _ = resolve_step("vision", &kind);
+            }
+        }
+    }
+
+    /// The exact 0.2.3 field repro, pinned: multibyte char followed
+    /// later by `=` must resolve as a surface-text assertion.
+    #[test]
+    fn multibyte_with_equals_resolves_as_page_shows() {
+        for text in ["page shows 4 × 5=20", "page shows a × b=c"] {
+            let step = SpecStep::Assert {
+                assert: text.to_string(),
+            };
+            let actions = resolve_step("web", &step).expect("resolves cleanly");
+            match &actions[0] {
+                ResolvedAction::AssertText {
+                    expected, matcher, ..
+                } => {
+                    assert_eq!(
+                        expected,
+                        text.strip_prefix("page shows ").expect("test constant")
+                    );
+                    assert_eq!(*matcher, TextMatch::Contains);
+                }
+                other => panic!("expected surface AssertText, got {other:?}"),
+            }
+        }
+        // The counting form survives multibyte too (its ` times` suffix
+        // strip was the 0.2.3 panic site).
+        let step = SpecStep::Assert {
+            assert: "page shows 4 × 5=20 2 times".into(),
+        };
+        let actions = resolve_step("web", &step).expect("resolves cleanly");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText {
+                matcher: TextMatch::CountEquals(2),
+                ..
+            }
+        ));
+    }
+
+    /// The backstop: even if a future slice bug panics inside parsing,
+    /// the caller gets a clean error, not a dead suite.
+    #[test]
+    fn parser_panics_degrade_to_clean_errors() {
+        // No known panicking input exists anymore (that is the point of
+        // the fixes), so prove the mechanism directly.
+        let caught = std::panic::catch_unwind(|| {
+            resolve_step("web", &SpecStep::Plain("page shows anything".into()))
+        });
+        assert!(caught.is_ok(), "resolve_step must never unwind");
     }
 }

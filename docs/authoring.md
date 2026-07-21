@@ -18,7 +18,11 @@ Matching is exact first, then prefix (`"Name"` finds the field labelled
 still finds the button reading `Close account`) — a case-sensitive match
 always wins. `page shows` reads visible text **plus** the accessible names
 of visible elements, so icon-only buttons that exist purely as an
-`aria-label` count. Two escape hatches work inside any
+`aria-label` count. Assertion TEXT matches the same way selectors do:
+exact first, then case-insensitive (`page shows Close Account` passes
+against a page reading `Close account`), and the negative forms mirror
+it — if `shows X` would pass, `does not show X` fails. Two escape
+hatches work inside any
 quoted label: `"css:<selector>"` (web) and `"id:<native id>"` (DOM id,
 UIA AutomationId, SAP scripting id). `[2nd ]` marks an optional 1-based
 ordinal (`2nd`, `3rd`, `10th`) for when several elements match.

@@ -355,20 +355,27 @@ fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
 
 /// Whether `text` satisfies the expectation — one predicate for every
 /// provenance (element text, surface text, later OCR text).
+///
+/// Case-insensitive FALLBACK, mirroring element anchors: an exact match
+/// always wins; when it misses, lowercased comparison decides. The
+/// negative form mirrors the positive — if `shows X` would pass,
+/// `does not show X` must fail.
 fn text_matches(expect: &serde_json::Value, expected: &str, negated: bool, text: &str) -> bool {
+    let (text_ci, expected_ci) = (text.to_lowercase(), expected.to_lowercase());
     if negated {
-        !text.contains(expected)
+        !text.contains(expected) && !text_ci.contains(&expected_ci)
     } else if let Some(n) = expect.get("count").and_then(|v| v.as_u64()) {
         text.matches(expected).count() as u64 == n
+            || text_ci.matches(&expected_ci).count() as u64 == n
     } else if expect.get("value_contains").is_some() {
-        text.contains(expected)
+        text.contains(expected) || text_ci.contains(&expected_ci)
     } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
         matches!(
             (numeric_value(text), expected.parse::<f64>()),
             (Some(actual), Ok(wanted)) if actual == wanted
         )
     } else {
-        text == expected
+        text == expected || text_ci == expected_ci
     }
 }
 
