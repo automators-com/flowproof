@@ -58,6 +58,10 @@ enum Command {
         /// Authoring backend: rules, llm, or auto (rules with llm fallback).
         #[arg(long, value_enum, default_value_t)]
         author: AuthorArg,
+        /// Incremental re-record: reuse every old step whose target still
+        /// resolves; re-author only what drifted (needs an existing trace).
+        #[arg(long)]
+        reuse: bool,
     },
     /// Deterministically replay a recorded flow (zero LLM calls). Point it
     /// at a DIRECTORY to run every *.flow.yaml under it as a suite with one
@@ -175,6 +179,7 @@ fn cmd_record(
     out: Option<PathBuf>,
     json: bool,
     author: AuthorArg,
+    reuse: bool,
 ) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     // The suite's data (env_from) and env govern recording too — the
@@ -190,8 +195,22 @@ fn cmd_record(
     }
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
     let mut driver = driver_for(&spec.app)?;
-    let summary = match flowproof_agent::record_with_author(&spec, &mut driver, &out, author.into())
-    {
+    // --reuse: consult the existing trace per step, re-authoring only
+    // drift; the old steps come from the trace being replaced.
+    let old_steps = if reuse {
+        let (_, steps) = flowproof_replay::load_trace(&out)
+            .map_err(|e| format!("--reuse needs an existing trace at {}: {e}", out.display()))?;
+        Some(steps)
+    } else {
+        None
+    };
+    let result = match &old_steps {
+        Some(steps) => {
+            flowproof_agent::record_incremental(&spec, &mut driver, &out, author.into(), steps)
+        }
+        None => flowproof_agent::record_with_author(&spec, &mut driver, &out, author.into()),
+    };
+    let summary = match result {
         Ok(summary) => summary,
         Err(err) => {
             // A clarification is data, not just a message: with --json the
@@ -219,8 +238,13 @@ fn cmd_record(
             serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
         );
     } else {
+        let reused = if summary.reused_steps > 0 {
+            format!(" ({} reused)", summary.reused_steps)
+        } else {
+            String::new()
+        };
         println!(
-            "Recorded '{}': {} steps -> {}",
+            "Recorded '{}': {} steps{reused} -> {}",
             spec.name,
             summary.steps,
             summary.trace_path.display()
@@ -813,7 +837,8 @@ where
             out,
             json,
             author,
-        } => cmd_record(&spec, out, json, author),
+            reuse,
+        } => cmd_record(&spec, out, json, author, reuse),
         Command::Run {
             spec,
             trace,

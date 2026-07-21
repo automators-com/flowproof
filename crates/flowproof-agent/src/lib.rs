@@ -15,7 +15,9 @@ pub mod spec;
 pub use clarify::{Clarification, ClarifyStage};
 pub use heal::{heal, heal_with_author, HealError, HealReport};
 pub use llm::{HttpModelClient, ModelClient};
-pub use recorder::{record, record_with_author, Author, RecordError, RecordSummary};
+pub use recorder::{
+    record, record_incremental, record_with_author, Author, RecordError, RecordSummary,
+};
 pub use spec::{FlowSpec, SpecStep, SuiteManifest};
 
 use std::env;

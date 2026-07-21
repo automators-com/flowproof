@@ -87,6 +87,15 @@ found, the failure detail suggests the nearest visible text anchors:
 `element … not found — did you mean 'Save changes'?` — usually the whole
 diagnosis for drifted labels, with `flowproof heal` as the fix.
 
+**Incremental re-record.** When the app changes, don't re-record the
+flow — re-record the step: `flowproof record calc.flow.yaml --reuse`
+walks the spec against the existing trace and reuses every old step
+whose intent still matches and whose target still resolves on the live
+app, verbatim (same selectors, zero rules/model work). Only drifted or
+new steps are authored fresh — for model-authored steps that means the
+model is consulted **only** for the drift. The summary reports the
+split: `Recorded 'Flow': 12 steps (11 reused)`.
+
 **Actionability.** Element actions don't fire on an element that merely
 exists: replay gates every click/type on **enabled** (not
 `disabled`/`aria-disabled`), **stable** (bounding box settled — no

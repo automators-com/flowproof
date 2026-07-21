@@ -89,6 +89,9 @@ pub enum RecordError {
 pub struct RecordSummary {
     pub trace_path: std::path::PathBuf,
     pub steps: usize,
+    /// Steps reused verbatim from the previous trace (`record --reuse`);
+    /// 0 on a fresh recording.
+    pub reused_steps: usize,
 }
 
 fn native_selector(payload: serde_json::Map<String, serde_json::Value>) -> Selector {
@@ -527,6 +530,232 @@ fn driver_key_mod(m: &flowproof_trace::format::KeyModifier) -> flowproof_driver:
     }
 }
 
+/// Reconstruct the recorder's `Target` from a step's PRIMARY selector —
+/// the inverse of `selectors_for` for the shapes the recorder itself
+/// emits. `None` = not reconstructable (reuse falls back to fresh
+/// authoring, never to a guess).
+fn target_from_selector(selectors: &[Selector]) -> Option<Target> {
+    let primary = selectors.first()?;
+    let get = |key: &str| primary.payload.get(key).and_then(|v| v.as_str());
+    let base = if let Some(css) = get("css") {
+        Target::css(css)
+    } else if let Some(id) = get("automation_id").or_else(|| get("id")) {
+        Target::id(id)
+    } else if primary.tier == SelectorTier::TextAnchor {
+        Target::text(get("text")?)
+    } else {
+        return None;
+    };
+    match primary.payload.get("nth").and_then(|v| v.as_u64()) {
+        Some(n) => Some(Target::Nth(n as u32, Box::new(base))),
+        None => Some(base),
+    }
+}
+
+/// Decode one recorded step back into the `ResolvedAction` that produced
+/// it — the inverse of `step_for`, for incremental re-record: a decoded
+/// action re-executes and re-encodes IDENTICALLY (same target → same
+/// ladder), with zero rules or model involvement. `None` = this step kind
+/// is not safely reconstructable; the caller authors fresh instead.
+fn decode_step(step: &Step) -> Option<ResolvedAction> {
+    use flowproof_trace::format::Assertion;
+    match &step.action {
+        Action::Click(_) => Some(ResolvedAction::Press {
+            target: target_from_selector(&step.selectors)?,
+            label: step.intent.clone(),
+        }),
+        Action::TypeText(params) => {
+            let replace = params.extra.get("replace").and_then(|v| v.as_bool()) == Some(true);
+            if step.selectors.is_empty() {
+                (!replace).then(|| ResolvedAction::TypeFocused {
+                    text: params.text.clone(),
+                })
+            } else if replace && params.text.is_empty() {
+                Some(ResolvedAction::Clear {
+                    target: target_from_selector(&step.selectors)?,
+                })
+            } else if replace {
+                // Replace-with-text is a compound the rules encode as two
+                // steps; a single step with both flags isn't ours to guess.
+                None
+            } else {
+                Some(ResolvedAction::TypeText {
+                    target: target_from_selector(&step.selectors)?,
+                    text: params.text.clone(),
+                })
+            }
+        }
+        Action::PressKey(params) => Some(ResolvedAction::PressKey {
+            key: params.key.clone(),
+            modifiers: params.modifiers.clone(),
+        }),
+        Action::Launch(params) => {
+            if params.get("reload").and_then(|v| v.as_bool()) == Some(true) {
+                Some(ResolvedAction::Reload)
+            } else {
+                Some(ResolvedAction::Navigate {
+                    path: params.get("url")?.as_str()?.to_string(),
+                })
+            }
+        }
+        Action::Assert(Assertion::ElementState {
+            expect,
+            selector_ref: _,
+        }) => {
+            let timeout_ms = expect
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10_000);
+            let target = if expect.get("scope").and_then(|v| v.as_str()) == Some("surface") {
+                Target::Surface
+            } else {
+                target_from_selector(&step.selectors)?
+            };
+            if let Some(present) = expect.get("element_present").and_then(|v| v.as_bool()) {
+                return Some(ResolvedAction::AssertPresence {
+                    target,
+                    present,
+                    timeout_ms,
+                });
+            }
+            if let Some(enabled) = expect.get("enabled").and_then(|v| v.as_bool()) {
+                return Some(ResolvedAction::AssertEnabled {
+                    target,
+                    enabled,
+                    timeout_ms,
+                });
+            }
+            let (expected, matcher) =
+                if let Some(e) = expect.get("value_not_contains").and_then(|v| v.as_str()) {
+                    (e, TextMatch::NotContains)
+                } else if let Some(e) = expect.get("value_contains").and_then(|v| v.as_str()) {
+                    match expect.get("count").and_then(|v| v.as_u64()) {
+                        Some(n) => (e, TextMatch::CountEquals(n)),
+                        None => (e, TextMatch::Contains),
+                    }
+                } else {
+                    let e = expect.get("value_equals").and_then(|v| v.as_str())?;
+                    if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
+                        (e, TextMatch::NumericEquals)
+                    } else {
+                        (e, TextMatch::Equals)
+                    }
+                };
+            Some(ResolvedAction::AssertText {
+                target,
+                expected: expected.to_string(),
+                matcher,
+                timeout_ms,
+            })
+        }
+        Action::Assert(Assertion::Sql {
+            connection,
+            query,
+            expect,
+        }) => Some(ResolvedAction::AssertSql {
+            connection: connection.clone(),
+            query: query.clone(),
+            equals: expect
+                .as_ref()
+                .and_then(|e| e.get("equals"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            timeout_ms: oob_timeout_from(expect.as_ref()),
+        }),
+        Action::Assert(Assertion::Api {
+            request,
+            status,
+            expect,
+        }) => Some(ResolvedAction::AssertApi {
+            method: request.method.clone(),
+            url: request.url.clone(),
+            headers: request.headers.clone(),
+            body: request.body.clone(),
+            status: *status,
+            body_contains: expect
+                .as_ref()
+                .and_then(|e| e.get("body_contains"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            timeout_ms: oob_timeout_from(expect.as_ref()),
+        }),
+        _ => None,
+    }
+}
+
+fn oob_timeout_from(expect: Option<&serde_json::Value>) -> u64 {
+    expect
+        .and_then(|e| e.get("timeout_ms"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10_000)
+}
+
+/// Old-trace reuse state for incremental re-record (`record --reuse`):
+/// consecutive old steps grouped by intent (one group per original spec
+/// step), consumed in order as spec steps match. Skipped-over groups are
+/// deleted spec steps; a spec step with no matching group is new.
+pub struct ReuseCursor {
+    groups: Vec<(String, Vec<Step>)>,
+    next: usize,
+    /// Trace steps reused verbatim (for the summary).
+    pub reused_steps: usize,
+}
+
+impl ReuseCursor {
+    pub fn new(old_steps: &[Step]) -> Self {
+        let mut groups: Vec<(String, Vec<Step>)> = Vec::new();
+        for step in old_steps {
+            match groups.last_mut() {
+                Some((intent, group)) if *intent == step.intent => group.push(step.clone()),
+                _ => groups.push((step.intent.clone(), vec![step.clone()])),
+            }
+        }
+        Self {
+            groups,
+            next: 0,
+            reused_steps: 0,
+        }
+    }
+
+    /// The old actions for `intent`, iff every step of the matching group
+    /// decodes AND its target still resolves on the live app. Anything
+    /// less → `None`, and the caller authors fresh (the incremental heal).
+    fn take_matching<D: AppDriver>(
+        &mut self,
+        driver: &mut D,
+        intent: &str,
+    ) -> Result<Option<Vec<ResolvedAction>>, RecordError> {
+        let Some(pos) = (self.next..self.groups.len()).find(|&i| self.groups[i].0 == intent) else {
+            return Ok(None);
+        };
+        let mut actions = Vec::new();
+        for step in &self.groups[pos].1 {
+            let Some(action) = decode_step(step) else {
+                return Ok(None);
+            };
+            let is_assert = matches!(
+                &action,
+                ResolvedAction::AssertText { .. }
+                    | ResolvedAction::AssertPresence { .. }
+                    | ResolvedAction::AssertEnabled { .. }
+                    | ResolvedAction::AssertSql { .. }
+                    | ResolvedAction::AssertApi { .. }
+            );
+            if !is_assert {
+                if let Some(selector) = action_selector(&action) {
+                    if !driver.element_exists(&selector)? {
+                        return Ok(None); // drifted — re-author this step
+                    }
+                }
+            }
+            actions.push(action);
+        }
+        self.reused_steps += self.groups[pos].1.len();
+        self.next = pos + 1;
+        Ok(Some(actions))
+    }
+}
+
 /// Trace mock rule → the driver's fully-resolved form (one conversion,
 /// shared shape with replay via `WebMock::from_rule_parts`).
 fn web_mock_from_rule(rule: &flowproof_trace::format::MockRule) -> flowproof_driver::WebMock {
@@ -602,7 +831,21 @@ pub fn record_with_author<D: AppDriver>(
     record_with_client(spec, driver, out, author, client.as_mut())
 }
 
+/// Incremental re-record (the CLI's `record --reuse`): env-configured
+/// model backend, old steps consulted per spec step.
+pub fn record_incremental<D: AppDriver>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+    old_steps: &[Step],
+) -> Result<RecordSummary, RecordError> {
+    let mut client = HttpModelClient::from_env();
+    record_with_reuse(spec, driver, out, author, client.as_mut(), Some(old_steps))
+}
+
 /// Resolve one spec step into actions per the authoring mode.
+#[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
 fn author_actions<D: AppDriver, C: ModelClient>(
     spec: &FlowSpec,
     driver: &mut D,
@@ -611,9 +854,17 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     prior: &[String],
     spec_step: &crate::spec::SpecStep,
     llm_used: &mut bool,
+    reuse: &mut Option<ReuseCursor>,
 ) -> Result<Vec<ResolvedAction>, RecordError> {
     let intent = spec_step.intent();
     let intent = intent.as_str();
+    // Incremental re-record: an old step group whose intent matches and
+    // whose target still resolves is reused VERBATIM — no rules, no model.
+    if let Some(cursor) = reuse {
+        if let Some(actions) = cursor.take_matching(driver, intent)? {
+            return Ok(actions);
+        }
+    }
     let rules_result = match author {
         Author::Llm => Err(RulesError::UnsupportedApp("llm forced".into())),
         _ => resolve_step(&spec.app, spec_step),
@@ -694,8 +945,24 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
     driver: &mut D,
     out: &Path,
     author: Author,
-    mut client: Option<&mut C>,
+    client: Option<&mut C>,
 ) -> Result<RecordSummary, RecordError> {
+    record_with_reuse(spec, driver, out, author, client, None)
+}
+
+/// Incremental re-record: reuse every old step whose intent still matches
+/// and whose target still resolves; author fresh only what drifted. Turns
+/// "the app changed, re-record the flow" into "re-record the step" — with
+/// zero rules/model work for the stable majority.
+pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+    mut client: Option<&mut C>,
+    old_steps: Option<&[Step]>,
+) -> Result<RecordSummary, RecordError> {
+    let mut reuse = old_steps.map(ReuseCursor::new);
     let target = launch_target(spec)?;
     if let Some(setup) = &spec.session {
         let (cookies, local_storage) = setup.resolved()?;
@@ -739,6 +1006,7 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
             &prior_intents,
             spec_step,
             &mut llm_used,
+            &mut reuse,
         )?;
         prior_intents.push(intent);
         for action in actions {
@@ -1046,6 +1314,7 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
     Ok(RecordSummary {
         trace_path: out.to_path_buf(),
         steps: steps.len(),
+        reused_steps: reuse.map(|c| c.reused_steps).unwrap_or(0),
     })
 }
 
@@ -1295,6 +1564,109 @@ steps:
             .expect_err("rules-only must fail");
         assert!(matches!(err, RecordError::Rules(_)));
         assert_eq!(client.calls, 0);
+    }
+
+    #[test]
+    fn incremental_reuses_stable_steps_with_zero_model_calls() {
+        let spec = FlowSpec::parse(
+            "name: Mixed\napp: web\nurl: https://e.test/x\nsteps:\n  - Type hello into the \"Name\" field\n  - Smash that shiny button\n",
+        )
+        .expect("parses");
+        let dir = std::env::temp_dir().join("flowproof-incremental-stable");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("mixed.trace.jsonl");
+
+        // Original recording: the freeform step needs the model.
+        let mut driver = MockAppDriver::new(&["Name", "#shiny"]);
+        driver.scene = Some(r##"[{"target":"css:#shiny","tag":"button"}]"##.into());
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target":"css:#shiny"}"##.into(),
+            calls: 0,
+        };
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("original records");
+        assert_eq!(client.calls, 1);
+        let (_, old_steps) = load_steps(&out);
+        let old_selectors: Vec<_> = old_steps.iter().map(|s| s.selectors.clone()).collect();
+
+        // Unchanged app: everything reuses, the model is NEVER consulted.
+        let mut driver = MockAppDriver::new(&["Name", "#shiny"]);
+        driver.scene = Some(r##"[{"target":"css:#shiny","tag":"button"}]"##.into());
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target":"css:#WRONG-IF-CALLED"}"##.into(),
+            calls: 0,
+        };
+        let summary = record_with_reuse(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Auto,
+            Some(&mut client),
+            Some(&old_steps),
+        )
+        .expect("incremental records");
+        assert_eq!(client.calls, 0, "stable steps must not consult the model");
+        assert_eq!(summary.reused_steps, old_steps.len());
+        let (_, new_steps) = load_steps(&out);
+        let new_selectors: Vec<_> = new_steps.iter().map(|s| s.selectors.clone()).collect();
+        assert_eq!(new_selectors, old_selectors, "selectors identical");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn incremental_reauthors_only_the_drifted_step() {
+        let spec = FlowSpec::parse(
+            "name: Mixed\napp: web\nurl: https://e.test/x\nsteps:\n  - Type hello into the \"Name\" field\n  - Smash that shiny button\n",
+        )
+        .expect("parses");
+        let dir = std::env::temp_dir().join("flowproof-incremental-drift");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("mixed.trace.jsonl");
+
+        let mut driver = MockAppDriver::new(&["Name", "#shiny"]);
+        driver.scene = Some(r##"[{"target":"css:#shiny","tag":"button"}]"##.into());
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target":"css:#shiny"}"##.into(),
+            calls: 0,
+        };
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("original records");
+        let (_, old_steps) = load_steps(&out);
+
+        // The app drifted: #shiny became #polished. The Type step reuses;
+        // the drifted step re-grounds via the model against the new scene.
+        let mut driver = MockAppDriver::new(&["Name", "#polished"]);
+        driver.scene = Some(r##"[{"target":"css:#polished","tag":"button"}]"##.into());
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target":"css:#polished"}"##.into(),
+            calls: 0,
+        };
+        let summary = record_with_reuse(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Auto,
+            Some(&mut client),
+            Some(&old_steps),
+        )
+        .expect("incremental records");
+        assert_eq!(client.calls, 1, "only the drifted step consults the model");
+        assert_eq!(summary.reused_steps, 1, "the stable Type step reused");
+        let trace = std::fs::read_to_string(&out).expect("trace readable");
+        assert!(trace.contains("#polished"), "drifted step re-grounded");
+        assert!(!trace.contains("#shiny"), "stale selector gone");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn load_steps(path: &Path) -> ((), Vec<Step>) {
+        let contents = std::fs::read_to_string(path).expect("trace readable");
+        let steps = contents
+            .lines()
+            .skip(1)
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str::<Step>(l).expect("step parses"))
+            .collect();
+        ((), steps)
     }
 
     #[test]
