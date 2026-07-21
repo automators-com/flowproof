@@ -69,6 +69,8 @@ pub struct MockAppDriver {
     /// Browser config captured by `stage_browser` — the mock stands in
     /// for the web driver here, so tests can assert the staging happened.
     pub staged_browser: Option<crate::WebBrowserConfig>,
+    /// URL reported by `current_url`, for `page url is|contains` tests.
+    pub url: Option<String>,
     /// Leading `surface_text` calls that fail with a TRANSPORT fault before
     /// any real answer — a dead CDP socket during an auto-wait poll.
     /// `u32::MAX` never recovers, which is how the "budget expired without
@@ -95,6 +97,11 @@ impl MockAppDriver {
 
     pub fn with_surface_text(mut self, text: &str) -> Self {
         self.texts.insert(Self::SURFACE.into(), text.into());
+        self
+    }
+
+    pub fn with_url(mut self, url: &str) -> Self {
+        self.url = Some(url.into());
         self
     }
 
@@ -187,6 +194,12 @@ impl AppDriver for MockAppDriver {
         self.texts.entry(id.to_string()).or_default().push_str(text);
         self.typed.push((id.to_string(), text.to_string()));
         Ok(())
+    }
+
+    fn current_url(&mut self) -> Result<String, DriverError> {
+        self.url
+            .clone()
+            .ok_or_else(|| DriverError::Uia("mock has no url".into()))
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {

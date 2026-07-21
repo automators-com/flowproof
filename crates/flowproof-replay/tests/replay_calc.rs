@@ -1245,3 +1245,95 @@ fn transport_fault_tolerance_preserves_multibyte_surface_text() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// GAP-D (field: cypress-realworld-app). `cy.location("pathname")
+/// .should("equal","/signin")` is the most common assertion in that suite
+/// and had no equivalent - the workaround was asserting on visible text,
+/// which passes even when the route is wrong. Record and replay must agree
+/// on what the URL forms mean, so both run through the same matcher.
+#[test]
+fn url_assertions_record_and_replay_through_one_matcher() {
+    let dir = std::env::temp_dir().join("flowproof-replay-url");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Redirect\napp: web\nurl: x\nsteps:\n  - assert: page url is /signin\n  - assert: page url contains signin\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/personal".into()),
+        ..spec
+    };
+    let trace = dir.join("url.trace.jsonl");
+
+    // Recording verifies against the live URL, exactly as replay will.
+    let mut rec = MockAppDriver::new(&[]).with_url("https://app.test/signin?next=%2Fpersonal");
+    record(&spec, &mut rec, &trace).expect("recording verifies the url");
+
+    // The trace carries the expectation, not the resolved location.
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(
+        persisted.contains("\"url_equals\":\"/signin\""),
+        "{persisted}"
+    );
+    assert!(
+        persisted.contains("\"url_contains\":\"signin\""),
+        "{persisted}"
+    );
+
+    // Replay: same URL, passes. The query is ignored because the
+    // expectation carries no `?`.
+    let mut driver = MockAppDriver::new(&[]).with_url("https://app.test/signin?next=%2Fpersonal");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    // A different route fails, and the failure names what it saw - the
+    // whole point of the assertion over a text proxy.
+    let mut driver = MockAppDriver::new(&[]).with_url("https://app.test/signup");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.clone().unwrap_or_default();
+    assert!(detail.contains("/signin"), "detail: {detail}");
+    assert!(
+        detail.contains("signup"),
+        "detail names the live url: {detail}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A URL expectation may carry a `${VAR}`, and then neither the trace nor a
+/// failure message may leak the resolved value.
+#[test]
+fn url_assertions_keep_secrets_out_of_the_trace_and_the_message() {
+    let dir = std::env::temp_dir().join("flowproof-replay-url-secret");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::env::set_var("FP_URL_TENANT", "acme-7f3c");
+    let spec = FlowSpec::parse(
+        "name: Tenant\napp: web\nurl: x\nsteps:\n  - assert: page url contains ${FP_URL_TENANT}\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/".into()),
+        ..spec
+    };
+    let trace = dir.join("secret.trace.jsonl");
+    let mut rec = MockAppDriver::new(&[]).with_url("https://app.test/t/acme-7f3c/home");
+    record(&spec, &mut rec, &trace).expect("recording resolves the ref");
+
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(persisted.contains("${FP_URL_TENANT}"), "raw ref travels");
+    assert!(
+        !persisted.contains("acme-7f3c"),
+        "resolved value must not: {persisted}"
+    );
+
+    let mut driver = MockAppDriver::new(&[]).with_url("https://app.test/t/other/home");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.clone().unwrap_or_default();
+    assert!(!detail.contains("acme-7f3c"), "failure must mask: {detail}");
+    assert!(detail.contains("<masked>"), "detail: {detail}");
+
+    std::env::remove_var("FP_URL_TENANT");
+    std::fs::remove_dir_all(&dir).ok();
+}

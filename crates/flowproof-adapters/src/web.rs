@@ -715,6 +715,17 @@ impl AppDriver for WebAppDriver {
         Ok(Some(flowproof_driver::DebugBundle { dom_html, console }))
     }
 
+    fn current_url(&mut self) -> Result<String, DriverError> {
+        let value = self
+            .tab()?
+            .evaluate("window.location.href", false)
+            .map_err(|e| web_err("reading page url", e))?;
+        Ok(value
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
+    }
+
     fn surface_text(&mut self) -> Result<String, DriverError> {
         // Visible text PLUS the accessible names of visible elements:
         // icon-only buttons (a command palette, an account menu) exist on

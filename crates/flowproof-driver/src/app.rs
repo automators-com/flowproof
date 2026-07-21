@@ -211,6 +211,16 @@ pub trait AppDriver {
         ))
     }
 
+    /// The surface's current location, for `page url is|contains`. Only a
+    /// browser has one: a UIA window, a SAP session and an OCR'd frame do
+    /// not, so the default refuses with a reason rather than inventing an
+    /// empty string that would make assertions quietly pass.
+    fn current_url(&mut self) -> Result<String, DriverError> {
+        Err(DriverError::Uia(
+            "this app has no URL: `page url` assertions are for web flows".into(),
+        ))
+    }
+
     /// Stage session state (cookies, localStorage) to be applied by the
     /// NEXT `launch` before the page loads.
     fn stage_session(&mut self, _session: WebSession) -> Result<(), DriverError> {
@@ -430,6 +440,70 @@ pub struct AppTarget {
 /// Extract the trailing numeric value from display text like
 /// `Display is 8` or `1,234.5`. Shared by record and replay so both phases
 /// judge display values identically.
+/// Does `actual` (a full URL) satisfy a `page url` expectation?
+///
+/// Shared by record and replay - like [`numeric_value`] - because a URL
+/// assertion that holds while recording must hold when replayed, and two
+/// copies of a matcher drift (that is exactly how the round-3 field
+/// migration produced traces that could not replay).
+///
+/// `exact = false` is `page url contains <text>`: a plain substring test
+/// over the whole href.
+///
+/// `exact = true` is `page url is <expected>`, which is deliberately
+/// path-shaped, because `cy.location("pathname").should("equal", "/signin")`
+/// is the assertion people actually write:
+///
+/// - `expected` containing `://` compares against the WHOLE url, exactly;
+/// - `expected` starting with `/` compares against the pathname, and
+///   includes the query only when `expected` carries a `?`, the fragment
+///   only when it carries a `#`. So `/orders` ignores `?page=2`, while
+///   `/orders?page=2` does not;
+/// - anything else compares against the whole url, exactly. There is no
+///   guessing: an expectation that is neither a path nor a full URL is
+///   most likely a mistake, and an exact comparison says so loudly.
+pub fn url_matches(expected: &str, exact: bool, actual: &str) -> bool {
+    if !exact {
+        return actual.contains(expected);
+    }
+    if expected.contains("://") || !expected.starts_with('/') {
+        return actual == expected;
+    }
+    let (want_query, want_hash) = (expected.contains('?'), expected.contains('#'));
+    // Split the live URL into path / query / fragment without pulling in a
+    // URL crate: after the scheme's `://`, the path starts at the first
+    // `/`, and `?` / `#` bound it from the right.
+    let after_scheme = match actual.find("://") {
+        Some(i) => &actual[i + 3..],
+        None => actual,
+    };
+    let from_path = match after_scheme.find('/') {
+        Some(i) => &after_scheme[i..],
+        // No path at all ("https://example.test") means the root.
+        None => "/",
+    };
+    let hash_at = from_path.find('#');
+    let without_hash = match hash_at {
+        Some(i) => &from_path[..i],
+        None => from_path,
+    };
+    let hash = hash_at.map(|i| &from_path[i..]).unwrap_or("");
+    let query_at = without_hash.find('?');
+    let path = match query_at {
+        Some(i) => &without_hash[..i],
+        None => without_hash,
+    };
+    let query = query_at.map(|i| &without_hash[i..]).unwrap_or("");
+    let mut candidate = String::from(path);
+    if want_query {
+        candidate.push_str(query);
+    }
+    if want_hash {
+        candidate.push_str(hash);
+    }
+    candidate == expected
+}
+
 pub fn numeric_value(text: &str) -> Option<f64> {
     text.split_whitespace()
         .rev()
@@ -545,6 +619,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
         (**self).surface_text()
+    }
+
+    fn current_url(&mut self) -> Result<String, DriverError> {
+        (**self).current_url()
     }
 
     fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
@@ -1092,5 +1170,105 @@ mod tests {
             .launch("calc.exe", "Calculator", Duration::from_secs(1))
             .expect_err("stub cannot launch");
         assert!(matches!(err, DriverError::UnsupportedPlatform));
+    }
+}
+
+#[cfg(test)]
+mod url_matches_tests {
+    use super::url_matches;
+
+    /// `page url is /path` is path-shaped on purpose: it maps
+    /// `cy.location("pathname").should("equal", "/signin")` one to one.
+    #[test]
+    fn a_path_expectation_compares_the_pathname_only() {
+        assert!(url_matches("/signin", true, "http://localhost:3000/signin"));
+        assert!(url_matches("/signin", true, "https://app.test/signin#top"));
+        // The query is ignored unless the expectation asks for one.
+        assert!(url_matches(
+            "/orders",
+            true,
+            "https://app.test/orders?page=2"
+        ));
+        assert!(!url_matches("/signin", true, "https://app.test/signup"));
+        // A path expectation must not match a mere prefix.
+        assert!(!url_matches("/order", true, "https://app.test/orders"));
+    }
+
+    #[test]
+    fn a_query_or_fragment_in_the_expectation_makes_it_significant() {
+        assert!(url_matches(
+            "/orders?page=2",
+            true,
+            "https://app.test/orders?page=2"
+        ));
+        assert!(!url_matches(
+            "/orders?page=2",
+            true,
+            "https://app.test/orders?page=3"
+        ));
+        assert!(!url_matches(
+            "/orders?page=2",
+            true,
+            "https://app.test/orders"
+        ));
+        assert!(url_matches(
+            "/docs#install",
+            true,
+            "https://app.test/docs#install"
+        ));
+        assert!(!url_matches(
+            "/docs#install",
+            true,
+            "https://app.test/docs#usage"
+        ));
+    }
+
+    #[test]
+    fn a_full_url_expectation_compares_the_whole_url() {
+        assert!(url_matches(
+            "https://app.test/signin",
+            true,
+            "https://app.test/signin"
+        ));
+        // Different scheme or host is a different URL, even at the same path.
+        assert!(!url_matches(
+            "https://app.test/signin",
+            true,
+            "http://app.test/signin"
+        ));
+    }
+
+    #[test]
+    fn contains_is_a_plain_substring_of_the_whole_url() {
+        assert!(url_matches(
+            "checkout",
+            false,
+            "https://app.test/cart/checkout?step=1"
+        ));
+        assert!(url_matches("app.test", false, "https://app.test/cart"));
+        assert!(!url_matches("checkout", false, "https://app.test/cart"));
+    }
+
+    /// Edge shapes that must not panic or silently mis-compare: a bare
+    /// origin has the root path, and non-ASCII paths are byte-safe.
+    #[test]
+    fn origins_and_multibyte_paths_are_handled() {
+        assert!(url_matches("/", true, "https://app.test"));
+        assert!(url_matches("/", true, "https://app.test/"));
+        assert!(url_matches(
+            "/konto/überweisung",
+            true,
+            "https://app.test/konto/überweisung"
+        ));
+        assert!(url_matches(
+            "überweisung",
+            false,
+            "https://app.test/konto/überweisung"
+        ));
+        assert!(!url_matches(
+            "/konto/überweisung",
+            true,
+            "https://app.test/konto/uberweisung"
+        ));
     }
 }

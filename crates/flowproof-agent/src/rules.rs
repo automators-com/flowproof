@@ -164,6 +164,12 @@ pub enum TextMatch {
     Equals,
     /// Compare the trailing numeric value instead of raw text.
     NumericEquals,
+    /// The surface's URL equals the expectation - `page url is /signin`.
+    /// See `url_matches` in flowproof-replay for what "equals" means for a
+    /// path, a path with a query, and a whole URL.
+    UrlEquals,
+    /// The surface's URL contains the expectation - `page url contains x`.
+    UrlContains,
 }
 
 /// Default auto-wait for assertions (Playwright's expect default).
@@ -451,6 +457,35 @@ mod assertions {
             .unwrap_or(std::borrow::Cow::Borrowed(trimmed));
         let trimmed = trimmed.as_ref();
 
+        // `page url is <expected>` / `page url contains <text>`. Checked
+        // BEFORE `page shows`, and both auto-wait like every other
+        // assertion: an SPA redirect lands asynchronously, so a
+        // non-waiting URL assert would be the grammar's only racy form.
+        if let Some(rest) = strip_prefix_ci(trimmed, "page url is ") {
+            let expected = rest.trim();
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected url"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: expected.to_string(),
+                matcher: TextMatch::UrlEquals,
+                timeout_ms,
+            }]);
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "page url contains ") {
+            let expected = rest.trim();
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected url"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: expected.to_string(),
+                matcher: TextMatch::UrlContains,
+                timeout_ms,
+            }]);
+        }
+
         if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
             let (expected, count) = split_count(rest.trim());
             if expected.is_empty() {
@@ -563,7 +598,8 @@ mod assertions {
 
         Err(unresolvable(
             trimmed,
-            "expected '[the ]page shows <text>[ N times]', '[the ]page does not show \
+            "expected '[the ]page shows <text>[ N times]', '[the ]page url is|contains \
+             <url>', '[the ]page does not show \
              <text>', 'the \"<label>\" field contains <text>', 'the \"<target>\" shows \
              <text>', 'the \"<target>\" is [not] visible', or 'the \"<target>\" is \
              enabled|disabled' (see docs/authoring.md for the full grammar)",

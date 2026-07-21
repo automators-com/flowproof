@@ -439,6 +439,65 @@ where
     }
 }
 
+/// The `page url` expectation carried by an `element_state`, if any:
+/// `(expected, exact)` where exact distinguishes `is` from `contains`.
+fn url_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
+    expect
+        .get("url_equals")
+        .and_then(|v| v.as_str())
+        .map(|e| (e, true))
+        .or_else(|| {
+            expect
+                .get("url_contains")
+                .and_then(|v| v.as_str())
+                .map(|e| (e, false))
+        })
+}
+
+/// Poll the surface's URL until the expectation holds or `deadline` passes.
+/// Mirrors [`check_text_expectation`]: transport faults are misses, a
+/// budget that expires with no reading at all is a driver error, and the
+/// message keeps the RAW expectation so a `${VAR}` never leaks.
+fn check_url_expectation<F>(
+    expect: &serde_json::Value,
+    raw: &str,
+    exact: bool,
+    deadline: Instant,
+    mut read: F,
+) -> Result<(Result<(), String>, Option<usize>), ReplayError>
+where
+    F: FnMut() -> Result<String, flowproof_driver::DriverError>,
+{
+    let _ = expect;
+    let expected = match flowproof_trace::secret::resolve_refs(raw) {
+        Ok(expected) => expected,
+        Err(e) => return Ok((Err(e.to_string()), None)),
+    };
+    let mut fault: Option<flowproof_driver::DriverError> = None;
+    let mut last: Option<String> = None;
+    loop {
+        if let Some(url) = tolerate(read(), &mut fault)? {
+            if flowproof_driver::url_matches(&expected, exact, &url) {
+                return Ok((Ok(()), None));
+            }
+            last = Some(url);
+        }
+        if Instant::now() >= deadline {
+            let Some(url) = last else {
+                return Err(exhausted(fault));
+            };
+            let shown = if flowproof_trace::secret::has_refs(raw) {
+                "<masked>".to_string()
+            } else {
+                url
+            };
+            let verb = if exact { "url" } else { "url containing" };
+            return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), None));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
 /// One reading inside an auto-wait poll loop. A [`DriverError::Transport`]
 /// fault is a MISS (`Ok(None)`) rather than an error: the assertion's
 /// contract is "this holds within N seconds", and a dead socket on one
@@ -515,6 +574,15 @@ fn check_assertion<D: AppDriver>(
             // Surface-scoped: no selector to resolve — every adapter
             // answers `surface_text` its own way (page / window subtree /
             // OCR frame).
+            // `page url is|contains` reads the surface's LOCATION rather
+            // than its text. Same poll, same recorded bound: an SPA
+            // redirect lands asynchronously, so this must auto-wait like
+            // everything else.
+            if let Some((raw, exact)) = url_expectation(expect) {
+                return check_url_expectation(expect, raw, exact, deadline, || {
+                    driver.current_url()
+                });
+            }
             if expect.get("scope").and_then(|v| v.as_str()) == Some("surface") {
                 return check_text_expectation(expect, deadline, None, || driver.surface_text());
             }

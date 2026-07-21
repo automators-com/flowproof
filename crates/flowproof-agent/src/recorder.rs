@@ -334,6 +334,8 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 TextMatch::NumericEquals => {
                     serde_json::json!({ "value_equals": expected, "normalize": "numeric" })
                 }
+                TextMatch::UrlEquals => serde_json::json!({ "url_equals": expected }),
+                TextMatch::UrlContains => serde_json::json!({ "url_contains": expected }),
             };
             expect["timeout_ms"] = serde_json::json!(timeout_ms);
             let selectors = selectors_for(app, target, None);
@@ -922,6 +924,10 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
             (flowproof_driver::numeric_value(actual), expected.parse::<f64>()),
             (Some(a), Ok(e)) if a == e
         ),
+        // Shared with replay so record and replay cannot drift: a URL
+        // assertion that holds while recording must hold when replayed.
+        TextMatch::UrlEquals => flowproof_driver::url_matches(expected, true, actual),
+        TextMatch::UrlContains => flowproof_driver::url_matches(expected, false, actual),
     }
 }
 
@@ -1254,13 +1260,18 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     let wanted = flowproof_trace::secret::resolve_refs(expected)?;
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
-                        let actual = if selector.is_none() {
-                            Some(driver.surface_text()?)
-                        } else if driver.element_exists(targeted())? {
-                            Some(driver.read_text(targeted())?)
-                        } else {
-                            None
-                        };
+                        let actual =
+                            if matches!(matcher, TextMatch::UrlEquals | TextMatch::UrlContains) {
+                                // The URL is a different reading of the surface,
+                                // not a different target: same poll, same bound.
+                                Some(driver.current_url()?)
+                            } else if selector.is_none() {
+                                Some(driver.surface_text()?)
+                            } else if driver.element_exists(targeted())? {
+                                Some(driver.read_text(targeted())?)
+                            } else {
+                                None
+                            };
                         if let Some(actual) = &actual {
                             if assert_holds(actual, &wanted, *matcher) {
                                 break;
