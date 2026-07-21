@@ -38,10 +38,13 @@ fn cli_main(py: Python<'_>, args: Vec<String>) -> PyResult<u8> {
 #[pyo3(signature = (spec, out=None))]
 fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<String> {
     py.detach(|| {
-        let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
+        let mut parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
         // Suite env/data (suite.yaml env_from + env) governs MCP-driven
-        // recording exactly like the CLI.
-        flowproof_cli::apply_suite_context(&spec).map_err(runtime_err)?;
+        // recording exactly like the CLI — including browser defaults.
+        let manifest = flowproof_cli::apply_suite_context(&spec).map_err(runtime_err)?;
+        if parsed.browser.is_none() {
+            parsed.browser = manifest.and_then(|m| m.browser);
+        }
         if let Some(reason) = parsed.skip_reason() {
             // A gated flow is data, like a clarification — not an error.
             return to_json(&serde_json::json!({ "skipped": reason }));

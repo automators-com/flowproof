@@ -141,6 +141,42 @@ fn mock_rules_travel_from_spec_through_trace_to_replay_staging() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Browser config travels spec → trace header → replay staging with the
+/// defaults applied once: a flow recorded on an emulated phone viewport
+/// replays on the same one, and the suite's user-agent shim is gone.
+#[test]
+fn browser_config_travels_from_spec_through_trace_to_replay_staging() {
+    let dir = std::env::temp_dir().join("flowproof-replay-browser");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Mobile\napp: web\nurl: https://e.test/x\nbrowser:\n  viewport:\n    width: 390\n    height: 844\n    mobile: true\n    touch: true\n  user_agent: flowproof-e2e\nsteps:\n  - Press the \"Go\" button\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("mobile.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Go"]);
+    record(&spec, &mut rec, &trace).expect("records");
+    let staged = rec.staged_browser.expect("record staged the browser");
+    let vp = staged.viewport.expect("viewport staged");
+    assert_eq!((vp.width, vp.height), (390, 844));
+    assert_eq!(vp.device_scale_factor, 1.0, "default applied");
+    assert!(vp.mobile && vp.touch);
+    assert_eq!(staged.user_agent.as_deref(), Some("flowproof-e2e"));
+
+    // Replay stages the same config from the header alone.
+    let mut driver = MockAppDriver::new(&["Go"]);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "{report:#?}");
+    assert_eq!(
+        driver.staged_browser.expect("replay staged the browser"),
+        flowproof_driver::WebBrowserConfig::from_setup_parts(
+            Some((390, 844, None, Some(true), Some(true))),
+            Some("flowproof-e2e"),
+            &[],
+        )
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Round-2 input capabilities replay deterministically: upload sets the
 /// file (skipping actionability — file inputs are conventionally hidden),
 /// right-click opens the context menu through the actionability gate, and

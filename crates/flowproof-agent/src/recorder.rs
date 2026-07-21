@@ -797,6 +797,21 @@ fn web_mock_from_rule(rule: &flowproof_trace::format::MockRule) -> flowproof_dri
     )
 }
 
+/// Trace browser setup → the driver's fully-resolved form (defaults live
+/// in `WebBrowserConfig::from_setup_parts`, shared with replay).
+fn web_browser_from_setup(
+    setup: &flowproof_trace::format::BrowserSetup,
+) -> flowproof_driver::WebBrowserConfig {
+    flowproof_driver::WebBrowserConfig::from_setup_parts(
+        setup
+            .viewport
+            .as_ref()
+            .map(|v| (v.width, v.height, v.device_scale_factor, v.mobile, v.touch)),
+        setup.user_agent.as_deref(),
+        &setup.args,
+    )
+}
+
 /// Poll an out-of-band probe until it holds or the bound elapses — the row
 /// may still be committing, the API still converging. Configuration errors
 /// (missing connection env) fail immediately.
@@ -1002,6 +1017,11 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
     }
     if !spec.mock.is_empty() {
         driver.stage_mocks(spec.mock.iter().map(web_mock_from_rule).collect())?;
+    }
+    if let Some(browser) = &spec.browser {
+        if !browser.is_empty() {
+            driver.stage_browser(web_browser_from_setup(browser))?;
+        }
     }
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
     let (width, height) = driver.screen_size()?;
@@ -1274,6 +1294,8 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
         // Mock rules travel with the trace: what was mocked at record MUST
         // be mocked at replay, or the two executions test different things.
         mock: spec.mock.clone(),
+        // Browser shape travels too: a flow recorded mobile replays mobile.
+        browser: spec.browser.clone(),
         spec: Some(flowproof_trace::format::SpecRef {
             name: spec.name.clone(),
             path: None,

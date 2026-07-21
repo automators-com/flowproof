@@ -12,7 +12,7 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector, WebSession};
 use headless_chrome::browser::tab::{ModifierKey, Tab};
 use headless_chrome::protocol::cdp::Target::CreateTarget;
-use headless_chrome::protocol::cdp::{Input, Network, Page};
+use headless_chrome::protocol::cdp::{Emulation, Input, Network, Page};
 use headless_chrome::{Browser, LaunchOptions};
 
 use crate::AdapterError;
@@ -23,10 +23,13 @@ fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
     DriverError::Uia(format!("web: {context}: {err}"))
 }
 
-/// Launch a fresh headless Chromium (`CHROME` env var overrides the binary).
-fn launch_browser() -> Result<Browser, AdapterError> {
+/// Launch a fresh headless Chromium (`CHROME` env var overrides the
+/// binary), optionally with extra command-line flags.
+fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
+    let os_args: Vec<std::ffi::OsString> = extra_args.iter().map(Into::into).collect();
     let mut options = LaunchOptions::default_builder();
     options.headless(true).sandbox(false);
+    options.args(os_args.iter().map(AsRef::as_ref).collect());
     if let Ok(path) = std::env::var("CHROME") {
         options.path(Some(path.into()));
     }
@@ -59,7 +62,7 @@ fn shared_browser() -> Result<Browser, AdapterError> {
             return Ok(browser.clone());
         }
     }
-    let browser = launch_browser()?;
+    let browser = launch_browser(&[])?;
     let keepalive = browser
         .new_tab()
         .map_err(|e| AdapterError::Web(format!("opening keep-alive tab: {e}")))?;
@@ -85,6 +88,10 @@ pub struct WebAppDriver {
     /// Network mocks staged via [`AppDriver::stage_mocks`], installed by
     /// the next `launch` before navigation (CDP Fetch interception).
     staged_mocks: Vec<flowproof_driver::WebMock>,
+    /// Browser config staged via [`AppDriver::stage_browser`], applied by
+    /// the next `launch`: viewport/UA per-tab; extra flags swap in a
+    /// private browser (flags only apply at process start).
+    staged_browser: Option<flowproof_driver::WebBrowserConfig>,
 }
 
 /// Cap on retained console lines — enough context for a failure, bounded
@@ -125,12 +132,13 @@ impl WebAppDriver {
     pub fn new() -> Result<Self, AdapterError> {
         if std::env::var_os("FLOWPROOF_NO_SHARED_BROWSER").is_some() {
             return Ok(Self {
-                browser: launch_browser()?,
+                browser: launch_browser(&[])?,
                 context_id: None,
                 tab: None,
                 staged_session: None,
                 console: Default::default(),
                 staged_mocks: Vec::new(),
+                staged_browser: None,
             });
         }
         let browser = shared_browser()?;
@@ -145,6 +153,7 @@ impl WebAppDriver {
             staged_session: None,
             console: Default::default(),
             staged_mocks: Vec::new(),
+            staged_browser: None,
         })
     }
 
@@ -458,6 +467,17 @@ impl AppDriver for WebAppDriver {
         _window_name: &str,
         _timeout: Duration,
     ) -> Result<(), DriverError> {
+        let staged_browser = self.staged_browser.take();
+        // Extra Chrome flags only apply at process start: swap in a
+        // PRIVATE browser for this flow (a plain tab on it is already
+        // isolated), paying its cold start instead of sharing.
+        if let Some(config) = &staged_browser {
+            if !config.args.is_empty() {
+                self.browser =
+                    launch_browser(&config.args).map_err(|e| DriverError::Uia(e.to_string()))?;
+                self.context_id = None;
+            }
+        }
         // On the shared browser, open the tab INSIDE this flow's isolated
         // context so its cookies/storage never touch another flow's.
         let tab = match &self.context_id {
@@ -478,6 +498,41 @@ impl AppDriver for WebAppDriver {
             None => self.browser.new_tab(),
         }
         .map_err(|e| web_err("opening tab", e))?;
+        // Viewport/UA emulation BEFORE navigation, so the app boots into
+        // the emulated device (responsive breakpoints, UA sniffing). NOT
+        // best-effort: a flow recorded mobile must never run desktop.
+        if let Some(config) = &staged_browser {
+            if let Some(vp) = &config.viewport {
+                tab.call_method(Emulation::SetDeviceMetricsOverride {
+                    width: vp.width,
+                    height: vp.height,
+                    device_scale_factor: vp.device_scale_factor,
+                    mobile: vp.mobile,
+                    scale: None,
+                    screen_width: None,
+                    screen_height: None,
+                    position_x: None,
+                    position_y: None,
+                    dont_set_visible_size: None,
+                    screen_orientation: None,
+                    viewport: None,
+                    display_feature: None,
+                    device_posture: None,
+                })
+                .map_err(|e| web_err("emulating viewport", e))?;
+                if vp.touch {
+                    tab.call_method(Emulation::SetTouchEmulationEnabled {
+                        enabled: true,
+                        max_touch_points: Some(1),
+                    })
+                    .map_err(|e| web_err("emulating touch", e))?;
+                }
+            }
+            if let Some(ua) = &config.user_agent {
+                tab.set_user_agent(ua, None, None)
+                    .map_err(|e| web_err("overriding user agent", e))?;
+            }
+        }
         if let Some(session) = self.staged_session.take() {
             Self::apply_session(&tab, &session, command)?;
         }
@@ -646,6 +701,14 @@ impl AppDriver for WebAppDriver {
 
     fn stage_mocks(&mut self, rules: Vec<flowproof_driver::WebMock>) -> Result<(), DriverError> {
         self.staged_mocks = rules;
+        Ok(())
+    }
+
+    fn stage_browser(
+        &mut self,
+        config: flowproof_driver::WebBrowserConfig,
+    ) -> Result<(), DriverError> {
+        self.staged_browser = Some(config);
         Ok(())
     }
 

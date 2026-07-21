@@ -70,6 +70,27 @@
             }
           }
         },
+        "browser": {
+          "type": "object",
+          "description": "Browser launch/emulation config applied identically at record and replay (web flows).",
+          "additionalProperties": false,
+          "properties": {
+            "viewport": {
+              "type": "object",
+              "required": ["width", "height"],
+              "additionalProperties": false,
+              "properties": {
+                "width": { "type": "integer" },
+                "height": { "type": "integer" },
+                "device_scale_factor": { "type": "number" },
+                "mobile": { "type": "boolean" },
+                "touch": { "type": "boolean" }
+              }
+            },
+            "user_agent": { "type": "string" },
+            "args": { "type": "array", "items": { "type": "string" } }
+          }
+        },
         "trace_id": { "type": "string", "format": "uuid" },
         "recorded_at": { "type": "string", "format": "date-time" },
         "spec": {

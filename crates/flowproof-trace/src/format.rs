@@ -24,6 +24,9 @@ pub enum TraceError {
 /// One line of a trace file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
+// Never stored in bulk: `parse` yields one at a time and callers unwrap
+// immediately into Header/Vec<Step>, so variant size imbalance is moot.
+#[allow(clippy::large_enum_variant)]
 pub enum TraceLine {
     Header(Header),
     Step(Step),
@@ -79,6 +82,11 @@ pub struct Header {
     /// two executions equivalent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mock: Vec<MockRule>,
+    /// Browser launch/emulation config copied from the spec at record
+    /// time, applied identically at record and every replay (web flows):
+    /// viewport/mobile emulation, user-agent, extra Chrome flags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<BrowserSetup>,
 }
 
 /// One network mock: match by URL substring (and optionally method), answer
@@ -273,6 +281,49 @@ pub struct UploadParams {
     pub path: String,
     #[serde(flatten)]
     pub extra: Params,
+}
+
+/// Browser launch/emulation config (web flows): viewport + mobile
+/// emulation, user-agent override, and extra Chrome flags. Copied from the
+/// spec into the trace header so record and every replay run the SAME
+/// browser shape. `deny_unknown_fields` deliberately: a silently dropped
+/// emulation field changes what the flow tests.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserSetup {
+    /// Viewport / device emulation, applied before navigation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<ViewportSetup>,
+    /// Navigator user-agent override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    /// Extra Chrome command-line flags. Forces a private (non-shared)
+    /// browser for the flow, since flags only apply at process start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+}
+
+impl BrowserSetup {
+    pub fn is_empty(&self) -> bool {
+        self.viewport.is_none() && self.user_agent.is_none() && self.args.is_empty()
+    }
+}
+
+/// Device-metrics emulation: the mobile half of a browser setup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewportSetup {
+    pub width: u32,
+    pub height: u32,
+    /// Device pixel ratio (default 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_scale_factor: Option<f64>,
+    /// Mobile layout mode (meta-viewport honored, mobile UA hints).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mobile: Option<bool>,
+    /// Emulate a touch screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub touch: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

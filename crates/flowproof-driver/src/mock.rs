@@ -66,6 +66,9 @@ pub struct MockAppDriver {
     pub uploads: Vec<(String, String)>,
     /// Element keys right-clicked via `context_click`, in order.
     pub context_clicked: Vec<String>,
+    /// Browser config captured by `stage_browser` — the mock stands in
+    /// for the web driver here, so tests can assert the staging happened.
+    pub staged_browser: Option<crate::WebBrowserConfig>,
 }
 
 impl MockAppDriver {
@@ -298,6 +301,11 @@ impl AppDriver for MockAppDriver {
             return Err(DriverError::Uia(format!("mock element '{id}' not found")));
         }
         self.context_clicked.push(id.to_string());
+        Ok(())
+    }
+
+    fn stage_browser(&mut self, config: crate::WebBrowserConfig) -> Result<(), DriverError> {
+        self.staged_browser = Some(config);
         Ok(())
     }
 }

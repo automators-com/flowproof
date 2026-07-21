@@ -181,10 +181,15 @@ fn cmd_record(
     author: AuthorArg,
     reuse: bool,
 ) -> Result<u8, String> {
-    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     // The suite's data (env_from) and env govern recording too — the
     // ${VAR}s a spec references must resolve the same here as in `run`.
-    apply_suite_context(spec_path)?;
+    let manifest = apply_suite_context(spec_path)?;
+    // Suite-level browser defaults apply only when the spec has none —
+    // recording bakes the result into the trace header.
+    if spec.browser.is_none() {
+        spec.browser = manifest.and_then(|m| m.browser);
+    }
     if let Some(reason) = spec.skip_reason() {
         if json {
             println!("{}", serde_json::json!({ "skipped": reason }));
@@ -398,12 +403,15 @@ fn apply_env_from(manifest: &flowproof_agent::SuiteManifest, dir: &Path) -> Resu
 /// `env_from`, export its `env`. `record` and single-spec `run` call this
 /// so a flow behaves the same alone as inside its suite — the data a
 /// DataMaker CLI mints at suite level reaches `${VAR}` at record time AND
-/// replay time. No manifest = no-op.
-pub fn apply_suite_context(spec_path: &Path) -> Result<(), String> {
+/// replay time. No manifest = no-op. Returns the manifest so callers can
+/// apply its non-env defaults (e.g. `browser:`) to the spec.
+pub fn apply_suite_context(
+    spec_path: &Path,
+) -> Result<Option<flowproof_agent::SuiteManifest>, String> {
     let Some((manifest, dir)) =
         flowproof_agent::SuiteManifest::discover(spec_path).map_err(|e| e.to_string())?
     else {
-        return Ok(());
+        return Ok(None);
     };
     // Name the manifest so a surprising ancestor suite.yaml is visible.
     eprintln!(
@@ -413,7 +421,7 @@ pub fn apply_suite_context(spec_path: &Path) -> Result<(), String> {
     manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
     apply_env_from(&manifest, &dir)?;
     apply_suite_env(&manifest);
-    Ok(())
+    Ok(Some(manifest))
 }
 
 /// Reorder discovered specs to honor the manifest's explicit `order`
@@ -470,8 +478,15 @@ pub enum MissingTrace {
 
 /// Record a spec in place (suite env already applied by the caller).
 /// The core of `cmd_record` without its CLI rendering.
-fn record_one(spec_path: &Path, out: &Path) -> Result<(), String> {
-    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+fn record_one(
+    spec_path: &Path,
+    out: &Path,
+    suite_browser: Option<&flowproof_trace::format::BrowserSetup>,
+) -> Result<(), String> {
+    let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    if spec.browser.is_none() {
+        spec.browser = suite_browser.cloned();
+    }
     let mut driver = driver_for(&spec.app)?;
     flowproof_agent::record(&spec, &mut driver, out)
         .map(|_| ())
@@ -533,7 +548,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
                     if !json {
                         println!("[RECORD] {} (no trace yet)", spec_path.display());
                     }
-                    record_one(spec_path, &trace_path)?;
+                    record_one(spec_path, &trace_path, manifest.browser.as_ref())?;
                     // Fall through to the normal replay below.
                 }
                 MissingTrace::Skip => {

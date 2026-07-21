@@ -19,7 +19,8 @@ pub mod window;
 
 pub use app::{
     absolute_url, numeric_value, resolve_app, url_origin, AppDriver, AppTarget, DebugBundle,
-    KeyMod, NoOpDriver, PixelRect, UiaAppDriver, UiaSelector, WebMock, WebSession,
+    KeyMod, NoOpDriver, PixelRect, UiaAppDriver, UiaSelector, WebBrowserConfig, WebMock,
+    WebSession, WebViewport,
 };
 pub use backend::PlatformBackend;
 pub use recording::{FrameRef, Recording, RunRecorder, StepTiming};
