@@ -118,6 +118,15 @@ flowproof run specs/
 flowproof run specs/ --retries 2      # re-run a flow that fails, up to twice
 ```
 
+**Dev servers with file watchers.** flowproof writes each run bundle to
+`.flowproof/runs/…` inside the project, next to the spec it came from. A dev
+server watching that tree (vite, webpack-dev-server, nodemon) sees those
+files appear and reloads the app **mid-run**, which can fail a flow for
+reasons that have nothing to do with the app. Exclude the artifacts from the
+watcher: in vite that is `server.watch.ignored: ["**/.flowproof/**"]`, plus
+any directory your app writes to during a test (a JSON-file database, an
+upload folder).
+
 Deterministic replay is stable, but the infrastructure under it (a dropped
 CDP frame, a momentarily slow backend) is not — `--retries N` re-runs a
 failed flow up to N more times with a fresh driver before calling it
