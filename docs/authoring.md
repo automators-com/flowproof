@@ -159,6 +159,39 @@ for a window vision attaches to but never launched. Using the wrong one is a
 parse error that names the right one. A web flow sizes its page with
 `browser: viewport`, and an api flow has no window at all.
 
+### UWP and packaged apps
+
+A UWP app (Calculator, Settings, anything from the Store) is not an exe you
+launch by path. Launch one through the shell, naming the package by its
+Application User Model ID:
+
+```yaml
+app:
+  command: explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App
+  window_title: Calculator
+window:
+  width: 640
+  height: 900
+```
+
+`explorer.exe` returns immediately, before the app has a window, which is
+exactly why `window_title` exists: flowproof waits for a window with that
+title rather than for the process it spawned. List the ids on the machine
+with `Get-StartApps` in PowerShell.
+
+The window matters for geometry. A UWP app draws into a
+`Windows.UI.Core.CoreWindow` hosted inside an `ApplicationFrameWindow` that
+belongs to `ApplicationFrameHost.exe`, and the CoreWindow does not own its
+own size - resizing it does nothing visible. flowproof detects the
+CoreWindow class and applies `window:` to the hosting frame instead, so a
+UWP flow pins its shape like any other. Nothing to configure; worth knowing
+only when a resize appears to be ignored.
+
+For running a UWP app on a CI runner that does not ship one, see
+[Deploying a UWP app on a CI runner](getting-started.md#deploying-a-uwp-app-on-a-ci-runner):
+a Windows Server image has no Store apps, but it can build and side-load
+the one a suite needs.
+
 ## Out-of-band assertions (any app; structured steps, not prose)
 
 ```yaml
