@@ -94,6 +94,10 @@ pub enum ResolvedAction {
     TypeFocused { text: String },
     /// Clear an input's current value (Playwright's `clear()`).
     Clear { target: Target },
+    /// Read a target's text into a flow-scoped name for later comparison
+    /// (`Remember the "Balance" as balance`). The VALUE never enters the
+    /// trace - only the name does, exactly like a `${VAR}` secret.
+    Capture { target: Target, name: String },
     /// Drive a checkbox-like control to a STATE (`Check`/`Uncheck`).
     /// Set-state rather than toggle, so the step means the same thing
     /// however the environment arrives: idempotent by design.
@@ -121,6 +125,15 @@ pub enum ResolvedAction {
     },
     /// Assert an element's enabled/disabled state ("the \"Save\" is
     /// disabled") — a first-class form, not a css attribute-selector trick.
+    /// `the "<target>" shows ${captured.<name>} [+|- <number>]`.
+    AssertCaptured {
+        target: Target,
+        name: String,
+        /// `None` = compare the text; `Some(n)` = compare numerically
+        /// against the captured number plus n.
+        offset: Option<f64>,
+        timeout_ms: u64,
+    },
     /// `the "<target>" checkbox is [not] checked`.
     AssertChecked {
         target: Target,
@@ -180,6 +193,52 @@ pub enum TextMatch {
     UrlEquals,
     /// The surface's URL contains the expectation - `page url contains x`.
     UrlContains,
+}
+
+/// A capture name: `[a-z][a-z0-9_]*`. Deliberately narrow so a name can
+/// never be confused with an expression or a `${VAR}` reference.
+fn valid_capture_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Parse the WHOLE expected text as a capture reference:
+/// `${captured.<name>}`, optionally `+ <number>` or `- <number>`.
+///
+/// This is the entire expression grammar and it is non-extensible by
+/// construction: one reference, one operator, one literal, nothing that
+/// composes. That is the guard against it growing into a language.
+pub(super) fn parse_capture_ref(text: &str) -> Option<(String, Option<f64>)> {
+    let rest = text.trim().strip_prefix("${captured.")?;
+    let (name, tail) = rest.split_once('}')?;
+    if !valid_capture_name(name) {
+        return None;
+    }
+    let tail = tail.trim();
+    if tail.is_empty() {
+        return Some((name.to_string(), None));
+    }
+    // Written with `?` rather than a trailing `else { return None }`:
+    // clippy's question_mark lint rejects the latter, and this repo has
+    // already been bitten by that exact lint once (see the 0.2.x history).
+    let (sign, literal) = match tail.strip_prefix('+') {
+        Some(v) => (1.0, v.trim()),
+        None => (-1.0, tail.strip_prefix('-')?.trim()),
+    };
+    // Digits only: no separators, no second capture, no nesting.
+    if literal.is_empty()
+        || !literal.chars().all(|c| c.is_ascii_digit() || c == '.')
+        || literal.matches('.').count() > 1
+        || literal.starts_with('.')
+        || literal.ends_with('.')
+    {
+        return None;
+    }
+    literal
+        .parse::<f64>()
+        .ok()
+        .map(|n| (name.to_string(), Some(sign * n)))
 }
 
 /// Default auto-wait for assertions (Playwright's expect default).
@@ -543,6 +602,16 @@ mod assertions {
                         let expected = expected.trim();
                         if expected.is_empty() {
                             return Err(unresolvable(trimmed, "no expected text"));
+                        }
+                        // `${captured.<name>}` with an optional offset is a
+                        // COMPUTED assertion, not literal text.
+                        if let Some((name, offset)) = parse_capture_ref(expected) {
+                            return Ok(vec![ResolvedAction::AssertCaptured {
+                                target,
+                                name,
+                                offset,
+                                timeout_ms,
+                            }]);
                         }
                         return Ok(vec![ResolvedAction::AssertText {
                             target,
@@ -1056,6 +1125,45 @@ mod web {
                 trimmed,
                 "expected 'Replace the [2nd ]\"<label>\" field with <text>' or \
                  'Replace the <id> field with <text>'",
+            ));
+        }
+
+        // Captures may be READ only by assertions. Allowing one in an action
+        // would make the app's own output steer execution, which is control
+        // flow in a test - the same thing the page.evaluate rejection is
+        // about.
+        if trimmed.contains("${captured.") {
+            return Err(unresolvable(
+                trimmed,
+                "captures may only be referenced in assertions, not in actions",
+            ));
+        }
+
+        // `Remember the [Nth ]"<target>" as <name>` - read a value now so a
+        // later assertion can compare against it. The value is read at
+        // execution time on record AND replay, so it never enters the trace.
+        if let Some(rest) = strip_prefix_ci(trimmed, "remember the ") {
+            let (nth, tail) = split_ordinal(rest.trim());
+            if let Some(quoted) = tail.strip_prefix('"') {
+                if let Some((label, after)) = quoted_label(quoted) {
+                    if let Some(name) = strip_prefix_ci(after, "as ").map(str::trim) {
+                        if !valid_capture_name(name) {
+                            return Err(unresolvable(
+                                trimmed,
+                                "a capture name must start with a lowercase letter and \
+                                 contain only lowercase letters, digits, and underscores",
+                            ));
+                        }
+                        return Ok(vec![ResolvedAction::Capture {
+                            target: with_nth(nth, target_from_label(label)),
+                            name: name.to_string(),
+                        }]);
+                    }
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'Remember the [2nd ]\"<target>\" as <name>'",
             ));
         }
 

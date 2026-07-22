@@ -546,6 +546,7 @@ fn check_assertion<D: AppDriver>(
     driver: &mut D,
     assertion: &Assertion,
     selectors: &[Selector],
+    captures: &std::collections::HashMap<String, String>,
 ) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
     match assertion {
         Assertion::ElementState {
@@ -626,6 +627,58 @@ fn check_assertion<D: AppDriver>(
                             "expected element to be gone, but it is still on screen".to_string()
                         };
                         return Ok((Err(reason), resolved.map(|(_, rung)| rung)));
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            }
+
+            // Computed assertion: compare against a value captured earlier
+            // in THIS flow. The captured value lives only in memory - the
+            // trace stores the name, never the number.
+            if let Some(name) = expect.get("capture").and_then(|v| v.as_str()) {
+                let offset = expect.get("offset").and_then(|v| v.as_f64());
+                let Some(captured) = captures.get(name) else {
+                    let mut names: Vec<&str> = captures.keys().map(String::as_str).collect();
+                    names.sort_unstable();
+                    let scope = if names.is_empty() {
+                        "no captures in scope".to_string()
+                    } else {
+                        format!("in scope: {}", names.join(", "))
+                    };
+                    // An unknown capture is a spec error, not an app
+                    // failure: the flow cannot be judged at all.
+                    return Err(ReplayError::Driver(flowproof_driver::DriverError::Browser(
+                        format!("capture '{name}' was never remembered ({scope})"),
+                    )));
+                };
+                let mut last: Option<String> = None;
+                let mut fault: Option<flowproof_driver::DriverError> = None;
+                loop {
+                    if let Some((uia, rung)) = resolve(driver, &mut fault)? {
+                        if let Some(text) = tolerate(driver.read_text(&uia), &mut fault)? {
+                            match flowproof_driver::capture_matches(captured, offset, &text) {
+                                Ok(true) => return Ok((Ok(()), Some(rung))),
+                                Ok(false) => last = Some(text),
+                                // A non-numeric side cannot become numeric
+                                // by waiting: fail now, saying which side.
+                                Err(why) => return Ok((Err(why), Some(rung))),
+                            }
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        if last.is_none() && fault.is_some() {
+                            return Err(exhausted(fault));
+                        }
+                        let wanted = match offset {
+                            None => format!("capture '{name}' ('{captured}')"),
+                            Some(o) => format!(
+                                "capture '{name}' ('{captured}') {} {}",
+                                if o < 0.0 { "-" } else { "+" },
+                                o.abs()
+                            ),
+                        };
+                        let shown = last.unwrap_or_else(|| "<element not found>".to_string());
+                        return Ok((Err(format!("expected {wanted}, got '{shown}'")), None));
                     }
                     std::thread::sleep(POLL_INTERVAL);
                 }
@@ -934,6 +987,7 @@ fn execute_step<D: AppDriver>(
     step: &Step,
     base_url: &str,
     visual_paths: &VisualPaths,
+    captures: &mut std::collections::HashMap<String, String>,
 ) -> Result<(Result<(), String>, StepMatch), ReplayError> {
     for condition in &step.sync.pre {
         if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
@@ -976,6 +1030,23 @@ fn execute_step<D: AppDriver>(
                     }
                     Err(reason) => (Err(reason), matched),
                 }
+            }
+            None => (
+                Err("no selector rung resolved to a live element".to_string()),
+                StepMatch::default(),
+            ),
+        },
+        Action::Capture(params) => match resolve_target(driver, &step.selectors)? {
+            Some((target, rung)) => {
+                let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
+                    return Ok((Err("capture step has no name".into()), matched));
+                };
+                // Read at execution time, on replay exactly as on record -
+                // which is why the value never needs to be in the trace.
+                let value = driver.read_text(&target)?;
+                captures.insert(name.to_string(), value);
+                (Ok(()), matched)
             }
             None => (
                 Err("no selector rung resolved to a live element".to_string()),
@@ -1110,7 +1181,7 @@ fn execute_step<D: AppDriver>(
             StepMatch::default(),
         ),
         Action::Assert(assertion) => {
-            let (outcome, rung) = check_assertion(driver, assertion, &step.selectors)?;
+            let (outcome, rung) = check_assertion(driver, assertion, &step.selectors, captures)?;
             let primary = match assertion {
                 Assertion::ElementState { selector_ref, .. } => selector_ref.unwrap_or(0),
                 _ => 0,
@@ -1265,6 +1336,10 @@ pub fn run_trace<D: AppDriver>(
         .unwrap_or_else(|| header.app.name.clone());
     let mut results = Vec::with_capacity(steps.len());
     let mut failed = false;
+    // Flow-scoped captures: read at execution time, never persisted. The
+    // trace holds the NAME only, which is what keeps a captured balance or
+    // order number out of a reviewable artifact.
+    let mut captures: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for step in &steps {
         if failed {
             results.push(StepResult::skipped(step));
@@ -1275,7 +1350,8 @@ pub fn run_trace<D: AppDriver>(
         }
         let step_started = Instant::now();
         let started_ms = started.elapsed().as_millis() as u64;
-        let (outcome, matched) = execute_step(driver, step, &target.command, &visual_paths)?;
+        let (outcome, matched) =
+            execute_step(driver, step, &target.command, &visual_paths, &mut captures)?;
         let duration_ms = step_started.elapsed().as_millis() as u64;
         if let Some(rec) = recorder.as_mut() {
             rec.step_finished(driver);

@@ -460,6 +460,44 @@ pub struct AppTarget {
 /// Extract the trailing numeric value from display text like
 /// `Display is 8` or `1,234.5`. Shared by record and replay so both phases
 /// judge display values identically.
+/// Compare a live reading against a CAPTURED value, optionally offset by a
+/// literal (`${captured.balance} - 100`).
+///
+/// Lives here beside [`numeric_value`] and [`url_matches`] so record and
+/// replay share ONE implementation: two copies of a matcher drift, and a
+/// drifted matcher is how a trace gets minted that cannot replay.
+///
+/// With no offset this is a text comparison with the same exact-then-ASCII
+/// -case-insensitive ladder every `shows` assertion uses. With an offset
+/// both sides are read as numbers, because "the balance dropped by 100" is
+/// arithmetic and nothing else. `Err` names which side failed to parse, so
+/// the failure says what to fix rather than just "no match".
+pub fn capture_matches(captured: &str, offset: Option<f64>, actual: &str) -> Result<bool, String> {
+    let Some(offset) = offset else {
+        return Ok(text_contains(actual, captured));
+    };
+    let Some(base) = numeric_value(captured) else {
+        return Err(format!(
+            "the captured value '{captured}' is not numeric, so it cannot be offset"
+        ));
+    };
+    let Some(seen) = numeric_value(actual) else {
+        return Err(format!("the live text '{actual}' is not numeric"));
+    };
+    let expected = base + offset;
+    // Decimal subtraction on f64 leaves representation noise (0.1 + 0.2),
+    // and money is the whole point of this feature, so compare with a
+    // relative epsilon rather than demanding bit equality.
+    Ok((seen - expected).abs() <= 1e-6 * expected.abs().max(1.0))
+}
+
+/// Substring match with the ASCII case-insensitive fallback rung: exact
+/// first, lowercased only if that misses. Widening-only, so it can never
+/// turn a passing trace into a failing one.
+pub fn text_contains(actual: &str, expected: &str) -> bool {
+    actual.contains(expected) || actual.to_lowercase().contains(&expected.to_lowercase())
+}
+
 /// Does `actual` (a full URL) satisfy a `page url` expectation?
 ///
 /// Shared by record and replay - like [`numeric_value`] - because a URL
@@ -525,9 +563,18 @@ pub fn url_matches(expected: &str, exact: bool, actual: &str) -> bool {
 }
 
 pub fn numeric_value(text: &str) -> Option<f64> {
-    text.split_whitespace()
-        .rev()
-        .find_map(|token| token.replace(',', "").parse::<f64>().ok())
+    text.split_whitespace().rev().find_map(|token| {
+        // Grouping separators and a currency symbol are formatting, not
+        // value: "$1,000.00" and "1000.00" are the same number, and the
+        // motivating case for computed assertions is an account balance.
+        // Widening only - a token that parsed before still parses to the
+        // same number, so no passing assertion can start failing.
+        let cleaned: String = token
+            .chars()
+            .filter(|c| !matches!(c, ',' | '$' | '€' | '£' | '¥' | '\u{a0}'))
+            .collect();
+        cleaned.parse::<f64>().ok()
+    })
 }
 
 /// How many times `expected` occurs in `text`, under the same widening the
@@ -1219,6 +1266,31 @@ mod tests {
             .launch("calc.exe", "Calculator", Duration::from_secs(1))
             .expect_err("stub cannot launch");
         assert!(matches!(err, DriverError::UnsupportedPlatform));
+    }
+}
+
+#[cfg(test)]
+mod numeric_value_tests {
+    use super::numeric_value;
+
+    #[test]
+    fn plain_numbers_are_unchanged() {
+        assert_eq!(numeric_value("8"), Some(8.0));
+        assert_eq!(numeric_value("Display is 8"), Some(8.0));
+        assert_eq!(numeric_value("1,234"), Some(1234.0));
+        assert_eq!(numeric_value("-5.5"), Some(-5.5));
+        assert_eq!(numeric_value("no digits here"), None);
+    }
+
+    /// Money is the motivating case for computed assertions, and a currency
+    /// symbol used to defeat parsing entirely.
+    #[test]
+    fn currency_formatting_is_ignored() {
+        assert_eq!(numeric_value("$1,000.00"), Some(1000.0));
+        assert_eq!(numeric_value("-$50.00"), Some(-50.0));
+        assert_eq!(numeric_value("Account Balance $930.26"), Some(930.26));
+        assert_eq!(numeric_value("€1.234"), Some(1.234));
+        assert_eq!(numeric_value("£12"), Some(12.0));
     }
 }
 
