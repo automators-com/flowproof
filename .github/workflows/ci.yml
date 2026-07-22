@@ -5,10 +5,52 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to the same branch makes the previous run's answer worthless,
+# so stop paying for it. Runs on main are never cancelled: those are the
+# ones that gate a release.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Do the expensive jobs need to run at all? A docs- or spec-only PR cannot
+  # change how a browser or a Windows app behaves, and the two E2E jobs cost
+  # ~50 minutes between them. Pushes to main always run everything: that is
+  # the branch a release is cut from, and a missed regression there is worth
+  # far more than the minutes.
+  scope:
+    name: what changed
+    runs-on: ubuntu-latest
+    outputs:
+      engine: ${{ steps.filter.outputs.engine }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "engine=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull request: running everything"
+            exit 0
+          fi
+          base=$(git merge-base origin/${{ github.base_ref }} HEAD)
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "$changed"
+          # Anything outside docs, specs, and the loop's own bookkeeping can
+          # reach the engine. Deliberately generous: the cost of a wrong
+          # "skip" is a missed regression, the cost of a wrong "run" is time.
+          if echo "$changed" | grep -qvE '^(docs/|examples/|README\.md|CONTRIBUTING\.md|\.loop/|.*\.md$)'; then
+            echo "engine=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "engine=false" >> "$GITHUB_OUTPUT"
+            echo "docs/spec-only change: skipping the E2E jobs"
+          fi
+
   # Fast feedback: lint + unit tests on Linux (driver uses its stub backend).
   lint:
     name: fmt + clippy + test (ubuntu)
@@ -50,7 +92,8 @@ jobs:
   # Server images; Notepad is).
   e2e:
     name: notepad E2E (windows)
-    needs: lint
+    needs: [lint, scope]
+    if: needs.scope.outputs.engine == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,7 +124,8 @@ jobs:
   # the web adapter, on the cheap fast runners.
   e2e-web:
     name: web E2E (ubuntu)
-    needs: lint
+    needs: [lint, scope]
+    if: needs.scope.outputs.engine == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
