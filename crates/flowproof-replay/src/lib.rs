@@ -600,6 +600,72 @@ fn check_assertion<D: AppDriver>(
                 return check_text_expectation(expect, deadline, None, || driver.surface_text());
             }
 
+            // Count expectations: how MANY match, which the ordinal every
+            // adapter already implements can answer without a new driver
+            // capability. `wanted + 1` questions decide it; counting
+            // further is paid only to describe a failure.
+            if let Some(wanted) = expect.get("element_count").and_then(|v| v.as_u64()) {
+                let wanted = wanted as usize;
+                let mut last = Err(String::new());
+                // Did the app ever actually answer? If every poll was a
+                // transport fault, nothing was learned and the run errors
+                // rather than reporting a count it never saw.
+                let mut read_ok = false;
+                loop {
+                    let mut fault: Option<flowproof_driver::DriverError> = None;
+                    let uia = selectors
+                        .get(primary)
+                        .and_then(selector_to_uia)
+                        .ok_or_else(|| {
+                            ReplayError::UnknownApp("count without a selector".into())
+                        })?;
+                    match tolerate(
+                        flowproof_driver::count_matching(driver, &uia, wanted + 1),
+                        &mut fault,
+                    )? {
+                        Some(found) if found == wanted => {
+                            return Ok((Ok(()), Some(primary)));
+                        }
+                        Some(found) => {
+                            read_ok = true;
+                            last = Err(format!(
+                                "expected {wanted} matching elements, found {found}"
+                            ));
+                        }
+                        // A transport fault says nothing about the app, so
+                        // it is a miss inside the budget, not an answer.
+                        None => {}
+                    }
+                    if Instant::now() >= deadline {
+                        if !read_ok {
+                            return Err(exhausted(fault));
+                        }
+                        // Count further now, so the failure names what was
+                        // there rather than only what was not.
+                        let mut ignored = None;
+                        if let Some(actual) = tolerate(
+                            flowproof_driver::count_matching(
+                                driver,
+                                &uia,
+                                flowproof_driver::COUNT_DIAGNOSTIC_CAP,
+                            ),
+                            &mut ignored,
+                        )? {
+                            let actual = if actual >= flowproof_driver::COUNT_DIAGNOSTIC_CAP {
+                                format!("{actual} or more")
+                            } else {
+                                actual.to_string()
+                            };
+                            last = Err(format!(
+                                "expected {wanted} matching elements, found {actual}"
+                            ));
+                        }
+                        return Ok((last, Some(primary)));
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            }
+
             // Presence expectations: the element being there (or gone) IS
             // the assertion — no text involved.
             if let Some(wanted_present) = expect.get("element_present").and_then(|v| v.as_bool()) {

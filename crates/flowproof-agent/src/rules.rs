@@ -135,6 +135,14 @@ pub enum ResolvedAction {
         timeout_ms: u64,
     },
     /// `the "<target>" checkbox is [not] checked`.
+    /// How many elements match an anchor - `the "Row" appears 3 times`.
+    /// Distinct from the substring count in `page shows X 3 times`: this
+    /// counts ELEMENTS, which is what a list assertion actually means.
+    AssertCount {
+        target: Target,
+        count: u64,
+        timeout_ms: u64,
+    },
     AssertChecked {
         target: Target,
         checked: bool,
@@ -621,6 +629,33 @@ mod assertions {
                             target,
                             expected: expected.to_string(),
                             matcher: TextMatch::Contains,
+                            timeout_ms,
+                        }]);
+                    }
+                    // `appears <N> times` counts ELEMENTS matching the
+                    // anchor. An ordinal cannot be combined with it: `the
+                    // 2nd "Row" appears 3 times` asks how many of one
+                    // specific row there are, which has no answer.
+                    if let Some(rest) = strip_prefix_ci(tail, "appears ") {
+                        let number = strip_suffix_ci(rest.trim(), " times")
+                            .or_else(|| strip_suffix_ci(rest.trim(), " time"))
+                            .ok_or_else(|| unresolvable(trimmed, "expected 'appears <N> times'"))?;
+                        let count: u64 = number.trim().parse().map_err(|_| {
+                            unresolvable(
+                                trimmed,
+                                format!("'{}' is not a whole number of times", number.trim()),
+                            )
+                        })?;
+                        if nth.is_some() {
+                            return Err(unresolvable(
+                                trimmed,
+                                "an ordinal cannot be counted: drop the `Nth` and count the \
+                                 anchor itself",
+                            ));
+                        }
+                        return Ok(vec![ResolvedAction::AssertCount {
+                            target,
+                            count,
                             timeout_ms,
                         }]);
                     }
@@ -2610,5 +2645,75 @@ mod windows_grammar_tests {
             .expect_err("reload is web-only")
             .to_string()
             .contains("not implemented for windows apps yet"));
+    }
+}
+
+#[cfg(test)]
+mod element_count_tests {
+    use super::*;
+
+    fn assert_step(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: text.to_string(),
+            },
+        )
+    }
+
+    #[test]
+    fn the_count_form_resolves() {
+        let actions = assert_step("the \"Row\" appears 3 times").expect("resolves");
+        match actions.as_slice() {
+            [ResolvedAction::AssertCount { count, .. }] => assert_eq!(*count, 3),
+            other => panic!("expected a count assertion, got {other:?}"),
+        }
+        // Singular reads naturally for one, and zero is a real question.
+        assert!(matches!(
+            assert_step("the \"Row\" appears 1 time").as_deref(),
+            Ok([ResolvedAction::AssertCount { count: 1, .. }])
+        ));
+        assert!(matches!(
+            assert_step("the \"Row\" appears 0 times").as_deref(),
+            Ok([ResolvedAction::AssertCount { count: 0, .. }])
+        ));
+        // A css target counts too - the anchor is whatever addresses the
+        // element, same as every other assertion.
+        assert!(assert_step("the \"css:.row\" appears 2 times").is_ok());
+    }
+
+    /// Counting an ordinal has no answer: `the 2nd "Row"` is ONE element by
+    /// construction. Saying so beats silently counting something else.
+    #[test]
+    fn an_ordinal_cannot_be_counted() {
+        let err = assert_step("the 2nd \"Row\" appears 3 times").expect_err("no answer");
+        assert!(err.to_string().contains("ordinal"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_or_bad_count_is_a_clean_error() {
+        for step in [
+            "the \"Row\" appears 3",
+            "the \"Row\" appears many times",
+            "the \"Row\" appears times",
+        ] {
+            let err = assert_step(step).expect_err("must not resolve");
+            let m = err.to_string();
+            assert!(
+                m.contains("appears <N> times") || m.contains("whole number"),
+                "step '{step}': {m}"
+            );
+        }
+    }
+
+    /// The element count and the SUBSTRING count are different questions
+    /// and stay different forms: three rows whose labels repeat a word are
+    /// still three rows.
+    #[test]
+    fn the_surface_text_count_is_untouched() {
+        assert!(matches!(
+            assert_step("page shows Row 3 times").as_deref(),
+            Ok([ResolvedAction::AssertText { .. }])
+        ));
     }
 }

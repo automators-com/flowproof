@@ -691,6 +691,39 @@ impl AppDriver for NoOpDriver {
 
 /// Resolve a spec `app:` id to a launch target. Shared by record and replay
 /// so a trace only needs to carry the app id.
+/// How many elements match this anchor, asked as "is there a 1st? a 2nd?"
+/// until one is missing, and never more than `cap` questions.
+///
+/// Counting rides on the ordinal every adapter ALREADY implements rather
+/// than on a new driver capability, so a count means exactly what
+/// `the 2nd "Row"` means on that adapter - web, UIA, SAP and vision stay
+/// consistent by construction, and no adapter had to change to gain it.
+///
+/// Shared between record and replay for the usual reason: a count that
+/// disagreed across the two would turn a passing recording into a
+/// failing replay with nothing to point at.
+pub fn count_matching<D: AppDriver + ?Sized>(
+    driver: &mut D,
+    selector: &UiaSelector,
+    cap: usize,
+) -> Result<usize, DriverError> {
+    let mut found = 0;
+    for n in 1..=cap {
+        let mut probe = selector.clone();
+        probe.nth = Some(n as u32);
+        if !driver.element_exists(&probe)? {
+            break;
+        }
+        found = n;
+    }
+    Ok(found)
+}
+
+/// When a count assertion FAILS, how far to keep counting so the error can
+/// say what was actually there. Only paid on the failure path; a passing
+/// assertion asks `expected + 1` questions and stops.
+pub const COUNT_DIAGNOSTIC_CAP: usize = 50;
+
 pub fn resolve_app(app_id: &str) -> Option<AppTarget> {
     match app_id {
         "calc" => Some(AppTarget {
