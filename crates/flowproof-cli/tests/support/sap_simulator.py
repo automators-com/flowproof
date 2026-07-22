@@ -3,9 +3,13 @@ automation model, so flowproof's late-bound ComEngine can be exercised on
 any Windows machine -- no SAP installation or license.
 
 What it does, exactly like the real SAP GUI:
-  * registers the ``SAPGUI`` ProgID (per-user, HKCU\\Software\\Classes --
-    no admin needed) and puts a live object in the Running Object Table,
-    which is where ``GetObject("SAPGUI")`` / ``GetActiveObject`` look;
+  * publishes a moniker with display name ``SAPGUI`` in the Running Object
+    Table -- confirmed against a real, live SAP GUI 7.60 install that real
+    SAP GUI does NOT register a ``SAPGUI`` ProgID/CLSID pair at all (there
+    is no such entry anywhere in the registry); ``GetObject("SAPGUI")`` /
+    ``GetActiveObject`` resolve it purely via the ROT moniker's display
+    name, which is what ``ComEngine::connect`` (see ``sap_com.rs``) binds
+    to by enumerating the ROT and matching on ``IMoniker::GetDisplayName``;
   * serves ``GetScriptingEngine`` -> engine -> Children (connections) ->
     Children (sessions) -> ``FindById`` / property access / ``Press`` /
     ``SendVKey`` over IDispatch late binding;
@@ -24,16 +28,12 @@ its own after WATCHDOG_SECONDS as an orphan guard, or on Ctrl+C).
 
 import sys
 import time
-import winreg
 
 import pythoncom
-import pywintypes
 import win32com.server.util
 from win32com.server.exception import COMException
 
-# Fixed, arbitrary CLSID for the simulator's SAPGUI object.
-CLSID = "{7F3C9B1E-5A44-4D8B-9C2A-F10D8E401001}"
-PROGID = "SAPGUI"
+ROT_NAME = "SAPGUI"
 SESSION_PREFIX = "/app/con[0]/ses[0]/"
 # Hard orphan guard only - generous enough that a slow CI runner's
 # record + replay never outlives it (the test kills the process when
@@ -213,20 +213,27 @@ def wrap(instance):
     return win32com.server.util.wrap(instance)
 
 
-def register_progid():
-    """Per-user ProgID -> CLSID mapping, so CLSIDFromProgID("SAPGUI")
-    resolves without SAP installed and without admin rights."""
-    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\%s\CLSID" % PROGID)
-    winreg.SetValue(key, "", winreg.REG_SZ, CLSID)
-    winreg.CloseKey(key)
+def register_rot_moniker(dispatch):
+    """Publish under a plain-string moniker in the Running Object Table --
+    the mechanism real SAP GUI actually uses (confirmed against a live
+    install: no ``SAPGUI`` ProgID/CLSID is registered anywhere; the ROT
+    entry's display name is simply ``SAPGUI``, requiring no admin rights
+    and no registry writes at all). A file moniker's ``GetDisplayName`` is
+    exactly its constructor string with no prefix, matching what a real
+    session publishes; the calling adapter enumerates the ROT and matches
+    by display name rather than reconstructing a specific moniker type, so
+    the exact moniker flavor used here doesn't need to match SAP's.
+    """
+    moniker = pythoncom.CreateFileMoniker(ROT_NAME)
+    rot = pythoncom.GetRunningObjectTable()
+    return rot.Register(pythoncom.ROTFLAGS_REGISTRATIONKEEPSALIVE, dispatch, moniker)
 
 
 def main():
     pythoncom.CoInitialize()
-    register_progid()
     screen = Screen()
     sapgui = wrap(SapGui(Engine(screen)))
-    handle = pythoncom.RegisterActiveObject(sapgui, pywintypes.IID(CLSID), 0)
+    handle = register_rot_moniker(sapgui)
     print("READY", flush=True)
     deadline = time.time() + WATCHDOG_SECONDS
     try:
@@ -236,7 +243,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        pythoncom.RevokeActiveObject(handle)
+        pythoncom.GetRunningObjectTable().Revoke(handle)
     return 0
 
 
