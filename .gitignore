@@ -37,3 +37,6 @@ yarn-error.log*
 # maturin develop artifacts
 *.abi3.so
 *.pyd
+
+# Field-hardening loop scratch state (local bookkeeping, not product).
+.loop/

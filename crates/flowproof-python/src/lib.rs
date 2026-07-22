@@ -50,7 +50,7 @@ fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<Strin
             return to_json(&serde_json::json!({ "skipped": reason }));
         }
         let out = out.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
-        let mut driver = flowproof_cli::driver_for(&parsed.app).map_err(runtime_err)?;
+        let mut driver = flowproof_cli::driver_for(parsed.app.id()).map_err(runtime_err)?;
         match flowproof_agent::record(&parsed, &mut driver, &out) {
             Ok(summary) => to_json(&serde_json::json!({
                 "trace_path": summary.trace_path,
@@ -122,7 +122,7 @@ fn heal(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>, apply: bool) -> P
     py.detach(|| {
         let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
         let trace_path = trace.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
-        let mut driver = flowproof_cli::driver_for(&parsed.app).map_err(runtime_err)?;
+        let mut driver = flowproof_cli::driver_for(parsed.app.id()).map_err(runtime_err)?;
         let mut report =
             flowproof_agent::heal(&parsed, &mut driver, &trace_path).map_err(runtime_err)?;
         let mut applied = false;

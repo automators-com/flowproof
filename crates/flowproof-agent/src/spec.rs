@@ -28,6 +28,111 @@ pub enum SpecError {
     Empty,
     #[error("invalid foreach: {0}")]
     Foreach(String),
+    #[error("invalid window: {0}")]
+    Window(String),
+}
+
+/// `app:` is either a registry id (`web`, `calc`, `notepad`, `sap`,
+/// `vision`, `api`) or a Windows launch mapping. The scalar form is what
+/// every existing spec uses and its meaning is unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AppSpec {
+    Id(String),
+    /// `app: {command, window_title}` - drive an arbitrary Windows program.
+    /// Both fields may carry `${VAR}`, resolved at launch and stored RAW.
+    ///
+    /// `command` is executed code: the same trust surface as `env_from`.
+    /// A spec is code.
+    Launch {
+        command: String,
+        window_title: String,
+    },
+}
+
+impl AppSpec {
+    /// The app id a driver is selected by. The mapping form reports the
+    /// reserved id `windows`.
+    pub fn id(&self) -> &str {
+        match self {
+            AppSpec::Id(id) => id,
+            AppSpec::Launch { .. } => "windows",
+        }
+    }
+
+    pub fn launch_parts(&self) -> Option<(&str, &str)> {
+        match self {
+            AppSpec::Id(_) => None,
+            AppSpec::Launch {
+                command,
+                window_title,
+            } => Some((command, window_title)),
+        }
+    }
+}
+
+impl From<&str> for AppSpec {
+    fn from(id: &str) -> Self {
+        AppSpec::Id(id.to_string())
+    }
+}
+
+impl From<String> for AppSpec {
+    fn from(id: String) -> Self {
+        AppSpec::Id(id)
+    }
+}
+
+impl std::fmt::Display for AppSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
+/// `window:` is either a bare title (vision shorthand) or a mapping of
+/// title and/or geometry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WindowSpec {
+    Title(String),
+    Full(WindowConfig),
+}
+
+/// The mapping form of `window:`. Geometry values are literal integers, not
+/// `${VAR}` references: geometry is a determinism precondition, and a
+/// precondition that varies by environment is not one.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<i32>,
+}
+
+impl WindowSpec {
+    pub fn title(&self) -> Option<&str> {
+        match self {
+            WindowSpec::Title(t) => Some(t),
+            WindowSpec::Full(c) => c.title.as_deref(),
+        }
+    }
+
+    pub fn config(&self) -> WindowConfig {
+        match self {
+            WindowSpec::Title(t) => WindowConfig {
+                title: Some(t.clone()),
+                ..WindowConfig::default()
+            },
+            WindowSpec::Full(c) => c.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,7 +141,7 @@ pub struct FlowSpec {
     pub name: String,
     /// App id resolved via `flowproof_driver::resolve_app` (e.g. `calc`),
     /// or `web` for browser flows.
-    pub app: String,
+    pub app: AppSpec,
     /// For `app: web`: the URL to open (relative paths become `file://`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -46,11 +151,15 @@ pub struct FlowSpec {
     /// `${VAR}` references, resolved at launch time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
-    /// For `app: vision`: the title (substring, case-insensitive) of the
-    /// window to drive as pixels — the Citrix/RDP client, or any window.
-    /// May carry `${VAR}` references, resolved at launch time.
+    /// The window this flow drives: which one, and what shape.
+    ///
+    /// A bare string is shorthand for `{title: …}` and is vision-only -
+    /// `title` is an ATTACH selector for a window flowproof never launched,
+    /// which is a different thing from `app.window_title`, the launch
+    /// parameter naming which window of a process it started. Each app kind
+    /// has exactly one spelling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window: Option<String>,
+    pub window: Option<WindowSpec>,
     /// Regions to mask in every persisted frame (password fields are always
     /// masked, with or without rules here). Copied into the trace header at
     /// record time so replays redact identically without the spec.
@@ -89,6 +198,75 @@ pub struct FlowSpec {
 }
 
 impl FlowSpec {
+    /// Check `window:` against the app kind. Each app kind has exactly ONE
+    /// spelling for naming a window, and geometry means nothing for a
+    /// browser or an api flow, so every wrong combination is a parse error
+    /// that names the right spelling rather than being silently ignored.
+    fn validate_window(&self) -> Result<(), SpecError> {
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+        let config = window.config();
+        let bad = |m: String| Err(SpecError::Window(m));
+
+        // Shape first: it is the same whatever the app.
+        match (config.width, config.height) {
+            (Some(w), Some(h)) if w > 0 && h > 0 => {}
+            (None, None) => {}
+            (Some(0), _) | (_, Some(0)) => return bad("width and height must be positive".into()),
+            _ => return bad("width and height go together: give both or neither".into()),
+        }
+        match (config.x, config.y) {
+            (Some(_), Some(_)) if config.width.is_none() => {
+                return bad("x and y need width and height to be set too".into())
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return bad("x and y go together: give both or neither".into())
+            }
+            _ => {}
+        }
+
+        let has_geometry = config.width.is_some();
+        let has_title = config.title.is_some();
+        match self.app.id() {
+            "vision" => Ok(()),
+            "web" => {
+                if has_title {
+                    return bad(
+                        "a web flow has no window title: the flow's `url:` selects the page".into(),
+                    );
+                }
+                if has_geometry {
+                    return bad(
+                        "a web flow sizes its page with `browser: viewport`, not `window:`".into(),
+                    );
+                }
+                Ok(())
+            }
+            "api" => bad("an api flow has no window".into()),
+            "sap" => {
+                if has_title {
+                    return bad("a sap flow attaches by `connection:`, not a window title".into());
+                }
+                if has_geometry {
+                    return bad("window geometry is not implemented for sap".into());
+                }
+                Ok(())
+            }
+            // Windows-driven apps: the registry ids and the `app:` mapping.
+            _ => {
+                if has_title {
+                    return bad(
+                        "name the window with `app: {command, window_title}`; `window.title` \
+                         is for vision flows, which attach to a window they did not launch"
+                            .into(),
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// The reason to skip this flow, if its `skip_unless_env` gate is not
     /// satisfied — naming every missing/empty variable.
     pub fn skip_reason(&self) -> Option<String> {
@@ -343,6 +521,7 @@ impl FlowSpec {
         if spec.steps.is_empty() {
             return Err(SpecError::Empty);
         }
+        spec.validate_window()?;
         Ok(spec)
     }
 
@@ -675,7 +854,7 @@ steps:
     fn parses_the_calc_spec() {
         let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
         assert_eq!(spec.name, "Add two numbers");
-        assert_eq!(spec.app, "calc");
+        assert_eq!(spec.app.id(), "calc");
         assert_eq!(spec.steps.len(), 5);
         assert_eq!(spec.steps[0], SpecStep::Plain("Type 5".into()));
         assert_eq!(
@@ -969,5 +1148,114 @@ order:
     fn rejects_empty_steps() {
         let err = FlowSpec::parse("name: x\napp: calc\nsteps: []\n").expect_err("must fail");
         assert!(matches!(err, SpecError::Empty));
+    }
+}
+
+#[cfg(test)]
+mod app_and_window_tests {
+    use super::*;
+
+    fn spec(yaml: &str) -> Result<FlowSpec, SpecError> {
+        FlowSpec::parse(yaml)
+    }
+
+    /// The scalar form is what every existing spec uses, and its meaning is
+    /// unchanged: this is the backward-compatibility guarantee.
+    #[test]
+    fn a_scalar_app_still_parses_and_means_the_same() {
+        let s = spec("name: n\napp: calc\nsteps:\n  - Type 5\n").expect("parses");
+        assert_eq!(s.app.id(), "calc");
+        assert!(s.app.launch_parts().is_none());
+    }
+
+    /// #66: drive an arbitrary Windows program. Both fields keep their
+    /// `${VAR}` refs RAW so they resolve again at every replay.
+    #[test]
+    fn the_mapping_form_reports_the_windows_id_and_keeps_refs_raw() {
+        let s = spec(
+            "name: n\napp:\n  command: notepad.exe\n  window_title: ${APP_WINDOW}\nsteps:\n  - Type hi\n",
+        )
+        .expect("parses");
+        assert_eq!(s.app.id(), "windows");
+        let (command, title) = s.app.launch_parts().expect("mapping form");
+        assert_eq!(command, "notepad.exe");
+        assert_eq!(
+            title, "${APP_WINDOW}",
+            "the reference must survive unresolved"
+        );
+    }
+
+    /// A bare `window:` string stays the vision shorthand it has always been.
+    #[test]
+    fn a_bare_window_string_is_vision_shorthand() {
+        let s = spec("name: n\napp: vision\nwindow: Citrix Receiver\nsteps:\n  - Type 5\n")
+            .expect("parses");
+        assert_eq!(
+            s.window.as_ref().and_then(|w| w.title()),
+            Some("Citrix Receiver")
+        );
+    }
+
+    /// Vision is the one app kind that can name a window AND pin its shape,
+    /// which is the case that killed the "geometry lives under its own key"
+    /// option: OCR baselines depend on both.
+    #[test]
+    fn vision_may_pin_title_and_geometry_together() {
+        let s = spec(
+            "name: n\napp: vision\nwindow:\n  title: Citrix\n  width: 1280\n  height: 720\nsteps:\n  - Type 5\n",
+        )
+        .expect("parses");
+        let c = s.window.expect("window").config();
+        assert_eq!(c.title.as_deref(), Some("Citrix"));
+        assert_eq!((c.width, c.height), (Some(1280), Some(720)));
+    }
+
+    #[test]
+    fn geometry_shape_rules_are_enforced() {
+        let half = spec("name: n\napp: calc\nwindow:\n  width: 800\nsteps:\n  - Type 5\n")
+            .expect_err("width without height");
+        assert!(half.to_string().contains("go together"), "{half}");
+
+        let zero =
+            spec("name: n\napp: calc\nwindow:\n  width: 0\n  height: 600\nsteps:\n  - Type 5\n")
+                .expect_err("zero size");
+        assert!(zero.to_string().contains("positive"), "{zero}");
+
+        let floating = spec("name: n\napp: calc\nwindow:\n  x: 10\n  y: 10\nsteps:\n  - Type 5\n")
+            .expect_err("position without size");
+        assert!(
+            floating.to_string().contains("width and height"),
+            "{floating}"
+        );
+    }
+
+    /// Each app kind has exactly one spelling for naming a window, and the
+    /// error names the right one rather than just refusing.
+    #[test]
+    fn a_window_title_on_a_windows_flow_names_the_right_spelling() {
+        let err = spec("name: n\napp: notepad\nwindow:\n  title: Untitled\nsteps:\n  - Type 5\n")
+            .expect_err("title is vision-only");
+        let m = err.to_string();
+        assert!(m.contains("app: {command, window_title}"), "{m}");
+        assert!(m.contains("vision"), "the message explains why: {m}");
+    }
+
+    #[test]
+    fn web_and_api_and_sap_reject_window_with_a_reason() {
+        let web = spec(
+            "name: n\napp: web\nurl: x\nwindow:\n  width: 800\n  height: 600\nsteps:\n  - Type 5\n",
+        )
+        .expect_err("web sizes with browser:");
+        assert!(web.to_string().contains("browser: viewport"), "{web}");
+
+        let api =
+            spec("name: n\napp: api\nwindow:\n  width: 800\n  height: 600\nsteps:\n  - Type 5\n")
+                .expect_err("api has no window");
+        assert!(api.to_string().contains("no window"), "{api}");
+
+        let sap =
+            spec("name: n\napp: sap\nwindow:\n  width: 800\n  height: 600\nsteps:\n  - Type 5\n")
+                .expect_err("sap geometry unimplemented");
+        assert!(sap.to_string().contains("not implemented for sap"), "{sap}");
     }
 }

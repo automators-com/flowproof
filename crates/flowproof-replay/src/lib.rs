@@ -1240,45 +1240,61 @@ pub fn run_trace<D: AppDriver>(
         .collect();
     let mut recorder =
         rules.and_then(|rules| flowproof_driver::RunRecorder::new(&run_dir, rules).ok());
-    let target = if header.app.name == "web" {
-        let raw = header
-            .app
-            .url
-            .clone()
-            .ok_or_else(|| ReplayError::UnknownApp("web trace without url".into()))?;
-        flowproof_driver::AppTarget {
-            // `${VAR}` refs in the recorded URL resolve at every replay.
-            command: flowproof_trace::secret::resolve_refs(&raw)?,
-            window_name: String::new(),
-        }
-    } else if header.app.name == "sap" {
-        // The header's `url` carries the SAP Logon connection description
-        // (may be a `${VAR}` ref); absent = attach to the running session.
-        let raw = header.app.url.clone().unwrap_or_default();
-        flowproof_driver::AppTarget {
-            command: flowproof_trace::secret::resolve_refs(&raw)?,
-            window_name: "SAP".into(),
-        }
-    } else if header.app.name == "vision" {
-        // Pixels mode re-attaches to the window recorded in the header.
-        let raw =
-            header.app.window_title.clone().ok_or_else(|| {
+    let target =
+        if header.app.name == "web" {
+            let raw = header
+                .app
+                .url
+                .clone()
+                .ok_or_else(|| ReplayError::UnknownApp("web trace without url".into()))?;
+            flowproof_driver::AppTarget {
+                // `${VAR}` refs in the recorded URL resolve at every replay.
+                command: flowproof_trace::secret::resolve_refs(&raw)?,
+                window_name: String::new(),
+            }
+        } else if header.app.name == "sap" {
+            // The header's `url` carries the SAP Logon connection description
+            // (may be a `${VAR}` ref); absent = attach to the running session.
+            let raw = header.app.url.clone().unwrap_or_default();
+            flowproof_driver::AppTarget {
+                command: flowproof_trace::secret::resolve_refs(&raw)?,
+                window_name: "SAP".into(),
+            }
+        } else if header.app.name == "vision" {
+            // Pixels mode re-attaches to the window recorded in the header.
+            let raw = header.app.window_title.clone().ok_or_else(|| {
                 ReplayError::UnknownApp("vision trace without window title".into())
             })?;
-        flowproof_driver::AppTarget {
-            command: String::new(),
-            window_name: flowproof_trace::secret::resolve_refs(&raw)?,
-        }
-    } else if header.app.name == "api" {
-        // Out-of-band only: NoOpDriver::launch ignores this.
-        flowproof_driver::AppTarget {
-            command: String::new(),
-            window_name: String::new(),
-        }
-    } else {
-        resolve_app(&header.app.name)
-            .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?
-    };
+            flowproof_driver::AppTarget {
+                command: String::new(),
+                window_name: flowproof_trace::secret::resolve_refs(&raw)?,
+            }
+        } else if header.app.name == "windows" {
+            // An arbitrary Windows app: unlike `calc` or `notepad` there is no
+            // registry entry to look up, because the SPEC supplied the command
+            // line and window title. They travel in the header, raw, so a
+            // `${VAR}` in either resolves fresh at every replay.
+            let command =
+                header.app.command.clone().ok_or_else(|| {
+                    ReplayError::UnknownApp("windows trace without a command".into())
+                })?;
+            let window = header.app.window_title.clone().ok_or_else(|| {
+                ReplayError::UnknownApp("windows trace without a window title".into())
+            })?;
+            flowproof_driver::AppTarget {
+                command: flowproof_trace::secret::resolve_refs(&command)?,
+                window_name: flowproof_trace::secret::resolve_refs(&window)?,
+            }
+        } else if header.app.name == "api" {
+            // Out-of-band only: NoOpDriver::launch ignores this.
+            flowproof_driver::AppTarget {
+                command: String::new(),
+                window_name: String::new(),
+            }
+        } else {
+            resolve_app(&header.app.name)
+                .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?
+        };
     // Session state travels in the header (values may be `${VAR}` refs):
     // stage it so the driver applies it before the page loads — replays
     // authenticate exactly like the recording did.
@@ -1328,6 +1344,13 @@ pub fn run_trace<D: AppDriver>(
     };
     let started = Instant::now();
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+    // Reproduce the recording's window shape before the first step. The
+    // header stores what was APPLIED then, including a position the spec
+    // never asked for, so replay reproduces it exactly rather than
+    // re-deriving it.
+    if let Some(g) = &header.app.geometry {
+        driver.set_window_geometry(g.width, g.height, Some((g.x, g.y)))?;
+    }
 
     let name = header
         .spec

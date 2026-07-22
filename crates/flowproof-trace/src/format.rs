@@ -198,13 +198,38 @@ pub struct SpecRef {
 pub struct AppInfo {
     pub name: String,
     pub adapter: Adapter,
+    /// THE header slot for a window title, whichever spec key supplied it:
+    /// `app.window_title` for windows flows, `window.title` for vision.
+    /// Stored RAW - a `${VAR}` reference never arrives here resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_title: Option<String>,
+    /// The command line a `windows` flow launched, stored RAW. Lives here
+    /// rather than in a separate block for the same reason `url` does:
+    /// per-adapter launch detail belongs on the app it describes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Window geometry APPLIED before the first step, so replay reproduces
+    /// the shape recording used. When the spec omitted a position, this
+    /// records where the window actually landed - which upgrades an
+    /// unpinned position into a pinned one for free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<WindowGeometry>,
     /// For `web` traces: the URL the flow was recorded against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+}
+
+/// Applied window geometry. Integers, never `${VAR}` references: geometry
+/// is a determinism precondition, and a precondition that varies by
+/// environment is not one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
 }
 
 /// Perception/adapter source. Doubles as selector provenance.

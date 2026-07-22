@@ -69,6 +69,11 @@ pub struct MockAppDriver {
     /// Browser config captured by `stage_browser` — the mock stands in
     /// for the web driver here, so tests can assert the staging happened.
     pub staged_browser: Option<crate::WebBrowserConfig>,
+    /// Geometry applied via `set_window_geometry`, for tests.
+    pub geometry: Option<(u32, u32, i32, i32)>,
+    /// When set, `set_window_geometry` fails - exercises the rule that a
+    /// window which cannot be shaped ERRORS rather than minting a baseline.
+    pub fail_geometry: bool,
     /// Checkbox state by element key. Absent = not a checkbox, which the
     /// driver reports as `None` so tests can cover that third answer.
     pub checked: HashMap<String, bool>,
@@ -202,6 +207,22 @@ impl AppDriver for MockAppDriver {
         self.texts.entry(id.to_string()).or_default().push_str(text);
         self.typed.push((id.to_string(), text.to_string()));
         Ok(())
+    }
+
+    fn set_window_geometry(
+        &mut self,
+        width: u32,
+        height: u32,
+        position: Option<(i32, i32)>,
+    ) -> Result<(u32, u32, i32, i32), DriverError> {
+        if self.fail_geometry {
+            return Err(DriverError::Uia("mock refuses to resize".into()));
+        }
+        // No position asked for: report where it "landed", which is what a
+        // real window manager decides and what the trace then pins.
+        let (x, y) = position.unwrap_or((40, 60));
+        self.geometry = Some((width, height, x, y));
+        Ok((width, height, x, y))
     }
 
     fn element_checked(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
