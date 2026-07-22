@@ -29,6 +29,25 @@ fn write_passing_flow(dir: &std::path::Path, stem: &str, base_var: &str) -> Path
     spec
 }
 
+/// A local HTTP server answering 200 on any path, so an `app: api` flow
+/// can actually record. Returns its base URL; the thread ends with the
+/// process.
+fn serve_ok() -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}");
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
 #[test]
 fn a_broken_flow_errors_alone_and_the_suite_still_writes_junit() {
     let dir = suite_dir("broken");
@@ -88,6 +107,74 @@ fn a_failing_before_each_hook_errors_that_flow_not_the_run() {
         "junit: {junit}"
     );
     assert!(junit.contains("errors=\"2\""), "junit: {junit}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// GAP-R, found in the field against released 0.3.0: running ONE spec did
+/// not run the suite's `before_each`, so a second consecutive run failed
+/// on state the first had left behind while the whole suite passed.
+///
+/// That is the worst shape for a bug: it appears exactly when someone
+/// isolates a spec to debug it, and the CLI prints "using suite context
+/// from ...suite.yaml" either way, which reads as a promise that the
+/// manifest applies.
+#[test]
+fn a_single_spec_run_honors_the_suites_hooks() {
+    let dir = suite_dir("single-hooks");
+    let spec = write_passing_flow(&dir, "only", "HOOKS_BASE");
+    std::env::set_var("HOOKS_BASE", serve_ok());
+    let before = dir.join("before.marker");
+    let after = dir.join("after.marker");
+    std::fs::write(
+        dir.join("suite.yaml"),
+        format!(
+            "before_each: touch {}\nafter_each: touch {}\n",
+            before.display(),
+            after.display()
+        ),
+    )
+    .expect("manifest");
+
+    // Record so there is a trace to replay, then run the single spec.
+    flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    std::fs::remove_file(&before).ok();
+    std::fs::remove_file(&after).ok();
+    flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]);
+
+    assert!(
+        before.exists(),
+        "before_each must run for a single spec, not only for a suite"
+    );
+    assert!(after.exists(), "after_each must run too");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `after_each` runs even when the flow fails, for the reason it exists:
+/// a left-behind fixture hurts most exactly when something went wrong.
+#[test]
+fn a_single_spec_run_cleans_up_after_a_failing_flow() {
+    let dir = suite_dir("single-cleanup");
+    let spec = write_passing_flow(&dir, "only", "CLEANUP_BASE");
+    std::env::set_var("CLEANUP_BASE", serve_ok());
+    let after = dir.join("after.marker");
+    std::fs::write(
+        dir.join("suite.yaml"),
+        format!("after_each: touch {}\n", after.display()),
+    )
+    .expect("manifest");
+
+    flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    std::fs::remove_file(&after).ok();
+    // Point the flow at a port nothing answers so replay fails.
+    std::env::set_var("CLEANUP_BASE", "http://127.0.0.1:9");
+    let code = flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]);
+    assert_ne!(code, 0, "the flow must fail for this test to mean anything");
+    assert!(
+        after.exists(),
+        "after_each must run even when the flow fails"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
