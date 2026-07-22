@@ -414,10 +414,11 @@ pub mod com {
 
     use windows::core::{Interface, BSTR, GUID, PCWSTR};
     use windows::Win32::System::Com::{
-        CLSIDFromProgID, CoInitializeEx, IDispatch, COINIT_APARTMENTTHREADED, DISPATCH_FLAGS,
-        DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT, DISPPARAMS,
+        CoInitializeEx, CoTaskMemFree, CreateBindCtx, GetRunningObjectTable, IDispatch,
+        COINIT_APARTMENTTHREADED, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
+        DISPATCH_PROPERTYPUT, DISPPARAMS,
     };
-    use windows::Win32::System::Ole::{GetActiveObject, DISPID_PROPERTYPUT};
+    use windows::Win32::System::Ole::DISPID_PROPERTYPUT;
     use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
@@ -607,6 +608,72 @@ pub mod com {
         }
     }
 
+    /// The name SAP GUI publishes itself under in the Running Object
+    /// Table. An item moniker's display name carries its delimiter, so the
+    /// entry may read `SAPGUI` or `!SAPGUI` depending on who created it;
+    /// both mean the same object.
+    const SAPGUI_ROT_NAME: &str = "SAPGUI";
+
+    /// Bind to the running SAP GUI automation root by finding it in the
+    /// Running Object Table.
+    ///
+    /// This is what `GetObject("SAPGUI")` reaches, spelled out. SAP does
+    /// NOT register a `SAPGUI` ProgID - a real 7.60 install has no such
+    /// key anywhere in HKCR - so `CLSIDFromProgID` + `GetActiveObject`,
+    /// which this used to call, could never succeed against a live
+    /// session. SAP publishes a plain ITEM MONIKER in the ROT instead.
+    ///
+    /// It enumerates rather than parsing the name into a moniker.
+    /// `MkParseDisplayName("SAPGUI")` is the obvious shortcut and it
+    /// returns MK_E_SYNTAX: with no ProgID to resolve, a bare word is not
+    /// a parseable display name. Enumerating asks the ROT what is actually
+    /// registered, which is also how the bug was diagnosed in the first
+    /// place, and it does not care which delimiter the publisher chose.
+    fn attach_to_sapgui() -> Result<IDispatch, DriverError> {
+        let rot = unsafe { GetRunningObjectTable(0) }
+            .map_err(|e| com_err("opening the Running Object Table", e))?;
+        let running = unsafe { rot.EnumRunning() }
+            .map_err(|e| com_err("enumerating the Running Object Table", e))?;
+        let ctx =
+            unsafe { CreateBindCtx(0) }.map_err(|e| com_err("creating a COM bind context", e))?;
+
+        loop {
+            let mut found = [const { None }; 1];
+            let mut fetched = 0u32;
+            unsafe { running.Next(&mut found, Some(&mut fetched)) }
+                .ok()
+                .map_err(|e| com_err("reading the Running Object Table", e))?;
+            if fetched == 0 {
+                break;
+            }
+            let Some(moniker) = found[0].take() else {
+                continue;
+            };
+            let Ok(name) = (unsafe { moniker.GetDisplayName(&ctx, None) }) else {
+                continue; // an entry we cannot name is not the one we want
+            };
+            // The name is COM-allocated; copy it out, then hand the memory
+            // back whatever the comparison says.
+            let display = unsafe { name.to_string() }.unwrap_or_default();
+            unsafe { CoTaskMemFree(Some(name.0 as *const _)) };
+
+            if !display
+                .trim_start_matches(|c: char| !c.is_alphanumeric())
+                .eq_ignore_ascii_case(SAPGUI_ROT_NAME)
+            {
+                continue;
+            }
+            let unknown = unsafe { rot.GetObject(&moniker) }
+                .map_err(|e| com_err("binding the SAPGUI object", e))?;
+            return unknown
+                .cast::<IDispatch>()
+                .map_err(|_| DriverError::Uia("sap-com: SAPGUI object is not scriptable".into()));
+        }
+        Err(DriverError::Uia(
+            "sap-com: SAP GUI is not running (no 'SAPGUI' in the Running Object Table)".into(),
+        ))
+    }
+
     impl SapEngine for ComEngine {
         fn connect(&mut self, connection: &str, timeout: Duration) -> Result<(), DriverError> {
             unsafe {
@@ -614,21 +681,11 @@ pub mod com {
                 // COM is already usable here.
                 let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             }
-            let clsid = unsafe { CLSIDFromProgID(windows::core::w!("SAPGUI")) }
-                .map_err(|e| com_err("SAP GUI is not installed (ProgID 'SAPGUI')", e))?;
-
             let deadline = Instant::now() + timeout;
             let mut opened = false;
             loop {
                 let attempt = (|| -> Result<Option<Disp>, DriverError> {
-                    let mut unknown = None;
-                    unsafe { GetActiveObject(&clsid, None, &mut unknown) }
-                        .map_err(|e| com_err("SAP GUI is not running", e))?;
-                    let sapgui = unknown
-                        .and_then(|u| u.cast::<IDispatch>().ok().map(Disp))
-                        .ok_or_else(|| {
-                            DriverError::Uia("sap-com: SAPGUI object is not scriptable".into())
-                        })?;
+                    let sapgui = Disp(attach_to_sapgui()?);
                     let engine = sapgui.call_disp("GetScriptingEngine", vec![])?;
                     let connections = engine.get_disp("Children")?;
                     if connections.get_i32("Count").unwrap_or(0) == 0 {

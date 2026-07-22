@@ -1,10 +1,17 @@
 //! The REAL SAP COM engine, exercised without SAP: a Python COM server
-//! (tests/support/sap_simulator.py) registers the `SAPGUI` ProgID and a
-//! live object in the Running Object Table, shaped like SAP's scripting
-//! model. `SapAppDriver::new()` then attaches exactly as it would to real
-//! SAP GUI — GetActiveObject, IDispatch late binding, VARIANT marshaling,
-//! collection walks, FindById error paths, absolute→relative id stripping
-//! all execute for real.
+//! (tests/support/sap_simulator.py) publishes an object in the Running
+//! Object Table under the item moniker `SAPGUI`, shaped like SAP's
+//! scripting model. `SapAppDriver::new()` then attaches exactly as it
+//! would to real SAP GUI — moniker binding through the ROT, IDispatch
+//! late binding, VARIANT marshaling, collection walks, FindById error
+//! paths, absolute→relative id stripping all execute for real.
+//!
+//! The moniker matters (issue #85). The simulator used to register a
+//! `SAPGUI` ProgID as well, and the engine attached through it, so this
+//! test passed for a year against a mechanism real SAP does not use: a
+//! genuine 7.60 install has no such key in HKCR, and every real attach
+//! failed. The simulator now publishes itself the way SAP does and
+//! nothing else, so passing here means the real path works.
 //!
 //! Windows-only, opt-in via FLOWPROOF_E2E=1 (runs in windows CI, where
 //! pywin32 is installed by the workflow step). The remaining untested
