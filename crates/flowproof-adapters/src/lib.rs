@@ -2,6 +2,9 @@
 //! prefer it over pixels: SAP GUI Scripting COM (`sap-com` feature), browser
 //! via the DevTools protocol (`web` feature). Java Access Bridge comes later.
 
+#[cfg(feature = "agent")]
+pub mod agent_proxy;
+
 #[cfg(feature = "sap-com")]
 pub mod sap_com;
 
@@ -10,6 +13,9 @@ pub mod vision;
 
 #[cfg(feature = "web")]
 pub mod web;
+
+#[cfg(feature = "agent")]
+pub use agent_proxy::AgentProxy;
 
 #[cfg(feature = "sap-com")]
 pub use sap_com::SapAppDriver;
