@@ -1445,3 +1445,165 @@ fn checkbox_labels_survive_multibyte_text() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Issue #57, confirmed by two field rounds against two frameworks: a suite
+/// wants to assert a value RELATIVE to one it read earlier ("the balance
+/// dropped by 100"). Until now flowproof could only compare against
+/// literals fixed before the run.
+#[test]
+fn a_capture_can_be_compared_with_an_offset() {
+    let dir = std::env::temp_dir().join("flowproof-replay-capture");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Balance\napp: web\nurl: x\nsteps:\n  - Remember the \"Balance\" as balance\n  - Press the \"Pay\" button\n  - assert: the \"Balance\" shows ${captured.balance} - 100\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/account".into()),
+        ..spec
+    };
+    let trace = dir.join("capture.trace.jsonl");
+
+    // $1,000.00 before the payment, $900.00 after.
+    let mut rec = MockAppDriver::new(&["Balance", "Pay"]).with_text("Balance", "$1,000.00");
+    rec.text_sequence.insert(
+        "Balance".into(),
+        ["$1,000.00", "$900.00"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    );
+    record(&spec, &mut rec, &trace).expect("recording verifies the computed assertion");
+
+    // The trace carries the NAME and the offset, never the money.
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(persisted.contains("\"type\":\"capture\""), "{persisted}");
+    assert!(persisted.contains("\"capture\":\"balance\""), "{persisted}");
+    assert!(persisted.contains("\"offset\":-100"), "{persisted}");
+    assert!(
+        !persisted.contains("1,000.00") && !persisted.contains("900.00"),
+        "a captured VALUE must never enter the trace: {persisted}"
+    );
+
+    // Replay with DIFFERENT absolute numbers: the relationship is what was
+    // recorded, so a $50 balance dropping to a -$50 one still satisfies it.
+    let mut driver = MockAppDriver::new(&["Balance", "Pay"]).with_text("Balance", "$50.00");
+    driver.text_sequence.insert(
+        "Balance".into(),
+        ["$50.00", "-$50.00"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    );
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    // A balance that did NOT move by 100 fails, and the message shows both
+    // the captured value and what was seen.
+    // The capture reads $1,000.00, then the balance settles at $999.00 - a
+    // drop of 1, not 100.
+    let mut driver = MockAppDriver::new(&["Balance", "Pay"]).with_text("Balance", "$999.00");
+    driver.text_sequence.insert(
+        "Balance".into(),
+        ["$1,000.00"].into_iter().map(String::from).collect(),
+    );
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+    let detail = report.steps[2].detail.clone().unwrap_or_default();
+    assert!(detail.contains("balance"), "detail: {detail}");
+    assert!(detail.contains("999"), "detail names what it saw: {detail}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The bare form compares TEXT, so a capture also pins "this value did not
+/// change" without any arithmetic.
+#[test]
+fn a_bare_capture_reference_compares_text() {
+    let dir = std::env::temp_dir().join("flowproof-replay-capture-text");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Order\napp: web\nurl: x\nsteps:\n  - Remember the \"Order\" as ref\n  - assert: the \"Receipt\" shows ${captured.ref}\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/o".into()),
+        ..spec
+    };
+    let trace = dir.join("text.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Order", "Receipt"])
+        .with_text("Order", "ORD-4711")
+        .with_text("Receipt", "Receipt for ORD-4711");
+    record(&spec, &mut rec, &trace).expect("records");
+
+    // A DIFFERENT order number replays fine, because the assertion is
+    // about the relationship, not the literal.
+    let mut driver = MockAppDriver::new(&["Order", "Receipt"])
+        .with_text("Order", "ORD-9999")
+        .with_text("Receipt", "Receipt for ORD-9999");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    // A receipt naming a different order fails.
+    let mut driver = MockAppDriver::new(&["Order", "Receipt"])
+        .with_text("Order", "ORD-9999")
+        .with_text("Receipt", "Receipt for ORD-0001");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Referencing a capture that was never taken is a spec ERROR, not a failed
+/// expectation: the flow cannot be judged at all, and the message must name
+/// what is in scope so the author can fix the typo.
+#[test]
+fn an_unknown_capture_is_an_error_naming_what_is_in_scope() {
+    let dir = std::env::temp_dir().join("flowproof-replay-capture-unknown");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Typo\napp: web\nurl: x\nsteps:\n  - Remember the \"Balance\" as balance\n  - assert: the \"Balance\" shows ${captured.blance}\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/a".into()),
+        ..spec
+    };
+    let trace = dir.join("typo.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Balance"]).with_text("Balance", "10");
+    // Recording refuses too: the mistake is caught at authoring time.
+    assert!(
+        record(&spec, &mut rec, &trace).is_err(),
+        "typo must not record"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Multibyte values survive capture and comparison unmangled.
+#[test]
+fn captures_handle_multibyte_values() {
+    let dir = std::env::temp_dir().join("flowproof-replay-capture-utf8");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Kunde\napp: web\nurl: x\nsteps:\n  - Remember the \"Kunde\" as kunde\n  - assert: the \"Beleg\" shows ${captured.kunde}\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/k".into()),
+        ..spec
+    };
+    let trace = dir.join("utf8.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Kunde", "Beleg"])
+        .with_text("Kunde", "Müller & Söhne 🏢")
+        .with_text("Beleg", "Beleg für Müller & Söhne 🏢");
+    record(&spec, &mut rec, &trace).expect("records");
+
+    let mut driver = MockAppDriver::new(&["Kunde", "Beleg"])
+        .with_text("Kunde", "Müller & Söhne 🏢")
+        .with_text("Beleg", "Beleg für Müller & Söhne 🏢");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

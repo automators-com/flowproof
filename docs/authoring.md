@@ -37,6 +37,7 @@ ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 | `Replace the [2nd ]"<label>" field with <text>` | clear + type, one step |
 | `Replace the <id> field with <text>` | |
 | `Clear the [2nd ]"<label>" field` / `Clear the <id> field` | fill-with-empty semantics |
+| `Remember the [2nd ]"<target>" as <name>` | read the target's text into a flow-scoped name (`[a-z][a-z0-9_]*`) for a later assertion to compare against. The VALUE is read at execution time on record and on every replay, so it never enters the trace - the same indirection `${VAR}` secrets use. Re-using a name overwrites it |
 | `Check the [2nd ]"<label>" checkbox` / `Uncheck the …` | drives a checkbox, radio, or `role=switch` to a STATE, not a toggle: `Check` on an already-checked box is a no-op, so the step means the same thing however the environment arrives. Resolves the control inside a wrapper too (the common pattern of a visually hidden `input` inside a styled label), performs a real click so the app's own handlers fire, then verifies the state took |
 | `Select <option> from the [2nd ]"<label>" field` | native `<select>`: committed via the value setter, fires `input`+`change` (React-safe). `in the` and `… dropdown` also accepted |
 | `Press the [2nd ]"<label>" button` / `Press the <id> button` | |
@@ -70,6 +71,8 @@ append `within <N>s` to any form to change the bound.
 | `the [2nd ]"<label>" field contains <text>` | input VALUE, by label |
 | `the <id> field contains <text>` | input VALUE, by native id |
 | `the [2nd ]"<target>" shows <text>` | element-scoped substring |
+| `the [2nd ]"<target>" shows ${captured.<name>}` | compare against a remembered value: text, with the same matching ladder as any `shows` |
+| `the [2nd ]"<target>" shows ${captured.<name>} + <number>` / `- <number>` | compare NUMERICALLY against the remembered number offset by a literal, e.g. `the "Balance" shows ${captured.balance} - 100`. Currency symbols and thousands separators are ignored on both sides |
 | `the [2nd ]"<target>" is visible` / `is not visible` | target resolves / does not resolve |
 | `the [2nd ]"<target>" is enabled` / `is disabled` | platform enabled state (`disabled`/`aria-disabled` on web, UIA IsEnabled on desktop) |
 | `the [2nd ]"<target>" checkbox is checked` / `is not checked` | checkbox state, read from the `checked` property or `aria-checked`. A target that is not a checkbox fails as exactly that, not as "wrong state" |
@@ -92,6 +95,21 @@ Checkboxes map `cy.check()` / `should("be.checked")`:
 - Uncheck the "Remember me" checkbox
 - assert: the "Remember me" checkbox is not checked
 ```
+
+Computed assertions answer "did this change by the right amount?", which a
+literal cannot express because the starting value is only known at run time:
+
+```yaml
+- Remember the "Account Balance" as balance
+- Press the "Pay" button
+- assert: the "Account Balance" shows ${captured.balance} - 100
+```
+
+The expression grammar is deliberately tiny and does not compose: one
+capture reference, optionally one `+` or `-`, and one plain number. There is
+no second capture, no nesting, no `*` or `/`. A capture may only be
+referenced in an ASSERTION - using one in an action is a parse error,
+because that would let the app under test steer execution.
 
 ## Out-of-band assertions (any app; structured steps, not prose)
 
