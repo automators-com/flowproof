@@ -10,6 +10,24 @@ use flowproof_driver::UiaAppDriver;
 
 const NOTEPAD_SPEC: &str = include_str!("../../../examples/notepad.flow.yaml");
 
+/// These tests share ONE machine-wide resource each: the single Notepad
+/// window, the foreground focus that keystrokes follow, and the process
+/// environment. Cargo runs tests in parallel threads by default, so
+/// without this they interleave - a real CI run typed
+/// "flowhperloloof  fdrroomv ef ltohwipsroof", which is two specs braided
+/// together, and both tests then failed on text neither of them wrote.
+/// Every test in this file takes the lock for its whole body.
+static DESKTOP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the desktop lock. A panicking test poisons the mutex; that says
+/// nothing about the desktop, so the guard is recovered rather than
+/// cascading one failure into every later test.
+fn exclusive_desktop() -> std::sync::MutexGuard<'static, ()> {
+    DESKTOP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Kill any notepad instance so each phase starts from a fresh, empty
 /// document and unsaved-changes prompts never appear.
 fn kill_notepad() {
@@ -21,6 +39,7 @@ fn kill_notepad() {
 
 #[test]
 fn records_and_replays_notepad() {
+    let _desktop = exclusive_desktop();
     if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
         eprintln!("skipping notepad E2E test: set FLOWPROOF_E2E=1 to run it");
         return;
@@ -103,6 +122,7 @@ fn records_and_replays_notepad() {
 /// exercises the real UIA path against a real process.
 #[test]
 fn drives_an_arbitrary_app_through_the_mapping_form_with_pinned_geometry() {
+    let _desktop = exclusive_desktop();
     if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
         eprintln!("skipping windows mapping E2E test: set FLOWPROOF_E2E=1 to run it");
         return;
