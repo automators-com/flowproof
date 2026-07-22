@@ -159,6 +159,45 @@ for a window vision attaches to but never launched. Using the wrong one is a
 parse error that names the right one. A web flow sizes its page with
 `browser: viewport`, and an api flow has no window at all.
 
+### UWP and packaged apps
+
+A UWP app (Calculator, Settings, anything from the Store) is not an exe you
+launch by path, and its window is not the window you think it is. Both
+differences are handled, but they change what you write.
+
+Launch one through the shell, naming the package by its Application User
+Model ID:
+
+```yaml
+app:
+  command: explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App
+  window_title: Calculator
+window:
+  width: 640
+  height: 900
+```
+
+`explorer.exe` returns immediately, before the app has a window, which is
+exactly why `window_title` exists: flowproof waits for a window with that
+title rather than for the process it spawned. List the ids on the machine
+with `Get-StartApps` in PowerShell.
+
+The window matters for geometry. A UWP app draws into a
+`Windows.UI.Core.CoreWindow` that is hosted inside an
+`ApplicationFrameWindow` belonging to `ApplicationFrameHost.exe`, and the
+CoreWindow does not own its own size - resizing it does nothing visible.
+flowproof detects the CoreWindow class and applies `window:` to the hosting
+frame instead, so a UWP flow pins its shape the same way any other flow
+does. Nothing to configure; it is worth knowing only when a resize appears
+to be ignored on some other kind of hosted window.
+
+**Verification status, stated plainly:** the UWP path was verified by hand
+on Windows 11 and is NOT covered by CI. GitHub's `windows-latest` runners
+are Windows Server images, which ship no Store apps - `notepad.exe` is there
+and Calculator is not, which is why the Notepad E2E runs on every push and
+no UWP equivalent does. Treat UWP support as working but unguarded: a
+regression would reach a release without a failing test.
+
 ## Out-of-band assertions (any app; structured steps, not prose)
 
 ```yaml

@@ -115,6 +115,20 @@ jobs:
           cargo test -p flowproof-cli --test sap_sim_e2e -- --nocapture
         env:
           FLOWPROOF_E2E: "1"
+      # #70: is a real `uwp-e2e` job possible on this runner at all? The
+      # image is Windows Server, which is believed to ship no Store apps,
+      # but "believed" is not evidence. This lists what is actually there
+      # and never fails the job - it costs seconds and settles the
+      # question with the runner's own answer.
+      - name: probe for UWP apps (informational, never fails)
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "--- Get-AppxPackage ---"
+          Get-AppxPackage | Select-Object -ExpandProperty Name | Sort-Object
+          Write-Host "--- Get-StartApps ---"
+          Get-StartApps | Format-Table -AutoSize
+          exit 0
       - name: cleanup stray notepad
         if: always()
         shell: pwsh
