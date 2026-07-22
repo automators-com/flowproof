@@ -5,6 +5,9 @@
 #[cfg(feature = "agent")]
 pub mod agent_proxy;
 
+#[cfg(feature = "agent")]
+pub mod agent_runner;
+
 #[cfg(feature = "sap-com")]
 pub mod sap_com;
 
@@ -16,6 +19,9 @@ pub mod web;
 
 #[cfg(feature = "agent")]
 pub use agent_proxy::AgentProxy;
+
+#[cfg(feature = "agent")]
+pub use agent_runner::{AgentRun, RunError};
 
 #[cfg(feature = "sap-com")]
 pub use sap_com::SapAppDriver;
