@@ -1259,10 +1259,15 @@ mod web {
             if let Some((key, modifiers)) = parse_key_chord(rest.trim()) {
                 return Ok(vec![ResolvedAction::PressKey { key, modifiers }]);
             }
+            // `Press <char>` is the near miss worth naming: a character is
+            // not a key name, and typing one is `Type <text>`. Listing only
+            // the two forms that DO parse sends the author to the grammar
+            // table to find a third that was there all along.
             return Err(unresolvable(
                 trimmed,
                 "expected 'Press the \"<label>\" button' or a key like \
-                 'Press Enter' / 'Press Control+V'",
+                 'Press Enter' / 'Press Control+V' (to send a character, \
+                 use 'Type <text>')",
             ));
         }
 
@@ -1673,6 +1678,18 @@ mod tests {
         // A sentence after `Press ` is NOT a key chord.
         resolve_step("web", &SpecStep::Plain("Press hard on the app".into()))
             .expect_err("non-key press must fail");
+
+        // A bare character is not a key name either, and the error must name
+        // the form that DOES send one. Found in the field: an app with no
+        // keyboard handling needed a spec proving keystrokes do nothing, and
+        // `Press 7` sent the author to the grammar table to find `Type`.
+        let err = resolve_step("web", &SpecStep::Plain("Press 7".into()))
+            .expect_err("a bare character is not a key");
+        let message = err.to_string();
+        assert!(
+            message.contains("Type <text>"),
+            "the error must name the form that sends a character: {message}"
+        );
     }
 
     #[test]

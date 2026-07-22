@@ -48,9 +48,11 @@ pub enum RecordError {
     MissingWindow,
     #[error("element for step '{intent}' not found: [{selector}]")]
     ElementNotFound { intent: String, selector: String },
-    #[error(
-        "assertion '{intent}' does not hold while recording: expected '{expected}', element shows '{actual}'"
-    )]
+    /// `expected` and `actual` are complete phrases, not bare values: the
+    /// subject differs per assertion (an element, the whole surface, a
+    /// checkbox, an occurrence count) and a template that names one of them
+    /// mislabels all the others - "element shows 'element never appeared'".
+    #[error("assertion '{intent}' does not hold while recording: expected {expected}, {actual}")]
     AssertMismatch {
         intent: String,
         expected: String,
@@ -1286,7 +1288,11 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                     return Err(RecordError::AssertMismatch {
                                         intent: spec_step.intent().to_string(),
                                         expected: describe_capture(name, &captured, *offset),
-                                        actual,
+                                        // Both halves are complete PHRASES:
+                                        // the template names no subject, so
+                                        // a bare value would read as a
+                                        // sentence fragment.
+                                        actual: format!("element shows '{actual}'"),
                                     });
                                 }
                             }
@@ -1407,10 +1413,34 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                         if std::time::Instant::now() >= deadline {
                             // Error messages carry the RAW expectation — a
                             // resolved secret must not leak through a failure.
+                            let subject = if selector.is_none() {
+                                "page"
+                            } else {
+                                "element"
+                            };
+                            let (expected, actual) = match (matcher, actual) {
+                                // A count assertion fails on the NUMBER of
+                                // occurrences, so the number found is the one
+                                // fact that fixes the step. The surface text
+                                // buries it.
+                                (TextMatch::CountEquals(n), Some(text)) => (
+                                    format!("'{expected}' {n} times"),
+                                    format!(
+                                        "found {}",
+                                        flowproof_driver::text_occurrences(&wanted, &text)
+                                    ),
+                                ),
+                                (_, Some(text)) => {
+                                    (format!("'{expected}'"), format!("{subject} shows '{text}'"))
+                                }
+                                (_, None) => {
+                                    (format!("'{expected}'"), "element not found".to_string())
+                                }
+                            };
                             return Err(RecordError::AssertMismatch {
                                 intent: spec_step.intent().to_string(),
-                                expected: expected.clone(),
-                                actual: actual.unwrap_or_else(|| "<element not found>".to_string()),
+                                expected,
+                                actual,
                             });
                         }
                         std::thread::sleep(ASSERT_POLL_INTERVAL);

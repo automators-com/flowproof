@@ -427,6 +427,18 @@ where
                 // send a caller healing a trace that is not broken.
                 return Err(exhausted(fault));
             };
+            // A count assertion fails on the NUMBER of occurrences, so the
+            // number found is the one fact that fixes the step. Dumping the
+            // surface text instead buries it in a page-sized haystack, which
+            // is exactly what makes an off-by-one count unfixable from CI
+            // output alone.
+            if let Some(n) = expect.get("count").and_then(|v| v.as_u64()) {
+                let found = flowproof_driver::text_occurrences(&expected, &text);
+                return Ok((
+                    Err(format!("expected text '{raw}' {n} times, found {found}")),
+                    rung,
+                ));
+            }
             let shown = if flowproof_trace::secret::has_refs(raw) {
                 "<masked>"
             } else {
