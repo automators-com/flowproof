@@ -9,6 +9,7 @@
 pub mod cassette;
 pub mod format;
 pub mod secret;
+pub mod toolcalls;
 
 pub use format::{Header, Step, TraceError, TraceLine};
 
