@@ -4,6 +4,7 @@
 //! author ([`author`]) handles arbitrary steps by observing the live app's
 //! scene graph. The replayer never touches this crate.
 
+pub mod agent_steps;
 pub mod author;
 pub mod clarify;
 pub mod heal;
