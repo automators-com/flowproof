@@ -484,11 +484,8 @@ steps:
   - assert: page shows Order saved          # asserts on the OCR'd frame
 ```
 
-Text anchors match OCR lines exactly first, then individual *words*
-inside a line, then line prefixes; `the 2nd "Amount" field` disambiguates
-repeats in reading order. The word tier is what makes key grids work:
-OCR merges a keypad row into one line ("4 5 6"), and `Click "5"` lands
-on the digit's own box, not the row's center. The recorded
+Text anchors match OCR lines exactly first, then by prefix; `the 2nd
+"Amount" field` disambiguates repeats in reading order. The recorded
 trace carries `provenance: vision` text anchors with their spatial
 `relation` (`inside` for clicks, `right_of` for fields), and freeform
 steps work through the LLM author — the OCR lines are the scene. OCR

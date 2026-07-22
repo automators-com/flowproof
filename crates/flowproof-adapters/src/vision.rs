@@ -4,9 +4,8 @@
 //! is the provenance for apps where only pixels exist.
 //!
 //! Addressing model: OCR lines are the elements. A text anchor matches a
-//! line (exact first, then exact word, then line prefix — the same
-//! exact-over-loose semantics accessible-name anchors have elsewhere),
-//! `nth` disambiguates in reading order, and the
+//! line (exact first, then prefix — the same semantics accessible-name
+//! anchors have elsewhere), `nth` disambiguates in reading order, and the
 //! selector's `relation` says where the ACTION lands relative to the
 //! match: `inside` (buttons — click the text itself) or `right_of` (form
 //! fields — the input box sits beside its label). Tree-backed drivers
@@ -24,71 +23,17 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector};
 use image::RgbaImage;
 
-/// One recognized word inside a line, in window-relative pixel coordinates.
-#[derive(Debug, Clone, PartialEq)]
-pub struct OcrWord {
-    pub text: String,
-    pub rect: PixelRect,
-}
-
 /// One recognized line of text, in window-relative pixel coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OcrLine {
     pub text: String,
     pub rect: PixelRect,
-    /// Per-word boxes when the engine provides them (#69). Empty means
-    /// "unknown", and word-level matching derives boxes by splitting the
-    /// line's box proportionally at whitespace gaps.
-    pub words: Vec<OcrWord>,
 }
 
 impl OcrLine {
-    pub fn new(text: impl Into<String>, rect: PixelRect) -> Self {
-        Self {
-            text: text.into(),
-            rect,
-            words: Vec::new(),
-        }
-    }
-
     fn center(&self) -> (i32, i32) {
         let (x, y, w, h) = self.rect;
         (x + w as i32 / 2, y + h as i32 / 2)
-    }
-
-    /// Word boxes for matching: the engine's own when present, otherwise
-    /// derived by proportional gap-splitting. Crude for proportional
-    /// fonts, but a key grid's tokens are short and well separated —
-    /// which is exactly the layout that needs this (#69: the digits of a
-    /// keypad share one OCR line, so `Click "5"` cannot land by line).
-    fn word_boxes(&self) -> Vec<OcrWord> {
-        if !self.words.is_empty() {
-            return self.words.clone();
-        }
-        let chars: Vec<char> = self.text.chars().collect();
-        let total = chars.len();
-        if total == 0 {
-            return Vec::new();
-        }
-        let (x, y, w, h) = self.rect;
-        let char_x = |i: usize| x + (w as f64 * i as f64 / total as f64).round() as i32;
-        let mut out = Vec::new();
-        let mut start = None;
-        for i in 0..=total {
-            let boundary = i == total || chars[i].is_whitespace();
-            match (start, boundary) {
-                (None, false) => start = Some(i),
-                (Some(s), true) => {
-                    out.push(OcrWord {
-                        text: chars[s..i].iter().collect(),
-                        rect: (char_x(s), y, (char_x(i) - char_x(s)).max(1) as u32, h),
-                    });
-                    start = None;
-                }
-                _ => {}
-            }
-        }
-        out
     }
 }
 
@@ -138,15 +83,9 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         self.ocr.recognize(&frame)
     }
 
-    /// Match a text anchor against the current OCR lines: exact line
-    /// first, then exact WORD, then line prefix — never substring, so
-    /// `Click "Save"` cannot hit "Save As" when a plain "Save" exists.
-    ///
-    /// The word tier is why a key grid works (#69): OCR merges a keypad
-    /// row into one line ("4 5 6"), and `Click "5"` must land on the
-    /// digit's own box, not the row's center. It sits above the prefix
-    /// tier deliberately — a lone "5" on screen must beat a line that
-    /// merely STARTS with 5 ("56 items").
+    /// Match a text anchor against the current OCR lines: exact match
+    /// first, then prefix — never substring, so `Click "Save"` cannot hit
+    /// "Save As" when a plain "Save" exists.
     fn resolve(&mut self, selector: &UiaSelector) -> Result<Option<OcrLine>, DriverError> {
         let Some(needle) = selector.name.as_deref().map(str::trim) else {
             return Ok(None);
@@ -163,18 +102,6 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             .cloned();
         if exact.is_some() {
             return Ok(exact);
-        }
-        // A multi-word needle can't be a single word; skip the allocation.
-        if !needle.contains(char::is_whitespace) {
-            let word = lines
-                .iter()
-                .flat_map(|l| l.word_boxes())
-                .filter(|w| w.text.trim() == needle)
-                .nth(nth - 1)
-                .map(|w| OcrLine::new(w.text, w.rect));
-            if word.is_some() {
-                return Ok(word);
-            }
         }
         Ok(lines
             .iter()
@@ -429,30 +356,15 @@ impl OcrEngine for OcrsEngine {
                 if text.trim().is_empty() {
                     return None;
                 }
-                fn to_pixel_rect(item: &impl TextItem) -> flowproof_driver::PixelRect {
-                    let rect = item.bounding_rect();
-                    (
+                let rect = line.bounding_rect();
+                Some(OcrLine {
+                    text,
+                    rect: (
                         rect.left(),
                         rect.top(),
                         (rect.right() - rect.left()).max(0) as u32,
                         (rect.bottom() - rect.top()).max(0) as u32,
-                    )
-                }
-                // The engine already segments words to find lines — carry
-                // their boxes through so single-token anchors can land on
-                // a key grid (#69).
-                let words = line
-                    .words()
-                    .map(|word| OcrWord {
-                        text: word.to_string(),
-                        rect: to_pixel_rect(&word),
-                    })
-                    .filter(|w| !w.text.trim().is_empty())
-                    .collect();
-                Some(OcrLine {
-                    text,
-                    rect: to_pixel_rect(&line),
-                    words,
+                    ),
                 })
             })
             .collect())
@@ -710,10 +622,22 @@ mod tests {
 
     fn login_lines() -> Vec<OcrLine> {
         vec![
-            OcrLine::new("User name", (20, 20, 90, 16)),
-            OcrLine::new("Password", (20, 60, 80, 16)),
-            OcrLine::new("Sign in", (20, 100, 70, 20)),
-            OcrLine::new("Sign in with SSO", (20, 140, 150, 16)),
+            OcrLine {
+                text: "User name".into(),
+                rect: (20, 20, 90, 16),
+            },
+            OcrLine {
+                text: "Password".into(),
+                rect: (20, 60, 80, 16),
+            },
+            OcrLine {
+                text: "Sign in".into(),
+                rect: (20, 100, 70, 20),
+            },
+            OcrLine {
+                text: "Sign in with SSO".into(),
+                rect: (20, 140, 150, 16),
+            },
         ]
     }
 
@@ -766,8 +690,14 @@ mod tests {
         let mut d = VisionAppDriver::with_parts(
             FakeScreen::with_frames(vec![blank_frame()]),
             FakeOcr::with_lines(vec![
-                OcrLine::new("Amount", (20, 20, 60, 16)),
-                OcrLine::new("Amount", (20, 60, 60, 16)),
+                OcrLine {
+                    text: "Amount".into(),
+                    rect: (20, 20, 60, 16),
+                },
+                OcrLine {
+                    text: "Amount".into(),
+                    rect: (20, 60, 60, 16),
+                },
             ]),
         );
         let second = anchor("Amount").with_nth(Some(2));
@@ -791,76 +721,6 @@ mod tests {
         let scene = d.scene().expect("scene").expect("json");
         assert!(scene.contains(r#""target":"text:Sign in""#));
         assert!(scene.contains("\"rect\""));
-    }
-
-    /// #69: OCR merges a keypad row into one line, so `Click "5"` must
-    /// resolve at word level — via the engine's own word boxes when it
-    /// has them, via proportional gap-splitting when it doesn't.
-    #[test]
-    fn single_token_anchor_lands_on_its_word_in_a_key_grid() {
-        // Engine-provided word boxes: click the exact box.
-        let row = OcrLine {
-            text: "4 5 6".into(),
-            rect: (0, 100, 300, 40),
-            words: vec![
-                OcrWord {
-                    text: "4".into(),
-                    rect: (10, 100, 60, 40),
-                },
-                OcrWord {
-                    text: "5".into(),
-                    rect: (120, 100, 60, 40),
-                },
-                OcrWord {
-                    text: "6".into(),
-                    rect: (230, 100, 60, 40),
-                },
-            ],
-        };
-        let mut d = VisionAppDriver::with_parts(
-            FakeScreen::with_frames(vec![blank_frame()]),
-            FakeOcr::with_lines(vec![row]),
-        );
-        d.invoke(&anchor("5")).expect("clicks the 5 key");
-        assert_eq!(d.screen.clicks, vec![(150, 120)]);
-
-        // No word boxes: the line's box splits proportionally at the gaps,
-        // so the click still lands in the middle third, not the row center.
-        let mut d = VisionAppDriver::with_parts(
-            FakeScreen::with_frames(vec![blank_frame()]),
-            FakeOcr::with_lines(vec![OcrLine::new("4 5 6", (0, 100, 300, 40))]),
-        );
-        d.invoke(&anchor("5")).expect("clicks the 5 key");
-        let (x, y) = d.screen.clicks[0];
-        assert!(
-            (100..200).contains(&x),
-            "x should be in the middle third: {x}"
-        );
-        assert_eq!(y, 120);
-    }
-
-    /// The word tier outranks the prefix tier: a lone "5" on screen beats
-    /// a line that merely STARTS with 5 — but an exact LINE still beats a
-    /// word, and multi-word needles never match at word level.
-    #[test]
-    fn word_matches_beat_prefix_matches_but_not_exact_lines() {
-        let mut d = VisionAppDriver::with_parts(
-            FakeScreen::with_frames(vec![blank_frame()]),
-            FakeOcr::with_lines(vec![
-                OcrLine::new("56 items", (0, 0, 160, 20)),
-                OcrLine::new("4 5 6", (0, 100, 300, 40)),
-            ]),
-        );
-        let rect = d
-            .element_rect(&anchor("5"))
-            .expect("resolves")
-            .expect("found");
-        assert_eq!(
-            rect.1, 100,
-            "must match the keypad row's word, got {rect:?}"
-        );
-        // Prefix matching still serves needles no word satisfies.
-        assert!(d.element_exists(&anchor("56 it")).expect("walks"));
     }
 
     #[test]
