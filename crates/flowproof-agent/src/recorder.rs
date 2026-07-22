@@ -375,6 +375,32 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 selector_ref: Some(0),
             }),
         ),
+        ResolvedAction::Capture { target, name } => {
+            let mut params = serde_json::Map::new();
+            params.insert("name".into(), name.clone().into());
+            (selectors_for(app, target, None), Action::Capture(params))
+        }
+        ResolvedAction::AssertCaptured {
+            target,
+            name,
+            offset,
+            timeout_ms,
+        } => {
+            let mut expect = serde_json::json!({
+                "capture": name,
+                "timeout_ms": timeout_ms,
+            });
+            if let Some(offset) = offset {
+                expect["offset"] = serde_json::json!(offset);
+            }
+            (
+                selectors_for(app, target, None),
+                Action::Assert(Assertion::ElementState {
+                    expect,
+                    selector_ref: Some(0),
+                }),
+            )
+        }
         ResolvedAction::AssertChecked {
             target,
             checked,
@@ -508,6 +534,8 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::SetChecked { target, .. }
         | ResolvedAction::AssertText { target, .. }
         | ResolvedAction::AssertPresence { target, .. }
+        | ResolvedAction::Capture { target, .. }
+        | ResolvedAction::AssertCaptured { target, .. }
         | ResolvedAction::AssertChecked { target, .. }
         | ResolvedAction::AssertEnabled { target, .. } => target,
         ResolvedAction::TypeFocused { .. }
@@ -918,6 +946,28 @@ fn poll_oob(
     }
 }
 
+/// Capture names currently in scope, sorted, for a "you meant one of these"
+/// failure message.
+fn in_scope(captures: &std::collections::HashMap<String, String>) -> String {
+    let mut names: Vec<&str> = captures.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    names.join(", ")
+}
+
+/// Render a computed expectation for a failure message. The CAPTURED VALUE
+/// is included because it was read from the app under test, not from a
+/// secret: without it "expected balance - 100" is unactionable.
+fn describe_capture(name: &str, captured: &str, offset: Option<f64>) -> String {
+    match offset {
+        None => format!("text matching capture '{name}' ('{captured}')"),
+        Some(o) => format!(
+            "capture '{name}' ('{captured}') {} {}",
+            if o < 0.0 { "-" } else { "+" },
+            o.abs()
+        ),
+    }
+}
+
 fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
     // Case-insensitive FALLBACK, mirroring element anchors: an exact
     // match always wins; when it misses, lowercased comparison decides
@@ -1144,6 +1194,10 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
     // assert is checked against the live display, so a trace is only ever
     // written for a flow that actually worked.
     let mut steps = Vec::new();
+    // Flow-scoped captures. Values live only for this run: they are read at
+    // execution time and never written to the trace, exactly like a
+    // `${VAR}` secret's resolved value.
+    let mut captures: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut prior_intents: Vec<String> = Vec::new();
     let mut llm_used = false;
     for spec_step in &spec.steps {
@@ -1200,6 +1254,55 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 ResolvedAction::Clear { .. } => driver.clear_text(targeted())?,
                 ResolvedAction::SetChecked { checked, .. } => {
                     driver.set_checked(targeted(), *checked)?
+                }
+                ResolvedAction::Capture { name, .. } => {
+                    let value = driver.read_text(targeted())?;
+                    captures.insert(name.clone(), value);
+                }
+                ResolvedAction::AssertCaptured {
+                    name,
+                    offset,
+                    timeout_ms,
+                    ..
+                } => {
+                    let Some(captured) = captures.get(name).cloned() else {
+                        return Err(RecordError::AssertMismatch {
+                            intent: spec_step.intent().to_string(),
+                            expected: format!("capture '{name}' to have been remembered"),
+                            actual: if captures.is_empty() {
+                                "no captures in scope".to_string()
+                            } else {
+                                format!("in scope: {}", in_scope(&captures))
+                            },
+                        });
+                    };
+                    let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
+                    loop {
+                        let actual = driver.read_text(targeted())?;
+                        match flowproof_driver::capture_matches(&captured, *offset, &actual) {
+                            Ok(true) => break,
+                            Ok(false) => {
+                                if std::time::Instant::now() >= deadline {
+                                    return Err(RecordError::AssertMismatch {
+                                        intent: spec_step.intent().to_string(),
+                                        expected: describe_capture(name, &captured, *offset),
+                                        actual,
+                                    });
+                                }
+                            }
+                            // A non-numeric side is a spec problem, not a
+                            // slow UI: fail immediately rather than waiting
+                            // out the bound for something that cannot change.
+                            Err(why) => {
+                                return Err(RecordError::AssertMismatch {
+                                    intent: spec_step.intent().to_string(),
+                                    expected: describe_capture(name, &captured, *offset),
+                                    actual: why,
+                                })
+                            }
+                        }
+                        std::thread::sleep(ASSERT_POLL_INTERVAL);
+                    }
                 }
                 ResolvedAction::Upload { path, .. } => {
                     driver.set_files(targeted(), std::slice::from_ref(path))?

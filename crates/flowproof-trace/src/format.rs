@@ -267,6 +267,10 @@ pub enum Action {
     Drag(Params),
     Scroll(Params),
     TypeText(TypeTextParams),
+    /// Read a target's text into a flow-scoped name: `{"name": "<name>"}`.
+    /// The VALUE is never stored - only the name - so a captured balance or
+    /// order number stays out of the reviewable artifact.
+    Capture(Params),
     /// Drive a checkbox-like control to a state: `{"checked": bool}`.
     /// Set-state rather than toggle, so replaying it is idempotent.
     SetChecked(Params),
