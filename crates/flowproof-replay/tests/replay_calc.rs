@@ -862,7 +862,48 @@ steps:
     let mut driver = MockAppDriver::new(&[]).with_surface_text("row one, row two");
     let trace2 = dir.join("count-mismatch.trace.jsonl");
     let err = record(&spec, &mut driver, &trace2).expect_err("count mismatch must fail");
-    assert!(err.to_string().contains("row"), "err: {err}");
+    let message = err.to_string();
+    // A count assertion fails on a NUMBER, so the message has to carry the
+    // number found. Reporting the surface text instead buries the one fact
+    // that fixes the step.
+    assert!(
+        message.contains("'row' 3 times") && message.contains("found 2"),
+        "a count failure must name both counts: {message}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same diagnostic on the replay side, which is the one CI prints.
+/// Recorded against a surface with two matches, replayed against one with
+/// three: the message must say what it wanted and what it found, not hand
+/// back a page-sized haystack.
+#[test]
+fn a_replayed_count_failure_names_the_count_it_found() {
+    let dir = std::env::temp_dir().join("flowproof-replay-count-message");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    let spec = FlowSpec::parse(
+        "name: Count drift
+app: web
+url: https://e.test/x
+steps:
+  - assert: page shows row 2 times within 1s
+",
+    )
+    .expect("spec parses");
+    let trace = dir.join("count.trace.jsonl");
+    let mut rec = MockAppDriver::new(&[]).with_surface_text("row one, row two");
+    record(&spec, &mut rec, &trace).expect("recording succeeds");
+
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("row one, row two, row three");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed, "three rows must not satisfy a count of two");
+    let message = format!("{report:?}");
+    assert!(
+        message.contains("'row' 2 times") && message.contains("found 3"),
+        "a replayed count failure must name both counts: {message}"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

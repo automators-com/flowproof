@@ -530,6 +530,27 @@ pub fn numeric_value(text: &str) -> Option<f64> {
         .find_map(|token| token.replace(',', "").parse::<f64>().ok())
 }
 
+/// How many times `expected` occurs in `text`, under the same widening the
+/// count matcher applies: a nonzero case-sensitive count IS the count, and
+/// the lowercased count is consulted only when the case-sensitive one found
+/// nothing.
+///
+/// Shared so a count failure REPORTS the number the matcher COMPARED.
+/// Record and replay both format their message from this, for the same
+/// reason they already share `numeric_value` and `url_matches`: a diagnostic
+/// that disagreed with the predicate would send a caller healing a trace
+/// that is not broken.
+pub fn text_occurrences(expected: &str, text: &str) -> usize {
+    let sensitive = text.matches(expected).count();
+    if sensitive > 0 {
+        sensitive
+    } else {
+        text.to_lowercase()
+            .matches(&expected.to_lowercase())
+            .count()
+    }
+}
+
 /// A driver for `app: api` flows: no UI, ever. `launch` is a no-op and
 /// `screen_size` is nominal; any actual UI operation errors, because an
 /// out-of-band flow that reached for the screen is a spec mistake worth
