@@ -48,6 +48,12 @@ ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 | `Reload the page` | web |
 | `Wait until page shows <text> [within <N>s]` | long-bound auto-waiting assert (default 60s) |
 
+There is deliberately **no `Blur` step**. Blur is not something a user does;
+it is a DOM event that a user action causes. `Press Tab` is that action, it
+already works, and it additionally tests what the user really experiences -
+that focus lands somewhere sensible. Blur-triggered form validation is
+exercised with `Press Tab`.
+
 ## Assertions (every app — the shared grammar)
 
 All assertion forms **auto-wait** (default 10s, recorded into the trace);
