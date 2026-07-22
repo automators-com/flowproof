@@ -2407,6 +2407,13 @@ mod windows_grammar_tests {
             plain("Clear the \"Name\" field").as_deref(),
             Ok([ResolvedAction::Clear { .. }])
         ));
+        // Untargeted `Type ...` types into whatever holds focus. A spec that
+        // has never named a control in an arbitrary app has nothing else to
+        // address, and a freshly launched app focuses its primary input.
+        assert!(matches!(
+            plain("Type flowproof drove this").as_deref(),
+            Ok([ResolvedAction::TypeFocused { .. }])
+        ));
         // An AutomationId addressed directly, and an ordinal.
         assert!(plain("Type 5 into the id:15 field").is_ok());
         assert!(plain("Click the 2nd \"Edit\"").is_ok() || plain("Click \"Edit\"").is_ok());

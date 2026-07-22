@@ -116,11 +116,15 @@ fn drives_an_arbitrary_app_through_the_mapping_form_with_pinned_geometry() {
     // at launch and are stored raw rather than baked into the trace.
     std::env::set_var("FLOWPROOF_E2E_APP", "notepad.exe");
     std::env::set_var("FLOWPROOF_E2E_WINDOW", "Notepad");
+    // `page shows` on purpose: it is the SHARED surface assertion, and an
+    // app the spec has never described has no "document". `document
+    // contains` belongs to the notepad rules, which can hardcode the editor
+    // id; here the assertion reads the foreground window's whole subtree.
     let spec = FlowSpec::parse(
         "name: Arbitrary Windows app\n\
          app:\n  command: ${FLOWPROOF_E2E_APP}\n  window_title: ${FLOWPROOF_E2E_WINDOW}\n\
          window:\n  width: 900\n  height: 640\n\
-         steps:\n  - Type flowproof drove this\n  - assert: document contains flowproof drove this\n",
+         steps:\n  - Type flowproof drove this\n  - assert: page shows flowproof drove this\n",
     )
     .expect("spec parses");
     assert_eq!(spec.app.id(), "windows");

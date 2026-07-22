@@ -1144,6 +1144,24 @@ mod windows_impl {
                 .map_err(|e| DriverError::Uia(format!("serializing scene: {e}")))
         }
 
+        /// Type into whatever currently holds focus, addressing nothing.
+        /// A freshly launched app puts focus on its primary input (Notepad
+        /// lands in the editor), so this is what an untargeted `Type ...`
+        /// means for an app whose control tree the spec has never named.
+        /// It is also the only honest reading: with no selector there is no
+        /// element to gate on, so the app decides where the text lands.
+        fn type_focused(&mut self, text: &str) -> Result<(), DriverError> {
+            let element = self
+                .automation
+                .get_focused_element()
+                .map_err(|e| uia_err("getting the focused element", e))?;
+            // Same 10ms keystroke interval as the targeted path: slow Win32
+            // message pumps drop text sent faster than they can consume it.
+            element
+                .send_text(text, 10)
+                .map_err(|e| uia_err("typing into the focused element", e))
+        }
+
         fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
             let element = self.find(selector, 3000)?;
             element
@@ -1266,6 +1284,10 @@ mod stub_impl {
         }
 
         fn type_text(&mut self, _selector: &UiaSelector, _text: &str) -> Result<(), DriverError> {
+            Err(DriverError::UnsupportedPlatform)
+        }
+
+        fn type_focused(&mut self, _text: &str) -> Result<(), DriverError> {
             Err(DriverError::UnsupportedPlatform)
         }
 
