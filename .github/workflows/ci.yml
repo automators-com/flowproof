@@ -16,11 +16,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Do the expensive jobs need to run at all? A docs- or spec-only PR cannot
-  # change how a browser or a Windows app behaves, and the two E2E jobs cost
-  # ~50 minutes between them. Pushes to main always run everything: that is
-  # the branch a release is cut from, and a missed regression there is worth
-  # far more than the minutes.
+  # Does anything need to run at all? A docs- or spec-only PR cannot change
+  # how the engine behaves: rustfmt and clippy do not read Markdown, the
+  # wheel is built from the Rust crates, and the two E2E jobs cost ~50
+  # minutes between them. So EVERY other job hangs off this one, and a
+  # one-file doc change costs a single six-second job instead of five.
+  #
+  # `build` and the E2E jobs need `lint`, so gating `lint` skips them
+  # transitively - GitHub skips a job whose dependency was skipped.
+  #
+  # Pushes to main always run everything: that is the branch a release is
+  # cut from, and a missed regression there is worth far more than the
+  # minutes.
   scope:
     name: what changed
     runs-on: ubuntu-latest
@@ -54,6 +61,8 @@ jobs:
   # Fast feedback: lint + unit tests on Linux (driver uses its stub backend).
   lint:
     name: fmt + clippy + test (ubuntu)
+    needs: scope
+    if: needs.scope.outputs.engine == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -158,6 +167,8 @@ jobs:
 
   python-sdk:
     name: ruff + pytest (sdk/python)
+    needs: scope
+    if: needs.scope.outputs.engine == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
