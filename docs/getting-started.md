@@ -157,8 +157,18 @@ env_from: datamaker sap info-record pick --plant 1010 --format env
 It runs once before any flow (via `sh -c`, from the suite directory); its
 stdout must be `KEY=VALUE` lines (`#` comments and blank lines allowed)
 which become env vars for every flow and hook — reachable from specs as
-`${VAR}`. Precedence: process env < `env_from` < `env:`. It fails closed:
-a non-zero exit or a malformed line aborts the run.
+`${VAR}`. It fails closed: a non-zero exit or a malformed line aborts the
+run, and the command's stderr is echoed either way, so a mint script that
+explains itself is heard.
+
+The command **runs with the suite's `env:` visible** — minting test data
+almost always needs the suite's own base URL and credentials. Each `env:`
+entry is resolved against the process environment for this purpose; an
+entry that cannot resolve yet is simply not passed (it may reference this
+command's own output, and it gets its turn afterwards). Two orderings are
+easy to conflate and only the first changed: what the *command sees* now
+includes `env:`, while `${VAR}` precedence *in flows* is unchanged —
+process env, then `env_from` output, then `env:`.
 
 Suite context follows single flows too: `record` and single-spec `run`
 discover the nearest `suite.yaml` walking up from the spec (nearest wins;
