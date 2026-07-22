@@ -109,6 +109,8 @@ Semantics:
   continue past each call (a multi-step agent cannot proceed without
   them). In cassette replay these are recorded anyway; the block is what
   lets **record** avoid executing anything real.
+- `assert: reply contains <text>` reads the FINAL ASSISTANT MESSAGE of
+  the trajectory, whatever the driver. See "Settled in review" below.
 - `assert_no_tool_call: <tool>` asserts a tool was NOT called anywhere
   in the trajectory (optionally `where` clauses narrow it: "never with
   amount above X"). This is the guard-path assertion — "the agent must
@@ -180,21 +182,57 @@ values the cassette merely happens to pin.
 3. **v3**: MCP servers as a second mockable boundary, for systems whose
    tools are external MCP processes rather than internal functions.
 
-## Open questions (to settle in review)
+## Settled in review
 
-- **Cassette matching tolerance.** Byte-exact prompt matching is brittle
-  (timestamps, IDs inside prompts). Proposal: match on the structural
-  envelope (model, tool schema, message roles/count) plus a normalized
-  prompt hash, with named `${VAR}`-style holes for known-volatile spans.
-  The failure message must always show WHAT diverged.
-- **Trajectory branching.** If the recorded trajectory had N turns and
-  replay's turn K request doesn't match turn K's recording, do we search
-  forward (reordering tolerance) or fail immediately? Start strict
-  (fail, name the divergence) — reordering tolerance can be added if the
-  field demands it.
-- **Where the reply assertion reads from.** `assert: reply contains …`
-  needs a definition of "reply" per driver (stdout for a process,
-  response body for http).
+The three questions this design left open have answers, and they are the
+same answer three times: a test that quietly tolerates drift stops being a
+test.
+
+**Cassette matching is strict, by position, with no tolerance holes.** The
+sketch proposed matching a structural envelope plus a normalized prompt
+hash, with named holes for volatile spans. Rejected for v1. An edited
+prompt template is exactly what this feature exists to catch, so a
+matcher with holes in it would be excused from catching the main case.
+Turn K of a replay must match turn K of the recording.
+
+Envelope comparison survived, but as a REPORTING rule rather than a
+matching one: model, tool names and message roles are compared and
+reported before any message body, because a byte diff of two 8000-token
+prompts is unreadable and "you added a tool" is a one-line answer.
+
+**Divergence fails at the first bad turn.** No searching forward for a
+turn that fits. Once a trajectory has diverged its later turns say
+nothing about the system under test, and continuing would report a
+cascade whose only real cause was the first failure. Reordering tolerance
+can be added if the field ever demands it; nothing has.
+
+**`reply` is the final assistant message in the trajectory.** Not the
+process's stdout, which this document originally suggested. Stdout is
+whatever a harness chose to print - a banner, a spinner, nothing at all -
+and it differs per driver, so a spec would mean different things
+depending on what it was pointed at. The last assistant message is the
+same fact everywhere, and it is what the agent actually decided to say. A
+trajectory whose last turn is a tool call has not replied yet, which is a
+real state and reads as absent rather than as empty text.
+
+## Implementation status
+
+Built and tested, each independently:
+
+| Piece | What it does |
+|---|---|
+| cassette | the recorded trajectory, plus strict positional matching and envelope-first divergence reporting |
+| tool-call matching | ordered subsequence, partial dotted-path arguments, the `assert_no_tool_call` guard path |
+| proxy | serves a cassette over an OpenAI-compatible endpoint |
+| trajectory diff | sorts a re-record into what the agent DID versus what it was TOLD, flagging changes the spec asserts |
+| `assert_tool_call` grammar | the prose form |
+
+Not built yet: the `app: agent` spec surface and process driver (which
+land together with the rules dispatch and an E2E, because an `app:` value
+that parses and cannot run is a trap), RECORD mode (which needs an HTTPS
+client this workspace does not yet have), and the `matches` argument
+matcher (which needs a regex dependency). v1 is done when a real external
+OSS agent records and replays through the proxy.
 
 ## Decision: model-output evals are out of scope
 
