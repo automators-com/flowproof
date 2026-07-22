@@ -1162,6 +1162,35 @@ mod windows_impl {
                 .map_err(|e| uia_err("typing into the focused element", e))
         }
 
+        /// A key chord to whatever holds focus, via SendInput — UIA has no
+        /// "press key on element" primitive, and the focused element is
+        /// what a real keyboard hits. Deliberately does NOT re-focus the
+        /// window first: `Press Escape` right after `Click "Edit"` must
+        /// reach the open menu, and stealing focus back would close it.
+        fn press_key(&mut self, key: &str, modifiers: &[crate::KeyMod]) -> Result<(), DriverError> {
+            let vk = crate::virtual_key(key)
+                .ok_or_else(|| DriverError::Uia(format!("no virtual key for '{key}'")))?;
+            let mut backend = crate::PlatformBackend::new();
+            let mut inject = |event| crate::Input::inject(&mut backend, &event);
+            for m in modifiers {
+                inject(crate::InputEvent::KeyDown {
+                    virtual_key: crate::modifier_virtual_key(m),
+                })?;
+            }
+            inject(crate::InputEvent::KeyDown { virtual_key: vk })?;
+            inject(crate::InputEvent::KeyUp { virtual_key: vk })?;
+            for m in modifiers.iter().rev() {
+                inject(crate::InputEvent::KeyUp {
+                    virtual_key: crate::modifier_virtual_key(m),
+                })?;
+            }
+            // Give the app's message pump a beat to consume the chord
+            // before the next action observes its effect — the same
+            // settling interval the vision driver uses.
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            Ok(())
+        }
+
         fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
             let element = self.find(selector, 3000)?;
             element

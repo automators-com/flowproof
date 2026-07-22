@@ -55,6 +55,57 @@ pub enum MouseButton {
     Middle,
 }
 
+/// Canonical key name → Windows virtual-key code. One table for every
+/// SendInput-based driver (UIA, vision), so `Press Escape` means the same
+/// keystroke on each. Names are the grammar's canonical spellings.
+pub fn virtual_key(key: &str) -> Option<u16> {
+    let named = match key {
+        "Enter" => 0x0D,
+        "Escape" => 0x1B,
+        "Tab" => 0x09,
+        "Backspace" => 0x08,
+        "Delete" => 0x2E,
+        "Space" => 0x20,
+        "ArrowLeft" => 0x25,
+        "ArrowUp" => 0x26,
+        "ArrowRight" => 0x27,
+        "ArrowDown" => 0x28,
+        "Home" => 0x24,
+        "End" => 0x23,
+        "PageUp" => 0x21,
+        "PageDown" => 0x22,
+        _ => 0,
+    };
+    if named != 0 {
+        return Some(named);
+    }
+    if let Some(n) = key
+        .strip_prefix(['F', 'f'])
+        .and_then(|n| n.parse::<u16>().ok())
+    {
+        if (1..=12).contains(&n) {
+            return Some(0x6F + n); // F1 = 0x70
+        }
+    }
+    let mut chars = key.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii_alphanumeric() => {
+            Some(c.to_ascii_uppercase() as u16) // VK for A-Z/0-9 equals ASCII
+        }
+        _ => None,
+    }
+}
+
+/// Modifier → its virtual-key code (left-hand variants).
+pub fn modifier_virtual_key(m: &KeyMod) -> u16 {
+    match m {
+        KeyMod::Ctrl => 0x11,
+        KeyMod::Alt => 0x12,
+        KeyMod::Shift => 0x10,
+        KeyMod::Meta => 0x5B,
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {
     #[error("driver backend not supported on this platform (Windows-only feature)")]

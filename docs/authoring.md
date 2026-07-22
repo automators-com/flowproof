@@ -254,9 +254,20 @@ default for every flow; a flow's own block wins outright.
 
 ## App sugar
 
+Sugar is an alias layer, not a cage: on every UIA-driven app (`calc`,
+`notepad`, and the `app:` mapping form) the full shared action grammar
+applies too — `Press the "<label>" button`, `Click "<text>"`, `Type <text>
+into the "<label>" field`, `Press Ctrl+S`, `id:` targets and ordinals all
+act on any control the app shows, menus and dialogs included. Sugar wins
+where it matches; everything else falls through to the shared forms.
+
 - **calc**: `Type <digits>` (one press per digit), `Press
   plus|minus|times|divided by|equals`, `assert: display shows <number>`.
-- **notepad**: `Type <text>`, `assert: document contains <text>` (plus the
+  Keys the sugar never named are shared-grammar presses: `Press the
+  "Square root" button`, `Click "History"`.
+- **notepad**: `Type <text>` types into the *document*; the targeted form
+  `Type <text> into the "<label>" field` addresses a dialog's field (Find,
+  Replace, Save As) instead. `assert: document contains <text>` (plus the
   shared grammar).
 
 ## When a step doesn't parse

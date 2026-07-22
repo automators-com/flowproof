@@ -114,6 +114,60 @@ fn records_and_replays_notepad() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// #67 on real Windows: the REGISTRY app resolves generic-grammar ACTIONS,
+/// not just its sugar. `Click "Edit"` presses a menu-bar item by its
+/// visible text (a text-anchor UIA lookup — nothing in the notepad sugar
+/// ever named a menu), and `Press Escape` sends a named key. Mock-driver
+/// tests pin the resolution rules; this proves the actions land on a real
+/// UIA tree.
+#[test]
+fn registry_app_performs_generic_grammar_actions() {
+    let _desktop = exclusive_desktop();
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping generic grammar E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    kill_notepad();
+
+    let dir = std::env::temp_dir().join("flowproof-notepad-grammar-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Notepad generic grammar\n\
+         app: notepad\n\
+         steps:\n\
+         \x20 - Type flowproof drove this\n\
+         \x20 - Click \"Edit\"\n\
+         \x20 - Press Escape\n\
+         \x20 - assert: document contains flowproof drove this\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("grammar.trace.jsonl");
+
+    let record_result = (|| {
+        let mut driver = UiaAppDriver::new()?;
+        flowproof_agent::record(&spec, &mut driver, &trace)
+            .map_err(|e| flowproof_driver::DriverError::Uia(format!("record failed: {e}")))
+    })();
+    kill_notepad();
+    record_result.expect("recording succeeds");
+
+    let replay_result = (|| {
+        let mut driver = UiaAppDriver::new()?;
+        flowproof_replay::run_trace(&trace, &mut driver)
+            .map(|(report, _)| report)
+            .map_err(|e| flowproof_driver::DriverError::Uia(format!("replay failed: {e}")))
+    })();
+    kill_notepad();
+    let report = replay_result.expect("replay runs");
+    for step in &report.steps {
+        eprintln!("{:?} {} {}", step.status, step.id, step.intent);
+    }
+    assert!(report.passed, "generic grammar flow must pass: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// #66 and #68 on real Windows: drive an ARBITRARY program through the
 /// `app: {command, window_title}` mapping, with its window pinned to a
 /// size. This is the merge gate for that work - the grammar, trace shape
