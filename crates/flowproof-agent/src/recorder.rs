@@ -377,6 +377,23 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 selector_ref: Some(0),
             }),
         ),
+        ResolvedAction::AssertCount {
+            target,
+            count,
+            timeout_ms,
+        } => (
+            selectors_for(app, target, None),
+            Action::Assert(Assertion::ElementState {
+                // A new `expect` KEY, not a new variant: the payload is
+                // free-form, so old traces keep loading and an old reader
+                // that meets this simply does not understand the step.
+                expect: serde_json::json!({
+                    "element_count": count,
+                    "timeout_ms": timeout_ms,
+                }),
+                selector_ref: Some(0),
+            }),
+        ),
         ResolvedAction::Capture { target, name } => {
             let mut params = serde_json::Map::new();
             params.insert("name".into(), name.clone().into());
@@ -536,6 +553,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::SetChecked { target, .. }
         | ResolvedAction::AssertText { target, .. }
         | ResolvedAction::AssertPresence { target, .. }
+        | ResolvedAction::AssertCount { target, .. }
         | ResolvedAction::Capture { target, .. }
         | ResolvedAction::AssertCaptured { target, .. }
         | ResolvedAction::AssertChecked { target, .. }
@@ -870,6 +888,7 @@ impl ReuseCursor {
                 &action,
                 ResolvedAction::AssertText { .. }
                     | ResolvedAction::AssertPresence { .. }
+                    | ResolvedAction::AssertCount { .. }
                     | ResolvedAction::AssertEnabled { .. }
                     | ResolvedAction::AssertSql { .. }
                     | ResolvedAction::AssertApi { .. }
@@ -1508,6 +1527,40 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                     "element never appeared".to_string()
                                 } else {
                                     "element still on screen".to_string()
+                                },
+                            });
+                        }
+                        std::thread::sleep(ASSERT_POLL_INTERVAL);
+                    }
+                }
+                ResolvedAction::AssertCount {
+                    count, timeout_ms, ..
+                } => {
+                    let wanted = *count as usize;
+                    let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
+                    loop {
+                        // `wanted + 1` questions decide it: the Nth must be
+                        // there and the N+1th must not.
+                        let found =
+                            flowproof_driver::count_matching(driver, targeted(), wanted + 1)?;
+                        if found == wanted {
+                            break;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            // Only now is it worth counting further, to say
+                            // what was actually there instead of "not N".
+                            let actual = flowproof_driver::count_matching(
+                                driver,
+                                targeted(),
+                                flowproof_driver::COUNT_DIAGNOSTIC_CAP,
+                            )?;
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: format!("{wanted} matching elements"),
+                                actual: if actual >= flowproof_driver::COUNT_DIAGNOSTIC_CAP {
+                                    format!("{actual} or more")
+                                } else {
+                                    format!("{actual}")
                                 },
                             });
                         }

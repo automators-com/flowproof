@@ -1760,3 +1760,48 @@ steps:
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// GAP-O: `the "<target>" appears <N> times` counts ELEMENTS, and means
+/// the same thing at record and at replay.
+///
+/// Distinct from `page shows X 3 times`, which counts occurrences of the
+/// TEXT on the surface. A list assertion is about elements: three rows
+/// whose labels happen to repeat a word are still three rows.
+#[test]
+fn an_element_count_records_and_replays() {
+    const SPEC: &str = "\
+name: Count rows
+app: calc
+steps:
+  - assert: the \"Row\" appears 3 times
+";
+    let dir = std::env::temp_dir().join("flowproof-replay-count");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("count.trace.jsonl");
+
+    let spec = FlowSpec::parse(SPEC).expect("spec parses");
+    let mut driver = MockAppDriver::new(&["Row"]).with_occurrences("Row", 3);
+    record(&spec, &mut driver, &trace).expect("recording succeeds");
+
+    let mut driver = MockAppDriver::new(&["Row"]).with_occurrences("Row", 3);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    // The count is a REAL expectation, not a formality: one row fewer and
+    // the same trace must fail, naming what it found.
+    let mut driver = MockAppDriver::new(&["Row"]).with_occurrences("Row", 2);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed, "2 rows must not satisfy 3: {report:#?}");
+    let detail = format!("{report:?}");
+    assert!(
+        detail.contains("found 2"),
+        "the failure must say what was there: {detail}"
+    );
+
+    // And one row MORE must fail too - a count is exact, not a minimum.
+    let mut driver = MockAppDriver::new(&["Row"]).with_occurrences("Row", 4);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed, "4 rows must not satisfy 3: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

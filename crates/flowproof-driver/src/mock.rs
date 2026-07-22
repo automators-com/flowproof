@@ -14,6 +14,11 @@ pub struct MockAppDriver {
     pub launched: Option<(String, String)>,
     /// Automation ids that exist in the fake UI tree.
     pub elements: Vec<String>,
+    /// How many elements an id stands for, when more than one. A real
+    /// screen has three rows matching "Row"; without this the mock could
+    /// only ever model one of anything, and no count assertion could be
+    /// tested off a real adapter.
+    pub occurrences: HashMap<String, usize>,
     /// Text returned by `read_text`, keyed by automation id.
     pub texts: HashMap<String, String>,
     /// Automation ids invoked, in order.
@@ -95,6 +100,15 @@ impl MockAppDriver {
         }
     }
 
+    /// Model `count` elements matching this id, rather than one.
+    pub fn with_occurrences(mut self, automation_id: &str, count: usize) -> Self {
+        if !self.elements.iter().any(|e| e == automation_id) {
+            self.elements.push(automation_id.into());
+        }
+        self.occurrences.insert(automation_id.into(), count);
+        self
+    }
+
     pub fn with_text(mut self, automation_id: &str, text: &str) -> Self {
         self.texts.insert(automation_id.into(), text.into());
         self
@@ -161,7 +175,17 @@ impl AppDriver for MockAppDriver {
             .or(selector.css.as_ref())
             .or(selector.name.as_ref())
         {
-            Some(id) => Ok(self.elements.contains(id)),
+            Some(id) => {
+                if !self.elements.contains(id) {
+                    return Ok(false);
+                }
+                // The Nth exists only while N is within the id's
+                // multiplicity, which is what every real adapter does with
+                // an ordinal and what makes counting mean the same thing
+                // here as it does against a browser.
+                let available = self.occurrences.get(id).copied().unwrap_or(1);
+                Ok(selector.nth.unwrap_or(1).max(1) as usize <= available)
+            }
             None => Ok(false),
         }
     }

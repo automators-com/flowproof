@@ -74,8 +74,27 @@ append `within <N>s` to any form to change the bound.
 | `the [2nd ]"<target>" shows ${captured.<name>}` | compare against a remembered value: text, with the same matching ladder as any `shows` |
 | `the [2nd ]"<target>" shows ${captured.<name>} + <number>` / `- <number>` | compare NUMERICALLY against the remembered number offset by a literal, e.g. `the "Balance" shows ${captured.balance} - 100`. Currency symbols and thousands separators are ignored on both sides |
 | `the [2nd ]"<target>" is visible` / `is not visible` | target resolves / does not resolve |
+| `the "<target>" appears <N> times` | how many ELEMENTS match the anchor. Exact, not a minimum. No ordinal: `the 2nd "Row"` is one element by construction, so counting it has no answer |
 | `the [2nd ]"<target>" is enabled` / `is disabled` | platform enabled state (`disabled`/`aria-disabled` on web, UIA IsEnabled on desktop) |
 | `the [2nd ]"<target>" checkbox is checked` / `is not checked` | checkbox state, read from the `checked` property or `aria-checked`. A target that is not a checkbox fails as exactly that, not as "wrong state" |
+
+Two different questions share the word "times", and picking the wrong one
+is a quiet way to write a test that cannot fail:
+
+```yaml
+- assert: page shows Pending 3 times      # the TEXT appears 3 times anywhere
+- assert: the "css:.order-row" appears 3 times   # 3 ELEMENTS match
+```
+
+A list assertion almost always wants the second. Three rows whose labels
+happen to repeat a word are still three rows, and a row that renders its
+status twice would satisfy the first without any row existing at all.
+
+Counting rides on the same ordinal as `the 2nd "Row"`, so it means on each
+adapter exactly what an ordinal means there: DOM order on web, UIA tree
+order on the desktop, reading order under vision. A passing count costs
+`N + 1` questions to the app; only a FAILING one counts further, so the
+error can say `found 5` rather than just "not 3".
 
 The URL forms map `cy.location("pathname").should("equal", "/signin")` and
 `cy.url().should("include", "checkout")`, and they auto-wait like every other
