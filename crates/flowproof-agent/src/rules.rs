@@ -13,7 +13,7 @@ use crate::spec::SpecStep;
 pub enum RulesError {
     #[error("cannot resolve step '{step}': {reason}")]
     Unresolvable { step: String, reason: String },
-    #[error("no rules for app '{0}' (supported: calc, notepad, web)")]
+    #[error("no rules for app '{0}' (supported: calc, notepad, web, sap, vision, windows)")]
     UnsupportedApp(String),
 }
 
@@ -415,6 +415,10 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
         // Pixels-only mode shares the generic grammar too: quoted labels
         // are OCR text anchors, asserts read the OCR'd surface.
         "vision" => sap::resolve(step),
+        // Arbitrary Windows apps (#66/#67): the SAME documented forms, acting
+        // through UI Automation. Not new vocabulary - the grammar is shared;
+        // what differs is which forms an adapter can actually perform.
+        "windows" => windows::resolve(step),
         other => Err(RulesError::UnsupportedApp(other.to_string())),
     }
 }
@@ -840,6 +844,86 @@ mod notepad {
             // Out-of-band steps are dispatched before app resolution.
             other => Err(unresolvable(&other.intent(), "handled before app dispatch")),
         }
+    }
+}
+
+/// The target an action addresses, when it addresses one.
+fn action_target(action: &ResolvedAction) -> Option<&Target> {
+    match action {
+        ResolvedAction::Press { target, .. }
+        | ResolvedAction::TypeText { target, .. }
+        | ResolvedAction::Upload { target, .. }
+        | ResolvedAction::ContextClick { target, .. }
+        | ResolvedAction::Clear { target }
+        | ResolvedAction::SetChecked { target, .. }
+        | ResolvedAction::Capture { target, .. }
+        | ResolvedAction::AssertCaptured { target, .. }
+        | ResolvedAction::AssertText { target, .. }
+        | ResolvedAction::AssertPresence { target, .. }
+        | ResolvedAction::AssertChecked { target, .. }
+        | ResolvedAction::AssertEnabled { target, .. } => Some(target),
+        _ => None,
+    }
+}
+
+/// Does this target address an element by CSS? Looks through an ordinal.
+fn target_uses_css(target: &Target) -> bool {
+    match target {
+        Target::Css(_) => true,
+        Target::Nth(_, inner) => target_uses_css(inner),
+        _ => false,
+    }
+}
+
+/// Arbitrary Windows apps driven through UI Automation.
+///
+/// The grammar is the shared one - the same forms the docs already list -
+/// so this module's job is not to invent syntax but to say honestly which
+/// of those forms this adapter performs. A form that is merely unimplemented
+/// gets an error naming it, rather than silently doing something else.
+mod windows {
+    use super::*;
+
+    pub(super) fn resolve(step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
+        let actions = match step {
+            SpecStep::Plain(text) => web::resolve_plain(text)?,
+            other => sap::resolve(other)?,
+        };
+        for action in &actions {
+            reject_unsupported(step, action)?;
+        }
+        Ok(actions)
+    }
+
+    /// v1 scope. Everything rejected here is additive later; saying "not
+    /// implemented" is honest, quietly doing something else is not.
+    fn reject_unsupported(step: &SpecStep, action: &ResolvedAction) -> Result<(), RulesError> {
+        let intent = step.intent();
+        let not_yet = |what: &str| {
+            Err(unresolvable(
+                &intent,
+                format!("{what} is not implemented for windows apps yet"),
+            ))
+        };
+        match action {
+            ResolvedAction::ContextClick { .. } => return not_yet("right-click"),
+            ResolvedAction::Upload { .. } => return not_yet("upload"),
+            ResolvedAction::Navigate { .. } => return not_yet("`Go to`"),
+            ResolvedAction::Reload => return not_yet("`Reload the page`"),
+            _ => {}
+        }
+        // A `css:` target is a web-ism: a UIA tree has no CSS. Catching it
+        // at parse time beats failing to resolve it against a live app.
+        if let Some(target) = action_target(action) {
+            if target_uses_css(target) {
+                return Err(unresolvable(
+                    &intent,
+                    "`css:` selectors are web-only; address a windows control by its \
+                     visible label, or `id:<AutomationId>`",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2287,5 +2371,91 @@ mod multibyte_tests {
             resolve_step("web", &SpecStep::Plain("page shows anything".into()))
         });
         assert!(caught.is_ok(), "resolve_step must never unwind");
+    }
+}
+
+#[cfg(test)]
+mod windows_grammar_tests {
+    use super::*;
+
+    fn plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step("windows", &SpecStep::Plain(text.into()))
+    }
+
+    /// #67: not new vocabulary. The SAME documented forms resolve for an
+    /// arbitrary Windows app - that is the whole point, because a suite
+    /// should not need a second grammar per platform.
+    #[test]
+    fn the_shared_forms_resolve_for_a_windows_app() {
+        assert!(matches!(
+            plain("Type hello into the \"Name\" field").as_deref(),
+            Ok([ResolvedAction::TypeText { .. }])
+        ));
+        assert!(matches!(
+            plain("Press the \"Save\" button").as_deref(),
+            Ok([ResolvedAction::Press { .. }])
+        ));
+        assert!(matches!(
+            plain("Click \"File\"").as_deref(),
+            Ok([ResolvedAction::Press { .. }])
+        ));
+        assert!(matches!(
+            plain("Press Control+S").as_deref(),
+            Ok([ResolvedAction::PressKey { .. }])
+        ));
+        assert!(matches!(
+            plain("Clear the \"Name\" field").as_deref(),
+            Ok([ResolvedAction::Clear { .. }])
+        ));
+        // An AutomationId addressed directly, and an ordinal.
+        assert!(plain("Type 5 into the id:15 field").is_ok());
+        assert!(plain("Click the 2nd \"Edit\"").is_ok() || plain("Click \"Edit\"").is_ok());
+    }
+
+    /// A `css:` selector is a web-ism: a UIA tree has no CSS. Catching it at
+    /// parse time beats failing to resolve it against a live app, and the
+    /// message names both working spellings.
+    #[test]
+    fn css_targets_are_rejected_as_web_only() {
+        let err = plain("Click \"css:#save\"").expect_err("css is web-only");
+        let m = err.to_string();
+        assert!(m.contains("web-only"), "{m}");
+        assert!(
+            m.contains("id:<AutomationId>"),
+            "the error names the alternative: {m}"
+        );
+    }
+
+    /// Out of v1 scope. Each says so by name rather than silently doing
+    /// something else - the same honesty the adapter errors use.
+    #[test]
+    fn out_of_scope_forms_say_so_by_name() {
+        for (step, want) in [
+            ("Right-click \"File\"", "right-click"),
+            ("Go to /settings", "`Go to`"),
+            ("Reload the page", "`Reload the page`"),
+            ("Upload /tmp/a.txt into the \"File\" field", "upload"),
+        ] {
+            let err = plain(step).expect_err("out of v1 scope");
+            let m = err.to_string();
+            assert!(m.contains(want), "step '{step}' should name {want}: {m}");
+            assert!(m.contains("not implemented for windows apps yet"), "{m}");
+        }
+    }
+
+    /// Assertions are shared too, including the ones added this round.
+    #[test]
+    fn shared_assertions_resolve_for_windows() {
+        let assert_step = |t: &str| {
+            resolve_step(
+                "windows",
+                &SpecStep::Assert {
+                    assert: t.to_string(),
+                },
+            )
+        };
+        assert!(assert_step("page shows Untitled").is_ok());
+        assert!(assert_step("the \"Save\" is disabled").is_ok());
+        assert!(assert_step("the \"Wrap\" checkbox is checked").is_ok());
     }
 }
