@@ -118,24 +118,33 @@ fn serve_one(stream: TcpStream, cassette: &Cassette, turn: &mut usize, log: &Mut
     let mut writer = stream;
 
     let Some((path, body)) = read_request(&mut reader) else {
-        let _ = writer.write_all(&response(400, r#"{"error":"malformed request"}"#));
+        respond(
+            &mut writer,
+            &mut reader,
+            &response(400, r#"{"error":"malformed request"}"#),
+        );
         return;
     };
     if !path.contains("/chat/completions") {
-        let _ = writer.write_all(&response(
-            404,
-            r#"{"error":"only /v1/chat/completions is served"}"#,
-        ));
+        respond(
+            &mut writer,
+            &mut reader,
+            &response(404, r#"{"error":"only /v1/chat/completions is served"}"#),
+        );
         return;
     }
 
     let incoming = match parse_request(&body) {
         Ok(request) => request,
         Err(why) => {
-            let _ = writer.write_all(&response(
-                400,
-                &error_body(&format!("could not read the request: {why}")),
-            ));
+            respond(
+                &mut writer,
+                &mut reader,
+                &response(
+                    400,
+                    &error_body(&format!("could not read the request: {why}")),
+                ),
+            );
             return;
         }
     };
@@ -145,7 +154,11 @@ fn serve_one(stream: TcpStream, cassette: &Cassette, turn: &mut usize, log: &Mut
     match cassette.turn(index, &incoming) {
         Ok(recorded) => {
             log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
-            let _ = writer.write_all(&response(200, &completion_body(&recorded.message)));
+            respond(
+                &mut writer,
+                &mut reader,
+                &response(200, &completion_body(&recorded.message)),
+            );
         }
         Err(divergence) => {
             // The agent is owed an answer or it will hang; the run is owed
@@ -157,7 +170,41 @@ fn serve_one(stream: TcpStream, cassette: &Cassette, turn: &mut usize, log: &Mut
             if log.divergence.is_none() {
                 log.divergence = Some(divergence.clone());
             }
-            let _ = writer.write_all(&response(409, &error_body(&divergence.to_string())));
+            drop(log);
+            respond(
+                &mut writer,
+                &mut reader,
+                &response(409, &error_body(&divergence.to_string())),
+            );
+        }
+    }
+}
+
+/// Send a response and close the write half cleanly.
+///
+/// Dropping the socket straight after `write_all` is what a first draft
+/// does, and on Windows it intermittently costs the client its answer:
+/// closing a socket that still has anything pending makes the stack send
+/// RST rather than FIN, and the client's read fails with
+/// WSAECONNRESET (10054) instead of returning the response it was
+/// already sent. It surfaced as a flaky windows-latest job, but the same
+/// race would hand a real agent a connection error in place of its model
+/// reply, which the agent would report as a model outage.
+///
+/// So: flush, then shut down the write half so the peer sees an orderly
+/// FIN, then drain whatever the client still had in flight before the
+/// socket goes away.
+fn respond(writer: &mut TcpStream, reader: &mut BufReader<TcpStream>, bytes: &[u8]) {
+    let _ = writer.write_all(bytes);
+    let _ = writer.flush();
+    let _ = writer.shutdown(std::net::Shutdown::Write);
+    // Unread bytes in the receive buffer are the other way to earn an RST.
+    // Bounded so a client that keeps talking cannot hold the thread.
+    let mut sink = [0u8; 4096];
+    for _ in 0..16 {
+        match reader.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
         }
     }
 }
