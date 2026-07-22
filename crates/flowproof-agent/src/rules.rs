@@ -749,41 +749,64 @@ mod calc {
         }
     }
 
+    /// Sugar first (`Type <digits>`, `Press <key word>`), then the shared
+    /// action grammar through UIA — the same fallback order the assertions
+    /// use. `Press the "Square root" button`, `Click "History"` and
+    /// `Press Ctrl+H` were inexpressible while the sugar was the whole
+    /// vocabulary (#67).
     fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
         let trimmed = text.trim();
+        match resolve_sugar(trimmed) {
+            Some(result) => result.or_else(|sugar_err| {
+                // A sugar prefix matched but didn't parse as calculator
+                // sugar. When the generic grammar can't make sense of it
+                // either, the sugar error names the likelier intent here.
+                windows::resolve_plain(text).map_err(|_| sugar_err)
+            }),
+            None => windows::resolve_plain(text),
+        }
+    }
 
+    /// The calculator's own vocabulary. `None` = no sugar prefix matched;
+    /// `Some(Err)` = a prefix matched but the rest wasn't valid sugar (the
+    /// caller gives the generic grammar its chance before reporting).
+    fn resolve_sugar(trimmed: &str) -> Option<Result<Vec<ResolvedAction>, RulesError>> {
         if let Some(rest) = strip_prefix_ci(trimmed, "type ") {
             let value = rest.trim();
             if value.is_empty() {
-                return Err(unresolvable(trimmed, "nothing to type"));
+                return Some(Err(unresolvable(trimmed, "nothing to type")));
             }
             let mut actions = Vec::new();
             for c in value.chars() {
-                let (automation_id, label) = digit_button(c).ok_or_else(|| {
-                    unresolvable(trimmed, format!("'{c}' is not a digit or decimal point"))
-                })?;
+                let Some((automation_id, label)) = digit_button(c) else {
+                    return Some(Err(unresolvable(
+                        trimmed,
+                        format!("'{c}' is not a digit or decimal point"),
+                    )));
+                };
                 actions.push(ResolvedAction::Press {
                     target: Target::AutomationId(automation_id),
                     label,
                 });
             }
-            return Ok(actions);
+            return Some(Ok(actions));
         }
 
         if let Some(rest) = strip_prefix_ci(trimmed, "press ") {
             let word = rest.trim().to_lowercase();
-            let (automation_id, label) = operator_button(&word)
-                .ok_or_else(|| unresolvable(trimmed, format!("unknown calculator key '{word}'")))?;
-            return Ok(vec![ResolvedAction::Press {
-                target: Target::id(automation_id),
-                label: label.into(),
-            }]);
+            return Some(match operator_button(&word) {
+                Some((automation_id, label)) => Ok(vec![ResolvedAction::Press {
+                    target: Target::id(automation_id),
+                    label: label.into(),
+                }]),
+                None => Err(unresolvable(
+                    trimmed,
+                    format!("unknown calculator key '{word}'"),
+                )),
+            });
         }
 
-        Err(unresolvable(
-            trimmed,
-            "expected 'Type <digits>' or 'Press <key>'",
-        ))
+        None
     }
 
     fn resolve_assert(text: &str) -> Result<ResolvedAction, RulesError> {
@@ -816,12 +839,25 @@ mod notepad {
                     if value.is_empty() {
                         return Err(unresolvable(trimmed, "nothing to type"));
                     }
+                    // The targeted form (`Type … into the "<label>" field`)
+                    // is the shared grammar's: a Find dialog's field is not
+                    // the document. Prose that merely CONTAINS "into the"
+                    // won't parse as that form and stays literal.
+                    if rfind_ci(rest, " into the ").is_some() {
+                        if let Ok(actions) = windows::resolve_plain(text) {
+                            return Ok(actions);
+                        }
+                    }
+                    // Bare `Type <text>` addresses the document, as always.
                     return Ok(vec![ResolvedAction::TypeText {
                         target: Target::id(NOTEPAD_EDITOR_ID),
                         text: value.to_string(),
                     }]);
                 }
-                Err(unresolvable(trimmed, "expected 'Type <text>'"))
+                // Everything else is the shared action grammar through UIA
+                // (#67): `Press the "Save" button`, `Click "File"`,
+                // `Press Ctrl+S`, ordinals, `id:` targets.
+                windows::resolve_plain(text)
             }
             SpecStep::Assert { assert } => {
                 let trimmed = assert.trim();
@@ -885,23 +921,36 @@ mod windows {
     use super::*;
 
     pub(super) fn resolve(step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
-        let actions = match step {
-            SpecStep::Plain(text) => web::resolve_plain(text)?,
-            other => sap::resolve(other)?,
-        };
+        match step {
+            SpecStep::Plain(text) => resolve_plain(text),
+            other => {
+                let actions = sap::resolve(other)?;
+                for action in &actions {
+                    reject_unsupported(&other.intent(), action)?;
+                }
+                Ok(actions)
+            }
+        }
+    }
+
+    /// The generic action grammar, performed through UI Automation. This is
+    /// the whole vocabulary any UIA-driven app gets — `calc` and `notepad`
+    /// fall back here too (#67), so their sugar is an alias layer, not a
+    /// cage.
+    pub(super) fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        let actions = web::resolve_plain(text)?;
         for action in &actions {
-            reject_unsupported(step, action)?;
+            reject_unsupported(text.trim(), action)?;
         }
         Ok(actions)
     }
 
     /// v1 scope. Everything rejected here is additive later; saying "not
     /// implemented" is honest, quietly doing something else is not.
-    fn reject_unsupported(step: &SpecStep, action: &ResolvedAction) -> Result<(), RulesError> {
-        let intent = step.intent();
+    fn reject_unsupported(intent: &str, action: &ResolvedAction) -> Result<(), RulesError> {
         let not_yet = |what: &str| {
             Err(unresolvable(
-                &intent,
+                intent,
                 format!("{what} is not implemented for windows apps yet"),
             ))
         };
@@ -917,7 +966,7 @@ mod windows {
         if let Some(target) = action_target(action) {
             if target_uses_css(target) {
                 return Err(unresolvable(
-                    &intent,
+                    intent,
                     "`css:` selectors are web-only; address a windows control by its \
                      visible label, or `id:<AutomationId>`",
                 ));
@@ -2464,5 +2513,102 @@ mod windows_grammar_tests {
         assert!(assert_step("page shows Untitled").is_ok());
         assert!(assert_step("the \"Save\" is disabled").is_ok());
         assert!(assert_step("the \"Wrap\" checkbox is checked").is_ok());
+    }
+
+    /// #67 proper: the registry apps get the same grammar as ACTIONS. Sugar
+    /// stays an alias on top; the shared forms open up everything the sugar
+    /// never named (sqrt, percent, memory keys, menus, dialogs).
+    #[test]
+    fn calc_falls_back_to_the_shared_action_grammar() {
+        let calc = |t: &str| resolve_step("calc", &SpecStep::Plain(t.into()));
+
+        // Sugar still means what it always meant.
+        let typed = calc("Type 12.5").expect("digit sugar resolves");
+        assert_eq!(typed.len(), 4);
+        assert!(matches!(
+            calc("Press equals").as_deref(),
+            Ok([ResolvedAction::Press { target: Target::AutomationId(id), .. }])
+                if id == "equalButton"
+        ));
+
+        // The shared forms now resolve as actions, not just asserts.
+        assert!(matches!(
+            calc("Press the \"Square root\" button").as_deref(),
+            Ok([ResolvedAction::Press { target: Target::Text(t), .. }]) if t == "Square root"
+        ));
+        assert!(matches!(
+            calc("Click \"History\"").as_deref(),
+            Ok([ResolvedAction::Press { .. }])
+        ));
+        assert!(matches!(
+            calc("Press Ctrl+H").as_deref(),
+            Ok([ResolvedAction::PressKey { .. }])
+        ));
+        assert!(matches!(
+            calc("Press the \"id:percentButton\" button").as_deref(),
+            Ok([ResolvedAction::Press { target: Target::AutomationId(id), .. }])
+                if id == "percentButton"
+        ));
+        assert!(matches!(
+            calc("Click the 2nd \"Memory\"").as_deref(),
+            Ok([ResolvedAction::Press {
+                target: Target::Nth(2, _),
+                ..
+            }])
+        ));
+
+        // The windows scope rules apply to the fallback too.
+        assert!(calc("Click \"css:#save\"")
+            .expect_err("css is web-only")
+            .to_string()
+            .contains("web-only"));
+        assert!(calc("Go to /settings")
+            .expect_err("navigation is web/sap")
+            .to_string()
+            .contains("not implemented for windows apps yet"));
+
+        // When neither grammar parses a sugar-prefixed step, the error
+        // names the calculator vocabulary — the likelier intent under
+        // `app: calc`.
+        assert!(calc("Press bogus")
+            .expect_err("not a key, chord, or button form")
+            .to_string()
+            .contains("unknown calculator key"));
+    }
+
+    /// Notepad keeps `Type <text>` = the document, gains the rest of the
+    /// grammar, and cedes the TARGETED type form to the shared grammar so
+    /// dialogs (Find, Replace, Save As) become addressable.
+    #[test]
+    fn notepad_falls_back_to_the_shared_action_grammar() {
+        let notepad = |t: &str| resolve_step("notepad", &SpecStep::Plain(t.into()));
+
+        assert!(matches!(
+            notepad("Type see you into the future").as_deref(),
+            Ok([ResolvedAction::TypeText { target: Target::AutomationId(_), text }])
+                if text == "see you into the future"
+        ));
+        assert!(matches!(
+            notepad("Type flowproof into the \"Find what\" field").as_deref(),
+            Ok([ResolvedAction::TypeText { target: Target::Text(t), .. }]) if t == "Find what"
+        ));
+        assert!(matches!(
+            notepad("Press Ctrl+S").as_deref(),
+            Ok([ResolvedAction::PressKey { .. }])
+        ));
+        assert!(matches!(
+            notepad("Click \"File\"").as_deref(),
+            Ok([ResolvedAction::Press { .. }])
+        ));
+        assert!(matches!(
+            notepad("Press the \"Save\" button").as_deref(),
+            Ok([ResolvedAction::Press { .. }])
+        ));
+        // Out-of-scope forms get the honest windows error now, not
+        // "expected 'Type <text>'".
+        assert!(notepad("Reload the page")
+            .expect_err("reload is web-only")
+            .to_string()
+            .contains("not implemented for windows apps yet"));
     }
 }
