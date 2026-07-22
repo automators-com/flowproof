@@ -69,6 +69,9 @@ pub struct MockAppDriver {
     /// Browser config captured by `stage_browser` — the mock stands in
     /// for the web driver here, so tests can assert the staging happened.
     pub staged_browser: Option<crate::WebBrowserConfig>,
+    /// Checkbox state by element key. Absent = not a checkbox, which the
+    /// driver reports as `None` so tests can cover that third answer.
+    pub checked: HashMap<String, bool>,
     /// URL reported by `current_url`, for `page url is|contains` tests.
     pub url: Option<String>,
     /// Leading `surface_text` calls that fail with a TRANSPORT fault before
@@ -97,6 +100,11 @@ impl MockAppDriver {
 
     pub fn with_surface_text(mut self, text: &str) -> Self {
         self.texts.insert(Self::SURFACE.into(), text.into());
+        self
+    }
+
+    pub fn with_checkbox(mut self, key: &str, checked: bool) -> Self {
+        self.checked.insert(key.into(), checked);
         self
     }
 
@@ -193,6 +201,20 @@ impl AppDriver for MockAppDriver {
         // Typing appends to the element's text, like a real edit control.
         self.texts.entry(id.to_string()).or_default().push_str(text);
         self.typed.push((id.to_string(), text.to_string()));
+        Ok(())
+    }
+
+    fn element_checked(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        let id = Self::id_of(selector)?;
+        Ok(self.checked.get(id).copied())
+    }
+
+    fn set_checked(&mut self, selector: &UiaSelector, checked: bool) -> Result<(), DriverError> {
+        let id = Self::id_of(selector)?.to_string();
+        if !self.checked.contains_key(&id) {
+            return Err(DriverError::Uia(format!("{id} is not a checkbox")));
+        }
+        self.checked.insert(id, checked);
         Ok(())
     }
 

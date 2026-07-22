@@ -211,6 +211,26 @@ pub trait AppDriver {
         ))
     }
 
+    /// Whether a checkbox-like control is checked. `None` when the target
+    /// is not one, so an assertion can say precisely that instead of
+    /// reporting a confident `false`.
+    fn element_checked(&mut self, _selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        Err(DriverError::Uia(
+            "element_checked is not supported by this driver".into(),
+        ))
+    }
+
+    /// Drive a checkbox-like control to `checked`. SET-state, not toggle:
+    /// idempotent, so a reseeded or drifted environment cannot silently
+    /// invert what the step means. Implementations act like a user - a real
+    /// click, so the app's own handlers fire - and then verify the state
+    /// actually took.
+    fn set_checked(&mut self, _selector: &UiaSelector, _checked: bool) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "set_checked is not supported by this driver".into(),
+        ))
+    }
+
     /// The surface's current location, for `page url is|contains`. Only a
     /// browser has one: a UIA window, a SAP session and an OCR'd frame do
     /// not, so the default refuses with a reason rather than inventing an
@@ -619,6 +639,14 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
         (**self).surface_text()
+    }
+
+    fn element_checked(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        (**self).element_checked(selector)
+    }
+
+    fn set_checked(&mut self, selector: &UiaSelector, checked: bool) -> Result<(), DriverError> {
+        (**self).set_checked(selector, checked)
     }
 
     fn current_url(&mut self) -> Result<String, DriverError> {

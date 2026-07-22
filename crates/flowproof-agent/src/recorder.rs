@@ -260,6 +260,11 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             }),
         ),
         // Clear is a replace-with-nothing TypeText, flagged via `replace`.
+        ResolvedAction::SetChecked { target, checked } => {
+            let mut params = serde_json::Map::new();
+            params.insert("checked".into(), (*checked).into());
+            (selectors_for(app, target, None), Action::SetChecked(params))
+        }
         ResolvedAction::Clear { target } => {
             let mut extra = serde_json::Map::new();
             extra.insert("replace".into(), true.into());
@@ -365,6 +370,20 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             Action::Assert(Assertion::ElementState {
                 expect: serde_json::json!({
                     "element_present": present,
+                    "timeout_ms": timeout_ms,
+                }),
+                selector_ref: Some(0),
+            }),
+        ),
+        ResolvedAction::AssertChecked {
+            target,
+            checked,
+            timeout_ms,
+        } => (
+            selectors_for(app, target, None),
+            Action::Assert(Assertion::ElementState {
+                expect: serde_json::json!({
+                    "checked": checked,
                     "timeout_ms": timeout_ms,
                 }),
                 selector_ref: Some(0),
@@ -486,8 +505,10 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::Upload { target, .. }
         | ResolvedAction::ContextClick { target, .. }
         | ResolvedAction::Clear { target }
+        | ResolvedAction::SetChecked { target, .. }
         | ResolvedAction::AssertText { target, .. }
         | ResolvedAction::AssertPresence { target, .. }
+        | ResolvedAction::AssertChecked { target, .. }
         | ResolvedAction::AssertEnabled { target, .. } => target,
         ResolvedAction::TypeFocused { .. }
         | ResolvedAction::PressKey { .. }
@@ -1177,6 +1198,9 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     driver.type_focused(&value)?
                 }
                 ResolvedAction::Clear { .. } => driver.clear_text(targeted())?,
+                ResolvedAction::SetChecked { checked, .. } => {
+                    driver.set_checked(targeted(), *checked)?
+                }
                 ResolvedAction::Upload { path, .. } => {
                     driver.set_files(targeted(), std::slice::from_ref(path))?
                 }
@@ -1308,6 +1332,35 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                     "element never appeared".to_string()
                                 } else {
                                     "element still on screen".to_string()
+                                },
+                            });
+                        }
+                        std::thread::sleep(ASSERT_POLL_INTERVAL);
+                    }
+                }
+                ResolvedAction::AssertChecked {
+                    checked,
+                    timeout_ms,
+                    ..
+                } => {
+                    let state = |c: bool| if c { "checked" } else { "unchecked" };
+                    let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
+                    loop {
+                        let seen = driver
+                            .element_exists(targeted())?
+                            .then(|| driver.element_checked(targeted()))
+                            .transpose()?
+                            .flatten();
+                        if seen == Some(*checked) {
+                            break;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: format!("checkbox {}", state(*checked)),
+                                actual: match seen {
+                                    Some(c) => format!("checkbox {}", state(c)),
+                                    None => "not a checkbox, or not found".to_string(),
                                 },
                             });
                         }

@@ -94,6 +94,10 @@ pub enum ResolvedAction {
     TypeFocused { text: String },
     /// Clear an input's current value (Playwright's `clear()`).
     Clear { target: Target },
+    /// Drive a checkbox-like control to a STATE (`Check`/`Uncheck`).
+    /// Set-state rather than toggle, so the step means the same thing
+    /// however the environment arrives: idempotent by design.
+    SetChecked { target: Target, checked: bool },
     /// Press a named key, optionally with modifiers (`Enter`, `Ctrl+V`).
     PressKey {
         key: String,
@@ -117,6 +121,12 @@ pub enum ResolvedAction {
     },
     /// Assert an element's enabled/disabled state ("the \"Save\" is
     /// disabled") — a first-class form, not a css attribute-selector trick.
+    /// `the "<target>" checkbox is [not] checked`.
+    AssertChecked {
+        target: Target,
+        checked: bool,
+        timeout_ms: u64,
+    },
     AssertEnabled {
         target: Target,
         enabled: bool,
@@ -569,6 +579,23 @@ mod assertions {
                             timeout_ms,
                         }]);
                     }
+                    // Checkbox state. The noun is required so the form
+                    // cannot be confused with visibility or enabledness:
+                    // `the "Remember me" checkbox is checked`.
+                    if tail.eq_ignore_ascii_case("checkbox is checked") {
+                        return Ok(vec![ResolvedAction::AssertChecked {
+                            target,
+                            checked: true,
+                            timeout_ms,
+                        }]);
+                    }
+                    if tail.eq_ignore_ascii_case("checkbox is not checked") {
+                        return Ok(vec![ResolvedAction::AssertChecked {
+                            target,
+                            checked: false,
+                            timeout_ms,
+                        }]);
+                    }
                 }
             } else if nth.is_none() {
                 if let Some(pos) = rest.find(" field contains ") {
@@ -599,7 +626,8 @@ mod assertions {
         Err(unresolvable(
             trimmed,
             "expected '[the ]page shows <text>[ N times]', '[the ]page url is|contains \
-             <url>', '[the ]page does not show \
+             <url>', 'the \"<target>\" checkbox is [not] checked', \
+             '[the ]page does not show \
              <text>', 'the \"<label>\" field contains <text>', 'the \"<target>\" shows \
              <text>', 'the \"<target>\" is [not] visible', or 'the \"<target>\" is \
              enabled|disabled' (see docs/authoring.md for the full grammar)",
@@ -1029,6 +1057,37 @@ mod web {
                 "expected 'Replace the [2nd ]\"<label>\" field with <text>' or \
                  'Replace the <id> field with <text>'",
             ));
+        }
+
+        // `Check the [Nth ]"<label>" checkbox` / `Uncheck the …`.
+        // SET-state, not toggle: `Check` on an already-checked box is a
+        // no-op, so a reseeded environment cannot invert the step's meaning
+        // the way a toggle would. Same reason Cypress's .check() works this
+        // way.
+        for (verb, checked) in [("check the ", true), ("uncheck the ", false)] {
+            let Some(rest) = strip_prefix_ci(trimmed, verb) else {
+                continue;
+            };
+            let (nth, field) = split_ordinal(rest.trim());
+            if let Some(quoted) = field.strip_prefix('"') {
+                if let Some((label, tail)) = quoted_label(quoted) {
+                    if tail.eq_ignore_ascii_case("checkbox") {
+                        return Ok(vec![ResolvedAction::SetChecked {
+                            target: with_nth(nth, target_from_label(label)),
+                            checked,
+                        }]);
+                    }
+                }
+            } else if nth.is_none() {
+                if let Some(id) = strip_suffix_ci(field, " checkbox").map(str::trim) {
+                    if !id.is_empty() {
+                        return Ok(vec![ResolvedAction::SetChecked {
+                            target: Target::id(id),
+                            checked,
+                        }]);
+                    }
+                }
+            }
         }
 
         // `Clear the [Nth ]"<label>" field` / `Clear the <id> field`.
