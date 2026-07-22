@@ -219,12 +219,12 @@ pub(super) fn parse_capture_ref(text: &str) -> Option<(String, Option<f64>)> {
     if tail.is_empty() {
         return Some((name.to_string(), None));
     }
-    let (sign, literal) = if let Some(v) = tail.strip_prefix('+') {
-        (1.0, v.trim())
-    } else if let Some(v) = tail.strip_prefix('-') {
-        (-1.0, v.trim())
-    } else {
-        return None;
+    // Written with `?` rather than a trailing `else { return None }`:
+    // clippy's question_mark lint rejects the latter, and this repo has
+    // already been bitten by that exact lint once (see the 0.2.x history).
+    let (sign, literal) = match tail.strip_prefix('+') {
+        Some(v) => (1.0, v.trim()),
+        None => (-1.0, tail.strip_prefix('-')?.trim()),
     };
     // Digits only: no separators, no second capture, no nesting.
     if literal.is_empty()
