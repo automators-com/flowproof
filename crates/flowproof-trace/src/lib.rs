@@ -6,6 +6,7 @@
 //! JSON Schema in `schema/trace-v1.schema.json`; the serde types in this
 //! crate are implemented against that schema.
 //!
+pub mod cassette;
 pub mod format;
 pub mod secret;
 
