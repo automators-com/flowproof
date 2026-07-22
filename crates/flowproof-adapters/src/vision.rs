@@ -471,53 +471,10 @@ pub mod native {
 
     use super::VisionScreen;
 
-    /// Canonical key name → Windows virtual-key code.
-    fn virtual_key(key: &str) -> Option<u16> {
-        let named = match key {
-            "Enter" => 0x0D,
-            "Escape" => 0x1B,
-            "Tab" => 0x09,
-            "Backspace" => 0x08,
-            "Delete" => 0x2E,
-            "Space" => 0x20,
-            "ArrowLeft" => 0x25,
-            "ArrowUp" => 0x26,
-            "ArrowRight" => 0x27,
-            "ArrowDown" => 0x28,
-            "Home" => 0x24,
-            "End" => 0x23,
-            "PageUp" => 0x21,
-            "PageDown" => 0x22,
-            _ => 0,
-        };
-        if named != 0 {
-            return Some(named);
-        }
-        if let Some(n) = key
-            .strip_prefix(['F', 'f'])
-            .and_then(|n| n.parse::<u16>().ok())
-        {
-            if (1..=12).contains(&n) {
-                return Some(0x6F + n); // F1 = 0x70
-            }
-        }
-        let mut chars = key.chars();
-        match (chars.next(), chars.next()) {
-            (Some(c), None) if c.is_ascii_alphanumeric() => {
-                Some(c.to_ascii_uppercase() as u16) // VK for A-Z/0-9 equals ASCII
-            }
-            _ => None,
-        }
-    }
-
-    fn modifier_key(m: &KeyMod) -> u16 {
-        match m {
-            KeyMod::Ctrl => 0x11,
-            KeyMod::Alt => 0x12,
-            KeyMod::Shift => 0x10,
-            KeyMod::Meta => 0x5B,
-        }
-    }
+    // Key mapping lives in the driver crate (`virtual_key`,
+    // `modifier_virtual_key`) — one table for every SendInput-based
+    // driver, so `Press Escape` means the same keystroke on each.
+    use flowproof_driver::{modifier_virtual_key as modifier_key, virtual_key};
 
     pub struct NativeScreen {
         backend: PlatformBackend,
