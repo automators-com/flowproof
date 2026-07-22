@@ -7,6 +7,7 @@
 //! crate are implemented against that schema.
 //!
 pub mod cassette;
+pub mod cassette_diff;
 pub mod format;
 pub mod secret;
 pub mod toolcalls;
