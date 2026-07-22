@@ -726,6 +726,7 @@ version = "0.2.5"
 dependencies = [
  "anyhow",
  "flowproof-driver",
+ "flowproof-trace",
  "headless_chrome",
  "image",
  "ocrs",
