@@ -6,8 +6,9 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowRect, GetWindowTextW, IsIconic, IsWindowVisible, SetForegroundWindow,
-    ShowWindow, SW_RESTORE,
+    EnumWindows, GetAncestor, GetClassNameW, GetWindowRect, GetWindowTextW, IsIconic,
+    IsWindowVisible, SetForegroundWindow, SetWindowPos, ShowWindow, GA_ROOT, SWP_NOACTIVATE,
+    SWP_NOZORDER, SW_RESTORE,
 };
 
 use crate::app::PixelRect;
@@ -106,5 +107,76 @@ impl WindowInfo {
             (rect.bottom - rect.top).unsigned_abs(),
         );
         Ok(self.rect)
+    }
+}
+
+impl WindowInfo {
+    /// Size and position this window, returning what was ACTUALLY applied.
+    ///
+    /// UWP is the trap the field report named: a packaged app's visible
+    /// window is a `Windows.UI.Core.CoreWindow` hosted inside an
+    /// `ApplicationFrameWindow`, and resizing the CoreWindow moves nothing
+    /// a user can see. Resize the frame ancestor instead when we are
+    /// looking at one.
+    pub fn set_geometry(
+        &mut self,
+        width: u32,
+        height: u32,
+        position: Option<(i32, i32)>,
+    ) -> Result<(u32, u32, i32, i32), DriverError> {
+        let target = self.frame_host().unwrap_or(self.hwnd);
+        let hwnd = HWND(target as *mut _);
+        // Keep the current position when the spec asked only for a size:
+        // the caller records whatever it lands on, so replay pins it.
+        let mut rect = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut rect) }
+            .map_err(|e| DriverError::Uia(format!("reading bounds of '{}': {e}", self.title)))?;
+        let (x, y) = position.unwrap_or((rect.left, rect.top));
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                x,
+                y,
+                width as i32,
+                height as i32,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .map_err(|e| {
+            DriverError::Uia(format!(
+                "resizing '{}' to {width}x{height} at ({x},{y}): {e}",
+                self.title
+            ))
+        })?;
+        // Report what the window manager actually did, not what we asked
+        // for: a DPI-scaled or minimum-size-constrained window lands
+        // somewhere else, and the trace must record the truth.
+        let mut applied = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut applied) }
+            .map_err(|e| DriverError::Uia(format!("re-reading bounds of '{}': {e}", self.title)))?;
+        Ok((
+            (applied.right - applied.left).unsigned_abs(),
+            (applied.bottom - applied.top).unsigned_abs(),
+            applied.left,
+            applied.top,
+        ))
+    }
+
+    /// The `ApplicationFrameWindow` hosting this window, when it is a UWP
+    /// `CoreWindow`. `None` for an ordinary Win32 window, which is its own
+    /// frame.
+    fn frame_host(&self) -> Option<isize> {
+        let hwnd = HWND(self.hwnd as *mut _);
+        let mut class = [0u16; 128];
+        let len = unsafe { GetClassNameW(hwnd, &mut class) };
+        if len <= 0 {
+            return None;
+        }
+        if String::from_utf16_lossy(&class[..len as usize]) != "Windows.UI.Core.CoreWindow" {
+            return None;
+        }
+        let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+        (!root.is_invalid() && root.0 as isize != self.hwnd).then(|| root.0 as isize)
     }
 }

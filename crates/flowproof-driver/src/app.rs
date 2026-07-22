@@ -211,6 +211,25 @@ pub trait AppDriver {
         ))
     }
 
+    /// Size and position the driven window, returning what was ACTUALLY
+    /// applied. When the caller passes no position, the implementation
+    /// reports where the window landed, so the trace can pin it for replay:
+    /// an unpinned position becomes a pinned one for free.
+    ///
+    /// Geometry is a determinism precondition for visual assertions, so a
+    /// failure to apply it is an error, never a warning - a silently
+    /// unsized window mints a flaky baseline.
+    fn set_window_geometry(
+        &mut self,
+        _width: u32,
+        _height: u32,
+        _position: Option<(i32, i32)>,
+    ) -> Result<(u32, u32, i32, i32), DriverError> {
+        Err(DriverError::Uia(
+            "window geometry is not supported by this driver".into(),
+        ))
+    }
+
     /// Whether a checkbox-like control is checked. `None` when the target
     /// is not one, so an assertion can say precisely that instead of
     /// reporting a confident `false`.
@@ -460,6 +479,30 @@ pub struct AppTarget {
 /// Extract the trailing numeric value from display text like
 /// `Display is 8` or `1,234.5`. Shared by record and replay so both phases
 /// judge display values identically.
+/// Split a command LINE into the program and the rest, honouring quotes so
+/// a path containing spaces survives: `"C:\\Program Files\\app.exe" --flag`.
+///
+/// `app.command` is a command line, not a program name, because that is what
+/// a person pastes from a shortcut. Pure string logic, so it is tested on
+/// every platform even though only the Windows driver uses it.
+pub fn split_command_line(command: &str) -> Option<(String, String)> {
+    let command = command.trim();
+    if command.is_empty() {
+        return None;
+    }
+    if let Some(rest) = command.strip_prefix('"') {
+        let (program, tail) = rest.split_once('"')?;
+        if program.is_empty() {
+            return None;
+        }
+        return Some((program.to_string(), tail.trim_start().to_string()));
+    }
+    match command.split_once(char::is_whitespace) {
+        Some((program, tail)) => Some((program.to_string(), tail.trim_start().to_string())),
+        None => Some((command.to_string(), String::new())),
+    }
+}
+
 /// Compare a live reading against a CAPTURED value, optionally offset by a
 /// literal (`${captured.balance} - 100`).
 ///
@@ -709,6 +752,15 @@ impl AppDriver for Box<dyn AppDriver> {
         (**self).surface_text()
     }
 
+    fn set_window_geometry(
+        &mut self,
+        width: u32,
+        height: u32,
+        position: Option<(i32, i32)>,
+    ) -> Result<(u32, u32, i32, i32), DriverError> {
+        (**self).set_window_geometry(width, height, position)
+    }
+
     fn element_checked(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
         (**self).element_checked(selector)
     }
@@ -872,7 +924,31 @@ mod windows_impl {
         }
     }
 
+    impl UiaAppDriver {
+        /// The driven window, by the title `launch` matched on.
+        fn driven_window(&self) -> Result<crate::window::WindowInfo, DriverError> {
+            let title = self
+                .window
+                .as_ref()
+                .and_then(|w| w.get_name().ok())
+                .ok_or_else(|| {
+                    DriverError::Uia("no window is attached: call launch first".into())
+                })?;
+            crate::window::find_window(&title)?
+                .ok_or_else(|| DriverError::Uia(format!("window '{title}' vanished")))
+        }
+    }
+
     impl AppDriver for UiaAppDriver {
+        fn set_window_geometry(
+            &mut self,
+            width: u32,
+            height: u32,
+            position: Option<(i32, i32)>,
+        ) -> Result<(u32, u32, i32, i32), DriverError> {
+            self.driven_window()?.set_geometry(width, height, position)
+        }
+
         fn launch(
             &mut self,
             command: &str,
@@ -889,7 +965,17 @@ mod windows_impl {
                 .contains_name(window_name)
                 .find_first();
             if existing.is_err() {
-                std::process::Command::new(command)
+                // `command` is a command LINE: split off the program, then
+                // hand the remainder over verbatim so the app sees exactly
+                // the arguments the spec wrote, quoting and all.
+                let (program, args) = crate::app::split_command_line(command)
+                    .ok_or_else(|| DriverError::Uia("app.command is empty".into()))?;
+                let mut spawn = std::process::Command::new(&program);
+                if !args.is_empty() {
+                    use std::os::windows::process::CommandExt;
+                    spawn.raw_arg(&args);
+                }
+                spawn
                     .spawn()
                     .map_err(|e| DriverError::Uia(format!("launching '{command}': {e}")))?;
             }
@@ -1266,6 +1352,58 @@ mod tests {
             .launch("calc.exe", "Calculator", Duration::from_secs(1))
             .expect_err("stub cannot launch");
         assert!(matches!(err, DriverError::UnsupportedPlatform));
+    }
+}
+
+#[cfg(test)]
+mod command_line_tests {
+    use super::split_command_line;
+
+    #[test]
+    fn a_bare_program_has_no_arguments() {
+        assert_eq!(
+            split_command_line("notepad.exe"),
+            Some(("notepad.exe".into(), String::new()))
+        );
+    }
+
+    #[test]
+    fn arguments_are_kept_verbatim() {
+        assert_eq!(
+            split_command_line("app.exe --flag --name=value"),
+            Some(("app.exe".into(), "--flag --name=value".into()))
+        );
+    }
+
+    /// The case that makes a naive split wrong: Windows paths have spaces,
+    /// so the program itself is quoted.
+    #[test]
+    fn a_quoted_program_path_survives_its_spaces() {
+        assert_eq!(
+            split_command_line("\"C:\\Program Files\\My App\\app.exe\" --flag"),
+            Some(("C:\\Program Files\\My App\\app.exe".into(), "--flag".into()))
+        );
+        assert_eq!(
+            split_command_line("\"C:\\Program Files\\app.exe\""),
+            Some(("C:\\Program Files\\app.exe".into(), String::new()))
+        );
+    }
+
+    #[test]
+    fn empty_and_malformed_are_rejected_not_guessed() {
+        assert_eq!(split_command_line(""), None);
+        assert_eq!(split_command_line("   "), None);
+        // An unterminated quote is a typo, not a program name.
+        assert_eq!(split_command_line("\"C:\\app.exe --flag"), None);
+        assert_eq!(split_command_line("\"\" --flag"), None);
+    }
+
+    #[test]
+    fn non_ascii_paths_are_handled() {
+        assert_eq!(
+            split_command_line("\"C:\\Programme\\Büro\\app.exe\" --öffnen"),
+            Some(("C:\\Programme\\Büro\\app.exe".into(), "--öffnen".into()))
+        );
     }
 }
 

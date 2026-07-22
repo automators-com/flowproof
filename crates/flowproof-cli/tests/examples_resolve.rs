@@ -12,9 +12,9 @@ const CONN_TEST_SPEC: &str = include_str!("../../../examples/api/connection-test
 #[test]
 fn connection_test_example_resolves_with_body_and_headers() {
     let spec = FlowSpec::parse(CONN_TEST_SPEC).expect("example parses");
-    assert_eq!(spec.app, "api");
+    assert_eq!(spec.app.id(), "api");
     let actions =
-        flowproof_agent::rules::resolve_step(&spec.app, &spec.steps[0]).expect("step resolves");
+        flowproof_agent::rules::resolve_step(spec.app.id(), &spec.steps[0]).expect("step resolves");
     let flowproof_agent::rules::ResolvedAction::AssertApi {
         headers,
         body,
@@ -41,7 +41,7 @@ fn connection_test_example_resolves_with_body_and_headers() {
 #[test]
 fn fiori_example_resolves_entirely_via_rules() {
     let spec = FlowSpec::parse(FIORI_SPEC).expect("example parses");
-    assert_eq!(spec.app, "web", "Fiori is a browser app");
+    assert_eq!(spec.app.id(), "web", "Fiori is a browser app");
     assert!(
         spec.url
             .as_deref()
@@ -50,7 +50,7 @@ fn fiori_example_resolves_entirely_via_rules() {
         "launch URL stays a ${{VAR}} reference"
     );
     for step in &spec.steps {
-        let actions = flowproof_agent::rules::resolve_step(&spec.app, step)
+        let actions = flowproof_agent::rules::resolve_step(spec.app.id(), step)
             .unwrap_or_else(|e| panic!("step '{}' must resolve via rules: {e}", step.intent()));
         assert!(
             !actions.is_empty(),

@@ -153,6 +153,19 @@ pub fn driver_for(app: &str) -> Result<Box<dyn AppDriver>, String> {
                 .into(),
         );
     }
+    if app == "windows" {
+        #[cfg(windows)]
+        {
+            let driver = UiaAppDriver::new().map_err(|e| e.to_string())?;
+            return Ok(Box::new(driver));
+        }
+        #[cfg(not(windows))]
+        return Err(
+            "app: {command, window_title} drives a Windows program through UI Automation, \
+             which exists only on Windows"
+                .into(),
+        );
+    }
     if app == "api" {
         // No UI: out-of-band assertions run without a driver. Works on
         // every platform.
@@ -199,7 +212,7 @@ fn cmd_record(
         return Ok(EXIT_PASS);
     }
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
-    let mut driver = driver_for(&spec.app)?;
+    let mut driver = driver_for(spec.app.id())?;
     // --reuse: consult the existing trace per step, re-authoring only
     // drift; the old steps come from the trace being replaced.
     let old_steps = if reuse {
@@ -515,7 +528,7 @@ fn record_one(
     if spec.browser.is_none() {
         spec.browser = suite_browser.cloned();
     }
-    let mut driver = driver_for(&spec.app)?;
+    let mut driver = driver_for(spec.app.id())?;
     flowproof_agent::record(&spec, &mut driver, out)
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -914,7 +927,7 @@ fn cmd_heal(
 ) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
-    let mut driver = driver_for(&spec.app)?;
+    let mut driver = driver_for(spec.app.id())?;
     let mut report =
         flowproof_agent::heal_with_author(&spec, &mut driver, &trace_path, author.into())
             .map_err(|e| e.to_string())?;

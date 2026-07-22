@@ -1648,3 +1648,68 @@ fn captures_handle_multibyte_values() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// #68: window geometry is CONFIG, not a verb - a determinism precondition
+/// applied once before the first step and reproduced identically at replay.
+/// The property worth pinning: a spec that gives only a SIZE still records
+/// the position the window actually got, so replay reproduces the same
+/// shape instead of re-deriving it and drifting.
+#[test]
+fn window_geometry_is_applied_and_the_landed_position_is_pinned() {
+    let dir = std::env::temp_dir().join("flowproof-replay-geometry");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Sized\napp: notepad\nwindow:\n  width: 800\n  height: 600\nsteps:\n  - Type hello\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("geo.trace.jsonl");
+
+    // "15" is notepad's edit control in this mock, as the notepad round
+    // trip above uses.
+    let mut rec = MockAppDriver::new(&["15"]);
+    record(&spec, &mut rec, &trace).expect("recording sizes the window");
+    assert_eq!(
+        rec.geometry,
+        Some((800, 600, 40, 60)),
+        "the driver was asked to size the window"
+    );
+
+    // The header pins the APPLIED position (40,60), which the spec never
+    // mentioned.
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(persisted.contains("\"geometry\""), "{persisted}");
+    assert!(
+        persisted.contains("\"x\":40"),
+        "an unpinned position is now pinned: {persisted}"
+    );
+
+    // Replay applies exactly that, position included.
+    let mut driver = MockAppDriver::new(&["15"]);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    assert_eq!(driver.geometry, Some((800, 600, 40, 60)));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A window that cannot be shaped ERRORS. A silently unsized window mints a
+/// flaky visual baseline, which is worse than a failed run.
+#[test]
+fn a_window_that_cannot_be_shaped_fails_the_run() {
+    let dir = std::env::temp_dir().join("flowproof-replay-geometry-fail");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Sized\napp: notepad\nwindow:\n  width: 800\n  height: 600\nsteps:\n  - Type hello\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("geo-fail.trace.jsonl");
+
+    let mut rec = MockAppDriver::new(&["15"]);
+    rec.fail_geometry = true;
+    assert!(
+        record(&spec, &mut rec, &trace).is_err(),
+        "an unshapeable window must not record silently"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

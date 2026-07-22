@@ -1437,3 +1437,72 @@ nocodb as its forcing function.
   determinism guarantees, trace semantics and per-adapter feasibility (CDP
   virtual time vs a Date shim vs nothing on UIA). Needs its OWN brief with
   the concrete RWA cases attached. Escalate separately.
+
+
+# DESIGN verdict 7 - #66/#68 collisions (2026-07-22, Fable), verbatim
+
+Two collisions found while implementing verdict 6. Both ruled; verdict 6's
+`launch:` header block is AMENDED AWAY by ruling 3.
+
+## Ruling 1: the `window:` key - option (c), with one tightening
+
+`window:` accepts a scalar or a mapping. A bare string is shorthand for
+`{title: <string>}` and is therefore valid only where `title` is valid.
+Mirrors the scalar-or-mapping shape ruled for `app:`, keeps every existing
+spec parsing, and lets a vision flow pin both title and geometry - exactly
+where geometry matters most. (a) rejected; (b) rejected: two top-level keys
+describing one window is a permanent accident.
+
+```yaml
+window:            # or a bare string, vision only, meaning {title: ...}
+  title: Citrix Receiver   # ${VAR}-capable, stored RAW (unchanged rule)
+  width: 800
+  height: 600
+  x: 0
+  y: 0
+```
+
+Permanent shape rules:
+- `width`/`height` are a PAIR: one without the other is a parse error.
+  Positive integers.
+- `x`/`y` are a pair, optional, and REQUIRE `width`/`height`. Integers,
+  negatives allowed (multi-monitor).
+- Geometry values are literal integers, NOT `${VAR}`-capable: geometry is a
+  determinism precondition, and a precondition that varies by environment is
+  not one. `title` alone keeps `${VAR}`.
+
+| app kind | `title` / bare string | `width`/`height`/`x`/`y` |
+|---|---|---|
+| vision | valid (required, as today) | valid |
+| windows (scalar id or #66 mapping) | parse error naming `app.window_title` | valid |
+| uwp | parse error naming `app.window_title` | valid (ApplicationFrameHost rule) |
+| web | parse error | parse error pointing at `browser: viewport` |
+| sap | parse error | parse error: not implemented for sap |
+| api | parse error: an api flow has no window | same |
+
+## Ruling 2: `title` is vision-only
+
+A UIA flow writing `window: {title: ...}` gets a parse error naming
+`app.window_title`. NOT two spellings for one concept: `app.window_title` is
+a launch parameter (which window of the process you spawned), `window.title`
+is an attach selector for a window vision never launched. Each app kind has
+exactly one spelling and the two never coexist in a valid spec.
+
+## Ruling 3: trace header - option (e); the `launch:` block is amended away
+
+- `AppInfo.command: Option<String>`, additive with
+  `skip_serializing_if = "Option::is_none"` so old traces keep loading.
+  Mapping-form flows record `name: "windows"`, `command` RAW, and the title
+  in the EXISTING `AppInfo.window_title`, RAW. The `url` precedent is
+  accepted: per-adapter launch detail lives on `AppInfo`.
+- State in trace-format.md: `AppInfo.window_title` is THE header slot for a
+  window title regardless of which spec key supplied it - `app.window_title`
+  for windows flows, `window.title` for vision flows.
+- `AppInfo.geometry: Option<{width, height, x, y}>`, additive. It records the
+  APPLIED values: if the spec omitted `x`/`y`, the header records the actual
+  position after sizing and replay applies exactly that. That is what
+  "identical at record and replay" means in practice, and it upgrades an
+  unpinned position into a pinned one for free.
+
+Docs owed: authoring.md rows plus CI-parsed examples covering a vision flow
+with title + geometry, and a windows flow with geometry.

@@ -1328,6 +1328,13 @@ pub fn run_trace<D: AppDriver>(
     };
     let started = Instant::now();
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+    // Reproduce the recording's window shape before the first step. The
+    // header stores what was APPLIED then, including a position the spec
+    // never asked for, so replay reproduces it exactly rather than
+    // re-deriving it.
+    if let Some(g) = &header.app.geometry {
+        driver.set_window_geometry(g.width, g.height, Some((g.x, g.y)))?;
+    }
 
     let name = header
         .spec

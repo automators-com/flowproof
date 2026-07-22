@@ -555,7 +555,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
 /// (`${VAR}` references resolve from the environment; relative paths become
 /// absolute `file://` URLs).
 fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordError> {
-    if spec.app == "web" {
+    if spec.app.id() == "web" {
         let url = spec.url.as_deref().ok_or(RecordError::MissingUrl)?;
         let url = flowproof_trace::secret::resolve_refs(url)?;
         let url = if url.contains("://") {
@@ -572,7 +572,7 @@ fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordE
             window_name: String::new(),
         });
     }
-    if spec.app == "sap" {
+    if spec.app.id() == "sap" {
         // `command` carries the SAP Logon connection description (empty =
         // attach to whatever logged-in session exists). Like the web URL it
         // may hold `${VAR}` references, resolved here and at every launch.
@@ -583,16 +583,20 @@ fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordE
             window_name: "SAP".into(),
         });
     }
-    if spec.app == "vision" {
+    if spec.app.id() == "vision" {
         // Pixels mode attaches to a window by title — nothing is spawned.
-        let window = spec.window.as_deref().ok_or(RecordError::MissingWindow)?;
+        let window = spec
+            .window
+            .as_ref()
+            .and_then(|w| w.title())
+            .ok_or(RecordError::MissingWindow)?;
         let window = flowproof_trace::secret::resolve_refs(window)?;
         return Ok(flowproof_driver::AppTarget {
             command: String::new(),
             window_name: window,
         });
     }
-    if spec.app == "api" {
+    if spec.app.id() == "api" {
         // Out-of-band only: nothing to launch. NoOpDriver::launch ignores
         // this empty target.
         return Ok(flowproof_driver::AppTarget {
@@ -600,7 +604,28 @@ fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordE
             window_name: String::new(),
         });
     }
-    resolve_app(&spec.app).ok_or_else(|| RecordError::UnknownApp(spec.app.clone()))
+    // `app: {command, window_title}` - an arbitrary Windows program. Both
+    // fields resolve their `${VAR}` refs HERE, at launch time, so the trace
+    // can keep storing the raw reference.
+    if let Some((command, window_title)) = spec.app.launch_parts() {
+        let command = flowproof_trace::secret::resolve_refs(command)?;
+        let window_name = flowproof_trace::secret::resolve_refs(window_title)?;
+        if command.trim().is_empty() {
+            return Err(RecordError::UnknownApp(
+                "app.command is empty: name the program to launch".into(),
+            ));
+        }
+        if window_name.trim().is_empty() {
+            return Err(RecordError::UnknownApp(
+                "app.window_title is empty: name the window to attach to".into(),
+            ));
+        }
+        return Ok(flowproof_driver::AppTarget {
+            command,
+            window_name,
+        });
+    }
+    resolve_app(spec.app.id()).ok_or_else(|| RecordError::UnknownApp(spec.app.id().to_string()))
 }
 
 fn driver_key_mod(m: &flowproof_trace::format::KeyModifier) -> flowproof_driver::KeyMod {
@@ -1064,7 +1089,7 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     }
     let rules_result = match author {
         Author::Llm => Err(RulesError::UnsupportedApp("llm forced".into())),
-        _ => resolve_step(&spec.app, spec_step),
+        _ => resolve_step(spec.app.id(), spec_step),
     };
     match rules_result {
         Ok(actions) => Ok(actions),
@@ -1107,10 +1132,10 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             };
             let scene = driver
                 .scene()?
-                .ok_or_else(|| RecordError::NoScene(spec.app.clone()))?;
+                .ok_or_else(|| RecordError::NoScene(spec.app.id().to_string()))?;
             let ctx = AuthorContext {
                 flow_name: &spec.name,
-                app: &spec.app,
+                app: spec.app.id(),
                 url: spec.url.as_deref(),
                 prior_steps: prior,
                 intent,
@@ -1177,6 +1202,24 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
         }
     }
     driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+    // Shape the window BEFORE the first step, so every frame and every
+    // visual baseline in this recording sees the same geometry replay will.
+    let applied_geometry = match spec.window.as_ref().map(|w| w.config()) {
+        Some(config) => match (config.width, config.height) {
+            (Some(w), Some(h)) => {
+                let position = config.x.zip(config.y);
+                let (w, h, x, y) = driver.set_window_geometry(w, h, position)?;
+                Some(flowproof_trace::format::WindowGeometry {
+                    width: w,
+                    height: h,
+                    x,
+                    y,
+                })
+            }
+            _ => None,
+        },
+        None => None,
+    };
     let (width, height) = driver.screen_size()?;
 
     // The authoring execution is itself recorded (review surface): frames
@@ -1530,7 +1573,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
             steps.push(step_for(
                 steps.len() + 1,
                 &spec_step.intent(),
-                &spec.app,
+                spec.app.id(),
                 &action,
             ));
         }
@@ -1578,21 +1621,35 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
             hash: None,
         }),
         app: AppInfo {
-            name: spec.app.clone(),
-            adapter: match spec.app.as_str() {
+            name: spec.app.id().to_string(),
+            adapter: match spec.app.id() {
                 "web" => flowproof_trace::format::Adapter::Web,
                 "sap" => flowproof_trace::format::Adapter::SapCom,
                 "vision" => flowproof_trace::format::Adapter::Vision,
                 "api" => flowproof_trace::format::Adapter::Api,
                 _ => flowproof_trace::format::Adapter::Uia,
             },
-            window_title: (!target.window_name.is_empty()).then(|| target.window_name.to_string()),
+            // THE header slot for a window title, whichever spec key
+            // supplied it. A mapping-form `app:` stores its title RAW so a
+            // `${VAR}` resolves again at replay; the registry path keeps
+            // recording the resolved target name it always did.
+            window_title: match spec.app.launch_parts() {
+                Some((_, window_title)) => Some(window_title.to_string()),
+                None => (!target.window_name.is_empty()).then(|| target.window_name.to_string()),
+            },
+            command: spec
+                .app
+                .launch_parts()
+                .map(|(command, _)| command.to_string()),
+            // What was APPLIED, not what was asked for: a spec that gave
+            // no position still pins the one the window actually got.
+            geometry: applied_geometry.clone(),
             // If the spec URL (or SAP connection) carries `${VAR}` refs, the
             // header stores them RAW (resolved again at each replay);
             // otherwise the resolved launch value (absolute file:// paths
             // included). For `app: sap` this field carries the connection
             // description — how replay reaches the same system.
-            url: match spec.app.as_str() {
+            url: match spec.app.id() {
                 "web" => Some(
                     spec.url
                         .as_ref()
