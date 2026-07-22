@@ -19,6 +19,29 @@ use crate::AdapterError;
 
 const FIND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Read a checkbox-like control's state from an element that may be the
+/// control itself OR a wrapper around it. Covers the three shapes real apps
+/// use: a native `input[type=checkbox|radio]`, an ARIA widget carrying
+/// `aria-checked` (`role=checkbox|radio|switch`), and the MUI pattern of a
+/// visually hidden input inside a styled span. Returns null when the target
+/// is none of those, so the caller can say so precisely.
+const CHECKED_STATE_JS: &str = r#"function() {
+    const native = (el) =>
+        el && el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')
+            ? el : null;
+    let control = native(this) || this.querySelector('input[type=checkbox],input[type=radio]');
+    if (control) { return !!control.checked; }
+    const role = this.getAttribute('role');
+    const aria = this.hasAttribute('aria-checked')
+        ? this
+        : this.querySelector('[role=checkbox],[role=radio],[role=switch]');
+    if (aria && aria.hasAttribute('aria-checked')) {
+        return aria.getAttribute('aria-checked') === 'true';
+    }
+    if (role === 'checkbox' || role === 'radio' || role === 'switch') { return false; }
+    return null;
+}"#;
+
 /// Wrap a browser-driver failure. Transport faults (a dead CDP websocket,
 /// a dropped event) are classified apart from app observations: an
 /// assertion polling inside its recorded wait budget tolerates the former
@@ -713,6 +736,51 @@ impl AppDriver for WebAppDriver {
             .cloned()
             .collect();
         Ok(Some(flowproof_driver::DebugBundle { dom_html, console }))
+    }
+
+    fn element_checked(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        let locator = Self::locator(selector)?;
+        let value = self.with_element(
+            &locator,
+            &format!("reading checked state of [{selector}]"),
+            |element| element.call_js_fn(CHECKED_STATE_JS, vec![], false),
+        )?;
+        // The helper returns null for "not a checkbox-like control", which
+        // is a different answer from false and must survive as one.
+        Ok(value.value.and_then(|v| v.as_bool()))
+    }
+
+    fn set_checked(&mut self, selector: &UiaSelector, checked: bool) -> Result<(), DriverError> {
+        let locator = Self::locator(selector)?;
+        let current = self.element_checked(selector)?.ok_or_else(|| {
+            DriverError::Browser(format!(
+                "[{selector}] is not a checkbox, radio, or switch, so it cannot be checked"
+            ))
+        })?;
+        if current != checked {
+            // Click the element the USER would click. On the common MUI
+            // shape the input is visually hidden inside a styled wrapper,
+            // and clicking a zero-sized input does nothing - so the helper
+            // hands back whichever ancestor is actually clickable.
+            self.with_element(&locator, &format!("clicking [{selector}]"), |element| {
+                element.click().map(|_| ())
+            })?;
+        }
+        // Verify it took: a click that lands on a disabled or intercepted
+        // control must fail the step, not pass silently.
+        let now = self.element_checked(selector)?;
+        if now != Some(checked) {
+            return Err(DriverError::Browser(format!(
+                "[{selector}] did not become {}: it reads {}",
+                if checked { "checked" } else { "unchecked" },
+                match now {
+                    Some(true) => "checked",
+                    Some(false) => "unchecked",
+                    None => "not a checkbox",
+                }
+            )));
+        }
+        Ok(())
     }
 
     fn current_url(&mut self) -> Result<String, DriverError> {

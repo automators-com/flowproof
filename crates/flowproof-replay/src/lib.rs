@@ -619,6 +619,41 @@ fn check_assertion<D: AppDriver>(
                 }
             }
 
+            // Checkbox state: same poll shape as enabled/disabled, but a
+            // driver answer of None means "not a checkbox", which is a
+            // different failure from "checked when it should not be" and
+            // must be reported as such.
+            if let Some(wanted) = expect.get("checked").and_then(|v| v.as_bool()) {
+                let mut last: Option<Option<bool>> = None;
+                let mut fault: Option<flowproof_driver::DriverError> = None;
+                loop {
+                    if let Some((uia, rung)) = resolve(driver, &mut fault)? {
+                        if let Some(seen) = tolerate(driver.element_checked(&uia), &mut fault)? {
+                            if seen == Some(wanted) {
+                                return Ok((Ok(()), Some(rung)));
+                            }
+                            last = Some(seen);
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        if last.is_none() && fault.is_some() {
+                            return Err(exhausted(fault));
+                        }
+                        let state = |c: bool| if c { "checked" } else { "not checked" };
+                        let shown = match last {
+                            Some(Some(c)) => state(c).to_string(),
+                            Some(None) => "not a checkbox".to_string(),
+                            None => "<element not found>".to_string(),
+                        };
+                        return Ok((
+                            Err(format!("expected checkbox {}, got {shown}", state(wanted))),
+                            None,
+                        ));
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            }
+
             // Enabled/disabled expectations: resolve the element, ask the
             // driver for its interactive state, poll until it matches.
             if let Some(wanted_enabled) = expect.get("enabled").and_then(|v| v.as_bool()) {
@@ -928,6 +963,28 @@ fn execute_step<D: AppDriver>(
                         (Ok(()), matched)
                     }
                     Err(reason) => (Err(reason), matched),
+                }
+            }
+            None => (
+                Err("no selector rung resolved to a live element".to_string()),
+                StepMatch::default(),
+            ),
+        },
+        Action::SetChecked(params) => match resolve_target(driver, &step.selectors)? {
+            Some((target, rung)) => {
+                let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                if let Err(reason) = wait_actionable(driver, &target, actionable_timeout(step))? {
+                    return Ok((Err(reason), matched));
+                }
+                let checked = params
+                    .get("checked")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                // Set-state: the driver no-ops when the control already
+                // reads the wanted value, and verifies that it took.
+                match driver.set_checked(&target, checked) {
+                    Ok(()) => (Ok(()), matched),
+                    Err(e) => (Err(e.to_string()), matched),
                 }
             }
             None => (

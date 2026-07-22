@@ -37,6 +37,7 @@ ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 | `Replace the [2nd ]"<label>" field with <text>` | clear + type, one step |
 | `Replace the <id> field with <text>` | |
 | `Clear the [2nd ]"<label>" field` / `Clear the <id> field` | fill-with-empty semantics |
+| `Check the [2nd ]"<label>" checkbox` / `Uncheck the …` | drives a checkbox, radio, or `role=switch` to a STATE, not a toggle: `Check` on an already-checked box is a no-op, so the step means the same thing however the environment arrives. Resolves the control inside a wrapper too (the common pattern of a visually hidden `input` inside a styled label), performs a real click so the app's own handlers fire, then verifies the state took |
 | `Select <option> from the [2nd ]"<label>" field` | native `<select>`: committed via the value setter, fires `input`+`change` (React-safe). `in the` and `… dropdown` also accepted |
 | `Press the [2nd ]"<label>" button` / `Press the <id> button` | |
 | `Right-click [the [2nd ]]"<text>"` | opens the element's context menu; `Right click` also accepted |
@@ -71,6 +72,7 @@ append `within <N>s` to any form to change the bound.
 | `the [2nd ]"<target>" shows <text>` | element-scoped substring |
 | `the [2nd ]"<target>" is visible` / `is not visible` | target resolves / does not resolve |
 | `the [2nd ]"<target>" is enabled` / `is disabled` | platform enabled state (`disabled`/`aria-disabled` on web, UIA IsEnabled on desktop) |
+| `the [2nd ]"<target>" checkbox is checked` / `is not checked` | checkbox state, read from the `checked` property or `aria-checked`. A target that is not a checkbox fails as exactly that, not as "wrong state" |
 
 The URL forms map `cy.location("pathname").should("equal", "/signin")` and
 `cy.url().should("include", "checkout")`, and they auto-wait like every other
@@ -80,6 +82,15 @@ assertion, because an SPA redirect lands asynchronously:
 - assert: page url is /signin
 - assert: page url contains checkout
 - assert: page url is /orders?page=2 within 15s
+```
+
+Checkboxes map `cy.check()` / `should("be.checked")`:
+
+```yaml
+- Check the "Remember me" checkbox
+- assert: the "Remember me" checkbox is checked
+- Uncheck the "Remember me" checkbox
+- assert: the "Remember me" checkbox is not checked
 ```
 
 ## Out-of-band assertions (any app; structured steps, not prose)

@@ -1337,3 +1337,111 @@ fn url_assertions_keep_secrets_out_of_the_trace_and_the_message() {
     std::env::remove_var("FP_URL_TENANT");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// GAP-E (field: cypress-realworld-app). `cy.get(...).check()` and
+/// `should("be.checked")` had no equivalent: clicking the label toggled the
+/// box, but the resulting state could not be asserted at all, and a toggle
+/// means different things depending on where the environment started.
+/// Check/Uncheck are SET-state and therefore idempotent.
+#[test]
+fn check_and_uncheck_are_idempotent_and_assertable() {
+    let dir = std::env::temp_dir().join("flowproof-replay-checkbox");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Remember me\napp: web\nurl: x\nsteps:\n  - Check the \"Remember me\" checkbox\n  - assert: the \"Remember me\" checkbox is checked\n  - Uncheck the \"Remember me\" checkbox\n  - assert: the \"Remember me\" checkbox is not checked\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/signin".into()),
+        ..spec
+    };
+    let trace = dir.join("checkbox.trace.jsonl");
+
+    let mut rec = MockAppDriver::new(&["Remember me"]).with_checkbox("Remember me", false);
+    record(&spec, &mut rec, &trace).expect("recording drives the checkbox");
+    assert_eq!(
+        rec.checked.get("Remember me"),
+        Some(&false),
+        "the flow ends unchecked"
+    );
+
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(
+        persisted.contains("\"type\":\"set_checked\""),
+        "{persisted}"
+    );
+    assert!(persisted.contains("\"checked\":true"), "{persisted}");
+
+    // Replay from the SAME starting state.
+    let mut driver = MockAppDriver::new(&["Remember me"]).with_checkbox("Remember me", false);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    // The point of set-state: replay from the OPPOSITE starting state and
+    // the flow still means the same thing. A toggle would invert here.
+    let mut driver = MockAppDriver::new(&["Remember me"]).with_checkbox("Remember me", true);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "set-state must be idempotent from either start: {report:#?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A target that is not a checkbox is its own failure, distinct from "the
+/// box is in the wrong state" - an agent healing the trace needs to know
+/// which of those two happened.
+#[test]
+fn asserting_checked_on_a_non_checkbox_says_so() {
+    let dir = std::env::temp_dir().join("flowproof-replay-not-checkbox");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Not a box\napp: web\nurl: x\nsteps:\n  - assert: the \"Remember me\" checkbox is checked within 1s\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/x".into()),
+        ..spec
+    };
+    let trace = dir.join("notbox.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Remember me"]).with_checkbox("Remember me", true);
+    record(&spec, &mut rec, &trace).expect("records against a real checkbox");
+
+    // Replay where the element exists but is NOT a checkbox.
+    let mut driver = MockAppDriver::new(&["Remember me"]);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.clone().unwrap_or_default();
+    assert!(
+        detail.contains("not a checkbox"),
+        "must distinguish kind from state: {detail}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Non-ASCII labels reach the checkbox ladder unmangled.
+#[test]
+fn checkbox_labels_survive_multibyte_text() {
+    let dir = std::env::temp_dir().join("flowproof-replay-checkbox-utf8");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: AGB\napp: web\nurl: x\nsteps:\n  - Check the \"Nutzungsbedingungen akzeptieren ✓\" checkbox\n  - assert: the \"Nutzungsbedingungen akzeptieren ✓\" checkbox is checked\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/agb".into()),
+        ..spec
+    };
+    let trace = dir.join("utf8.trace.jsonl");
+    let key = "Nutzungsbedingungen akzeptieren ✓";
+    let mut rec = MockAppDriver::new(&[key]).with_checkbox(key, false);
+    record(&spec, &mut rec, &trace).expect("records with a multibyte label");
+
+    let mut driver = MockAppDriver::new(&[key]).with_checkbox(key, false);
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

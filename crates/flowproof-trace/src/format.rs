@@ -267,6 +267,9 @@ pub enum Action {
     Drag(Params),
     Scroll(Params),
     TypeText(TypeTextParams),
+    /// Drive a checkbox-like control to a state: `{"checked": bool}`.
+    /// Set-state rather than toggle, so replaying it is idempotent.
+    SetChecked(Params),
     PressKey(PressKeyParams),
     Upload(UploadParams),
     Wait(Params),
