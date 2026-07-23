@@ -317,17 +317,46 @@ tools. A tool given a `result:` here is answered by the stand-in and NEVER
 forwarded to the real server, in either phase: the way to prove a genuinely
 dangerous tool is never invoked.
 
-**v3.1 is stdio transport only** (streamable HTTP is a later slice). A stdio
-MCP server is spawned by the agent over a subprocess pipe, so the only place
-to interpose is to BE the command the agent spawns. flowproof injects
-`FLOWPROOF_MCP_SERVER_<name>` (its stand-in command) into the agent's
-environment, and **the agent's MCP config must point that server's command at
-it**: the same one-variable cooperation the model boundary asks for, applied
-to the tool boundary. flowproof cannot verify the wiring up front, but a
-record whose declared server was never contacted fails loudly ("the agent
-never spawned flowproof's MCP stand-in for `<name>`; its config still points
-at the real server"), and a replay whose calls diverge or run short fails at
-the exact call.
+**Two transports, one vocabulary.** A server speaks exactly one, chosen the
+same way the `agent:` block chooses command vs url:
+
+```yaml
+mcp:
+  - name: filesystem                       # a STDIO server (command:)
+    command: "npx -y @modelcontextprotocol/server-filesystem ./sandbox"
+  - name: remote                           # a streamable-HTTP server (url:)
+    url: "https://tools.example.com/mcp"
+    port: 8931                             # optional fixed listener port
+```
+
+A **stdio** server (v3.1) is spawned by the agent over a subprocess pipe, so
+the only place to interpose is to BE the command the agent spawns. flowproof
+injects `FLOWPROOF_MCP_SERVER_<name>` (its stand-in command) into the agent's
+environment, and the agent's MCP config must point that server's command at
+it.
+
+A **streamable-HTTP** server (v3.2, `url:`) is dialed over HTTP, so flowproof
+hosts an in-process loopback listener and injects
+`FLOWPROOF_MCP_URL_<name>` (`http://127.0.0.1:<port>/mcp`) for the agent's
+MCP config to point at instead of the real server's URL. The port is
+ephemeral by default (read back from the bind); an optional `port:` forces a
+fixed one, for a flow whose agent is itself `url:`-driven and so cannot be
+handed the listener's port at launch (`port:` on a `command:` server is a
+parse error - a stdio server is spawned, not dialed). At RECORD the listener
+forwards each POST to the real `url:` (passing the agent's `Authorization`
+and `Mcp-Session-Id` through, storing neither) and captures the response,
+reading a `text/event-stream` answer's `data:` frames back into one JSON-RPC
+message; at REPLAY it answers every POST from the recorded lane as a single
+`application/json` body, with zero network. The agent is served plain JSON in
+both phases - flowproof never opens an SSE stream toward the agent.
+
+Either way this is the same one-variable cooperation the model boundary asks
+for, applied to the tool boundary. flowproof cannot verify the wiring up
+front, but a record whose declared server was never contacted fails loudly
+("the agent never spawned flowproof's MCP stand-in for `<name>`" for stdio,
+"the agent never contacted flowproof's MCP listener for `<name>`" for http;
+both name the env var its config still needs to point at), and a replay whose
+calls diverge or run short fails at the exact call.
 
 Each server records into its own lane in the trace (`mcp.<name>.calls`),
 matched strictly by position: the JSON-RPC method first, then for `tools/call`
@@ -339,11 +368,19 @@ the agent threads one into the other diverges at the MCP lane.
 
 **What it cannot do.** An agent whose MCP server command is hardcoded and
 unconfigurable, or that scrubs the environment when spawning servers, cannot
-be intercepted. Server-initiated traffic (sampling, elicitation,
-notifications) is relayed at record but not recorded or replayed in v3.1, so
-an agent whose control flow depends on it behaves differently at replay.
-`initialize`'s `clientInfo`/`capabilities` are reported but not matched (an
-SDK patch bump is a tuned dial); `protocolVersion` IS matched.
+be intercepted. Server-initiated traffic (sampling, elicitation) is a NAMED
+v3.3 slice: at record, a real HTTP server that sends a server-initiated
+request (an id-bearing message with a `method`) mid-response fails the record
+with "the real MCP server sent a server-initiated request (`<method>`)
+mid-response; recording server-initiated traffic is v3.3"; a server
+notification (no id) is dropped. The standalone server-push SSE channel (a
+`GET` to the endpoint) is not served (`405`), and the older HTTP+SSE
+transport with a separate SSE endpoint is not handled. A JSON-RPC batch (a
+top-level array POST) is a named `400`, not silently half-recorded. Session
+ids are an ignored knob (passed through at record, a constant
+`flowproof-replay` at replay, never stored or matched), as are
+`initialize`'s `clientInfo`/`capabilities` (an SDK patch bump is a tuned
+dial); `protocolVersion` IS matched.
 
 ## Phasing
 
@@ -372,9 +409,17 @@ SDK patch bump is a tuned dial); `protocolVersion` IS matched.
    tools are external MCP processes rather than internal functions.
    **Landed (v3.1)**: the stdio transport, with per-tool result mocks and
    per-server strict-positional lanes in the trace (see "Mocking MCP tool
-   servers" above). Streamable HTTP/SSE MCP servers, and recording
-   server-initiated traffic (sampling, notifications), are the remaining v3
-   slices.
+   servers" above). **Landed (v3.2)**: the streamable-HTTP transport
+   (`url:`/`port:`), an in-process loopback listener that forwards to the
+   real server at record (reading `application/json` or `text/event-stream`
+   answers) and replays the lane as single JSON bodies with zero network.
+   The trace shape is unchanged, so a lane is transport-blind: one recorded
+   through stdio replays through an HTTP-declared server and vice versa. The
+   remaining v3.3 slice is server-initiated traffic (sampling, elicitation),
+   and with it the standalone server-push SSE channel; both are named,
+   typed responses in v3.2 rather than silent gaps (a server-initiated
+   request mid-record fails by name, a standalone `GET` is a `405`, a
+   JSON-RPC batch is a `400`).
 
 ## Settled in review
 

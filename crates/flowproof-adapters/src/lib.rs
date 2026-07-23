@@ -9,6 +9,12 @@ pub mod agent_proxy;
 pub mod agent_runner;
 
 #[cfg(feature = "agent")]
+pub mod mcp_core;
+
+#[cfg(feature = "agent")]
+pub mod mcp_http;
+
+#[cfg(feature = "agent")]
 pub mod mcp_stdio;
 
 #[cfg(feature = "sap-com")]
@@ -27,7 +33,13 @@ pub use agent_proxy::AgentProxy;
 pub use agent_runner::{AgentRun, RunError};
 
 #[cfg(feature = "agent")]
-pub use mcp_stdio::{McpCall, McpDivergence, McpOut, McpPlan};
+pub use mcp_core::{McpCall, McpDivergence};
+
+#[cfg(feature = "agent")]
+pub use mcp_http::{McpHttpLog, McpHttpServer};
+
+#[cfg(feature = "agent")]
+pub use mcp_stdio::{McpOut, McpPlan};
 
 #[cfg(feature = "sap-com")]
 pub use sap_com::SapAppDriver;

@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use flowproof_adapters::agent_proxy::AgentProxy;
 use flowproof_adapters::agent_runner::{run_against, run_http, AgentRun};
+use flowproof_adapters::mcp_http::McpHttpServer;
 use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan};
 use flowproof_agent::{FlowSpec, SpecStep};
 use flowproof_trace::cassette::Cassette;
@@ -83,17 +84,26 @@ struct McpServerTrace {
     calls: Vec<McpCall>,
 }
 
-/// The MCP boundary set up for one phase: the per-run temp dir holding the
-/// `<server>.plan.json` files the stand-in reads and the `<server>.out.json`
-/// files it writes, plus the env the agent needs to reach the stand-in.
+/// The MCP boundary set up for one phase, across both transports.
+///
+/// A stdio server uses the file contract: the per-run temp dir holds the
+/// `<server>.plan.json` the stand-in reads and the `<server>.out.json` it
+/// writes. An http server has NO plan/out files - flowproof hosts an
+/// in-process [`McpHttpServer`] and reads its verdict from shared memory
+/// after the agent exits. Both inject one env var pointing the agent's MCP
+/// config at flowproof instead of the real server.
 ///
 /// `None` when the spec declares no `mcp:` servers, so an mcp-less flow is
 /// byte-for-byte the flow it always was.
 struct McpContext {
     dir: PathBuf,
     mode: &'static str,
-    /// (server name, env var name), one per declared server.
-    servers: Vec<(String, String)>,
+    /// stdio servers: (server name, `FLOWPROOF_MCP_SERVER_<NAME>`).
+    stdio: Vec<(String, String)>,
+    /// http servers: (server name, `FLOWPROOF_MCP_URL_<NAME>`, the live
+    /// in-process listener whose captured/served/divergence is read after
+    /// the run).
+    http: Vec<(String, String, McpHttpServer)>,
 }
 
 impl McpContext {
@@ -117,19 +127,13 @@ impl McpContext {
         ));
         std::fs::create_dir_all(&dir).map_err(|e| format!("creating MCP run dir: {e}"))?;
 
-        let mut servers = Vec::new();
+        let mut stdio = Vec::new();
+        let mut http = Vec::new();
         for server in &spec.mcp {
-            let command = flowproof_trace::secret::resolve_refs(&server.command)
-                .map_err(|e| e.to_string())?;
             // MCP mocks are the per-server tools with a non-null result -
             // the same "a name-only entry is a declaration" rule the model
             // boundary uses.
-            let mocks: BTreeMap<String, serde_json::Value> = server
-                .tools
-                .iter()
-                .filter(|t| !t.result.is_null())
-                .map(|t| (t.name.clone(), t.result.clone()))
-                .collect();
+            let mocks = server_mocks(server);
             let calls = if mode == "replay" {
                 trace_mcp
                     .get(&server.name)
@@ -138,49 +142,104 @@ impl McpContext {
             } else {
                 Vec::new()
             };
-            let plan = McpPlan {
-                mode: mode.to_string(),
-                command,
-                mocks,
-                calls,
-            };
-            let plan_path = dir.join(format!("{}.plan.json", server.name));
-            std::fs::write(
-                &plan_path,
-                serde_json::to_string(&plan).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| format!("writing {}: {e}", plan_path.display()))?;
-            servers.push((server.name.clone(), env_var_name(&server.name)));
+            // Exactly one transport (the spec validator guaranteed the
+            // choice): a stdio `command:` flowproof stands in as, or a
+            // streamable-HTTP `url:` flowproof hosts a listener for.
+            match (&server.command, &server.url) {
+                (Some(command), _) => {
+                    let command = flowproof_trace::secret::resolve_refs(command)
+                        .map_err(|e| e.to_string())?;
+                    let plan = McpPlan {
+                        mode: mode.to_string(),
+                        command,
+                        mocks,
+                        calls,
+                    };
+                    let plan_path = dir.join(format!("{}.plan.json", server.name));
+                    std::fs::write(
+                        &plan_path,
+                        serde_json::to_string(&plan).map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| format!("writing {}: {e}", plan_path.display()))?;
+                    stdio.push((server.name.clone(), stdio_env_var_name(&server.name)));
+                }
+                (None, Some(url)) => {
+                    // Ephemeral (0) by default; a fixed `port:` for a flow
+                    // whose agent cannot be handed the port at launch.
+                    let port = server.port.unwrap_or(0);
+                    let listener = if mode == "replay" {
+                        McpHttpServer::replay(calls, mocks, port)
+                    } else {
+                        let url = flowproof_trace::secret::resolve_refs(url)
+                            .map_err(|e| e.to_string())?;
+                        McpHttpServer::record(&url, mocks, port)
+                    }
+                    .map_err(|e| {
+                        format!("starting the MCP HTTP listener for `{}`: {e}", server.name)
+                    })?;
+                    http.push((
+                        server.name.clone(),
+                        url_env_var_name(&server.name),
+                        listener,
+                    ));
+                }
+                // The validator rejects a server naming neither transport,
+                // so this is unreachable in practice; fail loudly rather
+                // than skip it silently if that ever changes.
+                (None, None) => {
+                    return Err(format!(
+                        "mcp server `{}` names no transport (should have been rejected at parse)",
+                        server.name
+                    ));
+                }
+            }
         }
-        Ok(Some(McpContext { dir, mode, servers }))
+        Ok(Some(McpContext {
+            dir,
+            mode,
+            stdio,
+            http,
+        }))
     }
 
-    /// The env the agent's process needs: the run dir, the mode, and one
-    /// `FLOWPROOF_MCP_SERVER_<NAME>` per server pointing at this executable's
-    /// `mcp-stdio` subcommand. The SUT's MCP config points its server
-    /// command at that variable - the documented contract.
+    /// The env the agent's process needs: the run dir and mode (for the
+    /// stdio stand-in), one `FLOWPROOF_MCP_SERVER_<NAME>` per stdio server
+    /// pointing at this executable's `mcp-stdio` subcommand, and one
+    /// `FLOWPROOF_MCP_URL_<NAME>` per http server pointing at its in-process
+    /// listener. The SUT's MCP config points each server at its variable -
+    /// the documented contract.
     fn env_vars(&self) -> Result<BTreeMap<String, String>, String> {
-        // `current_exe()` is the flowproof binary in production. An explicit
-        // `FLOWPROOF_MCP_EXE` overrides it for the cases where it is not: a
-        // wrapper on PATH, or a test harness driving `run_cli` in-process
-        // (where `current_exe()` is the test binary, not flowproof).
-        let exe = match std::env::var("FLOWPROOF_MCP_EXE") {
-            Ok(path) if !path.trim().is_empty() => path,
-            _ => std::env::current_exe()
-                .map_err(|e| format!("finding the flowproof executable for mcp-stdio: {e}"))?
-                .display()
-                .to_string(),
-        };
         let mut env = BTreeMap::new();
         env.insert(
             "FLOWPROOF_MCP_DIR".to_string(),
             self.dir.display().to_string(),
         );
         env.insert("FLOWPROOF_MCP_MODE".to_string(), self.mode.to_string());
-        for (name, var) in &self.servers {
-            // The exe path is quoted so an argv splitter survives spaces in
-            // it; the agent spawns this command as its MCP server.
-            env.insert(var.clone(), format!("\"{exe}\" mcp-stdio --server {name}"));
+
+        if !self.stdio.is_empty() {
+            // `current_exe()` is the flowproof binary in production. An
+            // explicit `FLOWPROOF_MCP_EXE` overrides it for the cases where
+            // it is not: a wrapper on PATH, or a test harness driving
+            // `run_cli` in-process (where `current_exe()` is the test binary,
+            // not flowproof). Only the stdio transport spawns a subprocess,
+            // so an http-only flow never needs the exe.
+            let exe = match std::env::var("FLOWPROOF_MCP_EXE") {
+                Ok(path) if !path.trim().is_empty() => path,
+                _ => std::env::current_exe()
+                    .map_err(|e| format!("finding the flowproof executable for mcp-stdio: {e}"))?
+                    .display()
+                    .to_string(),
+            };
+            for (name, var) in &self.stdio {
+                // The exe path is quoted so an argv splitter survives spaces
+                // in it; the agent spawns this command as its MCP server.
+                env.insert(var.clone(), format!("\"{exe}\" mcp-stdio --server {name}"));
+            }
+        }
+
+        for (_name, var, listener) in &self.http {
+            // The listener's own endpoint URL, `http://127.0.0.1:<port>/mcp`.
+            env.insert(var.clone(), listener.url());
         }
         Ok(env)
     }
@@ -190,32 +249,44 @@ impl McpContext {
     /// captured calls plus the snapshotted mocks into the trace.
     fn collect_record(&self, spec: &FlowSpec) -> Result<BTreeMap<String, McpServerTrace>, String> {
         let mut out = BTreeMap::new();
-        for server in &spec.mcp {
-            let out_path = self.dir.join(format!("{}.out.json", server.name));
-            let parsed = read_out(&out_path).ok_or_else(|| wiring_guard(&server.name))?;
+        // stdio servers: read the out file the stand-in wrote.
+        for (name, _var) in &self.stdio {
+            let out_path = self.dir.join(format!("{name}.out.json"));
+            let parsed = read_out(&out_path).ok_or_else(|| stdio_wiring_guard(name))?;
             if let Some(err) = &parsed.error {
-                return Err(format!(
-                    "recording the MCP server `{}` failed: {err}",
-                    server.name
-                ));
+                return Err(format!("recording the MCP server `{name}` failed: {err}"));
             }
             // The progress guard: a real MCP client handshakes with
             // `initialize`, so a lane with no captured call means the agent
             // never spawned the stand-in.
             if parsed.calls.is_empty() {
-                return Err(wiring_guard(&server.name));
+                return Err(stdio_wiring_guard(name));
             }
-            let mocks = server
-                .tools
-                .iter()
-                .filter(|t| !t.result.is_null())
-                .map(|t| (t.name.clone(), t.result.clone()))
-                .collect();
             out.insert(
-                server.name.clone(),
+                name.clone(),
                 McpServerTrace {
-                    mocks,
+                    mocks: server_mocks_by_name(spec, name),
                     calls: parsed.calls,
+                },
+            );
+        }
+        // http servers: read the captured lane straight from the live
+        // in-process listener (no out file).
+        for (name, _var, listener) in &self.http {
+            // A named record failure (a server-initiated request mid-response)
+            // is surfaced with its own message, not swallowed.
+            if let Some(err) = &listener.log().record_error {
+                return Err(format!("recording the MCP server `{name}` failed: {err}"));
+            }
+            let calls = listener.captured();
+            if calls.is_empty() {
+                return Err(http_wiring_guard(name));
+            }
+            out.insert(
+                name.clone(),
+                McpServerTrace {
+                    mocks: server_mocks_by_name(spec, name),
+                    calls,
                 },
             );
         }
@@ -227,29 +298,44 @@ impl McpContext {
     /// `reproduced` analog for the MCP boundary).
     fn check_replay(
         &self,
-        spec: &FlowSpec,
+        _spec: &FlowSpec,
         trace_mcp: &BTreeMap<String, McpServerTrace>,
     ) -> Result<(), String> {
-        for server in &spec.mcp {
-            let out_path = self.dir.join(format!("{}.out.json", server.name));
-            let parsed = read_out(&out_path).ok_or_else(|| wiring_guard(&server.name))?;
+        let expected = |name: &str| trace_mcp.get(name).map(|t| t.calls.len()).unwrap_or(0);
+        // stdio servers: read the out file the stand-in wrote.
+        for (name, _var) in &self.stdio {
+            let out_path = self.dir.join(format!("{name}.out.json"));
+            let parsed = read_out(&out_path).ok_or_else(|| stdio_wiring_guard(name))?;
             if let Some(div) = &parsed.divergence {
                 return Err(format!(
-                    "the MCP server `{}` diverged at call {}: {}",
-                    server.name,
+                    "the MCP server `{name}` diverged at call {}: {}",
                     div.index + 1,
                     div.detail
                 ));
             }
-            let expected = trace_mcp
-                .get(&server.name)
-                .map(|t| t.calls.len())
-                .unwrap_or(0);
             let served = parsed.served.unwrap_or(0);
-            if served != expected {
+            if served != expected(name) {
                 return Err(format!(
-                    "the agent made {served} MCP calls to `{}`, the recording has {expected}",
-                    server.name
+                    "the agent made {served} MCP calls to `{name}`, the recording has {}",
+                    expected(name)
+                ));
+            }
+        }
+        // http servers: read the verdict straight from the live listener.
+        for (name, _var, listener) in &self.http {
+            let log = listener.log();
+            if let Some(div) = &log.divergence {
+                return Err(format!(
+                    "the MCP server `{name}` diverged at call {}: {}",
+                    div.index + 1,
+                    div.detail
+                ));
+            }
+            if log.served != expected(name) {
+                return Err(format!(
+                    "the agent made {} MCP calls to `{name}`, the recording has {}",
+                    log.served,
+                    expected(name)
                 ));
             }
         }
@@ -264,15 +350,46 @@ impl Drop for McpContext {
     }
 }
 
-/// The record-time wiring guard message, shared by "no out file" and "no
+/// The stdio record-time wiring guard, shared by "no out file" and "no
 /// captured handshake": both mean the agent's config still points at the
 /// real server instead of flowproof's stand-in.
-fn wiring_guard(server: &str) -> String {
+fn stdio_wiring_guard(server: &str) -> String {
     format!(
         "the agent never spawned flowproof's MCP stand-in for `{server}`; its config still \
          points at the real server (point it at ${{FLOWPROOF_MCP_SERVER_{}}})",
         env_suffix(server)
     )
+}
+
+/// The http record-time wiring guard: an empty captured lane means the
+/// agent never dialed flowproof's in-process listener.
+fn http_wiring_guard(server: &str) -> String {
+    format!(
+        "the agent never contacted flowproof's MCP listener for `{server}`; its config still \
+         points at the real server (point it at ${{FLOWPROOF_MCP_URL_{}}})",
+        env_suffix(server)
+    )
+}
+
+/// The per-server mocks: tools with a non-null `result:`. The same
+/// "a name-only entry is a declaration" rule the model boundary uses.
+fn server_mocks(server: &flowproof_agent::McpServerSpec) -> BTreeMap<String, serde_json::Value> {
+    server
+        .tools
+        .iter()
+        .filter(|t| !t.result.is_null())
+        .map(|t| (t.name.clone(), t.result.clone()))
+        .collect()
+}
+
+/// The mocks for the server named `name` in the spec, snapshotted into the
+/// trace. Absent name yields empty (the caller only asks for a declared one).
+fn server_mocks_by_name(spec: &FlowSpec, name: &str) -> BTreeMap<String, serde_json::Value> {
+    spec.mcp
+        .iter()
+        .find(|s| s.name == name)
+        .map(server_mocks)
+        .unwrap_or_default()
 }
 
 /// Poll for a stand-in's out file after the agent exits: the atomic rename
@@ -313,9 +430,14 @@ fn env_suffix(server: &str) -> String {
         .collect()
 }
 
-/// The full `FLOWPROOF_MCP_SERVER_<NAME>` env var name for a server.
-fn env_var_name(server: &str) -> String {
+/// The full `FLOWPROOF_MCP_SERVER_<NAME>` env var name for a stdio server.
+fn stdio_env_var_name(server: &str) -> String {
     format!("FLOWPROOF_MCP_SERVER_{}", env_suffix(server))
+}
+
+/// The full `FLOWPROOF_MCP_URL_<NAME>` env var name for an http server.
+fn url_env_var_name(server: &str) -> String {
+    format!("FLOWPROOF_MCP_URL_{}", env_suffix(server))
 }
 
 /// The mocks a flow substitutes: a tool with a non-null `result:`. A
@@ -931,5 +1053,432 @@ mod tests {
             why.contains(&format!("http://127.0.0.1:{proxy_port}/v1")),
             "names where to point the service: {why}"
         );
+    }
+
+    // ---- MCP HTTP boundary (v3.2) ----
+    //
+    // These drive `McpContext` directly rather than the whole `record`/
+    // `replay`, which also need a real model at the OTHER boundary. The MCP
+    // HTTP boundary is exercised end to end with a fake real server and a
+    // fake agent (the raw JSON-RPC POSTs below), no real MCP servers.
+
+    /// A JSON-RPC request envelope.
+    fn jsonrpc(id: i64, method: &str, params: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+    }
+
+    /// The fake agent: read the `FLOWPROOF_MCP_URL_<NAME>` flowproof injected
+    /// and POST one JSON-RPC message to it, returning (status, parsed body).
+    fn mcp_post(url: &str, payload: serde_json::Value) -> (u16, serde_json::Value) {
+        let rest = url.trim_start_matches("http://");
+        let (addr, path) = rest
+            .split_once('/')
+            .map(|(a, p)| (a.to_string(), format!("/{p}")))
+            .expect("url has a path");
+        let body = payload.to_string();
+        let mut stream = TcpStream::connect(&addr).expect("connect");
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nhost: {addr}\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).expect("write");
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).expect("read");
+        let status = raw
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .expect("status");
+        let body = raw.split("\r\n\r\n").nth(1).unwrap_or_default();
+        (
+            status,
+            serde_json::from_str(body).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// Read one JSON-RPC request off a socket: (id, method, params).
+    fn read_jsonrpc(stream: &mut TcpStream) -> (serde_json::Value, String, serde_json::Value) {
+        let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+        let mut line = String::new();
+        reader.read_line(&mut line).ok();
+        let mut length = 0usize;
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                break;
+            }
+            let header = header.trim_end();
+            if header.is_empty() {
+                break;
+            }
+            if let Some((n, v)) = header.split_once(':') {
+                if n.eq_ignore_ascii_case("content-length") {
+                    length = v.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body).ok();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        (
+            json.get("id").cloned().unwrap_or(serde_json::Value::Null),
+            json.get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string(),
+            json.get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// The fake real server's answer for a method.
+    fn fake_result(method: &str, params: &serde_json::Value) -> serde_json::Value {
+        match method {
+            "initialize" => {
+                serde_json::json!({ "protocolVersion": "2024-11-05", "serverInfo": { "name": "fake" } })
+            }
+            "tools/list" => serde_json::json!({ "tools": [{ "name": "get_weather" }] }),
+            "tools/call" => {
+                let city = params
+                    .get("arguments")
+                    .and_then(|a| a.get("city"))
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("?");
+                serde_json::json!({ "content": [{ "type": "text", "text": format!("sunny in {city}") }] })
+            }
+            _ => serde_json::json!({}),
+        }
+    }
+
+    /// A fake REAL streamable-HTTP MCP server: answers initialize /
+    /// tools/list / tools/call, one request per `Connection: close` socket.
+    /// `sse` answers via a `text/event-stream` `data:` frame (to exercise the
+    /// record SSE-read path); otherwise a plain `application/json` body.
+    /// Serves exactly `count` requests, then exits so the test can join it.
+    fn spawn_fake_mcp(sse: bool, count: usize) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind mcp");
+        let addr = listener.local_addr().expect("addr");
+        let url = format!("http://{addr}/mcp");
+        let handle = std::thread::spawn(move || {
+            for _ in 0..count {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let (id, method, params) = read_jsonrpc(&mut stream);
+                let result = fake_result(&method, &params);
+                let message =
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
+                let response = if sse {
+                    let frame = format!("event: message\ndata: {message}\n\n");
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                         mcp-session-id: real-123\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                        frame.len()
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                         mcp-session-id: real-123\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{message}",
+                        message.len()
+                    )
+                };
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (url, handle)
+    }
+
+    /// An `app: agent` spec whose single MCP server is HTTP (`url:`).
+    fn http_mcp_spec(url: &str, mock_send_alert: bool) -> FlowSpec {
+        let tools = if mock_send_alert {
+            "\n    tools:\n      - name: send_alert\n        result: { delivered: true }"
+        } else {
+            ""
+        };
+        FlowSpec::parse(&format!(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: remote\n    url: {url}{tools}\nsteps:\n  - prompt: hi\n"
+        ))
+        .expect("spec parses")
+    }
+
+    fn mcp_url_env(ctx: &McpContext) -> String {
+        ctx.env_vars().expect("env")["FLOWPROOF_MCP_URL_REMOTE"].clone()
+    }
+
+    /// End to end: record against a fake HTTP server captures the lane, then
+    /// replay serves it with the fake server GONE - zero network.
+    #[test]
+    fn http_mcp_records_then_replays_with_zero_network() {
+        let (real_url, handle) = spawn_fake_mcp(false, 3);
+        let spec = http_mcp_spec(&real_url, false);
+
+        // RECORD: the listener forwards to the fake real server.
+        let ctx = McpContext::setup(&spec, "record", &BTreeMap::new())
+            .expect("setup")
+            .expect("some");
+        let url = mcp_url_env(&ctx);
+        let (s, _) = mcp_post(
+            &url,
+            jsonrpc(
+                1,
+                "initialize",
+                serde_json::json!({ "protocolVersion": "2024-11-05", "clientInfo": { "name": "a" } }),
+            ),
+        );
+        assert_eq!(s, 200);
+        mcp_post(&url, jsonrpc(2, "tools/list", serde_json::json!({})));
+        let (_, call) = mcp_post(
+            &url,
+            jsonrpc(
+                3,
+                "tools/call",
+                serde_json::json!({ "name": "get_weather", "arguments": { "city": "Paris" } }),
+            ),
+        );
+        assert_eq!(
+            call["result"]["content"][0]["text"], "sunny in Paris",
+            "the real server answered at record"
+        );
+        handle.join().ok();
+
+        let recorded = ctx.collect_record(&spec).expect("record captured");
+        drop(ctx);
+        let lane = &recorded["remote"].calls;
+        assert_eq!(lane.len(), 3, "initialize, tools/list, tools/call");
+        assert_eq!(lane[0].method, "initialize");
+        assert_eq!(lane[2].method, "tools/call");
+
+        // REPLAY: no fake server anywhere. The listener answers from the lane.
+        let mut trace = BTreeMap::new();
+        trace.insert("remote".to_string(), recorded["remote"].clone());
+        let ctx = McpContext::setup(&spec, "replay", &trace)
+            .expect("setup")
+            .expect("some");
+        let url = mcp_url_env(&ctx);
+        let (s, init) = mcp_post(
+            &url,
+            jsonrpc(
+                1,
+                "initialize",
+                serde_json::json!({ "protocolVersion": "2024-11-05", "clientInfo": { "name": "z" } }),
+            ),
+        );
+        assert_eq!(s, 200);
+        assert_eq!(
+            init["result"]["serverInfo"]["name"], "fake",
+            "served from the recording, no server running"
+        );
+        mcp_post(&url, jsonrpc(2, "tools/list", serde_json::json!({})));
+        let (_, call) = mcp_post(
+            &url,
+            jsonrpc(
+                3,
+                "tools/call",
+                serde_json::json!({ "name": "get_weather", "arguments": { "city": "Paris" } }),
+            ),
+        );
+        assert_eq!(call["result"]["content"][0]["text"], "sunny in Paris");
+        ctx.check_replay(&spec, &trace).expect("replay reproduced");
+    }
+
+    /// The record SSE-read path: a fake server answering `text/event-stream`
+    /// is parsed into the captured lane.
+    #[test]
+    fn http_mcp_records_over_sse() {
+        let (real_url, handle) = spawn_fake_mcp(true, 1);
+        let spec = http_mcp_spec(&real_url, false);
+        let ctx = McpContext::setup(&spec, "record", &BTreeMap::new())
+            .expect("setup")
+            .expect("some");
+        let url = mcp_url_env(&ctx);
+        let (s, body) = mcp_post(
+            &url,
+            jsonrpc(
+                1,
+                "tools/call",
+                serde_json::json!({ "name": "get_weather", "arguments": { "city": "Berlin" } }),
+            ),
+        );
+        assert_eq!(s, 200);
+        assert_eq!(
+            body["result"]["content"][0]["text"], "sunny in Berlin",
+            "the SSE data frame was parsed at record"
+        );
+        handle.join().ok();
+        let recorded = ctx.collect_record(&spec).expect("captured");
+        assert_eq!(recorded["remote"].calls.len(), 1);
+        assert_eq!(recorded["remote"].calls[0].method, "tools/call");
+    }
+
+    /// A mocked tool is answered locally and NEVER forwarded (the real server
+    /// address points nowhere, and is never contacted); replay serves the
+    /// mock from the lane.
+    #[test]
+    fn http_mcp_mocked_tool_is_never_forwarded() {
+        // Port 9 (discard) would refuse a connection; a forward would fail.
+        let spec = http_mcp_spec("http://127.0.0.1:9/mcp", true);
+        let ctx = McpContext::setup(&spec, "record", &BTreeMap::new())
+            .expect("setup")
+            .expect("some");
+        let url = mcp_url_env(&ctx);
+        let (s, body) = mcp_post(
+            &url,
+            jsonrpc(
+                1,
+                "tools/call",
+                serde_json::json!({ "name": "send_alert", "arguments": { "to": "ops" } }),
+            ),
+        );
+        assert_eq!(s, 200);
+        assert_eq!(
+            body["result"]["content"][0]["text"], r#"{"delivered":true}"#,
+            "answered locally from the mock"
+        );
+        let recorded = ctx.collect_record(&spec).expect("captured");
+        drop(ctx);
+        assert_eq!(recorded["remote"].calls.len(), 1);
+        assert_eq!(
+            recorded["remote"].mocks["send_alert"],
+            serde_json::json!({ "delivered": true })
+        );
+
+        // REPLAY serves the mock from the lane, still with no server.
+        let mut trace = BTreeMap::new();
+        trace.insert("remote".to_string(), recorded["remote"].clone());
+        let ctx = McpContext::setup(&spec, "replay", &trace)
+            .expect("setup")
+            .expect("some");
+        let url = mcp_url_env(&ctx);
+        let (_, body) = mcp_post(
+            &url,
+            jsonrpc(
+                1,
+                "tools/call",
+                serde_json::json!({ "name": "send_alert", "arguments": { "to": "ops" } }),
+            ),
+        );
+        assert_eq!(
+            body["result"]["content"][0]["text"],
+            r#"{"delivered":true}"#
+        );
+        ctx.check_replay(&spec, &trace).expect("replay reproduced");
+    }
+
+    /// A replay whose `tools/call` argument changed gets an in-band JSON-RPC
+    /// error (HTTP 200, no 409) and fails the run naming the path.
+    #[test]
+    fn http_mcp_replay_divergence_names_the_path() {
+        let lane = vec![McpCall {
+            method: "tools/call".into(),
+            params: serde_json::json!({ "name": "get_weather", "arguments": { "city": "Paris" } }),
+            result: serde_json::json!({ "content": [] }),
+        }];
+        let mut trace = BTreeMap::new();
+        trace.insert(
+            "remote".to_string(),
+            McpServerTrace {
+                mocks: BTreeMap::new(),
+                calls: lane,
+            },
+        );
+        let spec = http_mcp_spec("http://unused/mcp", false);
+        let ctx = McpContext::setup(&spec, "replay", &trace)
+            .expect("setup")
+            .expect("some");
+        let url = mcp_url_env(&ctx);
+        let (s, body) = mcp_post(
+            &url,
+            jsonrpc(
+                1,
+                "tools/call",
+                serde_json::json!({ "name": "get_weather", "arguments": { "city": "Berlin" } }),
+            ),
+        );
+        assert_eq!(s, 200, "in-band JSON-RPC error, not a 409");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("arguments.city"),
+            "{body}"
+        );
+        let why = ctx.check_replay(&spec, &trace).expect_err("must fail");
+        assert!(why.contains("diverged at call 1"), "{why}");
+        assert!(why.contains("arguments.city"), "{why}");
+    }
+
+    /// The record wiring guard: a declared HTTP server the agent never
+    /// contacts fails the record with the named message.
+    #[test]
+    fn http_mcp_uncontacted_server_fails_the_record() {
+        let spec = http_mcp_spec("http://127.0.0.1:9/mcp", false);
+        let ctx = McpContext::setup(&spec, "record", &BTreeMap::new())
+            .expect("setup")
+            .expect("some");
+        // The agent never contacts the listener.
+        let why = ctx
+            .collect_record(&spec)
+            .expect_err("uncontacted must fail");
+        assert!(
+            why.contains("never contacted flowproof's MCP listener for `remote`"),
+            "{why}"
+        );
+        assert!(why.contains("FLOWPROOF_MCP_URL_REMOTE"), "{why}");
+    }
+
+    /// Transport-blind matching: a lane recorded via STDIO replays through an
+    /// HTTP-declared server. Nothing in the lane names a transport.
+    #[test]
+    fn a_stdio_recorded_lane_replays_via_an_http_server() {
+        let lane = vec![
+            McpCall {
+                method: "initialize".into(),
+                params: serde_json::json!({ "protocolVersion": "2024-11-05" }),
+                result: serde_json::json!({ "protocolVersion": "2024-11-05" }),
+            },
+            McpCall {
+                method: "tools/call".into(),
+                params: serde_json::json!({ "name": "get_weather", "arguments": { "city": "Paris" } }),
+                result: serde_json::json!({ "content": [{ "type": "text", "text": "sunny" }] }),
+            },
+        ];
+        let mut trace = BTreeMap::new();
+        trace.insert(
+            "remote".to_string(),
+            McpServerTrace {
+                mocks: BTreeMap::new(),
+                calls: lane,
+            },
+        );
+        // Declared as HTTP, though a stdio record produced the lane.
+        let spec = http_mcp_spec("http://unused/mcp", false);
+        let ctx = McpContext::setup(&spec, "replay", &trace)
+            .expect("setup")
+            .expect("some");
+        let url = mcp_url_env(&ctx);
+        let (s, init) = mcp_post(
+            &url,
+            jsonrpc(
+                1,
+                "initialize",
+                serde_json::json!({ "protocolVersion": "2024-11-05", "clientInfo": { "name": "x" } }),
+            ),
+        );
+        assert_eq!(s, 200);
+        assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
+        let (_, call) = mcp_post(
+            &url,
+            jsonrpc(
+                2,
+                "tools/call",
+                serde_json::json!({ "name": "get_weather", "arguments": { "city": "Paris" } }),
+            ),
+        );
+        assert_eq!(call["result"]["content"][0]["text"], "sunny");
+        ctx.check_replay(&spec, &trace)
+            .expect("a stdio-recorded lane replays over http");
     }
 }
