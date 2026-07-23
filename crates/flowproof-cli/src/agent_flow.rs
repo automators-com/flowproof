@@ -35,6 +35,12 @@ const AGENT_TIMEOUT: Duration = Duration::from_secs(300);
 /// the standard `OPENAI_BASE_URL` the developer already has set.
 const UPSTREAM_VARS: [&str; 2] = ["FLOWPROOF_AGENT_UPSTREAM", "OPENAI_BASE_URL"];
 
+/// The env vars a real-model KEY is read from at record time. flowproof
+/// passes it straight into the outbound `Authorization` header and never
+/// anywhere else: the trace stores request bodies only, so no key is ever
+/// written to disk. Bearer-prefixed if it is a bare key.
+const UPSTREAM_KEY_VARS: [&str; 3] = ["FLOWPROOF_AGENT_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
+
 /// The env var the prompt is delivered through. A documented handle, so an
 /// agent reads its task the same way it reads its model URL.
 const PROMPT_VAR: &str = "FLOWPROOF_PROMPT";
@@ -208,7 +214,8 @@ fn require_progress(run: &AgentRun, cassette: &Cassette) -> Result<(), String> {
 pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
     let plan = plan(spec)?;
     let upstream = upstream()?;
-    let proxy = AgentProxy::record(&upstream, plan.mocks.clone())
+    let auth = upstream_auth();
+    let proxy = AgentProxy::record(&upstream, auth, plan.mocks.clone())
         .map_err(|e| format!("starting the record proxy: {e}"))?;
     let run =
         run_against(&proxy, &plan.command, &plan.env, AGENT_TIMEOUT).map_err(|e| e.to_string())?;
@@ -274,4 +281,24 @@ fn upstream() -> Result<String, String> {
          set {}",
         UPSTREAM_VARS.join(" or ")
     ))
+}
+
+/// The `Authorization` header for the real model, read from flowproof's
+/// environment. A bare key is turned into `Bearer <key>`; a value that is
+/// already a scheme (`Bearer ...`, `x-api-key ...`) is passed as written.
+/// `None` when no key is set - a local fake model needs none.
+fn upstream_auth() -> Option<String> {
+    for var in UPSTREAM_KEY_VARS {
+        if let Ok(value) = std::env::var(var) {
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+            if value.contains(' ') {
+                return Some(value.to_string());
+            }
+            return Some(format!("Bearer {value}"));
+        }
+    }
+    None
 }
