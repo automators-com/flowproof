@@ -47,16 +47,25 @@ Everything a trajectory test needs to observe or control crosses the
 So flowproof does not instrument the system's tools at all. It stands up
 a local model-API proxy; the system under test is pointed at it through
 its normal configuration (`OPENAI_BASE_URL`-style env vars — suite env
-already does this). "Mock the tool, don't run it" falls out for free:
-when the proxy answers the model turn *for* the model, the scripted
-tool call is returned to the system, the system executes its own tool
-dispatch against whatever the spec staged, and no real side effect ever
-fires — or, in cassette mode (the default), even the tool results are
-replayed, and nothing external runs at all.
+already does this). What the proxy controls is what the MODEL sees: for a
+tool the spec gave a `result:`, the tool result the system reports back is
+replaced with the mock before the model conditions on it (see "Settled in
+review"), so the trajectory is driven entirely by spec-authored data.
+
+Be precise about what this does and does not prevent. flowproof sits at
+the model boundary, not the tool boundary, so the system STILL EXECUTES
+ITS OWN TOOLS — substitution pins what the model reads, it does not stop
+the tool from running. A tool with real side effects (a booking, a charge)
+still fires unless the author stubs or sandboxes it, or waits for the v3
+MCP boundary. What v1 guarantees is that the model's view is
+spec-controlled, and that replay is hermetic AT THE MODEL BOUNDARY: zero
+model calls, canned responses.
 
 This mirrors how flowproof already treats the browser's network: mock at
 the boundary, identically at record and replay, with the rules traveling
-in the trace.
+in the trace — with the one honest caveat that the browser mock intercepts
+the request, while the model-boundary mock only rewrites what the model is
+told about a tool the system ran itself.
 
 ## Record → replay, applied to the model boundary
 
@@ -115,8 +124,12 @@ Semantics:
   in the trajectory (optionally `where` clauses narrow it: "never with
   amount above X"). This is the guard-path assertion — "the agent must
   refuse WITHOUT side effects" — and arguably the highest-value one in
-  the feature: the dangerous tool is mocked, so even a buggy agent
-  causes no harm while the test proves it misbehaved. Scoped to the
+  the feature: the assertion proves the agent misbehaved, and its result
+  is spec-controlled so the model cannot be steered by a real return
+  value. It does NOT by itself stop the tool from executing (flowproof is
+  at the model boundary, not the tool boundary) — for a genuinely
+  dangerous tool, stub or sandbox it author-side, or use the v3 MCP
+  boundary. Scoped to the
   whole trajectory regardless of position; a positional variant can come
   later if the field demands it.
 
@@ -223,16 +236,17 @@ Built and tested, each independently:
 |---|---|
 | cassette | the recorded trajectory, plus strict positional matching and envelope-first divergence reporting |
 | tool-call matching | ordered subsequence, partial dotted-path arguments, the `assert_no_tool_call` guard path |
-| proxy | serves a cassette over an OpenAI-compatible endpoint |
+| proxy | serves a cassette over an OpenAI-compatible endpoint, and in record mode forwards to a real model and captures |
+| substitution | rewrites a mocked tool result at the model boundary, identically at record and replay |
 | trajectory diff | sorts a re-record into what the agent DID versus what it was TOLD, flagging changes the spec asserts |
 | `assert_tool_call` grammar | the prose form |
+| `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
 
-Not built yet: the `app: agent` spec surface and process driver (which
-land together with the rules dispatch and an E2E, because an `app:` value
-that parses and cannot run is a trap), RECORD mode (which needs an HTTPS
-client this workspace does not yet have), and the `matches` argument
-matcher (which needs a regex dependency). v1 is done when a real external
-OSS agent records and replays through the proxy.
+Not built yet: the `matches` argument matcher (which needs a regex
+dependency), per-call result sequences (v1 is one static result per tool),
+and the v3 MCP tool boundary. v1's remaining acceptance bar is a real
+external OSS agent recording and replaying through the proxy; the
+in-tree E2E proves the full path with a fake agent and a fake model.
 
 ## Decision: model-output evals are out of scope
 

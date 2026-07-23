@@ -30,6 +30,8 @@ pub enum SpecError {
     Foreach(String),
     #[error("invalid window: {0}")]
     Window(String),
+    #[error("invalid agent flow: {0}")]
+    Agent(String),
 }
 
 /// `app:` is either a registry id (`web`, `calc`, `notepad`, `sap`,
@@ -135,6 +137,38 @@ impl WindowSpec {
     }
 }
 
+/// The system under test for an `app: agent` flow: the command that starts
+/// it, and any extra environment it needs.
+///
+/// `command` is executed code, the same trust surface as `env_from` - a
+/// spec is code. The proxy's base URL is injected into the process's
+/// environment, so the agent talks to flowproof believing it is the model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSpec {
+    pub command: String,
+    /// Extra environment for the process. Applied on top of the injected
+    /// proxy URL, so a flow whose client reads a non-standard variable can
+    /// name it here. Values may carry `${VAR}` references.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+/// One tool mocked at the model boundary. Its `result` is returned to the
+/// agent as the tool's output, so a multi-step trajectory proceeds without
+/// anything real being executed - and because the result is spec-authored,
+/// the arguments a DOWNSTREAM call should thread from it are known when the
+/// spec is written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolMock {
+    pub name: String,
+    /// The tool's return value, any JSON. Absent means an empty object,
+    /// for a tool whose call matters but whose output the agent ignores.
+    #[serde(default)]
+    pub result: serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlowSpec {
@@ -194,6 +228,19 @@ pub struct FlowSpec {
     /// A suite's `browser:` applies when the spec has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<flowproof_trace::format::BrowserSetup>,
+    /// The system under test, for `app: agent` flows. Required for that
+    /// app and meaningless for any other; `validate` enforces both halves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentSpec>,
+    /// Tools mocked at the model boundary (`app: agent`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolMock>,
+    /// Forbid any tool call no `assert_tool_call` listed (`app: agent`).
+    /// The default is subsequence matching, which tolerates unlisted
+    /// calls; `strict: true` is for flows where the exact call set is the
+    /// contract.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
     pub steps: Vec<SpecStep>,
 }
 
@@ -202,6 +249,86 @@ impl FlowSpec {
     /// spelling for naming a window, and geometry means nothing for a
     /// browser or an api flow, so every wrong combination is a parse error
     /// that names the right spelling rather than being silently ignored.
+    /// Check the `app: agent` surface: the `agent:` block, the `tools:`
+    /// block, and the prompt/tool-call steps all belong to that app and
+    /// only that app. Each half is enforced, so a misplaced block is a
+    /// parse error naming the mismatch rather than something silently
+    /// ignored - the same contract every other app kind gets.
+    fn validate_agent(&self) -> Result<(), SpecError> {
+        let bad = |m: String| Err(SpecError::Agent(m));
+        let is_agent = self.app.id() == "agent";
+
+        let agent_only_step = self.steps.iter().find(|step| {
+            matches!(
+                step,
+                SpecStep::Prompt { .. }
+                    | SpecStep::AssertToolCall { .. }
+                    | SpecStep::AssertNoToolCall { .. }
+            )
+        });
+
+        if is_agent {
+            if self.agent.is_none() {
+                return bad(
+                    "an `app: agent` flow needs an `agent:` block naming the command to run".into(),
+                );
+            }
+            if self
+                .agent
+                .as_ref()
+                .is_some_and(|a| a.command.trim().is_empty())
+            {
+                return bad(
+                    "`agent.command` is blank; a spec is code, but an empty command is not".into(),
+                );
+            }
+            if !self
+                .steps
+                .iter()
+                .any(|s| matches!(s, SpecStep::Prompt { .. }))
+            {
+                return bad(
+                    "an `app: agent` flow has no `prompt:` step, so the agent is never given                      anything to do"
+                        .into(),
+                );
+            }
+            // Tool names must be distinct: a duplicate is almost always a
+            // copy-paste, and two mocks for one name has no defined winner.
+            let mut seen = std::collections::BTreeSet::new();
+            for tool in &self.tools {
+                if !seen.insert(tool.name.as_str()) {
+                    return bad(format!("tool `{}` is mocked twice", tool.name));
+                }
+            }
+            return Ok(());
+        }
+
+        // Not an agent flow: the agent-only surface must be absent.
+        if self.agent.is_some() {
+            return bad(format!(
+                "`agent:` belongs to an `app: agent` flow, but this is `app: {}`",
+                self.app.id()
+            ));
+        }
+        if !self.tools.is_empty() {
+            return bad(format!(
+                "`tools:` mocks the model boundary of an `app: agent` flow, but this is `app: {}`",
+                self.app.id()
+            ));
+        }
+        if self.strict {
+            return bad("`strict:` only means something for an `app: agent` flow".into());
+        }
+        if let Some(step) = agent_only_step {
+            return bad(format!(
+                "`{}` is an agent step, but this is `app: {}`",
+                step.intent().split(':').next().unwrap_or("that step"),
+                self.app.id()
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_window(&self) -> Result<(), SpecError> {
         let Some(window) = &self.window else {
             return Ok(());
@@ -305,13 +432,26 @@ pub enum SpecStep {
     Assert {
         assert: String,
     },
+    /// `app: agent`: send a user turn to the system under test.
+    Prompt {
+        prompt: String,
+    },
+    /// `app: agent`: assert a tool was called, in prose (see agent_steps).
+    AssertToolCall {
+        assert_tool_call: String,
+    },
+    /// `app: agent`: assert a tool was NEVER called anywhere in the run.
+    AssertNoToolCall {
+        assert_no_tool_call: String,
+    },
     Plain(String),
 }
 
 impl SpecStep {
     const FORMS: &'static str = "a plain string, `assert: <text>`, \
          `assert_sql: {...}`, `assert_api: {...}`, `assert_screenshot: {...}`, \
-         or `foreach: {...}`";
+         `prompt: <text>`, `assert_tool_call: <text>`, \
+         `assert_no_tool_call: <text>`, or `foreach: {...}`";
 
     fn from_yaml(value: serde_yaml::Value) -> Result<Self, String> {
         use serde_yaml::Value;
@@ -341,6 +481,22 @@ impl SpecStep {
                     Some("assert") => match inner {
                         Value::String(s) => Ok(SpecStep::Assert { assert: s }),
                         _ => Err("`assert:` takes a string (the expectation text)".into()),
+                    },
+                    Some("prompt") => match inner {
+                        Value::String(s) => Ok(SpecStep::Prompt { prompt: s }),
+                        _ => Err("`prompt:` takes a string (the user turn)".into()),
+                    },
+                    Some("assert_tool_call") => match inner {
+                        Value::String(s) => Ok(SpecStep::AssertToolCall {
+                            assert_tool_call: s,
+                        }),
+                        _ => Err("`assert_tool_call:` takes a string (see the docs)".into()),
+                    },
+                    Some("assert_no_tool_call") => match inner {
+                        Value::String(s) => Ok(SpecStep::AssertNoToolCall {
+                            assert_no_tool_call: s,
+                        }),
+                        _ => Err("`assert_no_tool_call:` takes a string (a tool name)".into()),
                     },
                     Some("assert_sql") => serde_yaml::from_value(inner)
                         .map(|assert_sql| SpecStep::AssertSql { assert_sql })
@@ -503,6 +659,15 @@ impl SpecStep {
             SpecStep::AssertScreenshot { assert_screenshot } => {
                 format!("screenshot matches {}", assert_screenshot.name)
             }
+            SpecStep::Prompt { prompt } => format!("prompt: {prompt}"),
+            SpecStep::AssertToolCall { assert_tool_call } => {
+                format!("assert_tool_call: {assert_tool_call}")
+            }
+            SpecStep::AssertNoToolCall {
+                assert_no_tool_call,
+            } => {
+                format!("assert_no_tool_call: {assert_no_tool_call}")
+            }
         }
     }
 }
@@ -522,6 +687,7 @@ impl FlowSpec {
             return Err(SpecError::Empty);
         }
         spec.validate_window()?;
+        spec.validate_agent()?;
         Ok(spec)
     }
 
@@ -1257,5 +1423,103 @@ mod app_and_window_tests {
             spec("name: n\napp: sap\nwindow:\n  width: 800\n  height: 600\nsteps:\n  - Type 5\n")
                 .expect_err("sap geometry unimplemented");
         assert!(sap.to_string().contains("not implemented for sap"), "{sap}");
+    }
+
+    // ---- app: agent surface ----
+
+    const AGENT_SPEC: &str = r#"
+name: Booking assistant
+app: agent
+agent:
+  command: python3 assistant.py
+  env:
+    ANTHROPIC_API_KEY: ${SECRET}
+tools:
+  - name: search_flights
+    result: { flights: [KQ311] }
+  - name: create_booking
+    result: { booking: B-1042 }
+steps:
+  - prompt: Book me a flight to Nairobi
+  - assert_tool_call: search_flights where destination contains NBO
+  - assert_no_tool_call: charge_card
+  - assert: reply contains booked
+"#;
+
+    #[test]
+    fn a_full_agent_flow_parses() {
+        let flow = spec(AGENT_SPEC).expect("parses");
+        assert_eq!(flow.app.id(), "agent");
+        let agent = flow.agent.expect("agent block");
+        assert_eq!(agent.command, "python3 assistant.py");
+        assert_eq!(
+            agent.env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("${SECRET}")
+        );
+        assert_eq!(flow.tools.len(), 2);
+        assert_eq!(flow.tools[0].name, "search_flights");
+        assert!(matches!(flow.steps[0], SpecStep::Prompt { .. }));
+        assert!(matches!(flow.steps[1], SpecStep::AssertToolCall { .. }));
+        assert!(matches!(flow.steps[2], SpecStep::AssertNoToolCall { .. }));
+    }
+
+    /// The #66/#67 lesson in spec form: the surface belongs to ONE app and
+    /// every wrong combination is a parse error that names the mismatch.
+    #[test]
+    fn the_agent_surface_is_rejected_off_agent_flows() {
+        // agent: block on a non-agent app.
+        let err =
+            spec("name: n\napp: web\nurl: http://x\nagent:\n  command: x\nsteps:\n  - Go to /\n")
+                .expect_err("agent block on web");
+        assert!(err.to_string().contains("app: web"), "{err}");
+
+        // tools: on a non-agent app.
+        let err = spec("name: n\napp: calc\ntools:\n  - name: t\nsteps:\n  - Type 5\n")
+            .expect_err("tools on calc");
+        assert!(err.to_string().contains("tools:"), "{err}");
+
+        // an agent STEP on a non-agent app.
+        let err = spec("name: n\napp: calc\nsteps:\n  - prompt: hi\n").expect_err("prompt on calc");
+        assert!(err.to_string().contains("agent step"), "{err}");
+
+        // strict: off an agent flow.
+        let err = spec("name: n\napp: calc\nstrict: true\nsteps:\n  - Type 5\n")
+            .expect_err("strict on calc");
+        assert!(err.to_string().contains("strict:"), "{err}");
+    }
+
+    #[test]
+    fn an_agent_flow_needs_a_command_and_a_prompt() {
+        let err =
+            spec("name: n\napp: agent\nsteps:\n  - prompt: hi\n").expect_err("no agent block");
+        assert!(err.to_string().contains("agent:"), "{err}");
+
+        let err = spec("name: n\napp: agent\nagent:\n  command: '   '\nsteps:\n  - prompt: hi\n")
+            .expect_err("blank command");
+        assert!(err.to_string().contains("blank"), "{err}");
+
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - assert: reply contains hi\n",
+        )
+        .expect_err("no prompt step");
+        assert!(err.to_string().contains("prompt:"), "{err}");
+    }
+
+    #[test]
+    fn a_duplicate_tool_mock_is_rejected() {
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\ntools:\n  - name: t\n  - name: t\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("dup tool");
+        assert!(err.to_string().contains("mocked twice"), "{err}");
+    }
+
+    /// A tool mock's result defaults to an empty object, for a tool whose
+    /// call matters but whose output the agent ignores.
+    #[test]
+    fn a_tool_result_is_optional() {
+        let flow = spec("name: n\napp: agent\nagent:\n  command: x\ntools:\n  - name: log_it\nsteps:\n  - prompt: hi\n")
+            .expect("parses");
+        assert_eq!(flow.tools[0].result, serde_json::json!(null));
     }
 }

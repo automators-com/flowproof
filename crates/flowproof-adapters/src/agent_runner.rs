@@ -20,6 +20,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use flowproof_trace::cassette::{Cassette, Divergence};
+use flowproof_trace::substitution::Mocks;
 
 use crate::agent_proxy::AgentProxy;
 
@@ -83,6 +84,8 @@ pub struct AgentRun {
     pub timed_out: bool,
     pub stdout: String,
     pub stderr: String,
+    /// A real-model call that failed, in record mode. `None` in replay.
+    pub upstream_error: Option<String>,
 }
 
 impl AgentRun {
@@ -133,13 +136,27 @@ pub fn run(
     command: &str,
     env: &BTreeMap<String, String>,
     cassette: Cassette,
+    mocks: Mocks,
+    timeout: Duration,
+) -> Result<AgentRun, RunError> {
+    let proxy = AgentProxy::start(cassette, mocks).map_err(RunError::Proxy)?;
+    run_against(&proxy, command, env, timeout)
+}
+
+/// Spawn the agent against an ALREADY-STARTED proxy and wait for it to
+/// finish. The orchestration uses this to drive a RECORD proxy (which
+/// forwards to a real model) as easily as a replay one - the process does
+/// not know or care which mode the endpoint it was handed is in.
+pub fn run_against(
+    proxy: &AgentProxy,
+    command: &str,
+    env: &BTreeMap<String, String>,
     timeout: Duration,
 ) -> Result<AgentRun, RunError> {
     let command = command.trim();
     if command.is_empty() {
         return Err(RunError::NoCommand);
     }
-    let proxy = AgentProxy::start(cassette).map_err(RunError::Proxy)?;
     let base = proxy.base_url();
 
     let parts = argv(command);
@@ -206,6 +223,7 @@ pub fn run(
         timed_out,
         stdout,
         stderr,
+        upstream_error: log.upstream_error.clone(),
     };
     drop(log);
     Ok(run)
@@ -316,6 +334,7 @@ for _ in range(turns):
             &format!("python3 \"{}\"", agent.display()),
             &env(&[("FAKE_TURNS", "2")]),
             cassette(2),
+            Mocks::new(),
             Duration::from_secs(30),
         )
         .expect("runs");
@@ -336,6 +355,7 @@ for _ in range(turns):
             &format!("python3 \"{}\"", agent.display()),
             &env(&[("FAKE_PROMPT", "Book a flight to Mombasa")]),
             cassette(1),
+            Mocks::new(),
             Duration::from_secs(30),
         )
         .expect("runs");
@@ -356,6 +376,7 @@ for _ in range(turns):
             &format!("python3 \"{}\"", agent.display()),
             &env(&[("FAKE_TURNS", "1")]),
             cassette(2),
+            Mocks::new(),
             Duration::from_secs(30),
         )
         .expect("runs");
@@ -379,6 +400,7 @@ for _ in range(turns):
             &format!("python3 \"{}\"", path.display()),
             &BTreeMap::new(),
             cassette(1),
+            Mocks::new(),
             Duration::from_millis(700),
         )
         .expect("runs");
@@ -399,6 +421,7 @@ for _ in range(turns):
             "definitely-not-a-real-program --go",
             &BTreeMap::new(),
             cassette(1),
+            Mocks::new(),
             Duration::from_secs(5),
         )
         .expect_err("cannot spawn");
@@ -410,7 +433,13 @@ for _ in range(turns):
         assert!(message.contains("starting the agent"), "{message}");
 
         assert!(matches!(
-            run("   ", &BTreeMap::new(), cassette(1), Duration::from_secs(5)),
+            run(
+                "   ",
+                &BTreeMap::new(),
+                cassette(1),
+                Mocks::new(),
+                Duration::from_secs(5)
+            ),
             Err(RunError::NoCommand)
         ));
     }
@@ -435,6 +464,7 @@ for _ in range(turns):
                 ("MY_LLM_URL", "http://custom.invalid/v1"),
             ]),
             cassette(1),
+            Mocks::new(),
             Duration::from_secs(30),
         )
         .expect("runs");

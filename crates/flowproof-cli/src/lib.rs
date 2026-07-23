@@ -1,6 +1,8 @@
 //! `flowproof` CLI logic, exposed as a library so both the Rust binary and
 //! the Python entry point (via PyO3) share one implementation.
 
+mod agent_flow;
+
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -212,6 +214,19 @@ fn cmd_record(
         return Ok(EXIT_PASS);
     }
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
+
+    // An agent flow does not use the record/replay driver at all: its
+    // trace is a cassette recorded at the model boundary.
+    if spec.app.id() == "agent" {
+        agent_flow::record(&spec, &out)?;
+        if json {
+            println!("{}", serde_json::json!({ "recorded": out, "app": "agent" }));
+        } else {
+            println!("Recorded '{}' -> {}", spec.name, out.display());
+        }
+        return Ok(EXIT_PASS);
+    }
+
     let mut driver = driver_for(spec.app.id())?;
     // --reuse: consult the existing trace per step, re-authoring only
     // drift; the old steps come from the trace being replaced.
@@ -854,6 +869,48 @@ fn cmd_run(
         return Ok(EXIT_PASS);
     }
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
+
+    // Agent flows replay their cassette through the model-boundary proxy,
+    // not the step-replay engine. Suite hooks still apply - the same
+    // before/after contract every single-spec run gets.
+    if spec.app.id() == "agent" {
+        if !trace_path.exists() {
+            return Err(format!(
+                "trace {} not found — run `flowproof record {}` first",
+                trace_path.display(),
+                spec_path.display()
+            ));
+        }
+        if let Some(cmd) = manifest.as_ref().and_then(|m| m.before_each.as_ref()) {
+            run_hook(cmd, spec_path, "before_each")?;
+        }
+        let outcome = agent_flow::replay(&spec, &trace_path);
+        if let Some(cmd) = manifest.as_ref().and_then(|m| m.after_each.as_ref()) {
+            run_hook(cmd, spec_path, "after_each")?;
+        }
+        return match outcome {
+            Ok(()) => {
+                if json {
+                    println!("{}", serde_json::json!({ "passed": true, "app": "agent" }));
+                } else {
+                    println!("PASS: {}", spec.name);
+                }
+                Ok(EXIT_PASS)
+            }
+            Err(why) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "passed": false, "app": "agent", "error": why })
+                    );
+                } else {
+                    println!("FAIL: {} — {why}", spec.name);
+                }
+                Ok(EXIT_FAIL)
+            }
+        };
+    }
+
     if !trace_path.exists() {
         return Err(format!(
             "trace {} not found — run `flowproof record {}` first",

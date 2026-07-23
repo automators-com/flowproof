@@ -10,6 +10,7 @@ pub mod cassette;
 pub mod cassette_diff;
 pub mod format;
 pub mod secret;
+pub mod substitution;
 pub mod toolcalls;
 
 pub use format::{Header, Step, TraceError, TraceLine};

@@ -765,6 +765,7 @@ dependencies = [
  "flowproof-trace",
  "image",
  "imageproc",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tiny_http",
