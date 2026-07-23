@@ -182,7 +182,7 @@ fn serve_one(
     });
     let mut writer = stream;
 
-    let Some((path, body)) = read_request(&mut reader) else {
+    let Some(request) = read_request(&mut reader) else {
         respond(
             &mut writer,
             &mut reader,
@@ -190,20 +190,34 @@ fn serve_one(
         );
         return;
     };
-    if !path.contains("/chat/completions") {
+
+    // Dispatch by path: the OpenAI chat-completions endpoint and the
+    // Anthropic Messages endpoint are served side by side, each parsed and
+    // rendered in its own dialect but reduced to the same neutral turn. The
+    // substring style is kept so a base URL with or without a trailing
+    // segment still routes.
+    let protocol = if request.path.contains("/v1/messages") {
+        "anthropic"
+    } else if request.path.contains("/chat/completions") {
+        "openai"
+    } else {
         respond(
             &mut writer,
             &mut reader,
-            &response(404, r#"{"error":"only /v1/chat/completions is served"}"#),
+            &response(
+                404,
+                r#"{"error":"only /v1/chat/completions and /v1/messages are served"}"#,
+            ),
         );
         return;
-    }
+    };
+    let is_anthropic = protocol == "anthropic";
 
     // Substitute on the raw body FIRST - the same transform in both phases,
     // so the request the model sees (record) and the request matched
     // (replay) are the same one, and a volatile real tool result cannot
-    // fail replay.
-    let mut json: serde_json::Value = match serde_json::from_slice(&body) {
+    // fail replay. Each dialect has its own sibling transform.
+    let mut json: serde_json::Value = match serde_json::from_slice(&request.body) {
         Ok(json) => json,
         Err(e) => {
             respond(
@@ -214,15 +228,19 @@ fn serve_one(
             return;
         }
     };
-    substitution::apply_json(&mut json, mocks);
+    if is_anthropic {
+        substitution::apply_anthropic_json(&mut json, mocks);
+    } else {
+        substitution::apply_json(&mut json, mocks);
+    }
 
     // `stream` is transport, not conversation. It never changes which turn
-    // this is (request_from_json already ignores it, alongside the sampling
-    // knobs), so a cassette recorded from a non-streaming client serves a
-    // streaming one and vice versa. Read the client's intent, then strip it
-    // (and stream_options) so that in record mode the upstream answers with
-    // one non-streaming JSON body `forward` can read, and the request that is
-    // captured/compared is stream-free.
+    // this is (the request parsers ignore it, alongside the sampling knobs),
+    // so a cassette recorded from a non-streaming client serves a streaming
+    // one and vice versa. Read the client's intent, then strip it (and
+    // stream_options) so that in record mode the upstream answers with one
+    // non-streaming body to read, and the request captured/compared is
+    // stream-free.
     let wants_stream = json
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -232,7 +250,12 @@ fn serve_one(
         obj.remove("stream_options");
     }
 
-    let incoming = match request_from_json(&json) {
+    let parsed = if is_anthropic {
+        request_from_anthropic_json(&json)
+    } else {
+        request_from_json(&json)
+    };
+    let incoming = match parsed {
         Ok(request) => request,
         Err(why) => {
             respond(
@@ -251,10 +274,19 @@ fn serve_one(
     *turn += 1;
 
     match mode {
-        Mode::Replay(cassette) => match cassette.turn(index, &incoming) {
+        Mode::Replay(cassette) => match cassette.turn(index, &incoming, protocol) {
             Ok(recorded) => {
                 log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
-                let bytes = if wants_stream {
+                // Render the recorded assistant message in the dialect the
+                // agent asked in. OpenAI honors `stream: true` with a
+                // synthetic SSE stream; the Anthropic Messages body is
+                // non-streaming until slice 3 adds its stream.
+                let bytes = if is_anthropic {
+                    response(
+                        200,
+                        &messages_body(&recorded.message, recorded.stop_reason.as_deref()),
+                    )
+                } else if wants_stream {
                     stream_response(&completion_stream_body(&recorded.message))
                 } else {
                     response(200, &completion_body(&recorded.message))
@@ -279,51 +311,67 @@ fn serve_one(
                 );
             }
         },
-        Mode::Record { upstream, auth } => match forward(upstream, auth.as_deref(), &json) {
-            Ok((message, raw)) => {
-                // Capture the POST-substitution request and the model's
-                // reply: that pair is exactly what replay will serve.
-                captured
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(Turn {
-                        request: incoming,
-                        response: TurnResponse {
-                            message: message.clone(),
-                        },
-                    });
-                log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
-                // Hand the model's OWN response body back to the agent
-                // verbatim, so record is transparent - the agent cannot
-                // tell it is being recorded. When the agent asked for a
-                // stream, the upstream was forced non-streaming (stream was
-                // stripped), so synthesize the stream from the captured
-                // message: the agent then sees the SAME transport and the
-                // SAME chunking at record as it will at replay, and no
-                // record/replay behavioral asymmetry can hide in transport.
-                let bytes = if wants_stream {
-                    stream_response(&completion_stream_body(&message))
-                } else {
-                    response(200, &raw)
-                };
-                respond(&mut writer, &mut reader, &bytes);
-            }
-            Err(why) => {
-                let mut log = log.lock().unwrap_or_else(|e| e.into_inner());
-                if log.upstream_error.is_none() {
-                    log.upstream_error = Some(why.clone());
+        Mode::Record { upstream, auth } => {
+            let outcome = if is_anthropic {
+                forward_anthropic(
+                    upstream,
+                    auth.as_deref(),
+                    &json,
+                    request.anthropic_version.as_deref(),
+                )
+            } else {
+                forward(upstream, auth.as_deref(), &json).map(|(message, raw)| (message, None, raw))
+            };
+            match outcome {
+                Ok((message, stop_reason, raw)) => {
+                    // Capture the POST-substitution request and the model's
+                    // reply, stamped with the protocol it spoke: that triple
+                    // is exactly what replay will match and serve.
+                    captured
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(Turn {
+                            protocol: protocol.to_string(),
+                            request: incoming,
+                            response: TurnResponse {
+                                message: message.clone(),
+                                stop_reason,
+                            },
+                        });
+                    log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
+                    // Hand the model's OWN response body back to the agent
+                    // verbatim, so record is transparent. When an OpenAI
+                    // agent asked for a stream, the upstream was forced
+                    // non-streaming (stream was stripped), so synthesize the
+                    // stream from the captured message: the agent then sees
+                    // the SAME transport and chunking at record as at replay,
+                    // and no record/replay asymmetry can hide in transport.
+                    // Anthropic streaming is slice 3; until then it hands back
+                    // the raw non-streaming body.
+                    let bytes = if wants_stream && !is_anthropic {
+                        stream_response(&completion_stream_body(&message))
+                    } else {
+                        response(200, &raw)
+                    };
+                    respond(&mut writer, &mut reader, &bytes);
                 }
-                drop(log);
-                respond(
-                    &mut writer,
-                    &mut reader,
-                    &response(
-                        502,
-                        &error_body(&format!("upstream model call failed: {why}")),
-                    ),
-                );
+                Err(why) => {
+                    let mut log = log.lock().unwrap_or_else(|e| e.into_inner());
+                    if log.upstream_error.is_none() {
+                        log.upstream_error = Some(why.clone());
+                    }
+                    drop(log);
+                    respond(
+                        &mut writer,
+                        &mut reader,
+                        &response(
+                            502,
+                            &error_body(&format!("upstream model call failed: {why}")),
+                        ),
+                    );
+                }
             }
-        },
+        }
     }
 }
 
@@ -356,6 +404,94 @@ fn forward(
     Ok((parse_message(message), raw))
 }
 
+/// Forward a request to the upstream Anthropic Messages API and read its
+/// reply. Returns the parsed assistant message, the recorded `stop_reason`,
+/// and the raw response body (handed back to the agent unchanged).
+///
+/// The auth story differs from OpenAI on purpose: Anthropic authenticates
+/// with an `x-api-key` header carrying the BARE key, not `Authorization:
+/// Bearer`. A `Bearer ` prefix is stripped defensively so a key threaded
+/// through the shared record plumbing still lands in the right shape. The
+/// incoming `anthropic-version` is passed through, defaulting to the pinned
+/// `2023-06-01` the SDKs send.
+fn forward_anthropic(
+    upstream: &str,
+    auth: Option<&str>,
+    body: &serde_json::Value,
+    version: Option<&str>,
+) -> Result<(Message, Option<String>, String), String> {
+    let url = format!("{upstream}/v1/messages");
+    let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
+    let mut request = ureq::post(&url)
+        .header("content-type", "application/json")
+        .header("anthropic-version", version.unwrap_or("2023-06-01"));
+    if let Some(auth) = auth {
+        let key = auth.strip_prefix("Bearer ").unwrap_or(auth);
+        request = request.header("x-api-key", key);
+    }
+    let mut response = request.send(&bytes[..]).map_err(|e| e.to_string())?;
+    let raw = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("upstream returned non-JSON: {e}"))?;
+    let message = message_from_anthropic_response(&parsed)?;
+    let stop_reason = parsed
+        .get("stop_reason")
+        .and_then(|s| s.as_str())
+        .map(str::to_string);
+    Ok((message, stop_reason, raw))
+}
+
+/// Parse an Anthropic Messages RESPONSE into the neutral assistant message:
+/// text blocks concatenate into `content`, `tool_use` blocks become
+/// `ToolCall`s whose arguments are the canonical JSON of the block `input`.
+/// The same normalization a chat-completions reply gets from
+/// [`parse_message`], so a recorded turn is dialect-independent thereafter.
+fn message_from_anthropic_response(parsed: &serde_json::Value) -> Result<Message, String> {
+    let content = parsed
+        .get("content")
+        .and_then(|c| c.as_array())
+        .ok_or("anthropic response has no content array")?;
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    for block in content {
+        match block.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                    text.push_str(t);
+                }
+            }
+            Some("tool_use") => {
+                let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+                tool_calls.push(ToolCall {
+                    id: block
+                        .get("id")
+                        .and_then(|i| i.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    name: block
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    arguments: input.to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(Message {
+        role: "assistant".into(),
+        // An assistant turn that only called tools said nothing; None keeps
+        // it byte-identical to the OpenAI shape through the round trip.
+        content: if text.is_empty() { None } else { Some(text) },
+        tool_calls,
+        tool_call_id: None,
+    })
+}
+
 /// Send a response and close the write half cleanly.
 ///
 /// Dropping the socket straight after `write_all` is what a first draft
@@ -385,18 +521,28 @@ fn respond(writer: &mut TcpStream, reader: &mut BufReader<TcpStream>, bytes: &[u
     }
 }
 
+/// The parts of a request the proxy acts on: the path (which API), the
+/// `anthropic-version` header (passed through to the real Messages API when
+/// recording), and the body.
+struct Request {
+    path: String,
+    anthropic_version: Option<String>,
+    body: Vec<u8>,
+}
+
 /// Read the request line, headers, and exactly `content-length` bytes.
 ///
 /// Reading a fixed-size buffer once would be shorter and wrong: a
 /// trajectory's later prompts run to tens of kilobytes and arrive across
 /// several TCP segments, so the body has to be read to its declared
 /// length rather than to whatever happened to have landed.
-fn read_request(reader: &mut BufReader<TcpStream>) -> Option<(String, Vec<u8>)> {
+fn read_request(reader: &mut BufReader<TcpStream>) -> Option<Request> {
     let mut request_line = String::new();
     reader.read_line(&mut request_line).ok()?;
     let path = request_line.split_whitespace().nth(1)?.to_string();
 
     let mut length = 0usize;
+    let mut anthropic_version = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header).ok()? == 0 {
@@ -409,6 +555,8 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Option<(String, Vec<u8>)> 
         if let Some((name, value)) = header.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
                 length = value.trim().parse().ok()?;
+            } else if name.eq_ignore_ascii_case("anthropic-version") {
+                anthropic_version = Some(value.trim().to_string());
             }
         }
     }
@@ -417,7 +565,11 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Option<(String, Vec<u8>)> 
     }
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body).ok()?;
-    Some((path, body))
+    Some(Request {
+        path,
+        anthropic_version,
+        body,
+    })
 }
 
 /// Pull the comparable request out of an OpenAI-compatible payload.
@@ -459,6 +611,182 @@ fn request_from_json(json: &serde_json::Value) -> Result<TurnRequest, String> {
         messages,
         tools,
     })
+}
+
+/// Pull the comparable request out of an Anthropic Messages payload,
+/// producing the SAME neutral [`TurnRequest`] the OpenAI parser does.
+///
+/// The dialects disagree on shape but agree on meaning, and the neutral
+/// form is where they meet: a top-level `system` becomes a leading system
+/// message, each content array is normalized block by block, and tools are
+/// named by their top-level `name` (Anthropic has no `function` wrapper).
+/// The normalization is one fixed helper used identically at record and
+/// replay, so a request recorded one run matches the same request the next.
+fn request_from_anthropic_json(json: &serde_json::Value) -> Result<TurnRequest, String> {
+    let model = json
+        .get("model")
+        .and_then(|m| m.as_str())
+        .ok_or("no model")?
+        .to_string();
+
+    let mut messages = Vec::new();
+    // A system prompt is top-level in Anthropic, not a message; it becomes a
+    // leading system message so the neutral roles line up with OpenAI.
+    if let Some(system) = json.get("system") {
+        if let Some(text) = anthropic_text(system) {
+            messages.push(Message {
+                role: "system".into(),
+                content: Some(text),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            });
+        }
+    }
+    let raw = json
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .ok_or("no messages")?;
+    for message in raw {
+        let role = message
+            .get("role")
+            .and_then(|r| r.as_str())
+            .unwrap_or_default();
+        let content = message.get("content").unwrap_or(&serde_json::Value::Null);
+        messages.extend(anthropic_messages_from_content(role, content));
+    }
+
+    let tools = json
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(TurnRequest {
+        model,
+        messages,
+        tools,
+    })
+}
+
+/// The text of an Anthropic `system` or block content: a bare string, or an
+/// array of `{type:"text", text}` blocks joined in order. Anything else has
+/// no text to contribute.
+fn anthropic_text(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    if let Some(blocks) = value.as_array() {
+        let joined: String = blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect();
+        return Some(joined);
+    }
+    None
+}
+
+/// The neutral text of a `tool_result` block's content: a bare string kept
+/// verbatim, or an array of text blocks joined. A substituted mock is a bare
+/// JSON string, so this reads it back byte-identical - the property replay
+/// matching depends on.
+fn anthropic_tool_result_content(block: &serde_json::Value) -> String {
+    let Some(content) = block.get("content") else {
+        return String::new();
+    };
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    if let Some(blocks) = content.as_array() {
+        return blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect();
+    }
+    // A structured object result with no text blocks: fall back to canonical
+    // JSON so it is at least deterministic.
+    content.to_string()
+}
+
+/// Normalize one Anthropic message's content into neutral messages.
+///
+/// A string content is one message. A block array is split in block order:
+/// `text` blocks concatenate into this message's content, `tool_use` blocks
+/// become tool calls on it, and each `tool_result` block becomes a SEPARATE
+/// neutral `role:"tool"` message (the OpenAI shape). The tool messages come
+/// first, then the text/tool_use message if it carried anything - so a user
+/// turn mixing a tool result and a follow-up sentence splits into (tool) +
+/// (user text), deterministically, the same way in both phases.
+fn anthropic_messages_from_content(role: &str, content: &serde_json::Value) -> Vec<Message> {
+    if let Some(text) = content.as_str() {
+        return vec![Message {
+            role: role.to_string(),
+            content: Some(text.to_string()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }];
+    }
+    let Some(blocks) = content.as_array() else {
+        return Vec::new();
+    };
+
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    let mut tool_messages = Vec::new();
+    for block in blocks {
+        match block.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                    text.push_str(t);
+                }
+            }
+            Some("tool_use") => {
+                let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+                tool_calls.push(ToolCall {
+                    id: block
+                        .get("id")
+                        .and_then(|i| i.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    name: block
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    arguments: input.to_string(),
+                });
+            }
+            Some("tool_result") => {
+                tool_messages.push(Message {
+                    role: "tool".into(),
+                    content: Some(anthropic_tool_result_content(block)),
+                    tool_calls: Vec::new(),
+                    tool_call_id: block
+                        .get("tool_use_id")
+                        .and_then(|i| i.as_str())
+                        .map(str::to_string),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = tool_messages;
+    // The carrying message follows the tool results, and only when it
+    // actually said or asked something - a user turn that was nothing but a
+    // tool result adds no empty message.
+    if !text.is_empty() || !tool_calls.is_empty() {
+        out.push(Message {
+            role: role.to_string(),
+            content: if text.is_empty() { None } else { Some(text) },
+            tool_calls,
+            tool_call_id: None,
+        });
+    }
+    out
 }
 
 fn parse_message(value: &serde_json::Value) -> Message {
@@ -595,6 +923,50 @@ fn completion_stream_body(message: &Message) -> String {
     out
 }
 
+/// Render a recorded assistant message as an Anthropic Messages RESPONSE.
+///
+/// The neutral message becomes content blocks: a text block when it said
+/// something, then one `tool_use` block per call with its arguments parsed
+/// back to the `input` object. The `stop_reason` is served from the
+/// recording when it was captured, and otherwise inferred - `tool_use` if
+/// the turn called tools, `end_turn` if it just spoke - so a hand-written
+/// cassette still yields a plausible reason.
+fn messages_body(message: &Message, stop_reason: Option<&str>) -> String {
+    let mut content: Vec<serde_json::Value> = Vec::new();
+    if let Some(text) = &message.content {
+        if !text.is_empty() {
+            content.push(serde_json::json!({ "type": "text", "text": text }));
+        }
+    }
+    for call in &message.tool_calls {
+        let input: serde_json::Value =
+            serde_json::from_str(&call.arguments).unwrap_or(serde_json::json!({}));
+        content.push(serde_json::json!({
+            "type": "tool_use",
+            "id": call.id,
+            "name": call.name,
+            "input": input,
+        }));
+    }
+    let stop_reason = stop_reason.map(str::to_string).unwrap_or_else(|| {
+        if message.tool_calls.is_empty() {
+            "end_turn".into()
+        } else {
+            "tool_use".into()
+        }
+    });
+    serde_json::json!({
+        "id": "flowproof-replay",
+        "type": "message",
+        "role": "assistant",
+        "model": "flowproof-replay",
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": serde_json::Value::Null,
+    })
+    .to_string()
+}
+
 fn error_body(message: &str) -> String {
     serde_json::json!({ "error": { "type": "flowproof_divergence", "message": message } })
         .to_string()
@@ -632,30 +1004,53 @@ mod tests {
     use super::*;
     use flowproof_trace::cassette::{Turn, TurnResponse};
 
+    /// Build an OpenAI turn, the default protocol, so the fixtures stay
+    /// terse while `Turn`/`TurnResponse` carry their v2 fields.
+    fn oai_turn(request: TurnRequest, message: Message) -> Turn {
+        Turn {
+            protocol: "openai".into(),
+            request,
+            response: TurnResponse {
+                message,
+                stop_reason: None,
+            },
+        }
+    }
+
+    /// Build an Anthropic turn with an optional recorded `stop_reason`.
+    fn ant_turn(request: TurnRequest, message: Message, stop_reason: Option<&str>) -> Turn {
+        Turn {
+            protocol: "anthropic".into(),
+            request,
+            response: TurnResponse {
+                message,
+                stop_reason: stop_reason.map(str::to_string),
+            },
+        }
+    }
+
     fn cassette() -> Cassette {
         Cassette {
             turns: vec![
-                Turn {
-                    request: TurnRequest {
+                oai_turn(
+                    TurnRequest {
                         model: "gpt-4o".into(),
                         messages: vec![Message::new("user", "Book a flight to Nairobi")],
                         tools: vec!["search_flights".into()],
                     },
-                    response: TurnResponse {
-                        message: Message {
-                            role: "assistant".into(),
-                            content: None,
-                            tool_calls: vec![ToolCall {
-                                id: "call_1".into(),
-                                name: "search_flights".into(),
-                                arguments: r#"{"destination":"NBO"}"#.into(),
-                            }],
-                            tool_call_id: None,
-                        },
+                    Message {
+                        role: "assistant".into(),
+                        content: None,
+                        tool_calls: vec![ToolCall {
+                            id: "call_1".into(),
+                            name: "search_flights".into(),
+                            arguments: r#"{"destination":"NBO"}"#.into(),
+                        }],
+                        tool_call_id: None,
                     },
-                },
-                Turn {
-                    request: TurnRequest {
+                ),
+                oai_turn(
+                    TurnRequest {
                         model: "gpt-4o".into(),
                         messages: vec![
                             Message::new("user", "Book a flight to Nairobi"),
@@ -663,10 +1058,8 @@ mod tests {
                         ],
                         tools: vec!["search_flights".into()],
                     },
-                    response: TurnResponse {
-                        message: Message::new("assistant", "Booked KQ311."),
-                    },
-                },
+                    Message::new("assistant", "Booked KQ311."),
+                ),
             ],
         }
     }
@@ -696,6 +1089,37 @@ mod tests {
         (status, serde_json::from_str(body).unwrap_or_default())
     }
 
+    /// POST a JSON body to a given path (so the Messages endpoint can be
+    /// exercised as well as chat-completions), return (status, body).
+    fn post_to(base: &str, path: &str, payload: serde_json::Value) -> (u16, serde_json::Value) {
+        let addr = base
+            .trim_start_matches("http://")
+            .trim_end_matches("/v1")
+            .to_string();
+        let body = payload.to_string();
+        let mut stream = TcpStream::connect(&addr).expect("connect");
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nhost: {addr}\r\nanthropic-version: 2023-06-01\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).expect("write");
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).expect("read");
+        let status = raw
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .expect("status");
+        let body = raw.split("\r\n\r\n").nth(1).unwrap_or_default();
+        (status, serde_json::from_str(body).unwrap_or_default())
+    }
+
+    /// POST an Anthropic Messages body to `/v1/messages`.
+    fn post_messages(base: &str, payload: serde_json::Value) -> (u16, serde_json::Value) {
+        post_to(base, "/v1/messages", payload)
+    }
+
     fn chat(messages: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
             "model": "gpt-4o",
@@ -703,6 +1127,54 @@ mod tests {
             "temperature": 0.7,
             "tools": [{"type": "function", "function": {"name": "search_flights"}}],
         })
+    }
+
+    /// A two-turn Anthropic trajectory: the model calls a tool, the tool
+    /// result comes back in a user message's content array, the model
+    /// replies with text. The neutral turns are exactly what the Messages
+    /// parser produces from the bodies `post_messages` sends below.
+    fn anthropic_cassette() -> Cassette {
+        let tool_use = Message {
+            role: "assistant".into(),
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: "toolu_1".into(),
+                name: "get_weather".into(),
+                arguments: r#"{"city":"Paris"}"#.into(),
+            }],
+            tool_call_id: None,
+        };
+        Cassette {
+            turns: vec![
+                ant_turn(
+                    TurnRequest {
+                        model: "claude-sonnet-4-5".into(),
+                        messages: vec![Message::new("user", "What's the weather in Paris?")],
+                        tools: vec!["get_weather".into()],
+                    },
+                    tool_use.clone(),
+                    Some("tool_use"),
+                ),
+                ant_turn(
+                    TurnRequest {
+                        model: "claude-sonnet-4-5".into(),
+                        messages: vec![
+                            Message::new("user", "What's the weather in Paris?"),
+                            tool_use,
+                            Message {
+                                role: "tool".into(),
+                                content: Some("sunny".into()),
+                                tool_calls: Vec::new(),
+                                tool_call_id: Some("toolu_1".into()),
+                            },
+                        ],
+                        tools: vec!["get_weather".into()],
+                    },
+                    Message::new("assistant", "It is sunny in Paris."),
+                    Some("end_turn"),
+                ),
+            ],
+        }
     }
 
     /// The whole point: an agent making its usual HTTP calls gets the
@@ -852,27 +1324,25 @@ mod tests {
         // MOCK - which is what record wrote after substituting.
         let cassette = Cassette {
             turns: vec![
-                Turn {
-                    request: TurnRequest {
+                oai_turn(
+                    TurnRequest {
                         model: "gpt-4o".into(),
                         messages: vec![Message::new("user", "What time is it there?")],
                         tools: vec!["clock".into()],
                     },
-                    response: TurnResponse {
-                        message: Message {
-                            role: "assistant".into(),
-                            content: None,
-                            tool_calls: vec![ToolCall {
-                                id: "call_clock".into(),
-                                name: "clock".into(),
-                                arguments: "{}".into(),
-                            }],
-                            tool_call_id: None,
-                        },
+                    Message {
+                        role: "assistant".into(),
+                        content: None,
+                        tool_calls: vec![ToolCall {
+                            id: "call_clock".into(),
+                            name: "clock".into(),
+                            arguments: "{}".into(),
+                        }],
+                        tool_call_id: None,
                     },
-                },
-                Turn {
-                    request: TurnRequest {
+                ),
+                oai_turn(
+                    TurnRequest {
                         model: "gpt-4o".into(),
                         messages: vec![
                             Message::new("user", "What time is it there?"),
@@ -896,10 +1366,8 @@ mod tests {
                         ],
                         tools: vec!["clock".into()],
                     },
-                    response: TurnResponse {
-                        message: Message::new("assistant", "It is fixed o'clock."),
-                    },
-                },
+                    Message::new("assistant", "It is fixed o'clock."),
+                ),
             ],
         };
         let mocks: Mocks = [("clock".to_string(), serde_json::json!({"now": "FIXED"}))]
@@ -944,6 +1412,188 @@ mod tests {
             "It is fixed o'clock."
         );
         assert!(proxy.log().divergence.is_none());
+    }
+
+    /// The Anthropic analogue of the headline OpenAI test: an agent making
+    /// its usual Messages calls gets the recorded trajectory back over
+    /// `/v1/messages`, turn by turn, Anthropic-shaped, with no model.
+    #[test]
+    fn an_anthropic_trajectory_is_served_over_v1_messages() {
+        let proxy = AgentProxy::start(anthropic_cassette(), Mocks::new()).expect("starts");
+
+        // Turn 1: a tool_use reply, rendered as Messages content blocks.
+        let (status, body) = post_messages(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "What's the weather in Paris?"}],
+                "tools": [{"name": "get_weather", "description": "look it up",
+                           "input_schema": {"type": "object"}}],
+            }),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body["type"], "message");
+        assert_eq!(body["role"], "assistant");
+        let block = &body["content"][0];
+        assert_eq!(block["type"], "tool_use");
+        assert_eq!(block["name"], "get_weather");
+        assert_eq!(block["id"], "toolu_1");
+        assert_eq!(block["input"]["city"], "Paris");
+        assert_eq!(body["stop_reason"], "tool_use");
+        assert!(body["stop_sequence"].is_null());
+
+        // Turn 2: the tool result comes back in a user content array, and
+        // the recorded text reply is served with its recorded stop_reason.
+        let (status, body) = post_messages(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "messages": [
+                    {"role": "user", "content": "What's the weather in Paris?"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "get_weather",
+                         "input": {"city": "Paris"}}]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1",
+                         "content": "sunny"}]},
+                ],
+                "tools": [{"name": "get_weather", "description": "look it up",
+                           "input_schema": {"type": "object"}}],
+            }),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body["content"][0]["type"], "text");
+        assert_eq!(body["content"][0]["text"], "It is sunny in Paris.");
+        assert_eq!(body["stop_reason"], "end_turn");
+
+        assert_eq!(proxy.log().served, 2);
+        assert!(proxy.log().divergence.is_none());
+    }
+
+    /// The Anthropic substitution sibling: a mocked tool_result lets an
+    /// otherwise-volatile Messages request MATCH. The cassette stored the
+    /// mock (canonical) at record; at replay the agent's real tool_result
+    /// arrives as a volatile text block and substitution rewrites it back to
+    /// the mock before matching.
+    #[test]
+    fn a_mocked_tool_result_lets_a_volatile_anthropic_request_match() {
+        let tool_use = Message {
+            role: "assistant".into(),
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: "toolu_c".into(),
+                name: "thermo".into(),
+                arguments: "{}".into(),
+            }],
+            tool_call_id: None,
+        };
+        let cassette = Cassette {
+            turns: vec![
+                ant_turn(
+                    TurnRequest {
+                        model: "claude-sonnet-4-5".into(),
+                        messages: vec![Message::new("user", "Temperature?")],
+                        tools: vec!["thermo".into()],
+                    },
+                    tool_use.clone(),
+                    Some("tool_use"),
+                ),
+                ant_turn(
+                    TurnRequest {
+                        model: "claude-sonnet-4-5".into(),
+                        messages: vec![
+                            Message::new("user", "Temperature?"),
+                            tool_use,
+                            // Stored as the mock, canonically - what record
+                            // wrote after substituting.
+                            Message {
+                                role: "tool".into(),
+                                content: Some(r#"{"temp":"FIXED"}"#.into()),
+                                tool_calls: Vec::new(),
+                                tool_call_id: Some("toolu_c".into()),
+                            },
+                        ],
+                        tools: vec!["thermo".into()],
+                    },
+                    Message::new("assistant", "It is fixed degrees."),
+                    Some("end_turn"),
+                ),
+            ],
+        };
+        let mocks: Mocks = [("thermo".to_string(), serde_json::json!({"temp": "FIXED"}))]
+            .into_iter()
+            .collect();
+        let proxy = AgentProxy::start(cassette, mocks).expect("starts");
+
+        // Turn 1.
+        let (status, _) = post_messages(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "Temperature?"}],
+                "tools": [{"name": "thermo", "input_schema": {"type": "object"}}],
+            }),
+        );
+        assert_eq!(status, 200);
+
+        // Turn 2: the agent's REAL thermometer returned a live reading, as a
+        // text block. Substitution must rewrite it to the mock so it matches.
+        let (status, body) = post_messages(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "messages": [
+                    {"role": "user", "content": "Temperature?"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "toolu_c", "name": "thermo", "input": {}}]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_c",
+                         "content": [{"type": "text", "text": "18.7C at 09:41:07.123"}]}]},
+                ],
+                "tools": [{"name": "thermo", "input_schema": {"type": "object"}}],
+            }),
+        );
+        assert_eq!(
+            status, 200,
+            "substitution must make the volatile result match"
+        );
+        assert_eq!(body["content"][0]["text"], "It is fixed degrees.");
+        assert!(proxy.log().divergence.is_none());
+    }
+
+    /// Protocol is part of a turn's identity: a cassette recorded in the
+    /// Anthropic dialect, replayed through the OpenAI endpoint, diverges on
+    /// protocol FIRST - before any body diff between two shapes.
+    #[test]
+    fn a_protocol_mismatch_diverges() {
+        // One anthropic turn, replayed via /chat/completions (openai).
+        let cassette = Cassette {
+            turns: vec![anthropic_cassette().turns.remove(0)],
+        };
+        let proxy = AgentProxy::start(cassette, Mocks::new()).expect("starts");
+
+        let (status, body) = post(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "claude-sonnet-4-5",
+                "messages": [{"role": "user", "content": "What's the weather in Paris?"}],
+                "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+            }),
+        );
+        assert_eq!(status, 409);
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("protocol changed"), "{message}");
+        assert!(
+            message.contains("recorded anthropic, replayed openai"),
+            "{message}"
+        );
+        assert!(message.starts_with("turn 1:"), "{message}");
+        assert_eq!(proxy.log().served, 0);
+        assert!(proxy.log().divergence.is_some());
     }
 
     /// A drifted prompt must not quietly succeed. The agent is owed an

@@ -283,10 +283,16 @@ fn upstream() -> Result<String, String> {
     ))
 }
 
-/// The `Authorization` header for the real model, read from flowproof's
-/// environment. A bare key is turned into `Bearer <key>`; a value that is
-/// already a scheme (`Bearer ...`, `x-api-key ...`) is passed as written.
-/// `None` when no key is set - a local fake model needs none.
+/// The auth value for the real model, read from flowproof's environment and
+/// handed to the proxy, which puts it in the header its dialect needs: an
+/// OpenAI request gets `Authorization: <value>`, an Anthropic request gets
+/// `x-api-key: <value>` (a `Bearer ` prefix stripped there defensively).
+///
+/// So the wrapping is dialect-aware: an OpenAI bare key becomes `Bearer
+/// <key>` the way v1 always did, but an `ANTHROPIC_API_KEY` is passed BARE,
+/// because `x-api-key` carries the raw key and a `Bearer ` prefix would be
+/// wrong. A value that already names a scheme (contains a space) is passed
+/// as written. `None` when no key is set - a local fake model needs none.
 fn upstream_auth() -> Option<String> {
     for var in UPSTREAM_KEY_VARS {
         if let Ok(value) = std::env::var(var) {
@@ -295,6 +301,11 @@ fn upstream_auth() -> Option<String> {
                 continue;
             }
             if value.contains(' ') {
+                return Some(value.to_string());
+            }
+            // Anthropic authenticates with a bare key in `x-api-key`, so it
+            // must not be Bearer-wrapped; OpenAI keeps its Bearer scheme.
+            if var == "ANTHROPIC_API_KEY" {
                 return Some(value.to_string());
             }
             return Some(format!("Bearer {value}"));

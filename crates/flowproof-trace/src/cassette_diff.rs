@@ -349,6 +349,7 @@ mod tests {
 
     fn turn(prompt: &str, calls: Vec<ToolCall>, reply: Option<&str>) -> Turn {
         Turn {
+            protocol: crate::cassette::default_protocol(),
             request: TurnRequest {
                 model: "gpt-4o".into(),
                 messages: vec![Message::new("user", prompt)],
@@ -361,6 +362,7 @@ mod tests {
                     tool_calls: calls,
                     tool_call_id: None,
                 },
+                stop_reason: None,
             },
         }
     }

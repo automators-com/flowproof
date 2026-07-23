@@ -88,11 +88,37 @@ pub struct TurnRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TurnResponse {
     pub message: Message,
+    /// The wire-level stop reason the model reported (`end_turn`,
+    /// `tool_use`, ...). Recorded verbatim so replay can hand it straight
+    /// back, and SERVED but NEVER MATCHED: it is an output of the turn, not
+    /// part of the request identity, so a change in it must not fail replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+}
+
+/// The default protocol for a turn: the OpenAI chat-completions wire shape,
+/// which is what every v1 recording spoke. Kept as a free function so both
+/// the serde default and the code that stamps a protocol name it once.
+pub fn default_protocol() -> String {
+    "openai".to_string()
+}
+
+fn protocol_is_default(protocol: &str) -> bool {
+    protocol == "openai"
 }
 
 /// One request/response exchange at the model boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Turn {
+    /// The API dialect this exchange was recorded in: `"openai"` (chat
+    /// completions) or `"anthropic"` (Messages). Defaults to `"openai"` and
+    /// is omitted from the JSON when it equals that default, so every v1
+    /// trace round-trips byte-identical and matching stays protocol-aware.
+    #[serde(
+        default = "default_protocol",
+        skip_serializing_if = "protocol_is_default"
+    )]
+    pub protocol: String,
     pub request: TurnRequest,
     pub response: TurnResponse,
 }
@@ -205,7 +231,12 @@ impl Cassette {
     /// it made while recording, the recording no longer describes it, and
     /// the honest answer is to say so at the exact turn it stopped being
     /// true.
-    pub fn turn(&self, index: usize, incoming: &TurnRequest) -> Result<&TurnResponse, Divergence> {
+    pub fn turn(
+        &self,
+        index: usize,
+        incoming: &TurnRequest,
+        protocol: &str,
+    ) -> Result<&TurnResponse, Divergence> {
         let Some(turn) = self.turns.get(index) else {
             return Err(Divergence {
                 turn: index,
@@ -217,6 +248,19 @@ impl Cassette {
             });
         };
         let recorded = &turn.request;
+
+        // Protocol is the FIRST thing compared: a turn recorded in one API
+        // dialect and replayed in another is not the same conversation at
+        // all, and saying so plainly beats a body diff between two shapes.
+        if turn.protocol != protocol {
+            return Err(Divergence {
+                turn: index,
+                detail: format!(
+                    "protocol changed: recorded {}, replayed {}",
+                    turn.protocol, protocol
+                ),
+            });
+        }
 
         // Envelope first: these are the differences a human can act on
         // immediately, and reporting them alongside a body diff would bury
@@ -323,35 +367,41 @@ mod tests {
         }
     }
 
+    /// An OpenAI turn, the default protocol, so the booking helpers stay
+    /// terse while the struct carries its new fields.
+    fn openai_turn(request: TurnRequest, message: Message) -> Turn {
+        Turn {
+            protocol: default_protocol(),
+            request,
+            response: TurnResponse {
+                message,
+                stop_reason: None,
+            },
+        }
+    }
+
     /// A two-turn booking trajectory: the model asks for a tool, the tool
     /// result comes back, the model replies.
     fn booking() -> Cassette {
         Cassette {
             turns: vec![
-                Turn {
-                    request: request(
+                openai_turn(
+                    request(
                         vec![Message::new("user", "Book me a flight to Nairobi")],
                         &["search_flights"],
                     ),
-                    response: TurnResponse {
-                        message: assistant_with(vec![call(
-                            "search_flights",
-                            r#"{"destination":"NBO"}"#,
-                        )]),
-                    },
-                },
-                Turn {
-                    request: request(
+                    assistant_with(vec![call("search_flights", r#"{"destination":"NBO"}"#)]),
+                ),
+                openai_turn(
+                    request(
                         vec![
                             Message::new("user", "Book me a flight to Nairobi"),
                             Message::new("tool", r#"{"flights":[{"id":"KQ311"}]}"#),
                         ],
                         &["search_flights"],
                     ),
-                    response: TurnResponse {
-                        message: Message::new("assistant", "Booked KQ311 to Nairobi."),
-                    },
-                },
+                    Message::new("assistant", "Booked KQ311 to Nairobi."),
+                ),
             ],
         }
     }
@@ -360,7 +410,9 @@ mod tests {
     fn an_identical_trajectory_replays() {
         let cassette = booking();
         for (i, turn) in cassette.turns.iter().enumerate() {
-            let served = cassette.turn(i, &turn.request).expect("turn matches");
+            let served = cassette
+                .turn(i, &turn.request, &turn.protocol)
+                .expect("turn matches");
             assert_eq!(served, &turn.response);
         }
     }
@@ -375,7 +427,9 @@ mod tests {
             vec![Message::new("user", "Book me a flight to Mombasa")],
             &["search_flights"],
         );
-        let err = cassette.turn(0, &drifted).expect_err("must diverge");
+        let err = cassette
+            .turn(0, &drifted, "openai")
+            .expect_err("must diverge");
         assert_eq!(err.turn, 0);
         assert!(err.detail.contains("content changed"), "{err}");
         assert!(err.detail.contains("Nairobi"), "shows the recording: {err}");
@@ -396,7 +450,7 @@ mod tests {
             vec![Message::new("user", "something else entirely")],
             &["search_flights", "create_booking"],
         );
-        let err = cassette.turn(0, &both).expect_err("must diverge");
+        let err = cassette.turn(0, &both, "openai").expect_err("must diverge");
         assert!(err.detail.contains("tools offered changed"), "{err}");
         assert!(!err.detail.contains("content changed"), "{err}");
 
@@ -406,14 +460,16 @@ mod tests {
             Message::new("system", "You are helpful"),
             Message::new("user", "Book me a flight to Nairobi"),
         ];
-        let err = cassette.turn(0, &both).expect_err("must diverge");
+        let err = cassette.turn(0, &both, "openai").expect_err("must diverge");
         assert!(err.detail.contains("conversation shape changed"), "{err}");
         assert!(err.detail.contains("system"), "{err}");
 
         // A different model is its own line.
         let mut swapped = booking().turns[0].request.clone();
         swapped.model = "gpt-4o-mini".into();
-        let err = cassette.turn(0, &swapped).expect_err("must diverge");
+        let err = cassette
+            .turn(0, &swapped, "openai")
+            .expect_err("must diverge");
         assert!(err.detail.contains("model changed"), "{err}");
     }
 
@@ -425,7 +481,7 @@ mod tests {
         let cassette = booking();
         let turn_two = cassette.turns[1].request.clone();
         let err = cassette
-            .turn(0, &turn_two)
+            .turn(0, &turn_two, "openai")
             .expect_err("a later turn must not satisfy an earlier one");
         assert_eq!(err.turn, 0);
     }
@@ -436,7 +492,9 @@ mod tests {
     fn running_past_the_recording_is_named_with_both_counts() {
         let cassette = booking();
         let extra = cassette.turns[1].request.clone();
-        let err = cassette.turn(2, &extra).expect_err("past the end");
+        let err = cassette
+            .turn(2, &extra, "openai")
+            .expect_err("past the end");
         assert!(err.detail.contains("3 model calls"), "{err}");
         assert!(err.detail.contains("has 2"), "{err}");
     }
@@ -500,5 +558,45 @@ mod tests {
         // nulls and empty arrays, which keeps old readers happy.
         assert!(!json.contains("null"), "{json}");
         assert!(!json.contains("tool_call_id"), "{json}");
+        // The v2 additions are absent on an OpenAI turn with no stop reason,
+        // so a v1 trace round-trips byte-identical: no `protocol` key (it
+        // equals the default) and no `stop_reason` key (it is None).
+        assert!(!json.contains("protocol"), "{json}");
+        assert!(!json.contains("stop_reason"), "{json}");
+    }
+
+    /// An anthropic turn carries its protocol through the round trip, and an
+    /// openai turn beside it still omits the key - the two coexist in one
+    /// cassette without either leaking into the other.
+    #[test]
+    fn protocol_and_stop_reason_survive_the_round_trip() {
+        let mut anthropic = openai_turn(
+            request(
+                vec![Message::new("user", "Book me a flight to Nairobi")],
+                &["search_flights"],
+            ),
+            Message::new("assistant", "Booked."),
+        );
+        anthropic.protocol = "anthropic".into();
+        anthropic.response.stop_reason = Some("end_turn".into());
+        let openai = openai_turn(
+            request(vec![Message::new("user", "hi")], &[]),
+            Message::new("assistant", "hello"),
+        );
+        let cassette = Cassette {
+            turns: vec![anthropic, openai],
+        };
+
+        let json = serde_json::to_string(&cassette).expect("serializes");
+        assert!(json.contains("\"protocol\":\"anthropic\""), "{json}");
+        assert!(json.contains("\"stop_reason\":\"end_turn\""), "{json}");
+        // The openai turn beside it still omits both keys, so the marker is
+        // present exactly once - on the turn that needs it.
+        assert_eq!(json.matches("\"protocol\"").count(), 1, "{json}");
+        assert_eq!(json.matches("\"stop_reason\"").count(), 1, "{json}");
+
+        let back: Cassette = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back, cassette);
+        assert_eq!(back.turns[1].protocol, "openai");
     }
 }

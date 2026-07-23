@@ -71,6 +71,13 @@ fn argv(command: &str) -> Vec<String> {
     out
 }
 
+/// The Anthropic base URL: the proxy origin with the trailing `/v1`
+/// removed, because the Anthropic SDK appends `/v1/messages` itself and
+/// would otherwise call `/v1/v1/messages`. The OpenAI vars keep the `/v1`.
+fn anthropic_base(base: &str) -> String {
+    base.strip_suffix("/v1").unwrap_or(base).to_string()
+}
+
 /// What a run produced.
 #[derive(Debug)]
 pub struct AgentRun {
@@ -171,6 +178,13 @@ pub fn run_against(
         child.env(var, &base);
     }
     child.env("OPENAI_API_KEY", "flowproof-replay-no-key-needed");
+    // The Anthropic SDK reads its own base URL and appends `/v1/messages`
+    // itself, so it wants the origin WITHOUT the `/v1` the OpenAI vars keep;
+    // hand it the suffix-free form. A placeholder key for the same reason
+    // OPENAI_API_KEY gets one: a client that refuses to start without a key
+    // must still reach the proxy, and there is no real upstream to leak to.
+    child.env("ANTHROPIC_BASE_URL", anthropic_base(&base));
+    child.env("ANTHROPIC_API_KEY", "flowproof-replay-no-key-needed");
     // `${FLOWPROOF_LLM_PROXY}` is the documented handle for the base URL,
     // for clients that take it as an argument rather than an env var.
     child.env("FLOWPROOF_LLM_PROXY", &base);
@@ -291,6 +305,7 @@ for _ in range(turns):
         for i in 0..turns {
             let last = i + 1 == turns;
             out.push(Turn {
+                protocol: flowproof_trace::cassette::default_protocol(),
                 request: TurnRequest {
                     model: "gpt-4o".into(),
                     messages: messages.clone(),
@@ -311,6 +326,7 @@ for _ in range(turns):
                             tool_call_id: None,
                         }
                     },
+                    stop_reason: None,
                 },
             });
             messages.push(Message::new("tool", r#"{"id":"KQ311"}"#));

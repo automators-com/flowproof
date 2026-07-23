@@ -113,6 +113,91 @@ pub fn apply_json(body: &mut Value, mocks: &Mocks) -> Substitutions {
     }
 }
 
+/// Rewrite an Anthropic Messages request body in place, replacing each
+/// mocked tool result. Returns which `tool_use_id`s were touched.
+///
+/// The Anthropic sibling of [`apply_json`], with the SAME contract and the
+/// same reason to operate on raw JSON: at record the substituted body is
+/// forwarded to the model, so every field the agent sent has to survive
+/// while only the mocked tool results change. The shapes differ from the
+/// OpenAI wire: a tool result is a `{type:"tool_result", tool_use_id,
+/// content}` block inside a user message's content array, and the id-to-name
+/// map is built from the `{type:"tool_use", id, name}` blocks in the
+/// assistant messages of this same request.
+///
+/// The overwritten `content` is the canonical JSON STRING of the mock,
+/// byte-for-byte what [`apply_json`] writes. That choice is load-bearing for
+/// determinism: the neutral parser reads a string tool-result content
+/// verbatim, so record (which substitutes then captures) and replay (which
+/// substitutes then matches) produce identical neutral bytes, and a volatile
+/// real tool result cannot fail replay.
+pub fn apply_anthropic_json(body: &mut Value, mocks: &Mocks) -> Substitutions {
+    if mocks.is_empty() {
+        return Substitutions::default();
+    }
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return Substitutions::default();
+    };
+    let id_to_name = tool_use_names(messages);
+
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return Substitutions::default();
+    };
+    let mut touched = Vec::new();
+    for message in messages.iter_mut() {
+        let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for block in blocks.iter_mut() {
+            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                continue;
+            }
+            let Some(id) = block
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Some(name) = id_to_name.get(&id) else {
+                continue;
+            };
+            let Some(mock) = mocks.get(name.as_str()) else {
+                continue;
+            };
+            if let Some(obj) = block.as_object_mut() {
+                obj.insert("content".into(), Value::String(canonical(mock)));
+                touched.push(id);
+            }
+        }
+    }
+    Substitutions {
+        tool_call_ids: touched,
+    }
+}
+
+/// Map every `tool_use_id` an assistant turn issued to the tool it named,
+/// reading the raw Anthropic content blocks.
+fn tool_use_names(messages: &[Value]) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for message in messages {
+        let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let id = block.get("id").and_then(Value::as_str);
+            let name = block.get("name").and_then(Value::as_str);
+            if let (Some(id), Some(name)) = (id, name) {
+                map.insert(id.to_string(), name.to_string());
+            }
+        }
+    }
+    map
+}
+
 /// Map every `tool_call_id` an assistant turn issued to the tool it named,
 /// reading the raw messages array.
 fn tool_call_names(messages: &[Value]) -> BTreeMap<String, String> {
@@ -238,6 +323,93 @@ mod tests {
         let subs = apply_json(&mut b, &Mocks::new());
         assert!(subs.is_empty());
         assert_eq!(content(&b, 2), Some("real"));
+    }
+
+    /// An Anthropic Messages request body: a user turn, an assistant
+    /// `tool_use` block, and the `tool_result` the agent computed, carried
+    /// in the next user message's content array.
+    fn anthropic_body(tool_result: Value) -> Value {
+        serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "Book a flight"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1",
+                     "name": "search_flights", "input": {}}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1",
+                     "content": tool_result}]},
+            ],
+            "max_tokens": 1024,
+        })
+    }
+
+    fn block_content(body: &Value) -> &Value {
+        &body["messages"][2]["content"][0]["content"]
+    }
+
+    /// The Anthropic headline: the agent's real tool_result is replaced with
+    /// the spec's mock, as the canonical JSON string, before the model sees
+    /// it - and everything else the agent sent survives for forwarding.
+    #[test]
+    fn an_anthropic_tool_result_is_substituted() {
+        let mut b = anthropic_body(serde_json::json!("whatever the real tool returned"));
+        let subs = apply_anthropic_json(
+            &mut b,
+            &mocks(&[("search_flights", serde_json::json!({"flights": ["KQ311"]}))]),
+        );
+        assert_eq!(subs.tool_call_ids, ["toolu_1"]);
+        assert_eq!(
+            block_content(&b),
+            &serde_json::json!(r#"{"flights":["KQ311"]}"#)
+        );
+        assert_eq!(b["max_tokens"], serde_json::json!(1024));
+        assert_eq!(
+            b["messages"][0]["content"],
+            serde_json::json!("Book a flight")
+        );
+    }
+
+    /// A volatile result arriving as a `[{type:text,text}]` block array is
+    /// still overwritten to the same canonical string, so record and replay
+    /// produce identical bytes whatever shape the agent used.
+    #[test]
+    fn an_anthropic_text_block_result_is_substituted_to_the_canonical_string() {
+        let mut b = anthropic_body(serde_json::json!([
+            {"type": "text", "text": "2026-07-23T09:41:07.123456Z"}
+        ]));
+        apply_anthropic_json(
+            &mut b,
+            &mocks(&[("search_flights", serde_json::json!({"b": 2, "a": 1}))]),
+        );
+        // Canonical: keys sorted, and a plain JSON string - the neutral
+        // parser reads it verbatim, so it matches at replay.
+        assert_eq!(block_content(&b), &serde_json::json!(r#"{"a":1,"b":2}"#));
+    }
+
+    /// A tool with no mock passes through verbatim, the same replay-drift
+    /// hazard the OpenAI path honors.
+    #[test]
+    fn an_unmocked_anthropic_tool_passes_through() {
+        let mut b = anthropic_body(serde_json::json!("REAL"));
+        let subs = apply_anthropic_json(&mut b, &mocks(&[("other", serde_json::json!({}))]));
+        assert!(subs.is_empty());
+        assert_eq!(block_content(&b), &serde_json::json!("REAL"));
+    }
+
+    /// A `tool_result` whose id no assistant `tool_use` issued is left alone.
+    #[test]
+    fn an_unknown_anthropic_tool_use_id_is_not_substituted() {
+        let mut b = serde_json::json!({
+            "messages": [{"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "orphan", "content": "keep me"}]}],
+        });
+        let subs = apply_anthropic_json(&mut b, &mocks(&[("book", serde_json::json!({}))]));
+        assert!(subs.is_empty());
+        assert_eq!(
+            b["messages"][0]["content"][0]["content"],
+            serde_json::json!("keep me")
+        );
     }
 
     /// The same tool called twice gets the same mock both times.
