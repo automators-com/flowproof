@@ -3,7 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # `labeled` is included so adding the `full-ci` label re-runs CI and
+  # picks up the Windows job on demand; without it a label change fires no
+  # run until the next push.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   # Nightly full run: the Windows build + E2E is off the PR path (see the
   # `windows` job), so a scheduled run is the backstop that catches a
   # Windows regression within a day even if nothing merged to main and no
