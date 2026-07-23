@@ -130,6 +130,36 @@ const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID){
   return sawHeader ? 'no_match' : 'no_header';
 }"#;
 
+/// The Date-pinning shim (GAP-P), injected before any page script. It reads
+/// `at` with the REAL date parser, computes a fixed offset against the real
+/// clock ONCE, and overrides `Date` so the page's "now" starts at `at` and
+/// advances at real wall rate. `Date.parse`/`Date.UTC` and explicit
+/// `new Date(args)` pass through unchanged - only the zero-arg "now" moves.
+/// A workers-see-real-time / performance.now-unpinned limitation is
+/// documented, not coded around.
+fn clock_shim(at: &str) -> String {
+    let at = serde_json::Value::from(at);
+    format!(
+        r#"(function(){{
+  var RealDate = Date;
+  var target = RealDate.parse({at});
+  if (isNaN(target)) return;
+  var delta = target - RealDate.now();
+  function FakeDate() {{
+    if (arguments.length === 0) return new RealDate(RealDate.now() + delta);
+    return new (Function.prototype.bind.apply(
+      RealDate, [null].concat(Array.prototype.slice.call(arguments))))();
+  }}
+  FakeDate.prototype = RealDate.prototype;
+  FakeDate.now = function() {{ return RealDate.now() + delta; }};
+  FakeDate.parse = RealDate.parse;
+  FakeDate.UTC = RealDate.UTC;
+  try {{ Object.defineProperty(window, 'Date', {{ value: FakeDate, writable: true, configurable: true }}); }}
+  catch (e) {{ window.Date = FakeDate; }}
+}})();"#
+    )
+}
+
 fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
     let message = format!("{context}: {err}");
     if is_transport_fault(&message) {
@@ -816,6 +846,26 @@ impl AppDriver for WebAppDriver {
             if let Some(ua) = &config.user_agent {
                 tab.set_user_agent(ua, None, None)
                     .map_err(|e| web_err("overriding user agent", e))?;
+            }
+            // A pinned clock (GAP-P): a Date shim injected before any page
+            // script runs, plus a CDP timezone override. NOT best-effort - a
+            // date-dependent flow that silently ran at wall time would test
+            // the wrong thing, so an install failure aborts the flow.
+            if let Some(clock) = &config.clock {
+                let shim = clock_shim(&clock.at);
+                tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+                    source: shim,
+                    world_name: None,
+                    include_command_line_api: None,
+                    run_immediately: None,
+                })
+                .map_err(|e| web_err("pinning the clock", e))?;
+                if let Some(tz) = &clock.timezone {
+                    tab.call_method(Emulation::SetTimezoneOverride {
+                        timezone_id: tz.clone(),
+                    })
+                    .map_err(|e| web_err("pinning the timezone", e))?;
+                }
             }
         }
         if let Some(session) = self.staged_session.take() {

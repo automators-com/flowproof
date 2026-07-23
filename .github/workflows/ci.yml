@@ -203,6 +203,11 @@ jobs:
         env:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome
+      - name: pinned clock is deterministic (GAP-P)
+        run: cargo test -p flowproof-cli --test clock_e2e -- --nocapture
+        env:
+          FLOWPROOF_E2E: "1"
+          CHROME: /usr/bin/google-chrome
       - name: vision pipeline (real OCR over synthetic screens)
         run: cargo test -p flowproof-cli --test vision_pipeline -- --nocapture
         env:

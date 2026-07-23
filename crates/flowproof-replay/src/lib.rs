@@ -1427,6 +1427,10 @@ pub fn run_trace<D: AppDriver>(
                     .map(|v| (v.width, v.height, v.device_scale_factor, v.mobile, v.touch)),
                 browser.user_agent.as_deref(),
                 &browser.args,
+                browser.clock.as_ref().map(|c| flowproof_driver::WebClock {
+                    at: c.at.clone(),
+                    timezone: c.timezone.clone(),
+                }),
             ))?;
         }
     }

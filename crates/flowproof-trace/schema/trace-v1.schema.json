@@ -88,7 +88,17 @@
               }
             },
             "user_agent": { "type": "string" },
-            "args": { "type": "array", "items": { "type": "string" } }
+            "args": { "type": "array", "items": { "type": "string" } },
+            "clock": {
+              "type": "object",
+              "description": "A pinned clock (GAP-P): the page reads `at` as 'now', advancing at wall rate, with an optional timezone override. Both literal, applied identically at record and replay.",
+              "required": ["at"],
+              "additionalProperties": false,
+              "properties": {
+                "at": { "type": "string", "format": "date-time" },
+                "timezone": { "type": "string" }
+              }
+            }
           }
         },
         "trace_id": { "type": "string", "format": "uuid" },

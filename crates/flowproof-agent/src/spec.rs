@@ -28,6 +28,8 @@ pub enum SpecError {
     Empty,
     #[error("invalid foreach: {0}")]
     Foreach(String),
+    #[error("invalid clock: {0}")]
+    Clock(String),
     #[error("invalid window: {0}")]
     Window(String),
     #[error("invalid agent flow: {0}")]
@@ -325,6 +327,43 @@ impl FlowSpec {
                 step.intent().split(':').next().unwrap_or("that step"),
                 self.app.id()
             ));
+        }
+        Ok(())
+    }
+
+    /// Check `browser.clock` (GAP-P). Web-only, both fields are LITERALS
+    /// (a determinism precondition cannot vary by environment), and `at`
+    /// must be a real RFC 3339 instant - a typo that silently disabled the
+    /// pin and ran at wall time is exactly the failure this feature exists
+    /// to remove.
+    fn validate_clock(&self) -> Result<(), SpecError> {
+        let Some(clock) = self.browser.as_ref().and_then(|b| b.clock.as_ref()) else {
+            return Ok(());
+        };
+        let bad = |m: String| Err(SpecError::Clock(m));
+        if self.app.id() != "web" {
+            return bad(format!(
+                "clock control is web-only, but this is `app: {}`",
+                self.app.id()
+            ));
+        }
+        if clock.at.contains("${") {
+            return bad("`at` is a literal instant, never a `${VAR}`: a pinned clock                         that varied by environment would not be deterministic"
+                .into());
+        }
+        if chrono::DateTime::parse_from_rfc3339(&clock.at).is_err() {
+            return bad(format!(
+                "`{}` is not an RFC 3339 instant (e.g. `2026-01-15T09:00:00Z`)",
+                clock.at
+            ));
+        }
+        if let Some(tz) = &clock.timezone {
+            if tz.contains("${") {
+                return bad("`timezone` is a literal IANA id, never a `${VAR}`".into());
+            }
+            if tz.trim().is_empty() {
+                return bad("`timezone` is empty; omit it or give an IANA id".into());
+            }
         }
         Ok(())
     }
@@ -688,6 +727,7 @@ impl FlowSpec {
         }
         spec.validate_window()?;
         spec.validate_agent()?;
+        spec.validate_clock()?;
         Ok(spec)
     }
 
@@ -1521,5 +1561,66 @@ steps:
         let flow = spec("name: n\napp: agent\nagent:\n  command: x\ntools:\n  - name: log_it\nsteps:\n  - prompt: hi\n")
             .expect("parses");
         assert_eq!(flow.tools[0].result, serde_json::json!(null));
+    }
+
+    // ---- browser.clock (GAP-P) ----
+
+    const CLOCK_SPEC: &str = r#"
+name: pinned
+app: web
+url: http://x
+browser:
+  clock:
+    at: "2026-01-15T09:00:00Z"
+    timezone: "Europe/Berlin"
+steps:
+  - assert: page shows Dashboard
+"#;
+
+    #[test]
+    fn a_pinned_clock_parses() {
+        let flow = spec(CLOCK_SPEC).expect("parses");
+        let clock = flow.browser.expect("browser").clock.expect("clock");
+        assert_eq!(clock.at, "2026-01-15T09:00:00Z");
+        assert_eq!(clock.timezone.as_deref(), Some("Europe/Berlin"));
+    }
+
+    #[test]
+    fn clock_is_web_only() {
+        let err = spec(
+            "name: n\napp: calc\nbrowser:\n  clock:\n    at: \"2026-01-15T09:00:00Z\"\nsteps:\n  - Type 5\n",
+        )
+        .expect_err("clock on calc");
+        assert!(err.to_string().contains("web-only"), "{err}");
+    }
+
+    #[test]
+    fn clock_at_must_be_a_real_instant_and_a_literal() {
+        // A typo that would silently disable the pin is a parse error.
+        let err = spec(
+            "name: n\napp: web\nurl: http://x\nbrowser:\n  clock:\n    at: \"last tuesday\"\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect_err("bad at");
+        assert!(err.to_string().contains("RFC 3339"), "{err}");
+
+        // A ${VAR} would let record and replay pin different times.
+        let err = spec(
+            "name: n\napp: web\nurl: http://x\nbrowser:\n  clock:\n    at: ${WHEN}\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect_err("var at");
+        assert!(err.to_string().contains("literal"), "{err}");
+    }
+
+    #[test]
+    fn a_clock_with_no_at_is_rejected() {
+        let err = spec(
+            "name: n\napp: web\nurl: http://x\nbrowser:\n  clock:\n    timezone: UTC\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect_err("no at");
+        // `at` is required by the type, so this fails at deserialization.
+        assert!(
+            err.to_string().contains("at") || err.to_string().contains("missing"),
+            "{err}"
+        );
     }
 }
