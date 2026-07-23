@@ -124,12 +124,18 @@ Semantics:
 - `tools:` entries provide the mocked results the trajectory needs to
   continue past each call (a multi-step agent cannot proceed without
   them). In cassette replay these are recorded anyway; the block is what
-  lets **record** avoid executing anything real.
+  lets **record** avoid executing anything real. A `tools:` entry with NO
+  `result:` is a **declaration only**: it is not mocked, so the tool's real
+  result passes through unsubstituted. It still validates an
+  `assert_tool_call` target and documents which tools the flow expects.
 - `assert: reply contains <text>` reads the FINAL ASSISTANT MESSAGE of
-  the trajectory, whatever the driver. See "Settled in review" below.
+  the trajectory, whatever the driver. `reply is <text>` is accepted as an
+  alias and means the same thing (substring match, not exact equality). See
+  "Settled in review" below.
 - `assert_no_tool_call: <tool>` asserts a tool was NOT called anywhere
-  in the trajectory (optionally `where` clauses narrow it: "never with
-  amount above X"). This is the guard-path assertion — "the agent must
+  in the trajectory (optionally `where` clauses narrow it to calls matching
+  specific arguments, using the same matchers as `assert_tool_call`). This
+  is the guard-path assertion: "the agent must
   refuse WITHOUT side effects" — and arguably the highest-value one in
   the feature: the assertion proves the agent misbehaved, and its result
   is spec-controlled so the model cannot be steered by a real return
@@ -147,14 +153,15 @@ the other half, and usually where the bugs are.
 
 **Path matchers, partial by default.** Tool arguments are JSON, often
 nested. The prose form takes `where` clauses on dotted paths, reusing
-the existing matcher vocabulary (`equals`, `contains`, numeric
-normalization); the structured form takes an `args:` mapping for
-anything prose reads badly:
+the existing matcher vocabulary (`equals`, `contains`, `matches`, plus the
+value-less `exists` and `is absent`). The guard path uses the same clauses
+on `assert_no_tool_call` to forbid a specific shape of call:
 
 ```yaml
 - assert_tool_call: create_booking where flight.id equals KQ311
 - assert_tool_call: create_booking where passenger.name contains Casey
 - assert_tool_call: book_seat where seat matches [0-9]+[A-F]   # volatile shape, not value
+- assert_no_tool_call: issue_refund where status equals approved   # guard path
 ```
 
 `assert_tool_call:` takes a single prose line: a tool name, optionally

@@ -559,6 +559,44 @@ The in-repo proof is `crates/flowproof-cli/tests/api_pipeline.rs`: every
 api-flow trace there is minted against a throwaway `tiny_http` responder
 and replayed cleanly, with leak assertions on the secrets.
 
+## Agent flows: test an AI agent (any OS)
+
+`app: agent` tests an AI agent at the **model boundary** instead of a UI:
+record its tool-call trajectory once against a real model, then replay it
+deterministically with zero model calls. The spec drives the agent process,
+mocks the tools at the boundary, and asserts the calls it makes:
+
+```yaml
+name: Weather assistant answers with the forecast
+app: agent
+agent:
+  command: python3 examples/agent-demo/weather_agent.py
+tools:
+  - name: get_weather
+    result: { city: Nairobi, sky: sunny, temp_c: 26 }
+steps:
+  - prompt: What is the weather in Nairobi right now? Use your tools.
+  - assert_tool_call: get_weather where city contains Nairobi
+  - assert: reply contains sunny
+```
+
+Recording needs a real model to record against; replay needs none. Point
+flowproof at the upstream and give it a key, then record and replay:
+
+```bash
+export FLOWPROOF_AGENT_UPSTREAM=https://api.openai.com/v1   # or your endpoint
+export FLOWPROOF_AGENT_KEY=sk-...                           # never enters the trace
+flowproof record examples/agent-demo/weather.flow.yaml
+flowproof run    examples/agent-demo/weather.flow.yaml      # zero model calls
+```
+
+flowproof spawns the agent, injects the proxy URL (`OPENAI_BASE_URL` and
+friends) and the prompt (`FLOWPROOF_PROMPT`) into its environment, and
+captures the trajectory into a cassette. The key rides only the outbound
+`Authorization` header and is never written to disk. The full grammar and
+runtime contract are in [agent-testing.md](agent-testing.md); the runnable
+example is `examples/agent-demo/`.
+
 ## Authoring with a model (arbitrary steps)
 
 The rules only know the demo vocabularies. With a model backend configured,

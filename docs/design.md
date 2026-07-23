@@ -100,9 +100,12 @@ first two are tracked as issues; the third is a decision, recorded here.
 
 ### Computed assertions (`expect.poll`-style)
 
+**Shipped:** the named-capture form landed; see [authoring.md](authoring.md)
+("Computed assertions"). The design reasoning below is kept for context.
+
 Playwright suites often read a value, act, then assert the NEW value
-relative to the old one (`balance == old_balance - 100`). Today a flow
-can only assert against literals or `${VAR}` refs fixed before the run.
+relative to the old one (`balance == old_balance - 100`). Before it, a flow
+could only assert against literals or `${VAR}` refs fixed before the run.
 The deterministic-replay-compatible shape is a **named capture**: a step
 that reads an element's text into a run-scoped variable, plus assertion
 grammar that can reference it with simple arithmetic
@@ -115,13 +118,19 @@ language), and how a captured value interacts with healing.
 
 ### Table-cell addressing
 
+**Shipped:** cells are addressed by column-header text and a row anchor;
+see [authoring.md](authoring.md#table-cells-by-identity). The shipped
+locator reads `the "<column>" column of the row containing "<anchor>"`
+(the sketch below said `of the "<row>" row`). The design reasoning is kept
+for context.
+
 "The cell in column X of the row containing Y is empty" — row/column
-coordinates, not flat text anchors. The scene() inventory would need
+coordinates, not flat text anchors. The scene() inventory needed
 table structure (headers + row anchors), the grammar a
-`in the "<column>" column of the "<row>" row` locator suffix, and the
+locator suffix, and the
 selector ladder a structural tier that survives column reordering.
-Worth doing as one coherent piece; half of it (row-anchored text) is
-already expressible via `nth` ordinals, which is the workaround today.
+Worth doing as one coherent piece; half of it (row-anchored text) was
+already expressible via `nth` ordinals, which was the workaround before.
 
 ### `page.evaluate` escape hatch: rejected
 
