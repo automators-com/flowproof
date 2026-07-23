@@ -1,0 +1,55 @@
+name: SAP E2E (real GUI)
+
+# Tier 3 of the SAP testing ladder (see #32): the fake engine (sap_pipeline)
+# and the COM simulator (sap_sim_e2e) run on every push via ci.yml. This
+# workflow is the one that talks to an actual SAP GUI session, so it needs
+# the self-hosted `sap` runner and stays out of the pull_request path —
+# fork PRs must never reach a real SAP system.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+# Only one physical SAP GUI session exists on the runner; a second run
+# stepping on it mid-navigation is worse than making the next one wait.
+concurrency:
+  group: sap-e2e
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sap-e2e:
+    name: sap_e2e (real SAP GUI)
+    runs-on: [self-hosted, sap]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nightly runs have nobody at the keyboard: make sure SAP Logon is up
+      # and clear the handful of modal dialogs known to block scripting
+      # (multiple-logon prompts, license info) before they can stall the job.
+      - name: session bootstrap
+        shell: pwsh
+        run: ./scripts/sap-session-bootstrap.ps1
+        env:
+          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      - name: cargo test sap_e2e (real COM engine, live SAP GUI)
+        run: cargo test -p flowproof-cli --test sap_e2e -- --nocapture
+        env:
+          FLOWPROOF_E2E_SAP: "1"
+          # ${VAR} indirection: FlowSpec.connection carries this literally
+          # and resolves it at launch time, so the value never reaches a
+          # trace file or a log line.
+          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      # Leave the session clean for whichever run is next, whether that's
+      # tonight's schedule or a manual dispatch during the working day.
+      - name: session reset
+        if: always()
+        shell: pwsh
+        run: ./scripts/sap-session-bootstrap.ps1
+        env:
+          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}

@@ -45,9 +45,16 @@ impl SapElement {
     fn matches_text(&self, needle: &str) -> bool {
         let needle = needle.trim();
         !needle.is_empty()
-            && (self.text.trim() == needle
-                || self.tooltip.trim() == needle
+            && (Self::without_required_marker(&self.text) == needle
+                || Self::without_required_marker(&self.tooltip) == needle
                 || self.name.trim() == needle)
+    }
+
+    /// SAP prefixes a mandatory field's label with `*` (e.g. `*Order Type`)
+    /// — a screen-rendering convention, not part of the anchor a spec author
+    /// would type or see when reading the field's label at a glance.
+    fn without_required_marker(label: &str) -> &str {
+        label.trim().strip_prefix('*').unwrap_or(label.trim()).trim()
     }
 }
 
@@ -809,7 +816,8 @@ mod tests {
                 id: "wnd[0]/usr/ctxtVBAK-AUART".into(),
                 kind: "GuiCTextField".into(),
                 name: "VBAK-AUART".into(),
-                tooltip: "Order Type".into(),
+                // SAP prefixes mandatory fields with `*` on the real screen.
+                tooltip: "*Order Type".into(),
                 changeable: true,
                 ..Default::default()
             },

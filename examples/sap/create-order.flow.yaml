@@ -14,6 +14,10 @@ app: sap
 connection: ${SAP_CONNECTION}
 steps:
   - Go to /nVA01
-  - Type ZOR into the "Order Type" field
+  # VA01's "Order Type" caption is a separate read-only label control
+  # (txtRV45A-TXT_AUART), not this field's own tooltip — the input carries
+  # neither text nor tooltip until filled, so only the scripting id is
+  # unambiguous here.
+  - Type OR into the "id:wnd[0]/usr/ctxtVBAK-AUART" field
   - Press Enter
   - assert: page shows Create Standard Order
