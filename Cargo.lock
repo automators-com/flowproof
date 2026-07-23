@@ -744,6 +744,7 @@ dependencies = [
  "chrono",
  "flowproof-driver",
  "flowproof-trace",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -815,6 +816,7 @@ name = "flowproof-trace"
 version = "0.3.0"
 dependencies = [
  "jsonschema",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

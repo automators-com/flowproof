@@ -122,6 +122,7 @@ fn parse_clause(
     for (keyword, make) in [
         ("equals", ArgMatch::Equals as fn(String) -> ArgMatch),
         ("contains", ArgMatch::Contains as fn(String) -> ArgMatch),
+        ("matches", ArgMatch::Matches as fn(String) -> ArgMatch),
         ("is", ArgMatch::Equals as fn(String) -> ArgMatch),
     ] {
         let Some((path, value)) = split_keyword(text, keyword) else {
@@ -133,6 +134,12 @@ fn parse_clause(
         }
         if value.is_empty() {
             return Err(fail(&format!("`{keyword}` with no value after it")));
+        }
+        // A `matches` value is a regex: reject a broken pattern HERE, at
+        // parse time, rather than at replay against a live trajectory.
+        if keyword == "matches" {
+            regex::Regex::new(value)
+                .map_err(|e| fail(&format!("`{value}` is not a valid pattern: {e}")))?;
         }
         return Ok(ArgExpectation {
             path: path.to_string(),
@@ -263,6 +270,17 @@ mod tests {
             args("book where coupon is missing"),
             [("coupon".into(), ArgMatch::Absent)]
         );
+    }
+
+    #[test]
+    fn matches_parses_and_validates_the_pattern() {
+        assert_eq!(
+            args("book where seat matches [0-9]+[A-F]"),
+            [("seat".into(), ArgMatch::Matches("[0-9]+[A-F]".into()))]
+        );
+        // A broken pattern is rejected at parse time, naming the value.
+        let err = parse("book where seat matches [unclosed").expect_err("bad regex");
+        assert!(err.to_string().contains("not a valid pattern"), "{err}");
     }
 
     /// `is absent` must win over `is`, or it would parse as

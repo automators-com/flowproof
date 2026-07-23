@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+regex = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
