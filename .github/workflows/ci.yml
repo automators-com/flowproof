@@ -3,7 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
+  # `labeled` is included so adding the `full-ci` label re-runs CI and
+  # picks up the Windows job on demand; without it a label change fires no
+  # run until the next push.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  # Nightly full run: the Windows build + E2E is off the PR path (see the
+  # `windows` job), so a scheduled run is the backstop that catches a
+  # Windows regression within a day even if nothing merged to main and no
+  # PR carried the `full-ci` label. 05:00 UTC, a quiet hour.
+  schedule:
+    - cron: "0 5 * * *"
 
 # A new push to the same branch makes the previous run's answer worthless,
 # so stop paying for it. Runs on main are never cancelled: those are the
@@ -77,16 +87,15 @@ jobs:
       - name: test
         run: cargo test --workspace --all-features
 
-  # Full build + test matrix. The driver is Windows-native; Linux exercises
-  # the stub backend so the whole workspace must stay green on both.
+  # Ubuntu build + test on every PR (fast runner, stub driver backend). The
+  # Windows build folds into the `windows` job below so the workspace
+  # compiles once on Windows, not twice. Depends only on `scope`, so it runs
+  # in parallel with lint - a lint failure fails the run anyway.
   build:
-    name: build + test (${{ matrix.os }})
-    needs: lint
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: build + test (ubuntu)
+    needs: scope
+    if: needs.scope.outputs.engine == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -96,18 +105,34 @@ jobs:
       - name: test
         run: cargo test --workspace --all-features
 
-  # The real acceptance bar, continuously: record→replay drives Notepad
-  # through UI Automation on the runner itself (Calculator isn't on Windows
-  # Server images; Notepad is).
-  e2e:
-    name: notepad E2E (windows)
-    needs: [lint, scope]
-    if: needs.scope.outputs.engine == 'true'
+  # Windows build + the real acceptance bar in ONE job: the workspace
+  # compiles and unit-tests on Windows, record→replay drives Notepad through
+  # UI Automation (Calculator isn't on Windows Server images; Notepad is),
+  # and the SAP COM engine runs against a simulator. One cold build, not two.
+  #
+  # OFF the PR merge path by choice: a Windows runner queues for minutes and
+  # the E2E is slow, so most PRs should not wait on it. It runs on every push
+  # to `main` (a Windows regression is caught within one merge), nightly (the
+  # backstop), and on demand for a PR carrying the `full-ci` label - add that
+  # label to any PR touching the Windows driver, the SAP adapter, or the
+  # shared record/replay engine.
+  windows:
+    name: windows build + E2E
+    needs: scope
+    if: >-
+      needs.scope.outputs.engine == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'schedule' ||
+       contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: build + test (windows)
+        run: |
+          cargo build --workspace --all-features
+          cargo test --workspace --all-features
       - name: record and replay Notepad via UIA
         run: cargo test -p flowproof-cli --test notepad_e2e -- --nocapture
         env:
@@ -129,12 +154,25 @@ jobs:
         shell: pwsh
         run: taskkill /F /IM notepad.exe; exit 0
 
-  # Cross-platform proof: the same record→replay spine drives a browser via
-  # the web adapter, on the cheap fast runners.
+  # Cross-platform proof: the same record→replay spine drives a real
+  # browser, plus the real-OCR vision pipeline. Heavy: the 18 browser tests
+  # run one at a time (concurrent Chromium flakes CDP on a 2-core runner) at
+  # ~100s each, ~31 min, and real OCR adds ~7 min. Compile is 8s - this is
+  # pure runtime, so it cannot be cached down.
+  #
+  # OFF the PR merge path for the same reason as the Windows job: a PR
+  # should not wait 40 minutes. The unit suite (`cargo test --workspace`,
+  # 300+ tests including mock-driver record/replay) runs on every PR; this
+  # real-browser/real-OCR proof runs on push to `main`, nightly, and on
+  # demand for a PR labelled `full-ci`.
   e2e-web:
     name: web E2E (ubuntu)
-    needs: [lint, scope]
-    if: needs.scope.outputs.engine == 'true'
+    needs: scope
+    if: >-
+      needs.scope.outputs.engine == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'schedule' ||
+       contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
