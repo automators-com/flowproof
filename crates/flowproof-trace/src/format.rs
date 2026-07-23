@@ -333,12 +333,39 @@ pub struct BrowserSetup {
     /// browser for the flow, since flags only apply at process start.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// A pinned clock, applied before navigation so a date-dependent flow
+    /// is deterministic (#58's sibling, GAP-P). Web-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<ClockSetup>,
 }
 
 impl BrowserSetup {
     pub fn is_empty(&self) -> bool {
-        self.viewport.is_none() && self.user_agent.is_none() && self.args.is_empty()
+        self.viewport.is_none()
+            && self.user_agent.is_none()
+            && self.args.is_empty()
+            && self.clock.is_none()
     }
+}
+
+/// A pinned browser clock (GAP-P). `at` freezes what the page reads as
+/// "now" - a fixed offset on `Date`, so the clock STARTS at `at` and
+/// advances at real wall rate (not a hard freeze; v1 has no tick). Both
+/// fields are LITERALS, never `${VAR}`: a determinism precondition that
+/// varied by environment would not be one. Applied before navigation via a
+/// `Date` shim plus a CDP timezone override, identically at record and
+/// replay.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClockSetup {
+    /// The pinned instant, RFC 3339 (`2026-01-15T09:00:00Z`). Pick a
+    /// mid-day time so no step straddles a pinned midnight.
+    pub at: String,
+    /// An IANA timezone id (`Europe/Berlin`). Optional but recommended:
+    /// without it, local dates and "last 7 days" boundaries still depend on
+    /// the runner's zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
 }
 
 /// Device-metrics emulation: the mobile half of a browser setup.

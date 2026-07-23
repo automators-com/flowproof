@@ -1006,6 +1006,10 @@ fn web_browser_from_setup(
             .map(|v| (v.width, v.height, v.device_scale_factor, v.mobile, v.touch)),
         setup.user_agent.as_deref(),
         &setup.args,
+        setup.clock.as_ref().map(|c| flowproof_driver::WebClock {
+            at: c.at.clone(),
+            timezone: c.timezone.clone(),
+        }),
     )
 }
 

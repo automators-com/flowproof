@@ -172,6 +172,7 @@ fn browser_config_travels_from_spec_through_trace_to_replay_staging() {
             Some((390, 844, None, Some(true), Some(true))),
             Some("flowproof-e2e"),
             &[],
+            None,
         )
     );
     std::fs::remove_dir_all(&dir).ok();

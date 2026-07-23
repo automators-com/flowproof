@@ -399,10 +399,14 @@ pub trait AppDriver {
     /// must REJECT it — silently ignoring emulation would change what the
     /// flow tests.
     fn stage_browser(&mut self, config: WebBrowserConfig) -> Result<(), DriverError> {
-        let _ = config;
-        Err(DriverError::Uia(
-            "browser emulation is not supported by this driver (web flows only)".into(),
-        ))
+        let what = if config.clock.is_some() {
+            "clock control"
+        } else {
+            "browser emulation"
+        };
+        Err(DriverError::Uia(format!(
+            "{what} is not supported by this driver (web flows only)"
+        )))
     }
 }
 
@@ -416,6 +420,16 @@ pub struct WebBrowserConfig {
     /// Extra Chrome flags — forces a private (non-shared) browser, since
     /// flags only apply at process start.
     pub args: Vec<String>,
+    /// A pinned clock, applied before navigation (GAP-P).
+    pub clock: Option<WebClock>,
+}
+
+/// A pinned browser clock: the literal instant the page reads as "now" and
+/// an optional timezone. Applied identically at record and replay.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WebClock {
+    pub at: String,
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -436,6 +450,7 @@ impl WebBrowserConfig {
         viewport: Option<(u32, u32, Option<f64>, Option<bool>, Option<bool>)>,
         user_agent: Option<&str>,
         args: &[String],
+        clock: Option<WebClock>,
     ) -> Self {
         Self {
             viewport: viewport.map(|(width, height, dsf, mobile, touch)| WebViewport {
@@ -447,6 +462,7 @@ impl WebBrowserConfig {
             }),
             user_agent: user_agent.map(str::to_string),
             args: args.to_vec(),
+            clock,
         }
     }
 }

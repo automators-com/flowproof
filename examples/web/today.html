@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>Today</title>
+<h1>Dashboard</h1>
+<p>Today is <span id="today"></span>.</p>
+<p id="tz"></p>
+<script>
+  document.getElementById('today').textContent = new Date().toISOString().slice(0, 10);
+  document.getElementById('tz').textContent =
+    'Zone: ' + Intl.DateTimeFormat().resolvedOptions().timeZone;
+</script>

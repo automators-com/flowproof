@@ -328,6 +328,9 @@ browser:
     touch: true               # optional; emulate a touch screen
   user_agent: my-agent        # optional; navigator.userAgent override
   args: ["--lang=en-US"]      # optional; extra Chrome flags
+  clock:                      # optional; pin the clock (GAP-P)
+    at: "2026-01-15T12:00:00Z"   # required; RFC 3339, a mid-day time
+    timezone: "Europe/Berlin"    # optional but recommended; IANA id
 ```
 
 The config travels in the trace header and applies **identically at
@@ -338,6 +341,30 @@ Chrome) become first-class. `args` forces a private (non-shared) browser
 for the flow, since flags only apply at process start — expect its cold
 start. A suite's `suite.yaml` may carry the same `browser:` block as a
 default for every flow; a flow's own block wins outright.
+
+### Pinning the clock
+
+`browser.clock` freezes what the page reads as "now", so a date-dependent
+flow is deterministic — a "last 7 days" filter, a "renews in N days"
+label, a relative timestamp, a picker that opens on the current month. The
+clock STARTS at `at` and advances at real wall rate (it is a fixed offset
+on `Date`, not a hard freeze), so pick a **mid-day** `at` and no step will
+straddle a pinned midnight. Both fields are literals, never `${VAR}`: a
+precondition that varied by environment would not be one. Set `timezone`
+whenever you set `at` — without it, local dates and week boundaries still
+depend on the runner's zone.
+
+What it does NOT cover, by design:
+
+- **server-side "today"** — a date the SERVER computes (an SSR page, an API
+  returning a relative window) is untouched; pin those with a `mock:` rule
+  instead.
+- **web workers** see the real clock; only the main frame's `Date` is
+  pinned.
+- **`performance.now()`** and timer scheduling are not shifted.
+
+Clock control is web-only; a `clock:` block on any other app kind is a
+parse error.
 
 ## App sugar
 
