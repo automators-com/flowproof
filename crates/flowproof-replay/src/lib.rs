@@ -341,6 +341,12 @@ fn actionable_timeout(step: &Step) -> u64 {
 /// Extract the text expectation from an `element_state` expect object:
 /// `(raw expectation, negated)`. None when it carries no text expectation.
 fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
+    // An emptiness check carries no expected text; text_matches reads the
+    // `value_empty` flag directly. Return an empty needle so the poll loop
+    // still runs.
+    if expect.get("value_empty").is_some() {
+        return Some(("", false));
+    }
     if let Some(e) = expect.get("value_not_contains").and_then(|v| v.as_str()) {
         Some((e, true))
     } else if let Some(e) = expect.get("value_contains").and_then(|v| v.as_str()) {
@@ -368,6 +374,9 @@ fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
 /// case-sensitive count IS the count, and the lowercased count is consulted
 /// only when the case-sensitive one found nothing.
 fn text_matches(expect: &serde_json::Value, expected: &str, negated: bool, text: &str) -> bool {
+    if let Some(want_empty) = expect.get("value_empty").and_then(|v| v.as_bool()) {
+        return text.trim().is_empty() == want_empty;
+    }
     let (text_ci, expected_ci) = (text.to_lowercase(), expected.to_lowercase());
     if negated {
         !text.contains(expected)
@@ -444,6 +453,14 @@ where
             } else {
                 text.as_str()
             };
+            if let Some(want_empty) = expect.get("value_empty").and_then(|v| v.as_bool()) {
+                let msg = if want_empty {
+                    format!("expected the target to be empty, but it shows '{shown}'")
+                } else {
+                    "expected the target to be non-empty, but it is empty".to_string()
+                };
+                return Ok((Err(msg), rung));
+            }
             let verb = if negated { "no text" } else { "text" };
             return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), rung));
         }

@@ -343,6 +343,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 }
                 TextMatch::UrlEquals => serde_json::json!({ "url_equals": expected }),
                 TextMatch::UrlContains => serde_json::json!({ "url_contains": expected }),
+                TextMatch::Empty(want_empty) => serde_json::json!({ "value_empty": want_empty }),
             };
             expect["timeout_ms"] = serde_json::json!(timeout_ms);
             let selectors = selectors_for(app, target, None);
@@ -1045,6 +1046,7 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
         // assertion that holds while recording must hold when replayed.
         TextMatch::UrlEquals => flowproof_driver::url_matches(expected, true, actual),
         TextMatch::UrlContains => flowproof_driver::url_matches(expected, false, actual),
+        TextMatch::Empty(want_empty) => actual.trim().is_empty() == want_empty,
     }
 }
 

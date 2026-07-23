@@ -201,6 +201,11 @@ pub enum TextMatch {
     UrlEquals,
     /// The surface's URL contains the expectation - `page url contains x`.
     UrlContains,
+    /// The target's trimmed visible text (or input value) is empty
+    /// (`true`) or non-empty (`false`). A first-class predicate: `shows ""`
+    /// cannot express it - empty expected text is rejected and
+    /// `contains ""` is vacuously true.
+    Empty(bool),
 }
 
 /// A capture name: `[a-z][a-z0-9_]*`. Deliberately narrow so a name can
@@ -656,6 +661,17 @@ mod assertions {
                         return Ok(vec![ResolvedAction::AssertCount {
                             target,
                             count,
+                            timeout_ms,
+                        }]);
+                    }
+                    if tail.eq_ignore_ascii_case("is empty")
+                        || tail.eq_ignore_ascii_case("is not empty")
+                    {
+                        let want_empty = tail.eq_ignore_ascii_case("is empty");
+                        return Ok(vec![ResolvedAction::AssertText {
+                            target,
+                            expected: String::new(),
+                            matcher: TextMatch::Empty(want_empty),
                             timeout_ms,
                         }]);
                     }
@@ -2659,6 +2675,38 @@ mod element_count_tests {
                 assert: text.to_string(),
             },
         )
+    }
+
+    #[test]
+    fn is_empty_and_is_not_empty_resolve() {
+        let empty = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the \"Balance\" is empty".to_string(),
+            },
+        )
+        .expect("resolves");
+        assert!(matches!(
+            empty.as_slice(),
+            [ResolvedAction::AssertText {
+                matcher: TextMatch::Empty(true),
+                ..
+            }]
+        ));
+        let not_empty = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the \"Balance\" is not empty".to_string(),
+            },
+        )
+        .expect("resolves");
+        assert!(matches!(
+            not_empty.as_slice(),
+            [ResolvedAction::AssertText {
+                matcher: TextMatch::Empty(false),
+                ..
+            }]
+        ));
     }
 
     #[test]
