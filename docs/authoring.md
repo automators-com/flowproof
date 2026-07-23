@@ -366,6 +366,24 @@ What it does NOT cover, by design:
 Clock control is web-only; a `clock:` block on any other app kind is a
 parse error.
 
+## Agent flows (`app: agent`)
+
+An `app: agent` flow tests an AI agent at the model boundary rather than a
+UI, so it has its own small step vocabulary, documented in full in
+[agent-testing.md](agent-testing.md). Unlike the forms above, these are
+structured steps that either parse or error; they do NOT fall back to the
+LLM author. The step forms:
+
+| Step | Meaning |
+|---|---|
+| `prompt: <text>` | the task handed to the agent; several `prompt:` steps are joined into one turn |
+| `assert_tool_call: <tool> [where <path> <matcher> <value> [and …]]` | a tool call the agent must make. Matchers: `equals` (alias `is`), `contains`, `matches` (regex), `exists`, `is absent` |
+| `assert_no_tool_call: <tool> [where …]` | a tool the agent must NOT call anywhere in the trajectory |
+| `assert: reply contains <text>` | the final assistant message contains `<text>` |
+
+`agent:` (command/env), `tools:` (the boundary mocks), and `strict:` are
+spec-level config, like `mock:` and `browser:` above.
+
 ## App sugar
 
 Sugar is an alias layer, not a cage: on every UIA-driven app (`calc`,

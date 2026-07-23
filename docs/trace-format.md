@@ -1,6 +1,6 @@
-# flowproof trace format (v1) — PROPOSAL
+# flowproof trace format (v1)
 
-Status: **proposed, pending review**. The serde types in `flowproof-trace` are
+Status: **shipped**. The serde types in `flowproof-trace` are
 implemented against this document and the JSON Schema at
 [`crates/flowproof-trace/schema/trace-v1.schema.json`](../crates/flowproof-trace/schema/trace-v1.schema.json).
 
@@ -21,6 +21,12 @@ the only thing the deterministic replayer reads. Design constraints:
 UTF-8 JSON-lines (`.trace.jsonl`). Line 1 is the **header**; every following
 non-empty line is a **step**. Consumers must reject a file whose first line
 has `format != "flowproof-trace"` or an unsupported `version`.
+
+**`app: agent` traces are a different shape.** An agent-boundary flow
+(see [agent-testing.md](agent-testing.md)) records a self-contained JSON
+document (`{"app":"agent","mocks":{…},"cassette":{…}}`), not JSON-lines and
+without the header below, because a new app kind gets a new trace shape
+rather than bending the step-log format. A step-log reader never opens one.
 
 ## Header line
 
@@ -48,6 +54,17 @@ has `format != "flowproof-trace"` or an unsupported `version`.
   `artifacts.recording {start_ms, end_ms}` maps it into that bundle. Optional
   `redaction` carries the masking rules copied from the spec at record time,
   so every replay masks identically without the spec (see docs/recording.md).
+- Optional `session` seeds pre-launch state (`cookies`, `local_storage`) so
+  an authenticated flow starts without a login walk; values may be `${VAR}`
+  references, resolved at apply time and never stored.
+- Optional `mock` is the network-mock ruleset (web flows), copied from the
+  spec and applied identically at record and replay: each rule matches a
+  request-URL substring (and optionally `method`) and answers it locally.
+- Optional `browser` is the launch/emulation config (web flows):
+  `viewport` (device emulation), `user_agent`, extra Chrome `args`, and
+  `clock` (`{at, timezone}`: a pinned `Date` offset plus a CDP timezone
+  override, so a date-dependent flow replays deterministically). It travels
+  in the header so record and every replay run the SAME browser shape.
 
 ## Step line
 
@@ -112,6 +129,14 @@ has `format != "flowproof-trace"` or an unsupported `version`.
   tree-walk order on UIA, reading order for OCR — so the same trace means
   the same element on every provenance.
 
+  A `structural` rung may instead carry a **cell** payload
+  (`{"kind":"cell","column":"Status","anchor":"Grace Hopper"}`), addressing a
+  table cell by its column-header text and a row anchor rather than a tree
+  path, so a row insert or a column reorder does not move the target (see
+  [authoring.md](authoring.md#table-cells-by-identity)). Record may attach
+  `column_field` / `row_id` hints read from the live grid, used as fallbacks
+  if the header text or the anchor later fails to resolve.
+
   **Replay semantics**: the engine walks rungs in order and acts on the
   first one that resolves to a live element. Tiers 1–3 execute today
   (`text_anchor` currently via accessible-name matching; OCR arrives with
@@ -138,7 +163,9 @@ has `format != "flowproof-trace"` or an unsupported `version`.
   numeric`), `value_not_contains` (text must be absent), `count` (with
   `value_contains`: exact occurrence count of the TEXT, not an element
   count — provenance-neutral, an OCR adapter counts occurrences in the
-  scene the same way), `element_present` (true/false — presence itself is
+  scene the same way; the ELEMENT count `the "Row" appears N times`
+  serializes instead as `element_count` over the step's resolved selector
+  ladder), `element_present` (true/false — presence itself is
   the assertion; note this means "the target resolves", not visual
   visibility — a tree-present-but-hidden element counts as present until
   the vision mode adds a true visual check), and `timeout_ms` (the

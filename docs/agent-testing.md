@@ -1,7 +1,11 @@
-# Agent-boundary testing (design)
+# Agent-boundary testing
 
-Status: **design for review** — no code yet. Tracking: the v1 issue and
-the MCP follow-up issue linked from this doc's PR.
+Status: **shipped (v1)** in the 0.3.x line. This page is the reference for
+the feature as built. The `## Phasing` section below marks what is v1 versus
+the v2/v3 roadmap (Anthropic messages API, streaming replay, http-target
+agents, the MCP boundary); "Settled in review" records the design calls that
+went into v1. A complete, runnable example ships in
+[`examples/agent-demo/`](../examples/agent-demo/).
 
 ## The problem
 
@@ -86,17 +90,15 @@ The existing core loop maps one-to-one:
   **trajectory diff** ("previously `search_flights` → `create_booking`;
   now also calls `check_visa` in between") for human approval.
 
-## Spec shape (sketch)
+## Spec shape
 
 ```yaml
 name: Booking assistant books a flight
 app: agent
 agent:
   command: "npm run assistant"        # process to drive; http target later
-  env:
-    OPENAI_BASE_URL: "${FLOWPROOF_LLM_PROXY}"   # injected by the runner
 tools:
-  - name: search_flights              # mocked at the boundary, never executed
+  - name: search_flights              # result substituted at the model boundary
     result: { flights: [ { id: KQ311, dest: NBO } ] }
   - name: create_booking
     result: { booking: B-1042 }
@@ -106,6 +108,11 @@ steps:
   - assert_tool_call: create_booking
   - assert: reply contains booked
 ```
+
+The proxy URL is injected into the agent process automatically (see
+[Running an agent flow](#running-an-agent-flow) below), so no `env:` wiring
+is needed; `agent.env` is only for a client that reads a non-standard
+variable.
 
 Semantics:
 
@@ -146,18 +153,24 @@ anything prose reads badly:
 
 ```yaml
 - assert_tool_call: create_booking where flight.id equals KQ311
-- assert_tool_call:
-    tool: create_booking
-    args:
-      flight.id: KQ311                # equals
-      passenger.name: { contains: Casey }
-      seat: { matches: "[0-9]+[A-F]" }   # volatile shape, not value
+- assert_tool_call: create_booking where passenger.name contains Casey
+- assert_tool_call: book_seat where seat matches [0-9]+[A-F]   # volatile shape, not value
 ```
 
-Partial matching is the default — assert the arguments that carry the
-intent, not the whole object. An `args_exact:` form does full deep
-equality when the whole payload IS the contract. `${VAR}` refs resolve
-at execution like everywhere else.
+`assert_tool_call:` takes a single prose line: a tool name, optionally
+followed by one or more `where <path> <matcher> <value>` clauses joined
+with `and`. The matchers are `equals` (alias `is`), `contains`, `matches`
+(a regex, validated at parse time so a broken pattern fails the spec, not a
+replay), plus the value-less `exists` and `is absent` / `is missing`. Paths
+are dotted and may index arrays: `passengers.0.name`. Partial matching is
+the default: assert the arguments that carry the intent, not the whole
+object. The value runs unquoted to the end of its clause, so the one case
+this trades away is a value that must itself contain the word `and`.
+`${VAR}` refs resolve at execution like everywhere else.
+
+A structured `args:` mapping and an `args_exact:` deep-equality form are on
+the roadmap but are NOT in v1: today every argument assertion is the prose
+line above.
 
 **Chained arguments are statically assertable.** Because tool results
 are spec-authored mocks, the expected arguments of *downstream* calls
@@ -183,6 +196,35 @@ UI flows), re-checked against the new trajectory after every re-record,
 and it documents in the spec which argument properties are meaningful —
 the ones a reviewer should defend in a heal diff, versus incidental
 values the cassette merely happens to pin.
+
+## Running an agent flow
+
+The agent under test is an ordinary process flowproof spawns (`agent.command`).
+Five facts about the runtime contract, all exercised by
+[`examples/agent-demo/`](../examples/agent-demo/):
+
+- **The prompt arrives in `FLOWPROOF_PROMPT`.** Every `prompt:` step is joined
+  by newlines into ONE task string, set on the process environment before it
+  starts. v1 delivers the whole task up front and reads the trajectory the
+  agent produces; it is a single turn, not a back-and-forth conversation.
+- **The proxy URL is injected for you.** flowproof points the agent at its
+  local proxy by setting `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_BASE`,
+  and `FLOWPROOF_LLM_PROXY`, plus a placeholder `OPENAI_API_KEY` so a client
+  that refuses to start without a key still starts. `agent.env` is applied
+  LAST, so a flow can override any of these for a client that reads a
+  different variable.
+- **Record needs a real model; replay needs none.** On `record`, name the
+  upstream with `FLOWPROOF_AGENT_UPSTREAM` (falling back to an
+  `OPENAI_BASE_URL` you already have set) and supply the key through
+  `FLOWPROOF_AGENT_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`. The key
+  goes straight into the outbound `Authorization` header (a bare key is
+  `Bearer`-wrapped) and nowhere else: the trace stores request bodies only,
+  so no key is ever written to disk. `replay` serves the cassette and makes
+  zero model calls.
+- **`reply` is the final assistant message** of the trajectory, not the
+  process's stdout (see "Settled in review").
+- **A flow is bounded to 300 seconds.** The agent's own logic decides when it
+  is done; if it never finishes, the run fails on the timeout.
 
 ## Phasing
 
@@ -242,11 +284,13 @@ Built and tested, each independently:
 | `assert_tool_call` grammar | the prose form |
 | `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
 
-Not built yet: the `matches` argument matcher (which needs a regex
-dependency), per-call result sequences (v1 is one static result per tool),
-and the v3 MCP tool boundary. v1's remaining acceptance bar is a real
-external OSS agent recording and replaying through the proxy; the
-in-tree E2E proves the full path with a fake agent and a fake model.
+Not built yet: per-call result sequences (v1 is one static result per
+tool), the structured `args:` / `args_exact:` assertion forms, and the v3
+MCP tool boundary. The `matches` argument matcher shipped in 0.3.x. v1's
+acceptance bar (a real external agent recording and replaying through the
+proxy) is met by [`examples/agent-demo/`](../examples/agent-demo/) (a real
+OpenAI-SDK agent against a live model); the in-tree E2E proves the same path
+with a fake agent and a fake model.
 
 ## Decision: model-output evals are out of scope
 
