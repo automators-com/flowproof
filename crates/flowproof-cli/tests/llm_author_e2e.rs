@@ -29,6 +29,7 @@ fn freeform_spec(url: String) -> FlowSpec {
         browser: None,
         agent: None,
         tools: Vec::new(),
+        mcp: Vec::new(),
         strict: false,
         steps: vec![
             SpecStep::Plain("Put Ada into the box labelled with the name".into()),

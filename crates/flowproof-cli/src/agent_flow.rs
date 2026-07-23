@@ -15,15 +15,22 @@
 //! a run whose assertions fail, the same rule every other app kind has.
 
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use flowproof_adapters::agent_proxy::AgentProxy;
 use flowproof_adapters::agent_runner::{run_against, run_http, AgentRun};
+use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan};
 use flowproof_agent::{FlowSpec, SpecStep};
 use flowproof_trace::cassette::Cassette;
 use flowproof_trace::substitution::Mocks;
 use flowproof_trace::toolcalls::{self, ToolCallExpectation};
+
+/// How long to wait for a stand-in's out file after the agent exits. The
+/// agent closing its side prompts the stand-in to write and exit, but the
+/// stand-in is a grandchild that may flush a beat later, so the read polls
+/// briefly rather than racing the rename.
+const MCP_OUT_WAIT: Duration = Duration::from_secs(10);
 
 /// How long an agent process gets before it is killed. Generous: a
 /// multi-turn agent against a real model at record can be slow, and replay
@@ -58,6 +65,257 @@ struct AgentTrace {
     #[serde(default)]
     mocks: BTreeMap<String, serde_json::Value>,
     cassette: Cassette,
+    /// The recorded MCP lanes, one per stdio server. ADDITIVE and skipped
+    /// when empty, so a v1/v2 trace and any mcp-less agent flow serialize
+    /// byte-identical (no `mcp` key), and an old trace still deserializes
+    /// (the field defaults to empty).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    mcp: BTreeMap<String, McpServerTrace>,
+}
+
+/// One MCP server's recorded lane: its mocks, snapshotted (travel-in-trace,
+/// like `AgentTrace.mocks`), and the JSON-RPC calls captured in order.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct McpServerTrace {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    mocks: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    calls: Vec<McpCall>,
+}
+
+/// The MCP boundary set up for one phase: the per-run temp dir holding the
+/// `<server>.plan.json` files the stand-in reads and the `<server>.out.json`
+/// files it writes, plus the env the agent needs to reach the stand-in.
+///
+/// `None` when the spec declares no `mcp:` servers, so an mcp-less flow is
+/// byte-for-byte the flow it always was.
+struct McpContext {
+    dir: PathBuf,
+    mode: &'static str,
+    /// (server name, env var name), one per declared server.
+    servers: Vec<(String, String)>,
+}
+
+impl McpContext {
+    /// Prepare the boundary for `mode` (`"record"` or `"replay"`): make the
+    /// run dir and write each server's plan. In replay the plan carries the
+    /// recorded lane from `trace_mcp`. Returns `None` for an mcp-less flow.
+    fn setup(
+        spec: &FlowSpec,
+        mode: &'static str,
+        trace_mcp: &BTreeMap<String, McpServerTrace>,
+    ) -> Result<Option<Self>, String> {
+        if spec.mcp.is_empty() {
+            return Ok(None);
+        }
+        // A per-setup nonce so record and replay in one process get distinct
+        // dirs and a re-run starts clean.
+        let dir = std::env::temp_dir().join(format!(
+            "flowproof-mcp-{}-{}-{mode}",
+            std::process::id(),
+            mcp_nonce()
+        ));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("creating MCP run dir: {e}"))?;
+
+        let mut servers = Vec::new();
+        for server in &spec.mcp {
+            let command = flowproof_trace::secret::resolve_refs(&server.command)
+                .map_err(|e| e.to_string())?;
+            // MCP mocks are the per-server tools with a non-null result -
+            // the same "a name-only entry is a declaration" rule the model
+            // boundary uses.
+            let mocks: BTreeMap<String, serde_json::Value> = server
+                .tools
+                .iter()
+                .filter(|t| !t.result.is_null())
+                .map(|t| (t.name.clone(), t.result.clone()))
+                .collect();
+            let calls = if mode == "replay" {
+                trace_mcp
+                    .get(&server.name)
+                    .map(|t| t.calls.clone())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let plan = McpPlan {
+                mode: mode.to_string(),
+                command,
+                mocks,
+                calls,
+            };
+            let plan_path = dir.join(format!("{}.plan.json", server.name));
+            std::fs::write(
+                &plan_path,
+                serde_json::to_string(&plan).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("writing {}: {e}", plan_path.display()))?;
+            servers.push((server.name.clone(), env_var_name(&server.name)));
+        }
+        Ok(Some(McpContext { dir, mode, servers }))
+    }
+
+    /// The env the agent's process needs: the run dir, the mode, and one
+    /// `FLOWPROOF_MCP_SERVER_<NAME>` per server pointing at this executable's
+    /// `mcp-stdio` subcommand. The SUT's MCP config points its server
+    /// command at that variable - the documented contract.
+    fn env_vars(&self) -> Result<BTreeMap<String, String>, String> {
+        // `current_exe()` is the flowproof binary in production. An explicit
+        // `FLOWPROOF_MCP_EXE` overrides it for the cases where it is not: a
+        // wrapper on PATH, or a test harness driving `run_cli` in-process
+        // (where `current_exe()` is the test binary, not flowproof).
+        let exe = match std::env::var("FLOWPROOF_MCP_EXE") {
+            Ok(path) if !path.trim().is_empty() => path,
+            _ => std::env::current_exe()
+                .map_err(|e| format!("finding the flowproof executable for mcp-stdio: {e}"))?
+                .display()
+                .to_string(),
+        };
+        let mut env = BTreeMap::new();
+        env.insert(
+            "FLOWPROOF_MCP_DIR".to_string(),
+            self.dir.display().to_string(),
+        );
+        env.insert("FLOWPROOF_MCP_MODE".to_string(), self.mode.to_string());
+        for (name, var) in &self.servers {
+            // The exe path is quoted so an argv splitter survives spaces in
+            // it; the agent spawns this command as its MCP server.
+            env.insert(var.clone(), format!("\"{exe}\" mcp-stdio --server {name}"));
+        }
+        Ok(env)
+    }
+
+    /// After a RECORD run: read each server's out file, enforce the progress
+    /// guard (a declared server the agent never contacted), and fold the
+    /// captured calls plus the snapshotted mocks into the trace.
+    fn collect_record(&self, spec: &FlowSpec) -> Result<BTreeMap<String, McpServerTrace>, String> {
+        let mut out = BTreeMap::new();
+        for server in &spec.mcp {
+            let out_path = self.dir.join(format!("{}.out.json", server.name));
+            let parsed = read_out(&out_path).ok_or_else(|| wiring_guard(&server.name))?;
+            if let Some(err) = &parsed.error {
+                return Err(format!(
+                    "recording the MCP server `{}` failed: {err}",
+                    server.name
+                ));
+            }
+            // The progress guard: a real MCP client handshakes with
+            // `initialize`, so a lane with no captured call means the agent
+            // never spawned the stand-in.
+            if parsed.calls.is_empty() {
+                return Err(wiring_guard(&server.name));
+            }
+            let mocks = server
+                .tools
+                .iter()
+                .filter(|t| !t.result.is_null())
+                .map(|t| (t.name.clone(), t.result.clone()))
+                .collect();
+            out.insert(
+                server.name.clone(),
+                McpServerTrace {
+                    mocks,
+                    calls: parsed.calls,
+                },
+            );
+        }
+        Ok(out)
+    }
+
+    /// After a REPLAY run: a divergence on any lane fails the run with its
+    /// reason; fewer served than recorded on any lane fails it too (the
+    /// `reproduced` analog for the MCP boundary).
+    fn check_replay(
+        &self,
+        spec: &FlowSpec,
+        trace_mcp: &BTreeMap<String, McpServerTrace>,
+    ) -> Result<(), String> {
+        for server in &spec.mcp {
+            let out_path = self.dir.join(format!("{}.out.json", server.name));
+            let parsed = read_out(&out_path).ok_or_else(|| wiring_guard(&server.name))?;
+            if let Some(div) = &parsed.divergence {
+                return Err(format!(
+                    "the MCP server `{}` diverged at call {}: {}",
+                    server.name,
+                    div.index + 1,
+                    div.detail
+                ));
+            }
+            let expected = trace_mcp
+                .get(&server.name)
+                .map(|t| t.calls.len())
+                .unwrap_or(0);
+            let served = parsed.served.unwrap_or(0);
+            if served != expected {
+                return Err(format!(
+                    "the agent made {served} MCP calls to `{}`, the recording has {expected}",
+                    server.name
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for McpContext {
+    fn drop(&mut self) {
+        // The run dir is scratch: plans in, outs out, nothing to keep.
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The record-time wiring guard message, shared by "no out file" and "no
+/// captured handshake": both mean the agent's config still points at the
+/// real server instead of flowproof's stand-in.
+fn wiring_guard(server: &str) -> String {
+    format!(
+        "the agent never spawned flowproof's MCP stand-in for `{server}`; its config still \
+         points at the real server (point it at ${{FLOWPROOF_MCP_SERVER_{}}})",
+        env_suffix(server)
+    )
+}
+
+/// Poll for a stand-in's out file after the agent exits: the atomic rename
+/// means a present file is complete, so a successful read is the whole file.
+fn read_out(path: &Path) -> Option<McpOut> {
+    let deadline = Instant::now() + MCP_OUT_WAIT;
+    loop {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            if let Ok(parsed) = serde_json::from_str::<McpOut>(&raw) {
+                return Some(parsed);
+            }
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A monotonic-ish nonce so two `setup`s in one process get distinct dirs.
+fn mcp_nonce() -> u128 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    u128::from(COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The uppercase, `_`-sanitized suffix of a server name for its env var.
+fn env_suffix(server: &str) -> String {
+    server
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// The full `FLOWPROOF_MCP_SERVER_<NAME>` env var name for a server.
+fn env_var_name(server: &str) -> String {
+    format!("FLOWPROOF_MCP_SERVER_{}", env_suffix(server))
 }
 
 /// The mocks a flow substitutes: a tool with a non-null `result:`. A
@@ -310,7 +568,13 @@ fn require_progress(run: &AgentRun, cassette: &Cassette, plan: &Plan) -> Result<
 /// Record an `app: agent` flow: run it against a real model, capture the
 /// trajectory, check the assertions, and write the cassette to `out`.
 pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
-    let plan = plan(spec)?;
+    let mut plan = plan(spec)?;
+    // Set up the MCP boundary BEFORE the agent starts: write the plans and
+    // inject the env that points the agent's MCP config at the stand-in.
+    let mcp = McpContext::setup(spec, "record", &BTreeMap::new())?;
+    if let Some(ctx) = &mcp {
+        plan.env.extend(ctx.env_vars()?);
+    }
     let upstream = upstream()?;
     let auth = upstream_auth();
     let proxy = AgentProxy::record(&upstream, auth, plan.mocks.clone(), plan.proxy_port())
@@ -320,6 +584,12 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
     drop(proxy);
 
     require_progress(&run, &cassette, &plan)?;
+    // The MCP lanes, folded in with the same progress guard: a declared
+    // server the agent never contacted fails the record.
+    let mcp_trace = match &mcp {
+        Some(ctx) => ctx.collect_record(spec)?,
+        None => BTreeMap::new(),
+    };
     // Recording asserts: no trace for a trajectory that fails the spec.
     check_assertions(&plan, &cassette)?;
 
@@ -327,6 +597,7 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
         app: "agent".into(),
         mocks: plan.mocks.into_iter().collect(),
         cassette,
+        mcp: mcp_trace,
     };
     let json = serde_json::to_string_pretty(&trace).map_err(|e| e.to_string())?;
     std::fs::write(out, json).map_err(|e| format!("writing {}: {e}", out.display()))?;
@@ -337,12 +608,20 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
 /// agent, and check that the trajectory reproduced and the assertions
 /// still hold.
 pub fn replay(spec: &FlowSpec, trace_path: &Path) -> Result<(), String> {
-    let plan = plan(spec)?;
+    let mut plan = plan(spec)?;
     let raw = std::fs::read_to_string(trace_path)
         .map_err(|e| format!("reading {}: {e}", trace_path.display()))?;
     let trace: AgentTrace = serde_json::from_str(&raw)
         .map_err(|e| format!("{} is not an agent trace: {e}", trace_path.display()))?;
     let expected = trace.cassette.len();
+
+    // Set up the MCP boundary from the recorded lanes BEFORE the agent
+    // starts: the lanes TRAVEL IN THE TRACE, so replay serves what was
+    // recorded even if the spec's mocks were edited since.
+    let mcp = McpContext::setup(spec, "replay", &trace.mcp)?;
+    if let Some(ctx) = &mcp {
+        plan.env.extend(ctx.env_vars()?);
+    }
 
     // The mocks that TRAVEL IN THE TRACE win, so replay reproduces the
     // recording even if the spec's mock was edited since - the spec's copy
@@ -361,6 +640,11 @@ pub fn replay(spec: &FlowSpec, trace_path: &Path) -> Result<(), String> {
     // the proxy consumed it.
     let trace: AgentTrace = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     check_assertions(&plan, &trace.cassette)?;
+    // The MCP lanes reproduced: a divergence, or fewer served than recorded,
+    // fails the run the same way the cassette's `reproduced` does.
+    if let Some(ctx) = &mcp {
+        ctx.check_replay(spec, &trace.mcp)?;
+    }
     Ok(())
 }
 
@@ -448,6 +732,7 @@ mod tests {
             app: "agent".into(),
             mocks: BTreeMap::new(),
             cassette,
+            mcp: BTreeMap::new(),
         };
         std::fs::write(
             &path,
@@ -547,6 +832,62 @@ mod tests {
             }
         });
         (url, handle)
+    }
+
+    /// An mcp-less agent trace serializes byte-identical with and without
+    /// the new field, and a trace written before v3.1 (no `mcp` key) still
+    /// deserializes - the additive rule the whole slice rests on.
+    #[test]
+    fn an_mcp_less_trace_round_trips_byte_identical() {
+        let trace = AgentTrace {
+            app: "agent".into(),
+            mocks: BTreeMap::new(),
+            cassette: neutral_cassette("hi", "there"),
+            mcp: BTreeMap::new(),
+        };
+        let json = serde_json::to_string_pretty(&trace).expect("serialize");
+        // The `mcp` key is skipped when empty, so the bytes match a pre-v3.1
+        // agent trace exactly.
+        assert!(
+            !json.contains("mcp"),
+            "no mcp key on an mcp-less trace: {json}"
+        );
+
+        // A hand-built pre-v3.1 trace (no `mcp` field at all) deserializes,
+        // its mcp map defaulting to empty.
+        let v2 = r#"{"app":"agent","mocks":{},"cassette":{"turns":[]}}"#;
+        let back: AgentTrace = serde_json::from_str(v2).expect("v2 trace still deserializes");
+        assert!(back.mcp.is_empty(), "absent mcp defaults to empty");
+    }
+
+    /// A trace WITH an mcp lane carries it through the round trip, and it
+    /// serializes only when non-empty.
+    #[test]
+    fn an_mcp_lane_survives_the_round_trip() {
+        let mut mcp = BTreeMap::new();
+        mcp.insert(
+            "weather".to_string(),
+            McpServerTrace {
+                mocks: BTreeMap::new(),
+                calls: vec![McpCall {
+                    method: "tools/call".into(),
+                    params: serde_json::json!({ "name": "get_weather", "arguments": {} }),
+                    result: serde_json::json!({ "isError": false }),
+                }],
+            },
+        );
+        let trace = AgentTrace {
+            app: "agent".into(),
+            mocks: BTreeMap::new(),
+            cassette: neutral_cassette("hi", "there"),
+            mcp,
+        };
+        let json = serde_json::to_string(&trace).expect("serialize");
+        assert!(json.contains("\"mcp\""), "mcp present: {json}");
+        assert!(json.contains("get_weather"), "call carried: {json}");
+        let back: AgentTrace = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.mcp["weather"].calls.len(), 1);
+        assert_eq!(back.mcp["weather"].calls[0].method, "tools/call");
     }
 
     /// D4: a cassette carrying no driver replays through `url:` even though a
