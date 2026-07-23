@@ -84,6 +84,8 @@ pub struct AgentRun {
     pub timed_out: bool,
     pub stdout: String,
     pub stderr: String,
+    /// A real-model call that failed, in record mode. `None` in replay.
+    pub upstream_error: Option<String>,
 }
 
 impl AgentRun {
@@ -137,11 +139,24 @@ pub fn run(
     mocks: Mocks,
     timeout: Duration,
 ) -> Result<AgentRun, RunError> {
+    let proxy = AgentProxy::start(cassette, mocks).map_err(RunError::Proxy)?;
+    run_against(&proxy, command, env, timeout)
+}
+
+/// Spawn the agent against an ALREADY-STARTED proxy and wait for it to
+/// finish. The orchestration uses this to drive a RECORD proxy (which
+/// forwards to a real model) as easily as a replay one - the process does
+/// not know or care which mode the endpoint it was handed is in.
+pub fn run_against(
+    proxy: &AgentProxy,
+    command: &str,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+) -> Result<AgentRun, RunError> {
     let command = command.trim();
     if command.is_empty() {
         return Err(RunError::NoCommand);
     }
-    let proxy = AgentProxy::start(cassette, mocks).map_err(RunError::Proxy)?;
     let base = proxy.base_url();
 
     let parts = argv(command);
@@ -208,6 +223,7 @@ pub fn run(
         timed_out,
         stdout,
         stderr,
+        upstream_error: log.upstream_error.clone(),
     };
     drop(log);
     Ok(run)
