@@ -92,6 +92,19 @@ enum Command {
         #[arg(long, conflicts_with = "record_missing")]
         strict: bool,
     },
+    /// Internal: the stdio MCP stand-in the agent spawns as its server
+    /// command. Not run by hand - flowproof injects
+    /// `FLOWPROOF_MCP_SERVER_<NAME>` into the agent's environment pointing
+    /// here, and reads its context from `FLOWPROOF_MCP_DIR` /
+    /// `FLOWPROOF_MCP_MODE`. Bridges JSON-RPC over stdin/stdout: record
+    /// forwards to the real server and captures, replay serves the recorded
+    /// lane with no external process.
+    #[command(hide = true)]
+    McpStdio {
+        /// The server name, matching its `<name>.plan.json` in the run dir.
+        #[arg(long)]
+        server: String,
+    },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
     Heal {
@@ -1114,6 +1127,12 @@ where
             json,
             author,
         } => cmd_heal(&spec, trace, apply, json, author),
+        // The stand-in speaks JSON-RPC on stdout, so it must print NOTHING
+        // else there; any error goes to stderr and a non-zero exit, which
+        // the orchestrator sees as a missing/short out file.
+        Command::McpStdio { server } => {
+            flowproof_adapters::mcp_stdio::run_stand_in(&server).map(|()| EXIT_PASS)
+        }
     };
     match result {
         Ok(code) => code,

@@ -200,6 +200,34 @@ pub struct ToolMock {
     pub result: serde_json::Value,
 }
 
+/// One stdio MCP server the system under test uses as a tool boundary
+/// (`app: agent`). flowproof stands in AS the `command` the agent spawns:
+/// it records the JSON-RPC traffic once against the real server, then
+/// replays it deterministically with zero external processes.
+///
+/// `command` is executed code at record time, the same trust surface as
+/// `agent.command` - a spec is code. It may carry `${VAR}` references,
+/// resolved at execution and never stored. A tool listed here with a
+/// `result:` is mocked AT THE MCP BOUNDARY: the real server is never asked
+/// for it (record) and the mock is served (replay), which is how a
+/// dangerous tool is intercepted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerSpec {
+    /// The server's name, distinct within a flow. Names the per-server
+    /// `FLOWPROOF_MCP_SERVER_<NAME>` env var the SUT's MCP config points at.
+    pub name: String,
+    /// The command that starts the REAL server at record time. `${VAR}`
+    /// references resolve at execution, exactly like `agent.command`.
+    pub command: String,
+    /// Tools mocked at the MCP boundary. Reuses `ToolMock`: a non-null
+    /// `result:` is served in place of the real tool; a name-only entry is
+    /// a declaration only. A tool name may not appear in BOTH top-level
+    /// `tools:` and any `mcp.*.tools` - there is no defined winner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolMock>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlowSpec {
@@ -266,6 +294,11 @@ pub struct FlowSpec {
     /// Tools mocked at the model boundary (`app: agent`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolMock>,
+    /// Stdio MCP servers this flow's agent uses as tool boundaries
+    /// (`app: agent`). flowproof stands in as each server command, records
+    /// the JSON-RPC traffic once, and replays it deterministically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp: Vec<McpServerSpec>,
     /// Forbid any tool call no `assert_tool_call` listed (`app: agent`).
     /// The default is subsequence matching, which tolerates unlisted
     /// calls; `strict: true` is for flows where the exact call set is the
@@ -392,6 +425,41 @@ impl FlowSpec {
                     return bad(format!("tool `{}` is mocked twice", tool.name));
                 }
             }
+            // MCP servers: names distinct, command non-blank, tool names
+            // distinct within a server, and no tool mocked at BOTH the model
+            // boundary (`tools:`) and the MCP boundary (`mcp.*.tools`) - two
+            // mocks for one name has no defined winner.
+            let model_tools: std::collections::BTreeSet<&str> =
+                self.tools.iter().map(|t| t.name.as_str()).collect();
+            let mut server_names = std::collections::BTreeSet::new();
+            for server in &self.mcp {
+                if server.command.trim().is_empty() {
+                    return bad(format!(
+                        "mcp server `{}` has a blank command; a spec is code, but an empty \
+                         command is not",
+                        server.name
+                    ));
+                }
+                if !server_names.insert(server.name.as_str()) {
+                    return bad(format!("mcp server `{}` is declared twice", server.name));
+                }
+                let mut tool_names = std::collections::BTreeSet::new();
+                for tool in &server.tools {
+                    if !tool_names.insert(tool.name.as_str()) {
+                        return bad(format!(
+                            "mcp server `{}` mocks tool `{}` twice",
+                            server.name, tool.name
+                        ));
+                    }
+                    if model_tools.contains(tool.name.as_str()) {
+                        return bad(format!(
+                            "tool `{}` is mocked at both the model boundary (`tools:`) and the \
+                             MCP boundary (`mcp.{}.tools`); there is no defined winner",
+                            tool.name, server.name
+                        ));
+                    }
+                }
+            }
             return Ok(());
         }
 
@@ -405,6 +473,13 @@ impl FlowSpec {
         if !self.tools.is_empty() {
             return bad(format!(
                 "`tools:` mocks the model boundary of an `app: agent` flow, but this is `app: {}`",
+                self.app.id()
+            ));
+        }
+        if !self.mcp.is_empty() {
+            return bad(format!(
+                "`mcp:` declares stdio MCP servers for an `app: agent` flow, but this is \
+                 `app: {}`",
                 self.app.id()
             ));
         }
@@ -1710,6 +1785,73 @@ steps:
         )
         .expect_err("dup tool");
         assert!(err.to_string().contains("mocked twice"), "{err}");
+    }
+
+    /// A full `mcp:` block parses: servers, commands, and per-server tool
+    /// mocks all land where the trace and stand-in expect them.
+    #[test]
+    fn an_mcp_block_parses() {
+        let flow = spec(
+            "name: n\napp: agent\nagent:\n  command: python3 assistant.py\n\
+             mcp:\n  - name: weather\n    command: python3 ${SERVER}\n    tools:\n      - name: send_alert\n        result: { delivered: true }\nsteps:\n  - prompt: hi\n",
+        )
+        .expect("parses");
+        assert_eq!(flow.mcp.len(), 1);
+        assert_eq!(flow.mcp[0].name, "weather");
+        // `${VAR}` in the command survives unresolved, exactly like
+        // `agent.command`.
+        assert_eq!(flow.mcp[0].command, "python3 ${SERVER}");
+        assert_eq!(flow.mcp[0].tools[0].name, "send_alert");
+        assert_eq!(
+            flow.mcp[0].tools[0].result,
+            serde_json::json!({ "delivered": true })
+        );
+    }
+
+    /// Each `mcp:` rule fails with its own named error.
+    #[test]
+    fn the_mcp_rules_are_enforced_with_named_errors() {
+        // mcp: requires app: agent.
+        let err = spec("name: n\napp: web\nurl: http://x\nmcp:\n  - name: s\n    command: x\nsteps:\n  - Go to /\n")
+            .expect_err("mcp on web");
+        assert!(err.to_string().contains("mcp:"), "{err}");
+        assert!(err.to_string().contains("app: web"), "{err}");
+
+        // blank command.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: s\n    command: '   '\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("blank mcp command");
+        assert!(err.to_string().contains("blank command"), "{err}");
+
+        // duplicate server names.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: s\n    command: a\n  - name: s\n    command: b\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("dup server");
+        assert!(err.to_string().contains("declared twice"), "{err}");
+
+        // duplicate tool within a server.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: s\n    command: a\n    tools:\n      - name: t\n      - name: t\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("dup mcp tool");
+        assert!(err.to_string().contains("mocks tool `t` twice"), "{err}");
+
+        // a tool mocked at BOTH boundaries has no defined winner.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\ntools:\n  - name: shared\n    result: 1\nmcp:\n  - name: s\n    command: a\n    tools:\n      - name: shared\n        result: 2\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("tool mocked at both boundaries");
+        assert!(err.to_string().contains("no defined winner"), "{err}");
+        assert!(err.to_string().contains("shared"), "{err}");
+
+        // an unknown key inside an mcp server entry is a named parse error.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: s\n    commnd: a\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("typo'd mcp field");
+        assert!(err.to_string().contains("commnd"), "{err}");
     }
 
     /// A tool mock's result defaults to an empty object, for a tool whose

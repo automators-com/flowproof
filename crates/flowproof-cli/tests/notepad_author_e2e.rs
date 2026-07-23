@@ -33,6 +33,7 @@ fn freeform_spec() -> FlowSpec {
         browser: None,
         agent: None,
         tools: Vec::new(),
+        mcp: Vec::new(),
         strict: false,
         steps: vec![
             SpecStep::Plain("Write hello from flowproof into the editor".into()),

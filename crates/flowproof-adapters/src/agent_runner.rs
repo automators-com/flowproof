@@ -42,7 +42,7 @@ const BASE_URL_VARS: [&str; 3] = ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_
 /// {command}` flow passes to a Windows program verbatim. Spawning a
 /// process here needs argv instead, so the same quoting rule is applied
 /// to every argument rather than only to the program.
-fn argv(command: &str) -> Vec<String> {
+pub(crate) fn argv(command: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
