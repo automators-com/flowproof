@@ -54,7 +54,11 @@ impl SapElement {
     /// — a screen-rendering convention, not part of the anchor a spec author
     /// would type or see when reading the field's label at a glance.
     fn without_required_marker(label: &str) -> &str {
-        label.trim().strip_prefix('*').unwrap_or(label.trim()).trim()
+        label
+            .trim()
+            .strip_prefix('*')
+            .unwrap_or(label.trim())
+            .trim()
     }
 }
 
