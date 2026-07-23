@@ -239,18 +239,22 @@ Five facts about the runtime contract, all exercised by
    `app: agent` process driver, cassette in trace v1 (additive header +
    step artifacts), `assert_tool_call` grammar, trajectory diff on
    re-record.
-2. **v2**: Anthropic messages API; streaming replay; http-target agents
-   (drive a service instead of a process). **Streaming replay (OpenAI) has
-   landed** as the first v2 slice: a request with `stream: true` is served
-   the recorded turn as a synthetic SSE stream, so every existing cassette
-   serves a streaming client with no re-record and no schema change. Chunk
-   boundaries are synthesized rather than recorded (they carry no test
-   signal, and recording them would break turn matching); the assembled
-   turn is still what matches, and `stream` is treated as transport, never
-   part of the comparison. To keep record and replay symmetric, the record
-   path forwards non-streaming to the upstream and synthesizes the same
-   stream back to the agent. The Anthropic messages API and http-target
-   agents are the remaining v2 slices.
+2. **v2**: **Landed** - the Anthropic Messages API (`/v1/messages`) and
+   streaming replay for both dialects. A request with `stream: true` is served
+   the recorded turn as a synthetic SSE stream in the client's own dialect
+   (OpenAI chat-completion chunks, or Anthropic `message_start` /
+   `content_block_*` / `message_delta` / `message_stop` events), so every
+   existing cassette serves a streaming client with no re-record and no schema
+   change. Chunk boundaries are synthesized rather than recorded (they carry
+   no test signal, and recording them would break turn matching); the
+   assembled turn is still what matches, and `stream` is transport, never part
+   of the comparison. Both wire protocols normalize into one neutral cassette,
+   tagged per turn (`protocol`, defaulting to `openai` so v1 traces are
+   byte-unchanged); a turn recorded in one dialect and replayed in another
+   diverges on that first. To keep record and replay symmetric, the record
+   path forwards non-streaming to the upstream and synthesizes the same stream
+   back to the agent. **Remaining v2 slice**: http-target agents (drive a
+   running service instead of spawning a process).
 3. **v3**: MCP servers as a second mockable boundary, for systems whose
    tools are external MCP processes rather than internal functions.
 
