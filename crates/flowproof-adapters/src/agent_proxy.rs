@@ -44,6 +44,18 @@ pub struct ProxyLog {
     pub upstream_error: Option<String>,
 }
 
+/// Why the proxy could not bind. A taken FIXED port is named, because it is
+/// the one failure a `url:` driver hits routinely (a stale run, or the
+/// service itself holding the port) and a bare io error would leave the
+/// author guessing.
+#[derive(Debug, thiserror::Error)]
+pub enum ProxyError {
+    #[error("port {0} is taken - another flowproof run, or the service itself?")]
+    PortTaken(u16),
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
+
 /// A running proxy. Dropping it stops the listener.
 pub struct AgentProxy {
     addr: SocketAddr,
@@ -55,36 +67,57 @@ pub struct AgentProxy {
 }
 
 impl AgentProxy {
-    /// Start serving `cassette` on an ephemeral localhost port.
+    /// Start serving `cassette` on localhost port `port`. `0` picks an
+    /// ephemeral port (the process driver, which reads the chosen port back
+    /// from `base_url`); a non-zero port is the fixed port a `url:` service
+    /// already points its model calls at.
     ///
     /// Bound to 127.0.0.1 on purpose: this endpoint answers whatever asks
     /// it, with no authentication, so it must not be reachable off the
     /// machine running the test.
-    pub fn start(cassette: Cassette, mocks: Mocks) -> std::io::Result<Self> {
-        Self::spawn(Mode::Replay(cassette), mocks)
+    pub fn start(cassette: Cassette, mocks: Mocks, port: u16) -> Result<Self, ProxyError> {
+        Self::spawn(Mode::Replay(cassette), mocks, port)
     }
 
     /// Start in RECORD mode: forward each request to the real model at
     /// `upstream` (an OpenAI-compatible base URL like
     /// `https://api.openai.com/v1`), substituting mocked tool results
     /// first, and capture the exchange. The captured cassette is read with
-    /// [`AgentProxy::captured`] after the run.
+    /// [`AgentProxy::captured`] after the run. `port` binds as in
+    /// [`AgentProxy::start`].
     ///
     /// This is the ONE place flowproof reaches a real model, and the only
     /// non-hermetic step in the whole feature: record touches reality by
     /// design, replay does not.
-    pub fn record(upstream: &str, auth: Option<String>, mocks: Mocks) -> std::io::Result<Self> {
+    pub fn record(
+        upstream: &str,
+        auth: Option<String>,
+        mocks: Mocks,
+        port: u16,
+    ) -> Result<Self, ProxyError> {
         Self::spawn(
             Mode::Record {
                 upstream: upstream.trim_end_matches('/').to_string(),
                 auth,
             },
             mocks,
+            port,
         )
     }
 
-    fn spawn(mode: Mode, mocks: Mocks) -> std::io::Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
+    fn spawn(mode: Mode, mocks: Mocks, port: u16) -> Result<Self, ProxyError> {
+        // Loopback always: an unauthenticated model endpoint must not be
+        // reachable off the machine, whichever port it lands on.
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).map_err(|e| {
+            // A taken FIXED port is the routine `url:` failure; name it. An
+            // ephemeral (0) bind cannot hit AddrInUse, so it stays a bare io
+            // error.
+            if port != 0 && e.kind() == std::io::ErrorKind::AddrInUse {
+                ProxyError::PortTaken(port)
+            } else {
+                ProxyError::Io(e)
+            }
+        })?;
         let addr = listener.local_addr()?;
         // A short read timeout lets the accept loop notice `stop` even
         // when a client connects and then says nothing.
@@ -1275,7 +1308,7 @@ mod tests {
     /// recorded trajectory back, turn by turn, with no model involved.
     #[test]
     fn a_recorded_trajectory_is_served_over_http() {
-        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new(), 0).expect("starts");
 
         let (status, body) = post(
             &proxy.base_url(),
@@ -1336,7 +1369,7 @@ mod tests {
     /// non-streaming cassette serves a streaming agent, turn for turn.
     #[test]
     fn a_streaming_client_is_served_a_synthetic_sse_stream() {
-        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new(), 0).expect("starts");
 
         let (status, content_type, body) = post_stream(
             &proxy.base_url(),
@@ -1467,7 +1500,7 @@ mod tests {
         let mocks: Mocks = [("clock".to_string(), serde_json::json!({"now": "FIXED"}))]
             .into_iter()
             .collect();
-        let proxy = AgentProxy::start(cassette, mocks).expect("starts");
+        let proxy = AgentProxy::start(cassette, mocks, 0).expect("starts");
 
         // Turn 1.
         let (status, _) = post(
@@ -1513,7 +1546,7 @@ mod tests {
     /// `/v1/messages`, turn by turn, Anthropic-shaped, with no model.
     #[test]
     fn an_anthropic_trajectory_is_served_over_v1_messages() {
-        let proxy = AgentProxy::start(anthropic_cassette(), Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(anthropic_cassette(), Mocks::new(), 0).expect("starts");
 
         // Turn 1: a tool_use reply, rendered as Messages content blocks.
         let (status, body) = post_messages(
@@ -1605,7 +1638,7 @@ mod tests {
     /// client replays, turn for turn.
     #[test]
     fn an_anthropic_streaming_client_is_served_a_synthetic_sse_stream() {
-        let proxy = AgentProxy::start(anthropic_cassette(), Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(anthropic_cassette(), Mocks::new(), 0).expect("starts");
 
         // Turn 1: a tool_use reply, streamed as content blocks.
         let (status, content_type, body) = post_messages_stream(
@@ -1720,7 +1753,7 @@ mod tests {
         let mocks: Mocks = [("thermo".to_string(), serde_json::json!({"temp": "FIXED"}))]
             .into_iter()
             .collect();
-        let proxy = AgentProxy::start(cassette, mocks).expect("starts");
+        let proxy = AgentProxy::start(cassette, mocks, 0).expect("starts");
 
         // Turn 1.
         let (status, _) = post_messages(
@@ -1769,7 +1802,7 @@ mod tests {
         let cassette = Cassette {
             turns: vec![anthropic_cassette().turns.remove(0)],
         };
-        let proxy = AgentProxy::start(cassette, Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(cassette, Mocks::new(), 0).expect("starts");
 
         let (status, body) = post(
             &proxy.base_url(),
@@ -1795,7 +1828,7 @@ mod tests {
     /// answer so it does not hang, and the run is owed the reason.
     #[test]
     fn a_divergence_is_reported_to_both_the_agent_and_the_run() {
-        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new(), 0).expect("starts");
         let (status, body) = post(
             &proxy.base_url(),
             chat(serde_json::json!([{"role": "user", "content": "Book a flight to Mombasa"}])),
@@ -1814,7 +1847,7 @@ mod tests {
     /// must not break because somebody tuned temperature.
     #[test]
     fn sampling_parameters_are_ignored() {
-        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new(), 0).expect("starts");
         let mut payload =
             chat(serde_json::json!([{"role": "user", "content": "Book a flight to Nairobi"}]));
         payload["temperature"] = serde_json::json!(0.0);
@@ -1828,7 +1861,7 @@ mod tests {
     /// big enough to hit it.
     #[test]
     fn a_body_arriving_in_pieces_is_read_to_its_declared_length() {
-        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new(), 0).expect("starts");
         // Pad with an ignored field so the body comfortably exceeds a
         // single small segment.
         let mut payload =
@@ -1863,7 +1896,7 @@ mod tests {
 
     #[test]
     fn other_endpoints_are_refused_rather_than_guessed_at() {
-        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new(), 0).expect("starts");
         let addr = proxy
             .base_url()
             .trim_start_matches("http://")
@@ -1917,7 +1950,7 @@ mod tests {
         }));
 
         // Record.
-        let rec = AgentProxy::record(&upstream, None, Mocks::new()).expect("record starts");
+        let rec = AgentProxy::record(&upstream, None, Mocks::new(), 0).expect("record starts");
         let (status, body) = post(
             &rec.base_url(),
             chat(serde_json::json!([{"role": "user", "content": "hi"}])),
@@ -1930,7 +1963,7 @@ mod tests {
         drop(rec);
 
         // Replay the captured cassette - no upstream this time.
-        let replay = AgentProxy::start(cassette, Mocks::new()).expect("replay starts");
+        let replay = AgentProxy::start(cassette, Mocks::new(), 0).expect("replay starts");
         let (status, body) = post(
             &replay.base_url(),
             chat(serde_json::json!([{"role": "user", "content": "hi"}])),
@@ -1947,7 +1980,8 @@ mod tests {
     #[test]
     fn a_failed_upstream_is_an_error_not_a_capture() {
         // Point at a port nothing answers.
-        let rec = AgentProxy::record("http://127.0.0.1:9/v1", None, Mocks::new()).expect("starts");
+        let rec =
+            AgentProxy::record("http://127.0.0.1:9/v1", None, Mocks::new(), 0).expect("starts");
         let (status, _) = post(
             &rec.base_url(),
             chat(serde_json::json!([{"role": "user", "content": "hi"}])),
@@ -1998,7 +2032,7 @@ mod tests {
         });
         let upstream = format!("http://127.0.0.1:{port}/v1");
 
-        let rec = AgentProxy::record(&upstream, Some("Bearer sekret-123".into()), Mocks::new())
+        let rec = AgentProxy::record(&upstream, Some("Bearer sekret-123".into()), Mocks::new(), 0)
             .expect("record starts");
         let (status, _) = post(
             &rec.base_url(),
@@ -2024,11 +2058,36 @@ mod tests {
     /// be reachable off this machine.
     #[test]
     fn the_proxy_listens_only_on_loopback() {
-        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new(), 0).expect("starts");
         assert!(
             proxy.base_url().starts_with("http://127.0.0.1:"),
             "{}",
             proxy.base_url()
         );
+    }
+
+    /// A FIXED port already held returns the NAMED taken-port error, not a
+    /// bare io error: the routine `url:`-driver collision (a stale run, or
+    /// the service itself) has to be legible.
+    #[test]
+    fn a_taken_fixed_port_is_a_named_error() {
+        // The first proxy owns the port; discover which one it got.
+        let first = AgentProxy::start(cassette(), Mocks::new(), 0).expect("first starts");
+        let port = first
+            .base_url()
+            .trim_start_matches("http://127.0.0.1:")
+            .trim_end_matches("/v1")
+            .parse::<u16>()
+            .expect("port");
+
+        let err = match AgentProxy::start(cassette(), Mocks::new(), port) {
+            Ok(_) => panic!("the same fixed port should be taken"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, ProxyError::PortTaken(p) if p == port),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("is taken"), "{err}");
     }
 }

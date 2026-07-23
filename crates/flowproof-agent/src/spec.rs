@@ -139,21 +139,47 @@ impl WindowSpec {
     }
 }
 
-/// The system under test for an `app: agent` flow: the command that starts
-/// it, and any extra environment it needs.
+/// The system under test for an `app: agent` flow. Exactly one of two
+/// drivers: a `command` flowproof starts, or a `url` flowproof POSTs to
+/// drive an already-running service. `validate_agent` enforces the choice.
 ///
 /// `command` is executed code, the same trust surface as `env_from` - a
 /// spec is code. The proxy's base URL is injected into the process's
 /// environment, so the agent talks to flowproof believing it is the model.
+///
+/// `url` names a service flowproof did NOT start: it is already running and
+/// already points its model calls at the local `proxy_port`. flowproof binds
+/// the proxy at that port and POSTs `{"prompt": ...}` to `url` to trigger a
+/// turn. Because flowproof does not own the process, it cannot inject `env`
+/// into it (only `command` can carry `env:`); `headers:` is how a `url:`
+/// driver carries auth or routing on the trigger POST instead.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpec {
-    pub command: String,
+    /// The command that starts the system under test. Exactly one of
+    /// `command` or `url` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// The URL flowproof POSTs to drive an already-running service. Exactly
+    /// one of `command` or `url` is set. May carry `${VAR}` references.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The local port the proxy binds when driving a `url:` service - the
+    /// port that service already points its model calls at. Required with
+    /// `url`, meaningless with `command` (which gets an ephemeral port).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_port: Option<u16>,
     /// Extra environment for the process. Applied on top of the injected
     /// proxy URL, so a flow whose client reads a non-standard variable can
-    /// name it here. Values may carry `${VAR}` references.
+    /// name it here. Values may carry `${VAR}` references. `command:` only -
+    /// flowproof cannot inject env into a service it did not start.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Headers sent on the trigger `POST <url>` (e.g. Authorization). `url:`
+    /// only. Values may carry `${VAR}` references, resolved at execution and
+    /// never stored, exactly like `assert_api` headers.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 /// One tool mocked at the model boundary. Its `result` is returned to the
@@ -273,19 +299,80 @@ impl FlowSpec {
         });
 
         if is_agent {
-            if self.agent.is_none() {
+            let Some(agent) = self.agent.as_ref() else {
                 return bad(
-                    "an `app: agent` flow needs an `agent:` block naming the command to run".into(),
+                    "an `app: agent` flow needs an `agent:` block naming the command to run \
+                     or a url: to drive"
+                        .into(),
                 );
-            }
-            if self
-                .agent
-                .as_ref()
-                .is_some_and(|a| a.command.trim().is_empty())
-            {
-                return bad(
-                    "`agent.command` is blank; a spec is code, but an empty command is not".into(),
-                );
+            };
+            // Exactly one system under test: a command flowproof starts, or a
+            // url it drives. A spec is code; two systems under test is not a
+            // choice flowproof can make for the author.
+            match (&agent.command, &agent.url) {
+                (None, None) => {
+                    return bad(
+                        "an `app: agent` flow needs an `agent:` block naming the command to run \
+                         or a url: to drive"
+                            .into(),
+                    );
+                }
+                (Some(_), Some(_)) => {
+                    return bad(
+                        "agent.command and agent.url are two systems under test; a flow drives \
+                         exactly one"
+                            .into(),
+                    );
+                }
+                (Some(command), None) => {
+                    if command.trim().is_empty() {
+                        return bad(
+                            "`agent.command` is blank; a spec is code, but an empty command is not"
+                                .into(),
+                        );
+                    }
+                    // headers: rides the url: trigger POST; a command driver
+                    // has nowhere to put them.
+                    if !agent.headers.is_empty() {
+                        return bad(
+                            "`agent.headers` is sent on the `url:` trigger POST; a `command:` \
+                             driver has no request to attach them to"
+                                .into(),
+                        );
+                    }
+                    if agent.proxy_port.is_some() {
+                        return bad(
+                            "`agent.proxy_port` only means something with `url:`; a `command:` \
+                             driver gets an ephemeral port"
+                                .into(),
+                        );
+                    }
+                }
+                (None, Some(url)) => {
+                    if url.trim().is_empty() {
+                        return bad(
+                            "`agent.url` is blank; a spec is code, but an empty url is not".into(),
+                        );
+                    }
+                    if agent.proxy_port.is_none() {
+                        return bad(
+                            "agent.url needs a proxy_port: the running service must already point \
+                             its model calls at that local port"
+                                .into(),
+                        );
+                    }
+                    // env cannot be injected into a service flowproof did not
+                    // start; naming it here is a mistake, never silently
+                    // ignored.
+                    if !agent.env.is_empty() {
+                        return bad(
+                            "`agent.env` is injected into a process flowproof starts; a `url:` \
+                             driver names an already-running service, so use `headers:` to carry \
+                             what it needs on the trigger"
+                                .into(),
+                        );
+                    }
+                }
             }
             if !self
                 .steps
@@ -1494,7 +1581,7 @@ steps:
         let flow = spec(AGENT_SPEC).expect("parses");
         assert_eq!(flow.app.id(), "agent");
         let agent = flow.agent.expect("agent block");
-        assert_eq!(agent.command, "python3 assistant.py");
+        assert_eq!(agent.command.as_deref(), Some("python3 assistant.py"));
         assert_eq!(
             agent.env.get("ANTHROPIC_API_KEY").map(String::as_str),
             Some("${SECRET}")
@@ -1546,6 +1633,74 @@ steps:
         )
         .expect_err("no prompt step");
         assert!(err.to_string().contains("prompt:"), "{err}");
+    }
+
+    /// A url: driver parses and keeps its `${VAR}` header refs raw.
+    #[test]
+    fn a_url_driven_agent_flow_parses() {
+        let flow = spec(
+            "name: n\napp: agent\nagent:\n  url: http://localhost:8080/run\n  proxy_port: 8123\n  headers:\n    Authorization: Bearer ${TOKEN}\nsteps:\n  - prompt: hi\n",
+        )
+        .expect("parses");
+        let agent = flow.agent.expect("agent block");
+        assert_eq!(agent.command, None);
+        assert_eq!(agent.url.as_deref(), Some("http://localhost:8080/run"));
+        assert_eq!(agent.proxy_port, Some(8123));
+        assert_eq!(
+            agent.headers.get("Authorization").map(String::as_str),
+            Some("Bearer ${TOKEN}"),
+            "the reference must survive unresolved"
+        );
+    }
+
+    /// D1: every cross-field rule fails with its named error.
+    #[test]
+    fn the_command_url_choice_is_enforced_with_named_errors() {
+        // Neither: the grown "needs a command ... or a url:" message.
+        let err = spec("name: n\napp: agent\nagent: {}\nsteps:\n  - prompt: hi\n")
+            .expect_err("neither command nor url");
+        assert!(err.to_string().contains("command"), "{err}");
+        assert!(err.to_string().contains("url:"), "{err}");
+
+        // Both: two systems under test.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\n  url: http://y\n  proxy_port: 9\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("both command and url");
+        assert!(err.to_string().contains("two systems under test"), "{err}");
+
+        // url without proxy_port.
+        let err = spec("name: n\napp: agent\nagent:\n  url: http://y\nsteps:\n  - prompt: hi\n")
+            .expect_err("url without proxy_port");
+        assert!(err.to_string().contains("needs a proxy_port"), "{err}");
+
+        // env with url.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  url: http://y\n  proxy_port: 9\n  env:\n    K: v\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("env with url");
+        assert!(err.to_string().contains("agent.env"), "{err}");
+
+        // headers with command.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\n  headers:\n    K: v\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("headers with command");
+        assert!(err.to_string().contains("agent.headers"), "{err}");
+
+        // proxy_port with command.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\n  proxy_port: 9\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("proxy_port with command");
+        assert!(err.to_string().contains("proxy_port"), "{err}");
+
+        // blank/whitespace url is rejected exactly like a blank command.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  url: '   '\n  proxy_port: 9\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("blank url");
+        assert!(err.to_string().contains("blank"), "{err}");
     }
 
     #[test]

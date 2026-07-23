@@ -19,7 +19,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use flowproof_adapters::agent_proxy::AgentProxy;
-use flowproof_adapters::agent_runner::{run_against, AgentRun};
+use flowproof_adapters::agent_runner::{run_against, run_http, AgentRun};
 use flowproof_agent::{FlowSpec, SpecStep};
 use flowproof_trace::cassette::Cassette;
 use flowproof_trace::substitution::Mocks;
@@ -98,10 +98,30 @@ fn agent_env(spec: &FlowSpec) -> Result<BTreeMap<String, String>, String> {
     Ok(env)
 }
 
+/// Which system under test a flow drives, resolved from the spec. A trace
+/// records NEITHER of these - a cassette is driver-blind, so a recording made
+/// through a `command:` replays through a `url:` and vice versa.
+enum Driver {
+    /// A process flowproof starts, with the proxy on an ephemeral port.
+    Command(String),
+    /// An already-running service flowproof POSTs to, with the proxy bound to
+    /// the fixed port the service already calls.
+    Http {
+        url: String,
+        headers: BTreeMap<String, String>,
+        proxy_port: u16,
+    },
+}
+
 /// Everything a phase needs pulled off the spec once.
 struct Plan {
-    command: String,
+    driver: Driver,
+    /// The process env (command driver): the injected proxy vars plus the
+    /// spec's own, PROMPT_VAR among them. Unused by the http driver, which
+    /// carries the prompt in the trigger body instead.
     env: BTreeMap<String, String>,
+    /// The joined prompt steps: the http trigger's POST body.
+    prompt: String,
     mocks: Mocks,
     strict: bool,
     tool_calls: Vec<ToolCallExpectation>,
@@ -109,13 +129,90 @@ struct Plan {
     reply_contains: Vec<String>,
 }
 
+impl Plan {
+    /// The port the proxy binds: the fixed `proxy_port` for an http driver,
+    /// ephemeral (`0`) for a process.
+    fn proxy_port(&self) -> u16 {
+        match &self.driver {
+            Driver::Http { proxy_port, .. } => *proxy_port,
+            Driver::Command(_) => 0,
+        }
+    }
+
+    /// The hint appended to a reproduction failure when the driver is http:
+    /// the usual reason a service made zero (or too few) model calls is that
+    /// it is not pointed at the proxy. `None` for a process driver.
+    fn http_hint(&self) -> Option<String> {
+        match &self.driver {
+            Driver::Http { proxy_port, .. } => Some(format!(
+                "is the service pointed at http://127.0.0.1:{proxy_port}/v1?"
+            )),
+            Driver::Command(_) => None,
+        }
+    }
+
+    /// Trigger the system under test against an already-started proxy.
+    fn drive(&self, proxy: &AgentProxy) -> Result<AgentRun, String> {
+        match &self.driver {
+            Driver::Command(command) => {
+                run_against(proxy, command, &self.env, AGENT_TIMEOUT).map_err(|e| e.to_string())
+            }
+            Driver::Http { url, headers, .. } => {
+                run_http(proxy, url, headers, &self.prompt, AGENT_TIMEOUT)
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+}
+
+/// Append the http driver's hint to a reproduction/progress failure, so a
+/// mispointed service tells the author where to point it. A no-op for a
+/// process driver.
+fn with_http_hint(message: String, plan: &Plan) -> String {
+    match plan.http_hint() {
+        Some(hint) => format!("{message}\n{hint}"),
+        None => message,
+    }
+}
+
 fn plan(spec: &FlowSpec) -> Result<Plan, String> {
     let agent = spec
         .agent
         .as_ref()
         .ok_or("an app: agent flow needs an agent: block")?;
+    let prompt = prompt_of(spec);
     let mut env = agent_env(spec)?;
-    env.insert(PROMPT_VAR.to_string(), prompt_of(spec));
+    env.insert(PROMPT_VAR.to_string(), prompt.clone());
+
+    // The driver: exactly one of command/url (the spec validator already
+    // guaranteed the choice). `${VAR}` refs in the command, url, and header
+    // values resolve here, at execution, and are never stored.
+    let driver = match (&agent.command, &agent.url) {
+        (Some(command), _) => Driver::Command(
+            flowproof_trace::secret::resolve_refs(command).map_err(|e| e.to_string())?,
+        ),
+        (None, Some(url)) => {
+            let proxy_port = agent.proxy_port.ok_or(
+                "agent.url needs a proxy_port: the running service must already point its \
+                 model calls at that local port",
+            )?;
+            let url = flowproof_trace::secret::resolve_refs(url).map_err(|e| e.to_string())?;
+            let mut headers = BTreeMap::new();
+            for (name, value) in &agent.headers {
+                let resolved =
+                    flowproof_trace::secret::resolve_refs(value).map_err(|e| e.to_string())?;
+                headers.insert(name.clone(), resolved);
+            }
+            Driver::Http {
+                url,
+                headers,
+                proxy_port,
+            }
+        }
+        (None, None) => {
+            return Err("an app: agent flow needs an agent.command or an agent.url".into())
+        }
+    };
 
     let mut tool_calls = Vec::new();
     let mut forbidden = Vec::new();
@@ -151,9 +248,9 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
     }
 
     Ok(Plan {
-        command: flowproof_trace::secret::resolve_refs(&agent.command)
-            .map_err(|e| e.to_string())?,
+        driver,
         env,
+        prompt,
         mocks: mocks_of(spec),
         strict: spec.strict,
         tool_calls,
@@ -190,21 +287,22 @@ fn check_assertions(plan: &Plan, cassette: &Cassette) -> Result<(), String> {
 
 /// Fail a run that did not actually exercise the agent, so an empty
 /// trajectory cannot pass by making zero assertions true.
-fn require_progress(run: &AgentRun, cassette: &Cassette) -> Result<(), String> {
+fn require_progress(run: &AgentRun, cassette: &Cassette, plan: &Plan) -> Result<(), String> {
     if let Some(err) = &run.upstream_error {
         return Err(format!(
             "recording touched the real model and it failed: {err}"
         ));
     }
     if cassette.is_empty() {
-        return Err(format!(
+        let message = format!(
             "the agent made no model calls; it exited {} without talking to the proxy.\n\
              stderr:\n{}",
             run.exit_code
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "with no code".into()),
             run.stderr.trim()
-        ));
+        );
+        return Err(with_http_hint(message, plan));
     }
     Ok(())
 }
@@ -215,14 +313,13 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
     let plan = plan(spec)?;
     let upstream = upstream()?;
     let auth = upstream_auth();
-    let proxy = AgentProxy::record(&upstream, auth, plan.mocks.clone())
+    let proxy = AgentProxy::record(&upstream, auth, plan.mocks.clone(), plan.proxy_port())
         .map_err(|e| format!("starting the record proxy: {e}"))?;
-    let run =
-        run_against(&proxy, &plan.command, &plan.env, AGENT_TIMEOUT).map_err(|e| e.to_string())?;
+    let run = plan.drive(&proxy)?;
     let cassette = proxy.captured();
     drop(proxy);
 
-    require_progress(&run, &cassette)?;
+    require_progress(&run, &cassette, &plan)?;
     // Recording asserts: no trace for a trajectory that fails the spec.
     check_assertions(&plan, &cassette)?;
 
@@ -251,15 +348,15 @@ pub fn replay(spec: &FlowSpec, trace_path: &Path) -> Result<(), String> {
     // recording even if the spec's mock was edited since - the spec's copy
     // is only used at record.
     let mocks: Mocks = trace.mocks.into_iter().collect();
-    let proxy = AgentProxy::start(trace.cassette, mocks)
+    let proxy = AgentProxy::start(trace.cassette, mocks, plan.proxy_port())
         .map_err(|e| format!("starting the replay proxy: {e}"))?;
-    let run =
-        run_against(&proxy, &plan.command, &plan.env, AGENT_TIMEOUT).map_err(|e| e.to_string())?;
+    let run = plan.drive(&proxy)?;
     let cassette = proxy.captured(); // empty in replay
     drop(proxy);
     let _ = cassette;
 
-    run.reproduced(expected)?;
+    run.reproduced(expected)
+        .map_err(|e| with_http_hint(e, &plan))?;
     // The cassette to assert against is the recording; re-load it, since
     // the proxy consumed it.
     let trace: AgentTrace = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
@@ -312,4 +409,186 @@ fn upstream_auth() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flowproof_trace::cassette::{Message, Turn, TurnRequest, TurnResponse};
+    use std::io::{BufRead, Read, Write};
+    use std::net::{Ipv4Addr, TcpListener, TcpStream};
+
+    /// A neutral one-turn cassette: a user prompt, an assistant reply. This
+    /// is exactly the shape a `command:` record produces - NOTHING in it names
+    /// how it was driven, which is what lets a `url:` replay it.
+    fn neutral_cassette(prompt: &str, reply: &str) -> Cassette {
+        Cassette {
+            turns: vec![Turn {
+                protocol: flowproof_trace::cassette::default_protocol(),
+                request: TurnRequest {
+                    model: "gpt-4o".into(),
+                    messages: vec![Message::new("user", prompt)],
+                    tools: vec!["search_flights".into()],
+                },
+                response: TurnResponse {
+                    message: Message::new("assistant", reply),
+                    stop_reason: None,
+                },
+            }],
+        }
+    }
+
+    /// Write a trace file the way `record` would, but hand-built so the test
+    /// needs no real model - a driver-blind cassette on disk.
+    fn write_trace(cassette: Cassette) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("flowproof-agent-flow");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!("trace-{}.json", std::process::id()));
+        let trace = AgentTrace {
+            app: "agent".into(),
+            mocks: BTreeMap::new(),
+            cassette,
+        };
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&trace).expect("serialize"),
+        )
+        .expect("write trace");
+        path
+    }
+
+    /// A free localhost port: bind ephemeral, read the number, release it.
+    /// A tiny race, acceptable in a test - the proxy re-binds it immediately.
+    fn free_port() -> u16 {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        port
+    }
+
+    fn read_prompt(stream: &mut TcpStream) -> String {
+        let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+        let mut line = String::new();
+        reader.read_line(&mut line).ok();
+        let mut length = 0usize;
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                break;
+            }
+            let header = header.trim_end();
+            if header.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body).ok();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        json.get("prompt")
+            .and_then(|p| p.as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn answer_trigger(stream: &mut TcpStream, body: &str) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    }
+
+    /// One chat-completions POST to the proxy at the FIXED port a `url:`
+    /// service is pointed at, over a raw socket. `Some(body)` on 200.
+    fn call_proxy(proxy_port: u16, prompt: &str) -> Option<String> {
+        let addr = format!("127.0.0.1:{proxy_port}");
+        let payload = serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": [{"type": "function", "function": {"name": "search_flights"}}],
+        })
+        .to_string();
+        let mut stream = TcpStream::connect(&addr).ok()?;
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nhost: {addr}\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{payload}",
+            payload.len()
+        );
+        stream.write_all(request.as_bytes()).ok()?;
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).ok()?;
+        let status: u16 = raw.split_whitespace().nth(1)?.parse().ok()?;
+        (status == 200)
+            .then(|| raw.split("\r\n\r\n").nth(1).map(str::to_string))
+            .flatten()
+    }
+
+    /// A fake already-running SUT: on the trigger POST it makes one model
+    /// call to the proxy at `proxy_port` (like a real service pointed there),
+    /// then answers. `calls_proxy=false` is the MISPOINTED service.
+    fn spawn_service(proxy_port: u16, calls_proxy: bool) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind service");
+        let addr = listener.local_addr().expect("addr");
+        let url = format!("http://{addr}/run");
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let prompt = read_prompt(&mut stream);
+                if calls_proxy {
+                    call_proxy(proxy_port, &prompt);
+                }
+                answer_trigger(&mut stream, "{\"ok\":true}");
+            }
+        });
+        (url, handle)
+    }
+
+    /// D4: a cassette carrying no driver replays through `url:` even though a
+    /// `command:` shape is what produced it - the trace is driver-blind. And
+    /// the on-disk trace names no driver at all.
+    #[test]
+    fn a_driver_blind_cassette_replays_via_url() {
+        let trace = write_trace(neutral_cassette("Reserve a table", "Booked KQ311."));
+        // The trace JSON must not persist a driver: no command, no url.
+        let raw = std::fs::read_to_string(&trace).expect("read");
+        assert!(!raw.contains("command"), "trace names a driver: {raw}");
+        assert!(!raw.contains("\"url\""), "trace names a driver: {raw}");
+
+        let proxy_port = free_port();
+        let (url, handle) = spawn_service(proxy_port, true);
+        let spec = FlowSpec::parse(&format!(
+            "name: url flow\napp: agent\nagent:\n  url: {url}\n  proxy_port: {proxy_port}\nsteps:\n  - prompt: Reserve a table\n  - assert: reply contains Booked\n"
+        ))
+        .expect("spec parses");
+
+        replay(&spec, &trace).expect("driver-blind replay via url passes");
+        handle.join().ok();
+    }
+
+    /// A mispointed service (never calls the proxy) fails replay, and the
+    /// failure carries the http hint naming where the service should point.
+    #[test]
+    fn a_mispointed_service_replay_reports_the_http_hint() {
+        let trace = write_trace(neutral_cassette("Reserve a table", "Booked KQ311."));
+        let proxy_port = free_port();
+        let (url, handle) = spawn_service(proxy_port, false);
+        let spec = FlowSpec::parse(&format!(
+            "name: url flow\napp: agent\nagent:\n  url: {url}\n  proxy_port: {proxy_port}\nsteps:\n  - prompt: Reserve a table\n  - assert: reply contains Booked\n"
+        ))
+        .expect("spec parses");
+
+        let why = replay(&spec, &trace).expect_err("mispointed service must fail");
+        handle.join().ok();
+        assert!(why.contains("made 0 model calls"), "{why}");
+        assert!(
+            why.contains(&format!("http://127.0.0.1:{proxy_port}/v1")),
+            "names where to point the service: {why}"
+        );
+    }
 }

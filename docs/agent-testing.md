@@ -96,7 +96,7 @@ The existing core loop maps one-to-one:
 name: Booking assistant books a flight
 app: agent
 agent:
-  command: "npm run assistant"        # process to drive; http target later
+  command: "npm run assistant"        # process to drive (or a url: for a running service)
 tools:
   - name: search_flights              # result substituted at the model boundary
     result: { flights: [ { id: KQ311, dest: NBO } ] }
@@ -233,6 +233,60 @@ Five facts about the runtime contract, all exercised by
 - **A flow is bounded to 300 seconds.** The agent's own logic decides when it
   is done; if it never finishes, the run fails on the timeout.
 
+### Driving a running service (`url:`)
+
+Instead of a `command` flowproof starts, an agent flow can drive a service
+that is ALREADY running, by POSTing to it:
+
+```yaml
+app: agent
+agent:
+  url: http://localhost:8088/task    # POST {"prompt": ...} triggers a turn
+  proxy_port: 4646                   # required: the local port the proxy binds
+  headers:                           # optional; ${VAR} allowed, never stored
+    Authorization: Bearer ${DEV_TOKEN}
+```
+
+`command:` and `url:` are the two drivers, and a flow uses exactly one.
+flowproof binds its proxy at `http://127.0.0.1:<proxy_port>/v1`, POSTs
+`{"prompt": "<your prompt steps, joined>"}` (plus any `headers:`) to `url`
+to trigger the run, and reads the trajectory from the proxy exactly as it
+does for a process. Everything else is identical: the reply is still the
+final assistant message, the run is still bounded to 300 seconds, and the
+verdict still comes from the trajectory, never the trigger's HTTP status (a
+service that answers 500 after swallowing a divergence still fails).
+
+**The wiring contract.** flowproof cannot inject environment into a service
+it did not start, so the service must ALREADY point its model calls at the
+proxy's port. Start it with its model base URL set there: the same one
+variable a `command:` flow relies on, just set by whoever starts the
+service.
+
+```bash
+OPENAI_BASE_URL=http://127.0.0.1:4646/v1 npm run dev
+# or, for an Anthropic client:
+ANTHROPIC_BASE_URL=http://127.0.0.1:4646 npm run dev
+```
+
+flowproof cannot verify that wiring up front, but it catches a mispointed
+service every run: a record whose trajectory is empty, or a replay whose
+served-turn count is wrong, fails loudly with a hint naming the port to
+point at.
+
+**What it cannot do.** The proxy binds loopback only (it is an
+unauthenticated endpoint), so the service must run on the SAME machine and
+must accept a model-base-URL configuration at startup. A deployed endpoint
+on someone else's infrastructure, or a service whose model URL is compiled
+in with no configuration, cannot be intercepted; prefer a `command:` flow
+(which flowproof starts, with zero configuration) whenever you can.
+
+**Two caveats for a long-lived service.** First, during a run the flow's
+trigger must be the ONLY source of model calls: another caller hitting the
+same service interleaves into the positional turn count and diverges.
+Second, the trigger must be stateless per request, or reset by a suite
+`before_each`; a service that grows per-conversation history sends a
+different first request on the next run, which reads as a turn-1 divergence.
+
 ## Phasing
 
 1. **v1**: OpenAI-compatible chat-completions proxy (non-streaming),
@@ -253,8 +307,9 @@ Five facts about the runtime contract, all exercised by
    byte-unchanged); a turn recorded in one dialect and replayed in another
    diverges on that first. To keep record and replay symmetric, the record
    path forwards non-streaming to the upstream and synthesizes the same stream
-   back to the agent. **Remaining v2 slice**: http-target agents (drive a
-   running service instead of spawning a process).
+   back to the agent. Also landed: **http-target agents** (drive an
+   already-running service via `agent.url` instead of spawning a process; see
+   "Driving a running service" above). v2 is complete.
 3. **v3**: MCP servers as a second mockable boundary, for systems whose
    tools are external MCP processes rather than internal functions.
 
