@@ -40,3 +40,8 @@ yarn-error.log*
 
 # Field-hardening loop scratch state (local bookkeeping, not product).
 .loop/
+
+# flowproof record/run artifacts (screenshots, GIFs, reports) — regenerated
+# next to each spec, never the thing to commit. The *.trace.jsonl next to it
+# is the actual test contract and is tracked.
+.flowproof/
