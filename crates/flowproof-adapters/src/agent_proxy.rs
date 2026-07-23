@@ -279,17 +279,14 @@ fn serve_one(
                 log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
                 // Render the recorded assistant message in the dialect the
                 // agent asked in. OpenAI honors `stream: true` with a
-                // synthetic SSE stream; the Anthropic Messages body is
-                // non-streaming until slice 3 adds its stream.
-                let bytes = if is_anthropic {
-                    response(
-                        200,
-                        &messages_body(&recorded.message, recorded.stop_reason.as_deref()),
-                    )
-                } else if wants_stream {
-                    stream_response(&completion_stream_body(&recorded.message))
-                } else {
-                    response(200, &completion_body(&recorded.message))
+                // synthetic SSE stream. Each dialect streams when the client
+                // asked (`stream: true`) and serves one JSON body otherwise.
+                let stop = recorded.stop_reason.as_deref();
+                let bytes = match (is_anthropic, wants_stream) {
+                    (true, true) => stream_response(&messages_stream_body(&recorded.message, stop)),
+                    (true, false) => response(200, &messages_body(&recorded.message, stop)),
+                    (false, true) => stream_response(&completion_stream_body(&recorded.message)),
+                    (false, false) => response(200, &completion_body(&recorded.message)),
                 };
                 respond(&mut writer, &mut reader, &bytes);
             }
@@ -335,7 +332,7 @@ fn serve_one(
                             request: incoming,
                             response: TurnResponse {
                                 message: message.clone(),
-                                stop_reason,
+                                stop_reason: stop_reason.clone(),
                             },
                         });
                     log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
@@ -346,12 +343,13 @@ fn serve_one(
                     // stream from the captured message: the agent then sees
                     // the SAME transport and chunking at record as at replay,
                     // and no record/replay asymmetry can hide in transport.
-                    // Anthropic streaming is slice 3; until then it hands back
-                    // the raw non-streaming body.
-                    let bytes = if wants_stream && !is_anthropic {
-                        stream_response(&completion_stream_body(&message))
-                    } else {
-                        response(200, &raw)
+                    // Otherwise hand the model's own body back verbatim.
+                    let bytes = match (wants_stream, is_anthropic) {
+                        (true, true) => {
+                            stream_response(&messages_stream_body(&message, stop_reason.as_deref()))
+                        }
+                        (true, false) => stream_response(&completion_stream_body(&message)),
+                        (false, _) => response(200, &raw),
                     };
                     respond(&mut writer, &mut reader, &bytes);
                 }
@@ -967,6 +965,102 @@ fn messages_body(message: &Message, stop_reason: Option<&str>) -> String {
     .to_string()
 }
 
+/// Render a recorded assistant message as a synthetic Anthropic Messages SSE
+/// stream: a `message_start` envelope, then for each content block a
+/// `content_block_start` / one full delta / `content_block_stop`, a
+/// `message_delta` carrying the stop reason, and `message_stop`. The same
+/// deliberately-minimal, precomputed approach as `completion_stream_body`:
+/// chunk boundaries are not a recorded fact, so they are not reproduced, and
+/// the whole stream ships as one body with a content-length.
+fn messages_stream_body(message: &Message, stop_reason: Option<&str>) -> String {
+    let stop_reason = stop_reason.map(str::to_string).unwrap_or_else(|| {
+        if message.tool_calls.is_empty() {
+            "end_turn".into()
+        } else {
+            "tool_use".into()
+        }
+    });
+    let frame = |event: &str, data: serde_json::Value| -> String {
+        format!("event: {event}\ndata: {data}\n\n")
+    };
+
+    let mut out = String::new();
+    // The opening envelope: an empty assistant message the deltas fill in.
+    out.push_str(&frame(
+        "message_start",
+        serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": "flowproof-replay",
+                "type": "message",
+                "role": "assistant",
+                "model": "flowproof-replay",
+                "content": [],
+                "stop_reason": serde_json::Value::Null,
+                "stop_sequence": serde_json::Value::Null,
+                "usage": { "input_tokens": 0, "output_tokens": 0 },
+            },
+        }),
+    ));
+
+    // The content blocks, same order as the non-streaming body: a text block
+    // if the turn spoke, then one tool_use block per call. Each block is
+    // (content_block, delta) - the delta type differs by block, everything
+    // else is uniform, so build them once and stream them enumerated.
+    let mut blocks: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
+    if let Some(text) = &message.content {
+        if !text.is_empty() {
+            blocks.push((
+                serde_json::json!({ "type": "text", "text": "" }),
+                serde_json::json!({ "type": "text_delta", "text": text }),
+            ));
+        }
+    }
+    for call in &message.tool_calls {
+        blocks.push((
+            serde_json::json!({
+                "type": "tool_use", "id": call.id, "name": call.name, "input": {},
+            }),
+            // The whole arguments string as one input_json_delta the client
+            // accumulates - the streaming echo of the non-streaming `input`.
+            serde_json::json!({ "type": "input_json_delta", "partial_json": call.arguments }),
+        ));
+    }
+    for (index, (block, delta)) in blocks.iter().enumerate() {
+        out.push_str(&frame(
+            "content_block_start",
+            serde_json::json!({
+                "type": "content_block_start", "index": index, "content_block": block,
+            }),
+        ));
+        out.push_str(&frame(
+            "content_block_delta",
+            serde_json::json!({
+                "type": "content_block_delta", "index": index, "delta": delta,
+            }),
+        ));
+        out.push_str(&frame(
+            "content_block_stop",
+            serde_json::json!({ "type": "content_block_stop", "index": index }),
+        ));
+    }
+
+    // The stop reason rides the message_delta, then the terminator.
+    out.push_str(&frame(
+        "message_delta",
+        serde_json::json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": stop_reason, "stop_sequence": serde_json::Value::Null },
+            "usage": { "output_tokens": 0 },
+        }),
+    ));
+    out.push_str(&frame(
+        "message_stop",
+        serde_json::json!({ "type": "message_stop" }),
+    ));
+    out
+}
+
 fn error_body(message: &str) -> String {
     serde_json::json!({ "error": { "type": "flowproof_divergence", "message": message } })
         .to_string()
@@ -1468,6 +1562,107 @@ mod tests {
         assert_eq!(body["content"][0]["text"], "It is sunny in Paris.");
         assert_eq!(body["stop_reason"], "end_turn");
 
+        assert_eq!(proxy.log().served, 2);
+        assert!(proxy.log().divergence.is_none());
+    }
+
+    /// POST an Anthropic Messages body to `/v1/messages` and return
+    /// `(status, content-type, raw body)` - a streamed reply is SSE frames.
+    fn post_messages_stream(
+        base: &str,
+        payload: serde_json::Value,
+    ) -> (u16, Option<String>, String) {
+        let addr = base
+            .trim_start_matches("http://")
+            .trim_end_matches("/v1")
+            .to_string();
+        let body = payload.to_string();
+        let mut stream = TcpStream::connect(&addr).expect("connect");
+        let request = format!(
+            "POST /v1/messages HTTP/1.1\r\nhost: {addr}\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).expect("write");
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).expect("read");
+        let status = raw
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .expect("status");
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap_or(("", ""));
+        let content_type = head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-type: ").map(str::to_string));
+        (status, content_type, body.to_string())
+    }
+
+    /// The Anthropic streaming analogue: a `stream: true` Messages client
+    /// gets the recorded turn as a well-formed Anthropic SSE stream
+    /// (`message_start` / `content_block_*` / `message_delta` /
+    /// `message_stop`), synthesized from the same cassette a non-streaming
+    /// client replays, turn for turn.
+    #[test]
+    fn an_anthropic_streaming_client_is_served_a_synthetic_sse_stream() {
+        let proxy = AgentProxy::start(anthropic_cassette(), Mocks::new()).expect("starts");
+
+        // Turn 1: a tool_use reply, streamed as content blocks.
+        let (status, content_type, body) = post_messages_stream(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "stream": true,
+                "messages": [{"role": "user", "content": "What's the weather in Paris?"}],
+                "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
+            }),
+        );
+        assert_eq!(status, 200, "diverged: {body}");
+        assert_eq!(content_type.as_deref(), Some("text/event-stream"));
+        assert!(body.contains("event: message_start"), "start: {body}");
+        assert!(
+            body.contains(r#""type":"tool_use""#) && body.contains(r#""name":"get_weather""#),
+            "tool_use block: {body}"
+        );
+        assert!(
+            body.contains(r#""type":"input_json_delta""#) && body.contains("Paris"),
+            "whole arguments in one delta: {body}"
+        );
+        assert!(
+            body.contains("event: message_delta") && body.contains(r#""stop_reason":"tool_use""#),
+            "message_delta stop reason: {body}"
+        );
+        assert!(body.contains("event: message_stop"), "terminator: {body}");
+
+        // Turn 2: a text reply, streamed as a text block ending end_turn.
+        let (status, _ct, body) = post_messages_stream(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "stream": true,
+                "messages": [
+                    {"role": "user", "content": "What's the weather in Paris?"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "get_weather",
+                         "input": {"city": "Paris"}}]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "sunny"}]},
+                ],
+                "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
+            }),
+        );
+        assert_eq!(status, 200, "diverged: {body}");
+        assert!(
+            body.contains(r#""type":"text_delta""#) && body.contains("It is sunny in Paris."),
+            "text delta: {body}"
+        );
+        assert!(
+            body.contains(r#""stop_reason":"end_turn""#),
+            "end_turn: {body}"
+        );
+        assert!(body.contains("event: message_stop"), "terminator: {body}");
         assert_eq!(proxy.log().served, 2);
         assert!(proxy.log().divergence.is_none());
     }
