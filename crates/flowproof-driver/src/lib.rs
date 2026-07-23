@@ -20,9 +20,9 @@ pub mod window;
 
 pub use app::{
     absolute_url, capture_matches, count_matching, numeric_value, resolve_app, split_command_line,
-    text_contains, text_occurrences, url_matches, url_origin, AppDriver, AppTarget, CellQuery,
-    DebugBundle, KeyMod, NoOpDriver, PixelRect, UiaAppDriver, UiaSelector, WebBrowserConfig,
-    WebMock, WebSession, WebViewport, COUNT_DIAGNOSTIC_CAP,
+    text_contains, text_occurrences, url_matches, url_origin, AppDriver, AppTarget, CellHints,
+    CellQuery, DebugBundle, KeyMod, NoOpDriver, PixelRect, UiaAppDriver, UiaSelector,
+    WebBrowserConfig, WebMock, WebSession, WebViewport, COUNT_DIAGNOSTIC_CAP,
 };
 pub use backend::PlatformBackend;
 pub use recording::{FrameRef, Recording, RunRecorder, StepTiming};

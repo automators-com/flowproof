@@ -253,6 +253,24 @@ fn stamp_vision_relation(selectors: &mut [Selector], action: &ResolvedAction) {
     }
 }
 
+/// Merge record-time cell hints into a step's cell selector payload, so
+/// replay carries the column field and row id as fallbacks (#58).
+fn enrich_cell_hints(step: &mut Step, hints: &flowproof_driver::CellHints) {
+    for selector in &mut step.selectors {
+        if selector.payload.get("kind").and_then(|v| v.as_str()) != Some("cell") {
+            continue;
+        }
+        if let Some(field) = &hints.column_field {
+            selector
+                .payload
+                .insert("column_field".into(), field.as_str().into());
+        }
+        if let Some(id) = &hints.row_id {
+            selector.payload.insert("row_id".into(), id.as_str().into());
+        }
+    }
+}
+
 fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step {
     let (mut selectors, trace_action) = match action {
         ResolvedAction::Press { target, label } => (
@@ -1655,6 +1673,17 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 spec.app.id(),
                 &action,
             ));
+            // Harvest record-time hints for a cell target (#58): the
+            // column's field and the row's id, so replay can fall back to
+            // them if the header text or the anchor changed. Best-effort -
+            // a text-only cell payload is already valid.
+            if let Some(cell_uia) = action_selector(&action).filter(|u| u.cell.is_some()) {
+                if let Ok(Some(hints)) = driver.cell_hints(&cell_uia) {
+                    if let Some(step) = steps.last_mut() {
+                        enrich_cell_hints(step, &hints);
+                    }
+                }
+            }
         }
     }
 
