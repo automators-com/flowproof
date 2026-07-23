@@ -215,6 +215,23 @@ fn serve_one(
         }
     };
     substitution::apply_json(&mut json, mocks);
+
+    // `stream` is transport, not conversation. It never changes which turn
+    // this is (request_from_json already ignores it, alongside the sampling
+    // knobs), so a cassette recorded from a non-streaming client serves a
+    // streaming one and vice versa. Read the client's intent, then strip it
+    // (and stream_options) so that in record mode the upstream answers with
+    // one non-streaming JSON body `forward` can read, and the request that is
+    // captured/compared is stream-free.
+    let wants_stream = json
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+    if let Some(obj) = json.as_object_mut() {
+        obj.remove("stream");
+        obj.remove("stream_options");
+    }
+
     let incoming = match request_from_json(&json) {
         Ok(request) => request,
         Err(why) => {
@@ -237,11 +254,12 @@ fn serve_one(
         Mode::Replay(cassette) => match cassette.turn(index, &incoming) {
             Ok(recorded) => {
                 log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
-                respond(
-                    &mut writer,
-                    &mut reader,
-                    &response(200, &completion_body(&recorded.message)),
-                );
+                let bytes = if wants_stream {
+                    stream_response(&completion_stream_body(&recorded.message))
+                } else {
+                    response(200, &completion_body(&recorded.message))
+                };
+                respond(&mut writer, &mut reader, &bytes);
             }
             Err(divergence) => {
                 // The agent is owed an answer or it will hang; the run is
@@ -277,8 +295,18 @@ fn serve_one(
                 log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
                 // Hand the model's OWN response body back to the agent
                 // verbatim, so record is transparent - the agent cannot
-                // tell it is being recorded.
-                respond(&mut writer, &mut reader, &response(200, &raw));
+                // tell it is being recorded. When the agent asked for a
+                // stream, the upstream was forced non-streaming (stream was
+                // stripped), so synthesize the stream from the captured
+                // message: the agent then sees the SAME transport and the
+                // SAME chunking at record as it will at replay, and no
+                // record/replay behavioral asymmetry can hide in transport.
+                let bytes = if wants_stream {
+                    stream_response(&completion_stream_body(&message))
+                } else {
+                    response(200, &raw)
+                };
+                respond(&mut writer, &mut reader, &bytes);
             }
             Err(why) => {
                 let mut log = log.lock().unwrap_or_else(|e| e.into_inner());
@@ -510,6 +538,63 @@ fn completion_body(message: &Message) -> String {
     .to_string()
 }
 
+/// Render a recorded assistant message as a synthetic OpenAI
+/// chat-completions SSE stream: a role chunk, one delta carrying the whole
+/// content, one delta per tool call carrying the whole arguments, a finish
+/// chunk, and the terminating `[DONE]`. Deliberately minimal and
+/// un-lifelike - chunk boundaries are noise flowproof does not record, so it
+/// does not reproduce them. The whole stream is precomputed into one body: a
+/// client reading it incrementally cannot tell the frames all arrived at
+/// once, and no chunked transfer encoding is needed.
+fn completion_stream_body(message: &Message) -> String {
+    let finish = if message.tool_calls.is_empty() {
+        "stop"
+    } else {
+        "tool_calls"
+    };
+    let frame = |delta: serde_json::Value, finish_reason: serde_json::Value| -> String {
+        let chunk = serde_json::json!({
+            "id": "flowproof-replay",
+            "object": "chat.completion.chunk",
+            "model": "flowproof-replay",
+            "choices": [{ "index": 0, "delta": delta, "finish_reason": finish_reason }],
+        });
+        format!("data: {chunk}\n\n")
+    };
+    let null = serde_json::Value::Null;
+    let mut out = String::new();
+    // 1. The role, on its own, as a streaming client expects first.
+    out.push_str(&frame(
+        serde_json::json!({ "role": message.role }),
+        null.clone(),
+    ));
+    // 2. The whole content as a single delta, if the turn said anything.
+    if let Some(content) = &message.content {
+        if !content.is_empty() {
+            out.push_str(&frame(
+                serde_json::json!({ "content": content }),
+                null.clone(),
+            ));
+        }
+    }
+    // 3. One delta per tool call, whole arguments in one piece.
+    for (index, call) in message.tool_calls.iter().enumerate() {
+        out.push_str(&frame(
+            serde_json::json!({ "tool_calls": [{
+                "index": index,
+                "id": call.id,
+                "type": "function",
+                "function": { "name": call.name, "arguments": call.arguments },
+            }] }),
+            null.clone(),
+        ));
+    }
+    // 4. The finish reason, then the terminator every SSE client waits for.
+    out.push_str(&frame(serde_json::json!({}), serde_json::json!(finish)));
+    out.push_str("data: [DONE]\n\n");
+    out
+}
+
 fn error_body(message: &str) -> String {
     serde_json::json!({ "error": { "type": "flowproof_divergence", "message": message } })
         .to_string()
@@ -524,6 +609,18 @@ fn response(status: u16, body: &str) -> Vec<u8> {
     };
     format!(
         "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\n\
+         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+/// A 200 whose body is a precomputed SSE stream. Same hand-rolled HTTP as
+/// `response` with a `content-length` - the stream is fully built, so it
+/// needs no chunked transfer encoding and no incremental writes.
+fn stream_response(body: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
          content-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     )
@@ -635,6 +732,109 @@ mod tests {
         assert_eq!(body["choices"][0]["message"]["content"], "Booked KQ311.");
         assert_eq!(body["choices"][0]["finish_reason"], "stop");
 
+        assert_eq!(proxy.log().served, 2);
+        assert!(proxy.log().divergence.is_none());
+    }
+
+    /// POST and return `(status, content-type, raw body)` without parsing -
+    /// a streaming reply is SSE frames, not one JSON object.
+    fn post_stream(base: &str, payload: serde_json::Value) -> (u16, Option<String>, String) {
+        let addr = base
+            .trim_start_matches("http://")
+            .trim_end_matches("/v1")
+            .to_string();
+        let body = payload.to_string();
+        let mut stream = TcpStream::connect(&addr).expect("connect");
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nhost: {addr}\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).expect("write");
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).expect("read");
+        let status = raw
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .expect("status");
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap_or(("", ""));
+        let content_type = head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-type: ").map(str::to_string));
+        (status, content_type, body.to_string())
+    }
+
+    /// A `stream: true` client gets the SAME recorded turn as a well-formed
+    /// synthetic SSE stream: chunk boundaries are not recorded, so a
+    /// non-streaming cassette serves a streaming agent, turn for turn.
+    #[test]
+    fn a_streaming_client_is_served_a_synthetic_sse_stream() {
+        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
+
+        let (status, content_type, body) = post_stream(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "gpt-4o",
+                "stream": true,
+                "stream_options": { "include_usage": true },
+                "messages": [{"role": "user", "content": "Book a flight to Nairobi"}],
+                "tools": [{"type": "function", "function": {"name": "search_flights"}}],
+            }),
+        );
+        assert_eq!(status, 200, "diverged unexpectedly: {body}");
+        assert_eq!(content_type.as_deref(), Some("text/event-stream"));
+        // Well formed: a role chunk first, the tool call carrying its WHOLE
+        // arguments in one delta, a finish chunk, then the terminator.
+        assert!(
+            body.contains(r#""delta":{"role":"assistant"}"#),
+            "role chunk missing: {body}"
+        );
+        assert!(body.contains("chat.completion.chunk"), "not chunks: {body}");
+        assert!(
+            body.contains(r#""name":"search_flights""#),
+            "tool call: {body}"
+        );
+        assert!(
+            body.contains("destination") && body.contains("NBO"),
+            "whole arguments in one delta: {body}"
+        );
+        assert!(
+            body.contains(r#""finish_reason":"tool_calls""#),
+            "finish chunk: {body}"
+        );
+        assert!(
+            body.trim_end().ends_with("data: [DONE]"),
+            "terminator: {body}"
+        );
+
+        // The streamed turn was consumed exactly like a non-streaming one:
+        // the next turn is the content reply, also streamed and terminated.
+        let (status, _ct, body) = post_stream(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "gpt-4o",
+                "stream": true,
+                "messages": [
+                    {"role": "user", "content": "Book a flight to Nairobi"},
+                    {"role": "tool", "content": r#"{"id":"KQ311"}"#},
+                ],
+                "tools": [{"type": "function", "function": {"name": "search_flights"}}],
+            }),
+        );
+        assert_eq!(status, 200, "second turn diverged: {body}");
+        assert!(
+            body.contains(r#""delta":{"content":"Booked KQ311."}"#),
+            "content delta: {body}"
+        );
+        assert!(
+            body.contains(r#""finish_reason":"stop""#),
+            "stop finish: {body}"
+        );
+        assert!(
+            body.trim_end().ends_with("data: [DONE]"),
+            "terminator: {body}"
+        );
         assert_eq!(proxy.log().served, 2);
         assert!(proxy.log().divergence.is_none());
     }

@@ -239,8 +239,18 @@ Five facts about the runtime contract, all exercised by
    `app: agent` process driver, cassette in trace v1 (additive header +
    step artifacts), `assert_tool_call` grammar, trajectory diff on
    re-record.
-2. **v2**: Anthropic messages API; streaming replay (serve the recorded
-   stream); http-target agents (drive a service instead of a process).
+2. **v2**: Anthropic messages API; streaming replay; http-target agents
+   (drive a service instead of a process). **Streaming replay (OpenAI) has
+   landed** as the first v2 slice: a request with `stream: true` is served
+   the recorded turn as a synthetic SSE stream, so every existing cassette
+   serves a streaming client with no re-record and no schema change. Chunk
+   boundaries are synthesized rather than recorded (they carry no test
+   signal, and recording them would break turn matching); the assembled
+   turn is still what matches, and `stream` is treated as transport, never
+   part of the comparison. To keep record and replay symmetric, the record
+   path forwards non-streaming to the upstream and synthesizes the same
+   stream back to the agent. The Anthropic messages API and http-target
+   agents are the remaining v2 slices.
 3. **v3**: MCP servers as a second mockable boundary, for systems whose
    tools are external MCP processes rather than internal functions.
 
