@@ -827,7 +827,12 @@ fn cmd_run(
     }
     // A single flow gets its suite's env/data too — replay resolves ${VAR}
     // at moment-of-use, so the same values must be present as at record.
-    apply_suite_context(spec_path)?;
+    // And its HOOKS: running one spec to debug it has to put the app in
+    // the same state the suite would, or the spec fails for a reason that
+    // has nothing to do with the spec. A field run found this the
+    // expensive way - the second consecutive single-spec run failed on
+    // state the first had left behind, while the suite passed.
+    let manifest = apply_suite_context(spec_path)?;
     // Load the spec for its gate (this also surfaces spec parse errors on
     // single runs, deliberately — a typo'd spec should not replay).
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
@@ -856,10 +861,22 @@ fn cmd_run(
             spec_path.display()
         ));
     }
+    // Seed before the flow, exactly as `run_suite` does.
+    if let Some(cmd) = manifest.as_ref().and_then(|m| m.before_each.as_ref()) {
+        run_hook(cmd, spec_path, "before_each")?;
+    }
     // Peek the header to pick the right driver for the recorded app.
     let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
-    let (report, run_dir, _attempts) =
-        replay_with_retries(&trace_path, &header.app.name, retries, !json)?;
+    let replayed = replay_with_retries(&trace_path, &header.app.name, retries, !json);
+    // Cleanup always runs, pass, fail or error - the suite's rule, and the
+    // reason it exists is that a flow which errors is exactly when a left
+    // -behind fixture hurts most.
+    let cleanup = match manifest.as_ref().and_then(|m| m.after_each.as_ref()) {
+        Some(cmd) => run_hook(cmd, spec_path, "after_each"),
+        None => Ok(()),
+    };
+    let (report, run_dir, _attempts) = replayed?;
+    cleanup?;
 
     let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;
 
