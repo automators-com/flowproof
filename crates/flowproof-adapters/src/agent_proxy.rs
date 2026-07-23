@@ -73,10 +73,11 @@ impl AgentProxy {
     /// This is the ONE place flowproof reaches a real model, and the only
     /// non-hermetic step in the whole feature: record touches reality by
     /// design, replay does not.
-    pub fn record(upstream: &str, mocks: Mocks) -> std::io::Result<Self> {
+    pub fn record(upstream: &str, auth: Option<String>, mocks: Mocks) -> std::io::Result<Self> {
         Self::spawn(
             Mode::Record {
                 upstream: upstream.trim_end_matches('/').to_string(),
+                auth,
             },
             mocks,
         )
@@ -154,7 +155,14 @@ impl Drop for AgentProxy {
 /// Replay serves a cassette; record forwards to a real model and captures.
 enum Mode {
     Replay(Cassette),
-    Record { upstream: String },
+    Record {
+        upstream: String,
+        /// The value for the outbound `Authorization` header, when the real
+        /// model needs one. Comes from flowproof's own environment straight
+        /// into this header - it is never read into the trace, which stores
+        /// request BODIES only, so a recorded cassette carries no secret.
+        auth: Option<String>,
+    },
 }
 
 /// Read one request, answer it, close. `Connection: close` every time:
@@ -253,7 +261,7 @@ fn serve_one(
                 );
             }
         },
-        Mode::Record { upstream } => match forward(upstream, &json) {
+        Mode::Record { upstream, auth } => match forward(upstream, auth.as_deref(), &json) {
             Ok((message, raw)) => {
                 // Capture the POST-substitution request and the model's
                 // reply: that pair is exactly what replay will serve.
@@ -294,13 +302,18 @@ fn serve_one(
 /// Forward a request to the upstream model and read its reply. Returns the
 /// parsed assistant message (for the cassette) and the raw response body
 /// (handed back to the agent unchanged).
-fn forward(upstream: &str, body: &serde_json::Value) -> Result<(Message, String), String> {
+fn forward(
+    upstream: &str,
+    auth: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<(Message, String), String> {
     let url = format!("{upstream}/chat/completions");
     let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
-    let mut response = ureq::post(&url)
-        .header("content-type", "application/json")
-        .send(&bytes[..])
-        .map_err(|e| e.to_string())?;
+    let mut request = ureq::post(&url).header("content-type", "application/json");
+    if let Some(auth) = auth {
+        request = request.header("authorization", auth);
+    }
+    let mut response = request.send(&bytes[..]).map_err(|e| e.to_string())?;
     let raw = response
         .body_mut()
         .read_to_string()
@@ -859,7 +872,7 @@ mod tests {
         }));
 
         // Record.
-        let rec = AgentProxy::record(&upstream, Mocks::new()).expect("record starts");
+        let rec = AgentProxy::record(&upstream, None, Mocks::new()).expect("record starts");
         let (status, body) = post(
             &rec.base_url(),
             chat(serde_json::json!([{"role": "user", "content": "hi"}])),
@@ -889,7 +902,7 @@ mod tests {
     #[test]
     fn a_failed_upstream_is_an_error_not_a_capture() {
         // Point at a port nothing answers.
-        let rec = AgentProxy::record("http://127.0.0.1:9/v1", Mocks::new()).expect("starts");
+        let rec = AgentProxy::record("http://127.0.0.1:9/v1", None, Mocks::new()).expect("starts");
         let (status, _) = post(
             &rec.base_url(),
             chat(serde_json::json!([{"role": "user", "content": "hi"}])),
@@ -897,6 +910,69 @@ mod tests {
         assert_eq!(status, 502);
         assert!(rec.log().upstream_error.is_some());
         assert_eq!(rec.captured().len(), 0);
+    }
+
+    /// The auth header flowproof was given is forwarded to the upstream,
+    /// and it never enters the captured cassette - the trace stores bodies
+    /// only, so a recording carries no secret.
+    #[test]
+    fn the_auth_header_is_forwarded_but_never_captured() {
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel();
+        // A fake model that reports back the Authorization header it saw.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            if let Some(stream) = listener.incoming().next() {
+                let mut stream = stream.expect("accept");
+                let mut buf = vec![0u8; 8192];
+                let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let seen = req
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("authorization:"))
+                    .unwrap_or("(none)")
+                    .to_string();
+                let _ = tx.send(seen);
+                let body = serde_json::json!({
+                    "choices": [{"index": 0, "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "ok"}}]
+                })
+                .to_string();
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = std::io::Write::flush(&mut stream);
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            }
+        });
+        let upstream = format!("http://127.0.0.1:{port}/v1");
+
+        let rec = AgentProxy::record(&upstream, Some("Bearer sekret-123".into()), Mocks::new())
+            .expect("record starts");
+        let (status, _) = post(
+            &rec.base_url(),
+            chat(serde_json::json!([{"role": "user", "content": "hi"}])),
+        );
+        assert_eq!(status, 200);
+
+        let seen = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("header seen");
+        assert!(seen.to_lowercase().contains("bearer sekret-123"), "{seen}");
+
+        // The secret must NOT be in the captured cassette.
+        let cassette = rec.captured();
+        let json = serde_json::to_string(&cassette).expect("serialize");
+        assert!(
+            !json.contains("sekret-123"),
+            "no secret in the trace: {json}"
+        );
     }
 
     /// It answers whatever asks it, with no authentication, so it must not

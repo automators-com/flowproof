@@ -1,0 +1,19 @@
+# A real agent (examples/agent-demo/weather_agent.py, built on the official
+# OpenAI SDK) recording and replaying against a real model - Fable's v1
+# acceptance bar for agent-boundary testing.
+#
+# get_weather is mocked, so the trajectory is driven by spec-authored data
+# and the assertion on the threaded `city` argument is static. The agent's
+# real tool returns a live timestamp; replay is deterministic only because
+# the mock is substituted at the model boundary.
+name: Weather assistant answers with the forecast
+app: agent
+agent:
+  command: python3 examples/agent-demo/weather_agent.py
+tools:
+  - name: get_weather
+    result: { city: Nairobi, sky: sunny, temp_c: 26 }
+steps:
+  - prompt: What is the weather in Nairobi right now? Use your tools.
+  - assert_tool_call: get_weather where city contains Nairobi
+  - assert: reply contains sunny
