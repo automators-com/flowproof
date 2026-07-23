@@ -85,6 +85,15 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             css: get("css"),
             nth,
             relation: None,
+            // A `kind: "cell"` structural payload decodes back into the
+            // cell query the web adapter resolves by header text + row
+            // anchor, carrying whatever hints record time harvested.
+            cell: (get("kind").as_deref() == Some("cell")).then(|| flowproof_driver::CellQuery {
+                column: get("column_text").unwrap_or_default(),
+                anchor: get("row_anchor").unwrap_or_default(),
+                column_field: get("column_field"),
+                row_id: get("row_id"),
+            }),
         },
         // A text anchor resolves by visible label (UIA Name / element
         // text / OCR line). `relation` rides along for pixels-only

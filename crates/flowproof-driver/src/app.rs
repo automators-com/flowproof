@@ -27,6 +27,23 @@ pub struct UiaSelector {
     /// Tree-backed drivers (UIA, web, SAP) ignore it — their match IS the
     /// element.
     pub relation: Option<String>,
+    /// A table cell addressed by identity (#58). Web-only; resolved against
+    /// the live DOM by column header text and row anchor, never position.
+    pub cell: Option<CellQuery>,
+}
+
+/// A table cell to resolve by IDENTITY, not position (#58). `column` is the
+/// header's visible text and `anchor` is text identifying the row; the
+/// optional hints (`column_field` = a `data-field`/`col-id`/`column-{field}`
+/// value, `row_id` = a row's `id`/`data-id`/`row-id`) are harvested at
+/// record time and used as fallbacks so a renamed header or a text-edited
+/// anchor still resolves.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CellQuery {
+    pub column: String,
+    pub anchor: String,
+    pub column_field: Option<String>,
+    pub row_id: Option<String>,
 }
 
 impl UiaSelector {
@@ -56,6 +73,7 @@ impl UiaSelector {
             && self.name.is_none()
             && self.control_type.is_none()
             && self.css.is_none()
+            && self.cell.is_none()
     }
 
     pub fn with_nth(mut self, nth: Option<u32>) -> Self {

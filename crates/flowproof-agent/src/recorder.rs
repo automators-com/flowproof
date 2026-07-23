@@ -186,6 +186,22 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
                 payload,
             }]
         }
+        // A table cell is a STRUCTURAL rung (Fable: no new tier), addressed
+        // by header text + row anchor. The `kind: "cell"` payload is
+        // self-describing; the adapter enriches it with column_field/row_id
+        // hints at record time, and a text-only payload stays valid.
+        Target::Cell { column, anchor } => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("kind".into(), "cell".into());
+            payload.insert("column_text".into(), column.as_str().into());
+            payload.insert("row_anchor".into(), anchor.as_str().into());
+            vec![Selector {
+                tier: SelectorTier::Structural,
+                provenance: flowproof_trace::format::Adapter::Web,
+                confidence: Some(0.9),
+                payload,
+            }]
+        }
         // A text anchor IS the primary selector here: the element is
         // addressed the way a user sees it (visible text / placeholder).
         Target::Text(text) => {
@@ -539,6 +555,14 @@ fn target_selector(target: &Target) -> Option<UiaSelector> {
         // The surface is not an element — it resolves via `surface_text`.
         Target::Surface => None,
         Target::Nth(n, inner) => target_selector(inner).map(|s| s.with_nth(Some(*n))),
+        Target::Cell { column, anchor } => Some(UiaSelector {
+            cell: Some(flowproof_driver::CellQuery {
+                column: column.clone(),
+                anchor: anchor.clone(),
+                ..Default::default()
+            }),
+            ..UiaSelector::default()
+        }),
     }
 }
 
