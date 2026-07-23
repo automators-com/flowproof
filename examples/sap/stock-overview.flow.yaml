@@ -1,0 +1,17 @@
+# A SAP GUI flow. Requirements on the recording/replaying machine:
+# Windows, SAP GUI for Windows installed, SAP Logon running and logged in,
+# and scripting enabled (RZ11: sapgui/user_scripting = TRUE).
+#
+# Read-only stock overview for a material via MMBE — a single selection
+# screen straight to a results list, no intermediate view-selection dialog
+# (unlike MM03's "Select View(s)" popup, which uses a tree/shell control
+# our adapter can't drive). MZ-FG-C900 is real sample data on the
+# reference system this was recorded against.
+name: Stock overview
+app: sap
+connection: ${SAP_CONNECTION}
+steps:
+  - Go to /nMMBE
+  - Type MZ-FG-C900 into the "id:wnd[0]/usr/ctxtMS_MATNR-LOW" field
+  - Press the "Execute" button
+  - assert: page shows Stock Overview

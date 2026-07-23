@@ -1,0 +1,16 @@
+# A SAP GUI flow. Requirements on the recording/replaying machine:
+# Windows, SAP GUI for Windows installed, SAP Logon running and logged in,
+# and scripting enabled (RZ11: sapgui/user_scripting = TRUE).
+#
+# Read-only complement to create-order.flow.yaml: views an existing order
+# instead of creating one, via VA03. Order 314 is real sample data on the
+# reference system this was recorded against — swap it for an order number
+# that exists on yours.
+name: View sales order
+app: sap
+connection: ${SAP_CONNECTION}
+steps:
+  - Go to /nVA03
+  - Type 314 into the "id:wnd[0]/usr/ctxtVBAK-VBELN" field
+  - Press Enter
+  - assert: page shows Display Standard Order 314

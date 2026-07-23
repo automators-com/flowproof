@@ -1,0 +1,14 @@
+# A SAP GUI flow. Requirements on the recording/replaying machine:
+# Windows, SAP GUI for Windows installed, SAP Logon running and logged in,
+# and scripting enabled (RZ11: sapgui/user_scripting = TRUE).
+#
+# The simplest possible SAP flow: navigate to the session manager (a no-op
+# that returns to SAP Easy Access) and assert the surface. No fields, no
+# input, nothing to get wrong — a good first flow to record on a new
+# system to confirm attach/scripting actually works before anything richer.
+name: Session status
+app: sap
+connection: ${SAP_CONNECTION}
+steps:
+  - Go to /nSESSION_MANAGER
+  - assert: page shows Session
