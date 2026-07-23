@@ -53,6 +53,23 @@ const CHECKED_STATE_JS: &str = r#"function() {
 /// then tags the winning cell with `data-flowproof-cell`. Returns a status
 /// string: `ok`, `no_column`/`no_row`/`no_header`/`no_match`,
 /// `ambiguous_row:<n>`, or `dup_header`.
+const CELL_HINTS: &str = r#"function(){
+  var c = document.querySelector('[data-flowproof-cell]');
+  if (!c) return 'null';
+  function fieldOf(e){
+    if (e.getAttribute){
+      var f = e.getAttribute('data-field') || e.getAttribute('col-id');
+      if (f) return f;
+      var cls = (e.className||'').toString().match(/column-([\w-]+)/);
+      if (cls) return cls[1];
+    }
+    return null;
+  }
+  var row = c.closest ? c.closest('tr, [role=row]') : null;
+  var id = row && row.getAttribute ? (row.getAttribute('id') || row.getAttribute('data-id') || row.getAttribute('row-id')) : null;
+  return JSON.stringify({ field: fieldOf(c), id: id });
+}"#;
+
 const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID){
   document.querySelectorAll('[data-flowproof-cell]').forEach(function(e){
     e.removeAttribute('data-flowproof-cell');
@@ -392,32 +409,40 @@ impl WebAppDriver {
     /// unique attribute, and reports status; then find the tagged element
     /// through the normal CSS path. Ambiguity is a hard error (Fable), a
     /// clean miss returns `Ok(None)` like any element miss.
+    /// The resolver JS call for a cell, with its params JSON-injected.
+    fn cell_resolver_js(cell: &flowproof_driver::CellQuery) -> String {
+        let opt = |v: &Option<String>| {
+            v.as_deref()
+                .map(|x| serde_json::Value::from(x).to_string())
+                .unwrap_or_else(|| "null".into())
+        };
+        format!(
+            "({CELL_RESOLVER})({col},{anchor},{field},{rowid})",
+            col = serde_json::Value::from(cell.column.as_str()),
+            anchor = serde_json::Value::from(cell.anchor.as_str()),
+            field = opt(&cell.column_field),
+            rowid = opt(&cell.row_id),
+        )
+    }
+
+    /// Run the resolver, which TAGS the winning cell, and return the status.
+    /// Shared by resolve_cell (which then finds the tag) and cell_hints
+    /// (which reads attributes off the tag).
+    fn tag_cell(&self, cell: &flowproof_driver::CellQuery) -> Result<String, DriverError> {
+        Ok(self
+            .tab()?
+            .evaluate(&Self::cell_resolver_js(cell), false)
+            .map_err(|e| web_err("resolving a table cell", e))?
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
+    }
+
     fn resolve_cell(
         &self,
         cell: &flowproof_driver::CellQuery,
     ) -> Result<Option<headless_chrome::Element<'_>>, DriverError> {
-        let tab = self.tab()?;
-        let js = format!(
-            "({CELL_RESOLVER})({col},{anchor},{field},{rowid})",
-            col = serde_json::Value::from(cell.column.as_str()),
-            anchor = serde_json::Value::from(cell.anchor.as_str()),
-            field = cell
-                .column_field
-                .as_deref()
-                .map(|f| serde_json::Value::from(f).to_string())
-                .unwrap_or_else(|| "null".into()),
-            rowid = cell
-                .row_id
-                .as_deref()
-                .map(|r| serde_json::Value::from(r).to_string())
-                .unwrap_or_else(|| "null".into()),
-        );
-        let status = tab
-            .evaluate(&js, false)
-            .map_err(|e| web_err("resolving a table cell", e))?
-            .value
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default();
+        let status = self.tag_cell(cell)?;
         match status.as_str() {
             "ok" => {
                 // Tagged; resolve it through the ordinary path.
@@ -683,6 +708,43 @@ impl Drop for WebAppDriver {
 }
 
 impl AppDriver for WebAppDriver {
+    fn cell_hints(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<Option<flowproof_driver::CellHints>, DriverError> {
+        let Some(cell) = &selector.cell else {
+            return Ok(None);
+        };
+        // Tag the winning cell, then read the field and row id off the tag,
+        // harvested at record time so replay can fall back to them when the
+        // header text or the anchor has since changed. No element handle
+        // needed, so this skips resolve_cell's find step.
+        if self.tag_cell(cell)? != "ok" {
+            return Ok(None);
+        }
+        let raw = self
+            .tab()?
+            .evaluate(&format!("({CELL_HINTS})()"), false)
+            .map_err(|e| web_err("reading cell hints", e))?
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+        let field = parsed
+            .get("field")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let id = parsed
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        Ok(Some(flowproof_driver::CellHints {
+            column_field: field,
+            row_id: id,
+        }))
+    }
+
     /// `command` is the URL to open; `window_name` is unused for web.
     fn launch(
         &mut self,

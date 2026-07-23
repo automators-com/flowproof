@@ -73,5 +73,24 @@ fn cell_addressing_survives_a_row_insert() {
         "identity addressing must survive a row insert: {report:#?}"
     );
 
+    // And the record-time hint fallback: rename the column HEADER. Text
+    // identity ("Status") no longer matches, but the recorded column_field
+    // hint (the `column-status` class) resolves it anyway.
+    std::fs::write(
+        &page,
+        GRID_HTML.replacen(
+            "<th class=\"column-status\">Status</th>",
+            "<th class=\"column-status\">State</th>",
+            1,
+        ),
+    )
+    .expect("renamed header");
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _) = flowproof_replay::run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "the column_field hint must survive a header rename: {report:#?}"
+    );
+
     std::fs::remove_dir_all(&dir).ok();
 }

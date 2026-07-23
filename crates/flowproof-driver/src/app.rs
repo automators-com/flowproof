@@ -46,6 +46,16 @@ pub struct CellQuery {
     pub row_id: Option<String>,
 }
 
+/// Record-time hints harvested from a resolved cell (#58): the column's
+/// field attribute and the row's id, recorded into the trace so replay can
+/// fall back to them when the header text or the row anchor has since
+/// changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CellHints {
+    pub column_field: Option<String>,
+    pub row_id: Option<String>,
+}
+
 impl UiaSelector {
     pub fn automation_id(id: impl Into<String>) -> Self {
         Self {
@@ -163,6 +173,15 @@ impl std::fmt::Display for KeyMod {
 
 /// Drives a single application window through UIA.
 pub trait AppDriver {
+    /// Record-time hints for a resolved table cell (#58). Only the web
+    /// adapter overrides this - a cell is a DOM concept - and it does so
+    /// only for a `selector` carrying a `cell` query. The default (every
+    /// other adapter, and a non-cell selector) harvests nothing, which is
+    /// valid: a text-only cell payload still resolves by identity.
+    fn cell_hints(&mut self, _selector: &UiaSelector) -> Result<Option<CellHints>, DriverError> {
+        Ok(None)
+    }
+
     /// Launch (or attach to) the target application and wait until a window
     /// whose name contains `window_name` exists.
     fn launch(
@@ -758,6 +777,10 @@ pub fn resolve_app(app_id: &str) -> Option<AppTarget> {
 
 // Allow callers to select a driver implementation at runtime.
 impl AppDriver for Box<dyn AppDriver> {
+    fn cell_hints(&mut self, selector: &UiaSelector) -> Result<Option<CellHints>, DriverError> {
+        (**self).cell_hints(selector)
+    }
+
     fn launch(
         &mut self,
         command: &str,
