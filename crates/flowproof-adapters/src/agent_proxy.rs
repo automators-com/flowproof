@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use flowproof_trace::cassette::{Cassette, Divergence, Message, ToolCall, TurnRequest};
+use flowproof_trace::substitution::{self, Mocks};
 
 /// The largest request body the proxy will read. Prompts are large and
 /// grow every turn; this is a guard against a malformed `content-length`,
@@ -52,7 +53,7 @@ impl AgentProxy {
     /// Bound to 127.0.0.1 on purpose: this endpoint answers whatever asks
     /// it, with no authentication, so it must not be reachable off the
     /// machine running the test.
-    pub fn start(cassette: Cassette) -> std::io::Result<Self> {
+    pub fn start(cassette: Cassette, mocks: Mocks) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         // A short read timeout lets the accept loop notice `stop` even
@@ -69,7 +70,7 @@ impl AgentProxy {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             stream.set_nonblocking(false).ok();
-                            serve_one(stream, &cassette, &mut turn, &log);
+                            serve_one(stream, &cassette, &mocks, &mut turn, &log);
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -110,7 +111,13 @@ impl Drop for AgentProxy {
 /// Read one request, answer it, close. `Connection: close` every time:
 /// keep-alive would buy nothing here and multiplexing state machines are
 /// where hand-rolled HTTP goes wrong.
-fn serve_one(stream: TcpStream, cassette: &Cassette, turn: &mut usize, log: &Mutex<ProxyLog>) {
+fn serve_one(
+    stream: TcpStream,
+    cassette: &Cassette,
+    mocks: &Mocks,
+    turn: &mut usize,
+    log: &Mutex<ProxyLog>,
+) {
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -134,7 +141,7 @@ fn serve_one(stream: TcpStream, cassette: &Cassette, turn: &mut usize, log: &Mut
         return;
     }
 
-    let incoming = match parse_request(&body) {
+    let mut incoming = match parse_request(&body) {
         Ok(request) => request,
         Err(why) => {
             respond(
@@ -148,6 +155,11 @@ fn serve_one(stream: TcpStream, cassette: &Cassette, turn: &mut usize, log: &Mut
             return;
         }
     };
+
+    // Substitute mocked tool results BEFORE matching, exactly as record
+    // did before storing, so the compared request is the one the model
+    // actually saw - a volatile real tool result cannot fail replay.
+    substitution::apply(&mut incoming, mocks);
 
     let index = *turn;
     *turn += 1;
@@ -466,7 +478,7 @@ mod tests {
     /// recorded trajectory back, turn by turn, with no model involved.
     #[test]
     fn a_recorded_trajectory_is_served_over_http() {
-        let proxy = AgentProxy::start(cassette()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
 
         let (status, body) = post(
             &proxy.base_url(),
@@ -493,11 +505,118 @@ mod tests {
         assert!(proxy.log().divergence.is_none());
     }
 
+    /// End to end through the proxy: a mocked tool result makes an
+    /// otherwise-divergent request MATCH. The cassette was recorded with
+    /// the mock (post-substitution); at replay the agent sends a volatile
+    /// real result, and substitution rewrites it to the mock before
+    /// matching, so a tool that returns a fresh value every run does not
+    /// fail replay.
+    #[test]
+    fn a_mocked_tool_result_lets_a_volatile_request_match() {
+        // A two-turn cassette: turn 2's request carries the assistant
+        // tool_call (naming the id) and the tool result, stored as the
+        // MOCK - which is what record wrote after substituting.
+        let cassette = Cassette {
+            turns: vec![
+                Turn {
+                    request: TurnRequest {
+                        model: "gpt-4o".into(),
+                        messages: vec![Message::new("user", "What time is it there?")],
+                        tools: vec!["clock".into()],
+                    },
+                    response: TurnResponse {
+                        message: Message {
+                            role: "assistant".into(),
+                            content: None,
+                            tool_calls: vec![ToolCall {
+                                id: "call_clock".into(),
+                                name: "clock".into(),
+                                arguments: "{}".into(),
+                            }],
+                            tool_call_id: None,
+                        },
+                    },
+                },
+                Turn {
+                    request: TurnRequest {
+                        model: "gpt-4o".into(),
+                        messages: vec![
+                            Message::new("user", "What time is it there?"),
+                            Message {
+                                role: "assistant".into(),
+                                content: None,
+                                tool_calls: vec![ToolCall {
+                                    id: "call_clock".into(),
+                                    name: "clock".into(),
+                                    arguments: "{}".into(),
+                                }],
+                                tool_call_id: None,
+                            },
+                            // Stored as the mock, canonically.
+                            Message {
+                                role: "tool".into(),
+                                content: Some(r#"{"now":"FIXED"}"#.into()),
+                                tool_calls: Vec::new(),
+                                tool_call_id: Some("call_clock".into()),
+                            },
+                        ],
+                        tools: vec!["clock".into()],
+                    },
+                    response: TurnResponse {
+                        message: Message::new("assistant", "It is fixed o'clock."),
+                    },
+                },
+            ],
+        };
+        let mocks: Mocks = [("clock".to_string(), serde_json::json!({"now": "FIXED"}))]
+            .into_iter()
+            .collect();
+        let proxy = AgentProxy::start(cassette, mocks).expect("starts");
+
+        // Turn 1.
+        let (status, _) = post(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "What time is it there?"}],
+                "tools": [{"type": "function", "function": {"name": "clock"}}],
+            }),
+        );
+        assert_eq!(status, 200);
+
+        // Turn 2: the agent's REAL clock returned a live timestamp, which
+        // is not what was recorded. Without substitution this diverges.
+        let (status, body) = post(
+            &proxy.base_url(),
+            serde_json::json!({
+                "model": "gpt-4o",
+                "messages": [
+                    {"role": "user", "content": "What time is it there?"},
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "call_clock", "type": "function",
+                         "function": {"name": "clock", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "call_clock",
+                     "content": "2026-07-23T09:41:07.123456Z"},
+                ],
+                "tools": [{"type": "function", "function": {"name": "clock"}}],
+            }),
+        );
+        assert_eq!(
+            status, 200,
+            "substitution must make the volatile result match"
+        );
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "It is fixed o'clock."
+        );
+        assert!(proxy.log().divergence.is_none());
+    }
+
     /// A drifted prompt must not quietly succeed. The agent is owed an
     /// answer so it does not hang, and the run is owed the reason.
     #[test]
     fn a_divergence_is_reported_to_both_the_agent_and_the_run() {
-        let proxy = AgentProxy::start(cassette()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
         let (status, body) = post(
             &proxy.base_url(),
             chat(serde_json::json!([{"role": "user", "content": "Book a flight to Mombasa"}])),
@@ -516,7 +635,7 @@ mod tests {
     /// must not break because somebody tuned temperature.
     #[test]
     fn sampling_parameters_are_ignored() {
-        let proxy = AgentProxy::start(cassette()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
         let mut payload =
             chat(serde_json::json!([{"role": "user", "content": "Book a flight to Nairobi"}]));
         payload["temperature"] = serde_json::json!(0.0);
@@ -530,7 +649,7 @@ mod tests {
     /// big enough to hit it.
     #[test]
     fn a_body_arriving_in_pieces_is_read_to_its_declared_length() {
-        let proxy = AgentProxy::start(cassette()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
         // Pad with an ignored field so the body comfortably exceeds a
         // single small segment.
         let mut payload =
@@ -565,7 +684,7 @@ mod tests {
 
     #[test]
     fn other_endpoints_are_refused_rather_than_guessed_at() {
-        let proxy = AgentProxy::start(cassette()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
         let addr = proxy
             .base_url()
             .trim_start_matches("http://")
@@ -587,7 +706,7 @@ mod tests {
     /// be reachable off this machine.
     #[test]
     fn the_proxy_listens_only_on_loopback() {
-        let proxy = AgentProxy::start(cassette()).expect("starts");
+        let proxy = AgentProxy::start(cassette(), Mocks::new()).expect("starts");
         assert!(
             proxy.base_url().starts_with("http://127.0.0.1:"),
             "{}",

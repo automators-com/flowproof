@@ -20,6 +20,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use flowproof_trace::cassette::{Cassette, Divergence};
+use flowproof_trace::substitution::Mocks;
 
 use crate::agent_proxy::AgentProxy;
 
@@ -133,13 +134,14 @@ pub fn run(
     command: &str,
     env: &BTreeMap<String, String>,
     cassette: Cassette,
+    mocks: Mocks,
     timeout: Duration,
 ) -> Result<AgentRun, RunError> {
     let command = command.trim();
     if command.is_empty() {
         return Err(RunError::NoCommand);
     }
-    let proxy = AgentProxy::start(cassette).map_err(RunError::Proxy)?;
+    let proxy = AgentProxy::start(cassette, mocks).map_err(RunError::Proxy)?;
     let base = proxy.base_url();
 
     let parts = argv(command);
@@ -316,6 +318,7 @@ for _ in range(turns):
             &format!("python3 \"{}\"", agent.display()),
             &env(&[("FAKE_TURNS", "2")]),
             cassette(2),
+            Mocks::new(),
             Duration::from_secs(30),
         )
         .expect("runs");
@@ -336,6 +339,7 @@ for _ in range(turns):
             &format!("python3 \"{}\"", agent.display()),
             &env(&[("FAKE_PROMPT", "Book a flight to Mombasa")]),
             cassette(1),
+            Mocks::new(),
             Duration::from_secs(30),
         )
         .expect("runs");
@@ -356,6 +360,7 @@ for _ in range(turns):
             &format!("python3 \"{}\"", agent.display()),
             &env(&[("FAKE_TURNS", "1")]),
             cassette(2),
+            Mocks::new(),
             Duration::from_secs(30),
         )
         .expect("runs");
@@ -379,6 +384,7 @@ for _ in range(turns):
             &format!("python3 \"{}\"", path.display()),
             &BTreeMap::new(),
             cassette(1),
+            Mocks::new(),
             Duration::from_millis(700),
         )
         .expect("runs");
@@ -399,6 +405,7 @@ for _ in range(turns):
             "definitely-not-a-real-program --go",
             &BTreeMap::new(),
             cassette(1),
+            Mocks::new(),
             Duration::from_secs(5),
         )
         .expect_err("cannot spawn");
@@ -410,7 +417,13 @@ for _ in range(turns):
         assert!(message.contains("starting the agent"), "{message}");
 
         assert!(matches!(
-            run("   ", &BTreeMap::new(), cassette(1), Duration::from_secs(5)),
+            run(
+                "   ",
+                &BTreeMap::new(),
+                cassette(1),
+                Mocks::new(),
+                Duration::from_secs(5)
+            ),
             Err(RunError::NoCommand)
         ));
     }
@@ -435,6 +448,7 @@ for _ in range(turns):
                 ("MY_LLM_URL", "http://custom.invalid/v1"),
             ]),
             cassette(1),
+            Mocks::new(),
             Duration::from_secs(30),
         )
         .expect("runs");
