@@ -28,7 +28,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::cassette::{Message, TurnRequest};
+use serde_json::Value;
 
 /// The effective `tools:` mocks: tool name to its canonical result JSON.
 /// A tool present here is substituted; a tool absent (a name-only `tools:`
@@ -57,47 +57,79 @@ pub fn canonical(value: &serde_json::Value) -> String {
     value.to_string()
 }
 
-/// Rewrite `request` in place, replacing each mocked tool result. Returns
-/// which `tool_call_id`s were touched.
+/// Rewrite an OpenAI-compatible chat request body in place, replacing each
+/// mocked tool result. Returns which `tool_call_id`s were touched.
+///
+/// Operates on the raw request JSON, not a parsed view, for one reason: at
+/// record the substituted body is FORWARDED to the model, so every field
+/// the agent sent (sampling knobs, full tool schemas) has to survive
+/// untouched while only the tool-result contents change. A lossy
+/// round-trip through a typed struct would drop them. Replay parses the
+/// same substituted body afterwards for matching, so both phases share
+/// this one transform.
 ///
 /// A `role: tool` message is substituted when its `tool_call_id` names a
 /// call whose tool has a mock. The id-to-name map is built from the
 /// assistant `tool_calls` in this same request, so a tool message that
 /// references an id no earlier assistant turn issued is left alone rather
 /// than guessed at.
-pub fn apply(request: &mut TurnRequest, mocks: &Mocks) -> Substitutions {
+pub fn apply_json(body: &mut Value, mocks: &Mocks) -> Substitutions {
     if mocks.is_empty() {
         return Substitutions::default();
     }
-    let id_to_name = tool_call_names(&request.messages);
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return Substitutions::default();
+    };
+    let id_to_name = tool_call_names(messages);
+
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return Substitutions::default();
+    };
     let mut touched = Vec::new();
-    for message in &mut request.messages {
-        if message.role != "tool" {
+    for message in messages.iter_mut() {
+        if message.get("role").and_then(Value::as_str) != Some("tool") {
             continue;
         }
-        let Some(id) = message.tool_call_id.as_deref() else {
+        let Some(id) = message
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
             continue;
         };
-        let Some(name) = id_to_name.get(id) else {
+        let Some(name) = id_to_name.get(&id) else {
             continue;
         };
         let Some(mock) = mocks.get(name.as_str()) else {
             continue;
         };
-        message.content = Some(canonical(mock));
-        touched.push(id.to_string());
+        if let Some(obj) = message.as_object_mut() {
+            obj.insert("content".into(), Value::String(canonical(mock)));
+            touched.push(id);
+        }
     }
     Substitutions {
         tool_call_ids: touched,
     }
 }
 
-/// Map every `tool_call_id` an assistant turn issued to the tool it named.
-fn tool_call_names(messages: &[Message]) -> BTreeMap<String, String> {
+/// Map every `tool_call_id` an assistant turn issued to the tool it named,
+/// reading the raw messages array.
+fn tool_call_names(messages: &[Value]) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     for message in messages {
-        for call in &message.tool_calls {
-            map.insert(call.id.clone(), call.name.clone());
+        let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+            continue;
+        };
+        for call in calls {
+            let id = call.get("id").and_then(Value::as_str);
+            let name = call
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str);
+            if let (Some(id), Some(name)) = (id, name) {
+                map.insert(id.to_string(), name.to_string());
+            }
         }
     }
     map
@@ -106,138 +138,126 @@ fn tool_call_names(messages: &[Message]) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cassette::{Message, ToolCall};
 
-    fn mocks(pairs: &[(&str, serde_json::Value)]) -> Mocks {
+    fn mocks(pairs: &[(&str, Value)]) -> Mocks {
         pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect()
     }
 
-    fn assistant_call(id: &str, name: &str) -> Message {
-        Message {
-            role: "assistant".into(),
-            content: None,
-            tool_calls: vec![ToolCall {
-                id: id.into(),
-                name: name.into(),
-                arguments: "{}".into(),
-            }],
-            tool_call_id: None,
-        }
+    /// An OpenAI-shaped request body: a user turn, an assistant tool_call,
+    /// and the tool result the agent computed.
+    fn body(tool_content: &str) -> Value {
+        serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": "Book a flight"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "call_1", "type": "function",
+                     "function": {"name": "search_flights", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "call_1", "content": tool_content},
+            ],
+            "temperature": 0.7,
+        })
     }
 
-    fn tool_result(id: &str, content: &str) -> Message {
-        Message {
-            role: "tool".into(),
-            content: Some(content.into()),
-            tool_calls: Vec::new(),
-            tool_call_id: Some(id.into()),
-        }
-    }
-
-    fn request(messages: Vec<Message>) -> TurnRequest {
-        TurnRequest {
-            model: "gpt-4o".into(),
-            messages,
-            tools: vec!["search_flights".into()],
-        }
+    fn content(body: &Value, i: usize) -> Option<&str> {
+        body["messages"][i]["content"].as_str()
     }
 
     /// The headline: the agent's real tool result is replaced with the
     /// spec's mock before the model ever sees it.
     #[test]
     fn a_mocked_tool_result_is_substituted() {
-        let mut req = request(vec![
-            Message::new("user", "Book a flight"),
-            assistant_call("call_1", "search_flights"),
-            tool_result(
-                "call_1",
-                r#"{"flights":["whatever the real tool returned"]}"#,
-            ),
-        ]);
-        let subs = apply(
-            &mut req,
+        let mut b = body(r#"{"flights":["whatever the real tool returned"]}"#);
+        let subs = apply_json(
+            &mut b,
             &mocks(&[("search_flights", serde_json::json!({"flights": ["KQ311"]}))]),
         );
         assert_eq!(subs.tool_call_ids, ["call_1"]);
-        assert_eq!(
-            req.messages[2].content.as_deref(),
-            Some(r#"{"flights":["KQ311"]}"#)
-        );
+        assert_eq!(content(&b, 2), Some(r#"{"flights":["KQ311"]}"#));
+        // Everything else the agent sent survives untouched, so the body
+        // can be forwarded to the model verbatim.
+        assert_eq!(b["temperature"], serde_json::json!(0.7));
+        assert_eq!(content(&b, 0), Some("Book a flight"));
     }
 
     /// Canonical JSON: object keys are sorted, so the same mock written in
     /// a different order records identical bytes and never drifts.
     #[test]
     fn substitution_is_canonical_regardless_of_key_order() {
-        let mut req = request(vec![assistant_call("c", "book"), tool_result("c", "old")]);
-        apply(
-            &mut req,
-            &mocks(&[("book", serde_json::json!({"b": 2, "a": 1}))]),
+        let mut b = body("old");
+        apply_json(
+            &mut b,
+            &mocks(&[("search_flights", serde_json::json!({"b": 2, "a": 1}))]),
         );
-        assert_eq!(req.messages[1].content.as_deref(), Some(r#"{"a":1,"b":2}"#));
+        assert_eq!(content(&b, 2), Some(r#"{"a":1,"b":2}"#));
     }
 
-    /// A tool with no mock (a name-only `tools:` entry, or one the spec
-    /// never listed) passes through verbatim. This is the documented
+    /// A tool with no mock passes through verbatim - the documented
     /// replay-drift hazard, honored exactly rather than papered over.
     #[test]
     fn an_unmocked_tool_passes_through() {
-        let mut req = request(vec![
-            assistant_call("call_1", "search_flights"),
-            tool_result("call_1", "REAL RESULT"),
-            assistant_call("call_2", "get_time"),
-            tool_result("call_2", "2026-07-23T00:00:00Z"),
-        ]);
-        let subs = apply(
-            &mut req,
+        let mut b = serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "assistant", "tool_calls": [
+                    {"id": "c1", "type": "function",
+                     "function": {"name": "search_flights", "arguments": "{}"}},
+                    {"id": "c2", "type": "function",
+                     "function": {"name": "get_time", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "REAL"},
+                {"role": "tool", "tool_call_id": "c2", "content": "2026-07-23T00:00:00Z"},
+            ],
+        });
+        let subs = apply_json(
+            &mut b,
             &mocks(&[("search_flights", serde_json::json!({"ok": true}))]),
         );
-        assert_eq!(subs.tool_call_ids, ["call_1"]);
-        // search_flights was mocked...
-        assert_eq!(req.messages[1].content.as_deref(), Some(r#"{"ok":true}"#));
-        // ...get_time was not, so its volatile value is untouched.
-        assert_eq!(
-            req.messages[3].content.as_deref(),
-            Some("2026-07-23T00:00:00Z")
-        );
+        assert_eq!(subs.tool_call_ids, ["c1"]);
+        assert_eq!(content(&b, 1), Some(r#"{"ok":true}"#));
+        assert_eq!(content(&b, 2), Some("2026-07-23T00:00:00Z"));
     }
 
-    /// A tool message whose id no assistant turn issued is left alone, not
-    /// guessed at.
+    /// A tool message whose id no assistant turn issued is left alone.
     #[test]
     fn an_unknown_tool_call_id_is_not_substituted() {
-        let mut req = request(vec![tool_result("orphan", "keep me")]);
-        let subs = apply(&mut req, &mocks(&[("book", serde_json::json!({}))]));
+        let mut b = serde_json::json!({
+            "messages": [{"role": "tool", "tool_call_id": "orphan", "content": "keep me"}],
+        });
+        let subs = apply_json(&mut b, &mocks(&[("book", serde_json::json!({}))]));
         assert!(subs.is_empty());
-        assert_eq!(req.messages[0].content.as_deref(), Some("keep me"));
+        assert_eq!(content(&b, 0), Some("keep me"));
     }
 
-    /// Empty mocks is a no-op fast path: an agent flow may declare no
-    /// mocks at all and still record.
+    /// Empty mocks is a no-op fast path.
     #[test]
     fn no_mocks_is_a_no_op() {
-        let mut req = request(vec![assistant_call("c", "book"), tool_result("c", "real")]);
-        let subs = apply(&mut req, &Mocks::new());
+        let mut b = body("real");
+        let subs = apply_json(&mut b, &Mocks::new());
         assert!(subs.is_empty());
-        assert_eq!(req.messages[1].content.as_deref(), Some("real"));
+        assert_eq!(content(&b, 2), Some("real"));
     }
 
-    /// The same tool called twice gets the same mock both times - the v1
-    /// fence (one static result per tool name).
+    /// The same tool called twice gets the same mock both times.
     #[test]
     fn a_tool_called_twice_is_substituted_both_times() {
-        let mut req = request(vec![
-            assistant_call("c1", "lookup"),
-            tool_result("c1", "first real"),
-            assistant_call("c2", "lookup"),
-            tool_result("c2", "second real"),
-        ]);
-        let subs = apply(&mut req, &mocks(&[("lookup", serde_json::json!({"v": 1}))]));
+        let mut b = serde_json::json!({
+            "messages": [
+                {"role": "assistant", "tool_calls": [
+                    {"id": "c1", "type": "function",
+                     "function": {"name": "lookup", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "first real"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "c2", "type": "function",
+                     "function": {"name": "lookup", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c2", "content": "second real"},
+            ],
+        });
+        let subs = apply_json(&mut b, &mocks(&[("lookup", serde_json::json!({"v": 1}))]));
         assert_eq!(subs.tool_call_ids, ["c1", "c2"]);
-        assert_eq!(req.messages[1].content.as_deref(), Some(r#"{"v":1}"#));
-        assert_eq!(req.messages[3].content.as_deref(), Some(r#"{"v":1}"#));
+        assert_eq!(content(&b, 1), Some(r#"{"v":1}"#));
+        assert_eq!(content(&b, 3), Some(r#"{"v":1}"#));
     }
 }

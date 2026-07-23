@@ -14,8 +14,9 @@ web = ["dep:headless_chrome"]
 # Pixels-only (Citrix/RDP) driving: OCR perception via ocrs/rten, model
 # download via ureq.
 vision = ["dep:ocrs", "dep:rten", "dep:ureq"]
-# Agent-boundary testing: the model-API proxy that serves a cassette.
-agent = []
+# Agent-boundary testing: the model-API proxy, and record mode forwarding
+# to a real model over ureq (TLS via platform-verifier, already in-tree).
+agent = ["dep:ureq"]
 
 [dependencies]
 anyhow = { workspace = true }
