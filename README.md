@@ -130,12 +130,17 @@ before/after frames — applied only with explicit `--apply`.
 - `app: vision` — pixels-only driving for Citrix/RDP: OCR perception
   (pure-Rust ocrs), spatial text anchors, real input injection
 - `app: api` — no UI at all: flows made of HTTP and SQL assertions
+- `app: agent`: test an AI agent at the model boundary. Record its
+  trajectory once against a real model, replay it deterministically with
+  zero model calls, and assert the tool calls it makes
+  ([docs/agent-testing.md](docs/agent-testing.md))
 
 **Verify beyond the UI** — out-of-band truth in any flow: `assert_sql`
 (postgres) and `assert_api` (status, body matching, JSON request body,
-auth headers). Secrets travel as `${VAR}` references: resolved from the
-environment when the step fires, never stored in a trace; password
-fields are masked in captured frames.
+auth headers); and for an `app: agent` flow, `assert_tool_call` /
+`assert_no_tool_call` over the agent's trajectory. Secrets travel as
+`${VAR}` references: resolved from the environment when the step fires,
+never stored in a trace; password fields are masked in captured frames.
 
 All of it ships as one wheel (PyO3/maturin): Rust engine, Python API,
 CLI, MCP server. Proven in CI on every push: a Notepad flow records and
