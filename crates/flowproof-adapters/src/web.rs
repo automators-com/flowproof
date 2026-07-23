@@ -47,6 +47,72 @@ const CHECKED_STATE_JS: &str = r#"function() {
 /// assertion polling inside its recorded wait budget tolerates the former
 /// as a miss, because a call that never reached the page learned nothing
 /// about it.
+/// The cell resolver, run in the page. Implements Fable's algorithm:
+/// column by header text (exact-after-trim, then unique-contains, then a
+/// `column_field` fallback), row by the four-branch id/anchor resolution,
+/// then tags the winning cell with `data-flowproof-cell`. Returns a status
+/// string: `ok`, `no_column`/`no_row`/`no_header`/`no_match`,
+/// `ambiguous_row:<n>`, or `dup_header`.
+const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID){
+  document.querySelectorAll('[data-flowproof-cell]').forEach(function(e){
+    e.removeAttribute('data-flowproof-cell');
+  });
+  function txt(e){ return (e.textContent||'').trim(); }
+  function fieldOf(e){
+    if (e.getAttribute){
+      var f = e.getAttribute('data-field') || e.getAttribute('col-id');
+      if (f) return f;
+      var cls = (e.className||'').toString().match(/column-([\w-]+)/);
+      if (cls) return cls[1];
+    }
+    return null;
+  }
+  function idOf(e){
+    return (e.getAttribute && (e.getAttribute('id') || e.getAttribute('data-id') || e.getAttribute('row-id'))) || null;
+  }
+  var tables = document.querySelectorAll('table, [role=grid], [role=table], [role=treegrid]');
+  var sawHeader = false;
+  for (var t=0; t<tables.length; t++){
+    var table = tables[t];
+    var headers = table.querySelectorAll('th, [role=columnheader]');
+    if (!headers.length) continue;
+    sawHeader = true;
+    var exact=[], part=[], byField=-1;
+    for (var i=0;i<headers.length;i++){
+      var h = txt(headers[i]);
+      if (h === COL) exact.push(i);
+      else if (h.indexOf(COL) !== -1) part.push(i);
+      if (COLFIELD && fieldOf(headers[i]) === COLFIELD) byField = i;
+    }
+    if (exact.length > 1) return 'dup_header';
+    var colIdx = exact.length===1 ? exact[0] : (part.length===1 ? part[0] : byField);
+    if (colIdx < 0) continue;
+    var rows = [];
+    table.querySelectorAll('tr, [role=row]').forEach(function(r){
+      if (r.querySelectorAll('td, [role=gridcell], [role=cell]').length) rows.push(r);
+    });
+    if (!rows.length) continue;
+    var idRow = ROWID ? rows.find(function(r){ return idOf(r) === ROWID; }) : null;
+    var anchorRows = rows.filter(function(r){ return txt(r).indexOf(ANCHOR) !== -1; });
+    var chosen = null;
+    if (idRow){
+      if (txt(idRow).indexOf(ANCHOR) !== -1) chosen = idRow;
+      else if (anchorRows.length === 0) chosen = idRow;
+      else if (anchorRows.length === 1) chosen = anchorRows[0];
+      else return 'ambiguous_row:'+anchorRows.length;
+    } else {
+      if (anchorRows.length === 0) continue;
+      if (anchorRows.length > 1) return 'ambiguous_row:'+anchorRows.length;
+      chosen = anchorRows[0];
+    }
+    var cells = chosen.querySelectorAll('td, [role=gridcell], [role=cell]');
+    if (colIdx >= cells.length) continue;
+    cells[colIdx].setAttribute('data-flowproof-cell','1');
+    return 'ok';
+  }
+  return sawHeader ? 'no_match' : 'no_header';
+}"#;
+
 fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
     let message = format!("{context}: {err}");
     if is_transport_fault(&message) {
@@ -286,11 +352,20 @@ impl WebAppDriver {
 
     fn locator_of(selector: &UiaSelector) -> Option<WebLocator> {
         let nth = selector.nth;
+        if let Some(cell) = &selector.cell {
+            return Some(WebLocator {
+                css: None,
+                text: None,
+                nth: None,
+                cell: Some(cell.clone()),
+            });
+        }
         if let Some(css) = selector.css_selector() {
             return Some(WebLocator {
                 css: Some(css),
                 text: None,
                 nth,
+                cell: None,
             });
         }
         // Text anchor: find by visible text / accessible label / placeholder
@@ -300,6 +375,7 @@ impl WebAppDriver {
             css: None,
             text: Some(text.clone()),
             nth,
+            cell: None,
         })
     }
 
@@ -311,6 +387,71 @@ impl WebAppDriver {
         })
     }
 
+    /// Resolve a table cell by IDENTITY (#58): run a JS pass that finds the
+    /// column by header text and the row by anchor, TAGS the cell with a
+    /// unique attribute, and reports status; then find the tagged element
+    /// through the normal CSS path. Ambiguity is a hard error (Fable), a
+    /// clean miss returns `Ok(None)` like any element miss.
+    fn resolve_cell(
+        &self,
+        cell: &flowproof_driver::CellQuery,
+    ) -> Result<Option<headless_chrome::Element<'_>>, DriverError> {
+        let tab = self.tab()?;
+        let js = format!(
+            "({CELL_RESOLVER})({col},{anchor},{field},{rowid})",
+            col = serde_json::Value::from(cell.column.as_str()),
+            anchor = serde_json::Value::from(cell.anchor.as_str()),
+            field = cell
+                .column_field
+                .as_deref()
+                .map(|f| serde_json::Value::from(f).to_string())
+                .unwrap_or_else(|| "null".into()),
+            rowid = cell
+                .row_id
+                .as_deref()
+                .map(|r| serde_json::Value::from(r).to_string())
+                .unwrap_or_else(|| "null".into()),
+        );
+        let status = tab
+            .evaluate(&js, false)
+            .map_err(|e| web_err("resolving a table cell", e))?
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        match status.as_str() {
+            "ok" => {
+                // Tagged; resolve it through the ordinary path.
+                self.try_find(&WebLocator {
+                    css: Some("[data-flowproof-cell]".into()),
+                    text: None,
+                    nth: None,
+                    cell: None,
+                })
+            }
+            // A miss is a miss - the auto-wait loop will retry, and the
+            // final error names the cell.
+            "no_match" | "no_row" | "no_column" | "no_header" => Ok(None),
+            other => {
+                // Ambiguity and duplicate headers are hard errors: the
+                // spec named an identity that does not uniquely resolve.
+                let detail = if let Some(n) = other.strip_prefix("ambiguous_row:") {
+                    format!(
+                        "row anchor '{}' matches {n} rows - use a more specific anchor",
+                        cell.anchor
+                    )
+                } else if other == "dup_header" {
+                    format!(
+                        "column header '{}' is not unique - use a `css:` selector for this table",
+                        cell.column
+                    )
+                } else {
+                    format!("could not resolve the cell ({other})")
+                };
+                Err(DriverError::Browser(detail))
+            }
+        }
+    }
+
     /// One resolution attempt, in preference order: css, then exact text
     /// anchor, then prefix text anchor (Playwright's name matching accepts
     /// a leading match when the accessible name carries trailing detail —
@@ -320,6 +461,9 @@ impl WebAppDriver {
         locator: &WebLocator,
     ) -> Result<Option<headless_chrome::Element<'_>>, DriverError> {
         let tab = self.tab()?;
+        if let Some(cell) = &locator.cell {
+            return self.resolve_cell(cell);
+        }
         if let Some(css) = &locator.css {
             return Ok(match locator.nth {
                 None => tab.find_element(css).ok(),
@@ -399,10 +543,18 @@ struct WebLocator {
     css: Option<String>,
     text: Option<String>,
     nth: Option<u32>,
+    cell: Option<flowproof_driver::CellQuery>,
 }
 
 impl std::fmt::Display for WebLocator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(cell) = &self.cell {
+            return write!(
+                f,
+                "the \"{}\" column of the row containing \"{}\"",
+                cell.column, cell.anchor
+            );
+        }
         match (&self.css, &self.text) {
             (Some(css), _) => write!(f, "css '{css}'")?,
             (None, Some(text)) => write!(f, "text '{text}'")?,

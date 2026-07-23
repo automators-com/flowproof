@@ -77,6 +77,8 @@ append `within <N>s` to any form to change the bound.
 | `the "<target>" appears <N> times` | how many ELEMENTS match the anchor. Exact, not a minimum. No ordinal: `the 2nd "Row"` is one element by construction, so counting it has no answer |
 | `the [2nd ]"<target>" is enabled` / `is disabled` | platform enabled state (`disabled`/`aria-disabled` on web, UIA IsEnabled on desktop) |
 | `the [2nd ]"<target>" checkbox is checked` / `is not checked` | checkbox state, read from the `checked` property or `aria-checked`. A target that is not a checkbox fails as exactly that, not as "wrong state" |
+| `the "<target>" is empty` / `is not empty` | the target's trimmed visible text (or input value) is empty. A first-class predicate: `shows ""` cannot express it |
+| `the "<column>" column of the row containing "<anchor>" <predicate>` | a table cell, by IDENTITY. See below |
 
 Two different questions share the word "times", and picking the wrong one
 is a quiet way to write a test that cannot fail:
@@ -114,6 +116,39 @@ Checkboxes map `cy.check()` / `should("be.checked")`:
 - Uncheck the "Remember me" checkbox
 - assert: the "Remember me" checkbox is not checked
 ```
+
+### Table cells, by identity
+
+A cell in a grid is addressed by the column's header text and an anchor that
+identifies the row — never by position:
+
+```yaml
+- assert: the "Status" column of the row containing "Grace Hopper" shows Suspended
+- assert: the "Balance" column of the row containing "Grace Hopper" is empty
+- Click the "Actions" column of the row containing "Grace Hopper"
+```
+
+The same cell target composes with every predicate (`shows`, `is empty`,
+`is [not] visible`, `is enabled`, `checkbox is [not] checked`) and every
+action (`Click`, `Type … into`, `Clear`, `Check`). `in the row containing`
+also works — the of/in coin flip is one you should not have to remember.
+
+Why identity, not `the 2nd ".column-status"`: an ordinal encodes position,
+so inserting a row or reordering a column silently makes the assertion hit
+the wrong record. Identity survives both — the trace records the header
+text and the row anchor, and replay finds them wherever they moved. For
+that reason an ordinal cannot address a cell (`the 2nd "Status" column …`
+is a parse error).
+
+Resolution is generic over any `<table>` or ARIA grid (`role=grid`/`table`/
+`treegrid`), so react-admin, MUI DataGrid and AG Grid all work with no
+framework-specific selector. Two things are hard errors rather than a
+silent wrong guess, and both point at the `css:` escape hatch: a row anchor
+that matches more than one row (`use a more specific anchor`), and a
+duplicate column header. **Known boundary:** a virtualized grid that keeps
+off-screen rows out of the DOM (AG Grid's row virtualization) can only be
+addressed for rows that are rendered; scroll the anchor row into view
+first, or use `css:` against the grid's own row API.
 
 Computed assertions answer "did this change by the right amount?", which a
 literal cannot express because the starting value is only known at run time:

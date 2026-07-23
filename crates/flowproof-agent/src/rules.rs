@@ -33,6 +33,15 @@ pub enum Target {
     /// The nth (1-based) element matching the inner css/text target —
     /// `Type email into the 2nd "Field Name" field`.
     Nth(u32, Box<Target>),
+    /// A table cell, addressed by IDENTITY: the column's header text and an
+    /// anchor that identifies the row (`the "Status" column of the row
+    /// containing "Grace Hopper"`). Resolved at replay by header text and
+    /// row anchor, never by position, so it survives column reorder and row
+    /// insertion - the whole point of #58.
+    Cell {
+        column: String,
+        anchor: String,
+    },
 }
 
 impl Target {
@@ -201,6 +210,11 @@ pub enum TextMatch {
     UrlEquals,
     /// The surface's URL contains the expectation - `page url contains x`.
     UrlContains,
+    /// The target's trimmed visible text (or input value) is empty
+    /// (`true`) or non-empty (`false`). A first-class predicate: `shows ""`
+    /// cannot express it - empty expected text is rejected and
+    /// `contains ""` is vacuously true.
+    Empty(bool),
 }
 
 /// A capture name: `[a-z][a-z0-9_]*`. Deliberately narrow so a name can
@@ -607,7 +621,36 @@ mod assertions {
             let (nth, rest) = split_ordinal(rest.trim());
             if let Some(quoted) = rest.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    let target = with_nth(nth, target_from_label(label));
+                    let mut target = with_nth(nth, target_from_label(label));
+                    let mut tail = tail;
+                    // Cell target: `"<column>" column of|in the row
+                    // containing "<anchor>" <predicate>`. Rebinding target
+                    // and tail here means every predicate below composes
+                    // with a cell for free.
+                    if let Some(after) = strip_prefix_ci(tail, "column of the row containing ")
+                        .or_else(|| strip_prefix_ci(tail, "column in the row containing "))
+                    {
+                        let after = after.trim_start();
+                        let anchor_quoted = after.strip_prefix('"').ok_or_else(|| {
+                            unresolvable(
+                                trimmed,
+                                "expected a quoted row anchor after 'row containing'",
+                            )
+                        })?;
+                        let (anchor, rest_tail) = quoted_label(anchor_quoted)
+                            .ok_or_else(|| unresolvable(trimmed, "unterminated row anchor"))?;
+                        if nth.is_some() {
+                            return Err(unresolvable(
+                                trimmed,
+                                "an ordinal cannot address a cell: a cell is identified by its                                  column and row anchor, not by position",
+                            ));
+                        }
+                        target = Target::Cell {
+                            column: label.to_string(),
+                            anchor: anchor.to_string(),
+                        };
+                        tail = rest_tail;
+                    }
                     if let Some(expected) = strip_prefix_ci(tail, "field contains ")
                         .or_else(|| strip_prefix_ci(tail, "shows "))
                     {
@@ -656,6 +699,17 @@ mod assertions {
                         return Ok(vec![ResolvedAction::AssertCount {
                             target,
                             count,
+                            timeout_ms,
+                        }]);
+                    }
+                    if tail.eq_ignore_ascii_case("is empty")
+                        || tail.eq_ignore_ascii_case("is not empty")
+                    {
+                        let want_empty = tail.eq_ignore_ascii_case("is empty");
+                        return Ok(vec![ResolvedAction::AssertText {
+                            target,
+                            expected: String::new(),
+                            matcher: TextMatch::Empty(want_empty),
                             timeout_ms,
                         }]);
                     }
@@ -2659,6 +2713,38 @@ mod element_count_tests {
                 assert: text.to_string(),
             },
         )
+    }
+
+    #[test]
+    fn is_empty_and_is_not_empty_resolve() {
+        let empty = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the \"Balance\" is empty".to_string(),
+            },
+        )
+        .expect("resolves");
+        assert!(matches!(
+            empty.as_slice(),
+            [ResolvedAction::AssertText {
+                matcher: TextMatch::Empty(true),
+                ..
+            }]
+        ));
+        let not_empty = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: "the \"Balance\" is not empty".to_string(),
+            },
+        )
+        .expect("resolves");
+        assert!(matches!(
+            not_empty.as_slice(),
+            [ResolvedAction::AssertText {
+                matcher: TextMatch::Empty(false),
+                ..
+            }]
+        ));
     }
 
     #[test]
