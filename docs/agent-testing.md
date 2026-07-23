@@ -287,6 +287,64 @@ Second, the trigger must be stateless per request, or reset by a suite
 `before_each`; a service that grows per-conversation history sends a
 different first request on the next run, which reads as a turn-1 divergence.
 
+## Mocking MCP tool servers (`mcp:`)
+
+When an agent's tools are external **MCP servers** (separate processes it
+speaks JSON-RPC to over the Model Context Protocol), the tool EXECUTION does
+not cross the model boundary at all: the model returns a tool-use, and the
+agent then calls an MCP server to run it. The `mcp:` block makes that server
+a second record/replay boundary, so a flow whose tools are real MCP processes
+(with side effects, network, cost) becomes testable hermetically.
+
+```yaml
+app: agent
+agent:
+  command: "npm run assistant"
+mcp:
+  - name: filesystem                       # the flow/trace name for this server
+    command: "npx -y @modelcontextprotocol/server-filesystem ./sandbox"
+                                           # the REAL server; run only at record
+    tools:                                 # optional: intercept specific tools
+      - name: delete_file
+        result: { ok: true }               # answered by the stand-in, never run
+```
+
+flowproof stands in AS the server the agent spawns: it records the JSON-RPC
+traffic once against the real server, then replays it with **zero external
+processes**. So at replay the tools genuinely do not exist, which retires v1's
+honest caveat ("the system still executes its own tools") for MCP-backed
+tools. A tool given a `result:` here is answered by the stand-in and NEVER
+forwarded to the real server, in either phase: the way to prove a genuinely
+dangerous tool is never invoked.
+
+**v3.1 is stdio transport only** (streamable HTTP is a later slice). A stdio
+MCP server is spawned by the agent over a subprocess pipe, so the only place
+to interpose is to BE the command the agent spawns. flowproof injects
+`FLOWPROOF_MCP_SERVER_<name>` (its stand-in command) into the agent's
+environment, and **the agent's MCP config must point that server's command at
+it**: the same one-variable cooperation the model boundary asks for, applied
+to the tool boundary. flowproof cannot verify the wiring up front, but a
+record whose declared server was never contacted fails loudly ("the agent
+never spawned flowproof's MCP stand-in for `<name>`; its config still points
+at the real server"), and a replay whose calls diverge or run short fails at
+the exact call.
+
+Each server records into its own lane in the trace (`mcp.<name>.calls`),
+matched strictly by position: the JSON-RPC method first, then for `tools/call`
+the tool name, then a field-level diff of the arguments naming the first
+divergent path. The two boundaries stay consistent without a cross-boundary
+equality check: the model cassette pins the tool-use decision, the MCP lane
+independently pins the execution's name and arguments, so any change in how
+the agent threads one into the other diverges at the MCP lane.
+
+**What it cannot do.** An agent whose MCP server command is hardcoded and
+unconfigurable, or that scrubs the environment when spawning servers, cannot
+be intercepted. Server-initiated traffic (sampling, elicitation,
+notifications) is relayed at record but not recorded or replayed in v3.1, so
+an agent whose control flow depends on it behaves differently at replay.
+`initialize`'s `clientInfo`/`capabilities` are reported but not matched (an
+SDK patch bump is a tuned dial); `protocolVersion` IS matched.
+
 ## Phasing
 
 1. **v1**: OpenAI-compatible chat-completions proxy (non-streaming),
@@ -312,6 +370,11 @@ different first request on the next run, which reads as a turn-1 divergence.
    "Driving a running service" above). v2 is complete.
 3. **v3**: MCP servers as a second mockable boundary, for systems whose
    tools are external MCP processes rather than internal functions.
+   **Landed (v3.1)**: the stdio transport, with per-tool result mocks and
+   per-server strict-positional lanes in the trace (see "Mocking MCP tool
+   servers" above). Streamable HTTP/SSE MCP servers, and recording
+   server-initiated traffic (sampling, notifications), are the remaining v3
+   slices.
 
 ## Settled in review
 
