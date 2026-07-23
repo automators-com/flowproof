@@ -27,6 +27,12 @@ jobs:
     name: build + publish ${{ matrix.pkg }}
     needs: guard
     strategy:
+      # Publish each platform package independently: one leg failing (an npm
+      # spam-detection hold on a brand-new name, a flaky runner) must not
+      # cancel the others, or a partial publish strands the rest. Combined
+      # with the skip-if-already-published guard below, a re-run converges on
+      # whatever is still missing.
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -76,10 +82,22 @@ jobs:
             }, null, 2));
           "
       - name: Publish the platform package
-        run: npm publish --access public --provenance
         working-directory: dist-npm
+        shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          # npm versions are immutable: republishing one that already exists
+          # is a hard 409. On a re-run (e.g. after a spam hold clears on one
+          # platform), skip the packages already at this version so the run
+          # can finish the missing ones instead of failing on the done ones.
+          published=$(npm view "${{ matrix.pkg }}@$version" version 2>/dev/null || true)
+          if [ "$published" = "$version" ]; then
+            echo "${{ matrix.pkg }}@$version is already published, skipping"
+          else
+            npm publish --access public --provenance
+          fi
 
   publish:
     name: publish flowproof
@@ -95,7 +113,15 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
       - name: Publish to npm
-        run: npm publish --access public --provenance
         working-directory: sdk/js
+        shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          published=$(npm view "flowproof@$version" version 2>/dev/null || true)
+          if [ "$published" = "$version" ]; then
+            echo "flowproof@$version is already published, skipping"
+          else
+            npm publish --access public --provenance
+          fi
