@@ -236,16 +236,17 @@ Built and tested, each independently:
 |---|---|
 | cassette | the recorded trajectory, plus strict positional matching and envelope-first divergence reporting |
 | tool-call matching | ordered subsequence, partial dotted-path arguments, the `assert_no_tool_call` guard path |
-| proxy | serves a cassette over an OpenAI-compatible endpoint |
+| proxy | serves a cassette over an OpenAI-compatible endpoint, and in record mode forwards to a real model and captures |
+| substitution | rewrites a mocked tool result at the model boundary, identically at record and replay |
 | trajectory diff | sorts a re-record into what the agent DID versus what it was TOLD, flagging changes the spec asserts |
 | `assert_tool_call` grammar | the prose form |
+| `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
 
-Not built yet: the `app: agent` spec surface and process driver (which
-land together with the rules dispatch and an E2E, because an `app:` value
-that parses and cannot run is a trap), RECORD mode (which needs an HTTPS
-client this workspace does not yet have), and the `matches` argument
-matcher (which needs a regex dependency). v1 is done when a real external
-OSS agent records and replays through the proxy.
+Not built yet: the `matches` argument matcher (which needs a regex
+dependency), per-call result sequences (v1 is one static result per tool),
+and the v3 MCP tool boundary. v1's remaining acceptance bar is a real
+external OSS agent recording and replaying through the proxy; the
+in-tree E2E proves the full path with a fake agent and a fake model.
 
 ## Decision: model-output evals are out of scope
 
