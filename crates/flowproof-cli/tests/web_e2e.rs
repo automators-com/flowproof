@@ -31,6 +31,9 @@ fn records_and_replays_a_browser_flow() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -96,6 +99,9 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -189,6 +195,9 @@ fn secret_reference_types_real_value_but_never_persists_it() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type ${FLOWPROOF_E2E_PW} into the pw field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -264,6 +273,9 @@ fn assertions_wait_for_async_page_updates() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Press the start button".into()),
             flowproof_agent::SpecStep::Plain(
@@ -329,6 +341,9 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: vec![
             flowproof_agent::SpecStep::Plain(
                 "Type Customers into the \"Template name\" field".into(),
@@ -405,6 +420,9 @@ fn assertion_forms_wait_and_verify_on_real_pages() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "the searchBox field contains prefilled".into(),
@@ -502,6 +520,9 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: vec![
             // Fill semantics: clear the prefilled value, retype, Enter.
             // "Submitted: fresh" (not "…stale textfresh") proves the clear.
@@ -606,6 +627,9 @@ fn session_seeding_and_navigation_drive_real_pages() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows project: ${FLOWPROOF_E2E_PROJECT}".into(),
@@ -678,6 +702,9 @@ fn persisted_frames_never_contain_masked_data() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type bob into the user field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -849,6 +876,9 @@ fn select_own_text_anchors_and_state_asserts_work() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: FlowSpec::parse(
             "name: x\napp: web\nurl: x\nsteps:\n\
              - assert: the \"Save\" is disabled\n\
@@ -1229,6 +1259,9 @@ fn a_navigation_after_a_long_idle_does_not_kill_the_connection() {
         skip_unless_env: Vec::new(),
         mock: Vec::new(),
         browser: None,
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: vec![
             // Out-waits the 30s default idle timeout.
             flowproof_agent::SpecStep::Plain(
@@ -1315,6 +1348,9 @@ fn an_element_below_the_fold_is_scrolled_to_rather_than_called_obscured() {
             user_agent: None,
             args: Vec::new(),
         }),
+        agent: None,
+        tools: Vec::new(),
+        strict: false,
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type Ada into the name field".into()),
             flowproof_agent::SpecStep::Plain("Press the \"Save\" button".into()),
