@@ -37,6 +37,10 @@ pub enum ArgMatch {
     /// agree. Models emit both.
     Equals(String),
     Contains(String),
+    /// The value, as text, matches a regular expression. For arguments
+    /// whose SHAPE is the contract but whose value is volatile - a seat
+    /// like `[0-9]+[A-F]`, an id with a fixed format, a rendered date.
+    Matches(String),
     /// Present at all, whatever the value. For arguments whose VALUE is
     /// volatile - a rendered date, a generated idempotency key - but whose
     /// presence is the point.
@@ -122,6 +126,24 @@ impl ToolCallExpectation {
                         ));
                     }
                 }
+                (ArgMatch::Matches(pattern), Some(value)) => {
+                    // Compile per check: a Regex is not Clone/PartialEq/
+                    // Serialize, so the expectation stores the pattern
+                    // string and the grammar validated that it compiles.
+                    let regex = regex::Regex::new(pattern).map_err(|e| {
+                        format!(
+                            "{} has an invalid pattern `{pattern}`: {e}",
+                            expectation.path
+                        )
+                    })?;
+                    let got = render(value);
+                    if !regex.is_match(&got) {
+                        return Err(format!(
+                            "{} is {got}, which does not match /{pattern}/",
+                            expectation.path
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -132,6 +154,7 @@ fn describe(matcher: &ArgMatch) -> String {
     match matcher {
         ArgMatch::Equals(want) => format!("equal {want}"),
         ArgMatch::Contains(want) => format!("contain {want}"),
+        ArgMatch::Matches(pattern) => format!("match /{pattern}/"),
         ArgMatch::Exists => "exist".into(),
         ArgMatch::Absent => "be absent".into(),
     }
@@ -434,6 +457,36 @@ mod tests {
 
         let missing = expect_with("book", &[("passengers.1.name", ArgMatch::Exists)]);
         assert!(missing.check(&calls[0]).is_err());
+    }
+
+    /// `matches` is for arguments whose SHAPE is the contract: the value
+    /// changes every run but its format does not.
+    #[test]
+    fn matches_checks_a_value_against_a_regex() {
+        let calls = [call("book", r#"{"seat":"12A","id":"BK-99327"}"#)];
+        let ok = expect_with(
+            "book",
+            &[
+                ("seat", ArgMatch::Matches("^[0-9]+[A-F]$".into())),
+                ("id", ArgMatch::Matches(r"^BK-\d+$".into())),
+            ],
+        );
+        assert_eq!(ok.check(&calls[0]), Ok(()));
+
+        let wrong = expect_with("book", &[("seat", ArgMatch::Matches("^[A-F]+$".into()))]);
+        let err = wrong.check(&calls[0]).expect_err("12A is not all letters");
+        assert!(err.contains("does not match"), "{err}");
+        assert!(err.contains("12A"), "the failure shows the value: {err}");
+    }
+
+    /// A pattern that does not compile is reported, not a panic. The
+    /// grammar rejects it earlier, but the matcher must be total.
+    #[test]
+    fn an_invalid_pattern_is_an_error_not_a_panic() {
+        let calls = [call("book", r#"{"seat":"12A"}"#)];
+        let bad = expect_with("book", &[("seat", ArgMatch::Matches("[unclosed".into()))]);
+        let err = bad.check(&calls[0]).expect_err("bad regex");
+        assert!(err.contains("invalid pattern"), "{err}");
     }
 
     /// Volatile arguments: assert shape, not value. The cassette still
