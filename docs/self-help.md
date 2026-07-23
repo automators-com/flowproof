@@ -13,6 +13,11 @@ what the live screen offered) and **`env_from`** (how externally-minted
 test data reaches the spec). Together they let an agent author tests
 against systems it cannot see into — like SAP — by asking tools that can.
 
+This loop is for UI authoring. An `app: agent` flow (see
+[agent-testing.md](agent-testing.md)) never enters it: its steps
+(`prompt:`, `assert_tool_call:`, `assert_no_tool_call:`) are structured and
+either parse or raise a plain error, so there is nothing to clarify.
+
 ## The clarification payload
 
 When neither the deterministic rules nor the grounded model (one attempt +

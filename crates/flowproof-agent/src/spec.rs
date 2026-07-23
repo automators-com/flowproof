@@ -165,8 +165,11 @@ pub struct AgentSpec {
 #[serde(deny_unknown_fields)]
 pub struct ToolMock {
     pub name: String,
-    /// The tool's return value, any JSON. Absent means an empty object,
-    /// for a tool whose call matters but whose output the agent ignores.
+    /// The tool's return value, any JSON. Absent defaults to null, which
+    /// makes the entry a declaration only: the tool is NOT mocked, its real
+    /// result passes through unsubstituted (see `mocks_of` in the CLI's
+    /// agent_flow, which keeps only non-null results), and the entry still
+    /// validates an `assert_tool_call` target.
     #[serde(default)]
     pub result: serde_json::Value,
 }

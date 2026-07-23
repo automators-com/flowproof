@@ -19,6 +19,11 @@ external evaluation got right.
   produced. `app: api` runs those with no browser at all.
 - **Non-engineers need to read the tests.** A product owner can read a
   flow file and tell you whether it tests the right thing.
+- **You ship an AI agent and need its tool use tested deterministically.**
+  `app: agent` records an agent's tool-call trajectory once against a real
+  model and replays it with zero model calls, asserting which tools it
+  called and with what arguments (see [agent-testing.md](agent-testing.md)).
+  Neither Playwright nor Cypress addresses this.
 
 ## When to keep what you have
 
@@ -44,10 +49,10 @@ the honest ones about fit remain true.
 | Fresh Chromium per flow (4.3s floor) | **Fixed** — one browser per run, isolated context per flow |
 | No retries, no API-only flows | **Fixed** — `run --retries N`; `app: api` for UI-less suites |
 | Raw driver faults surfaced ("connection is closed") | **Improved** — web driver retries transient CDP faults once |
-| Network mocking (SSE, Stripe interception) | Not yet — on the roadmap |
+| Network mocking (SSE, Stripe interception) | **Fixed**: `mock:` answers matched requests inside the browser (status/body/headers), identically at record and replay |
 | Re-record on every UI change | Partly — `heal` proposes diffs; incremental re-record is planned |
 | Adds Python + Rust wheel to a JS monorepo | An npm distribution is planned; the wheel stays the primary SDK |
-| Needs a harness for seed/cleanup sequencing | A suite manifest with before/after hooks is planned |
+| Needs a harness for seed/cleanup sequencing | **Fixed**: `suite.yaml` gives shared env, a `before_each` seed/cleanup hook, and `env_from` for externally-minted data |
 
 ## What the evaluation validated (and we kept)
 

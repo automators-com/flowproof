@@ -165,6 +165,26 @@ no second capture, no nesting, no `*` or `/`. A capture may only be
 referenced in an ASSERTION - using one in an action is a parse error,
 because that would let the app under test steer execution.
 
+## Repeating a block (`foreach`)
+
+A block that repeats with one value changing collapses into a `foreach`
+values matrix. Scalars are referenced with `${each}`, mappings with
+`${each.<key>}`; a whole-string token keeps its YAML type, so
+`status: ${each.status}` stays a number. Expansion happens at parse time -
+each iteration becomes an ordinary recorded step, so a `foreach` adds no
+runtime construct to the trace.
+
+```yaml
+steps:
+  - foreach:
+      values: [mysql, mssql, oracle]
+      steps:
+        - assert_api:
+            request: POST ${API}/connections/test
+            body: { type: "${each}" }
+            status: 500
+```
+
 ## Driving an arbitrary Windows app (`app:` mapping, `window:` config)
 
 `app:` is normally a registry id (`web`, `calc`, `notepad`, `sap`, `vision`,
