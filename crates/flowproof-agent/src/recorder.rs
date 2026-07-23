@@ -15,7 +15,8 @@ use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 use crate::author::{author_step, AuthorContext};
 use crate::llm::{HttpModelClient, ModelClient};
 use crate::rules::{
-    resolve_step, ResolvedAction, RulesError, Target, TextMatch, NOTEPAD_EDITOR_ID,
+    resolve_step, AttrCheck, ResolvedAction, RulesError, ScrollTo, Target, TextMatch,
+    NOTEPAD_EDITOR_ID,
 };
 use crate::spec::FlowSpec;
 
@@ -483,6 +484,79 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 selector_ref: Some(0),
             }),
         ),
+        // Attribute assertion: new `expect` KEYS ride the open object, no
+        // schema change. `{"attribute": name, "value_equals": v[, "negate"]}`
+        // or `{"attribute": name, "present": bool}`.
+        ResolvedAction::AssertAttribute {
+            target,
+            name,
+            check,
+            timeout_ms,
+        } => {
+            let mut expect = match check {
+                AttrCheck::Value { value, negate } => {
+                    let mut e = serde_json::json!({ "attribute": name, "value_equals": value });
+                    if *negate {
+                        e["negate"] = serde_json::json!(true);
+                    }
+                    e
+                }
+                AttrCheck::Present(present) => {
+                    serde_json::json!({ "attribute": name, "present": present })
+                }
+            };
+            expect["timeout_ms"] = serde_json::json!(timeout_ms);
+            (
+                selectors_for(app, target, None),
+                Action::Assert(Assertion::ElementState {
+                    expect,
+                    selector_ref: Some(0),
+                }),
+            )
+        }
+        // Computed-style assertion: `{"style": prop, "value_equals": v[,
+        // "negate"]}`.
+        ResolvedAction::AssertStyle {
+            target,
+            prop,
+            value,
+            negate,
+            timeout_ms,
+        } => {
+            let mut expect = serde_json::json!({ "style": prop, "value_equals": value });
+            if *negate {
+                expect["negate"] = serde_json::json!(true);
+            }
+            expect["timeout_ms"] = serde_json::json!(timeout_ms);
+            (
+                selectors_for(app, target, None),
+                Action::Assert(Assertion::ElementState {
+                    expect,
+                    selector_ref: Some(0),
+                }),
+            )
+        }
+        // Scroll reuses the pre-existing `Action::Scroll` (no schema change).
+        // A page scroll (target None) has empty selectors, like a key press.
+        ResolvedAction::Scroll { target, to } => {
+            let mut params = serde_json::Map::new();
+            match to {
+                ScrollTo::IntoView => {
+                    params.insert("into_view".into(), true.into());
+                }
+                ScrollTo::Top => {
+                    params.insert("to".into(), "top".into());
+                }
+                ScrollTo::Bottom => {
+                    params.insert("to".into(), "bottom".into());
+                }
+            }
+            let selectors = match target {
+                Some(target) => selectors_for(app, target, None),
+                None => Vec::new(),
+            };
+            (selectors, Action::Scroll(params))
+        }
         // Out-of-band assertions: the connection NAME and the raw (ref-
         // bearing) query/url travel in the trace; credentials never do.
         ResolvedAction::AssertSql {
@@ -600,7 +674,12 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::Capture { target, .. }
         | ResolvedAction::AssertCaptured { target, .. }
         | ResolvedAction::AssertChecked { target, .. }
+        | ResolvedAction::AssertAttribute { target, .. }
+        | ResolvedAction::AssertStyle { target, .. }
         | ResolvedAction::AssertEnabled { target, .. } => target,
+        // A page scroll (target None) has no selector; a container/into-view
+        // scroll targets its element.
+        ResolvedAction::Scroll { target, .. } => return target.as_ref().and_then(target_selector),
         ResolvedAction::TypeFocused { .. }
         | ResolvedAction::PressKey { .. }
         | ResolvedAction::Navigate { .. }
@@ -792,6 +871,27 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
                 })
             }
         }
+        Action::Scroll(params) => {
+            let to = if params.get("into_view").and_then(|v| v.as_bool()) == Some(true) {
+                ScrollTo::IntoView
+            } else {
+                match params.get("to").and_then(|v| v.as_str()) {
+                    Some("bottom") => ScrollTo::Bottom,
+                    Some("top") => ScrollTo::Top,
+                    _ => return None,
+                }
+            };
+            let target = if step.selectors.is_empty() {
+                None
+            } else {
+                Some(target_from_selector(&step.selectors)?)
+            };
+            // Into-view is meaningless without an element.
+            if matches!(to, ScrollTo::IntoView) && target.is_none() {
+                return None;
+            }
+            Some(ResolvedAction::Scroll { target, to })
+        }
         Action::Assert(Assertion::ElementState {
             expect,
             selector_ref: _,
@@ -816,6 +916,37 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
                 return Some(ResolvedAction::AssertEnabled {
                     target,
                     enabled,
+                    timeout_ms,
+                });
+            }
+            // Attribute / style ride the same open object and also use
+            // `value_equals`, so they MUST decode before the text branch.
+            if let Some(name) = expect.get("attribute").and_then(|v| v.as_str()) {
+                let check = if let Some(present) = expect.get("present").and_then(|v| v.as_bool()) {
+                    AttrCheck::Present(present)
+                } else {
+                    let value = expect.get("value_equals").and_then(|v| v.as_str())?;
+                    let negate = expect.get("negate").and_then(|v| v.as_bool()) == Some(true);
+                    AttrCheck::Value {
+                        value: value.to_string(),
+                        negate,
+                    }
+                };
+                return Some(ResolvedAction::AssertAttribute {
+                    target,
+                    name: name.to_string(),
+                    check,
+                    timeout_ms,
+                });
+            }
+            if let Some(prop) = expect.get("style").and_then(|v| v.as_str()) {
+                let value = expect.get("value_equals").and_then(|v| v.as_str())?;
+                let negate = expect.get("negate").and_then(|v| v.as_bool()) == Some(true);
+                return Some(ResolvedAction::AssertStyle {
+                    target,
+                    prop: prop.to_string(),
+                    value: value.to_string(),
+                    negate,
                     timeout_ms,
                 });
             }
@@ -933,6 +1064,8 @@ impl ReuseCursor {
                     | ResolvedAction::AssertPresence { .. }
                     | ResolvedAction::AssertCount { .. }
                     | ResolvedAction::AssertEnabled { .. }
+                    | ResolvedAction::AssertAttribute { .. }
+                    | ResolvedAction::AssertStyle { .. }
                     | ResolvedAction::AssertSql { .. }
                     | ResolvedAction::AssertApi { .. }
             );
@@ -1058,6 +1191,63 @@ fn describe_capture(name: &str, captured: &str, offset: Option<f64>) -> String {
             if o < 0.0 { "-" } else { "+" },
             o.abs()
         ),
+    }
+}
+
+/// Map the rules-level `ScrollTo` onto the driver's, so the recorder is the
+/// one place the two enums meet (rules never depend on the driver crate).
+fn driver_scroll_to(to: ScrollTo) -> flowproof_driver::ScrollTo {
+    match to {
+        ScrollTo::Top => flowproof_driver::ScrollTo::Top,
+        ScrollTo::Bottom => flowproof_driver::ScrollTo::Bottom,
+        ScrollTo::IntoView => flowproof_driver::ScrollTo::IntoView,
+    }
+}
+
+/// `(expected, actual)` phrases for a failed attribute assertion. Both are
+/// complete phrases (the template names no subject), and the value form
+/// against a missing attribute says exactly that.
+fn describe_attribute(
+    name: &str,
+    check: &AttrCheck,
+    exists: bool,
+    actual: Option<&str>,
+) -> (String, String) {
+    if !exists {
+        return (
+            format!("attribute `{name}` to be checked"),
+            "element not found".to_string(),
+        );
+    }
+    match check {
+        AttrCheck::Value { value, negate } => {
+            let expected = if *negate {
+                format!("attribute `{name}` not '{value}'")
+            } else {
+                format!("attribute `{name}` = '{value}'")
+            };
+            let actual = match actual {
+                None => format!("the element has no `{name}` attribute"),
+                Some(v) => format!("attribute `{name}` = '{v}'"),
+            };
+            (expected, actual)
+        }
+        AttrCheck::Present(present) => {
+            let word = |p: bool| if p { "present" } else { "absent" };
+            (
+                format!("attribute `{name}` {}", word(*present)),
+                format!("attribute `{name}` {}", word(actual.is_some())),
+            )
+        }
+    }
+}
+
+/// The `expected` phrase for a failed style assertion.
+fn describe_style(prop: &str, value: &str, negate: bool) -> String {
+    if negate {
+        format!("style {prop} is not '{value}'")
+    } else {
+        format!("style {prop} is '{value}'")
     }
 }
 
@@ -1339,6 +1529,8 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 ResolvedAction::AssertText { .. }
                     | ResolvedAction::AssertPresence { .. }
                     | ResolvedAction::AssertEnabled { .. }
+                    | ResolvedAction::AssertAttribute { .. }
+                    | ResolvedAction::AssertStyle { .. }
             );
             if !is_assert {
                 if let Some(selector) = &selector {
@@ -1662,6 +1854,100 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                 intent: spec_step.intent().to_string(),
                                 expected: format!("element {}", state(*enabled)),
                                 actual: format!("element {}", state(!*enabled)),
+                            });
+                        }
+                        std::thread::sleep(ASSERT_POLL_INTERVAL);
+                    }
+                }
+                // Scroll executes instantly, no settle-wait: the next
+                // assertion auto-waits. The driver verifies it took (position
+                // reached the edge / rect within viewport), like set_checked.
+                ResolvedAction::Scroll { to, .. } => {
+                    driver.scroll(selector.as_ref(), driver_scroll_to(*to))?
+                }
+                ResolvedAction::AssertAttribute {
+                    name,
+                    check,
+                    timeout_ms,
+                    ..
+                } => {
+                    // Resolve any ${VAR} in a value form once; the message
+                    // keeps the raw reference.
+                    let wanted = match check {
+                        AttrCheck::Value { value, .. } => {
+                            Some(flowproof_trace::secret::resolve_refs(value)?)
+                        }
+                        AttrCheck::Present(_) => None,
+                    };
+                    let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
+                    loop {
+                        let exists = driver.element_exists(targeted())?;
+                        let actual = if exists {
+                            driver.element_attribute(targeted(), name)?
+                        } else {
+                            None
+                        };
+                        let holds = exists
+                            && match check {
+                                AttrCheck::Value { negate, .. } => {
+                                    flowproof_driver::attribute_value_matches(
+                                        wanted.as_deref().unwrap_or_default(),
+                                        *negate,
+                                        actual.as_deref(),
+                                    )
+                                }
+                                AttrCheck::Present(present) => actual.is_some() == *present,
+                            };
+                        if holds {
+                            break;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            let (expected, actual) =
+                                describe_attribute(name, check, exists, actual.as_deref());
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected,
+                                actual,
+                            });
+                        }
+                        std::thread::sleep(ASSERT_POLL_INTERVAL);
+                    }
+                }
+                ResolvedAction::AssertStyle {
+                    prop,
+                    value,
+                    negate,
+                    timeout_ms,
+                    ..
+                } => {
+                    let wanted = flowproof_trace::secret::resolve_refs(value)?;
+                    let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
+                    let mut last: Option<String> = None;
+                    loop {
+                        if driver.element_exists(targeted())? {
+                            let actual = driver.element_computed_style(targeted(), prop)?;
+                            match flowproof_driver::style_matches(prop, &wanted, *negate, &actual) {
+                                Ok(true) => break,
+                                Ok(false) => last = Some(actual),
+                                // An unparseable computed value (or a non-color
+                                // expected) cannot resolve by waiting.
+                                Err(why) => {
+                                    return Err(RecordError::AssertMismatch {
+                                        intent: spec_step.intent().to_string(),
+                                        expected: describe_style(prop, value, *negate),
+                                        actual: why,
+                                    })
+                                }
+                            }
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: describe_style(prop, value, *negate),
+                                actual: match last {
+                                    Some(seen) => format!("computed {prop} is '{seen}'"),
+                                    None => "element not found".to_string(),
+                                },
                             });
                         }
                         std::thread::sleep(ASSERT_POLL_INTERVAL);
@@ -2046,6 +2332,108 @@ steps:
                 assert_eq!(target, Target::text("Accounts"));
             }
             other => panic!("right_click must decode to ContextClick, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn records_attribute_style_and_scroll_against_the_mock() {
+        // The full record pass verifies each new form against the live
+        // (mock) app: a present-empty attribute, a canonical color, and a
+        // page scroll that the driver records.
+        let spec = FlowSpec::parse(
+            "\
+name: web checks
+app: web
+url: https://example.test
+steps:
+  - Scroll to the bottom
+  - assert: the \"css:#export\" has attribute download
+  - assert: the \"css:#amount\" style color is rgb(255, 0, 0)
+  - assert: the \"css:#amount\" style color is not green
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["#export", "#amount"])
+            .with_attribute("#export", "download", "")
+            .with_style("#amount", "color", "rgb(255, 0, 0)");
+        let out = std::env::temp_dir().join("flowproof-web-checks.trace.jsonl");
+        let summary = record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Rules,
+            None::<&mut CountingClient>,
+        )
+        .expect("records the flow");
+        assert_eq!(summary.steps, 4);
+        // The page scroll reached the driver with no target.
+        assert_eq!(driver.scrolls, vec![(None, "bottom".to_string())]);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn attribute_style_and_scroll_round_trip_for_reuse() {
+        // Every new action must decode back identically, or `record --reuse`
+        // would re-author a step it could have reused verbatim.
+        let cases = vec![
+            ResolvedAction::AssertAttribute {
+                target: Target::text("Link"),
+                name: "href".into(),
+                check: AttrCheck::Value {
+                    value: "/new".into(),
+                    negate: false,
+                },
+                timeout_ms: 10_000,
+            },
+            ResolvedAction::AssertAttribute {
+                target: Target::text("Docs"),
+                name: "target".into(),
+                check: AttrCheck::Value {
+                    value: "_self".into(),
+                    negate: true,
+                },
+                timeout_ms: 10_000,
+            },
+            ResolvedAction::AssertAttribute {
+                target: Target::text("Export"),
+                name: "download".into(),
+                check: AttrCheck::Present(true),
+                timeout_ms: 10_000,
+            },
+            ResolvedAction::AssertStyle {
+                target: Target::css(".amount"),
+                prop: "color".into(),
+                value: "rgb(255, 0, 0)".into(),
+                negate: false,
+                timeout_ms: 10_000,
+            },
+            ResolvedAction::AssertStyle {
+                target: Target::text("Amount"),
+                prop: "color".into(),
+                value: "green".into(),
+                negate: true,
+                timeout_ms: 10_000,
+            },
+            ResolvedAction::Scroll {
+                target: Some(Target::text("Transactions")),
+                to: ScrollTo::Bottom,
+            },
+            ResolvedAction::Scroll {
+                target: Some(Target::text("Grace Hopper")),
+                to: ScrollTo::IntoView,
+            },
+            ResolvedAction::Scroll {
+                target: None,
+                to: ScrollTo::Top,
+            },
+        ];
+        for action in cases {
+            let step = step_for(1, "step", "web", &action);
+            assert_eq!(
+                decode_step(&step),
+                Some(action.clone()),
+                "must round-trip: {action:?}"
+            );
         }
     }
 

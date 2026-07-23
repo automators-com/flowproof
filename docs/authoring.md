@@ -45,6 +45,9 @@ ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 | `Upload <path> into the [2nd ]"<label>" field` | sets a file on a file-chooser input (may be hidden behind a styled button); relative paths resolve against the working directory at execution |
 | `Upload <path> into the <id> field` | |
 | `Click [the [2nd ]]"<text>"` | tabs, links, menu options, rows |
+| `Scroll the [2nd ]"<target>" to the [top\|bottom]` | scroll the TARGET as a container to an edge (the `the` before top/bottom is optional). Web only |
+| `Scroll [the [2nd ]]"<target>" into view` | bring an in-DOM element into the viewport. Web only |
+| `Scroll to the [top\|bottom]` | scroll the PAGE itself (no target, like `Press <Key>`). Web only. Scroll is instant with no settle-wait - the next assertion auto-waits - and the step verifies the scroll took (edge reached / rect in viewport) |
 | `Press <Key>` / `Press <Mod>+<Key>` | `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `Space`, arrows, `Home`/`End`, `PageUp`/`PageDown`; chords `Control+V`, `Alt+Shift+Backspace`. `Mod` (aliases `CtrlOrMeta`, `ControlOrMeta`) is the **portable** primary modifier: stored neutrally in the trace and resolved at execution — Meta on macOS, Ctrl elsewhere — so `Press Mod+K` recorded on a Mac replays on Linux CI |
 | `Go to <path-or-URL>` / `Navigate to <path-or-URL>` | relative paths resolve against the flow URL's origin; on SAP this is transaction navigation (`Go to /nVA01`) |
 | `Reload the page` | web |
@@ -78,6 +81,9 @@ append `within <N>s` to any form to change the bound.
 | `the [2nd ]"<target>" is enabled` / `is disabled` | platform enabled state (`disabled`/`aria-disabled` on web, UIA IsEnabled on desktop) |
 | `the [2nd ]"<target>" checkbox is checked` / `is not checked` | checkbox state, read from the `checked` property or `aria-checked`. A target that is not a checkbox fails as exactly that, not as "wrong state" |
 | `the "<target>" is empty` / `is not empty` | the target's trimmed visible text (or input value) is empty. A first-class predicate: `shows ""` cannot express it |
+| `the [2nd ]"<target>" attribute <name> is <value>` / `is not <value>` | a DOM attribute's value, compared EXACT and case-SENSITIVE (attributes are machine strings - no text-matching ladder, no substring). `<name>` is case-insensitive. `is not` passes when the attribute is ABSENT or has a different value. Missing and empty are distinct. `${VAR}` resolves in the value; a `${captured.x}` there is a parse error (captures compare against visible text with `shows`). Web only |
+| `the [2nd ]"<target>" has attribute <name>` / `does not have attribute <name>` | attribute PRESENCE only (`download=""` counts as present). Web only |
+| `the [2nd ]"<target>" style <prop> is <value>` / `is not <value>` | a COMPUTED CSS value. `<prop>` is a closed allowlist: `color`, `background-color`, `text-transform` (anything else is a parse error - geometry belongs in `assert_screenshot`, visibility in `is visible`). Colors compare CANONICALLY (named / `#rgb` / `#rrggbb` / `rgb()` / `rgba()` all parse to RGBA); `text-transform` compares its keyword case-insensitively. `style`, not `css`: `css:` is the selector escape hatch. Web only |
 | `the "<column>" column of the row containing "<anchor>" <predicate>` | a table cell, by IDENTITY. See below |
 
 Two different questions share the word "times", and picking the wrong one
@@ -129,9 +135,11 @@ identifies the row — never by position:
 ```
 
 The same cell target composes with every predicate (`shows`, `is empty`,
-`is [not] visible`, `is enabled`, `checkbox is [not] checked`) and every
-action (`Click`, `Type … into`, `Clear`, `Check`). `in the row containing`
-also works — the of/in coin flip is one you should not have to remember.
+`is [not] visible`, `is enabled`, `checkbox is [not] checked`, `attribute
+<name> is [not] <value>`, `has|does not have attribute <name>`, `style <prop>
+is [not] <value>`) and every action (`Click`, `Type … into`, `Clear`,
+`Check`, `Scroll`). `in the row containing` also works - the of/in coin flip
+is one you should not have to remember.
 
 Why identity, not `the 2nd ".column-status"`: an ordinal encodes position,
 so inserting a row or reordering a column silently makes the assertion hit
@@ -147,8 +155,10 @@ silent wrong guess, and both point at the `css:` escape hatch: a row anchor
 that matches more than one row (`use a more specific anchor`), and a
 duplicate column header. **Known boundary:** a virtualized grid that keeps
 off-screen rows out of the DOM (AG Grid's row virtualization) can only be
-addressed for rows that are rendered; scroll the anchor row into view
-first, or use `css:` against the grid's own row API.
+addressed for rows that are rendered; bring the anchor row in with `Scroll
+"<anchor>" into view` first (or use `css:` against the grid's own row API),
+then the cell predicates - `shows`, `attribute <name> is <value>`, `style
+<prop> is <value>`, and the rest - resolve it.
 
 Computed assertions answer "did this change by the right amount?", which a
 literal cannot express because the starting value is only known at run time:

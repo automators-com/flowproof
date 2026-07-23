@@ -9,7 +9,9 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector, WebSession};
+use flowproof_driver::{
+    AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector, WebSession,
+};
 use headless_chrome::browser::tab::{ModifierKey, Tab};
 use headless_chrome::protocol::cdp::Target::CreateTarget;
 use headless_chrome::protocol::cdp::{Emulation, Input, Network, Page};
@@ -583,6 +585,15 @@ impl WebAppDriver {
     }
 }
 
+/// "bottom" or "top", for a scroll failure message.
+fn edge_word(to_bottom: bool) -> &'static str {
+    if to_bottom {
+        "bottom"
+    } else {
+        "top"
+    }
+}
+
 /// Faults of the CDP transport itself (dead websocket, dropped event) —
 /// distinct from "element not found": worth one retry with a fresh handle.
 fn is_transport_fault(message: &str) -> bool {
@@ -1146,6 +1157,150 @@ impl AppDriver for WebAppDriver {
             },
         )?;
         Ok(value.value.and_then(|v| v.as_bool()).unwrap_or(true))
+    }
+
+    fn element_attribute(
+        &mut self,
+        selector: &UiaSelector,
+        name: &str,
+    ) -> Result<Option<String>, DriverError> {
+        let locator = Self::locator(selector)?;
+        // `getAttribute` is ASCII case-insensitive for HTML elements and
+        // returns null for a missing attribute (-> None) but "" for a present
+        // empty one (`download=""` -> Some("")); that distinction is the whole
+        // point of `has attribute` vs a value comparison.
+        let value = self.with_element(
+            &locator,
+            &format!("reading attribute '{name}' of [{selector}]"),
+            |element| {
+                element.call_js_fn(
+                    "function(n) { return this.getAttribute(n); }",
+                    vec![serde_json::json!(name)],
+                    false,
+                )
+            },
+        )?;
+        Ok(value.value.and_then(|v| v.as_str().map(str::to_string)))
+    }
+
+    fn element_computed_style(
+        &mut self,
+        selector: &UiaSelector,
+        prop: &str,
+    ) -> Result<String, DriverError> {
+        let locator = Self::locator(selector)?;
+        let value = self.with_element(
+            &locator,
+            &format!("reading computed style '{prop}' of [{selector}]"),
+            |element| {
+                element.call_js_fn(
+                    "function(p) { return getComputedStyle(this).getPropertyValue(p).trim(); }",
+                    vec![serde_json::json!(prop)],
+                    false,
+                )
+            },
+        )?;
+        Ok(value
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
+    }
+
+    fn scroll(&mut self, selector: Option<&UiaSelector>, to: ScrollTo) -> Result<(), DriverError> {
+        // Instant scroll, no settle-wait: the next assertion auto-waits. Every
+        // form verifies the scroll took (position reached the edge, or the
+        // rect is within the viewport), so a scroll that did nothing fails.
+        match selector {
+            // The page itself: `Scroll to the top|bottom`.
+            None => {
+                let to_bottom = matches!(to, ScrollTo::Bottom);
+                let ok = self
+                    .tab()?
+                    .evaluate(
+                        &format!(
+                            r#"(() => {{
+                                const el = document.scrollingElement || document.documentElement;
+                                el.scrollTop = {target};
+                                const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+                                const atTop = el.scrollTop <= 2;
+                                return {which};
+                            }})()"#,
+                            target = if to_bottom { "el.scrollHeight" } else { "0" },
+                            which = if to_bottom { "atBottom" } else { "atTop" },
+                        ),
+                        false,
+                    )
+                    .map_err(|e| web_err("scrolling the page", e))?;
+                if ok.value.and_then(|v| v.as_bool()) != Some(true) {
+                    return Err(DriverError::Browser(
+                        "the page did not reach the requested edge".into(),
+                    ));
+                }
+                Ok(())
+            }
+            Some(sel) => {
+                let locator = Self::locator(sel)?;
+                match to {
+                    // Bring an in-DOM element into the viewport.
+                    ScrollTo::IntoView => {
+                        let value = self.with_element(
+                            &locator,
+                            &format!("scrolling [{sel}] into view"),
+                            |element| {
+                                element.scroll_into_view()?;
+                                element.call_js_fn(
+                                    r#"function() {
+                                        const r = this.getBoundingClientRect();
+                                        const vw = window.innerWidth
+                                            || document.documentElement.clientWidth;
+                                        const vh = window.innerHeight
+                                            || document.documentElement.clientHeight;
+                                        return r.bottom > 0 && r.right > 0
+                                            && r.top < vh && r.left < vw;
+                                    }"#,
+                                    vec![],
+                                    false,
+                                )
+                            },
+                        )?;
+                        if value.value.and_then(|v| v.as_bool()) != Some(true) {
+                            return Err(DriverError::Browser(format!(
+                                "[{sel}] is not in the viewport after scrolling"
+                            )));
+                        }
+                        Ok(())
+                    }
+                    // Scroll the element AS A CONTAINER to an edge.
+                    _ => {
+                        let to_bottom = matches!(to, ScrollTo::Bottom);
+                        let value = self.with_element(
+                            &locator,
+                            &format!("scrolling [{sel}] to the {}", edge_word(to_bottom)),
+                            |element| {
+                                element.call_js_fn(
+                                    r#"function(toBottom) {
+                                        this.scrollTop = toBottom ? this.scrollHeight : 0;
+                                        const atBottom = this.scrollTop + this.clientHeight
+                                            >= this.scrollHeight - 2;
+                                        const atTop = this.scrollTop <= 2;
+                                        return toBottom ? atBottom : atTop;
+                                    }"#,
+                                    vec![serde_json::json!(to_bottom)],
+                                    false,
+                                )
+                            },
+                        )?;
+                        if value.value.and_then(|v| v.as_bool()) != Some(true) {
+                            return Err(DriverError::Browser(format!(
+                                "[{sel}] did not reach the {}",
+                                edge_word(to_bottom)
+                            )));
+                        }
+                        Ok(())
+                    }
+                }
+            }
+        }
     }
 
     fn element_receives_events(

@@ -171,6 +171,16 @@ impl std::fmt::Display for KeyMod {
     }
 }
 
+/// Where a `Scroll` step moves the surface. `Top`/`Bottom` scroll a
+/// container (or the page, when the target is absent) to its edge; `IntoView`
+/// brings an in-DOM element into the viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollTo {
+    Top,
+    Bottom,
+    IntoView,
+}
+
 /// Drives a single application window through UIA.
 pub trait AppDriver {
     /// Record-time hints for a resolved table cell (#58). Only the web
@@ -284,6 +294,53 @@ pub trait AppDriver {
     fn set_checked(&mut self, _selector: &UiaSelector, _checked: bool) -> Result<(), DriverError> {
         Err(DriverError::Uia(
             "set_checked is not supported by this driver".into(),
+        ))
+    }
+
+    /// The raw value of the element's `<name>` DOM attribute, ASCII
+    /// case-insensitively (`getAttribute`). `None` = the attribute is ABSENT;
+    /// `Some("")` = present with an empty value (`download=""`) - the two are
+    /// distinct answers and a value assertion needs both. Only the web
+    /// adapter has DOM attributes; the default refuses with a reason rather
+    /// than inventing an absence, exactly like `current_url` (the `page url
+    /// is` precedent).
+    fn element_attribute(
+        &mut self,
+        _selector: &UiaSelector,
+        _name: &str,
+    ) -> Result<Option<String>, DriverError> {
+        Err(DriverError::Uia(
+            "this app's elements have no DOM attributes: attribute assertions are for web flows"
+                .into(),
+        ))
+    }
+
+    /// The element's COMPUTED value for a single CSS property (`color`,
+    /// `background-color`, `text-transform`), read via `getComputedStyle`.
+    /// Web-only: the default refuses with a reason - a UIA/SAP/vision element
+    /// has no computed style - rather than inventing a value.
+    fn element_computed_style(
+        &mut self,
+        _selector: &UiaSelector,
+        _prop: &str,
+    ) -> Result<String, DriverError> {
+        Err(DriverError::Uia(
+            "this app's elements have no computed style: style assertions are for web flows".into(),
+        ))
+    }
+
+    /// Scroll the element matching `selector` (or the page, when `selector`
+    /// is `None`) per `to`. Instant, with no settle-wait: the next assertion
+    /// auto-waits. Implementations verify the scroll took (position reached
+    /// the edge, or the element's rect is within the viewport), like
+    /// `set_checked`, so a scroll that did nothing fails the step.
+    fn scroll(
+        &mut self,
+        _selector: Option<&UiaSelector>,
+        _to: ScrollTo,
+    ) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "scrolling is not supported by this driver (web flows only)".into(),
         ))
     }
 
@@ -673,6 +730,287 @@ pub fn numeric_value(text: &str) -> Option<f64> {
     })
 }
 
+/// The CLOSED allowlist of CSS properties a `style` assertion may name.
+/// Anything else is a parse error - `style` is not a generic css escape
+/// hatch (that is `css:` on the selector). Geometry belongs in
+/// `assert_screenshot`, visibility in `is visible`.
+pub const STYLE_PROPS: [&str; 3] = ["color", "background-color", "text-transform"];
+
+/// A `style <prop>` value assertion. `color`/`background-color` compare
+/// CANONICALLY (parse both sides to RGBA); `text-transform` compares its
+/// keyword ASCII case-insensitively. Shared by record and replay so the two
+/// executions cannot disagree - the same reason `url_matches` and
+/// `numeric_value` live here.
+///
+/// `Err` is a hard, no-wait failure that names what was seen: an unparseable
+/// COMPUTED color cannot become a color by waiting (it fails regardless of
+/// negation), and a non-color EXPECTED value is a spec mistake.
+pub fn style_matches(
+    prop: &str,
+    expected: &str,
+    negate: bool,
+    actual: &str,
+) -> Result<bool, String> {
+    if prop.eq_ignore_ascii_case("color") || prop.eq_ignore_ascii_case("background-color") {
+        let seen = parse_css_color(actual).ok_or_else(|| {
+            format!("the computed {prop} is '{actual}', which is not a color value")
+        })?;
+        let want = parse_css_color(expected)
+            .ok_or_else(|| format!("'{expected}' is not a color value"))?;
+        let eq = seen == want;
+        return Ok(if negate { !eq } else { eq });
+    }
+    // text-transform (and any future keyword prop): a plain keyword compare.
+    let eq = actual.trim().eq_ignore_ascii_case(expected.trim());
+    Ok(if negate { !eq } else { eq })
+}
+
+/// `attribute <name> is [not] <value>`: EXACT, case-SENSITIVE (attributes are
+/// machine strings - no text ladder, no substring). An absent attribute never
+/// equals a value, so the negative form passes when the attribute is missing
+/// OR present with a different value. Shared by record and replay.
+pub fn attribute_value_matches(expected: &str, negate: bool, actual: Option<&str>) -> bool {
+    let eq = actual == Some(expected);
+    if negate {
+        !eq
+    } else {
+        eq
+    }
+}
+
+/// Parse a CSS color to `[r, g, b, a]` (each 0..=255). Understands named CSS
+/// colors, `#rgb`/`#rrggbb` hex, and `rgb()`/`rgba()` (comma- or
+/// space-separated, alpha as a 0..1 float or a percentage). Two colors are
+/// equal iff their RGBA quadruples are equal, so `red`, `#f00`, `#ff0000` and
+/// `rgb(255, 0, 0)` all match the computed `rgb(255, 0, 0)`.
+pub fn parse_css_color(input: &str) -> Option<[u8; 4]> {
+    let s = input.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        return parse_hex_color(hex);
+    }
+    let lower = s.to_ascii_lowercase();
+    if let Some(inner) = func_body(&lower, "rgba").or_else(|| func_body(&lower, "rgb")) {
+        return parse_rgb_components(inner);
+    }
+    named_css_color(&lower)
+}
+
+/// The `…` inside `name(…)`, trimmed - or `None` if `s` is not that call.
+fn func_body<'a>(s: &'a str, name: &str) -> Option<&'a str> {
+    s.strip_prefix(name)?
+        .trim_start()
+        .strip_prefix('(')?
+        .strip_suffix(')')
+        .map(str::trim)
+}
+
+fn parse_hex_color(hex: &str) -> Option<[u8; 4]> {
+    let bytes = hex.as_bytes();
+    let hx = |c: u8| (c as char).to_digit(16);
+    match bytes.len() {
+        // #rgb -> each nibble doubled.
+        3 => {
+            let r = hx(bytes[0])? as u8;
+            let g = hx(bytes[1])? as u8;
+            let b = hx(bytes[2])? as u8;
+            Some([r * 17, g * 17, b * 17, 255])
+        }
+        // #rrggbb.
+        6 => {
+            let pair = |i: usize| Some((hx(bytes[i])? * 16 + hx(bytes[i + 1])?) as u8);
+            Some([pair(0)?, pair(2)?, pair(4)?, 255])
+        }
+        _ => None,
+    }
+}
+
+fn parse_rgb_components(inner: &str) -> Option<[u8; 4]> {
+    // Accept both the legacy `r, g, b[, a]` and the CSS4 space form
+    // `r g b / a`: split on commas, whitespace, and the alpha slash.
+    let parts: Vec<&str> = inner
+        .split(|c: char| c == ',' || c == '/' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if parts.len() != 3 && parts.len() != 4 {
+        return None;
+    }
+    let channel = |t: &str| -> Option<u8> {
+        if let Some(pct) = t.strip_suffix('%') {
+            let v: f64 = pct.trim().parse().ok()?;
+            Some((v / 100.0 * 255.0).round().clamp(0.0, 255.0) as u8)
+        } else {
+            let v: f64 = t.parse().ok()?;
+            Some(v.round().clamp(0.0, 255.0) as u8)
+        }
+    };
+    let r = channel(parts[0])?;
+    let g = channel(parts[1])?;
+    let b = channel(parts[2])?;
+    let a = match parts.get(3) {
+        None => 255u8,
+        Some(t) => {
+            if let Some(pct) = t.strip_suffix('%') {
+                let v: f64 = pct.trim().parse().ok()?;
+                (v / 100.0 * 255.0).round().clamp(0.0, 255.0) as u8
+            } else {
+                let v: f64 = t.parse().ok()?;
+                (v * 255.0).round().clamp(0.0, 255.0) as u8
+            }
+        }
+    };
+    Some([r, g, b, a])
+}
+
+/// The CSS named colors (extended keyword set), each as `[r, g, b]`. Only the
+/// EXPECTED side of a comparison is ever a name - `getComputedStyle` returns
+/// `rgb()`/`rgba()` - but a spec writes `green`, so the mapping must be here.
+fn named_css_color(name: &str) -> Option<[u8; 4]> {
+    let rgb: [u8; 3] = match name {
+        "transparent" => return Some([0, 0, 0, 0]),
+        "black" => [0, 0, 0],
+        "silver" => [192, 192, 192],
+        "gray" | "grey" => [128, 128, 128],
+        "white" => [255, 255, 255],
+        "maroon" => [128, 0, 0],
+        "red" => [255, 0, 0],
+        "purple" => [128, 0, 128],
+        "fuchsia" | "magenta" => [255, 0, 255],
+        "green" => [0, 128, 0],
+        "lime" => [0, 255, 0],
+        "olive" => [128, 128, 0],
+        "yellow" => [255, 255, 0],
+        "navy" => [0, 0, 128],
+        "blue" => [0, 0, 255],
+        "teal" => [0, 128, 128],
+        "aqua" | "cyan" => [0, 255, 255],
+        "orange" => [255, 165, 0],
+        "aliceblue" => [240, 248, 255],
+        "antiquewhite" => [250, 235, 215],
+        "aquamarine" => [127, 255, 212],
+        "azure" => [240, 255, 255],
+        "beige" => [245, 245, 220],
+        "bisque" => [255, 228, 196],
+        "blanchedalmond" => [255, 235, 205],
+        "blueviolet" => [138, 43, 226],
+        "brown" => [165, 42, 42],
+        "burlywood" => [222, 184, 135],
+        "cadetblue" => [95, 158, 160],
+        "chartreuse" => [127, 255, 0],
+        "chocolate" => [210, 105, 30],
+        "coral" => [255, 127, 80],
+        "cornflowerblue" => [100, 149, 237],
+        "cornsilk" => [255, 248, 220],
+        "crimson" => [220, 20, 60],
+        "darkblue" => [0, 0, 139],
+        "darkcyan" => [0, 139, 139],
+        "darkgoldenrod" => [184, 134, 11],
+        "darkgray" | "darkgrey" => [169, 169, 169],
+        "darkgreen" => [0, 100, 0],
+        "darkkhaki" => [189, 183, 107],
+        "darkmagenta" => [139, 0, 139],
+        "darkolivegreen" => [85, 107, 47],
+        "darkorange" => [255, 140, 0],
+        "darkorchid" => [153, 50, 204],
+        "darkred" => [139, 0, 0],
+        "darksalmon" => [233, 150, 122],
+        "darkseagreen" => [143, 188, 143],
+        "darkslateblue" => [72, 61, 139],
+        "darkslategray" | "darkslategrey" => [47, 79, 79],
+        "darkturquoise" => [0, 206, 209],
+        "darkviolet" => [148, 0, 211],
+        "deeppink" => [255, 20, 147],
+        "deepskyblue" => [0, 191, 255],
+        "dimgray" | "dimgrey" => [105, 105, 105],
+        "dodgerblue" => [30, 144, 255],
+        "firebrick" => [178, 34, 34],
+        "floralwhite" => [255, 250, 240],
+        "forestgreen" => [34, 139, 34],
+        "gainsboro" => [220, 220, 220],
+        "ghostwhite" => [248, 248, 255],
+        "gold" => [255, 215, 0],
+        "goldenrod" => [218, 165, 32],
+        "greenyellow" => [173, 255, 47],
+        "honeydew" => [240, 255, 240],
+        "hotpink" => [255, 105, 180],
+        "indianred" => [205, 92, 92],
+        "indigo" => [75, 0, 130],
+        "ivory" => [255, 255, 240],
+        "khaki" => [240, 230, 140],
+        "lavender" => [230, 230, 250],
+        "lavenderblush" => [255, 240, 245],
+        "lawngreen" => [124, 252, 0],
+        "lemonchiffon" => [255, 250, 205],
+        "lightblue" => [173, 216, 230],
+        "lightcoral" => [240, 128, 128],
+        "lightcyan" => [224, 255, 255],
+        "lightgoldenrodyellow" => [250, 250, 210],
+        "lightgray" | "lightgrey" => [211, 211, 211],
+        "lightgreen" => [144, 238, 144],
+        "lightpink" => [255, 182, 193],
+        "lightsalmon" => [255, 160, 122],
+        "lightseagreen" => [32, 178, 170],
+        "lightskyblue" => [135, 206, 250],
+        "lightslategray" | "lightslategrey" => [119, 136, 153],
+        "lightsteelblue" => [176, 196, 222],
+        "lightyellow" => [255, 255, 224],
+        "limegreen" => [50, 205, 50],
+        "linen" => [250, 240, 230],
+        "mediumaquamarine" => [102, 205, 170],
+        "mediumblue" => [0, 0, 205],
+        "mediumorchid" => [186, 85, 211],
+        "mediumpurple" => [147, 112, 219],
+        "mediumseagreen" => [60, 179, 113],
+        "mediumslateblue" => [123, 104, 238],
+        "mediumspringgreen" => [0, 250, 154],
+        "mediumturquoise" => [72, 209, 204],
+        "mediumvioletred" => [199, 21, 133],
+        "midnightblue" => [25, 25, 112],
+        "mintcream" => [245, 255, 250],
+        "mistyrose" => [255, 228, 225],
+        "moccasin" => [255, 228, 181],
+        "navajowhite" => [255, 222, 173],
+        "oldlace" => [253, 245, 230],
+        "olivedrab" => [107, 142, 35],
+        "orangered" => [255, 69, 0],
+        "orchid" => [218, 112, 214],
+        "palegoldenrod" => [238, 232, 170],
+        "palegreen" => [152, 251, 152],
+        "paleturquoise" => [175, 238, 238],
+        "palevioletred" => [219, 112, 147],
+        "papayawhip" => [255, 239, 213],
+        "peachpuff" => [255, 218, 185],
+        "peru" => [205, 133, 63],
+        "pink" => [255, 192, 203],
+        "plum" => [221, 160, 221],
+        "powderblue" => [176, 224, 230],
+        "rosybrown" => [188, 143, 143],
+        "royalblue" => [65, 105, 225],
+        "saddlebrown" => [139, 69, 19],
+        "salmon" => [250, 128, 114],
+        "sandybrown" => [244, 164, 96],
+        "seagreen" => [46, 139, 87],
+        "seashell" => [255, 245, 238],
+        "sienna" => [160, 82, 45],
+        "skyblue" => [135, 206, 235],
+        "slateblue" => [106, 90, 205],
+        "slategray" | "slategrey" => [112, 128, 144],
+        "snow" => [255, 250, 250],
+        "springgreen" => [0, 255, 127],
+        "steelblue" => [70, 130, 180],
+        "tan" => [210, 180, 140],
+        "thistle" => [216, 191, 216],
+        "tomato" => [255, 99, 71],
+        "turquoise" => [64, 224, 208],
+        "violet" => [238, 130, 238],
+        "wheat" => [245, 222, 179],
+        "whitesmoke" => [245, 245, 245],
+        "yellowgreen" => [154, 205, 50],
+        "rebeccapurple" => [102, 51, 153],
+        _ => return None,
+    };
+    Some([rgb[0], rgb[1], rgb[2], 255])
+}
+
 /// How many times `expected` occurs in `text`, under the same widening the
 /// count matcher applies: a nonzero case-sensitive count IS the count, and
 /// the lowercased count is consulted only when the case-sensitive one found
@@ -857,6 +1195,29 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn set_checked(&mut self, selector: &UiaSelector, checked: bool) -> Result<(), DriverError> {
         (**self).set_checked(selector, checked)
+    }
+
+    // Must forward explicitly, like `debug_bundle` below: a boxed driver
+    // otherwise hits the trait DEFAULT and reports the web adapter's DOM
+    // capabilities as unsupported.
+    fn element_attribute(
+        &mut self,
+        selector: &UiaSelector,
+        name: &str,
+    ) -> Result<Option<String>, DriverError> {
+        (**self).element_attribute(selector, name)
+    }
+
+    fn element_computed_style(
+        &mut self,
+        selector: &UiaSelector,
+        prop: &str,
+    ) -> Result<String, DriverError> {
+        (**self).element_computed_style(selector, prop)
+    }
+
+    fn scroll(&mut self, selector: Option<&UiaSelector>, to: ScrollTo) -> Result<(), DriverError> {
+        (**self).scroll(selector, to)
     }
 
     fn current_url(&mut self) -> Result<String, DriverError> {
@@ -1419,6 +1780,70 @@ mod stub_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colors_compare_canonically() {
+        // Every spelling of pure red parses to the same RGBA as the computed
+        // `rgb(255, 0, 0)`, so a spec may write any of them.
+        let red = parse_css_color("rgb(255, 0, 0)").expect("computed red");
+        for spelling in [
+            "red",
+            "#f00",
+            "#ff0000",
+            "#FF0000",
+            "rgb(255,0,0)",
+            "rgba(255, 0, 0, 1)",
+        ] {
+            assert_eq!(parse_css_color(spelling), Some(red), "'{spelling}' == red");
+        }
+        // Different colors are not equal.
+        assert_ne!(parse_css_color("green"), parse_css_color("lime"));
+        assert_eq!(parse_css_color("green"), Some([0, 128, 0, 255]));
+        // Alpha participates: translucent red is not opaque red.
+        assert_ne!(parse_css_color("rgba(255,0,0,0.5)"), Some(red));
+        // Non-colors do not parse.
+        assert_eq!(parse_css_color("not-a-color"), None);
+        assert_eq!(parse_css_color("100px"), None);
+    }
+
+    #[test]
+    fn style_matches_colors_and_keywords() {
+        // Canonical color equality, both polarities.
+        assert_eq!(
+            style_matches("color", "red", false, "rgb(255, 0, 0)"),
+            Ok(true)
+        );
+        assert_eq!(
+            style_matches("color", "green", true, "rgb(255, 0, 0)"),
+            Ok(true)
+        );
+        assert_eq!(
+            style_matches("color", "green", false, "rgb(255, 0, 0)"),
+            Ok(false)
+        );
+        // text-transform is a case-insensitive keyword compare.
+        assert_eq!(
+            style_matches("text-transform", "UPPERCASE", false, "uppercase"),
+            Ok(true)
+        );
+        // An unparseable computed color fails naming what was seen, whatever
+        // the polarity.
+        assert!(style_matches("color", "red", false, "chartreuseish").is_err());
+        assert!(style_matches("color", "red", true, "chartreuseish").is_err());
+    }
+
+    #[test]
+    fn attribute_value_matcher_is_exact_and_case_sensitive() {
+        // Exact, case-sensitive: no text ladder.
+        assert!(attribute_value_matches("/new", false, Some("/new")));
+        assert!(!attribute_value_matches("/new", false, Some("/NEW")));
+        // A missing attribute never equals a value...
+        assert!(!attribute_value_matches("/new", false, None));
+        // ...so the negative form passes when absent OR different.
+        assert!(attribute_value_matches("/new", true, None));
+        assert!(attribute_value_matches("/new", true, Some("/old")));
+        assert!(!attribute_value_matches("/new", true, Some("/new")));
+    }
 
     #[test]
     fn web_mock_body_conventions() {

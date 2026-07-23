@@ -162,6 +162,31 @@ pub enum ResolvedAction {
         enabled: bool,
         timeout_ms: u64,
     },
+    /// `the "<target>" attribute <name> is [not] <value>` /
+    /// `has|does not have attribute <name>`. Web-only at execution; other
+    /// adapters fail naming that their elements have no DOM attributes.
+    AssertAttribute {
+        target: Target,
+        name: String,
+        check: AttrCheck,
+        timeout_ms: u64,
+    },
+    /// `the "<target>" style <prop> is [not] <value>`. `prop` is one of the
+    /// closed allowlist (`color`, `background-color`, `text-transform`);
+    /// colors compare canonically. Web-only at execution.
+    AssertStyle {
+        target: Target,
+        prop: String,
+        value: String,
+        negate: bool,
+        timeout_ms: u64,
+    },
+    /// `Scroll …` - move a container/element/page instantly. `target: None`
+    /// scrolls the page itself (empty selectors, like `Press <Key>`).
+    Scroll {
+        target: Option<Target>,
+        to: ScrollTo,
+    },
     /// Assert that an element is (or is not) present on screen — the
     /// deterministic reading of "is visible" / "is not visible".
     AssertPresence {
@@ -215,6 +240,30 @@ pub enum TextMatch {
     /// cannot express it - empty expected text is rejected and
     /// `contains ""` is vacuously true.
     Empty(bool),
+}
+
+/// What an attribute assertion checks. Value comparison is EXACT and
+/// case-SENSITIVE (attributes are machine strings, not visible text - no
+/// matching ladder, no substring); presence distinguishes a missing attribute
+/// from a present-but-empty one (`download=""` counts as present).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttrCheck {
+    /// `attribute <name> is <value>` (`negate=false`), `is not <value>`
+    /// (`negate=true`, passes when the attribute is ABSENT or has a DIFFERENT
+    /// value).
+    Value { value: String, negate: bool },
+    /// `has attribute <name>` (`true`) / `does not have attribute <name>`
+    /// (`false`).
+    Present(bool),
+}
+
+/// Where a `Scroll` step moves the surface (mirrors the driver's `ScrollTo`,
+/// which the recorder maps onto - rules never depend on the driver crate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollTo {
+    Top,
+    Bottom,
+    IntoView,
 }
 
 /// A capture name: `[a-z][a-z0-9_]*`. Deliberately narrow so a name can
@@ -507,6 +556,24 @@ fn with_nth(nth: Option<u32>, target: Target) -> Target {
     }
 }
 
+/// `to the bottom` / `to bottom` / `to the top` / `to top` -> the edge (the
+/// article is optional). Used for both the page form (`Scroll to the bottom`)
+/// and the container form (`Scroll the "List" to the top`).
+fn parse_scroll_edge(s: &str) -> Option<ScrollTo> {
+    let rest = strip_prefix_ci(s.trim(), "to ")?.trim_start();
+    let rest = strip_prefix_ci(rest, "the ")
+        .map(str::trim_start)
+        .unwrap_or(rest);
+    let rest = rest.trim_end();
+    if rest.eq_ignore_ascii_case("bottom") {
+        Some(ScrollTo::Bottom)
+    } else if rest.eq_ignore_ascii_case("top") {
+        Some(ScrollTo::Top)
+    } else {
+        None
+    }
+}
+
 /// The PROVENANCE-AGNOSTIC assertion grammar, shared by every app profile.
 /// Forms describe WHAT to check; how each target resolves is the adapter's
 /// business (surface = page / window subtree / OCR frame; `<id>` = DOM id /
@@ -758,6 +825,133 @@ mod assertions {
                             timeout_ms,
                         }]);
                     }
+                    // `has attribute <name>` / `does not have attribute
+                    // <name>` - presence only. `download=""` counts as
+                    // PRESENT (the web adapter reads null vs "").
+                    if let Some(name) = strip_prefix_ci(tail, "does not have attribute ") {
+                        let name = name.trim();
+                        if name.is_empty() {
+                            return Err(unresolvable(trimmed, "no attribute name"));
+                        }
+                        return Ok(vec![ResolvedAction::AssertAttribute {
+                            target,
+                            name: name.to_string(),
+                            check: AttrCheck::Present(false),
+                            timeout_ms,
+                        }]);
+                    }
+                    if let Some(name) = strip_prefix_ci(tail, "has attribute ") {
+                        let name = name.trim();
+                        if name.is_empty() {
+                            return Err(unresolvable(trimmed, "no attribute name"));
+                        }
+                        return Ok(vec![ResolvedAction::AssertAttribute {
+                            target,
+                            name: name.to_string(),
+                            check: AttrCheck::Present(true),
+                            timeout_ms,
+                        }]);
+                    }
+                    // `attribute <name> is [not] <value>` - EXACT,
+                    // case-sensitive value. `<name>` is the first whitespace
+                    // token, so a value containing ` is ` cannot mis-split.
+                    if let Some(rest) = strip_prefix_ci(tail, "attribute ") {
+                        let rest = rest.trim_start();
+                        let (name, after) =
+                            rest.split_once(char::is_whitespace).ok_or_else(|| {
+                                unresolvable(
+                                    trimmed,
+                                    "expected 'attribute <name> is [not] <value>'",
+                                )
+                            })?;
+                        let after = after.trim_start();
+                        let (negate, value) = if let Some(v) = strip_prefix_ci(after, "is not ") {
+                            (true, v)
+                        } else if let Some(v) = strip_prefix_ci(after, "is ") {
+                            (false, v)
+                        } else {
+                            return Err(unresolvable(
+                                trimmed,
+                                "expected 'attribute <name> is <value>' or \
+                                 'attribute <name> is not <value>'",
+                            ));
+                        };
+                        let value = value.trim();
+                        if name.is_empty() || value.is_empty() {
+                            return Err(unresolvable(
+                                trimmed,
+                                "an attribute value assertion needs a name and a value",
+                            ));
+                        }
+                        // A capture compares against VISIBLE TEXT via `shows`;
+                        // an attribute is a machine string, so a capture ref
+                        // here is a mistake, not a comparison.
+                        if value.contains("${captured.") {
+                            return Err(unresolvable(
+                                trimmed,
+                                "captures compare against visible text with `shows`, \
+                                 not against an attribute value",
+                            ));
+                        }
+                        return Ok(vec![ResolvedAction::AssertAttribute {
+                            target,
+                            name: name.to_string(),
+                            check: AttrCheck::Value {
+                                value: value.to_string(),
+                                negate,
+                            },
+                            timeout_ms,
+                        }]);
+                    }
+                    // `style <prop> is [not] <value>` - a CLOSED allowlist of
+                    // properties; anything else is a parse error. `style`, not
+                    // `css`: `css:` is the selector escape hatch, not an
+                    // assertion.
+                    if let Some(rest) = strip_prefix_ci(tail, "style ") {
+                        let rest = rest.trim_start();
+                        let (prop, after) =
+                            rest.split_once(char::is_whitespace).ok_or_else(|| {
+                                unresolvable(trimmed, "expected 'style <prop> is [not] <value>'")
+                            })?;
+                        let after = after.trim_start();
+                        let (negate, value) = if let Some(v) = strip_prefix_ci(after, "is not ") {
+                            (true, v)
+                        } else if let Some(v) = strip_prefix_ci(after, "is ") {
+                            (false, v)
+                        } else {
+                            return Err(unresolvable(
+                                trimmed,
+                                "expected 'style <prop> is <value>' or \
+                                 'style <prop> is not <value>'",
+                            ));
+                        };
+                        let value = value.trim();
+                        let prop_lc = prop.to_ascii_lowercase();
+                        if !matches!(
+                            prop_lc.as_str(),
+                            "color" | "background-color" | "text-transform"
+                        ) {
+                            return Err(unresolvable(
+                                trimmed,
+                                format!(
+                                    "'{prop}' is not an asserted style property: only color, \
+                                     background-color, and text-transform are supported \
+                                     (geometry belongs in assert_screenshot, visibility in \
+                                     'is visible')"
+                                ),
+                            ));
+                        }
+                        if value.is_empty() {
+                            return Err(unresolvable(trimmed, "no expected style value"));
+                        }
+                        return Ok(vec![ResolvedAction::AssertStyle {
+                            target,
+                            prop: prop_lc,
+                            value: value.to_string(),
+                            negate,
+                            timeout_ms,
+                        }]);
+                    }
                 }
             } else if nth.is_none() {
                 if let Some(pos) = rest.find(" field contains ") {
@@ -780,8 +974,10 @@ mod assertions {
                 trimmed,
                 "expected 'the \"<label>\" field contains <text>', 'the <id> field \
                  contains <text>', 'the \"<target>\" shows <text>', \
-                 'the \"<target>\" is [not] visible', or 'the \"<target>\" is \
-                 enabled|disabled'",
+                 'the \"<target>\" is [not] visible', 'the \"<target>\" is \
+                 enabled|disabled', 'the \"<target>\" attribute <name> is [not] \
+                 <value>', 'the \"<target>\" has|does not have attribute <name>', \
+                 or 'the \"<target>\" style <prop> is [not] <value>'",
             ));
         }
 
@@ -791,8 +987,11 @@ mod assertions {
              <url>', 'the \"<target>\" checkbox is [not] checked', \
              '[the ]page does not show \
              <text>', 'the \"<label>\" field contains <text>', 'the \"<target>\" shows \
-             <text>', 'the \"<target>\" is [not] visible', or 'the \"<target>\" is \
-             enabled|disabled' (see docs/authoring.md for the full grammar)",
+             <text>', 'the \"<target>\" is [not] visible', 'the \"<target>\" is \
+             enabled|disabled', 'the \"<target>\" attribute <name> is [not] <value>', \
+             'the \"<target>\" has|does not have attribute <name>', or 'the \
+             \"<target>\" style <prop> is [not] <value>' (see docs/authoring.md for \
+             the full grammar)",
         ))
     }
 }
@@ -1154,6 +1353,46 @@ mod web {
     /// sap module reuses it verbatim; targets resolve per-provenance.
     pub(super) fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
         let trimmed = text.trim();
+
+        // `Scroll …` (web). Three forms:
+        //   Scroll to the top|bottom                  (the page itself)
+        //   Scroll the [2nd ]"<target>" to the top|bottom  (a container)
+        //   Scroll [the [2nd ]]"<target>" into view   (bring into viewport)
+        // The article before top/bottom is optional. Non-web adapters parse
+        // this too and fail at execution with an Unsupported scroll.
+        if let Some(rest) = strip_prefix_ci(trimmed, "scroll ") {
+            let rest = rest.trim();
+            // The page form has no quoted target: `Scroll to the bottom`.
+            if let Some(to) = parse_scroll_edge(rest) {
+                return Ok(vec![ResolvedAction::Scroll { target: None, to }]);
+            }
+            let (nth, after) = match strip_prefix_ci(rest, "the ") {
+                Some(a) => split_ordinal(a.trim()),
+                None => (None, rest),
+            };
+            if let Some(quoted) = after.strip_prefix('"') {
+                if let Some((label, tail)) = quoted_label(quoted) {
+                    let target = with_nth(nth, target_from_label(label));
+                    if tail.eq_ignore_ascii_case("into view") {
+                        return Ok(vec![ResolvedAction::Scroll {
+                            target: Some(target),
+                            to: ScrollTo::IntoView,
+                        }]);
+                    }
+                    if let Some(to) = parse_scroll_edge(tail) {
+                        return Ok(vec![ResolvedAction::Scroll {
+                            target: Some(target),
+                            to,
+                        }]);
+                    }
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'Scroll the [2nd ]\"<target>\" to the top|bottom', \
+                 'Scroll \"<target>\" into view', or 'Scroll to the top|bottom'",
+            ));
+        }
 
         // `Go to /path` / `Navigate to /path` → navigate mid-flow.
         if let Some(rest) =
@@ -2215,6 +2454,10 @@ mod tests {
             ("web", "Navigate to /settings"),
             ("web", "Reload the page"),
             ("web", "Wait until page shows templates found within 30s"),
+            ("web", r#"Scroll the "Transactions" to the bottom"#),
+            ("web", r#"Scroll the "css:.transactions-list" to the top"#),
+            ("web", r#"Scroll "Grace Hopper" into view"#),
+            ("web", "Scroll to the bottom"),
             ("sap", "Go to /nVA01"),
             ("sap", r#"Type ZOR into the "Order Type" field"#),
             ("vision", r#"Press the "Submit" button"#),
@@ -2240,6 +2483,22 @@ mod tests {
             ("web", r#"the "css:#modal" is not visible within 15s"#),
             ("web", r#"the "Save" is enabled"#),
             ("web", r#"the "Save" is disabled"#),
+            (
+                "web",
+                r#"the "New Transaction" attribute href is /transaction/new"#,
+            ),
+            ("web", r#"the "Docs" attribute target is not _self"#),
+            ("web", r#"the "Export" has attribute download"#),
+            ("web", r#"the "Banner" does not have attribute hidden"#),
+            (
+                "web",
+                r#"the "css:.charge .amount" style color is rgb(255, 0, 0)"#,
+            ),
+            ("web", r#"the "Amount" style color is not green"#),
+            (
+                "web",
+                r#"the "Amount" column of the row containing "Deposit" style color is green"#,
+            ),
             ("calc", "display shows 8"),
             ("notepad", "document contains hello"),
         ];
@@ -2252,6 +2511,212 @@ mod tests {
             )
             .unwrap_or_else(|e| panic!("documented assert '{assert}' ({app}) must parse: {e}"));
         }
+    }
+
+    fn assert_action(app: &str, step: &str) -> ResolvedAction {
+        resolve_step(
+            app,
+            &SpecStep::Assert {
+                assert: step.to_string(),
+            },
+        )
+        .unwrap_or_else(|e| panic!("'{step}' must parse: {e}"))
+        .remove(0)
+    }
+
+    fn plain_action(app: &str, step: &str) -> ResolvedAction {
+        resolve_step(app, &SpecStep::Plain(step.to_string()))
+            .unwrap_or_else(|e| panic!("'{step}' must parse: {e}"))
+            .remove(0)
+    }
+
+    #[test]
+    fn attribute_value_forms_parse() {
+        assert_eq!(
+            assert_action("web", r#"the "Link" attribute href is /new"#),
+            ResolvedAction::AssertAttribute {
+                target: Target::text("Link"),
+                name: "href".into(),
+                check: AttrCheck::Value {
+                    value: "/new".into(),
+                    negate: false,
+                },
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }
+        );
+        // `is not` negates; a value carrying ` is ` cannot mis-split because
+        // the name is the first whitespace token.
+        assert_eq!(
+            assert_action("web", r#"the "Link" attribute title is not this is fine"#),
+            ResolvedAction::AssertAttribute {
+                target: Target::text("Link"),
+                name: "title".into(),
+                check: AttrCheck::Value {
+                    value: "this is fine".into(),
+                    negate: true,
+                },
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }
+        );
+    }
+
+    #[test]
+    fn attribute_presence_forms_parse() {
+        assert_eq!(
+            assert_action("web", r#"the "Export" has attribute download"#),
+            ResolvedAction::AssertAttribute {
+                target: Target::text("Export"),
+                name: "download".into(),
+                check: AttrCheck::Present(true),
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }
+        );
+        assert_eq!(
+            assert_action("web", r#"the "Banner" does not have attribute hidden"#),
+            ResolvedAction::AssertAttribute {
+                target: Target::text("Banner"),
+                name: "hidden".into(),
+                check: AttrCheck::Present(false),
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }
+        );
+    }
+
+    #[test]
+    fn attribute_value_rejects_a_capture_reference() {
+        // A capture compares against VISIBLE text via `shows`, never against
+        // an attribute's machine string.
+        let err = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: r#"the "Link" attribute data-id is ${captured.orderid}"#.into(),
+            },
+        )
+        .expect_err("a capture in an attribute value is a parse error");
+        assert!(
+            err.to_string().contains("shows"),
+            "the error should point at `shows`: {err}"
+        );
+    }
+
+    #[test]
+    fn attribute_composes_with_the_cell_target_without_special_casing() {
+        // The cell rebinds `target` before predicate dispatch, so the
+        // attribute predicate composes for free.
+        assert_eq!(
+            assert_action(
+                "web",
+                r#"the "Actions" column of the row containing "Ada" attribute href is /edit/1"#,
+            ),
+            ResolvedAction::AssertAttribute {
+                target: Target::Cell {
+                    column: "Actions".into(),
+                    anchor: "Ada".into(),
+                },
+                name: "href".into(),
+                check: AttrCheck::Value {
+                    value: "/edit/1".into(),
+                    negate: false,
+                },
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }
+        );
+    }
+
+    #[test]
+    fn style_forms_parse_and_reject_off_allowlist_props() {
+        assert_eq!(
+            assert_action("web", r#"the "Amount" style color is rgb(255, 0, 0)"#),
+            ResolvedAction::AssertStyle {
+                target: Target::text("Amount"),
+                prop: "color".into(),
+                value: "rgb(255, 0, 0)".into(),
+                negate: false,
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }
+        );
+        assert_eq!(
+            assert_action("web", r#"the "Amount" style color is not green"#),
+            ResolvedAction::AssertStyle {
+                target: Target::text("Amount"),
+                prop: "color".into(),
+                value: "green".into(),
+                negate: true,
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }
+        );
+        // `text-transform` is on the allowlist; `Color` normalises to
+        // lowercase.
+        assert_eq!(
+            assert_action("web", r#"the "Header" style TEXT-TRANSFORM is uppercase"#),
+            ResolvedAction::AssertStyle {
+                target: Target::text("Header"),
+                prop: "text-transform".into(),
+                value: "uppercase".into(),
+                negate: false,
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }
+        );
+        // A generic property is rejected, naming the allowed set.
+        let err = resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: r#"the "Box" style width is 100px"#.into(),
+            },
+        )
+        .expect_err("a non-allowlisted style property is a parse error");
+        let msg = err.to_string();
+        assert!(msg.contains("color") && msg.contains("text-transform"));
+        assert!(msg.contains("assert_screenshot"));
+    }
+
+    #[test]
+    fn scroll_forms_parse() {
+        assert_eq!(
+            plain_action("web", r#"Scroll the "Transactions" to the bottom"#),
+            ResolvedAction::Scroll {
+                target: Some(Target::text("Transactions")),
+                to: ScrollTo::Bottom,
+            }
+        );
+        // The article before top/bottom is optional.
+        assert_eq!(
+            plain_action("web", r#"Scroll the "List" to top"#),
+            ResolvedAction::Scroll {
+                target: Some(Target::text("List")),
+                to: ScrollTo::Top,
+            }
+        );
+        assert_eq!(
+            plain_action("web", r#"Scroll "Grace Hopper" into view"#),
+            ResolvedAction::Scroll {
+                target: Some(Target::text("Grace Hopper")),
+                to: ScrollTo::IntoView,
+            }
+        );
+        // `the [2nd ]` and `css:` compose for free on the container form.
+        assert_eq!(
+            plain_action("web", r#"Scroll the 2nd "css:.list" to the top"#),
+            ResolvedAction::Scroll {
+                target: Some(Target::nth(2, Target::css(".list"))),
+                to: ScrollTo::Top,
+            }
+        );
+        // Page forms have no target (empty selectors, like `Press <Key>`).
+        assert_eq!(
+            plain_action("web", "Scroll to the bottom"),
+            ResolvedAction::Scroll {
+                target: None,
+                to: ScrollTo::Bottom,
+            }
+        );
+        assert_eq!(
+            plain_action("web", "Scroll to the top"),
+            ResolvedAction::Scroll {
+                target: None,
+                to: ScrollTo::Top,
+            }
+        );
     }
 
     #[test]

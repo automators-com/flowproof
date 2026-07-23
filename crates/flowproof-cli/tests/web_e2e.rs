@@ -1388,3 +1388,93 @@ fn an_element_below_the_fold_is_scrolled_to_rather_than_called_obscured() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The web-only assertion + action family (GAP-E sibling): DOM attributes,
+/// computed style, and Scroll. Records and replays against real Chrome so the
+/// adapter's `getAttribute` / `getComputedStyle` / scroll paths are exercised
+/// end to end. Gated behind FLOWPROOF_E2E like every browser test here.
+#[test]
+fn attribute_style_and_scroll_record_and_replay() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web attribute/style/scroll E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-attr-style-scroll-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("checks.html");
+    // A download link (present-empty attribute), a crimson amount, and a
+    // scrollable list whose last row starts below the fold.
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body style="margin:0">
+            <a id="dl" href="/report.csv" download>Export</a>
+            <span id="amount" style="color: crimson">-100.00</span>
+            <div id="list" style="height:120px;overflow:auto">
+              <div style="height:600px">rows</div>
+              <div id="last">Last row</div>
+            </div>
+            <div style="height:1500px">page spacer</div>
+            <div id="footer">Footer</div>
+        </body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("checks.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Attribute, style, and scroll".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: None,
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        agent: None,
+        tools: Vec::new(),
+        mcp: Vec::new(),
+        strict: false,
+        steps: vec![
+            flowproof_agent::SpecStep::Assert {
+                assert: r#"the "css:#dl" has attribute download"#.into(),
+            },
+            flowproof_agent::SpecStep::Assert {
+                assert: r#"the "css:#dl" attribute href is /report.csv"#.into(),
+            },
+            flowproof_agent::SpecStep::Assert {
+                assert: r#"the "css:#dl" does not have attribute hidden"#.into(),
+            },
+            flowproof_agent::SpecStep::Assert {
+                assert: r#"the "css:#amount" style color is rgb(220, 20, 60)"#.into(),
+            },
+            flowproof_agent::SpecStep::Assert {
+                assert: r#"the "css:#amount" style color is not green"#.into(),
+            },
+            flowproof_agent::SpecStep::Plain(r#"Scroll the "css:#list" to the bottom"#.into()),
+            flowproof_agent::SpecStep::Plain(r#"Scroll "css:#last" into view"#.into()),
+            flowproof_agent::SpecStep::Plain("Scroll to the bottom".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Footer".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let summary = flowproof_agent::record(&spec, &mut driver, &trace_path)
+        .expect("recording the attribute/style/scroll flow succeeds");
+    assert_eq!(summary.steps, 9);
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "attribute/style/scroll flow must replay green: {report:#?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
