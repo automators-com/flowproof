@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8"><title>Accounts</title>
+<style>
+  body{font:14px system-ui;margin:2rem}
+  table{border-collapse:collapse;width:640px}
+  th,td{border:1px solid #ccc;padding:6px 10px;text-align:left}
+  th{background:#f4f4f4}
+  .status-active{color:#137333}.status-suspended{color:#c5221f}
+</style>
+<!-- Modeled on react-admin's <Datagrid>: a real HTML table, column-{field}
+     classes on th/td, and the record id on each row. This is the DOM the
+     selector ladder must record header text + row anchor from. -->
+<h1>Accounts</h1>
+<table class="RaDatagrid-table" aria-label="Accounts">
+  <thead>
+    <tr>
+      <th class="column-name">Name</th>
+      <th class="column-email">Email</th>
+      <th class="column-status">Status</th>
+      <th class="column-balance">Balance</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class="RaDatagrid-row" id="row-101">
+      <td class="column-name">Ada Lovelace</td>
+      <td class="column-email">ada@example.com</td>
+      <td class="column-status status-active">Active</td>
+      <td class="column-balance">$1,240.00</td>
+    </tr>
+    <tr class="RaDatagrid-row" id="row-102">
+      <td class="column-name">Grace Hopper</td>
+      <td class="column-email">grace@example.com</td>
+      <td class="column-status status-suspended">Suspended</td>
+      <td class="column-balance"></td>
+    </tr>
+    <tr class="RaDatagrid-row" id="row-103">
+      <td class="column-name">Alan Turing</td>
+      <td class="column-email">alan@example.com</td>
+      <td class="column-status status-active">Active</td>
+      <td class="column-balance">$980.50</td>
+    </tr>
+  </tbody>
+</table>

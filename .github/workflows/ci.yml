@@ -198,6 +198,11 @@ jobs:
       # REAL OCR, no real window: the production ocrs engine reads
       # synthetically rendered screens through the full record→replay
       # pipeline — the vision provenance proven on every push.
+      - name: table-cell addressing survives a row insert (#58)
+        run: cargo test -p flowproof-cli --test grid_cell_e2e -- --nocapture
+        env:
+          FLOWPROOF_E2E: "1"
+          CHROME: /usr/bin/google-chrome
       - name: vision pipeline (real OCR over synthetic screens)
         run: cargo test -p flowproof-cli --test vision_pipeline -- --nocapture
         env:
