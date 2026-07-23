@@ -119,7 +119,7 @@ language), and how a captured value interacts with healing.
 ### Table-cell addressing
 
 **Shipped:** cells are addressed by column-header text and a row anchor;
-see [authoring.md](authoring.md#table-cells-by-identity). The shipped
+see [authoring.md](authoring.md#scoped-targets-table-cells-and-list-items-by-identity). The shipped
 locator reads `the "<column>" column of the row containing "<anchor>"`
 (the sketch below said `of the "<row>" row`). The design reasoning is kept
 for context.
