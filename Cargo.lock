@@ -760,13 +760,14 @@ dependencies = [
 
 [[package]]
 name = "flowproof-adapters"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "flowproof-driver",
  "flowproof-trace",
  "headless_chrome",
  "image",
+ "libc",
  "ocrs",
  "rten",
  "serde",
@@ -778,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-agent"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "flowproof-driver",
@@ -794,7 +795,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ab_glyph",
  "chrono",
@@ -815,7 +816,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-driver"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "image",
  "postgres",
@@ -829,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-python"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "flowproof-agent",
  "flowproof-cli",
@@ -841,7 +842,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-replay"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "flowproof-agent",
@@ -855,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-trace"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "jsonschema",
  "regex",

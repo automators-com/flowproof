@@ -445,6 +445,104 @@ Session ids are an ignored knob (passed through at record, a constant
    answer correlation: on both transports a request mid-record fails by name
    rather than corrupt a lane, and a JSON-RPC batch is a `400`.
 
+## Security posture
+
+The model boundary is small on purpose, and the small surface is the
+security property.
+
+- **The proxy binds loopback only.** It answers whatever asks it, with no
+  authentication, so it must not be reachable off the machine running the
+  test. Both replay and record bind `127.0.0.1`, whichever port they land on.
+- **The upstream is fixed when the proxy starts and is NOT request-choosable.**
+  Record mode is handed one upstream base URL at construction; a request body
+  cannot redirect it. This is load-bearing: a proxy that let a request pick
+  its own upstream would be an open relay pointed by whatever the system
+  under test sent.
+- **Replay has no network client at all.** It serves bytes from the cassette
+  over a hand-rolled HTTP/1.1 listener - no TLS stack, no HTTP client, no
+  outbound path. The one place flowproof reaches a real model is record mode,
+  which touches reality by design and is the only non-hermetic step.
+- **There are no dynamic code paths at the boundary.** Dispatch is fixed:
+  a chat-completions request is served from the cassette or forwarded to the
+  fixed upstream. Nothing in a request selects code to run.
+- **Secrets go env -> header, never to disk.** A real-model key is read from
+  flowproof's own environment straight into the outbound `Authorization` /
+  `x-api-key` header. The trace stores request BODIES only, so a recorded
+  cassette carries no key.
+
+## Egress containment
+
+The proxy contains the MODEL boundary. Egress containment is the second
+half: a `command:` agent is a black-box process, and a black-box process can
+open sockets to anywhere. On Linux, flowproof runs it under a real,
+unprivileged, default-deny seccomp filter so a test can DECLARE the network
+it is allowed to touch and CERTIFY it touched nothing else.
+
+```yaml
+app: agent
+agent:
+  command: python3 assistant.py
+  allow_egress:
+    - api.example.com:443          # host:port
+    - 198.51.100.9:443             # ip:port
+    - 10.0.0.0/8:443               # cidr:port
+    - api.example.com              # bare host / ip: any port
+    - ${SERVICE_HOST}:443          # ${VAR}, resolved at run, never stored
+steps:
+  - prompt: Book me a flight to Nairobi
+  - assert_tool_call: create_booking
+  - assert_no_egress               # certify: nothing undeclared was reached
+```
+
+`allow_egress` names the destinations the agent may reach. An entry is
+`host:port`, `ip:port`, `cidr:port`, or a bare `host`/`ip` for any port;
+`${VAR}` references resolve at execution and are stored UNRESOLVED (a
+resolved allow-list would leak the destination into the trace). Loopback
+(`127/8`, `::1`) is exempt WHOLESALE, so the model proxy and any local MCP
+server need not be listed. A hostname is resolved to its IP set once at run
+start and pinned; the agent's own DNS lookups go to the loopback resolver,
+which is exempt.
+
+`assert_no_egress` is a bare step that CERTIFIES the run: the set of
+undeclared destinations the agent attempted is empty. It is a CAPABILITY
+claim - on any platform or driver where containment is not enforced it fails
+outright ("cannot certify"), with no bypass flag, rather than passing
+vacuously. Containment is enforced LIVE in both record and replay, so the two
+phases share a denial environment and reproduce the same trajectory - a
+determinism requirement, not an add-on.
+
+Every agent run prints its containment tier, on every platform:
+
+| Platform / driver | Tier |
+|---|---|
+| Linux, `command:` | **enforced** (seccomp) |
+| macOS / Windows, `command:` | not contained (mechanism is Linux-only) |
+| any `url:` service | not contained (flowproof did not start it, so it cannot contain it) |
+| kernel < 5.6 | not contained (no seccomp user-notification / `pidfd_getfd`) |
+
+**How it works (Linux).** The child installs the filter in `pre_exec`
+(`no_new_privs` then `seccomp(SECCOMP_SET_MODE_FILTER,
+SECCOMP_FILTER_FLAG_NEW_LISTENER)`), and passes the notify fd to a parent
+supervisor over a socketpair. For an address-bearing syscall the supervisor
+copies the sockaddr out of child memory with `process_vm_readv`, checks
+`SECCOMP_IOCTL_NOTIF_ID_VALID` AFTER the read, and decides on the COPY. An
+allowed destination is connected by the supervisor itself (`pidfd_getfd`
+dups the child's socket, same file description); it NEVER replies
+`SECCOMP_USER_NOTIF_FLAG_CONTINUE` for connect/sendto/sendmsg, which would
+let the kernel re-read child memory a sibling thread can rewrite between
+check and use. `io_uring_setup` and `socket(AF_PACKET)` are refused at the
+filter; a non-loopback listener is denied.
+
+**Punts (v1).** Off-host unconnected UDP is denied rather than vetted
+(loopback UDP, e.g. a local DNS resolver, is performed). DNS to `:53`
+off-host, `io_uring`, and raw/packet sockets are refused, not proxied.
+Inbound `listen` off loopback is denied but not otherwise brokered. A
+local-relay exfil (writing to a loopback process that itself egresses) is
+NOT caught - loopback is trusted wholesale. `no_new_privs` breaks a setuid
+child. A `url:` service and any non-Linux host are "not contained" by
+construction. There is no runtime or production mode: this is a testing
+sandbox that fails a test, not a jail that protects a host.
+
 ## Settled in review
 
 The three questions this design left open have answers, and they are the
@@ -491,6 +589,7 @@ Built and tested, each independently:
 | trajectory diff | sorts a re-record into what the agent DID versus what it was TOLD, flagging changes the spec asserts |
 | `assert_tool_call` grammar | the prose form |
 | `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
+| egress containment | `allow_egress` / `assert_no_egress`, enforced by a Linux seccomp supervisor (proven by the Linux CI E2E); "not contained" and honestly reported on macOS/Windows and for `url:` flows |
 
 Not built yet: per-call result sequences (v1 is one static result per
 tool), the structured `args:` / `args_exact:` assertion forms, and the v3

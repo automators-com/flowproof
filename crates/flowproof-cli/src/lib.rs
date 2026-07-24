@@ -252,9 +252,24 @@ fn cmd_record(
     // An agent flow does not use the record/replay driver at all: its
     // trace is a cassette recorded at the model boundary.
     if spec.app.id() == "agent" {
+        // The containment tier prints on EVERY agent run, on every platform,
+        // pass or fail - computed before the run so it shows even when
+        // recording errors out.
+        let tier = agent_flow::containment(&spec);
+        if !json {
+            println!("{}", tier.report_line());
+        }
         agent_flow::record(&spec, &out)?;
         if json {
-            println!("{}", serde_json::json!({ "recorded": out, "app": "agent" }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "recorded": out,
+                    "app": "agent",
+                    "containment": tier.report_line(),
+                    "contained": tier.is_enforced(),
+                })
+            );
         } else {
             println!("Recorded '{}' -> {}", spec.name, out.display());
         }
@@ -918,6 +933,11 @@ fn cmd_run(
         if let Some(cmd) = manifest.as_ref().and_then(|m| m.before_each.as_ref()) {
             run_hook(cmd, spec_path, "before_each")?;
         }
+        // The containment tier prints on EVERY agent run, pass or fail.
+        let tier = agent_flow::containment(&spec);
+        if !json {
+            println!("{}", tier.report_line());
+        }
         let outcome = agent_flow::replay(&spec, &trace_path);
         if let Some(cmd) = manifest.as_ref().and_then(|m| m.after_each.as_ref()) {
             run_hook(cmd, spec_path, "after_each")?;
@@ -925,7 +945,15 @@ fn cmd_run(
         return match outcome {
             Ok(()) => {
                 if json {
-                    println!("{}", serde_json::json!({ "passed": true, "app": "agent" }));
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "passed": true,
+                            "app": "agent",
+                            "containment": tier.report_line(),
+                            "contained": tier.is_enforced(),
+                        })
+                    );
                 } else {
                     println!("PASS: {}", spec.name);
                 }
@@ -935,7 +963,13 @@ fn cmd_run(
                 if json {
                     println!(
                         "{}",
-                        serde_json::json!({ "passed": false, "app": "agent", "error": why })
+                        serde_json::json!({
+                            "passed": false,
+                            "app": "agent",
+                            "error": why,
+                            "containment": tier.report_line(),
+                            "contained": tier.is_enforced(),
+                        })
                     );
                 } else {
                     println!("FAIL: {} — {why}", spec.name);

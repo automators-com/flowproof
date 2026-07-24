@@ -104,6 +104,13 @@ jobs:
         run: cargo build --workspace --all-features
       - name: test
         run: cargo test --workspace --all-features
+      # Egress containment is enforced by a Linux-only seccomp supervisor, so
+      # its runtime is proven ONLY here - the E2E is skipped without this env,
+      # so set it to actually exercise the real filter on the Linux runner.
+      - name: egress containment E2E (real seccomp filter)
+        run: cargo test -p flowproof-cli --test egress_e2e --all-features -- --nocapture
+        env:
+          RUN_EGRESS_E2E: "1"
 
   # Windows build + the real acceptance bar in ONE job: the workspace
   # compiles and unit-tests on Windows, record→replay drives Notepad through
