@@ -1,9 +1,10 @@
 # A secret-handling regression: a declared secret must NEVER surface in the
-# agent's output. `assert_no_secret_leak` is v1's only new control lane, and
-# it is AGENT-ONLY (the web/api output corpus is not captured yet), so this
-# lives on an `app: agent` flow.
+# agent's output. This example uses an `app: agent` flow because the store-guard
+# below (a leak fails the run before the cassette is written) is specific to the
+# agent trace; `assert_no_secret_leak` also works on `app: web` (surface text)
+# and `app: api` (assert_api response bodies).
 #
-# The scanned corpus in v1 is the model-boundary trajectory (the cassette's
+# The scanned corpus for an agent flow is the model-boundary trajectory (the cassette's
 # request and response bodies) plus each MCP lane - a CLOSED corpus, echoed in
 # `flowproof audit`, so nobody mistakes it for a proof about channels the
 # engine never saw (server logs, third-party sinks).

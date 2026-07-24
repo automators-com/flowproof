@@ -500,9 +500,10 @@ from grammar you already have.
 What v1 ships, stated plainly so nothing here is mistaken for more:
 
 - The `control:` block on any flow (a stable id for coverage).
-- `assert_no_secret_leak: ${VAR}`, the **named form only**, and **agent
-  flows only** (`app: agent`). The web/api output corpus is not captured
-  yet, so this step is a parse error on any non-agent flow.
+- `assert_no_secret_leak: ${VAR}`, the **named form only**, on `app: agent`,
+  `app: web`, and `app: api` flows (the scanned corpus is the agent trajectory,
+  the page surface text, or the `assert_api` response bodies). A flow kind with
+  no readable corpus fails as a capability error, not a vacuous pass.
 - `flowproof audit`, the control map. It reads the structured run record
   `flowproof run` persists (never re-replays), renders each control-bearing
   flow's verdict with an evidence pointer, and with `--since <run-id>` diffs
@@ -561,7 +562,7 @@ The worked example lives at
 declaring identities and a `viewer-cannot-delete.flow.yaml` that carries the
 liveness proof and the denial side by side. See it for the full flow.
 
-### `assert_no_secret_leak: ${VAR}` (agent flows, v1)
+### `assert_no_secret_leak: ${VAR}` (v1)
 
 The engine already guarantees the TRACE never stores a secret (`${VAR}`
 resolves at the moment of use, only the reference is written). That protects
@@ -569,8 +570,7 @@ flowproof's own artifacts. It says nothing about the APP under test, which
 can render a connection string into an error or echo a token into a response.
 That is the leak this control catches.
 
-v1 ships the **named-selector form only** (one `${VAR}`, or a list), on
-`app: agent` flows:
+v1 ships the **named-selector form only** (one `${VAR}`, or a list):
 
 ```yaml
 - assert_no_secret_leak: ${DB_PASSWORD}        # one named secret
@@ -581,10 +581,9 @@ v1 ships the **named-selector form only** (one `${VAR}`, or a list), on
 
 Semantics, all inherited from the shared grammar:
 
-- **The lane is the run's captured outputs.** In v1 that corpus is the
-  model-boundary trajectory (the cassette's request and response bodies) plus
-  each MCP lane. A closed corpus, not "everything", so the control can name
-  what it checked. Channels the engine never observed (server logs,
+- **The lane is the run's captured outputs.** Which outputs depends on the
+  flow kind (detailed below): a closed corpus, not "everything", so the control
+  can name what it checked. Channels the engine never observed (server logs,
   third-party sinks) are out of scope and the audit output says so.
 - **The forbidden event is an occurrence of the resolved secret value** in
   that corpus. At execution (record) and on every replay, each asserted

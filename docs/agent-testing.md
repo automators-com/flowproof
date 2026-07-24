@@ -548,13 +548,14 @@ sandbox that fails a test, not a jail that protects a host.
 A second agent-boundary control shares egress's honesty rules: a declared
 secret must never appear in the agent's output. In v1 the scanned corpus is
 the model-boundary trajectory (the cassette's request and response bodies)
-plus each MCP lane, and the step is agent-only (the web/api output corpus is
-not captured yet). Only the variable NAME travels in the trace, and because
+plus each MCP lane; the step also works on `app: web` and `app: api` flows,
+over the page surface text and `assert_api` response bodies. Only the variable
+NAME travels in the trace, and because
 the record-time scan runs before the trace is minted, a leak writes no trace
 (a store-guard on flowproof's own cassette). The full form, its limits, and
 how it folds into `flowproof audit` are documented with the rest of the
 control grammar in
-[authoring.md](authoring.md#assert_no_secret_leak-var-agent-flows-v1).
+[authoring.md](authoring.md#assert_no_secret_leak-var-v1).
 
 ## Settled in review
 
