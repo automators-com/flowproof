@@ -1,0 +1,53 @@
+# The access-control regression pattern: "identity X must be denied action Y".
+# It is NOT a new step type - it is three ordinary moves (become the identity,
+# perform the attempt, assert the denial), all shipped grammar. The only new
+# token in this file is the `control:` block that names it.
+#
+# Four layers of evidence, in two groups:
+#
+#   LIVENESS (the first two steps) proves the viewer session is REALLY alive,
+#   so a dead credential cannot read as a passing control. The page confirms
+#   the session is signed in, and the same ${VIEWER_TOKEN} that will be
+#   REFUSED on DELETE is first shown to SUCCEED on a GET it is entitled to.
+#   Without this, a token that quietly expired would return 403 and the
+#   control would "pass" while testing nothing.
+#
+#   DENIAL (the last three steps) proves the control held: the UI withholds
+#   the button (necessary but famously insufficient), the API refuses a direct
+#   request (403, asserted POSITIVELY - a timeout or unrelated error must read
+#   as a broken test, not a passing control), and the record survives.
+#
+# Template: `session: viewer` resolves against the suite's `identities:`
+# (see suite.yaml); the ${VAR}s and the /customers app are your own.
+
+name: A viewer cannot delete a customer
+app: web
+url: ${APP_URL}/customers
+control:
+  id: ac.customers.delete.viewer-denied
+  title: Viewer role is denied customer deletion
+  description: >-
+    A viewer may read a customer but every deletion path refuses it - the UI
+    hides the control, the API returns 403, and the record is unchanged.
+session: viewer                                    # resolved against suite identities
+steps:
+  # --- liveness: prove the identity is alive and entitled to succeed ---
+  - assert: page shows Signed in as viewer          # the browser session is signed in
+  - assert_api:                                      # and the token is live on a GET it may do
+      request: GET ${API}/customers/4711
+      headers:
+        Authorization: Bearer ${VIEWER_TOKEN}
+      status: 200
+
+  # --- denial: prove the control held on every layer that expresses it ---
+  - Click "Grace Hopper"
+  - assert: the "Delete" button is not visible       # the UI withholds it
+  - assert_api:                                       # the API refuses it
+      request: DELETE ${API}/customers/4711
+      headers:
+        Authorization: Bearer ${VIEWER_TOKEN}
+      status: 403
+  - assert_sql:                                       # the state is unchanged
+      connection: main
+      query: SELECT count(*) FROM customers WHERE id = 4711
+      equals: "1"

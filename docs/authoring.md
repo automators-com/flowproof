@@ -487,6 +487,191 @@ where it matches; everything else falls through to the shared forms.
   Replace, Save As) instead. `assert: document contains <text>` (plus the
   shared grammar).
 
+## Security controls
+
+A security control is not a special kind of test. It is a property that
+must hold, expressed as an ordinary deterministic assertion over a recorded
+flow: a viewer cannot delete, a secret never surfaces in output. The forms
+below add just enough to NAME a control stably and to assert one class of
+"this must never appear" that the shared grammar could not spell before. The
+access-control pattern needs no new step at all (see below); it is composed
+from grammar you already have.
+
+What v1 ships, stated plainly so nothing here is mistaken for more:
+
+- The `control:` block on any flow (a stable id for coverage).
+- `assert_no_secret_leak: ${VAR}`, the **named form only**, and **agent
+  flows only** (`app: agent`). The web/api output corpus is not captured
+  yet, so this step is a parse error on any non-agent flow.
+- `flowproof audit`, the minimal in-run control map. It replays each
+  control-bearing flow and renders its verdict. There are no evidence-path
+  links and no cross-run diffing in v1.
+
+### Naming a control: the `control:` block
+
+A flow-level block, at most one per flow, gives the control a stable id:
+
+```yaml
+name: A viewer cannot delete a customer
+app: web
+url: ${APP_URL}/customers
+control:
+  id: ac.customers.delete.viewer-denied      # required
+  title: Viewer role is denied customer deletion   # optional
+  description: >-                              # optional
+    The viewer session may read a customer but the API refuses its DELETE.
+steps: [ ... ]
+```
+
+The `id` is author-chosen, dotted, lowercase (`[a-z0-9._-]+`); a value with
+whitespace or an out-of-range character is a parse error. Its one hard job
+is STABILITY: it survives renames of the flow file, moves between suites, and
+re-records, because it is the join key between what an auditor tracks and
+what CI ran. `title` and `description` are author metadata. A recommended
+(not enforced) convention for the id is
+`<domain>.<resource>.<action>.<expectation>`. Teams mapping to an external
+framework (SOC 2, ISO) keep that mapping in their own catalog keyed by the
+id; flowproof models no compliance ontology, it provides the stable key.
+
+**Uniqueness is a suite property.** Two flows in one suite sharing a control
+id is a suite-load error naming BOTH flows, because a duplicated join key
+would corrupt the coverage map. A lone `flowproof run` on a single flow sees
+only that flow, so it neither checks nor needs uniqueness.
+
+### Access-control regression (a pattern, not a step)
+
+The highest-value control in practice is "identity X must be denied action
+Y". It is NOT a new `assert_no_*` subject. "Unauthorized access" is not a
+lane the engine observes; it is an attempt the flow performs plus a denial
+the shipped grammar already asserts. So the flow is three ordinary moves:
+become the identity, perform the attempt, assert the denial.
+
+The one rule that makes it a real control: **a denial is only evidence when
+the same run proves the identity was alive.** If the app returns `403` for
+both an unauthorized-but-valid session AND a dead one (an expired token, a
+logged-out browser), then a credential that quietly expired reads as a
+PASSING control while testing nothing. So a denial flow MUST also assert that
+the identity is entitled to succeed at something: a `200` on an action it is
+allowed, or a UI fact only the signed-in session shows. A denial flow with no
+liveness assertion is an incomplete control.
+
+The worked example lives at
+[`examples/access-control/`](../examples/access-control/): a `suite.yaml`
+declaring identities and a `viewer-cannot-delete.flow.yaml` that carries the
+liveness proof and the denial side by side. See it for the full flow.
+
+### `assert_no_secret_leak: ${VAR}` (agent flows, v1)
+
+The engine already guarantees the TRACE never stores a secret (`${VAR}`
+resolves at the moment of use, only the reference is written). That protects
+flowproof's own artifacts. It says nothing about the APP under test, which
+can render a connection string into an error or echo a token into a response.
+That is the leak this control catches.
+
+v1 ships the **named-selector form only** (one `${VAR}`, or a list), on
+`app: agent` flows:
+
+```yaml
+- assert_no_secret_leak: ${DB_PASSWORD}        # one named secret
+- assert_no_secret_leak:                       # or several at once
+    - ${DB_PASSWORD}
+    - ${API_TOKEN}
+```
+
+Semantics, all inherited from the shared grammar:
+
+- **The lane is the run's captured outputs.** In v1 that corpus is the
+  model-boundary trajectory (the cassette's request and response bodies) plus
+  each MCP lane. A closed corpus, not "everything", so the control can name
+  what it checked. Channels the engine never observed (server logs,
+  third-party sinks) are out of scope and the audit output says so.
+- **The forbidden event is an occurrence of the resolved secret value** in
+  that corpus. At execution (record) and on every replay, each asserted
+  `${VAR}` is resolved through the same resolve-refs machinery and the
+  in-memory corpus is substring-scanned for the resolved value. The trace
+  stores only the variable NAMES; the value is never written or printed.
+- **Whole-run scope.** Position in `steps:` does not narrow it.
+- **Only names travel.** A failure names every matching variable (in a stable
+  order, so a run leaking two secrets reports both), the corpus element it
+  appeared in, and the step index. It never prints the value.
+- **A secret too short to scan is refused, not weakened.** A resolved value
+  under a small minimum length (4 characters) fails the run at execution, in
+  the same shape as the `MissingSecret` error, naming the variable and the
+  minimum but never the value (scanning for `"1"` would fire on any page
+  showing a 1).
+
+**Bonus: the record-time scan is a store-guard.** On an agent flow the
+model-boundary trajectory is persisted into the trace as a cassette, so a
+leaked secret would otherwise be written to disk. The scan runs BEFORE the
+trace is minted, so a leak fails the run and NO trace is written: the leaked
+secret never reaches disk. Determinism holds because the corpus is
+re-observed by the same mechanism at both phases, so an unchanged system
+yields the same scan and the same verdict.
+
+The corpus depends on the flow kind: an `app: agent` flow scans the
+model-boundary trajectory and its MCP lanes; a `web` flow scans the surface
+text read at each step boundary (not page source, and not continuously
+between steps); an `api` flow scans each `assert_api` response body. A flow
+kind with no readable corpus fails as a capability error rather than passing
+vacuously.
+
+One thing is deliberately NOT in v1: the **bare** form ("scan for every
+`${VAR}` the flow referenced") is deferred until a suite-level `secrets:`
+declaration gives it a defined domain (`${APP_URL}`, `${API}`, and minted
+test data legitimately appear in output, so a bare scan would false-fail on
+nearly every flow).
+
+### `flowproof audit`: the control map
+
+A suite run already yields per-flow verdicts. `flowproof audit <dir>` folds
+the flows that carry a `control:` block into a control-coverage report. It is
+a rendering of results that already exist, not a new pipeline: each
+control-bearing flow is replayed and its verdict read.
+
+```text
+$ flowproof audit examples/access-control            # YAML on stdout
+$ flowproof audit examples/access-control --json     # JSON instead
+$ flowproof audit examples/access-control --retries 2   # absorb infra flakiness
+```
+
+```yaml
+suite: access-control
+run: 2026-07-24T09:14:03Z
+controls:
+  - id: ac.customers.delete.viewer-denied
+    title: Viewer role is denied customer deletion
+    flow: viewer-cannot-delete.flow.yaml
+    verdict: pass
+  - id: sec.assistant.no-db-password-leak
+    title: The DB password never surfaces in agent output
+    flow: assistant-no-leak.flow.yaml
+    verdict: pass
+    secrets_checked: ["${DB_PASSWORD}"]        # variable names, never values
+    corpus:
+      - model-boundary trajectory (cassette request and response bodies)
+      - MCP lanes
+    excluded:
+      - channels the engine never observed (server logs, third-party sinks)
+```
+
+Three verdicts, kept distinct so a report can never launder "we could not
+check" into "it held":
+
+- `pass` - the control held on replay.
+- `fail` - the control did not hold. `flowproof audit` exits non-zero when
+  any control failed.
+- `capability-error` - the platform could not enforce or observe the lane,
+  or the flow never ran (a missing trace is a capability error naming the
+  `flowproof record` to run, never a silent pass).
+
+`secrets_checked` / `corpus` / `excluded` appear only for a flow that ran a
+secret-leak scan. That is the whole audit surface in v1: a stable file
+external tooling can ingest. Deliberately absent for now, and called out here
+so nothing reads as shipped: **evidence-path links** into the run bundle, and
+**cross-run report diffing** (the coverage map over time, including
+removed-control detection). Both are planned once a durable structured run
+record exists to point at and diff against.
+
 ## When a step doesn't parse
 
 The error names the accepted forms for that app. Anything freeform (e.g.
