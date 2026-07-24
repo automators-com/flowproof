@@ -417,15 +417,16 @@ fn a_clean_secret_flow_records_and_replays_deterministically() {
 /// `flowproof audit` folds the control-bearing flow into a control-coverage
 /// report: the control id, its pass verdict, and (for the secret-leak flow)
 /// the secrets_checked / corpus / excluded fields - in both YAML and JSON,
-/// naming the variable but never its value.
+/// naming the variable but never its value. Audit READS the run record, so the
+/// flow is recorded AND run before auditing; audit never re-replays.
 #[test]
 fn audit_renders_the_control_map_in_yaml_and_json() {
     let dir = work_dir("secret-audit");
     let agent_py = dir.join("agent.py");
     std::fs::write(&agent_py, SECRET_AGENT).expect("agent");
-    let _spec = write_secret_spec(&dir, &agent_py, false);
+    let spec = write_secret_spec(&dir, &agent_py, false);
 
-    // Record the clean flow so audit has a trace to replay.
+    // Record the clean flow.
     let record = std::process::Command::new(FLOWPROOF_BIN)
         .args([
             "record",
@@ -436,6 +437,20 @@ fn audit_renders_the_control_map_in_yaml_and_json() {
         .output()
         .expect("record");
     assert!(record.status.success(), "record for audit");
+
+    // Run it so a run record is written for audit to read - zero network.
+    let run = std::process::Command::new(FLOWPROOF_BIN)
+        .args(["run", spec.to_str().expect("utf8")])
+        .env("DB_PASSWORD", SECRET)
+        .env_remove("FLOWPROOF_AGENT_UPSTREAM")
+        .env_remove("OPENAI_BASE_URL")
+        .output()
+        .expect("run");
+    assert!(
+        run.status.success(),
+        "the clean flow replays green: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
 
     // Audit as YAML (the default).
     let yaml = std::process::Command::new(FLOWPROOF_BIN)
