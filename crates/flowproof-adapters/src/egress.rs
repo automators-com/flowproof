@@ -46,6 +46,16 @@ impl Containment {
         }
     }
 
+    /// The tier for a flow that does not ENGAGE egress: it declares no
+    /// `allow_egress` and asserts no egress, so no seccomp filter is installed
+    /// and there is nothing to contain. Containment is opt-in; an unengaged
+    /// flow claims no tier.
+    pub fn not_engaged() -> Self {
+        Containment::NotContained(
+            "flow does not engage egress (no allow_egress or assert_no_egress)".to_string(),
+        )
+    }
+
     /// The tier for a `url:` flow: a service flowproof did not start cannot
     /// be contained.
     pub fn url_flow() -> Self {

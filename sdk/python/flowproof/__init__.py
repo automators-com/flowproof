@@ -1,4 +1,4 @@
-"""flowproof — a generic open-source automation framework for the AI-agent era.
+"""flowproof - a generic open-source automation framework for the AI-agent era.
 
 Automated testing and agentic process automation across web, desktop, and
 Citrix. An agent authors a flow once from a natural-language spec and
@@ -24,7 +24,7 @@ from flowproof.flow import (
     run,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = [
     "ClarificationNeeded",

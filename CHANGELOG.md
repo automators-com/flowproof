@@ -4,6 +4,15 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## 0.4.1
+
+### Fixed
+
+- egress containment deadlocked every command-agent flow on Linux (the
+  notify-fd handoff used a syscall the filter traps); containment is now opt-in
+  (only flows using allow_egress/assert_no_egress) and the handoff no longer
+  deadlocks.
+
 ## 0.4.0 (2026-07-24)
 
 ### Added

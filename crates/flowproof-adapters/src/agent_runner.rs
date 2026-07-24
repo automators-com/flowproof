@@ -391,7 +391,8 @@ pub fn run_against_contained(
         command: command.trim().to_string(),
         source,
     })?;
-    // Start the supervisor: receive the notify fd and service it for the run.
+    // Start the supervisor: collect the notify fd the handoff thread acquired
+    // out of the child while `spawn` ran, and service it for the run.
     let supervisor = prep
         .into_supervisor(spawned)
         .map_err(|source| RunError::Spawn {
