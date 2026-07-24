@@ -4,10 +4,26 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
-## 0.3.2
+## 0.4.0 (2026-07-24)
 
 ### Added
 
+- **Agent-boundary testing (`app: agent`).** Deterministic record/replay of an
+  agent's model-call trajectory against a mocked model boundary. OpenAI-style
+  and Anthropic Messages backends, streaming synthesized symmetrically at record
+  and replay, and http-target agents (`agent.url` + `proxy_port`) alongside
+  `command:` agents. Assertions: `assert_tool_call` / `assert_no_tool_call` with
+  `where` matchers, and reply-content checks. See
+  [docs/agent-testing.md](docs/agent-testing.md).
+- **MCP tool-boundary testing.** The agent's Model Context Protocol traffic is
+  recorded and replayed as additive trace lanes: stdio servers, streamable-HTTP
+  servers, and server notifications over the GET SSE stream. A mocked tool result
+  is answered locally and never forwarded.
+- **`flowproof capture`.** A byte-fidelity HTTP capture endpoint for inspecting
+  exactly what a tool under test sends. See [docs/capture.md](docs/capture.md).
+- **Web grammar additions.** Attribute assertions (`attribute X is Y`),
+  computed-style assertions over a closed property allowlist, a `Scroll` action,
+  and scoped-container targets (`the "X" in the item containing "Y"`).
 - **Egress containment for `app: agent` (Linux).** A `command:` agent flow
   can now declare the network it is allowed to reach and certify that it
   reached nothing else:
@@ -35,3 +51,12 @@ together).
 
 See [docs/agent-testing.md](docs/agent-testing.md) for the grammar, the
 per-platform honesty table, and the v1 limitations.
+
+### Fixed
+
+- **Test stability.** The agent-boundary end-to-end tests each mutated the
+  process-global `FLOWPROOF_AGENT_UPSTREAM`; under parallel `cargo test` that
+  raced and could flake or hang CI. They are now serialized so a run is
+  deterministic.
+- **npm publish pipeline.** The multi-platform publish workflow is idempotent
+  and fails open, so a partially-published release can be re-run safely.
