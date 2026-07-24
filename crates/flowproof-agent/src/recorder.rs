@@ -390,6 +390,10 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             selectors_for(app, target, Some(label)),
             Action::RightClick(serde_json::Map::new()),
         ),
+        ResolvedAction::DoubleClick { target, label } => (
+            selectors_for(app, target, Some(label)),
+            Action::DoubleClick(serde_json::Map::new()),
+        ),
         // Whole-surface capture: no selectors; masks travel as raw
         // selector strings so replay blanks the SAME regions.
         ResolvedAction::AssertScreenshot {
@@ -747,6 +751,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::TypeText { target, .. }
         | ResolvedAction::Upload { target, .. }
         | ResolvedAction::ContextClick { target, .. }
+        | ResolvedAction::DoubleClick { target, .. }
         | ResolvedAction::Clear { target }
         | ResolvedAction::SetChecked { target, .. }
         | ResolvedAction::AssertText { target, .. }
@@ -930,6 +935,10 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
             path: params.path.clone(),
         }),
         Action::RightClick(_) => Some(ResolvedAction::ContextClick {
+            target: target_from_selector(&step.selectors)?,
+            label: step.intent.clone(),
+        }),
+        Action::DoubleClick(_) => Some(ResolvedAction::DoubleClick {
             target: target_from_selector(&step.selectors)?,
             label: step.intent.clone(),
         }),
@@ -1725,6 +1734,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     driver.set_files(targeted(), std::slice::from_ref(path))?
                 }
                 ResolvedAction::ContextClick { .. } => driver.context_click(targeted())?,
+                ResolvedAction::DoubleClick { .. } => driver.double_click(targeted())?,
                 ResolvedAction::AssertScreenshot { name, masks, .. } => {
                     // Recording MINTS the masked baseline — re-record (or
                     // `record --reuse`) is the update path.
@@ -2421,6 +2431,7 @@ url: https://e.test/x
 steps:
   - Upload fixtures/data.qif into the \"Import file\" field
   - Right-click \"Accounts\"
+  - Double-click \"Accounts\"
   - Press Mod+K
 ",
         )
@@ -2429,12 +2440,13 @@ steps:
         let dir = std::env::temp_dir().join("flowproof-recorder-upload");
         let out = dir.join("upload.trace.jsonl");
         let summary = record(&spec, &mut driver, &out).expect("recording succeeds");
-        assert_eq!(summary.steps, 3);
+        assert_eq!(summary.steps, 4);
         assert_eq!(
             driver.uploads,
             vec![("Import file".to_string(), "fixtures/data.qif".to_string())]
         );
         assert_eq!(driver.context_clicked, vec!["Accounts"]);
+        assert_eq!(driver.double_clicked, vec!["Accounts"]);
         // Mod resolves per-OS at execution (Ctrl here on CI), but the
         // TRACE stays neutral: the same file replays on any OS.
         let expected_chord = if cfg!(target_os = "macos") {
@@ -2453,6 +2465,10 @@ steps:
         assert!(
             contents.contains("\"right_click\""),
             "right_click action encoded"
+        );
+        assert!(
+            contents.contains("\"double_click\""),
+            "double_click action encoded"
         );
         assert!(
             contents.contains("\"modifiers\":[\"mod\"]"),
@@ -2483,6 +2499,18 @@ steps:
                 assert_eq!(target, Target::text("Accounts"));
             }
             other => panic!("right_click must decode to ContextClick, got {other:?}"),
+        }
+
+        let double_click = ResolvedAction::DoubleClick {
+            target: Target::text("Accounts"),
+            label: "Double-click Accounts".into(),
+        };
+        let step = step_for(3, "Double-click Accounts", "web", &double_click);
+        match decode_step(&step) {
+            Some(ResolvedAction::DoubleClick { target, .. }) => {
+                assert_eq!(target, Target::text("Accounts"));
+            }
+            other => panic!("double_click must decode to DoubleClick, got {other:?}"),
         }
     }
 

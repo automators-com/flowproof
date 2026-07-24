@@ -298,7 +298,7 @@ fn upload_right_click_and_portable_modifier_replay() {
     let dir = std::env::temp_dir().join("flowproof-replay-upload");
     std::fs::create_dir_all(&dir).expect("temp dir");
     let spec = FlowSpec::parse(
-        "name: Import\napp: web\nurl: https://e.test/x\nsteps:\n  - Upload fixtures/data.qif into the \"Import file\" field\n  - Right-click \"Accounts\"\n  - Press Mod+K\n",
+        "name: Import\napp: web\nurl: https://e.test/x\nsteps:\n  - Upload fixtures/data.qif into the \"Import file\" field\n  - Right-click \"Accounts\"\n  - Double-click \"Accounts\"\n  - Press Mod+K\n",
     )
     .expect("spec parses");
     let trace = dir.join("import.trace.jsonl");
@@ -313,6 +313,7 @@ fn upload_right_click_and_portable_modifier_replay() {
         vec![("Import file".to_string(), "fixtures/data.qif".to_string())]
     );
     assert_eq!(driver.context_clicked, vec!["Accounts"]);
+    assert_eq!(driver.double_clicked, vec!["Accounts"]);
     let expected_chord = if cfg!(target_os = "macos") {
         "Meta+k"
     } else {

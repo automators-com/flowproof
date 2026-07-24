@@ -512,6 +512,13 @@ pub trait AppDriver {
         )))
     }
 
+    /// Double-click an element (fire a real `dblclick`).
+    fn double_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        Err(DriverError::Uia(format!(
+            "double-click is not supported by this driver yet: [{selector}]"
+        )))
+    }
+
     /// Stage browser launch/emulation config (viewport, user-agent, extra
     /// flags) to apply at the next `launch`. Drivers without a browser
     /// must REJECT it — silently ignoring emulation would change what the
@@ -1346,6 +1353,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         (**self).context_click(selector)
+    }
+
+    fn double_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        (**self).double_click(selector)
     }
 
     fn stage_browser(&mut self, config: WebBrowserConfig) -> Result<(), DriverError> {

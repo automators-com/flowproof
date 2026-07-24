@@ -1167,6 +1167,55 @@ fn upload_right_click_and_portable_chord_work_on_a_real_page() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A real `dblclick` against real Chromium: the driver's CDP double-click
+/// (two press/release pairs, the second at click_count 2) makes the page
+/// emit a DOM `dblclick`, which flips a status marker the flow then asserts.
+/// A plain click must NOT trigger it, which is what makes this a genuine
+/// double-click and not a click in disguise.
+#[test]
+fn double_click_fires_a_real_dblclick_on_a_real_page() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web double-click E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-dblclick-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("dblclick.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Double click</title>
+<main>
+  <button id="target"
+    onclick="document.getElementById('status').textContent = 'single'"
+    ondblclick="document.getElementById('status').textContent = 'opened'">Open</button>
+  <div id="status">waiting</div>
+</main>"#,
+    )
+    .expect("page written");
+
+    let spec = FlowSpec::parse(&format!(
+        "name: Double click a button\napp: web\nurl: file://{}\nsteps:\n  \
+         - Double-click \"Open\"\n  \
+         - assert: page shows opened\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("dblclick.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "double-click flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Round-2 selector fixes against real Chromium, all three in one flow:
 /// a wrapping `<label>Name: <input/></label>` resolves as a label query,
 /// `Click "Close Account"` lands on a button whose DOM text is

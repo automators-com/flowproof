@@ -1644,6 +1644,49 @@ impl AppDriver for WebAppDriver {
         )
     }
 
+    fn double_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let locator = Self::locator(selector)?;
+        let tab = self.tab()?.clone();
+        self.with_element(
+            &locator,
+            &format!("double-clicking [{selector}]"),
+            |element| {
+                element.scroll_into_view()?;
+                let point = element.get_midpoint()?;
+                // A real `dblclick` is two full press/release pairs at the
+                // same point; Chromium raises the DOM `dblclick` on the
+                // SECOND release when its click_count reaches 2. Mirrors the
+                // context_click CDP shape, left button, click counts 1,1,2,2.
+                for (kind, click_count) in [
+                    (Input::DispatchMouseEventTypeOption::MousePressed, 1),
+                    (Input::DispatchMouseEventTypeOption::MouseReleased, 1),
+                    (Input::DispatchMouseEventTypeOption::MousePressed, 2),
+                    (Input::DispatchMouseEventTypeOption::MouseReleased, 2),
+                ] {
+                    tab.call_method(Input::DispatchMouseEvent {
+                        Type: kind,
+                        x: point.x,
+                        y: point.y,
+                        button: Some(Input::MouseButton::Left),
+                        click_count: Some(click_count),
+                        modifiers: None,
+                        timestamp: None,
+                        buttons: None,
+                        force: None,
+                        tangential_pressure: None,
+                        tilt_x: None,
+                        tilt_y: None,
+                        twist: None,
+                        delta_x: None,
+                        delta_y: None,
+                        pointer_Type: None,
+                    })?;
+                }
+                Ok(())
+            },
+        )
+    }
+
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
         let locator = Self::locator(selector)?;
         // Inner text covers most elements; inputs expose their VALUE — the
