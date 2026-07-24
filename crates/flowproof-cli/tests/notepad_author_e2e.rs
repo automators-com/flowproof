@@ -35,6 +35,7 @@ fn freeform_spec() -> FlowSpec {
         tools: Vec::new(),
         mcp: Vec::new(),
         strict: false,
+        control: None,
         steps: vec![
             SpecStep::Plain("Write hello from flowproof into the editor".into()),
             SpecStep::Assert {

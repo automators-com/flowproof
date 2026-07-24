@@ -1519,7 +1519,10 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
 ) -> Result<RecordSummary, RecordError> {
     let mut reuse = old_steps.map(ReuseCursor::new);
     let target = launch_target(spec)?;
-    if let Some(setup) = &spec.session {
+    // The session is an inline mapping by now: a `session: <name>` ref is
+    // dereferenced to its identity's inline setup at flow load, so record
+    // never sees an unresolved name.
+    if let Some(setup) = spec.session.as_ref().and_then(|s| s.inline()) {
         let (cookies, local_storage) = setup.resolved()?;
         driver.stage_session(flowproof_driver::WebSession {
             cookies,
@@ -2092,7 +2095,10 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
             .filter_map(|rule| serde_json::to_value(rule).ok())
             .collect(),
         // The RAW session setup — cookie values keep their `${VAR}` refs.
-        session: spec.session.clone(),
+        // A `session: <name>` ref has been dereferenced to its identity's
+        // inline setup at flow load, so the header carries the setup itself,
+        // never a pointer to the suite. The trace stays self-contained.
+        session: spec.session.as_ref().and_then(|s| s.inline()).cloned(),
         // Mock rules travel with the trace: what was mocked at record MUST
         // be mocked at replay, or the two executions test different things.
         mock: spec.mock.clone(),
@@ -2167,6 +2173,10 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
             dpi_scale: None,
             locale: None,
         },
+        // The control this flow validates, copied so the evidence is
+        // self-describing. Additive/optional: absent for flows with no
+        // `control:` block, which serialize byte-identical to before.
+        control: spec.control.clone(),
     };
 
     let io_err = |source: std::io::Error| RecordError::Io {

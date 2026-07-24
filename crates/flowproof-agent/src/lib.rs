@@ -19,7 +19,7 @@ pub use llm::{HttpModelClient, ModelClient};
 pub use recorder::{
     record, record_incremental, record_with_author, Author, RecordError, RecordSummary,
 };
-pub use spec::{FlowSpec, McpServerSpec, SpecStep, SuiteManifest};
+pub use spec::{check_control_ids, FlowSpec, McpServerSpec, SessionRef, SpecStep, SuiteManifest};
 
 use std::env;
 
