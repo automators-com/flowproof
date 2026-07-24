@@ -8,6 +8,7 @@
 //!
 pub mod cassette;
 pub mod cassette_diff;
+pub mod egress;
 pub mod format;
 pub mod secret;
 pub mod substitution;

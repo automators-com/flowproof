@@ -180,6 +180,16 @@ pub struct AgentSpec {
     /// never stored, exactly like `assert_api` headers.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// Destinations the contained agent is allowed to reach over the network
+    /// (`command:` only). Each entry is `host:port`, `ip:port`, `cidr:port`,
+    /// or a bare `host`/`ip` for any port; values may carry `${VAR}`
+    /// references, resolved at execution and NEVER stored resolved. Loopback
+    /// (127/8, ::1) is always exempt and need not be listed. On Linux this
+    /// installs a real default-deny seccomp filter; on every other platform
+    /// the run is reported "not contained". A `url:` flow cannot carry it -
+    /// flowproof does not own that process, so it cannot contain it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_egress: Vec<String>,
 }
 
 /// One tool mocked at the model boundary. Its `result` is returned to the
@@ -354,6 +364,7 @@ impl FlowSpec {
                 SpecStep::Prompt { .. }
                     | SpecStep::AssertToolCall { .. }
                     | SpecStep::AssertNoToolCall { .. }
+                    | SpecStep::AssertNoEgress
             )
         });
 
@@ -406,6 +417,17 @@ impl FlowSpec {
                                 .into(),
                         );
                     }
+                    // Egress allow-list: each entry must parse (a `${VAR}`
+                    // ref defers the deep check to execution), and a
+                    // duplicate is almost always a copy-paste.
+                    let mut seen_egress = std::collections::BTreeSet::new();
+                    for entry in &agent.allow_egress {
+                        flowproof_trace::egress::validate_allow_entry(entry)
+                            .map_err(SpecError::Agent)?;
+                        if !seen_egress.insert(entry.as_str()) {
+                            return bad(format!("`allow_egress` lists `{entry}` twice"));
+                        }
+                    }
                 }
                 (None, Some(url)) => {
                     if url.trim().is_empty() {
@@ -428,6 +450,16 @@ impl FlowSpec {
                             "`agent.env` is injected into a process flowproof starts; a `url:` \
                              driver names an already-running service, so use `headers:` to carry \
                              what it needs on the trigger"
+                                .into(),
+                        );
+                    }
+                    // Containment is a property of a process flowproof starts
+                    // and can install a seccomp filter into; a `url:` service
+                    // is one flowproof did not start and cannot contain.
+                    if !agent.allow_egress.is_empty() {
+                        return bad(
+                            "`agent.allow_egress` contains a `command:` driver; a `url:` service \
+                             is not contained; flowproof does not own it"
                                 .into(),
                         );
                     }
@@ -694,14 +726,15 @@ impl FlowSpec {
 /// out-of-band business-data assertion (SQL / API) — the posted record is
 /// often the truth an enterprise test must verify, not the pixels.
 ///
-/// Serialize stays derived-untagged (the wire shape specs are written in);
-/// Deserialize is manual so unknown or misspelled fields are PARSE ERRORS
-/// that name the offending key. The untagged derive can't do that: it
-/// would either silently drop unknown fields (a 0.2.1 `assert_api` with
-/// `headers:` ran on 0.2.0 with the auth silently gone) or collapse every
-/// mistake into "did not match any variant".
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(untagged)]
+/// Serialize is manual (an untagged derive over the same shapes specs are
+/// written in, plus the bare-string `assert_no_egress`, which an untagged
+/// unit variant would wrongly emit as `null`); Deserialize is manual too so
+/// unknown or misspelled fields are PARSE ERRORS that name the offending
+/// key. The untagged derive can't do the latter: it would either silently
+/// drop unknown fields (a 0.2.1 `assert_api` with `headers:` ran on 0.2.0
+/// with the auth silently gone) or collapse every mistake into "did not
+/// match any variant".
+#[derive(Debug, Clone, PartialEq)]
 pub enum SpecStep {
     AssertSql {
         assert_sql: SqlAssertSpec,
@@ -727,6 +760,11 @@ pub enum SpecStep {
     AssertNoToolCall {
         assert_no_tool_call: String,
     },
+    /// `app: agent`: assert the agent attempted NO undeclared egress. A bare
+    /// step with no payload; checked against the live egress log of each
+    /// phase, and a capability error on any platform where containment is
+    /// not enforced.
+    AssertNoEgress,
     Plain(String),
 }
 
@@ -734,11 +772,15 @@ impl SpecStep {
     const FORMS: &'static str = "a plain string, `assert: <text>`, \
          `assert_sql: {...}`, `assert_api: {...}`, `assert_screenshot: {...}`, \
          `prompt: <text>`, `assert_tool_call: <text>`, \
-         `assert_no_tool_call: <text>`, or `foreach: {...}`";
+         `assert_no_tool_call: <text>`, `assert_no_egress`, or `foreach: {...}`";
 
     fn from_yaml(value: serde_yaml::Value) -> Result<Self, String> {
         use serde_yaml::Value;
         match value {
+            // The bare `assert_no_egress` step: an exact match tried BEFORE
+            // the plain-string catch-all, so it is a first-class step and not
+            // a natural-language action that happens to read that way.
+            Value::String(s) if s.trim() == "assert_no_egress" => Ok(SpecStep::AssertNoEgress),
             Value::String(s) => Ok(SpecStep::Plain(s)),
             Value::Mapping(map) => {
                 let keys: Vec<String> = map
@@ -854,6 +896,44 @@ impl<'de> serde::Deserialize<'de> for SpecStep {
     }
 }
 
+impl Serialize for SpecStep {
+    /// The untagged wire shape a spec is written in: a bare string for
+    /// `Plain` and `AssertNoEgress`, a single-entry mapping for every keyed
+    /// form. Hand-written because a derived untagged unit variant would emit
+    /// `null` for `assert_no_egress` instead of its bare-string spelling.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            SpecStep::Plain(text) => serializer.serialize_str(text),
+            SpecStep::AssertNoEgress => serializer.serialize_str("assert_no_egress"),
+            SpecStep::Assert { assert } => single(serializer, "assert", assert),
+            SpecStep::Prompt { prompt } => single(serializer, "prompt", prompt),
+            SpecStep::AssertToolCall { assert_tool_call } => {
+                single(serializer, "assert_tool_call", assert_tool_call)
+            }
+            SpecStep::AssertNoToolCall {
+                assert_no_tool_call,
+            } => single(serializer, "assert_no_tool_call", assert_no_tool_call),
+            SpecStep::AssertSql { assert_sql } => single(serializer, "assert_sql", assert_sql),
+            SpecStep::AssertApi { assert_api } => single(serializer, "assert_api", assert_api),
+            SpecStep::AssertScreenshot { assert_screenshot } => {
+                single(serializer, "assert_screenshot", assert_screenshot)
+            }
+        }
+    }
+}
+
+/// Serialize a keyed step form as its one-entry mapping, `{key: value}`.
+fn single<S: serde::Serializer, T: Serialize>(
+    serializer: S,
+    key: &str,
+    value: &T,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    let mut map = serializer.serialize_map(Some(1))?;
+    map.serialize_entry(key, value)?;
+    map.end()
+}
+
 /// ```yaml
 /// - assert_screenshot:
 ///     name: dashboard                  # baseline PNG name (no extension)
@@ -951,6 +1031,7 @@ impl SpecStep {
             } => {
                 format!("assert_no_tool_call: {assert_no_tool_call}")
             }
+            SpecStep::AssertNoEgress => "assert_no_egress".to_string(),
         }
     }
 }
@@ -1864,6 +1945,71 @@ steps:
         )
         .expect_err("dup tool");
         assert!(err.to_string().contains("mocked twice"), "{err}");
+    }
+
+    /// The `allow_egress` grammar parses every documented form and keeps a
+    /// `${VAR}` ref raw (resolved and never stored resolved at execution).
+    #[test]
+    fn allow_egress_parses_every_form() {
+        let flow = spec(
+            "name: n\napp: agent\nagent:\n  command: x\n  allow_egress:\n    - api.example.com:443\n    - 198.51.100.9:443\n    - 10.0.0.0/8:443\n    - api.example.com\n    - ${SERVICE_HOST}:443\nsteps:\n  - prompt: hi\n",
+        )
+        .expect("parses");
+        let agent = flow.agent.expect("agent block");
+        assert_eq!(agent.allow_egress.len(), 5);
+        assert_eq!(
+            agent.allow_egress[4], "${SERVICE_HOST}:443",
+            "the reference survives unresolved"
+        );
+    }
+
+    #[test]
+    fn allow_egress_named_errors() {
+        // A malformed entry is rejected NAMING the entry.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\n  allow_egress:\n    - api.example.com:70000\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("bad port");
+        assert!(err.to_string().contains("api.example.com:70000"), "{err}");
+
+        // A duplicate entry is rejected.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\n  allow_egress:\n    - api.example.com:443\n    - api.example.com:443\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("dup entry");
+        assert!(err.to_string().contains("twice"), "{err}");
+
+        // allow_egress on a `url:` flow: not contained, flowproof does not
+        // own the process.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  url: http://y\n  proxy_port: 9\n  allow_egress:\n    - api.example.com:443\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("allow_egress on url");
+        assert!(err.to_string().contains("not contained"), "{err}");
+        assert!(err.to_string().contains("does not own"), "{err}");
+    }
+
+    /// The bare `assert_no_egress` step parses as its own first-class step,
+    /// not a natural-language action, and round-trips as a bare string.
+    #[test]
+    fn assert_no_egress_is_a_first_class_step() {
+        let flow = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_egress\n",
+        )
+        .expect("parses");
+        assert!(matches!(flow.steps[1], SpecStep::AssertNoEgress));
+        // It serializes back to the bare string, NOT `null`.
+        let yaml = serde_yaml::to_string(&flow.steps[1]).expect("serializes");
+        assert_eq!(yaml.trim(), "assert_no_egress");
+    }
+
+    /// `assert_no_egress` is agent-only, exactly like the other agent steps.
+    #[test]
+    fn assert_no_egress_is_rejected_off_agent_flows() {
+        let err = spec("name: n\napp: calc\nsteps:\n  - Type 5\n  - assert_no_egress\n")
+            .expect_err("assert_no_egress on calc");
+        assert!(err.to_string().contains("agent step"), "{err}");
+        assert!(err.to_string().contains("assert_no_egress"), "{err}");
     }
 
     /// A full `mcp:` block parses: servers, commands, and per-server tool
