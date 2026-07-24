@@ -16,7 +16,12 @@ name = "flowproof"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { workspace = true }
 clap = { workspace = true }
+# Cross-platform Ctrl-C handling for the long-lived `capture` listener, so a
+# deliberate interrupt exits 0 cleanly on Windows and Unix alike. Light: no
+# async runtime, just a signal handler.
+ctrlc = "3"
 flowproof-adapters = { workspace = true, features = ["web", "sap-com", "vision", "agent"] }
 flowproof-agent = { workspace = true }
 flowproof-driver = { workspace = true }

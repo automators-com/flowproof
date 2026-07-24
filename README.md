@@ -142,6 +142,13 @@ auth headers); and for an `app: agent` flow, `assert_tool_call` /
 `${VAR}` references: resolved from the environment when the step fires,
 never stored in a trace; password fields are masked in captured frames.
 
+**Debug what a tool sends**: `flowproof capture` is a byte-fidelity HTTP
+capture endpoint: point a tool-under-test at it and every request is printed
+and saved verbatim (method, path, all headers, raw body as text and hexdump,
+plus any SAP `/BA1/`-style namespace field names), answered 200 so the send
+side completes. One signed binary instead of a Python install
+([docs/capture.md](docs/capture.md)).
+
 All of it ships as one wheel (PyO3/maturin): Rust engine, Python API,
 CLI, MCP server. Proven in CI on every push: a Notepad flow records and
 replays on GitHub's Windows runners, the web adapter drives real Chromium

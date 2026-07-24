@@ -2,6 +2,7 @@
 //! the Python entry point (via PyO3) share one implementation.
 
 mod agent_flow;
+mod capture;
 
 use std::path::{Path, PathBuf};
 
@@ -104,6 +105,26 @@ enum Command {
         /// The server name, matching its `<name>.plan.json` in the run dir.
         #[arg(long)]
         server: String,
+    },
+    /// Capture what a tool sends on the wire: a byte-fidelity HTTP endpoint
+    /// for debugging serialization. Point a tool-under-test's HTTP connection
+    /// here instead of its real target; every request is printed and saved
+    /// (method, path, all headers, raw body as text AND hexdump, plus any SAP
+    /// `/BA1/`-style namespace field names), and answered 200 so the send
+    /// side completes. Binds all interfaces, unauthenticated - run it
+    /// deliberately, Ctrl-C to stop.
+    Capture {
+        /// TCP port to listen on (binds 0.0.0.0).
+        #[arg(long)]
+        port: u16,
+        /// Directory for the per-request `req-NNN.txt` files (created if
+        /// missing).
+        #[arg(long, default_value = "./captured")]
+        out: PathBuf,
+        /// Emit a structured JSON-Lines report on stdout, one object per
+        /// request, instead of the human view.
+        #[arg(long)]
+        json: bool,
     },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
@@ -1120,6 +1141,7 @@ where
             };
             cmd_run(&spec, trace, json, retries, missing)
         }
+        Command::Capture { port, out, json } => capture::cmd_capture(port, Some(out), json),
         Command::Heal {
             spec,
             trace,
