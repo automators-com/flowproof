@@ -18,6 +18,50 @@ use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// A hard per-test watchdog: if the guard is not dropped within `secs`, print
+/// a diagnostic and `abort()` the whole test process. This exists because the
+/// seccomp path once DEADLOCKED (the notify-fd handoff used a syscall the
+/// filter traps), wedging CI for hours. With a watchdog a future deadlock
+/// FAILS RED in ~1 minute instead of hanging. Each seccomp E2E arms one before
+/// it does anything that could block; a normal completion drops the guard,
+/// disarming it.
+struct Watchdog {
+    disarmed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Watchdog {
+    fn arm(label: &'static str, secs: u64) -> Self {
+        use std::sync::atomic::Ordering;
+        let disarmed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&disarmed);
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+            while std::time::Instant::now() < deadline {
+                if flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if flag.load(Ordering::Relaxed) {
+                return;
+            }
+            eprintln!(
+                "egress E2E watchdog: `{label}` exceeded {secs}s - assuming a deadlock \
+                 (e.g. the notify-fd handoff) and aborting so CI fails red instead of hanging"
+            );
+            std::process::abort();
+        });
+        Watchdog { disarmed }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.disarmed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Is this run allowed to exercise the (kernel-dependent) seccomp E2E?
 fn enabled() -> bool {
     std::env::var("RUN_EGRESS_E2E")
@@ -230,6 +274,7 @@ fn a_declared_flow_passes_and_mints_a_trace() {
         eprintln!("no non-loopback IPv4 on this host; skipping");
         return;
     };
+    let _watchdog = Watchdog::arm("a_declared_flow_passes_and_mints_a_trace", 60);
     let dir = work_dir("declared");
     let agent_py = dir.join("agent.py");
     std::fs::write(&agent_py, FAKE_AGENT).expect("agent");
@@ -270,6 +315,10 @@ fn an_undeclared_flow_fails_assert_no_egress_and_mints_no_trace() {
         eprintln!("no non-loopback IPv4 on this host; skipping");
         return;
     };
+    let _watchdog = Watchdog::arm(
+        "an_undeclared_flow_fails_assert_no_egress_and_mints_no_trace",
+        60,
+    );
     let dir = work_dir("undeclared");
     let agent_py = dir.join("agent.py");
     std::fs::write(&agent_py, FAKE_AGENT).expect("agent");
@@ -313,6 +362,10 @@ fn an_undeclared_attempt_is_denied_and_recorded_in_the_blocked_lane() {
         eprintln!("no non-loopback IPv4 on this host; skipping");
         return;
     };
+    let _watchdog = Watchdog::arm(
+        "an_undeclared_attempt_is_denied_and_recorded_in_the_blocked_lane",
+        60,
+    );
     let dir = work_dir("recorded");
     let agent_py = dir.join("agent.py");
     std::fs::write(&agent_py, FAKE_AGENT).expect("agent");

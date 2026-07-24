@@ -15,9 +15,22 @@
 //!   closing the two paths that reach the network under the notifier.
 //!
 //! The filter is installed with `SECCOMP_FILTER_FLAG_NEW_LISTENER`, whose
-//! return value is a notify fd. That fd lives in the child, so it is passed
-//! back to the parent over a pre-created `socketpair` using `SCM_RIGHTS`. A
-//! supervisor thread services it for the whole run.
+//! return value is a notify fd. That fd lives in the child, so it is handed to
+//! the parent - but NOT with `SCM_RIGHTS`/`sendmsg`, since `sendmsg` is one of
+//! the syscalls the filter traps, so using it here would suspend the child on
+//! the very notifier the parent has not started servicing yet (a deadlock).
+//! Instead the child WRITES its `(pid, notify-fd-number)` over a pre-created
+//! `socketpair` (`getpid`/`write` are not trapped), a PARENT HANDOFF THREAD
+//! acquires the actual fd with `pidfd_open`+`pidfd_getfd` (the same infra the
+//! supervisor uses to act on the child's sockets) and WRITES back a one-byte
+//! ack so the child may close its copy and proceed to exec. A supervisor
+//! thread then services the notify fd for the whole run.
+//!
+//! The handoff runs on its own thread, started BEFORE `Command::spawn`,
+//! because `spawn` blocks until the child execs and the child cannot exec
+//! until it gets the ack: the read+ack must happen concurrently with `spawn`,
+//! not after it. The child sends its own pid because `child.id()` is not yet
+//! available while `spawn` is still blocked.
 //!
 //! # The TOCTOU-safe pattern
 //!
@@ -233,24 +246,32 @@ pub fn probe_containment() -> Containment {
     Containment::Enforced
 }
 
-/// A prepared filter and its parent-side control socket, wired into a
-/// `Command`'s `pre_exec`. Created BEFORE spawn; turned into a live
-/// supervisor AFTER spawn.
+/// A prepared filter plus the in-flight parent-side handoff, wired into a
+/// `Command`'s `pre_exec`. Created BEFORE spawn; turned into a live supervisor
+/// AFTER spawn.
+///
+/// The handoff runs on its OWN thread, started here in [`install`] rather than
+/// after spawn, and this is load-bearing: `Command::spawn` BLOCKS until the
+/// child execs, and the child cannot exec until the parent acks its notify fd.
+/// If the parent tried to do the read+ack after `spawn` returned, it would
+/// deadlock - the parent waiting in `spawn` for an exec that waits on an ack
+/// the parent has not sent. So the ack must come from a concurrent thread.
 pub struct EgressPrep {
-    parent_sock: OwnedFd,
+    handoff: std::thread::JoinHandle<io::Result<OwnedFd>>,
     allow: AllowSet,
 }
 
 /// Install the egress filter into `cmd` via `pre_exec` and return the
 /// parent-side handle. The filter and the child socket are moved into the
-/// closure; the parent keeps its end of the socketpair to receive the notify
-/// fd once the child has installed the filter.
+/// `pre_exec` closure; a handoff thread owns the parent's socket end and
+/// acquires the notify fd out of the child while `spawn` runs.
 pub fn install(cmd: &mut Command, allow: &AllowSet) -> io::Result<EgressPrep> {
     let filter = build_filter();
 
-    // A stream socketpair carries the notify fd from child to parent via
-    // SCM_RIGHTS. Both ends are close-on-exec: the child sends before exec
-    // (pre_exec runs first), and the execed program must inherit neither.
+    // A stream socketpair carries the child's (pid, notify-fd-number) to the
+    // parent and the parent's ack back. Both ends are close-on-exec: the child
+    // sends before exec (pre_exec runs first), and the execed program must
+    // inherit neither.
     let mut fds = [0 as RawFd; 2];
     let rc = unsafe {
         libc::socketpair(
@@ -273,18 +294,28 @@ pub fn install(cmd: &mut Command, allow: &AllowSet) -> io::Result<EgressPrep> {
     unsafe {
         cmd.pre_exec(move || child_install(&filter, child_sock));
     }
+
+    // The handoff thread: it blocks reading the child's message, so it must run
+    // CONCURRENTLY with the caller's `cmd.spawn()` (see `EgressPrep`). It owns
+    // `parent_sock` and yields the acquired notify fd.
+    let handoff = std::thread::spawn(move || recv_notify_fd(parent_sock));
+
     Ok(EgressPrep {
-        parent_sock,
+        handoff,
         allow: allow.clone(),
     })
 }
 
 impl EgressPrep {
-    /// After spawn: receive the notify fd the child sent, and start the
-    /// supervisor thread that services it for the run. `spawn` is the instant
-    /// the child was launched, the zero for every event's monotonic `at_ms`.
+    /// After spawn: collect the notify fd the handoff thread acquired from the
+    /// child, and start the supervisor thread that services it for the run.
+    /// `spawn` is the instant the child was launched, the zero for every
+    /// event's monotonic `at_ms`.
     pub fn into_supervisor(self, spawn: Instant) -> io::Result<Supervisor> {
-        let notify_fd = recv_fd(self.parent_sock.as_raw_fd())?;
+        let notify_fd = self
+            .handoff
+            .join()
+            .map_err(|_| io::Error::other("egress handoff thread panicked"))??;
         Ok(Supervisor::start(notify_fd, self.allow, spawn))
     }
 }
@@ -302,7 +333,10 @@ fn child_install(filter: &[libc::sock_filter], child_sock: RawFd) -> io::Result<
         filter: filter.as_ptr() as *mut libc::sock_filter,
     };
     // 2. Install the filter with NEW_LISTENER; the return value is the notify
-    //    fd, which the parent will service.
+    //    fd, which the parent will service. The filter is active IMMEDIATELY,
+    //    so from here on the trapped syscalls (connect/send*/listen) would
+    //    suspend us on the notifier - hence the handoff below uses only
+    //    `write`/`read`, which the filter does NOT trap.
     let notify_fd = unsafe {
         libc::syscall(
             libc::SYS_seccomp,
@@ -314,91 +348,147 @@ fn child_install(filter: &[libc::sock_filter], child_sock: RawFd) -> io::Result<
     if notify_fd < 0 {
         return Err(io::Error::last_os_error());
     }
-    // 3. Hand the notify fd to the parent over the socketpair.
-    send_fd(child_sock, notify_fd as RawFd)?;
-    // The child no longer needs either fd; the filter stays installed.
+    let notify_fd = notify_fd as RawFd;
+    // 3. Hand the notify fd to the parent WITHOUT a trapped syscall: write our
+    //    PID and the notify fd's NUMBER, then block on the parent's one-byte
+    //    ack. The pid lets the handoff thread `pidfd_open`+`pidfd_getfd` the fd
+    //    (it cannot use `child.id()` - `spawn` has not returned yet, since it
+    //    blocks until we exec). We must NOT close `notify_fd` until the parent
+    //    has acquired its own reference to the same open file description;
+    //    closing early would tear down the listener. `getpid`/`write`/`read`
+    //    are not in the filter, so none traps and the child never blocks on the
+    //    un-serviced notifier.
+    let pid = unsafe { libc::getpid() };
+    let handoff = write_handoff(child_sock, pid, notify_fd).and_then(|()| wait_ack(child_sock));
+    // 4. Whether the handoff succeeded or failed, drop both fds before exec so
+    //    the child's real program (python) inherits NEITHER the notify fd nor
+    //    the socketpair. The socketpair is already CLOEXEC, but the notify fd
+    //    is not, so this explicit close is what keeps it out of the exec.
     unsafe {
-        libc::close(notify_fd as RawFd);
+        libc::close(notify_fd);
         libc::close(child_sock);
     }
-    Ok(())
+    handoff
 }
 
-/// Send a single fd over a unix socket with SCM_RIGHTS (one filler data byte,
-/// as the kernel requires a non-empty payload).
-fn send_fd(sock: RawFd, fd: RawFd) -> io::Result<()> {
-    let mut byte = [0u8; 1];
-    let mut iov = libc::iovec {
-        iov_base: byte.as_mut_ptr() as *mut libc::c_void,
-        iov_len: 1,
-    };
-    let mut cmsg_buf = [0u8; unsafe_cmsg_space()];
-    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-    msg.msg_iov = &mut iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
-    msg.msg_controllen = cmsg_buf.len() as _;
-    unsafe {
-        let cmsg = libc::CMSG_FIRSTHDR(&msg);
-        (*cmsg).cmsg_level = libc::SOL_SOCKET;
-        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
-        std::ptr::copy_nonoverlapping(
-            &fd as *const RawFd as *const u8,
-            libc::CMSG_DATA(cmsg),
-            std::mem::size_of::<RawFd>(),
-        );
-        let n = libc::sendmsg(sock, &msg, 0);
-        if n < 0 {
-            return Err(io::Error::last_os_error());
+/// Write the child's `(pid, notify-fd-number)` as two native-endian `i32`s to
+/// the socketpair. Used in place of an `SCM_RIGHTS`/`sendmsg` fd passage,
+/// because `sendmsg` is trapped by the filter that is already installed;
+/// `write` is not.
+fn write_handoff(sock: RawFd, pid: libc::pid_t, fd: RawFd) -> io::Result<()> {
+    // RawFd and pid_t are both i32 on Linux: a fixed 8-byte message the parent
+    // reads back with `i32::from_ne_bytes`.
+    let mut msg = [0u8; 8];
+    msg[0..4].copy_from_slice(&pid.to_ne_bytes());
+    msg[4..8].copy_from_slice(&fd.to_ne_bytes());
+    write_all(sock, &msg)
+}
+
+/// Block until the parent writes its one-byte ack, meaning it has acquired the
+/// notify fd and the child may close its copy and proceed to exec. `read` is
+/// not trapped by the filter.
+fn wait_ack(sock: RawFd) -> io::Result<()> {
+    let mut ack = [0u8; 1];
+    read_exact(sock, &mut ack)
+}
+
+/// Parent side of the handoff, run on its own thread (see [`install`]): read
+/// the child's `(pid, notify-fd-number)`, acquire the actual fd out of the
+/// child with `pidfd_open`+`pidfd_getfd` (the same mechanism [`dup_child_fd`]
+/// uses for the child's sockets), then write the one-byte ack so the child can
+/// close its copy and exec. Owns `sock` and drops it on return.
+fn recv_notify_fd(sock: OwnedFd) -> io::Result<OwnedFd> {
+    let raw = sock.as_raw_fd();
+    // Bound the wait for the child's message. On the happy path the child
+    // writes within milliseconds; a bound means that if `cmd.spawn` FAILS (the
+    // child never runs) this thread errors out instead of blocking forever on a
+    // socketpair whose peer never speaks.
+    if !poll_readable(raw, HANDOFF_TIMEOUT_MS)? {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "egress handoff: child never sent its notify fd",
+        ));
+    }
+    let mut msg = [0u8; 8];
+    read_exact(raw, &mut msg)?;
+    let child_pid = i32::from_ne_bytes([msg[0], msg[1], msg[2], msg[3]]) as u32;
+    let fd_number = i32::from_ne_bytes([msg[4], msg[5], msg[6], msg[7]]) as RawFd;
+    // Acquire OUR OWN reference to the child's notify file description. Once we
+    // hold it, the child closing its copy does not tear down the listener.
+    // pidfd_getfd sets CLOEXEC on the returned fd, so flowproof's own future
+    // execs do not leak it.
+    let notify_fd = dup_child_fd(child_pid, fd_number)?;
+    // Ack: the child is blocked on this one byte before it closes and execs.
+    write_all(raw, &[1u8])?;
+    Ok(notify_fd)
+}
+
+/// How long the parent handoff thread waits for the child's message before
+/// giving up. Generous: the child writes within milliseconds on success, so
+/// this only fires when the child never ran (a failed `cmd.spawn`).
+const HANDOFF_TIMEOUT_MS: libc::c_int = 30_000;
+
+/// `poll` a fd for readability with a millisecond timeout. `Ok(true)` means
+/// readable (or an error condition the following read will surface),
+/// `Ok(false)` means the timeout elapsed with nothing to read.
+fn poll_readable(sock: RawFd, timeout_ms: libc::c_int) -> io::Result<bool> {
+    loop {
+        let mut pfd = libc::pollfd {
+            fd: sock,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        if rc < 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(e);
         }
+        return Ok(rc > 0);
+    }
+}
+
+/// `write` the whole buffer, retrying short writes and EINTR. Async-signal-safe
+/// (used in the child): no allocation, so failures carry a bare errno rather
+/// than a formatted message.
+fn write_all(sock: RawFd, mut buf: &[u8]) -> io::Result<()> {
+    while !buf.is_empty() {
+        let n = unsafe { libc::write(sock, buf.as_ptr() as *const libc::c_void, buf.len()) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(e);
+        }
+        if n == 0 {
+            return Err(io::Error::from_raw_os_error(libc::EPIPE));
+        }
+        buf = &buf[n as usize..];
     }
     Ok(())
 }
 
-/// Receive a single fd sent with SCM_RIGHTS.
-fn recv_fd(sock: RawFd) -> io::Result<OwnedFd> {
-    let mut byte = [0u8; 1];
-    let mut iov = libc::iovec {
-        iov_base: byte.as_mut_ptr() as *mut libc::c_void,
-        iov_len: 1,
-    };
-    let mut cmsg_buf = [0u8; unsafe_cmsg_space()];
-    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-    msg.msg_iov = &mut iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
-    msg.msg_controllen = cmsg_buf.len() as _;
-    unsafe {
-        let n = libc::recvmsg(sock, &mut msg, 0);
+/// `read` exactly `buf.len()` bytes, retrying short reads and EINTR. A closed
+/// peer (0 bytes) before the buffer is filled is an error. Async-signal-safe.
+fn read_exact(sock: RawFd, mut buf: &mut [u8]) -> io::Result<()> {
+    while !buf.is_empty() {
+        let n = unsafe { libc::read(sock, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if n < 0 {
-            return Err(io::Error::last_os_error());
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(e);
         }
-        let cmsg = libc::CMSG_FIRSTHDR(&msg);
-        if cmsg.is_null()
-            || (*cmsg).cmsg_level != libc::SOL_SOCKET
-            || (*cmsg).cmsg_type != libc::SCM_RIGHTS
-        {
-            return Err(io::Error::other(
-                "no notify fd in the child's SCM_RIGHTS message",
-            ));
+        if n == 0 {
+            return Err(io::Error::from_raw_os_error(libc::ECONNRESET));
         }
-        let mut fd: RawFd = -1;
-        std::ptr::copy_nonoverlapping(
-            libc::CMSG_DATA(cmsg),
-            &mut fd as *mut RawFd as *mut u8,
-            std::mem::size_of::<RawFd>(),
-        );
-        Ok(OwnedFd::from_raw_fd(fd))
+        buf = &mut buf[n as usize..];
     }
-}
-
-/// Room for one fd's control message. `CMSG_SPACE` is not const, so this
-/// mirrors its arithmetic for the fixed single-fd case.
-const fn unsafe_cmsg_space() -> usize {
-    // CMSG_SPACE(sizeof(int)) == align(sizeof(cmsghdr)) + align(sizeof(int)).
-    // 64 bytes is a safe over-allocation on every Linux ABI.
-    64
+    Ok(())
 }
 
 /// The live supervisor: a thread servicing the notify fd, plus the shared log

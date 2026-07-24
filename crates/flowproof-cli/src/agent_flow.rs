@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use flowproof_adapters::agent_proxy::AgentProxy;
-use flowproof_adapters::agent_runner::{run_against_contained, run_http, AgentRun};
+use flowproof_adapters::agent_runner::{run_against, run_against_contained, run_http, AgentRun};
 use flowproof_adapters::egress::{AllowSet, Containment};
 use flowproof_adapters::mcp_http::McpHttpServer;
 use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan, McpServerEvent};
@@ -547,6 +547,12 @@ struct Plan {
     allow_unresolved: Vec<String>,
     /// Whether the flow carries an `assert_no_egress` step.
     assert_no_egress: bool,
+    /// Whether this flow ENGAGES egress containment: it declares an
+    /// `allow_egress` set or asserts no egress. The PURE predicate (see
+    /// [`engages_egress`]) that gates whether the command driver runs
+    /// contained - identical in record and replay, so both install (or skip)
+    /// the seccomp filter the same way.
+    engages_egress: bool,
 }
 
 impl Plan {
@@ -572,13 +578,19 @@ impl Plan {
     }
 
     /// Trigger the system under test against an already-started proxy. A
-    /// `command:` driver runs CONTAINED (live in both record and replay); a
-    /// `url:` service flowproof did not start is never contained.
+    /// `command:` driver runs CONTAINED only when the flow ENGAGES egress
+    /// (`allow_egress` or `assert_no_egress`); this is opt-in, so the common
+    /// path installs no seccomp filter. The gating predicate is pure and
+    /// identical in record and replay, so both make the same choice. A `url:`
+    /// service flowproof did not start is never contained.
     fn drive(&self, proxy: &AgentProxy) -> Result<AgentRun, String> {
         match &self.driver {
-            Driver::Command(command) => {
+            Driver::Command(command) if self.engages_egress => {
                 run_against_contained(proxy, command, &self.env, AGENT_TIMEOUT, &self.allow)
                     .map_err(|e| e.to_string())
+            }
+            Driver::Command(command) => {
+                run_against(proxy, command, &self.env, AGENT_TIMEOUT).map_err(|e| e.to_string())
             }
             Driver::Http { url, headers, .. } => {
                 run_http(proxy, url, headers, &self.prompt, AGENT_TIMEOUT)
@@ -703,14 +715,38 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
         allow,
         allow_unresolved,
         assert_no_egress,
+        engages_egress: engages_egress(spec),
     })
+}
+
+/// Whether a flow ENGAGES egress containment: it declares an `allow_egress`
+/// set OR carries an `assert_no_egress` step. A PURE function of the spec, so
+/// record and replay make the identical containment choice (a determinism
+/// requirement) and so the SAME predicate drives both the containment decision
+/// in [`Plan::drive`] and the tier reported by [`containment`]. When this is
+/// false, no seccomp filter is installed and no containment tier is claimed;
+/// `assert_no_egress` forces it true, which is exactly the certification.
+pub fn engages_egress(spec: &FlowSpec) -> bool {
+    let declares_allow = spec
+        .agent
+        .as_ref()
+        .is_some_and(|a| !a.allow_egress.is_empty());
+    let asserts_no_egress = spec
+        .steps
+        .iter()
+        .any(|s| matches!(s, SpecStep::AssertNoEgress));
+    declares_allow || asserts_no_egress
 }
 
 /// The containment tier a flow's run achieves, on this platform. Pure and
 /// cheap (a kernel probe on Linux); computed both here, to print the report's
 /// tier line, and inside record/replay, to gate `assert_no_egress` and build
-/// the trace's egress lane.
+/// the trace's egress lane. Containment is OPT-IN: a flow that does not engage
+/// egress installs no filter and claims no tier.
 pub fn containment(spec: &FlowSpec) -> Containment {
+    if !engages_egress(spec) {
+        return Containment::not_engaged();
+    }
     match spec.agent.as_ref() {
         // A service flowproof did not start cannot be contained.
         Some(agent) if agent.url.is_some() => Containment::url_flow(),
@@ -746,10 +782,11 @@ fn check_egress(
     }
 
     // The audit lane is written only when the feature is engaged, so a flow
-    // that never touches egress serializes byte-identical to today.
-    let engaged = !plan.allow_unresolved.is_empty()
-        || !run.egress.blocked.is_empty()
-        || plan.assert_no_egress;
+    // that never touches egress serializes byte-identical to today. This is
+    // the SAME pure predicate that gated containment (`plan.engages_egress`);
+    // `run.egress.blocked` can only be non-empty when it was already true, so
+    // the two decisions never disagree.
+    let engaged = plan.engages_egress || !run.egress.blocked.is_empty();
     if !engaged {
         return Ok(None);
     }
@@ -1189,6 +1226,7 @@ mod tests {
             forbidden: Vec::new(),
             reply_contains: Vec::new(),
             allow: AllowSet::default(),
+            engages_egress: !allow_unresolved.is_empty() || assert_no_egress,
             allow_unresolved,
             assert_no_egress,
         }
