@@ -145,6 +145,16 @@ auth headers); and for an `app: agent` flow, `assert_tool_call` /
 `${VAR}` references: resolved from the environment when the step fires,
 never stored in a trace; password fields are masked in captured frames.
 
+**Prove security controls hold**: a control is just a property that must
+hold, asserted deterministically over a recorded flow. Name one with a
+stable `control:` id; assert an access-control denial as a composed pattern
+(become a low-privilege identity from the suite's `identities:`, prove it is
+alive, then assert the denial); catch a leaked secret in agent output with
+`assert_no_secret_leak: ${VAR}` (agent flows in v1); and fold the
+control-bearing flows into a `pass`/`fail`/`capability-error` coverage map
+with `flowproof audit`
+([docs/authoring.md](docs/authoring.md#security-controls)).
+
 **Debug what a tool sends**: `flowproof capture` is a byte-fidelity HTTP
 capture endpoint: point a tool-under-test at it and every request is printed
 and saved verbatim (method, path, all headers, raw body as text and hexdump,

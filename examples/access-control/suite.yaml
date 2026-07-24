@@ -1,0 +1,34 @@
+# Access-control regression suite: prove that known authorization controls
+# still hold on every CI run. A template - point the ${VAR}s at your app and
+# supply the session cookies and API tokens from your own fixture (a
+# `before_each` hook, an external mint script, or the environment).
+#
+# Identities are declared ONCE here and referenced by name from a flow's
+# `session:` field. Each entry is exactly the inline `session:` shape (cookies
+# + local_storage); values are ${VAR} refs resolved at apply time and never
+# stored. An identity carries the BROWSER SESSION ONLY - API bearer tokens are
+# not part of a browser session, so they stay plain suite `env` by convention
+# (see ${VIEWER_TOKEN} below), not in the identity block.
+#
+# See docs/authoring.md#security-controls and
+# docs/getting-started.md#shared-identities-declare-once-reference-by-name.
+
+identities:
+  viewer:
+    cookies:
+      - name: app.session
+        value: ${VIEWER_SESSION_COOKIE}     # resolved at apply time, never stored
+  admin:
+    cookies:
+      - name: app.session
+        value: ${ADMIN_SESSION_COOKIE}
+    local_storage:
+      role: admin
+
+# API credentials stay plain suite env: a bearer token is not a browser
+# session, so it does not live in an identity block. These resolve at the
+# moment each assert_api probe fires, and the trace stores only the reference.
+env:
+  APP_URL: ${APP_URL}
+  API: ${API}
+  VIEWER_TOKEN: ${VIEWER_TOKEN}
