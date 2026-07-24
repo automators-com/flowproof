@@ -133,7 +133,10 @@ before/after frames — applied only with explicit `--apply`.
 - `app: agent`: test an AI agent at the model boundary. Record its
   trajectory once against a real model, replay it deterministically with
   zero model calls, and assert the tool calls it makes
-  ([docs/agent-testing.md](docs/agent-testing.md))
+  ([docs/agent-testing.md](docs/agent-testing.md)). On **Linux**, an
+  `agent.command` flow can be run under real, unprivileged **egress
+  containment (seccomp)**: declare its network with `allow_egress` and
+  certify it with `assert_no_egress`
 
 **Verify beyond the UI** — out-of-band truth in any flow: `assert_sql`
 (postgres) and `assert_api` (status, body matching, JSON request body,
@@ -191,6 +194,8 @@ Planned, not yet shipped — feature bullets above only claim what works:
 - npm distribution of the CLI (the wheel stays the primary SDK)
 - Visual-template matching, OCR sync conditions, DXGI capture for vision
 - Healing over the clarification-payload surface; worker parallelism
+- Egress containment on macOS and Windows (`command:` agents there are
+  reported "not contained" today; the mechanism is Linux-only)
 
 See [docs/design.md](docs/design.md) for the design notes behind these.
 
