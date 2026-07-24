@@ -42,6 +42,7 @@ ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 | `Select <option> from the [2nd ]"<label>" field` | native `<select>`: committed via the value setter, fires `input`+`change` (React-safe). `in the` and `… dropdown` also accepted |
 | `Press the [2nd ]"<label>" button` / `Press the <id> button` | |
 | `Right-click [the [2nd ]]"<text>"` | opens the element's context menu; `Right click` also accepted |
+| `Double-click [the [2nd ]]"<text>"` | fires a real `dblclick` on the element; `Double click` also accepted. Web only. Like `Click`, its effect is app-defined, so the step verifies the element resolved and the event dispatched, not app state |
 | `Upload <path> into the [2nd ]"<label>" field` | sets a file on a file-chooser input (may be hidden behind a styled button); relative paths resolve against the working directory at execution |
 | `Upload <path> into the <id> field` | |
 | `Click [the [2nd ]]"<text>"` | tabs, links, menu options, rows |
