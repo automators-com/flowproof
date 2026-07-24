@@ -116,7 +116,7 @@ these fields existed) is byte-identical:
 - `intent` — the natural-language step description. Never executed; used for
   review, reporting, and as the prompt seed for `ai_relocation`/healing.
 - `action.type` — one of `launch`, `focus_window`, `click`, `double_click`,
-  `right_click`, `drag`, `scroll`, `type_text`, `press_key`, `wait`,
+  `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`, `wait`,
   `assert`. `params` is action-specific (see schema `$defs`).
   Text params (`type_text` text, assert expectations) may contain `${VAR}`
   **secret references**: the engine resolves them from the environment at

@@ -1485,6 +1485,26 @@ fn execute_step<D: AppDriver>(
                 StepMatch::default(),
             ),
         },
+        // Hover: the driver moves the pointer onto the element ONCE; the
+        // engine synthesizes no pointer movement between steps, so the
+        // hover state persists until the author's next explicit pointer
+        // action.
+        Action::Hover(_) => match resolve_target(driver, &step.selectors)? {
+            Some((target, rung)) => {
+                let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                match wait_actionable(driver, &target, actionable_timeout(step))? {
+                    Ok(()) => {
+                        driver.hover(&target)?;
+                        (Ok(()), matched)
+                    }
+                    Err(reason) => (Err(reason), matched),
+                }
+            }
+            None => (
+                Err("no selector rung resolved to a live element".to_string()),
+                StepMatch::default(),
+            ),
+        },
         // Scroll a container/element/page. An empty selector list is a page
         // scroll (`Scroll to the bottom`); otherwise the target scrolls (as a
         // container for top/bottom, or into the viewport). Instant, no

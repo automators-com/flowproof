@@ -31,6 +31,15 @@ together).
   `flowproof run` writes, with no re-replay. `--since <run-id>` diffs two runs
   and reports added, removed, and verdict-changed controls, exiting non-zero on
   a regression (a removed control, or one that turned failing).
+- **Hover a web element.** `Hover over "<text>"` (plus the `the`, ordinal, and
+  `in the item containing "<anchor>"` forms) moves the pointer onto the element
+  with a single `mouseMoved`, no press/release. The step then self-checks that
+  the element actually matches `:hover` (the hit test landed on it or a
+  descendant), so a move that hit an occluder fails instead of passing. Hover
+  state persists until the next explicit pointer action, so a following `Click`
+  can hit a hover-revealed element. Web only. Additive trace v1 change: a new
+  `hover` entry in the action-type enum of `trace-v1.schema.json`; traces not
+  using it are byte-identical.
 
 See [docs/authoring.md](docs/authoring.md#security-controls) and
 [examples/access-control/](examples/access-control/).

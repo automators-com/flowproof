@@ -410,6 +410,7 @@
             "click",
             "double_click",
             "right_click",
+            "hover",
             "drag",
             "scroll",
             "type_text",

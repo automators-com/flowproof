@@ -312,6 +312,10 @@ pub enum Action {
     Click(Params),
     DoubleClick(Params),
     RightClick(Params),
+    /// Move the pointer onto an element (a single `mouseMoved`, no
+    /// press/release). Hover state persists until the next explicit
+    /// pointer action.
+    Hover(Params),
     Drag(Params),
     Scroll(Params),
     TypeText(TypeTextParams),

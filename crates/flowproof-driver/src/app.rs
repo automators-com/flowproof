@@ -519,6 +519,15 @@ pub trait AppDriver {
         )))
     }
 
+    /// Hover over an element: move the pointer onto it (a single
+    /// `mouseMoved`, no press/release). Hover state persists until the
+    /// next explicit pointer action.
+    fn hover(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        Err(DriverError::Uia(format!(
+            "hover is not supported by this driver yet: [{selector}]"
+        )))
+    }
+
     /// Stage browser launch/emulation config (viewport, user-agent, extra
     /// flags) to apply at the next `launch`. Drivers without a browser
     /// must REJECT it — silently ignoring emulation would change what the
@@ -1357,6 +1366,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn double_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         (**self).double_click(selector)
+    }
+
+    fn hover(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        (**self).hover(selector)
     }
 
     fn stage_browser(&mut self, config: WebBrowserConfig) -> Result<(), DriverError> {

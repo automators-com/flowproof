@@ -1687,6 +1687,75 @@ impl AppDriver for WebAppDriver {
         )
     }
 
+    fn hover(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let locator = Self::locator(selector)?;
+        let tab = self.tab()?.clone();
+        // The closure returns the `:hover` self-check so the caller can turn
+        // a false into a clear DriverError, exactly as `scroll` turns a
+        // failed edge-check into one. A bare "dispatch succeeded" would pass
+        // even when the move landed on an occluder, so hover VERIFIES.
+        let hovered =
+            self.with_element(&locator, &format!("hovering [{selector}]"), |element| {
+                element.scroll_into_view()?;
+                // NOT-OBSCURED gate: hovering an obscured element is
+                // meaningless because the occluder receives the `mouseover`,
+                // not our target. Same Playwright-style `elementFromPoint`
+                // check the click path uses.
+                let visible = element.call_js_fn(
+                    r#"function() {
+                    const r = this.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) { return false; }
+                    const t = document.elementFromPoint(
+                        r.x + r.width / 2, r.y + r.height / 2);
+                    return !!(t && (t === this || this.contains(t) || t.contains(this)));
+                }"#,
+                    vec![],
+                    false,
+                )?;
+                if visible.value.and_then(|v| v.as_bool()) != Some(true) {
+                    anyhow::bail!("the element is obscured; a hover would land on the occluder");
+                }
+                let point = element.get_midpoint()?;
+                // A single `mouseMoved` at the element's center: no
+                // press/release, and no synthesized intermediate moves. The
+                // browser derives `mouseover`/`mouseenter` itself, and the
+                // hover state PERSISTS until the author's next explicit
+                // pointer action, because nothing else moves the pointer.
+                tab.call_method(Input::DispatchMouseEvent {
+                    Type: Input::DispatchMouseEventTypeOption::MouseMoved,
+                    x: point.x,
+                    y: point.y,
+                    button: None,
+                    click_count: None,
+                    modifiers: None,
+                    timestamp: None,
+                    buttons: None,
+                    force: None,
+                    tangential_pressure: None,
+                    tilt_x: None,
+                    tilt_y: None,
+                    twist: None,
+                    delta_x: None,
+                    delta_y: None,
+                    pointer_Type: None,
+                })?;
+                // THE VERIFY: `:hover` is true only if the hit test at the pointer
+                // landed on this element or a descendant. Mirrors how `scroll`
+                // proves its effect took, instead of trusting the dispatch.
+                element.call_js_fn(
+                    "function() { return this.matches(':hover'); }",
+                    vec![],
+                    false,
+                )
+            })?;
+        if hovered.value.and_then(|v| v.as_bool()) != Some(true) {
+            return Err(DriverError::Browser(format!(
+                "[{selector}] is not hovered after the pointer move (the hit test landed elsewhere)"
+            )));
+        }
+        Ok(())
+    }
+
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
         let locator = Self::locator(selector)?;
         // Inner text covers most elements; inputs expose their VALUE — the
