@@ -19,11 +19,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use flowproof_adapters::agent_proxy::AgentProxy;
-use flowproof_adapters::agent_runner::{run_against, run_http, AgentRun};
+use flowproof_adapters::agent_runner::{run_against_contained, run_http, AgentRun};
+use flowproof_adapters::egress::{AllowSet, Containment};
 use flowproof_adapters::mcp_http::McpHttpServer;
 use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan, McpServerEvent};
 use flowproof_agent::{FlowSpec, SpecStep};
 use flowproof_trace::cassette::Cassette;
+use flowproof_trace::egress::EgressEvent;
 use flowproof_trace::substitution::Mocks;
 use flowproof_trace::toolcalls::{self, ToolCallExpectation};
 
@@ -72,6 +74,28 @@ struct AgentTrace {
     /// (the field defaults to empty).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     mcp: BTreeMap<String, McpServerTrace>,
+    /// The egress audit lane, written at record when containment is engaged.
+    /// ADDITIVE and OMITTED entirely when there is nothing to say, so a flow
+    /// that never uses the feature serializes BYTE-IDENTICAL to today. The
+    /// allow-list is stored as UNRESOLVED `${VAR}` text (an audit record, not
+    /// authority: enforcement always uses the CURRENT spec's set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    egress: Option<EgressTrace>,
+}
+
+/// The trace's egress lane: the containment tier the recording ran under, the
+/// declared allow-list (unresolved text), and the denied attempts observed.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct EgressTrace {
+    /// The containment tier line, e.g. `enforced (linux seccomp)`.
+    containment: String,
+    /// The spec's `allow_egress` entries, UNRESOLVED - an audit record of the
+    /// policy in force, never resolved (which would leak the destination).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    allowed: Vec<String>,
+    /// Undeclared destinations the agent attempted and containment denied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    blocked: Vec<EgressEvent>,
 }
 
 /// One MCP server's recorded lane: its mocks, snapshotted (travel-in-trace,
@@ -515,6 +539,14 @@ struct Plan {
     tool_calls: Vec<ToolCallExpectation>,
     forbidden: Vec<ToolCallExpectation>,
     reply_contains: Vec<String>,
+    /// The resolved egress allow-set enforced on a `command:` driver (empty
+    /// and unused for `url:`).
+    allow: AllowSet,
+    /// The spec's `allow_egress` entries, kept UNRESOLVED for the trace's
+    /// audit lane.
+    allow_unresolved: Vec<String>,
+    /// Whether the flow carries an `assert_no_egress` step.
+    assert_no_egress: bool,
 }
 
 impl Plan {
@@ -539,11 +571,14 @@ impl Plan {
         }
     }
 
-    /// Trigger the system under test against an already-started proxy.
+    /// Trigger the system under test against an already-started proxy. A
+    /// `command:` driver runs CONTAINED (live in both record and replay); a
+    /// `url:` service flowproof did not start is never contained.
     fn drive(&self, proxy: &AgentProxy) -> Result<AgentRun, String> {
         match &self.driver {
             Driver::Command(command) => {
-                run_against(proxy, command, &self.env, AGENT_TIMEOUT).map_err(|e| e.to_string())
+                run_against_contained(proxy, command, &self.env, AGENT_TIMEOUT, &self.allow)
+                    .map_err(|e| e.to_string())
             }
             Driver::Http { url, headers, .. } => {
                 run_http(proxy, url, headers, &self.prompt, AGENT_TIMEOUT)
@@ -602,6 +637,27 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
         }
     };
 
+    // The egress allow-set: the CURRENT spec's `allow_egress`, `${VAR}` refs
+    // resolved at execution and DNS names pinned to their IP set once. The
+    // UNRESOLVED text is kept for the trace's audit lane. `url:` flows reject
+    // `allow_egress` at validation, so this is only ever non-empty for a
+    // `command:` driver.
+    let allow_unresolved = spec
+        .agent
+        .as_ref()
+        .map(|a| a.allow_egress.clone())
+        .unwrap_or_default();
+    let mut resolved_allow = Vec::new();
+    for entry in &allow_unresolved {
+        resolved_allow
+            .push(flowproof_trace::secret::resolve_refs(entry).map_err(|e| e.to_string())?);
+    }
+    let allow = AllowSet::resolve(&resolved_allow)?;
+    let assert_no_egress = spec
+        .steps
+        .iter()
+        .any(|s| matches!(s, SpecStep::AssertNoEgress));
+
     let mut tool_calls = Vec::new();
     let mut forbidden = Vec::new();
     let mut reply_contains = Vec::new();
@@ -644,7 +700,89 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
         tool_calls,
         forbidden,
         reply_contains,
+        allow,
+        allow_unresolved,
+        assert_no_egress,
     })
+}
+
+/// The containment tier a flow's run achieves, on this platform. Pure and
+/// cheap (a kernel probe on Linux); computed both here, to print the report's
+/// tier line, and inside record/replay, to gate `assert_no_egress` and build
+/// the trace's egress lane.
+pub fn containment(spec: &FlowSpec) -> Containment {
+    match spec.agent.as_ref() {
+        // A service flowproof did not start cannot be contained.
+        Some(agent) if agent.url.is_some() => Containment::url_flow(),
+        // A process flowproof starts: what this platform/kernel can enforce.
+        _ => Containment::command_flow(),
+    }
+}
+
+/// Check the run's egress against the flow's policy. Returns the trace's
+/// egress lane to store (record) or discard (replay). Fails - so record mints
+/// no trace and replay fails the flow - when `assert_no_egress` cannot be
+/// certified or was violated.
+fn check_egress(
+    plan: &Plan,
+    run: &AgentRun,
+    containment: &Containment,
+) -> Result<Option<EgressTrace>, String> {
+    // `assert_no_egress` is a CAPABILITY claim: it can only certify where
+    // containment is actually enforced. There is no bypass flag.
+    if plan.assert_no_egress && !containment.is_enforced() {
+        return Err(format!(
+            "egress containment is not enforced on this platform/driver ({}); \
+             assert_no_egress cannot certify",
+            containment.reason().unwrap_or("not contained")
+        ));
+    }
+    // The verdict is the SET predicate: the set of undeclared destinations
+    // attempted is empty (deduped by destination, so retry-count variance is
+    // irrelevant).
+    let undeclared = run.egress.undeclared_destinations();
+    if plan.assert_no_egress && !undeclared.is_empty() {
+        return Err(egress_failure_message(&undeclared));
+    }
+
+    // The audit lane is written only when the feature is engaged, so a flow
+    // that never touches egress serializes byte-identical to today.
+    let engaged = !plan.allow_unresolved.is_empty()
+        || !run.egress.blocked.is_empty()
+        || plan.assert_no_egress;
+    if !engaged {
+        return Ok(None);
+    }
+    Ok(Some(EgressTrace {
+        containment: containment_tag(containment),
+        allowed: plan.allow_unresolved.clone(),
+        blocked: run.egress.blocked.clone(),
+    }))
+}
+
+/// The short containment tag stored in the trace lane (the parenthetical of
+/// the report line): `enforced (linux seccomp)` or `not contained (<reason>)`.
+fn containment_tag(containment: &Containment) -> String {
+    containment
+        .report_line()
+        .strip_prefix("egress containment: ")
+        .unwrap_or("")
+        .to_string()
+}
+
+/// The failure naming the undeclared destinations, e.g.
+/// `undeclared egress attempted: 198.51.100.9:443 (tcp), 203.0.113.9:53 (udp);
+/// declare it in agent.allow_egress or remove it from the agent`.
+fn egress_failure_message(undeclared: &[EgressEvent]) -> String {
+    let list = undeclared
+        .iter()
+        .map(|e| format!("{} ({})", e.destination, e.protocol))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "undeclared egress attempted: {list}; declare it in agent.allow_egress or remove it \
+         from the agent"
+    )
 }
 
 fn parse_expectation(text: &str) -> Result<ToolCallExpectation, String> {
@@ -722,12 +860,18 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
     };
     // Recording asserts: no trace for a trajectory that fails the spec.
     check_assertions(&plan, &cassette)?;
+    // Egress asserts too: a failing `assert_no_egress` (or a blocked
+    // undeclared attempt when the step is present) mints NO trace, beside the
+    // trajectory assertions. The returned lane is the audit record written
+    // into the trace.
+    let egress = check_egress(&plan, &run, &containment(spec))?;
 
     let trace = AgentTrace {
         app: "agent".into(),
         mocks: plan.mocks.into_iter().collect(),
         cassette,
         mcp: mcp_trace,
+        egress,
     };
     let json = serde_json::to_string_pretty(&trace).map_err(|e| e.to_string())?;
     std::fs::write(out, json).map_err(|e| format!("writing {}: {e}", out.display()))?;
@@ -775,6 +919,10 @@ pub fn replay(spec: &FlowSpec, trace_path: &Path) -> Result<(), String> {
     if let Some(ctx) = &mcp {
         ctx.check_replay(spec, &trace.mcp)?;
     }
+    // Egress is checked against THIS phase's LIVE log, not the recorded lane:
+    // enforcement uses the current spec's set both phases, and the trace's
+    // lane is an audit record only.
+    check_egress(&plan, &run, &containment(spec))?;
     Ok(())
 }
 
@@ -863,6 +1011,7 @@ mod tests {
             mocks: BTreeMap::new(),
             cassette,
             mcp: BTreeMap::new(),
+            egress: None,
         };
         std::fs::write(
             &path,
@@ -974,20 +1123,165 @@ mod tests {
             mocks: BTreeMap::new(),
             cassette: neutral_cassette("hi", "there"),
             mcp: BTreeMap::new(),
+            egress: None,
         };
         let json = serde_json::to_string_pretty(&trace).expect("serialize");
-        // The `mcp` key is skipped when empty, so the bytes match a pre-v3.1
-        // agent trace exactly.
+        // The `mcp` and `egress` keys are skipped when empty, so the bytes
+        // match a pre-feature agent trace exactly.
         assert!(
             !json.contains("mcp"),
             "no mcp key on an mcp-less trace: {json}"
         );
+        assert!(
+            !json.contains("egress"),
+            "no egress key on an egress-less trace: {json}"
+        );
 
-        // A hand-built pre-v3.1 trace (no `mcp` field at all) deserializes,
-        // its mcp map defaulting to empty.
+        // A hand-built pre-feature trace (no `mcp`/`egress` fields at all)
+        // deserializes, its added fields defaulting to empty/None.
         let v2 = r#"{"app":"agent","mocks":{},"cassette":{"turns":[]}}"#;
         let back: AgentTrace = serde_json::from_str(v2).expect("v2 trace still deserializes");
         assert!(back.mcp.is_empty(), "absent mcp defaults to empty");
+        assert!(back.egress.is_none(), "absent egress defaults to None");
+    }
+
+    /// The egress lane round-trips and is OMITTED entirely when there is
+    /// nothing to say - the additivity the byte-identical invariant rests on.
+    #[test]
+    fn an_egress_lane_survives_the_round_trip() {
+        let trace = AgentTrace {
+            app: "agent".into(),
+            mocks: BTreeMap::new(),
+            cassette: neutral_cassette("hi", "there"),
+            mcp: BTreeMap::new(),
+            egress: Some(EgressTrace {
+                containment: "enforced (linux seccomp)".into(),
+                allowed: vec!["api.example.com:443".into(), "${SERVICE_HOST}:443".into()],
+                blocked: vec![EgressEvent {
+                    destination: "198.51.100.9:443".into(),
+                    protocol: "tcp".into(),
+                    at_ms: 42,
+                }],
+            }),
+        };
+        let json = serde_json::to_string(&trace).expect("serialize");
+        assert!(json.contains("\"egress\""), "egress present: {json}");
+        // The allow-list travels UNRESOLVED - the `${VAR}` ref is not expanded.
+        assert!(json.contains("${SERVICE_HOST}:443"), "unresolved: {json}");
+        let back: AgentTrace = serde_json::from_str(&json).expect("deserialize");
+        let lane = back.egress.expect("lane present");
+        assert_eq!(lane.allowed.len(), 2);
+        assert_eq!(lane.blocked[0].destination, "198.51.100.9:443");
+        assert_eq!(lane.blocked[0].protocol, "tcp");
+    }
+
+    // ---- egress containment verdict (cross-platform) ----
+
+    /// A minimal `command:` Plan for exercising `check_egress` directly.
+    fn egress_plan(assert_no_egress: bool, allow_unresolved: Vec<String>) -> Plan {
+        Plan {
+            driver: Driver::Command("agent".into()),
+            env: BTreeMap::new(),
+            prompt: String::new(),
+            mocks: Mocks::new(),
+            strict: false,
+            tool_calls: Vec::new(),
+            forbidden: Vec::new(),
+            reply_contains: Vec::new(),
+            allow: AllowSet::default(),
+            allow_unresolved,
+            assert_no_egress,
+        }
+    }
+
+    /// An `AgentRun` carrying `blocked` egress events and nothing else.
+    fn egress_run(blocked: Vec<EgressEvent>) -> AgentRun {
+        AgentRun {
+            served: 1,
+            divergence: None,
+            exit_code: Some(0),
+            timed_out: false,
+            stdout: String::new(),
+            stderr: String::new(),
+            upstream_error: None,
+            egress: flowproof_adapters::egress::EgressLog { blocked },
+        }
+    }
+
+    /// `assert_no_egress` is a CAPABILITY claim: on any tier that is not
+    /// enforced it fails outright, with no bypass, rather than passing
+    /// vacuously.
+    #[test]
+    fn assert_no_egress_is_a_capability_error_when_not_enforced() {
+        let plan = egress_plan(true, vec![]);
+        let run = egress_run(vec![]);
+        let err = check_egress(&plan, &run, &Containment::url_flow())
+            .expect_err("cannot certify when not enforced");
+        assert!(err.contains("assert_no_egress cannot certify"), "{err}");
+        assert!(err.contains("not enforced"), "{err}");
+
+        // A non-enforced kernel is the same story.
+        let not = Containment::NotContained("kernel lacks seccomp user-notification".into());
+        let err = check_egress(&plan, &run, &not).expect_err("cannot certify");
+        assert!(err.contains("cannot certify"), "{err}");
+    }
+
+    /// Under enforcement, an undeclared attempt fails the assertion, naming
+    /// every destination and its protocol, deduped by destination.
+    #[test]
+    fn undeclared_egress_fails_naming_destinations() {
+        let plan = egress_plan(true, vec!["api.example.com:443".into()]);
+        let run = egress_run(vec![
+            EgressEvent {
+                destination: "198.51.100.9:443".into(),
+                protocol: "tcp".into(),
+                at_ms: 10,
+            },
+            // A retry of the same destination collapses to one.
+            EgressEvent {
+                destination: "198.51.100.9:443".into(),
+                protocol: "tcp".into(),
+                at_ms: 20,
+            },
+            EgressEvent {
+                destination: "203.0.113.9:53".into(),
+                protocol: "udp".into(),
+                at_ms: 30,
+            },
+        ]);
+        let err =
+            check_egress(&plan, &run, &Containment::Enforced).expect_err("undeclared egress fails");
+        assert!(err.contains("undeclared egress attempted"), "{err}");
+        assert!(err.contains("198.51.100.9:443 (tcp)"), "{err}");
+        assert!(err.contains("203.0.113.9:53 (udp)"), "{err}");
+        assert!(err.contains("declare it in agent.allow_egress"), "{err}");
+        // Deduped: the retry does not appear twice.
+        assert_eq!(err.matches("198.51.100.9:443").count(), 1, "{err}");
+    }
+
+    /// A clean enforced run with declared allow passes and writes the audit
+    /// lane (containment tag + unresolved allow-list + empty blocked).
+    #[test]
+    fn a_clean_enforced_run_writes_the_audit_lane() {
+        let plan = egress_plan(true, vec!["${SERVICE_HOST}:443".into()]);
+        let run = egress_run(vec![]);
+        let lane = check_egress(&plan, &run, &Containment::Enforced)
+            .expect("clean run passes")
+            .expect("engaged feature writes a lane");
+        assert_eq!(lane.containment, "enforced (linux seccomp)");
+        // The allow-list travels UNRESOLVED.
+        assert_eq!(lane.allowed, vec!["${SERVICE_HOST}:443".to_string()]);
+        assert!(lane.blocked.is_empty());
+    }
+
+    /// A flow that never touches egress writes NO lane, so its trace is
+    /// byte-identical to a pre-feature one.
+    #[test]
+    fn an_unused_feature_writes_no_lane() {
+        let plan = egress_plan(false, vec![]);
+        let run = egress_run(vec![]);
+        let lane = check_egress(&plan, &run, &Containment::url_flow()).expect("nothing to certify");
+        assert!(lane.is_none(), "no lane when the feature is unused");
     }
 
     /// A trace WITH an mcp lane carries it through the round trip, and it
@@ -1012,6 +1306,7 @@ mod tests {
             mocks: BTreeMap::new(),
             cassette: neutral_cassette("hi", "there"),
             mcp,
+            egress: None,
         };
         let json = serde_json::to_string(&trace).expect("serialize");
         assert!(json.contains("\"mcp\""), "mcp present: {json}");
@@ -1713,6 +2008,7 @@ mod tests {
             mocks: BTreeMap::new(),
             cassette: neutral_cassette("hi", "there"),
             mcp,
+            egress: None,
         };
         let json = serde_json::to_string_pretty(&trace).expect("serialize");
         assert!(

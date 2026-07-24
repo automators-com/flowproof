@@ -23,6 +23,7 @@ use flowproof_trace::cassette::{Cassette, Divergence};
 use flowproof_trace::substitution::Mocks;
 
 use crate::agent_proxy::{AgentProxy, ProxyError};
+use crate::egress::{AllowSet, EgressLog};
 
 /// The environment variables an OpenAI-compatible client reads for its
 /// base URL. All of them are set, because the system under test picks one
@@ -93,6 +94,12 @@ pub struct AgentRun {
     pub stderr: String,
     /// A real-model call that failed, in record mode. `None` in replay.
     pub upstream_error: Option<String>,
+    /// What egress containment denied during the run. Empty on an
+    /// uncontained run, and empty on a contained run that attempted nothing
+    /// undeclared. Surfaced beside `divergence`, like [`ProxyLog`].
+    ///
+    /// [`ProxyLog`]: crate::agent_proxy::ProxyLog
+    pub egress: EgressLog,
 }
 
 impl AgentRun {
@@ -229,27 +236,23 @@ pub fn run_http(
         stdout,
         stderr: String::new(),
         upstream_error: log.upstream_error.clone(),
+        egress: EgressLog::default(),
     };
     drop(log);
     Ok(run)
 }
 
-/// Spawn the agent against an ALREADY-STARTED proxy and wait for it to
-/// finish. The orchestration uses this to drive a RECORD proxy (which
-/// forwards to a real model) as easily as a replay one - the process does
-/// not know or care which mode the endpoint it was handed is in.
-pub fn run_against(
-    proxy: &AgentProxy,
+/// Build the agent's [`Command`] with the proxy pointed at `base` and the
+/// spec's env applied on top. Shared by the plain and contained spawn paths.
+fn configure(
     command: &str,
+    base: &str,
     env: &BTreeMap<String, String>,
-    timeout: Duration,
-) -> Result<AgentRun, RunError> {
+) -> Result<Command, RunError> {
     let command = command.trim();
     if command.is_empty() {
         return Err(RunError::NoCommand);
     }
-    let base = proxy.base_url();
-
     let parts = argv(command);
     let (program, args) = parts.split_first().ok_or(RunError::NoCommand)?;
 
@@ -259,7 +262,7 @@ pub fn run_against(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for var in BASE_URL_VARS {
-        child.env(var, &base);
+        child.env(var, base);
     }
     child.env("OPENAI_API_KEY", "flowproof-replay-no-key-needed");
     // The Anthropic SDK reads its own base URL and appends `/v1/messages`
@@ -267,22 +270,25 @@ pub fn run_against(
     // hand it the suffix-free form. A placeholder key for the same reason
     // OPENAI_API_KEY gets one: a client that refuses to start without a key
     // must still reach the proxy, and there is no real upstream to leak to.
-    child.env("ANTHROPIC_BASE_URL", anthropic_base(&base));
+    child.env("ANTHROPIC_BASE_URL", anthropic_base(base));
     child.env("ANTHROPIC_API_KEY", "flowproof-replay-no-key-needed");
     // `${FLOWPROOF_LLM_PROXY}` is the documented handle for the base URL,
     // for clients that take it as an argument rather than an env var.
-    child.env("FLOWPROOF_LLM_PROXY", &base);
+    child.env("FLOWPROOF_LLM_PROXY", base);
     // The spec's own env goes on LAST so a flow can override any of the
     // above; it knows its client better than this module does.
     for (key, value) in env {
         child.env(key, value);
     }
+    Ok(child)
+}
 
-    let mut child = child.spawn().map_err(|source| RunError::Spawn {
-        command: command.to_string(),
-        source,
-    })?;
-
+/// Wait for `child` to the deadline, killing it at the timeout. Returns the
+/// exit status (`None` if killed or unwaitable) and whether it timed out.
+fn wait_to_deadline(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> (Option<std::process::ExitStatus>, bool) {
     let deadline = Instant::now() + timeout;
     let mut timed_out = false;
     let status = loop {
@@ -302,7 +308,11 @@ pub fn run_against(
         }
         std::thread::sleep(Duration::from_millis(20));
     };
+    (status, timed_out)
+}
 
+/// Drain a child's stdout and stderr pipes to strings.
+fn read_pipes(child: &mut std::process::Child) -> (String, String) {
     let read = |pipe: Option<&mut dyn Read>| {
         let mut buffer = String::new();
         if let Some(pipe) = pipe {
@@ -312,6 +322,31 @@ pub fn run_against(
     };
     let stdout = read(child.stdout.as_mut().map(|p| p as &mut dyn Read));
     let stderr = read(child.stderr.as_mut().map(|p| p as &mut dyn Read));
+    (stdout, stderr)
+}
+
+/// Spawn the agent against an ALREADY-STARTED proxy and wait for it to
+/// finish. The orchestration uses this to drive a RECORD proxy (which
+/// forwards to a real model) as easily as a replay one - the process does
+/// not know or care which mode the endpoint it was handed is in.
+///
+/// UNcontained: no egress filter. [`run_against_contained`] is the path an
+/// `app: agent` flow takes, so record and replay share a denial environment.
+pub fn run_against(
+    proxy: &AgentProxy,
+    command: &str,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+) -> Result<AgentRun, RunError> {
+    let base = proxy.base_url();
+    let mut cmd = configure(command, &base, env)?;
+    let mut child = cmd.spawn().map_err(|source| RunError::Spawn {
+        command: command.trim().to_string(),
+        source,
+    })?;
+
+    let (status, timed_out) = wait_to_deadline(&mut child, timeout);
+    let (stdout, stderr) = read_pipes(&mut child);
 
     let log = proxy.log();
     let run = AgentRun {
@@ -322,9 +357,78 @@ pub fn run_against(
         stdout,
         stderr,
         upstream_error: log.upstream_error.clone(),
+        egress: EgressLog::default(),
     };
     drop(log);
     Ok(run)
+}
+
+/// Spawn the agent against `proxy` with egress CONTAINED to `allow`. Live in
+/// both record and replay (a determinism requirement: the same denial
+/// environment both phases reproduces the same trajectory). On Linux this
+/// installs the real seccomp filter and services it for the run; on every
+/// other platform it is exactly [`run_against`] with an empty egress log,
+/// since the mechanism is Linux-only and the tier is reported "not
+/// contained" independently.
+#[cfg(target_os = "linux")]
+pub fn run_against_contained(
+    proxy: &AgentProxy,
+    command: &str,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+    allow: &AllowSet,
+) -> Result<AgentRun, RunError> {
+    let base = proxy.base_url();
+    let mut cmd = configure(command, &base, env)?;
+    // Install the filter into the child's pre_exec BEFORE spawn; the parent
+    // keeps its socket end to receive the notify fd once the child installs.
+    let prep = crate::egress_linux::install(&mut cmd, allow).map_err(|source| RunError::Spawn {
+        command: command.trim().to_string(),
+        source,
+    })?;
+    let spawned = Instant::now();
+    let mut child = cmd.spawn().map_err(|source| RunError::Spawn {
+        command: command.trim().to_string(),
+        source,
+    })?;
+    // Start the supervisor: receive the notify fd and service it for the run.
+    let supervisor = prep
+        .into_supervisor(spawned)
+        .map_err(|source| RunError::Spawn {
+            command: command.trim().to_string(),
+            source,
+        })?;
+
+    let (status, timed_out) = wait_to_deadline(&mut child, timeout);
+    let (stdout, stderr) = read_pipes(&mut child);
+    let egress = supervisor.stop_and_collect();
+
+    let log = proxy.log();
+    let run = AgentRun {
+        served: log.served,
+        divergence: log.divergence.clone(),
+        exit_code: status.and_then(|s| s.code()),
+        timed_out,
+        stdout,
+        stderr,
+        upstream_error: log.upstream_error.clone(),
+        egress,
+    };
+    drop(log);
+    Ok(run)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn run_against_contained(
+    proxy: &AgentProxy,
+    command: &str,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+    _allow: &AllowSet,
+) -> Result<AgentRun, RunError> {
+    // The seccomp mechanism is Linux-only; elsewhere this is the plain path,
+    // and the report's tier line says "not contained".
+    run_against(proxy, command, env, timeout)
 }
 
 #[cfg(test)]
