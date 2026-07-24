@@ -126,7 +126,27 @@ Generalized, a **control assertion** is:
 assert_no_<lane>[: <selector>] [where <path> <matcher> <value> [and ...]]
 ```
 
-with exactly these semantics, all inherited, none new:
+That one line is a family, not a single parser: the optional `<selector>`
+and the `where` clause are present, absent, or a different KIND of thing
+per lane, so each lane has its own tight grammar and the table below is
+normative, not the line above. What is shared is the meaning of "no
+event on this lane matched", not a uniform syntax.
+
+| lane | selector | `where` clauses | valid on app kinds |
+| --- | --- | --- | --- |
+| `tool_call` | tool name (string) | yes: full existing matcher vocabulary | agent flows (a model boundary exists) |
+| `egress` | none (bare form only) | no | flows flowproof spawns and contains: `agent:` today, Linux-spawned `app:` mapping in v2 |
+| `secret_leak` | `${VAR}` (one or more, a different selector KIND) | no | any flow with a readable output corpus |
+
+Read the table as three distinct grammars that happen to rhyme:
+`tool_call` selects by tool name and refines with `where`; `egress`
+takes neither a selector nor a `where` and certifies the whole log;
+`secret_leak` takes a `${VAR}` selector - an env reference, not a
+predicate over event fields - and no `where`. The claim that this "reuses
+existing matchers unchanged" is true of `tool_call` only, and is not
+generalized to the other two.
+
+With exactly these semantics, all inherited, none new:
 
 - **`<lane>` names an observation lane the engine records** - a stream of
   events captured identically at record and replay. The lane list is
@@ -138,10 +158,13 @@ with exactly these semantics, all inherited, none new:
 - **The scope is the whole run, regardless of the step's position** -
   the rule `assert_no_tool_call` already set. A control that holds only
   between steps 3 and 5 is not a control, it is a race.
-- **`<selector>` and `where` clauses narrow the forbidden event**, reusing
-  the existing matcher vocabulary unchanged: `equals` (alias `is`),
-  `contains`, `matches`, `exists`, `is absent`. No new matchers ride in
-  with this feature.
+- **`<selector>` and `where` clauses narrow the forbidden event where the
+  lane supports them.** On `tool_call` this reuses the existing matcher
+  vocabulary unchanged: `equals` (alias `is`), `contains`, `matches`,
+  `exists`, `is absent`, and no new matchers ride in with this feature.
+  `egress` takes no selector and no `where`; `secret_leak` takes a `${VAR}`
+  selector and no `where`. The per-lane table above is the authority on
+  which lane admits which.
 - **Absence is only certified over an observed lane.** If the platform
   could not enforce or observe the lane (egress containment off Linux, a
   `url:` service flowproof does not own), the assertion **fails as a
@@ -150,11 +173,22 @@ with exactly these semantics, all inherited, none new:
   and `assert_no_egress` cannot certify over it), promoted to a property
   of the whole family: a control assertion never certifies what it
   cannot observe.
-- **The verdict is deterministic.** The lane's contents at replay are the
-  recorded contents, so a control assertion can never fail on an
-  unchanged system. It is judged at record time too: a trace is only
-  minted for a run where every control held, the same rule every
-  assertion already follows.
+- **The verdict is deterministic.** The lane is observed by the SAME
+  mechanism at both phases, so on an unchanged system the observation, and
+  therefore the verdict, is identical - the same determinism grade as
+  `page shows`, which re-reads live surface text at replay rather than
+  serving it from the cassette. Only `tool_call` has the stronger grade
+  where the recorded cassette IS the lane; `egress` is live containment
+  enforcement at both phases, and the `secret_leak` corpus (page text,
+  `assert_api` bodies) is re-observed live at replay. It is judged at
+  record time too: a trace is only minted for a run where every control
+  held, the same rule every assertion already follows. The corollary is
+  that replay never diffs a live lane against the recorded one - the
+  egress log's `at_ms` values alone would churn a byte-for-byte compare on
+  every run - so the verdict comes from re-observing the lane, not from
+  comparing it to a recording. And in a minted trace the recorded egress
+  lane is empty by construction: record refuses to mint when a control
+  failed, so a clean log is the only log a trace can carry.
 
 ### One grammar, four subjects
 
@@ -177,7 +211,9 @@ without special pleading:
 #    No new step at all: the forbidden event here is the success state,
 #    and the shipped negative grammar already spells it. The flow
 #    performs the attempt, then asserts the denial and the absence of
-#    effect:
+#    effect - and, per "The denial flow" below, must ALSO carry a
+#    liveness assertion proving the identity was really authenticated
+#    (elided here; the full pattern shows it):
 - assert: page shows Access denied
 - assert: page does not show Deleted
 - assert_api:
@@ -202,9 +238,10 @@ but the control identity, which the `control:` block below provides.
 
 A proposed `assert_no_<lane>` subject is admitted only if ALL of:
 
-1. The engine records the lane's events **deterministically at both
-   phases** - the events are facts of the run, present in the trace or
-   derivable from it byte-for-byte.
+1. The engine observes the lane by the **same mechanism at both phases** -
+   the events are facts of the run, so an unchanged system yields the same
+   lane whether the lane is served from the cassette (`tool_call`) or
+   re-observed live (`egress`, `secret_leak`).
 2. The forbidden event is **decidable from the lane alone** - no judge,
    no threshold, no external knowledge base.
 3. The engine can be **honest about non-observation** - there is a
@@ -250,21 +287,49 @@ identities:
 ```
 
 A flow references one by name, or keeps an inline mapping exactly as
-today (a name and a mapping are distinguished by YAML type, so nothing
-shipped changes meaning):
+today. The `session` field becomes an untagged string-or-mapping form -
+a bare name resolves against suite identities, a mapping is inline setup -
+with the same "distinguished by YAML type" rule the `app:` and `window:`
+spec forms already use ([authoring.md](authoring.md)), so nothing shipped
+changes meaning:
 
 ```yaml
 session: viewer          # a string: resolved against suite identities
 ```
 
-An unknown name is a parse error listing the declared identities. The
-secret property is inherited, not re-argued: every value in an identity
-is a `${VAR}` reference resolved at apply time on record and on every
-replay, so the trace carries role NAMES and variable NAMES, never
+**Dereference is a load-time copy, not a runtime lookup.** When the flow
+is LOADED, the named identity is dereferenced and its `${VAR}`-bearing
+session setup is copied into the trace header EXACTLY as an inline
+`session:` mapping is copied today. The trace therefore stays
+self-contained: it carries the identity's setup, not a pointer to the
+suite. The consequence is deliberate - a later edit to the suite's
+identity definition is a re-record or heal event on the flows that use
+it, never a silent change to existing traces, the same way editing an
+inline `session:` is. A bare `session: viewer` in a flow with no
+governing suite is a load-time error naming the missing suite (there is
+nowhere to resolve the name), and an unknown name under a suite is a
+parse error listing the declared identities.
+
+The secret property is inherited, not re-argued: every value in an
+identity is a `${VAR}` reference resolved at apply time on record and on
+every replay, so the trace carries role NAMES and variable NAMES, never
 credentials (`crates/flowproof-trace/src/secret.rs`). How the sessions
 are minted is outside the engine, exactly as it is for `session:` today:
 a suite `before_each`, or an external fixture script, populates the
 variables.
+
+**Scope of an identity: browser session only.** An `identities:` entry
+carries the browser session - cookies and `local_storage` - and nothing
+else. The denial flow below also needs `${VIEWER_TOKEN}` on an
+`assert_api` call, and that token is NOT part of the browser session, so
+it does not live in the identity block. API credentials stay plain suite
+env by convention: `${VIEWER_TOKEN}` is a suite variable resolved at apply
+time like any other, and the identity block is not stretched to model
+exported HTTP credentials. This keeps the identity a faithful mirror of
+the shipped `session:` shape rather than a new credential container; a
+future flow that genuinely needs an identity to export non-cookie
+variables is a deliberate extension to design then, not an accident of
+this one.
 
 ### The denial flow
 
@@ -277,6 +342,12 @@ control:
   title: Viewer role is denied customer deletion
 session: viewer
 steps:
+  - assert: page shows Signed in as viewer            # the identity is ALIVE
+  - assert_api:                                       # and entitled to succeed
+      request: GET ${API}/customers/4711
+      headers:
+        Authorization: Bearer ${VIEWER_TOKEN}
+      status: 200
   - Click "Grace Hopper"
   - assert: the "Delete" button is not visible        # the UI withholds it
   - assert_api:                                       # the API refuses it
@@ -290,15 +361,32 @@ steps:
       equals: "1"
 ```
 
-Three layers of evidence, deliberately: the UI hiding the button is
-necessary but famously insufficient, so the flow also proves the API
-refuses a direct request and the record survives. All three are shipped
+Four layers of evidence, deliberately. The first two are the LIVENESS
+proof: the page confirms the viewer session is signed in, and the same
+`${VIEWER_TOKEN}` that will be refused on `DELETE` is first shown to
+SUCCEED on a `GET` it is entitled to. The last three are the denial: the
+UI hiding the button (necessary but famously insufficient), the API
+refusing a direct request, and the record surviving. All are shipped
 assertion forms; the only new token in the file is the `control:` block.
 
-The denial itself must be asserted POSITIVELY where the app expresses one
-(`status: 403`, `page shows Access denied`, an empty result set), not
-only as absence of success. An attempt that times out or errors for an
-unrelated reason must read as a broken test, never as a passing control.
+**A denial is only evidence when the same run proves the identity was
+alive.** A bare `status: 403` is not proof the control held: if the app
+returns `403` for both an unauthorized-but-valid session AND a dead one
+(an expired or revoked `${VIEWER_TOKEN}`, a logged-out browser), then a
+credential that quietly expired reads as a PASSING control while actually
+testing nothing. So a denial flow MUST include a positive assertion that
+the identity is entitled to succeed at something alongside the denial: a
+`200` probe on an action the identity is allowed (as above), or a UI fact
+only the logged-in session shows (`page shows Signed in as viewer`). This
+is a stated requirement of the pattern, not a nicety - a denial flow
+without a liveness assertion is an incomplete control, because it cannot
+distinguish "correctly denied" from "never really authenticated".
+
+The denial itself must also be asserted POSITIVELY where the app
+expresses one (`status: 403`, `page shows Access denied`, an empty result
+set), not only as absence of success. An attempt that times out or errors
+for an unrelated reason must read as a broken test, never as a passing
+control.
 
 Record and replay work exactly as for any web flow: the attempt is
 recorded once, the assertions are minted with the trace, and every CI run
@@ -330,23 +418,27 @@ redesigned:
   the point of policy.
 
 The generalization is one move: the declaring party stops being only
-`agent:` and becomes **any flow that spawns the process under test**. An
-`app:` mapping flow (a Windows program, [authoring.md](authoring.md)) or
-any future spawned-process driver gets the same block under a
-capability-neutral name:
+`agent:` and becomes **any flow that spawns the process under test AND can
+contain it**. That second clause is load-bearing, because containment is
+not universal. Egress containment is Linux-only seccomp: off Linux the
+supervisor returns `Containment::NotContained` and `assert_no_egress`
+fails as a capability error (`crates/flowproof-adapters/src/egress.rs`).
+So v2 scopes `surface.egress` to a process flowproof **spawns on Linux**,
+where the same seccomp mechanism the `agent:` seed already uses applies
+unchanged:
 
 ```yaml
 name: Exporter reaches only its declared services
 app:
-  command: '"C:\Program Files\Exporter\exporter.exe" --run'
-  window_title: Exporter
+  command: ./bin/exporter --run     # a Linux binary flowproof spawns and contains
 surface:
   egress:
     - api.example.com:443
-    - ${DB_HOST}:5432        # resolved at execution, never stored
+    - ${DB_HOST}:5432               # resolved at execution, never stored
 steps:
-  - Press the "Export" button
-  - assert: page shows Export complete
+  - assert_api:
+      request: POST ${API}/export
+      status: 200
   - assert_no_egress
 ```
 
@@ -354,13 +446,20 @@ steps:
 (`host:port`, bare host, `ip:port`, `cidr:port`, `${VAR}` deferral -
 `crates/flowproof-trace/src/egress.rs`); on an `app: agent` flow,
 `agent.allow_egress` remains the spelling and `surface:` is not a second
-one. The honesty rule generalizes with it: a flow flowproof did not spawn
-(`url:` services, `app: web` pages, vision-attached windows) has no
-containable process, so `surface:` there is a parse error saying so, not
-a silently unenforced wish. The browser's network boundary already has
-its own first-class tool (`mock:` intercepts inside the browser), and the
-two are not merged: `mock:` shapes what the page sees, `surface:`
-contains what a process may touch.
+one. The honesty rule generalizes with it, and cuts two ways. A flow
+flowproof did not spawn (`url:` services, `app: web` pages,
+vision-attached windows) has no containable process, so `surface:` there
+is a parse error saying so, not a silently unenforced wish. And a process
+flowproof spawns on a platform where seccomp does not exist - a Windows
+`app:` mapping driven through UI Automation ([authoring.md](authoring.md))
+- has no enforcement mechanism, so `surface.egress` is not offered there:
+its `assert_no_egress` could only ever be a permanent capability error on
+its one runnable platform, which is worse than absent. Windows containment
+waits on a future host mechanism (Windows Filtering Platform), designed if
+ever in its own work, not assumed here. The browser's network boundary
+already has its own first-class tool (`mock:` intercepts inside the
+browser), and the two are not merged: `mock:` shapes what the page sees,
+`surface:` contains what a process may touch.
 
 `surface:` is named for the future it must not overreach into: a
 `surface.filesystem:` or `surface.data:` axis is imaginable, but each
@@ -378,40 +477,86 @@ artifacts. It says nothing about the APP under test, which can happily
 render a connection string into an error page or echo a token into an
 API response. That is the leak a control must catch.
 
+v1 ships the **named-selector form only** - one or more `${VAR}` names,
+each a secret the flow declares must never surface:
+
 ```yaml
-- assert_no_secret_leak                       # every ${VAR} the flow referenced
-- assert_no_secret_leak: ${DB_PASSWORD}       # or one named secret
+- assert_no_secret_leak: ${DB_PASSWORD}       # one named secret
+- assert_no_secret_leak: ${API_TOKEN}         # or several, one per line
 ```
+
+The BARE form - "scan for every `${VAR}` the flow referenced" - is NOT
+buildable now and is deferred (see phasing). `${VAR}` is the engine's
+universal env indirection, not a secret marker: `${APP_URL}`, `${API}`,
+and `env_from`-minted test data (`${MATERIAL}`, `${SUPPLIER}`,
+[authoring.md](authoring.md)) legitimately appear in page text and
+`assert_api` bodies, so a bare scan of all referenced variables would fail
+at record on nearly every real flow. The bare form is admissible only once
+a suite-level `secrets:` declaration gives it a defined domain to scan
+(the set of variables the suite calls secret), which is future work; until
+then the author names each secret explicitly.
 
 Semantics, as an instance of the control-assertion grammar:
 
 - **The lane is the run's captured outputs**, defined as a closed corpus:
-  the page text the surface shows at each recorded step (the same text
-  `page shows` reads), every `assert_api` response body, and on agent
-  flows the model-boundary trajectory and MCP lanes. A closed corpus,
-  not "everything", because a control must name what it checked; the
-  audit output lists the corpus so nobody mistakes it for a proof about
-  channels the engine never saw (server logs, third-party sinks).
+  (a) the surface text at each STEP BOUNDARY (the same text `page shows`
+  reads), (b) every `assert_api` response body probed, and (c) on agent
+  flows the model-boundary trajectory and the MCP lanes. A closed corpus,
+  not "everything", because a control must name what it checked; the audit
+  output lists the corpus so nobody mistakes it for a proof about channels
+  the engine never saw (server logs, third-party sinks). Two exclusions
+  are part of the definition, not caveats bolted on, and both are echoed
+  in the audit output exactly as the OCR exclusion is:
+    - **Step-boundary capture, not continuous.** Surface text is sampled
+      when a step completes, not streamed, so a secret that flashes into
+      the DOM and is gone before the next boundary is invisible to this
+      control. It proves nothing about the gaps between steps.
+    - **Surface text, not page source.** "Page text" is the surface/scene
+      text `page shows` reads, NOT the page source, so a secret hidden in
+      a `value` attribute of an off-screen field, an HTML comment, or a
+      `data-` attribute is invisible. The control sees what a user sees,
+      not what a `view-source` would.
 - **The forbidden event is an occurrence of a resolved secret value** in
-  that corpus. The value resolves at execution on record and on every
-  replay and is scanned in memory; the trace stores only the variable
-  NAMES asserted. A leak failure message says which variable and where,
-  and never prints the value.
-- **Whole-run scope**, like every control assertion: position in
-  `steps:` does not narrow it.
+  that corpus. Match mechanism, identical at both phases: at execution on
+  record and on every replay, resolve the asserted `${VAR}` names through
+  the existing resolve-refs machinery (`crates/flowproof-trace/src/secret.rs`)
+  and substring-scan the in-memory corpus for each resolved value. The
+  trace stores only the variable NAMES asserted, never the values. A leak
+  failure message names the VARIABLE, the corpus element it appeared in,
+  and the step index, and it names ALL matching variables deterministically
+  (not just the first one found), so a run that leaks two secrets reports
+  both in a stable order. It never prints the value.
+- **Whole-run scope**, like every control assertion: position in `steps:`
+  does not narrow it.
 - **Capability honesty**: a corpus element the platform cannot read as
   text (a vision flow's OCR frame is lossy, a screenshot is pixels) is
-  excluded from the corpus BY NAME in the report, and a flow whose
-  corpus would be empty fails as a capability error rather than
-  certifying nothing.
-- A secret value too short to be meaningful (under a small fixed length)
-  is a parse-time error on the assertion, because scanning for `"1"`
-  would fail on any page showing a 1: a control that cannot be asserted
-  precisely is not weakened, it is refused.
+  excluded from the corpus BY NAME in the report, and a flow whose corpus
+  would be empty fails as a capability error rather than certifying
+  nothing.
+- **A secret value too short to scan precisely is refused at execution,
+  not parse.** The length of a `${VAR}` is unknown until it resolves, and
+  it resolves at execution, not parse - so this cannot be a parse-time
+  error. It is an execution-time refusal at BOTH phases, in the same phase
+  and shape as the existing `MissingSecret` error: if a resolved secret is
+  under a small fixed minimum length (scanning for `"1"` would fire on any
+  page showing a 1), the run fails naming the VARIABLE and the minimum,
+  never the value. A control that cannot be asserted precisely is not
+  weakened, it is refused.
 
-Determinism holds because the corpus at replay is the recorded corpus
-and the resolved values are the same environment indirection replay
-already performs. An unchanged system cannot fail this step.
+Determinism holds because the corpus is re-observed by the same mechanism
+at both phases and the resolved values are the same environment
+indirection replay already performs, so an unchanged system yields the
+same corpus, the same scan, and the same verdict - the `page shows`
+determinism grade, not a diff against a recorded corpus. An unchanged
+system cannot fail this step.
+
+**Bonus property: the record-time scan is also a store-guard.** On agent
+flows the model-boundary trajectory is persisted into the trace as a
+cassette, so a secret leaked into a cassette body would otherwise be
+written to disk. The record-time scan runs before the trace is minted, so
+a leak fails the run and NO trace is minted - the leaked secret never
+reaches disk. The control that protects the app's output doubles as a
+guard on flowproof's own artifact.
 
 ## Evidence and audit output: the control map
 
@@ -456,6 +601,17 @@ controls:
       - the "Delete" button is not visible
       - assert_api DELETE /customers/4711 -> 403
       - assert_sql count unchanged
+  - id: sec.portal.no-db-password-leak
+    title: The DB password never surfaces in portal output
+    flow: flows/no-secret-leak.flow.yaml
+    verdict: pass
+    secrets_checked: ["${DB_PASSWORD}"]        # variable names, never values
+    corpus:                                     # what was actually scanned
+      - surface text at each step boundary
+      - assert_api response bodies
+    excluded:                                   # echoed like the OCR exclusion
+      - transient text between step boundaries (capture is per-step, not continuous)
+      - page source not read as text (hidden fields, HTML comments, data- attributes)
   - id: net.exporter.egress.declared-only
     title: Exporter reaches only its declared services
     verdict: capability-error
@@ -477,23 +633,46 @@ and everything richer builds on it from outside.
 
 ## Phasing
 
-1. **v1 - the smallest useful slice.** The `control:` block with id
-   uniqueness, the access-control regression pattern (suite
-   `identities:` + `session:` by name; the denial flow is already
-   expressible with shipped grammar), and the audit rendering
-   (`flowproof audit` over run results, YAML + JSON). The control
-   grammar's rules are normative from v1 even though v1 adds no new
-   `assert_no_*` lane: the family and its admission test are the gate
-   new proposals must pass.
-2. **v2 - declared surface beyond agents.** `surface.egress` on spawned
-   `app:` mapping flows, riding the egress containment mechanism and its
-   containment-tier honesty unchanged.
-3. **v3 - `assert_no_secret_leak`.** The corpus definition, the
-   in-memory scan on both phases, the never-print-the-value failure
-   shape.
-4. **v4 - the full coverage map.** Report diffing across runs,
-   removed-control detection, and whatever the field demands of the
-   JSON shape once real audit tooling consumes it.
+**Precondition: PR #126 merges first.** The egress containment work
+(branch `claude/flowproof-egress-containment`, PR #126) edits the same
+`spec.rs` spine this design extends - the `control:`, `identities:`, and
+`assert_no_secret_leak` additions all land on top of its changes. v1 is
+sequenced AFTER #126 merges, not concurrently, so the two do not fight
+over the spec spine.
+
+**v1 - the smallest useful slice.** Four pieces, all buildable on shipped
+mechanism:
+
+  a. The `control:` block with per-suite id uniqueness (a duplicated id is
+     a suite-load error naming both flows).
+  b. Suite `identities:` + `session: <name>`, with the load-time-copy
+     dereference semantics above: the named identity is copied into the
+     trace header at load, the `session` field is the untagged
+     string-or-mapping form, and a bare name with no governing suite is a
+     load-time error.
+  c. A `flowproof audit` rendering (YAML + JSON, the three verdicts
+     `pass`/`fail`/`capability-error`), folded from the suite runner's
+     EXISTING run report - a rendering of results that already exist, not
+     a new pipeline.
+  d. `assert_no_secret_leak: ${VAR}`, the NAMED form only, scanning the
+     corpus defined in the secret ruling (surface text at step boundaries,
+     `assert_api` bodies, agent trajectory + MCP lanes), with the
+     both-phase in-memory scan and the never-print-the-value failure shape.
+
+The control grammar's rules are normative from v1: the family and its
+admission test are the gate new proposals must pass, even though the only
+new lane v1 ships is `secret_leak`.
+
+**Deferred, in rough order:**
+
+- The **bare `assert_no_secret_leak`** form, which needs a suite-level
+  `secrets:` declaration to give it a defined domain before it is safe.
+- **`surface.egress` on spawned-app flows** (v2), Linux-scoped as above,
+  riding the egress containment mechanism and its containment-tier honesty
+  unchanged.
+- **Report diffing and removed-control detection** (later): the full
+  coverage map across runs, once real audit tooling consumes the JSON and
+  a persisted run record exists to diff against (see open questions).
 
 ## Open questions
 
@@ -514,6 +693,22 @@ Settled here so implementation does not relitigate them:
   `identities:` whose entries are the `session:` shape; flows reference
   by name; values are `${VAR}` refs resolved at apply time. Minting the
   sessions is fixture work outside the engine, as it already is today.
+- **What does `flowproof audit` render FROM?** It needs a persisted,
+  structured run record, and today the suite runner's verdicts live
+  in-process plus a junit XML export (`crates/flowproof-replay/src/report.rs`)
+  - neither is the durable structured record the audit YAML/JSON and its
+  `evidence:` paths imply. The artifact-store layout that record would live
+  in (`.flowproof/artifacts/`) is itself still an open question upstream -
+  [design.md](design.md) lists "artifact store layout and retention" as
+  open - so v1's `flowproof audit` is gated on that record existing, and
+  the exact on-disk shape is deferred to wherever the artifact store is
+  settled.
+- **Where is control-id uniqueness checkable?** Only at SUITE LOAD. A
+  standalone flow run sees one flow, so it cannot detect a duplicate id in
+  a sibling flow; uniqueness is a suite-level property enforced when the
+  suite loads, and a lone `flowproof run` on a single flow neither checks
+  nor needs it. This is accepted, not a gap: the id's job is to be the
+  join key across a suite's coverage map, which only exists at suite scope.
 - **THE LINE - what makes a proposed feature in scope?** The test, and
   it is the spine of this whole document: **does it assert that a known,
   named property held on this run, decidably from the recorded lanes,
