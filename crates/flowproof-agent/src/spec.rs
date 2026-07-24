@@ -406,6 +406,11 @@ impl FlowSpec {
         let bad = |m: String| Err(SpecError::Agent(m));
         let is_agent = self.app.id() == "agent";
 
+        // `assert_no_secret_leak` is deliberately NOT here: v1 extends it to
+        // web and api flows, and any flow kind still without a readable corpus
+        // is refused at execution as a CAPABILITY error (never a vacuous
+        // parse-time rejection), the same honesty rule `assert_no_egress`
+        // follows at execution.
         let agent_only_step = self.steps.iter().find(|step| {
             matches!(
                 step,
@@ -413,7 +418,6 @@ impl FlowSpec {
                     | SpecStep::AssertToolCall { .. }
                     | SpecStep::AssertNoToolCall { .. }
                     | SpecStep::AssertNoEgress
-                    | SpecStep::AssertNoSecretLeak { .. }
             )
         });
 
@@ -814,6 +818,28 @@ impl FlowSpec {
             }
         }
         out
+    }
+
+    /// The `assert_no_secret_leak` steps as corpus-scan assertions: each
+    /// step's `${VAR}` selectors paired with its 1-based position in `steps:`,
+    /// for the failure message. The single source both the record store-guard
+    /// and every replay build their scan from, so a web/api flow scans the
+    /// same names at both phases exactly as an agent flow does.
+    pub fn secret_leak_assertions(&self) -> Vec<flowproof_trace::secret_scan::LeakAssertion> {
+        self.steps
+            .iter()
+            .enumerate()
+            .filter_map(|(i, step)| match step {
+                SpecStep::AssertNoSecretLeak {
+                    assert_no_secret_leak,
+                } => Some(flowproof_trace::secret_scan::LeakAssertion {
+                    // 1-based, so the message reads as an author counts steps.
+                    step_index: i + 1,
+                    selectors: assert_no_secret_leak.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Dereference a `session: <name>` ref against a suite's `identities:`
@@ -2571,16 +2597,25 @@ mod security_spine_tests {
         }
     }
 
-    /// Agent-only in v1, exactly like `assert_no_egress`: the corpus this
-    /// lane scans is only wired for the model boundary today.
+    /// Web and api flows now carry `assert_no_secret_leak`: v1 extends the
+    /// corpus scan to their surface text and `assert_api` bodies, so the parse
+    /// gate that once made it agent-only is gone. The honesty for corpus-less
+    /// kinds moved to execution (a capability error), not parse.
     #[test]
-    fn assert_no_secret_leak_is_rejected_off_agent_flows() {
-        let err = spec(
+    fn assert_no_secret_leak_parses_on_web_and_api_flows() {
+        let web = spec(
             "name: n\napp: web\nurl: http://x\nsteps:\n  - assert_no_secret_leak: ${DB_PASSWORD}\n",
         )
-        .expect_err("secret-leak on web");
-        assert!(err.to_string().contains("agent step"), "{err}");
-        assert!(err.to_string().contains("assert_no_secret_leak"), "{err}");
+        .expect("secret-leak on web now parses");
+        assert_eq!(
+            web.secret_leak_assertions(),
+            vec![flowproof_trace::secret_scan::LeakAssertion {
+                step_index: 1,
+                selectors: vec!["${DB_PASSWORD}".into()],
+            }]
+        );
+        spec("name: n\napp: api\nsteps:\n  - assert_no_secret_leak: ${API_TOKEN}\n")
+            .expect("secret-leak on api now parses");
     }
 
     /// It round-trips through serialize/reparse: one selector as a string,

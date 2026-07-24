@@ -11,6 +11,7 @@ pub mod cassette_diff;
 pub mod egress;
 pub mod format;
 pub mod secret;
+pub mod secret_scan;
 pub mod substitution;
 pub mod toolcalls;
 

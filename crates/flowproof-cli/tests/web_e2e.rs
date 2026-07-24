@@ -1493,3 +1493,175 @@ fn attribute_style_and_scroll_record_and_replay() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// `assert_no_secret_leak` on a real browser flow: a page whose SURFACE TEXT
+/// contains the resolved `${SECRET}` fails the record. The store-guard scans
+/// the corpus (surface text at each step boundary) before minting, so the
+/// leaked value never reaches disk and NO trace is written. The failure names
+/// the variable and the step, never the value.
+#[test]
+fn a_secret_in_web_surface_text_fails_the_record_and_mints_no_trace() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web secret-leak E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    let secret = "s3cret-portal-dsn-value";
+    std::env::set_var("FLOWPROOF_E2E_LEAK_PW", secret);
+
+    let dir = std::env::temp_dir().join("flowproof-web-secret-leak-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("leaky.html");
+    // The page renders the secret straight into visible surface text: the
+    // exact leak this control catches.
+    std::fs::write(
+        &page,
+        format!(
+            r#"<!doctype html><html><body>
+                <h1>Welcome</h1>
+                <pre id="err">connection failed: {secret}</pre>
+            </body></html>"#
+        ),
+    )
+    .expect("page written");
+    let trace_path = dir.join("leaky.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "DB password must not surface".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: None,
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        agent: None,
+        tools: Vec::new(),
+        mcp: Vec::new(),
+        strict: false,
+        control: None,
+        steps: vec![
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Welcome".into(),
+            },
+            flowproof_agent::SpecStep::AssertNoSecretLeak {
+                assert_no_secret_leak: vec!["${FLOWPROOF_E2E_LEAK_PW}".into()],
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let err = flowproof_agent::record(&spec, &mut driver, &trace_path)
+        .expect_err("a leaked secret must fail the record");
+    drop(driver);
+    let message = err.to_string();
+
+    assert!(
+        message.contains("${FLOWPROOF_E2E_LEAK_PW}"),
+        "names the var: {message}"
+    );
+    assert!(message.contains("step 2"), "names the step: {message}");
+    assert!(
+        message.contains("surface text at a step boundary"),
+        "names the corpus element: {message}"
+    );
+    assert!(
+        !message.contains(secret),
+        "message must not leak the value: {message}"
+    );
+    assert!(
+        !trace_path.exists(),
+        "a leak must mint no trace; {} exists",
+        trace_path.display()
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::env::remove_var("FLOWPROOF_E2E_LEAK_PW");
+}
+
+/// The clean counterpart: the same secret is declared but never appears in the
+/// page's surface text, so record mints a trace whose bytes never contain the
+/// value, and replay passes deterministically re-scanning the absent secret.
+#[test]
+fn a_clean_web_flow_records_and_replays_with_the_secret_absent() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web clean-secret E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    let secret = "s3cret-portal-dsn-value";
+    std::env::set_var("FLOWPROOF_E2E_CLEAN_PW", secret);
+
+    let dir = std::env::temp_dir().join("flowproof-web-secret-clean-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("clean.html");
+    // No secret anywhere in the surface text.
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body>
+            <h1>Welcome</h1>
+            <pre id="err">connection healthy</pre>
+        </body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("clean.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "DB password stays contained".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: None,
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        agent: None,
+        tools: Vec::new(),
+        mcp: Vec::new(),
+        strict: false,
+        control: None,
+        steps: vec![
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Welcome".into(),
+            },
+            flowproof_agent::SpecStep::AssertNoSecretLeak {
+                assert_no_secret_leak: vec!["${FLOWPROOF_E2E_CLEAN_PW}".into()],
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("clean flow records");
+    drop(driver);
+
+    let trace = std::fs::read_to_string(&trace_path).expect("trace written");
+    assert!(
+        !trace.contains(secret),
+        "the value must never reach the trace"
+    );
+
+    // Replay through the scanning path: the secret is re-scanned and absent,
+    // so the flow passes deterministically on an unchanged page.
+    let scan = flowproof_replay::SecretScan {
+        assertions: spec.secret_leak_assertions(),
+    };
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, run_dir) =
+        flowproof_replay::run_trace_with_secret_scan(&trace_path, &mut driver, &scan)
+            .expect("replay runs");
+    drop(driver);
+    assert!(report.passed, "clean web flow must replay: {report:#?}");
+    let result_path = report.write_into(&run_dir).expect("artifacts written");
+    let artifacts = std::fs::read_to_string(&result_path).expect("result readable");
+    assert!(
+        !artifacts.contains(secret),
+        "the value must never reach the run artifacts"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::env::remove_var("FLOWPROOF_E2E_CLEAN_PW");
+}

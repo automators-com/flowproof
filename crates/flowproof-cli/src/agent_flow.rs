@@ -556,22 +556,9 @@ struct Plan {
     /// The `assert_no_secret_leak` steps, each naming one or more `${VAR}`
     /// selectors and its 1-based position in the flow's `steps:` (for the
     /// failure message). Only the variable NAMES travel here - never a value.
-    secret_leaks: Vec<SecretLeakStep>,
+    /// The shared type web and api flows also build their scan from.
+    secret_leaks: Vec<flowproof_trace::secret_scan::LeakAssertion>,
 }
-
-/// One `assert_no_secret_leak` step: the `${VAR}` selectors it declares and
-/// its 1-based step position (named in the failure message).
-struct SecretLeakStep {
-    step_index: usize,
-    selectors: Vec<String>,
-}
-
-/// The smallest resolved secret length the corpus scan will accept.
-/// Scanning for a one- or two-character value would fire on almost any
-/// output (the doc's `"1"` example), so a secret shorter than this is
-/// REFUSED at execution rather than asserted imprecisely - a control that
-/// cannot be checked precisely is refused, not weakened.
-const MIN_SECRET_LEN: usize = 4;
 
 impl Plan {
     /// The port the proxy binds: the fixed `proxy_port` for an http driver,
@@ -691,20 +678,13 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
     let mut tool_calls = Vec::new();
     let mut forbidden = Vec::new();
     let mut reply_contains = Vec::new();
-    let mut secret_leaks = Vec::new();
-    for (i, step) in spec.steps.iter().enumerate() {
+    // The secret-leak assertions come from the shared spec accessor, the same
+    // source web and api flows build their scan from.
+    let secret_leaks = spec.secret_leak_assertions();
+    for step in spec.steps.iter() {
         match step {
             SpecStep::AssertToolCall { assert_tool_call } => {
                 tool_calls.push(parse_expectation(assert_tool_call)?);
-            }
-            SpecStep::AssertNoSecretLeak {
-                assert_no_secret_leak,
-            } => {
-                secret_leaks.push(SecretLeakStep {
-                    // 1-based, so the message reads as an author counts steps.
-                    step_index: i + 1,
-                    selectors: assert_no_secret_leak.clone(),
-                });
             }
             SpecStep::AssertNoToolCall {
                 assert_no_tool_call,
@@ -878,14 +858,12 @@ fn secret_corpus(
     corpus
 }
 
-/// Scan the run's captured corpus for any declared secret, by the SAME
-/// mechanism at record and replay, so an unchanged system yields the same
-/// verdict. Resolves each asserted `${VAR}` through the shared resolve-refs
-/// machinery and substring-scans the in-memory corpus; only variable NAMES
-/// are ever stored or printed. A leak names ALL matching variables in a
-/// stable order, the corpus element, and the step index - never the value.
-/// A resolved secret under the minimum length is refused (both phases), in
-/// the same shape as the shipped `MissingSecret` error.
+/// Scan the run's captured corpus for any declared secret, by the SAME shared
+/// mechanism web, api, and replay use, so an unchanged system yields the same
+/// verdict. Builds the agent corpus (model-boundary trajectory + MCP lanes)
+/// and delegates the resolve/refuse/substring-scan to
+/// [`flowproof_trace::secret_scan::scan_corpus`]; only variable NAMES are ever
+/// stored or printed.
 fn check_secret_leak(
     plan: &Plan,
     cassette: &Cassette,
@@ -895,42 +873,7 @@ fn check_secret_leak(
         return Ok(());
     }
     let corpus = secret_corpus(cassette, mcp);
-    for leak in &plan.secret_leaks {
-        // (selector, corpus element) for every variable that appeared,
-        // collected then sorted so two leaks report in a stable order.
-        let mut hits: Vec<(String, String)> = Vec::new();
-        for selector in &leak.selectors {
-            let value =
-                flowproof_trace::secret::resolve_refs(selector).map_err(|e| e.to_string())?;
-            if value.chars().count() < MIN_SECRET_LEN {
-                // Named like MissingSecret: the variable and the minimum,
-                // never the value.
-                return Err(format!(
-                    "assert_no_secret_leak (step {}): {selector} resolves to a value shorter \
-                     than the {MIN_SECRET_LEN}-character minimum needed to scan for it \
-                     precisely; a secret that short cannot be asserted without false positives",
-                    leak.step_index
-                ));
-            }
-            if let Some((element, _)) = corpus.iter().find(|(_, text)| text.contains(&value)) {
-                hits.push((selector.clone(), element.clone()));
-            }
-        }
-        if !hits.is_empty() {
-            hits.sort();
-            let list = hits
-                .iter()
-                .map(|(selector, element)| format!("{selector} in {element}"))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(format!(
-                "assert_no_secret_leak (step {}): a declared secret appeared in the run \
-                 output: {list}",
-                leak.step_index
-            ));
-        }
-    }
-    Ok(())
+    flowproof_trace::secret_scan::scan_corpus(&plan.secret_leaks, &corpus)
 }
 
 fn parse_expectation(text: &str) -> Result<ToolCallExpectation, String> {

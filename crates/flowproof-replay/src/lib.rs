@@ -19,6 +19,29 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Auto-wait bound for asserts in traces recorded before timeouts existed.
 const DEFAULT_ASSERT_TIMEOUT_MS: u64 = 10_000;
 
+/// The `assert_no_secret_leak` scan to run on this replay, derived from the
+/// SPEC (the trace stores no secret-leak steps; the feature is additive). A
+/// replay re-observes the same corpus as record and scans it by the same
+/// shared mechanism, so an unchanged system replays the same verdict. Empty
+/// `assertions` means the flow does not use the feature: no corpus is
+/// captured and replay behaves exactly as it always has.
+#[derive(Debug, Clone, Default)]
+pub struct SecretScan {
+    pub assertions: Vec<flowproof_trace::secret_scan::LeakAssertion>,
+}
+
+impl SecretScan {
+    /// A flow that does not assert `assert_no_secret_leak`: no capture, no
+    /// scan, behaviour identical to before the feature existed.
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+
+    fn enabled(&self) -> bool {
+        !self.assertions.is_empty()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ReplayError {
     #[error("cannot read trace {path}: {source}")]
@@ -611,6 +634,7 @@ fn check_assertion<D: AppDriver>(
     assertion: &Assertion,
     selectors: &[Selector],
     captures: &std::collections::HashMap<String, String>,
+    api_corpus: &mut Vec<(String, String)>,
 ) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
     match assertion {
         Assertion::ElementState {
@@ -1081,7 +1105,8 @@ fn check_assertion<D: AppDriver>(
                     None => None,
                 },
             };
-            poll_oob(&probe, oob_timeout(expect.as_ref()))
+            let (verdict, rung, _) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
+            Ok((verdict, rung))
         }
         Assertion::Api {
             request,
@@ -1114,7 +1139,13 @@ fn check_assertion<D: AppDriver>(
                     None => None,
                 },
             };
-            poll_oob(&probe, oob_timeout(expect.as_ref()))
+            let (verdict, rung, body) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
+            // The response body joins the corpus a secret-leak scan reads, held
+            // in memory for this run only and re-observed identically at record.
+            if let Some(text) = body {
+                api_corpus.push(("an assert_api response body".to_string(), text));
+            }
+            Ok((verdict, rung))
         }
         other => Ok((
             Err(format!(
@@ -1132,18 +1163,24 @@ fn oob_timeout(expect: Option<&serde_json::Value>) -> u64 {
         .unwrap_or(DEFAULT_ASSERT_TIMEOUT_MS)
 }
 
+/// An out-of-band probe's outcome: the assertion verdict, the selector rung
+/// it matched (always `None` for OOB probes), and the probe's response body
+/// (an `Api` probe's response text, the corpus a secret-leak scan reads;
+/// `None` otherwise).
+type ProbeOutcome = (Result<(), String>, Option<usize>, Option<String>);
+
 /// Auto-wait an out-of-band probe like any other assertion.
 fn poll_oob(
     probe: &flowproof_driver::oob::OobProbe,
     timeout_ms: u64,
-) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
+) -> Result<ProbeOutcome, ReplayError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         match flowproof_driver::oob::check(probe)? {
-            Ok(()) => return Ok((Ok(()), None)),
+            Ok(body) => return Ok((Ok(()), None, body)),
             Err(reason) => {
                 if Instant::now() >= deadline {
-                    return Ok((Err(reason), None));
+                    return Ok((Err(reason), None, None));
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
@@ -1246,6 +1283,7 @@ fn execute_step<D: AppDriver>(
     base_url: &str,
     visual_paths: &VisualPaths,
     captures: &mut std::collections::HashMap<String, String>,
+    api_corpus: &mut Vec<(String, String)>,
 ) -> Result<(Result<(), String>, StepMatch), ReplayError> {
     for condition in &step.sync.pre {
         if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
@@ -1478,7 +1516,8 @@ fn execute_step<D: AppDriver>(
             StepMatch::default(),
         ),
         Action::Assert(assertion) => {
-            let (outcome, rung) = check_assertion(driver, assertion, &step.selectors, captures)?;
+            let (outcome, rung) =
+                check_assertion(driver, assertion, &step.selectors, captures, api_corpus)?;
             let primary = match assertion {
                 Assertion::ElementState { selector_ref, .. } => selector_ref.unwrap_or(0),
                 _ => 0,
@@ -1512,6 +1551,20 @@ fn execute_step<D: AppDriver>(
 pub fn run_trace<D: AppDriver>(
     path: &Path,
     driver: &mut D,
+) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
+    run_trace_with_secret_scan(path, driver, &SecretScan::disabled())
+}
+
+/// Replay the trace, additionally running the flow's `assert_no_secret_leak`
+/// scan against the corpus this replay re-observes (web surface text at each
+/// step boundary + every `assert_api` response body). Identical to
+/// [`run_trace`] when `scan` is disabled. A leak (or a corpus-less flow kind,
+/// or a too-short secret) fails the run with a value-free message, exactly as
+/// the record-time store-guard does.
+pub fn run_trace_with_secret_scan<D: AppDriver>(
+    path: &Path,
+    driver: &mut D,
+    scan: &SecretScan,
 ) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
     let (header, steps) = load_trace(path)?;
 
@@ -1664,6 +1717,12 @@ pub fn run_trace<D: AppDriver>(
     // trace holds the NAME only, which is what keeps a captured balance or
     // order number out of a reviewable artifact.
     let mut captures: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // The secret-leak corpus, re-observed exactly as at record and held in
+    // memory only: web surface text at each step boundary + every `assert_api`
+    // response body. Populated only when the flow asserts the control.
+    let mut secret_corpus: Vec<(String, String)> = Vec::new();
+    let scan_secrets = scan.enabled();
+    let scan_web = scan_secrets && header.app.name == "web";
     for step in &steps {
         if failed {
             results.push(StepResult::skipped(step));
@@ -1674,11 +1733,25 @@ pub fn run_trace<D: AppDriver>(
         }
         let step_started = Instant::now();
         let started_ms = started.elapsed().as_millis() as u64;
-        let (outcome, matched) =
-            execute_step(driver, step, &target.command, &visual_paths, &mut captures)?;
+        let (outcome, matched) = execute_step(
+            driver,
+            step,
+            &target.command,
+            &visual_paths,
+            &mut captures,
+            &mut secret_corpus,
+        )?;
         let duration_ms = step_started.elapsed().as_millis() as u64;
         if let Some(rec) = recorder.as_mut() {
             rec.step_finished(driver);
+        }
+        // Step boundary: sample the web surface text (the same text `page
+        // shows` reads, not the page source), per-step, not continuous.
+        if scan_web && outcome.is_ok() {
+            secret_corpus.push((
+                "the surface text at a step boundary".to_string(),
+                driver.surface_text()?,
+            ));
         }
         let mut result = match outcome {
             Ok(()) => StepResult::passed(step, started_ms, duration_ms),
@@ -1695,6 +1768,39 @@ pub fn run_trace<D: AppDriver>(
         result.selector_tier = matched.tier.map(|t| t.name().to_string());
         result.degraded = matched.degraded;
         results.push(result);
+    }
+
+    // The secret-leak scan, by the SAME shared mechanism as the record-time
+    // store-guard, over the corpus this replay re-observed. Runs only when the
+    // flow asserts the control and the earlier steps all passed (a flow that
+    // already failed has its verdict; the scan does not overrule it). A
+    // corpus-less flow kind is a capability error, never a vacuous pass, but
+    // record's store-guard would have refused to mint such a trace, so this is
+    // the honest guard, not the common path.
+    if scan_secrets && !failed {
+        let verdict = if flowproof_trace::secret_scan::has_readable_corpus(&header.app.name) {
+            flowproof_trace::secret_scan::scan_corpus(&scan.assertions, &secret_corpus)
+        } else {
+            Err(flowproof_trace::secret_scan::capability_error(
+                &header.app.name,
+            ))
+        };
+        if let Err(message) = verdict {
+            failed = true;
+            // The leak is a whole-run verdict, not a single recorded step:
+            // surface it as its own failed result so the report and every CLI
+            // reader (audit included) see the value-free reason.
+            results.push(StepResult {
+                id: "secret-leak-scan".to_string(),
+                intent: "assert_no_secret_leak".to_string(),
+                status: StepStatus::Failed,
+                detail: Some(message),
+                started_ms: started.elapsed().as_millis() as u64,
+                duration_ms: 0,
+                selector_tier: None,
+                degraded: false,
+            });
+        }
     }
 
     let degraded = results.iter().any(|s| s.degraded);

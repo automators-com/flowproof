@@ -389,13 +389,15 @@ fn replay_with_retries(
     app_name: &str,
     retries: u8,
     announce: bool,
+    secret_scan: &flowproof_replay::SecretScan,
 ) -> Result<(flowproof_replay::RunReport, PathBuf, u32), String> {
     let mut attempt = 0u32;
     loop {
         attempt += 1;
         let mut driver = driver_for(app_name)?;
         let (report, run_dir) =
-            flowproof_replay::run_trace(trace_path, &mut driver).map_err(|e| e.to_string())?;
+            flowproof_replay::run_trace_with_secret_scan(trace_path, &mut driver, secret_scan)
+                .map_err(|e| e.to_string())?;
         if report.passed || attempt > u32::from(retries) {
             return Ok((report, run_dir, attempt));
         }
@@ -797,12 +799,17 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
                 continue;
             }
         }
+        // The secret-leak scan is spec-driven (the trace stores no secret-leak
+        // steps): replay re-observes the corpus and scans the same names.
+        let secret_scan = flowproof_replay::SecretScan {
+            assertions: gated_spec.secret_leak_assertions(),
+        };
         let replayed = flowproof_replay::load_trace(&trace_path)
             .map_err(|e| e.to_string())
             // A fresh driver per flow: full isolation, like Playwright
             // contexts. A driver fault here ends THIS flow only.
             .and_then(|(header, _)| {
-                replay_with_retries(&trace_path, &header.app.name, retries, !json)
+                replay_with_retries(&trace_path, &header.app.name, retries, !json, &secret_scan)
             });
         // Cleanup always runs, pass, fail or error.
         let cleanup = match &manifest.after_each {
@@ -1043,7 +1050,13 @@ fn cmd_run(
     }
     // Peek the header to pick the right driver for the recorded app.
     let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
-    let replayed = replay_with_retries(&trace_path, &header.app.name, retries, !json);
+    // The secret-leak scan is driven by the SPEC (the trace stores no
+    // secret-leak steps; the feature is additive): replay re-observes the
+    // corpus and scans the same names as record.
+    let secret_scan = flowproof_replay::SecretScan {
+        assertions: spec.secret_leak_assertions(),
+    };
+    let replayed = replay_with_retries(&trace_path, &header.app.name, retries, !json, &secret_scan);
     // Cleanup always runs, pass, fail or error - the suite's rule, and the
     // reason it exists is that a flow which errors is exactly when a left
     // -behind fixture hurts most.
@@ -1155,6 +1168,39 @@ struct AuditReport {
     controls: Vec<AuditControl>,
 }
 
+/// The `corpus` and `excluded` audit lines for a secret-leak scan on `app`.
+/// Each flow kind names exactly what it scanned and what it could not, so the
+/// report never overstates its reach. The web exclusions are part of the
+/// corpus definition, echoed exactly as the OCR exclusion is.
+fn secret_scan_corpus_report(app: &str) -> (Vec<String>, Vec<String>) {
+    match app {
+        "web" => (
+            vec![
+                "surface text at each step boundary".to_string(),
+                "assert_api response bodies".to_string(),
+            ],
+            vec![
+                "transient text between step boundaries (capture is per-step, not continuous)"
+                    .to_string(),
+                "page source not read as text (hidden fields, HTML comments, data- attributes)"
+                    .to_string(),
+            ],
+        ),
+        "api" => (
+            vec!["assert_api response bodies".to_string()],
+            vec!["channels the engine never observed (server logs, third-party sinks)".to_string()],
+        ),
+        // agent (and any future corpus-bearing kind): the model boundary.
+        _ => (
+            vec![
+                "model-boundary trajectory (cassette request and response bodies)".to_string(),
+                "MCP lanes".to_string(),
+            ],
+            vec!["channels the engine never observed (server logs, third-party sinks)".to_string()],
+        ),
+    }
+}
+
 /// Whether a replay failure is really a capability error (the lane could not
 /// be enforced or observed) rather than a control that failed. Mirrors the
 /// egress honesty wording so a "not contained" run reads as capability-error.
@@ -1196,10 +1242,13 @@ fn control_verdict(
             Err(e) => (AuditVerdict::Fail, Some(e)),
         }
     } else {
+        let secret_scan = flowproof_replay::SecretScan {
+            assertions: spec.secret_leak_assertions(),
+        };
         match flowproof_replay::load_trace(&trace_path)
             .map_err(|e| e.to_string())
             .and_then(|(header, _)| {
-                replay_with_retries(&trace_path, &header.app.name, retries, false)
+                replay_with_retries(&trace_path, &header.app.name, retries, false, &secret_scan)
             }) {
             Ok((report, _, _)) if report.passed => (AuditVerdict::Pass, None),
             Ok((report, _, _)) => (
@@ -1261,22 +1310,15 @@ fn cmd_audit(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
         };
         let (verdict, reason) = control_verdict(spec_path, spec, &manifest, retries);
         let secrets_checked = spec.secret_leak_selectors();
-        // The corpus + exclusions are named ONLY for a flow that actually
-        // ran a secret-leak scan, and describe exactly what v1 scans on an
-        // agent flow (the model-boundary corpus).
+        // The corpus + exclusions are named ONLY for a flow that actually ran
+        // a secret-leak scan, and describe exactly what v1 scanned for THIS
+        // flow kind, so nobody mistakes the report for a proof about channels
+        // the engine never saw. The two web exclusions are part of the corpus
+        // definition, echoed here exactly as the OCR exclusion is.
         let (corpus, excluded) = if secrets_checked.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            (
-                vec![
-                    "model-boundary trajectory (cassette request and response bodies)".to_string(),
-                    "MCP lanes".to_string(),
-                ],
-                vec![
-                    "channels the engine never observed (server logs, third-party sinks)"
-                        .to_string(),
-                ],
-            )
+            secret_scan_corpus_report(spec.app.id())
         };
         let flow = spec_path
             .strip_prefix(dir)
