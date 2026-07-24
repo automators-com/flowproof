@@ -1,6 +1,6 @@
 {
   "name": "flowproof",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Generic open-source automation framework for the AI-agent era: automated testing and agentic process automation across web, desktop, and Citrix.",
   "bin": {
     "flowproof": "bin/flowproof.js"
@@ -14,10 +14,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "flowproof-cli-linux-x64": "0.4.1",
-    "flowproof-cli-darwin-x64": "0.4.1",
-    "flowproof-cli-darwin-arm64": "0.4.1",
-    "flowproof-cli-win32-x64": "0.4.1"
+    "flowproof-cli-linux-x64": "0.5.0",
+    "flowproof-cli-darwin-x64": "0.5.0",
+    "flowproof-cli-darwin-arm64": "0.5.0",
+    "flowproof-cli-win32-x64": "0.5.0"
   },
   "repository": {
     "type": "git",

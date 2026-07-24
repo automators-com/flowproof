@@ -9,9 +9,8 @@ raw body both as text and as a hexdump - and answers `200` so the sending
 tool completes. Nothing is reserialized. Header casing and order are kept as
 sent. The bytes on disk are the bytes that arrived.
 
-It ships inside the flowproof binary, so a consultant on a locked-down
-Windows box gets one signed executable instead of a Python install or an
-unsigned script: `flowproof capture` and go.
+It ships inside the flowproof binary, so once flowproof is installed it is a
+single command with nothing else to set up: `flowproof capture` and go.
 
 ## The worked example: SAP `/BA1/` field names
 

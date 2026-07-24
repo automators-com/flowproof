@@ -4,6 +4,37 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## 0.5.0
+
+### Added
+
+- **Security controls: deterministic security regression.** Assert that a
+  security control still holds on every replay, with recorded evidence.
+  - `assert_no_secret_leak: ${VAR}` certifies a named secret never appears in a
+    run's observable output: the agent model-boundary trajectory, a web flow's
+    surface text captured at each step boundary, or an `assert_api` response
+    body. Scanned identically at record and replay; only the variable NAME
+    travels, never the value; a leak at record fails the run and mints no trace
+    (a store-guard for the trace's own cassette). A flow kind with no readable
+    corpus fails as a capability error, never a vacuous pass.
+  - `control:` block names a flow's security control with a stable id, so a
+    suite becomes a control-coverage map over time; per-suite id uniqueness is
+    enforced at load.
+  - Access-control regression as a composed pattern: perform the attempt as a
+    declared identity, assert the denial (a 403, a UI block), and prove the
+    identity was alive in the same run so a dead credential cannot read as a
+    passing control.
+  - Shared `identities:` in a suite (`session: <name>`), declared once and
+    dereferenced into each flow at load so the trace stays self-contained.
+- **`flowproof audit`.** Renders a control-coverage map (YAML or `--json`) from
+  a persisted run record (`.flowproof/runs/<id>/report.json`) that
+  `flowproof run` writes, with no re-replay. `--since <run-id>` diffs two runs
+  and reports added, removed, and verdict-changed controls, exiting non-zero on
+  a regression (a removed control, or one that turned failing).
+
+See [docs/authoring.md](docs/authoring.md#security-controls) and
+[examples/access-control/](examples/access-control/).
+
 ## 0.4.1
 
 ### Fixed
