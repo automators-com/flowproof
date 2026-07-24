@@ -347,8 +347,28 @@ forwards each POST to the real `url:` (passing the agent's `Authorization`
 and `Mcp-Session-Id` through, storing neither) and captures the response,
 reading a `text/event-stream` answer's `data:` frames back into one JSON-RPC
 message; at REPLAY it answers every POST from the recorded lane as a single
-`application/json` body, with zero network. The agent is served plain JSON in
-both phases - flowproof never opens an SSE stream toward the agent.
+`application/json` body, with zero network. The agent is served plain JSON on
+every POST reply in both phases - flowproof never turns a POST answer into an
+SSE stream toward the agent.
+
+**Server notifications (v3.3).** A server may push notifications (a JSON-RPC
+message with a `method` and no `id`: `notifications/tools/list_changed`,
+`.../message`, `.../progress`, `.../resources/updated`). These are now
+recorded and replayed on both transports. On stdio, flowproof's stand-in
+captures a notification the real server writes back and re-emits it at replay.
+On HTTP, a notification that arrives inline in a POST's `text/event-stream`
+body is captured (and stripped from the single JSON reply), and the standalone
+server-push channel is bridged: when the agent opens `GET <endpoint>`,
+flowproof opens a matching upstream `GET` and pumps the server's notification
+frames through, capturing each; at replay flowproof serves that `GET` itself,
+re-emitting the recorded notifications as the agent reaches the point each was
+recorded (a second concurrent `GET` is a `409`). Each notification is stored
+in its server's lane with an `after` anchor (the count of client calls
+answered when it crossed); the anchor is an emission cue, RECORDED and
+REPLAYED but never MATCHED, so a notification racing at call n versus n+1
+changes bytes, not the verdict. The verdict still judges the `calls` lane
+only. An agent that never opens the `GET` stream at replay simply leaves the
+notifications undelivered, without hanging or failing the run.
 
 Either way this is the same one-variable cooperation the model boundary asks
 for, applied to the tool boundary. flowproof cannot verify the wiring up
@@ -368,19 +388,19 @@ the agent threads one into the other diverges at the MCP lane.
 
 **What it cannot do.** An agent whose MCP server command is hardcoded and
 unconfigurable, or that scrubs the environment when spawning servers, cannot
-be intercepted. Server-initiated traffic (sampling, elicitation) is a NAMED
-v3.3 slice: at record, a real HTTP server that sends a server-initiated
-request (an id-bearing message with a `method`) mid-response fails the record
-with "the real MCP server sent a server-initiated request (`<method>`)
-mid-response; recording server-initiated traffic is v3.3"; a server
-notification (no id) is dropped. The standalone server-push SSE channel (a
-`GET` to the endpoint) is not served (`405`), and the older HTTP+SSE
-transport with a separate SSE endpoint is not handled. A JSON-RPC batch (a
-top-level array POST) is a named `400`, not silently half-recorded. Session
-ids are an ignored knob (passed through at record, a constant
-`flowproof-replay` at replay, never stored or matched), as are
-`initialize`'s `clientInfo`/`capabilities` (an SDK patch bump is a tuned
-dial); `protocolVersion` IS matched.
+be intercepted. Server-initiated REQUESTS (sampling, elicitation, roots-list:
+an id-bearing message with a `method`, which the agent must answer) are the
+remaining NAMED v3.4 slice: on BOTH transports a real server that sends one
+mid-record fails the record loudly with "the real MCP server sent a
+server-initiated request (`<method>`) mid-response; recording server-initiated
+traffic is v3.4", rather than corrupt a lane silently. (Server NOTIFICATIONS,
+which need no answer, ARE recorded and replayed - see above.) The older
+HTTP+SSE transport with a separate SSE endpoint is not handled. A JSON-RPC
+batch (a top-level array POST) is a named `400`, not silently half-recorded.
+Session ids are an ignored knob (passed through at record, a constant
+`flowproof-replay` at replay, never stored or matched), as are `initialize`'s
+`clientInfo`/`capabilities` (an SDK patch bump is a tuned dial);
+`protocolVersion` IS matched.
 
 ## Phasing
 
@@ -414,12 +434,16 @@ dial); `protocolVersion` IS matched.
    real server at record (reading `application/json` or `text/event-stream`
    answers) and replays the lane as single JSON bodies with zero network.
    The trace shape is unchanged, so a lane is transport-blind: one recorded
-   through stdio replays through an HTTP-declared server and vice versa. The
-   remaining v3.3 slice is server-initiated traffic (sampling, elicitation),
-   and with it the standalone server-push SSE channel; both are named,
-   typed responses in v3.2 rather than silent gaps (a server-initiated
-   request mid-record fails by name, a standalone `GET` is a `405`, a
-   JSON-RPC batch is a `400`).
+   through stdio replays through an HTTP-declared server and vice versa.
+   **Landed (v3.3)**: server-initiated NOTIFICATIONS and the standalone
+   server-push SSE stream. A notification is recorded (inline in a POST's SSE
+   body, or off the bridged `GET` stream) into its lane with an `after`
+   anchor, and replayed over the `GET` stream flowproof now serves (a second
+   concurrent `GET` is a `409`); anchors are recorded and replayed but never
+   matched, so the verdict is unchanged. The remaining v3.4 slice is
+   server-initiated REQUESTS (sampling, elicitation, roots-list), which need
+   answer correlation: on both transports a request mid-record fails by name
+   rather than corrupt a lane, and a JSON-RPC batch is a `400`.
 
 ## Settled in review
 

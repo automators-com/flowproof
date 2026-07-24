@@ -33,7 +33,7 @@ pub use agent_proxy::AgentProxy;
 pub use agent_runner::{AgentRun, RunError};
 
 #[cfg(feature = "agent")]
-pub use mcp_core::{McpCall, McpDivergence};
+pub use mcp_core::{McpCall, McpDivergence, McpServerEvent};
 
 #[cfg(feature = "agent")]
 pub use mcp_http::{McpHttpLog, McpHttpServer};

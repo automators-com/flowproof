@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use flowproof_adapters::agent_proxy::AgentProxy;
 use flowproof_adapters::agent_runner::{run_against, run_http, AgentRun};
 use flowproof_adapters::mcp_http::McpHttpServer;
-use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan};
+use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan, McpServerEvent};
 use flowproof_agent::{FlowSpec, SpecStep};
 use flowproof_trace::cassette::Cassette;
 use flowproof_trace::substitution::Mocks;
@@ -82,6 +82,11 @@ struct McpServerTrace {
     mocks: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     calls: Vec<McpCall>,
+    /// Server-initiated notifications captured on this lane, re-emitted at
+    /// replay. ADDITIVE and skipped when empty, so a v3.1/v3.2 lane with no
+    /// `events` key deserializes (empty) and re-serializes byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    events: Vec<McpServerEvent>,
 }
 
 /// The MCP boundary set up for one phase, across both transports.
@@ -134,13 +139,13 @@ impl McpContext {
             // the same "a name-only entry is a declaration" rule the model
             // boundary uses.
             let mocks = server_mocks(server);
-            let calls = if mode == "replay" {
+            let (calls, events) = if mode == "replay" {
                 trace_mcp
                     .get(&server.name)
-                    .map(|t| t.calls.clone())
+                    .map(|t| (t.calls.clone(), t.events.clone()))
                     .unwrap_or_default()
             } else {
-                Vec::new()
+                (Vec::new(), Vec::new())
             };
             // Exactly one transport (the spec validator guaranteed the
             // choice): a stdio `command:` flowproof stands in as, or a
@@ -154,6 +159,7 @@ impl McpContext {
                         command,
                         mocks,
                         calls,
+                        events,
                     };
                     let plan_path = dir.join(format!("{}.plan.json", server.name));
                     std::fs::write(
@@ -168,7 +174,7 @@ impl McpContext {
                     // whose agent cannot be handed the port at launch.
                     let port = server.port.unwrap_or(0);
                     let listener = if mode == "replay" {
-                        McpHttpServer::replay(calls, mocks, port)
+                        McpHttpServer::replay(calls, events, mocks, port)
                     } else {
                         let url = flowproof_trace::secret::resolve_refs(url)
                             .map_err(|e| e.to_string())?;
@@ -267,6 +273,7 @@ impl McpContext {
                 McpServerTrace {
                     mocks: server_mocks_by_name(spec, name),
                     calls: parsed.calls,
+                    events: parsed.events,
                 },
             );
         }
@@ -287,6 +294,7 @@ impl McpContext {
                 McpServerTrace {
                     mocks: server_mocks_by_name(spec, name),
                     calls,
+                    events: listener.events(),
                 },
             );
         }
@@ -996,6 +1004,7 @@ mod tests {
                     params: serde_json::json!({ "name": "get_weather", "arguments": {} }),
                     result: serde_json::json!({ "isError": false }),
                 }],
+                events: Vec::new(),
             },
         );
         let trace = AgentTrace {
@@ -1208,6 +1217,115 @@ mod tests {
         ctx.env_vars().expect("env")["FLOWPROOF_MCP_URL_REMOTE"].clone()
     }
 
+    /// A fake REAL streamable-HTTP MCP server that emits a server-initiated
+    /// NOTIFICATION inline in the `tools/call` SSE body, BEFORE the response
+    /// frame. Serves exactly `count` requests, then exits.
+    fn spawn_fake_mcp_notifying(count: usize) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind mcp");
+        let addr = listener.local_addr().expect("addr");
+        let url = format!("http://{addr}/mcp");
+        let handle = std::thread::spawn(move || {
+            for _ in 0..count {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let (id, method, params) = read_jsonrpc(&mut stream);
+                let result = fake_result(&method, &params);
+                let message =
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
+                let body = if method == "tools/call" {
+                    let notif = serde_json::json!({ "jsonrpc": "2.0",
+                        "method": "notifications/message",
+                        "params": { "level": "info", "data": "weather ready" } });
+                    format!("event: message\ndata: {notif}\n\nevent: message\ndata: {message}\n\n")
+                } else {
+                    format!("event: message\ndata: {message}\n\n")
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                     mcp-session-id: real-123\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (url, handle)
+    }
+
+    /// The fake agent opens the standalone GET SSE stream on the listener:
+    /// send the GET, read the status and drain the head, return a reader on
+    /// the body with a read timeout.
+    fn mcp_get(url: &str) -> (u16, std::io::BufReader<TcpStream>) {
+        let rest = url.trim_start_matches("http://");
+        let (addr, path) = rest
+            .split_once('/')
+            .map(|(a, p)| (a.to_string(), format!("/{p}")))
+            .expect("url has a path");
+        let stream = TcpStream::connect(&addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(800)))
+            .ok();
+        let mut writer = stream.try_clone().expect("clone");
+        let request =
+            format!("GET {path} HTTP/1.1\r\nhost: {addr}\r\naccept: text/event-stream\r\n\r\n");
+        writer.write_all(request.as_bytes()).expect("write");
+        let mut reader = std::io::BufReader::new(stream);
+        let mut status_line = String::new();
+        reader.read_line(&mut status_line).ok();
+        let status = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                break;
+            }
+            if header == "\r\n" || header == "\n" {
+                break;
+            }
+        }
+        (status, reader)
+    }
+
+    /// Read up to `want` SSE notification frames off a stream, giving up on a
+    /// read timeout.
+    fn read_get_notifications(
+        reader: &mut std::io::BufReader<TcpStream>,
+        want: usize,
+    ) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        let mut data = String::new();
+        let mut line = String::new();
+        while out.len() < want {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                if !data.is_empty() {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                        out.push(v);
+                    }
+                    data.clear();
+                }
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("data:") {
+                let rest = rest.strip_prefix(' ').unwrap_or(rest);
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(rest);
+            }
+        }
+        out
+    }
+
     /// End to end: record against a fake HTTP server captures the lane, then
     /// replay serves it with the fake server GONE - zero network.
     #[test]
@@ -1382,6 +1500,7 @@ mod tests {
             McpServerTrace {
                 mocks: BTreeMap::new(),
                 calls: lane,
+                events: Vec::new(),
             },
         );
         let spec = http_mcp_spec("http://unused/mcp", false);
@@ -1451,6 +1570,7 @@ mod tests {
             McpServerTrace {
                 mocks: BTreeMap::new(),
                 calls: lane,
+                events: Vec::new(),
             },
         );
         // Declared as HTTP, though a stdio record produced the lane.
@@ -1480,5 +1600,137 @@ mod tests {
         assert_eq!(call["result"]["content"][0]["text"], "sunny");
         ctx.check_replay(&spec, &trace)
             .expect("a stdio-recorded lane replays over http");
+    }
+
+    /// End to end (v3.3): record captures a server notification into the mcp
+    /// lane at the right anchor, and replay re-emits it over the standalone
+    /// GET stream at that point - a second GET is a 409, and the run passes.
+    #[test]
+    fn http_mcp_records_a_notification_then_replays_it_over_the_get_stream() {
+        // RECORD: two POSTs (initialize, tools/call); the tools/call SSE body
+        // carries a notification before its response.
+        let (real_url, handle) = spawn_fake_mcp_notifying(2);
+        let spec = http_mcp_spec(&real_url, false);
+        let ctx = McpContext::setup(&spec, "record", &BTreeMap::new())
+            .expect("setup")
+            .expect("some");
+        let url = mcp_url_env(&ctx);
+        mcp_post(
+            &url,
+            jsonrpc(
+                1,
+                "initialize",
+                serde_json::json!({ "protocolVersion": "2024-11-05", "clientInfo": { "name": "a" } }),
+            ),
+        );
+        let (_, call) = mcp_post(
+            &url,
+            jsonrpc(
+                2,
+                "tools/call",
+                serde_json::json!({ "name": "get_weather", "arguments": { "city": "Paris" } }),
+            ),
+        );
+        assert_eq!(call["result"]["content"][0]["text"], "sunny in Paris");
+        handle.join().ok();
+
+        let recorded = ctx.collect_record(&spec).expect("record captured");
+        drop(ctx);
+        let lane = &recorded["remote"];
+        assert_eq!(lane.calls.len(), 2, "initialize, tools/call");
+        assert_eq!(lane.events.len(), 1, "the notification was captured");
+        assert_eq!(lane.events[0].method, "notifications/message");
+        assert_eq!(
+            lane.events[0].after, 1,
+            "anchored after initialize, before tools/call"
+        );
+
+        // REPLAY: no fake server. The agent opens the GET push stream, drives
+        // the two calls, and the notification arrives after `initialize`.
+        let mut trace = BTreeMap::new();
+        trace.insert("remote".to_string(), recorded["remote"].clone());
+        let ctx = McpContext::setup(&spec, "replay", &trace)
+            .expect("setup")
+            .expect("some");
+        let url = mcp_url_env(&ctx);
+
+        let (status, mut reader) = mcp_get(&url);
+        assert_eq!(status, 200, "the push stream opens");
+        let (status2, _second) = mcp_get(&url);
+        assert_eq!(status2, 409, "a second GET stream is a 409");
+
+        // Nothing is due before any call is answered (anchor is 1).
+        assert!(
+            read_get_notifications(&mut reader, 1).is_empty(),
+            "not due before initialize"
+        );
+        mcp_post(
+            &url,
+            jsonrpc(
+                1,
+                "initialize",
+                serde_json::json!({ "protocolVersion": "2024-11-05", "clientInfo": { "name": "z" } }),
+            ),
+        );
+        let got = read_get_notifications(&mut reader, 1);
+        assert_eq!(got.len(), 1, "the notification arrives after initialize");
+        assert_eq!(got[0]["method"], "notifications/message");
+        let (_, call) = mcp_post(
+            &url,
+            jsonrpc(
+                2,
+                "tools/call",
+                serde_json::json!({ "name": "get_weather", "arguments": { "city": "Paris" } }),
+            ),
+        );
+        assert_eq!(call["result"]["content"][0]["text"], "sunny in Paris");
+        // The verdict judges calls only - a delivered notification is not an
+        // assertion, and the run reproduces.
+        ctx.check_replay(&spec, &trace).expect("replay reproduced");
+    }
+
+    /// Additivity: an mcp lane with calls but NO events serializes with no
+    /// `events` key and round-trips byte-identical, and a lane written before
+    /// v3.3 (no `events` key) deserializes with an empty events vec. The
+    /// event-free trace is the byte-for-byte trace v3.2 wrote.
+    #[test]
+    fn an_event_free_mcp_lane_round_trips_byte_identical() {
+        let mut mcp = BTreeMap::new();
+        mcp.insert(
+            "weather".to_string(),
+            McpServerTrace {
+                mocks: BTreeMap::new(),
+                calls: vec![McpCall {
+                    method: "tools/call".into(),
+                    params: serde_json::json!({ "name": "get_weather", "arguments": {} }),
+                    result: serde_json::json!({ "isError": false }),
+                }],
+                events: Vec::new(),
+            },
+        );
+        let trace = AgentTrace {
+            app: "agent".into(),
+            mocks: BTreeMap::new(),
+            cassette: neutral_cassette("hi", "there"),
+            mcp,
+        };
+        let json = serde_json::to_string_pretty(&trace).expect("serialize");
+        assert!(
+            !json.contains("events"),
+            "no events key on an event-free lane: {json}"
+        );
+
+        // A hand-built pre-v3.3 lane (calls, no events) deserializes with an
+        // empty events vec and re-serializes to the identical bytes.
+        let back: AgentTrace = serde_json::from_str(&json).expect("deserialize");
+        assert!(
+            back.mcp["weather"].events.is_empty(),
+            "events default empty"
+        );
+        let reencoded = serde_json::to_string_pretty(&back).expect("re-serialize");
+        assert_eq!(
+            json, reencoded,
+            "event-free lane round-trips byte-identical"
+        );
     }
 }
