@@ -57,7 +57,9 @@ impl AllowEntry {
     /// Does this entry's port constraint admit `port`? An entry with no port
     /// admits every port.
     pub fn port_ok(&self, port: u16) -> bool {
-        self.port.map_or(true, |p| p == port)
+        // `is_none() || == Some(port)` rather than `map_or`/`is_none_or`: the
+        // first is clippy-clean on old toolchains, the second needs 1.82.
+        self.port.is_none() || self.port == Some(port)
     }
 }
 
@@ -289,13 +291,13 @@ mod tests {
         // A bare IPv6 keeps all its colons.
         assert_eq!(
             parse_allow_entry("2001:db8::1").expect("parses").host,
-            HostMatch::Ip(IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap()))
+            HostMatch::Ip(IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().expect("ipv6")))
         );
         // Bracketed IPv6 with a port.
         assert_eq!(
             parse_allow_entry("[2001:db8::1]:443").expect("parses"),
             AllowEntry {
-                host: HostMatch::Ip(IpAddr::V6("2001:db8::1".parse().unwrap())),
+                host: HostMatch::Ip(IpAddr::V6("2001:db8::1".parse().expect("ipv6"))),
                 port: Some(443),
             }
         );
@@ -369,7 +371,9 @@ mod tests {
         assert!(is_loopback(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
         assert!(is_loopback(IpAddr::V4(Ipv4Addr::new(127, 5, 6, 7))));
         assert!(is_loopback(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-        assert!(is_loopback(IpAddr::V6("::ffff:127.0.0.1".parse().unwrap())));
+        assert!(is_loopback(IpAddr::V6(
+            "::ffff:127.0.0.1".parse().expect("ipv6")
+        )));
         assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
     }
 }

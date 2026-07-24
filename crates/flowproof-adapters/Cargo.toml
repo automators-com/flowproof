@@ -32,6 +32,15 @@ ocrs = { version = "0.12", optional = true }
 rten = { version = "0.24", optional = true }
 ureq = { version = "3", features = ["platform-verifier"], optional = true }
 
+# Egress containment (`app: agent`) is a Linux-only, unprivileged seccomp
+# user-notification supervisor. `libc` is pure Rust (no C library to link),
+# so a non-Linux build never pulls it and a cross `cargo check --target
+# x86_64-unknown-linux-gnu` type-checks the module off a Mac. The BPF filter
+# is hand-built: seccompiler builds classic-BPF filters but its actions do
+# not include SECCOMP_RET_USER_NOTIF, which this design requires.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",

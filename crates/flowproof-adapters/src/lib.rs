@@ -9,6 +9,14 @@ pub mod agent_proxy;
 pub mod agent_runner;
 
 #[cfg(feature = "agent")]
+pub mod egress;
+
+// The seccomp mechanism is Linux-only; on every other OS the `egress` module
+// reports "not contained" and this module does not exist.
+#[cfg(all(feature = "agent", target_os = "linux"))]
+pub mod egress_linux;
+
+#[cfg(feature = "agent")]
 pub mod mcp_core;
 
 #[cfg(feature = "agent")]
@@ -31,6 +39,9 @@ pub use agent_proxy::AgentProxy;
 
 #[cfg(feature = "agent")]
 pub use agent_runner::{AgentRun, RunError};
+
+#[cfg(feature = "agent")]
+pub use egress::{AllowSet, Containment, EgressLog};
 
 #[cfg(feature = "agent")]
 pub use mcp_core::{McpCall, McpDivergence, McpServerEvent};
