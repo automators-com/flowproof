@@ -73,6 +73,8 @@ pub struct MockAppDriver {
     pub context_clicked: Vec<String>,
     /// Element keys double-clicked via `double_click`, in order.
     pub double_clicked: Vec<String>,
+    /// Element keys hovered via `hover`, in order.
+    pub hovered: Vec<String>,
     /// Browser config captured by `stage_browser` — the mock stands in
     /// for the web driver here, so tests can assert the staging happened.
     pub staged_browser: Option<crate::WebBrowserConfig>,
@@ -489,6 +491,15 @@ impl AppDriver for MockAppDriver {
             return Err(DriverError::Uia(format!("mock element '{id}' not found")));
         }
         self.double_clicked.push(id.to_string());
+        Ok(())
+    }
+
+    fn hover(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let id = Self::id_of(selector)?;
+        if !self.elements.iter().any(|e| e == id) {
+            return Err(DriverError::Uia(format!("mock element '{id}' not found")));
+        }
+        self.hovered.push(id.to_string());
         Ok(())
     }
 

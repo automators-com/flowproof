@@ -394,6 +394,10 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             selectors_for(app, target, Some(label)),
             Action::DoubleClick(serde_json::Map::new()),
         ),
+        ResolvedAction::Hover { target, label } => (
+            selectors_for(app, target, Some(label)),
+            Action::Hover(serde_json::Map::new()),
+        ),
         // Whole-surface capture: no selectors; masks travel as raw
         // selector strings so replay blanks the SAME regions.
         ResolvedAction::AssertScreenshot {
@@ -752,6 +756,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::Upload { target, .. }
         | ResolvedAction::ContextClick { target, .. }
         | ResolvedAction::DoubleClick { target, .. }
+        | ResolvedAction::Hover { target, .. }
         | ResolvedAction::Clear { target }
         | ResolvedAction::SetChecked { target, .. }
         | ResolvedAction::AssertText { target, .. }
@@ -939,6 +944,10 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
             label: step.intent.clone(),
         }),
         Action::DoubleClick(_) => Some(ResolvedAction::DoubleClick {
+            target: target_from_selector(&step.selectors)?,
+            label: step.intent.clone(),
+        }),
+        Action::Hover(_) => Some(ResolvedAction::Hover {
             target: target_from_selector(&step.selectors)?,
             label: step.intent.clone(),
         }),
@@ -1735,6 +1744,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 }
                 ResolvedAction::ContextClick { .. } => driver.context_click(targeted())?,
                 ResolvedAction::DoubleClick { .. } => driver.double_click(targeted())?,
+                ResolvedAction::Hover { .. } => driver.hover(targeted())?,
                 ResolvedAction::AssertScreenshot { name, masks, .. } => {
                     // Recording MINTS the masked baseline — re-record (or
                     // `record --reuse`) is the update path.
@@ -2432,6 +2442,7 @@ steps:
   - Upload fixtures/data.qif into the \"Import file\" field
   - Right-click \"Accounts\"
   - Double-click \"Accounts\"
+  - Hover over \"Accounts\"
   - Press Mod+K
 ",
         )
@@ -2440,13 +2451,14 @@ steps:
         let dir = std::env::temp_dir().join("flowproof-recorder-upload");
         let out = dir.join("upload.trace.jsonl");
         let summary = record(&spec, &mut driver, &out).expect("recording succeeds");
-        assert_eq!(summary.steps, 4);
+        assert_eq!(summary.steps, 5);
         assert_eq!(
             driver.uploads,
             vec![("Import file".to_string(), "fixtures/data.qif".to_string())]
         );
         assert_eq!(driver.context_clicked, vec!["Accounts"]);
         assert_eq!(driver.double_clicked, vec!["Accounts"]);
+        assert_eq!(driver.hovered, vec!["Accounts"]);
         // Mod resolves per-OS at execution (Ctrl here on CI), but the
         // TRACE stays neutral: the same file replays on any OS.
         let expected_chord = if cfg!(target_os = "macos") {
@@ -2470,6 +2482,7 @@ steps:
             contents.contains("\"double_click\""),
             "double_click action encoded"
         );
+        assert!(contents.contains("\"hover\""), "hover action encoded");
         assert!(
             contents.contains("\"modifiers\":[\"mod\"]"),
             "portable modifier stored neutrally, not resolved into the trace"
@@ -2511,6 +2524,18 @@ steps:
                 assert_eq!(target, Target::text("Accounts"));
             }
             other => panic!("double_click must decode to DoubleClick, got {other:?}"),
+        }
+
+        let hover = ResolvedAction::Hover {
+            target: Target::text("Accounts"),
+            label: "Hover over Accounts".into(),
+        };
+        let step = step_for(4, "Hover over Accounts", "web", &hover);
+        match decode_step(&step) {
+            Some(ResolvedAction::Hover { target, .. }) => {
+                assert_eq!(target, Target::text("Accounts"));
+            }
+            other => panic!("hover must decode to Hover, got {other:?}"),
         }
     }
 

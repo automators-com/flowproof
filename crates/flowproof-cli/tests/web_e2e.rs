@@ -1216,6 +1216,149 @@ fn double_click_fires_a_real_dblclick_on_a_real_page() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A real hover against real Chromium reveals a CSS `:hover` menu. The menu
+/// is `display:none` by default and shown only by `.trigger:hover + .menu`,
+/// so its text is absent from the surface until the driver's single CDP
+/// `mouseMoved` parks the pointer on the trigger. The test proves BOTH
+/// directions: without the hover step the revealed text is absent (a control
+/// flow asserts `page does not show`), and with it the revealed text appears.
+/// A no-op or a click-in-disguise (which moves the pointer off after
+/// releasing) would leave `:hover` inactive and the menu hidden, failing.
+#[test]
+fn hover_reveals_a_css_hover_menu_on_a_real_page() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web hover E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-hover-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("hover.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Hover menu</title>
+<style>
+  .menu { display: none; }
+  .trigger:hover + .menu { display: block; }
+</style>
+<main>
+  <button class="trigger">Menu</button>
+  <div class="menu">Reports</div>
+</main>"#,
+    )
+    .expect("page written");
+
+    // Control: WITHOUT any hover, the CSS `:hover` menu stays hidden, so its
+    // text never reaches the surface. This is what proves the hover (not the
+    // page load) is what reveals it.
+    let control = FlowSpec::parse(&format!(
+        "name: Menu hidden by default\napp: web\nurl: file://{}\nsteps:\n  \
+         - assert: page does not show Reports\n",
+        page.display()
+    ))
+    .expect("control spec parses");
+    let control_trace = dir.join("control.trace.jsonl");
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&control, &mut driver, &control_trace).expect("control records");
+    drop(driver);
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (control_report, _run_dir) =
+        flowproof_replay::run_trace(&control_trace, &mut driver).expect("control replays");
+    assert!(
+        control_report.passed,
+        "without a hover the revealed text must be absent: {control_report:#?}"
+    );
+
+    // With the hover, the menu opens and its text shows.
+    let spec = FlowSpec::parse(&format!(
+        "name: Hover reveals a menu\napp: web\nurl: file://{}\nsteps:\n  \
+         - Hover over \"Menu\"\n  \
+         - assert: page shows Reports\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("hover.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "hover flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Hover-then-click against real Chromium: hovering the menu reveals a
+/// submenu button (shown on `mouseover`, hidden again by a `mouseout` that
+/// leaves the menu), and the NEXT step clicks the revealed button. This
+/// pins the persistence semantic: the engine synthesizes no pointer
+/// movement between steps, so any engine-injected move would fire the
+/// mouseout, collapse the submenu, and fail the click.
+#[test]
+fn hover_reveals_a_submenu_the_next_step_can_click() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web hover-submenu E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-hover-submenu-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("submenu.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Hover submenu</title>
+<main>
+  <div id="menu">
+    <button id="trigger">Menu</button>
+    <button id="submenu" style="display:none"
+      onclick="document.getElementById('status').textContent = 'submenu clicked'">Reports</button>
+  </div>
+  <div id="status">waiting</div>
+  <script>
+    const menu = document.getElementById('menu');
+    const submenu = document.getElementById('submenu');
+    menu.addEventListener('mouseover', () => {
+      submenu.style.display = 'inline-block';
+    });
+    menu.addEventListener('mouseout', (e) => {
+      // The standard menu pattern: only a move that LEAVES the menu
+      // (including its submenu) collapses it.
+      if (!menu.contains(e.relatedTarget)) {
+        submenu.style.display = 'none';
+      }
+    });
+  </script>
+</main>"#,
+    )
+    .expect("page written");
+
+    let spec = FlowSpec::parse(&format!(
+        "name: Open a hover submenu\napp: web\nurl: file://{}\nsteps:\n  \
+         - Hover over \"Menu\"\n  \
+         - Click \"Reports\"\n  \
+         - assert: page shows submenu clicked\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("submenu.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "hover-submenu flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Round-2 selector fixes against real Chromium, all three in one flow:
 /// a wrapping `<label>Name: <input/></label>` resolves as a label query,
 /// `Click "Close Account"` lands on a button whose DOM text is

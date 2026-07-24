@@ -108,6 +108,14 @@ pub enum ResolvedAction {
         /// Human-readable label (recorded as the selector name hint).
         label: String,
     },
+    /// Hover over an element: move the pointer onto it, no press/release.
+    /// Hover state persists until the next explicit pointer action; the
+    /// post-condition is app-defined, exactly like a plain click's.
+    Hover {
+        target: Target,
+        /// Human-readable label (recorded as the selector name hint).
+        label: String,
+    },
     /// Screenshot comparison against a named baseline. Record mints the
     /// masked baseline; replay compares with the same masks.
     AssertScreenshot {
@@ -1405,6 +1413,7 @@ fn action_target(action: &ResolvedAction) -> Option<&Target> {
         | ResolvedAction::Upload { target, .. }
         | ResolvedAction::ContextClick { target, .. }
         | ResolvedAction::DoubleClick { target, .. }
+        | ResolvedAction::Hover { target, .. }
         | ResolvedAction::Clear { target }
         | ResolvedAction::SetChecked { target, .. }
         | ResolvedAction::Capture { target, .. }
@@ -1477,6 +1486,7 @@ mod windows {
         match action {
             ResolvedAction::ContextClick { .. } => return not_yet("right-click"),
             ResolvedAction::DoubleClick { .. } => return not_yet("double-click"),
+            ResolvedAction::Hover { .. } => return not_yet("hover"),
             ResolvedAction::Upload { .. } => return not_yet("upload"),
             ResolvedAction::Navigate { .. } => return not_yet("`Go to`"),
             ResolvedAction::Reload => return not_yet("`Reload the page`"),
@@ -2026,6 +2036,40 @@ mod web {
                 trimmed,
                 "expected 'Double-click \"<text>\"' or 'Double-click the [2nd ]\"<text>\"'",
             ));
+        }
+
+        // `Hover over [the [Nth ]]"<text>"` → move the pointer onto an
+        // element, no press/release; hover state persists until the next
+        // explicit pointer action. The `over` is mandatory: there is no
+        // `Hover "<text>"` shorthand. The rest mirrors the right-click form
+        // exactly, including the scope suffix.
+        if let Some(after_hover) = strip_prefix_ci(trimmed, "hover ") {
+            let near_miss = || {
+                Err(unresolvable(
+                    trimmed,
+                    "expected 'Hover over \"<text>\"' or 'Hover over the [2nd ]\"<text>\"'",
+                ))
+            };
+            let Some(rest) = strip_prefix_ci(after_hover.trim(), "over ") else {
+                return near_miss();
+            };
+            let rest = rest.trim();
+            let (nth, rest) = match strip_prefix_ci(rest, "the ") {
+                Some(after_the) => split_ordinal(after_the.trim()),
+                None => (None, rest),
+            };
+            if let Some(quoted) = rest.strip_prefix('"') {
+                if let Some((label, tail)) = quoted_label(quoted) {
+                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    if tail.is_empty() {
+                        return Ok(vec![ResolvedAction::Hover {
+                            target: scoped_target(trimmed, nth, label, scope)?,
+                            label: label.to_string(),
+                        }]);
+                    }
+                }
+            }
+            return near_miss();
         }
 
         // `Click [the [Nth ]]"<text>"` → any interactable element showing
@@ -2721,6 +2765,8 @@ mod tests {
             ("web", r#"Right click the 2nd "Row actions""#),
             ("web", r#"Double-click "Accounts""#),
             ("web", r#"Double click the 2nd "Row actions""#),
+            ("web", r#"Hover over "Accounts""#),
+            ("web", r#"Hover over the 2nd "Row actions""#),
             ("web", r#"Upload logo.png into the "Avatar" field"#),
             ("web", r#"Upload data/import.qif into the importFile field"#),
             ("web", "Press Enter"),
@@ -2790,6 +2836,10 @@ mod tests {
             (
                 "web",
                 r#"Double-click the "Pay" in the item containing "Invoice 4711""#,
+            ),
+            (
+                "web",
+                r#"Hover over the "Pay" in the item containing "Invoice 4711""#,
             ),
             (
                 "web",
@@ -3291,6 +3341,7 @@ mod multibyte_tests {
                     format!("Click \"{payload}\""),
                     format!("Right-click \"{payload}\""),
                     format!("Double-click \"{payload}\""),
+                    format!("Hover over \"{payload}\""),
                     format!("Press the \"{payload}\" button"),
                     format!("the \"{payload}\" shows {payload}"),
                     format!("the \"Name\" field contains {payload}"),
@@ -3430,6 +3481,7 @@ mod windows_grammar_tests {
         for (step, want) in [
             ("Right-click \"File\"", "right-click"),
             ("Double-click \"File\"", "double-click"),
+            ("Hover over \"File\"", "hover"),
             ("Go to /settings", "`Go to`"),
             ("Reload the page", "`Reload the page`"),
             ("Upload /tmp/a.txt into the \"File\" field", "upload"),
@@ -3853,6 +3905,14 @@ mod scoped_target_tests {
             plain(r#"Double-click the "Amount" in the item containing "Invoice 4711""#)
                 .expect("parses"),
             vec![ResolvedAction::DoubleClick {
+                target: wanted.clone(),
+                label: "Amount".into()
+            }]
+        );
+        assert_eq!(
+            plain(r#"Hover over the "Amount" in the item containing "Invoice 4711""#)
+                .expect("parses"),
+            vec![ResolvedAction::Hover {
                 target: wanted,
                 label: "Amount".into()
             }]
@@ -3886,6 +3946,50 @@ mod scoped_target_tests {
         ));
         let err = plain("Double-click Accounts").expect_err("bare word is a near miss");
         assert!(err.to_string().contains("Double-click"), "{err}");
+    }
+
+    /// Hover mirrors right-click's shape with one canonical form,
+    /// `Hover over [the [2nd ]]"<text>"`. The `over` is mandatory: there is
+    /// NO `Hover "<text>"` shorthand. `the`, `2nd`, and case-insensitivity
+    /// ride along, and every near miss (missing `over`, unquoted text) names
+    /// the canonical `Hover over` form.
+    #[test]
+    fn hover_parses_every_documented_form() {
+        assert_eq!(
+            plain(r#"Hover over "Accounts""#).expect("parses"),
+            vec![ResolvedAction::Hover {
+                target: Target::text("Accounts"),
+                label: "Accounts".into()
+            }]
+        );
+        assert_eq!(
+            plain(r#"hover over "Accounts""#).expect("case-insensitive"),
+            vec![ResolvedAction::Hover {
+                target: Target::text("Accounts"),
+                label: "Accounts".into()
+            }]
+        );
+        assert_eq!(
+            plain(r#"Hover over the "Accounts""#).expect("`the` accepted"),
+            vec![ResolvedAction::Hover {
+                target: Target::text("Accounts"),
+                label: "Accounts".into()
+            }]
+        );
+        assert!(matches!(
+            plain(r#"Hover over the 2nd "Row actions""#).as_deref(),
+            Ok([ResolvedAction::Hover {
+                target: Target::Nth(2, _),
+                ..
+            }])
+        ));
+        // No shorthand: `Hover "<text>"` without `over` is a near miss.
+        let err = plain(r#"Hover "Accounts""#).expect_err("no shorthand");
+        assert!(err.to_string().contains("Hover over \"<text>\""), "{err}");
+        let err = plain("Hover over Accounts").expect_err("unquoted is a near miss");
+        assert!(err.to_string().contains("Hover over \"<text>\""), "{err}");
+        let err = plain("Hover Accounts").expect_err("bare word is a near miss");
+        assert!(err.to_string().contains("Hover over \"<text>\""), "{err}");
     }
 
     /// PART A, pinned: the CELL target composes with every action too. The
@@ -3938,6 +4042,14 @@ mod scoped_target_tests {
             plain(r#"Double-click the "Actions" column in the row containing "Grace Hopper""#)
                 .as_deref(),
             Ok([ResolvedAction::DoubleClick {
+                target: Target::Cell { .. },
+                ..
+            }])
+        ));
+        assert!(matches!(
+            plain(r#"Hover over the "Actions" column in the row containing "Grace Hopper""#)
+                .as_deref(),
+            Ok([ResolvedAction::Hover {
                 target: Target::Cell { .. },
                 ..
             }])
