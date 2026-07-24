@@ -30,6 +30,11 @@ pub struct UiaSelector {
     /// A table cell addressed by identity (#58). Web-only; resolved against
     /// the live DOM by column header text and row anchor, never position.
     pub cell: Option<CellQuery>,
+    /// An element addressed INSIDE a container identified by an anchor
+    /// (`the "Amount" in the item containing "Invoice 4711"`). Web-only,
+    /// like `cell`: the container is found first, then the ordinary
+    /// resolution ladder runs rooted at it.
+    pub scope: Option<ScopeQuery>,
 }
 
 /// A table cell to resolve by IDENTITY, not position (#58). `column` is the
@@ -54,6 +59,43 @@ pub struct CellQuery {
 pub struct CellHints {
     pub column_field: Option<String>,
     pub row_id: Option<String>,
+}
+
+/// An element addressed inside a CONTAINER identified by an anchor. The
+/// container is either the bare word `item` (a closed list of list-ish
+/// roles) or an explicit `css:`/`id:` selector, written exactly as the spec
+/// wrote it; `anchor` is text identifying WHICH container. The inner target
+/// is the ordinary one - css, native id, or text anchor - resolved rooted
+/// at the container, never page-wide.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScopeQuery {
+    pub container: String,
+    pub anchor: String,
+    pub inner_css: Option<String>,
+    pub inner_id: Option<String>,
+    pub inner_text: Option<String>,
+    /// Record-time hint: the container's own id, used as a fallback when
+    /// the anchor text has since changed (the `row_id` analog).
+    pub container_id: Option<String>,
+}
+
+impl ScopeQuery {
+    /// The CSS selector for the inner target, if it is addressed that way.
+    pub fn inner_css_selector(&self) -> Option<String> {
+        self.inner_css
+            .clone()
+            .or_else(|| self.inner_id.as_ref().map(|id| format!("#{id}")))
+    }
+}
+
+/// Record-time hint and failure diagnostic for a scoped-container target:
+/// the container's id (the `row_id` analog), plus whether the anchor is on
+/// the surface without sitting in any container at all - the one miss whose
+/// timeout message should name the fix rather than say "not found".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScopeHints {
+    pub container_id: Option<String>,
+    pub anchor_without_container: bool,
 }
 
 impl UiaSelector {
@@ -84,6 +126,7 @@ impl UiaSelector {
             && self.control_type.is_none()
             && self.css.is_none()
             && self.cell.is_none()
+            && self.scope.is_none()
     }
 
     pub fn with_nth(mut self, nth: Option<u32>) -> Self {
@@ -114,6 +157,16 @@ impl std::fmt::Display for UiaSelector {
         }
         if let Some(nth) = self.nth {
             parts.push(format!("nth={nth}"));
+        }
+        if let Some(scope) = &self.scope {
+            let inner = scope
+                .inner_css_selector()
+                .or_else(|| scope.inner_text.clone())
+                .unwrap_or_default();
+            parts.push(format!(
+                "\"{inner}\" in the {} containing \"{}\"",
+                scope.container, scope.anchor
+            ));
         }
         write!(f, "{}", parts.join(","))
     }
@@ -189,6 +242,14 @@ pub trait AppDriver {
     /// other adapter, and a non-cell selector) harvests nothing, which is
     /// valid: a text-only cell payload still resolves by identity.
     fn cell_hints(&mut self, _selector: &UiaSelector) -> Result<Option<CellHints>, DriverError> {
+        Ok(None)
+    }
+
+    /// Record-time hints and failure diagnostics for a scoped-container
+    /// target. Web-only for the same reason `cell_hints` is: a container is
+    /// a DOM concept. The default harvests nothing, which is valid - a
+    /// text-only scoped payload still resolves by identity.
+    fn scope_hints(&mut self, _selector: &UiaSelector) -> Result<Option<ScopeHints>, DriverError> {
         Ok(None)
     }
 
@@ -1133,6 +1194,12 @@ pub fn resolve_app(app_id: &str) -> Option<AppTarget> {
 impl AppDriver for Box<dyn AppDriver> {
     fn cell_hints(&mut self, selector: &UiaSelector) -> Result<Option<CellHints>, DriverError> {
         (**self).cell_hints(selector)
+    }
+
+    // Every trait method needs its delegation here: a missing one silently
+    // falls back to the DEFAULT body, which no mock-driver test can catch.
+    fn scope_hints(&mut self, selector: &UiaSelector) -> Result<Option<ScopeHints>, DriverError> {
+        (**self).scope_hints(selector)
     }
 
     fn launch(

@@ -203,6 +203,42 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
                 payload,
             }]
         }
+        // A scoped-container target is a STRUCTURAL rung too, addressed by
+        // the container's identity plus the ordinary inner target. The
+        // inner keys are PREFIXED (`inner_text`/`inner_css`/`inner_id`) and
+        // that is load-bearing: an older engine reads bare `css`/`text` off
+        // any structural rung, and bare keys here would make it resolve the
+        // inner target PAGE-WIDE - a silent wrong-element pass. Prefixed,
+        // the old decode yields an empty selector, the rung is skipped, and
+        // the run fails loudly instead.
+        //
+        // There is deliberately NO text-anchor fallback rung: an unscoped
+        // "Amount" would match any "Amount" on the page and pass
+        // green-degraded on a lie.
+        Target::Scoped {
+            container,
+            anchor,
+            inner,
+        } => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("kind".into(), "scoped".into());
+            payload.insert("container".into(), container.as_str().into());
+            payload.insert("container_anchor".into(), anchor.as_str().into());
+            match inner.as_ref() {
+                Target::Css(css) => payload.insert("inner_css".into(), css.as_str().into()),
+                Target::AutomationId(id) => payload.insert("inner_id".into(), id.as_str().into()),
+                Target::Text(text) => payload.insert("inner_text".into(), text.as_str().into()),
+                // The parser only ever builds those three inners (nesting
+                // is a parse error), so nothing else can appear here.
+                _ => None,
+            };
+            vec![Selector {
+                tier: SelectorTier::Structural,
+                provenance: flowproof_trace::format::Adapter::Web,
+                confidence: Some(0.9),
+                payload,
+            }]
+        }
         // A text anchor IS the primary selector here: the element is
         // addressed the way a user sees it (visible text / placeholder).
         Target::Text(text) => {
@@ -268,6 +304,22 @@ fn enrich_cell_hints(step: &mut Step, hints: &flowproof_driver::CellHints) {
         }
         if let Some(id) = &hints.row_id {
             selector.payload.insert("row_id".into(), id.as_str().into());
+        }
+    }
+}
+
+/// Merge the record-time container id into a step's scoped selector
+/// payload - the `row_id` analog, so replay can still find the container
+/// when the anchor text has since been reworded.
+fn enrich_scope_hints(step: &mut Step, hints: &flowproof_driver::ScopeHints) {
+    for selector in &mut step.selectors {
+        if selector.payload.get("kind").and_then(|v| v.as_str()) != Some("scoped") {
+            continue;
+        }
+        if let Some(id) = &hints.container_id {
+            selector
+                .payload
+                .insert("container_id".into(), id.as_str().into());
         }
     }
 }
@@ -652,6 +704,30 @@ fn target_selector(target: &Target) -> Option<UiaSelector> {
                 column: column.clone(),
                 anchor: anchor.clone(),
                 ..Default::default()
+            }),
+            ..UiaSelector::default()
+        }),
+        Target::Scoped {
+            container,
+            anchor,
+            inner,
+        } => Some(UiaSelector {
+            scope: Some(flowproof_driver::ScopeQuery {
+                container: container.clone(),
+                anchor: anchor.clone(),
+                inner_css: match inner.as_ref() {
+                    Target::Css(css) => Some(css.clone()),
+                    _ => None,
+                },
+                inner_id: match inner.as_ref() {
+                    Target::AutomationId(id) => Some(id.clone()),
+                    _ => None,
+                },
+                inner_text: match inner.as_ref() {
+                    Target::Text(text) => Some(text.clone()),
+                    _ => None,
+                },
+                container_id: None,
             }),
             ..UiaSelector::default()
         }),
@@ -1974,6 +2050,15 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     }
                 }
             }
+            // The same harvest for a scoped-container target: the
+            // container's own id, so a reworded anchor still resolves.
+            if let Some(scope_uia) = action_selector(&action).filter(|u| u.scope.is_some()) {
+                if let Ok(Some(hints)) = driver.scope_hints(&scope_uia) {
+                    if let Some(step) = steps.last_mut() {
+                        enrich_scope_hints(step, &hints);
+                    }
+                }
+            }
         }
     }
 
@@ -2715,5 +2800,128 @@ steps:
             record(&spec, &mut driver, &out).expect_err("must fail"),
             RecordError::UnknownApp(_)
         ));
+    }
+
+    fn scoped(inner: Target) -> Target {
+        Target::Scoped {
+            container: "item".into(),
+            anchor: "Invoice 4711".into(),
+            inner: Box::new(inner),
+        }
+    }
+
+    /// The inner keys are PREFIXED, and that is load-bearing rather than
+    /// cosmetic: an engine that predates this rung reads bare `css`/`text`
+    /// off any structural payload, so a bare key here would make it resolve
+    /// the inner target PAGE-WIDE and pass on the wrong element.
+    #[test]
+    fn a_scoped_rung_prefixes_every_inner_key() {
+        for (inner, key, value) in [
+            (Target::text("Amount"), "inner_text", "Amount"),
+            (Target::css(".amount"), "inner_css", ".amount"),
+            (Target::id("amount"), "inner_id", "amount"),
+        ] {
+            let ladder = selectors_for("web", &scoped(inner), None);
+            assert_eq!(ladder.len(), 1, "a scoped target has no fallback rung");
+            let payload = &ladder[0].payload;
+            assert_eq!(ladder[0].tier, SelectorTier::Structural);
+            assert_eq!(ladder[0].confidence, Some(0.9));
+            assert_eq!(payload.get("kind").and_then(|v| v.as_str()), Some("scoped"));
+            assert_eq!(
+                payload.get("container").and_then(|v| v.as_str()),
+                Some("item")
+            );
+            assert_eq!(
+                payload.get("container_anchor").and_then(|v| v.as_str()),
+                Some("Invoice 4711")
+            );
+            assert_eq!(payload.get(key).and_then(|v| v.as_str()), Some(value));
+            for bare in ["css", "text", "automation_id", "name", "id"] {
+                assert!(
+                    !payload.contains_key(bare),
+                    "a bare '{bare}' key would resolve unscoped on an older engine"
+                );
+            }
+        }
+    }
+
+    /// No text-anchor fallback: an unscoped "Amount" would match any
+    /// "Amount" on the page and pass green-degraded on a lie.
+    #[test]
+    fn a_scoped_target_records_no_fallback_rung() {
+        let ladder = selectors_for("web", &scoped(Target::text("Amount")), Some("Amount"));
+        assert_eq!(ladder.len(), 1);
+        assert!(ladder
+            .iter()
+            .all(|s| s.tier != SelectorTier::TextAnchor && s.tier != SelectorTier::NativeId));
+    }
+
+    /// The container id rides in as a HINT, exactly like a cell's row_id.
+    #[test]
+    fn the_container_id_hint_is_merged_into_the_scoped_payload() {
+        let mut step = step_for(
+            1,
+            "Click",
+            "web",
+            &ResolvedAction::Press {
+                target: scoped(Target::text("Amount")),
+                label: "Amount".into(),
+            },
+        );
+        enrich_scope_hints(
+            &mut step,
+            &flowproof_driver::ScopeHints {
+                container_id: Some("transaction-183".into()),
+                anchor_without_container: false,
+            },
+        );
+        assert_eq!(
+            step.selectors[0]
+                .payload
+                .get("container_id")
+                .and_then(|v| v.as_str()),
+            Some("transaction-183")
+        );
+        // Existing cell payloads are untouched by the scoped pass.
+        let mut cell_step = step_for(
+            2,
+            "Click",
+            "web",
+            &ResolvedAction::Press {
+                target: Target::Cell {
+                    column: "Actions".into(),
+                    anchor: "Grace Hopper".into(),
+                },
+                label: "Actions".into(),
+            },
+        );
+        enrich_scope_hints(
+            &mut cell_step,
+            &flowproof_driver::ScopeHints {
+                container_id: Some("row-102".into()),
+                anchor_without_container: false,
+            },
+        );
+        assert!(!cell_step.selectors[0].payload.contains_key("container_id"));
+        assert_eq!(
+            cell_step.selectors[0]
+                .payload
+                .get("kind")
+                .and_then(|v| v.as_str()),
+            Some("cell")
+        );
+    }
+
+    /// The live-driver selector carries the container query, so the web
+    /// adapter resolves the container first and the inner target inside it.
+    #[test]
+    fn a_scoped_target_becomes_a_scope_query_for_the_driver() {
+        let uia = target_selector(&scoped(Target::text("Amount"))).expect("has a selector");
+        let scope = uia.scope.clone().expect("carries a scope query");
+        assert_eq!(scope.container, "item");
+        assert_eq!(scope.anchor, "Invoice 4711");
+        assert_eq!(scope.inner_text.as_deref(), Some("Amount"));
+        assert!(scope.inner_css.is_none() && scope.inner_id.is_none());
+        assert!(!uia.is_empty());
     }
 }

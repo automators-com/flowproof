@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8"><title>Transactions</title>
+<style>
+  body{font:14px system-ui;margin:2rem}
+  ul{list-style:none;padding-left:1rem}
+  li{border:1px solid #ccc;margin:.4rem 0;padding:.4rem .6rem}
+  .ref{font-weight:600;margin-right:1rem}
+  .amount,.state{margin-right:1rem}
+</style>
+<!-- A list, not a table: the shape a cell target cannot address. Each item
+     carries its own id so record can harvest the container hint, and the
+     nested group exists so "innermost wins" has something to prove. -->
+<h1>Transactions</h1>
+<ul id="transactions">
+  <li id="transaction-183">
+    <span class="ref">Invoice 4711</span>
+    <span class="amount">50.00</span>
+    <span class="state">Unpaid</span>
+    <input type="checkbox" aria-label="Select">
+    <button>Pay</button>
+  </li>
+  <li id="transaction-184">
+    <span class="ref">Invoice 4712</span>
+    <span class="amount">75.00</span>
+    <span class="state">Unpaid</span>
+    <input type="checkbox" aria-label="Select">
+    <button>Pay</button>
+  </li>
+  <li id="group-9">
+    <span class="group">Group A</span>
+    <ul>
+      <li id="transaction-190">
+        <span class="ref">Invoice 4790</span>
+        <span class="amount">10.00</span>
+        <span class="state">Unpaid</span>
+        <button>Pay</button>
+      </li>
+      <li id="transaction-191">
+        <span class="ref">Invoice 4791</span>
+        <span class="amount">20.00</span>
+        <span class="state">Unpaid</span>
+        <button>Pay</button>
+      </li>
+    </ul>
+  </li>
+</ul>
+<p id="loose">Invoice 9000 sits outside every list</p>
+<script>
+  document.querySelectorAll('li button').forEach(function (button) {
+    button.addEventListener('click', function () {
+      button.closest('li').querySelector('.state').textContent = 'Paid';
+    });
+  });
+</script>

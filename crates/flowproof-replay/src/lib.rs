@@ -94,6 +94,22 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
                 column_field: get("column_field"),
                 row_id: get("row_id"),
             }),
+            // A `kind: "scoped"` structural payload decodes into the
+            // container query. Its inner keys are PREFIXED, so the
+            // `automation_id`/`css` reads above see nothing: an engine that
+            // predates this rung gets an EMPTY selector, skips the rung and
+            // fails loudly, instead of resolving `inner_text` page-wide and
+            // passing on the wrong element.
+            scope: (get("kind").as_deref() == Some("scoped")).then(|| {
+                flowproof_driver::ScopeQuery {
+                    container: get("container").unwrap_or_default(),
+                    anchor: get("container_anchor").unwrap_or_default(),
+                    inner_css: get("inner_css"),
+                    inner_id: get("inner_id"),
+                    inner_text: get("inner_text").or_else(|| get("inner_name")),
+                    container_id: get("container_id"),
+                }
+            }),
         },
         // A text anchor resolves by visible label (UIA Name / element
         // text / OCR line). `relation` rides along for pixels-only
@@ -147,6 +163,28 @@ fn augment_failure<D: AppDriver>(
                 }
             }
         }
+    }
+    // A scoped target that timed out has one miss worth naming: the anchor
+    // IS on the surface, but it sits in no container the closed `item` list
+    // covers. "not found" would send the author looking for a typo; this
+    // says what to write instead.
+    for selector in &step.selectors {
+        let Some(uia) = selector_to_uia(selector) else {
+            continue;
+        };
+        let Some(scope) = uia.scope.clone() else {
+            continue;
+        };
+        if let Ok(Some(hints)) = driver.scope_hints(&uia) {
+            if hints.anchor_without_container {
+                reason.push_str(&format!(
+                    " - '{}' is visible but sits in no list item - name the container with \
+                     \"css:…\"",
+                    scope.anchor
+                ));
+            }
+        }
+        break;
     }
     if let Ok(Some(bundle)) = driver.debug_bundle() {
         let debug_dir = run_dir.join("debug");
@@ -1698,6 +1736,68 @@ mod failure_hint_tests {
         let hints = nearest_anchor_hints("Save change", scene);
         assert_eq!(hints, vec!["Sace change", "Save changes"]);
         assert!(nearest_anchor_hints("Save change", "not json").is_empty());
+    }
+
+    /// A `kind: "scoped"` rung decodes into a container query - never into
+    /// a bare css/text selector that would resolve page-wide.
+    #[test]
+    fn a_scoped_rung_decodes_into_a_container_query() {
+        let selector: Selector = serde_json::from_str(
+            r#"{"tier":"structural","provenance":"web","confidence":0.9,
+                "payload":{"kind":"scoped","container":"item",
+                           "container_anchor":"Invoice 4711","inner_text":"Amount",
+                           "container_id":"transaction-183"}}"#,
+        )
+        .expect("selector parses");
+        let uia = selector_to_uia(&selector).expect("decodes");
+        let scope = uia.scope.clone().expect("carries a scope query");
+        assert_eq!(scope.container, "item");
+        assert_eq!(scope.anchor, "Invoice 4711");
+        assert_eq!(scope.inner_text.as_deref(), Some("Amount"));
+        assert_eq!(scope.container_id.as_deref(), Some("transaction-183"));
+        // Nothing leaked into the unscoped fields.
+        assert!(uia.css.is_none() && uia.name.is_none() && uia.automation_id.is_none());
+
+        // Existing cell payloads keep decoding, untouched.
+        let cell: Selector = serde_json::from_str(
+            r#"{"tier":"structural","provenance":"web",
+                "payload":{"kind":"cell","column_text":"Status","row_anchor":"Grace Hopper"}}"#,
+        )
+        .expect("selector parses");
+        let uia = selector_to_uia(&cell).expect("decodes");
+        assert_eq!(uia.cell.expect("cell query").column, "Status");
+    }
+
+    /// The whole reason the inner keys are PREFIXED: an engine that
+    /// predates this rung reads bare `css`/`text`/`automation_id` off any
+    /// structural payload. With prefixed keys it decodes to an EMPTY
+    /// selector, skips the rung, and fails loudly - instead of resolving
+    /// "Amount" page-wide and passing on some other item's amount.
+    #[test]
+    fn an_older_engine_cannot_resolve_a_scoped_rung_unscoped() {
+        let payload: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            r#"{"kind":"scoped","container":"item","container_anchor":"Invoice 4711",
+                "inner_text":"Amount","inner_css":".amount","inner_id":"amount"}"#,
+        )
+        .expect("payload parses");
+        // Verbatim the pre-scoped decode: bare keys only.
+        let get = |key: &str| {
+            payload
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        let legacy = UiaSelector {
+            automation_id: get("automation_id").or_else(|| get("id")),
+            name: get("name"),
+            control_type: get("control_type"),
+            css: get("css"),
+            ..UiaSelector::default()
+        };
+        assert!(
+            legacy.is_empty(),
+            "an older engine must skip this rung, not resolve it page-wide: {legacy:?}"
+        );
     }
 
     #[test]

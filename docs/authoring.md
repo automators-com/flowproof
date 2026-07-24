@@ -48,6 +48,7 @@ ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 | `Scroll the [2nd ]"<target>" to the [top\|bottom]` | scroll the TARGET as a container to an edge (the `the` before top/bottom is optional). Web only |
 | `Scroll [the [2nd ]]"<target>" into view` | bring an in-DOM element into the viewport. Web only |
 | `Scroll to the [top\|bottom]` | scroll the PAGE itself (no target, like `Press <Key>`). Web only. Scroll is instant with no settle-wait - the next assertion auto-waits - and the step verifies the scroll took (edge reached / rect in viewport) |
+| `<action> … the "<target>" in the item containing "<anchor>"` | any action above, scoped to one list item or table cell - see [Scoped targets](#scoped-targets-table-cells-and-list-items-by-identity) |
 | `Press <Key>` / `Press <Mod>+<Key>` | `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `Space`, arrows, `Home`/`End`, `PageUp`/`PageDown`; chords `Control+V`, `Alt+Shift+Backspace`. `Mod` (aliases `CtrlOrMeta`, `ControlOrMeta`) is the **portable** primary modifier: stored neutrally in the trace and resolved at execution — Meta on macOS, Ctrl elsewhere — so `Press Mod+K` recorded on a Mac replays on Linux CI |
 | `Go to <path-or-URL>` / `Navigate to <path-or-URL>` | relative paths resolve against the flow URL's origin; on SAP this is transaction navigation (`Go to /nVA01`) |
 | `Reload the page` | web |
@@ -85,6 +86,8 @@ append `within <N>s` to any form to change the bound.
 | `the [2nd ]"<target>" has attribute <name>` / `does not have attribute <name>` | attribute PRESENCE only (`download=""` counts as present). Web only |
 | `the [2nd ]"<target>" style <prop> is <value>` / `is not <value>` | a COMPUTED CSS value. `<prop>` is a closed allowlist: `color`, `background-color`, `text-transform` (anything else is a parse error - geometry belongs in `assert_screenshot`, visibility in `is visible`). Colors compare CANONICALLY (named / `#rgb` / `#rrggbb` / `rgb()` / `rgba()` all parse to RGBA); `text-transform` compares its keyword case-insensitively. `style`, not `css`: `css:` is the selector escape hatch. Web only |
 | `the "<column>" column of the row containing "<anchor>" <predicate>` | a table cell, by IDENTITY. See below |
+| `the "<inner>" in the item containing "<anchor>" <predicate>` | an element inside the list item holding `<anchor>`. See below |
+| `the "<inner>" in the "css:<container>" containing "<anchor>" <predicate>` | the same, with the container named explicitly |
 
 Two different questions share the word "times", and picking the wrong one
 is a quiet way to write a test that cannot fail:
@@ -123,15 +126,26 @@ Checkboxes map `cy.check()` / `should("be.checked")`:
 - assert: the "Remember me" checkbox is not checked
 ```
 
-### Table cells, by identity
+### Scoped targets: table cells and list items, by identity
 
-A cell in a grid is addressed by the column's header text and an anchor that
-identifies the row — never by position:
+Repeated UI - a grid's rows, a list's items, a board's cards - needs a way
+to say WHICH one without counting. Both forms name the region by its
+content and then address the element inside it:
 
 ```yaml
+# a table cell: the column's header text plus an anchor identifying the row
 - assert: the "Status" column of the row containing "Grace Hopper" shows Suspended
 - assert: the "Balance" column of the row containing "Grace Hopper" is empty
 - Click the "Actions" column of the row containing "Grace Hopper"
+
+# a list item: an anchor identifying the item, then the ordinary target
+- assert: the "css:.amount" in the item containing "Invoice 4711" shows 50.00
+- assert: the "Amount" field in the item containing "Invoice 4711" contains 50
+- Click the "Pay" in the item containing "Invoice 4711"
+- Check the "Select" checkbox in the item containing "Invoice 4711"
+
+# a container the `item` rung cannot see: name it
+- Click the "Ship" in the "css:.card" containing "Order 8801"
 ```
 
 The same cell target composes with every predicate (`shows`, `is empty`,
@@ -140,13 +154,31 @@ The same cell target composes with every predicate (`shows`, `is empty`,
 is [not] <value>`) and every action (`Click`, `Type … into`, `Clear`,
 `Check`, `Scroll`). `in the row containing` also works - the of/in coin flip
 is one you should not have to remember.
+| Form | Notes |
+|---|---|
+| `the "<column>" column of the row containing "<anchor>"` | a table cell; `in the row containing` also works - the of/in coin flip is one you should not have to remember |
+| `the "<inner>" in the item containing "<anchor>"` | `item` means exactly `li`, `[role=listitem]`, `[role=row]`, `[role=option]`, `[role=article]`, `tr` - a closed list, not a guess |
+| `the "<inner>" inside the item containing "<anchor>"` | `inside` is a synonym for `in` |
+| `the "<inner>" in the "css:<sel>" containing "<anchor>"` | any container, named explicitly; `"id:<id>"` too |
+
+Both targets compose with **every predicate** (`shows`, `shows
+${captured.x} ± n`, `is [not] empty`, `is [not] visible`, `is
+enabled|disabled`, `field contains`, `checkbox is [not] checked`) and
+**every action** (`Click`, `Type … into`, `Clear`, `Check`/`Uncheck`,
+`Press … button`, `Right-click`, `Remember … as`): one shared suffix
+parse rebinds the target, so nothing composes specially. A role noun goes
+BEFORE the scope phrase: `the "Amount" field in the item containing "X"
+contains 50`, `Check the "Select" checkbox in the item containing "X"`.
 
 Why identity, not `the 2nd ".column-status"`: an ordinal encodes position,
 so inserting a row or reordering a column silently makes the assertion hit
-the wrong record. Identity survives both — the trace records the header
-text and the row anchor, and replay finds them wherever they moved. For
-that reason an ordinal cannot address a cell (`the 2nd "Status" column …`
-is a parse error).
+the wrong record. Identity survives both - the trace records the header
+text, the anchor, and (when the live DOM offers one) the row's or
+container's own id as a fallback, and replay finds them wherever they
+moved. For that reason an ordinal cannot address a scoped target on either
+half: `the 2nd "Status" column …` and `the "Amount" in the 2nd item
+containing …` are both parse errors. Nor can the two nest: one container,
+or one cell, and the element inside it.
 
 Resolution is generic over any `<table>` or ARIA grid (`role=grid`/`table`/
 `treegrid`), so react-admin, MUI DataGrid and AG Grid all work with no
@@ -159,6 +191,29 @@ addressed for rows that are rendered; bring the anchor row in with `Scroll
 "<anchor>" into view` first (or use `css:` against the grid's own row API),
 then the cell predicates - `shows`, `attribute <name> is <value>`, `style
 <prop> is <value>`, and the rest - resolve it.
+Cell resolution is generic over any `<table>` or ARIA grid
+(`role=grid`/`table`/`treegrid`), so react-admin, MUI DataGrid and AG Grid
+all work with no framework-specific selector. Container resolution has two
+rungs and no heuristics: the explicit `css:`/`id:` selector, or the closed
+`item` list above. Among the containers holding the anchor the **innermost
+wins**, so an item nested in a group resolves to the item.
+
+Three things are hard errors rather than a silent wrong guess, and all
+three point at the `css:` escape hatch: an anchor matching more than one
+row or item (`use a more specific anchor or a css: container`), a duplicate
+column header, and a container that is neither `item` nor a selector (`in
+the "Transaction" containing …`, where "Transaction" is a noun, not a
+container).
+
+**Known boundaries.** A virtualized list or grid that keeps off-screen rows
+out of the DOM (AG Grid's row virtualization, windowed feeds) can only be
+addressed for what is rendered: scroll the anchor into view first, or use
+`css:` against the widget's own API. Content inside a closed shadow root or
+a cross-origin iframe is unreachable to any selector, scoped or not. And an
+anchor that appears in EVERY item ("Invoice", when every item says
+"Invoice") is ambiguous by design: it identifies nothing, and the error
+says so instead of picking the first one. `appears <N> times` cannot be
+scoped to a container yet.
 
 Computed assertions answer "did this change by the right amount?", which a
 literal cannot express because the starting value is only known at run time:

@@ -42,6 +42,16 @@ pub enum Target {
         column: String,
         anchor: String,
     },
+    /// An element addressed INSIDE a container identified by an anchor:
+    /// `the "Amount" in the item containing "Invoice 4711"`. The container
+    /// is the bare word `item` (a closed list of list-ish roles) or an
+    /// explicit `css:`/`id:` selector; the inner target resolves with the
+    /// ORDINARY ladder, rooted at the container rather than page-wide.
+    Scoped {
+        container: String,
+        anchor: String,
+        inner: Box<Target>,
+    },
 }
 
 impl Target {
@@ -574,6 +584,219 @@ fn parse_scroll_edge(s: &str) -> Option<ScrollTo> {
     }
 }
 
+/// A scope phrase found in a target's tail - the two ways a spec narrows a
+/// target to one region of the screen by IDENTITY:
+///
+/// ```text
+/// the "<column>" column of|in the row containing "<anchor>"
+/// the "<inner>" in|inside the item containing "<anchor>"
+/// the "<inner>" in|inside the "css:<sel>" containing "<anchor>"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Scope {
+    Cell { anchor: String },
+    Container { container: String, anchor: String },
+}
+
+/// A container must name itself: the bare word `item` (the closed list of
+/// list-ish roles) or an explicit selector. A plain quoted noun cannot -
+/// "the Transaction" is not a thing the DOM knows.
+const CONTAINER_FORM: &str = "a container must be the word `item` or a quoted \
+                              \"css:<selector>\" / \"id:<id>\" - a plain quoted \
+                              name does not identify a container";
+
+/// Parse `"<anchor>"` and whatever follows it, off the text after
+/// `containing`.
+fn quoted_anchor(after: &str, noun: &str) -> Result<(String, String), String> {
+    let quoted = after
+        .trim_start()
+        .strip_prefix('"')
+        .ok_or_else(|| format!("expected a quoted {noun} after 'containing'"))?;
+    let (anchor, rest) = quoted_label(quoted).ok_or_else(|| format!("unterminated {noun}"))?;
+    Ok((anchor.to_string(), rest.trim().to_string()))
+}
+
+/// `column of|in the row containing "<anchor>"` - the cell form, which
+/// always sits directly after the column's quoted label.
+fn strip_cell_suffix(tail: &str) -> Option<Result<(Scope, String), String>> {
+    let after = strip_prefix_ci(tail, "column of the row containing ")
+        .or_else(|| strip_prefix_ci(tail, "column in the row containing "))?;
+    Some(quoted_anchor(after, "row anchor").map(|(anchor, rest)| (Scope::Cell { anchor }, rest)))
+}
+
+/// Where a container phrase could START: `in the …` / `inside the …`,
+/// either right after the quoted label or after a role noun (`field`,
+/// `checkbox`, `button`).
+fn container_keyword_positions(tail: &str) -> Vec<(usize, &'static str)> {
+    let mut found = Vec::new();
+    for keyword in ["in the ", "inside the "] {
+        if strip_prefix_ci(tail, keyword).is_some() {
+            found.push((0usize, keyword));
+        }
+    }
+    for keyword in [" in the ", " inside the "] {
+        found.extend(ci_positions(tail, keyword).map(|pos| (pos, keyword)));
+    }
+    found.sort_by_key(|(pos, _)| *pos);
+    found
+}
+
+/// The container word itself: `item`, or a quoted `css:`/`id:` selector.
+fn parse_container_word(text: &str) -> Result<String, String> {
+    let (ordinal, text) = split_ordinal(text);
+    if ordinal.is_some() {
+        return Err(ORDINAL_SCOPE.into());
+    }
+    if text.eq_ignore_ascii_case("item") {
+        return Ok("item".into());
+    }
+    let Some(quoted) = text.strip_prefix('"') else {
+        return Err(CONTAINER_FORM.into());
+    };
+    match quoted_label(quoted) {
+        Some((label, rest))
+            if rest.is_empty() && (label.starts_with("css:") || label.starts_with("id:")) =>
+        {
+            Ok(label.to_string())
+        }
+        _ => Err(CONTAINER_FORM.into()),
+    }
+}
+
+/// `<container> containing "<anchor>"`, given the text after `in the `.
+/// `None` means this was not a scope phrase at all (ordinary prose that
+/// happened to say "in the"), which is not an error.
+fn parse_container_phrase(after: &str) -> Option<Result<(Scope, String), String>> {
+    let after = after.trim_start();
+    let mut first_error: Option<String> = None;
+    // A quoted container may itself contain the word, so try every
+    // occurrence and keep the first that parses.
+    let positions: Vec<usize> = ci_positions(after, " containing ").collect();
+    for pos in positions {
+        let container_text = after[..pos].trim();
+        let anchor_part = after[pos + " containing ".len()..].trim_start();
+        if container_text.is_empty() || !anchor_part.starts_with('"') {
+            continue;
+        }
+        match parse_container_word(container_text) {
+            Ok(container) => {
+                return Some(
+                    quoted_anchor(anchor_part, "container anchor")
+                        .map(|(anchor, rest)| (Scope::Container { container, anchor }, rest)),
+                );
+            }
+            Err(reason) => {
+                if first_error.is_none() {
+                    first_error = Some(reason);
+                }
+            }
+        }
+    }
+    first_error.map(Err)
+}
+
+/// Find a container phrase anywhere in `tail` and cut it OUT, returning the
+/// scope plus the tail without it - so a role noun before the phrase and a
+/// predicate after it end up adjacent, and the caller's own dispatch is
+/// unchanged (`"Amount" field in the item containing "X" contains 50` leaves
+/// `field contains 50`).
+fn strip_container_suffix(tail: &str) -> Option<Result<(Scope, String), String>> {
+    for (pos, keyword) in container_keyword_positions(tail) {
+        let after = &tail[pos + keyword.len()..];
+        match parse_container_phrase(after) {
+            None => continue,
+            Some(Err(reason)) => return Some(Err(reason)),
+            Some(Ok((scope, rest))) => {
+                let head = tail[..pos].trim();
+                let rest = rest.trim();
+                let spliced = match (head.is_empty(), rest.is_empty()) {
+                    (true, _) => rest.to_string(),
+                    (false, true) => head.to_string(),
+                    (false, false) => format!("{head} {rest}"),
+                };
+                return Some(Ok((scope, spliced)));
+            }
+        }
+    }
+    None
+}
+
+/// THE scope-suffix parse, used by every target slot: the assertion
+/// resolver and each action's target. It lived only in the assertion
+/// resolver before, which is why `Click the "Actions" column of the row
+/// containing "Grace Hopper"` was documented but never parsed.
+///
+/// `None` = no scope phrase; `Some(Err)` = a phrase that cannot mean
+/// anything else and is malformed, which is a parse error rather than a
+/// silent page-wide target.
+fn strip_scope_suffix(tail: &str) -> Option<Result<(Scope, String), String>> {
+    let found = strip_cell_suffix(tail).or_else(|| strip_container_suffix(tail))?;
+    let (scope, rest) = match found {
+        Ok(parsed) => parsed,
+        Err(reason) => return Some(Err(reason)),
+    };
+    // Nesting is rejected in ONE place: scope-in-scope, scope-in-cell and
+    // cell-in-scope all leave a second phrase behind.
+    if strip_scope_suffix(&rest).is_some() {
+        return Some(Err("a scoped target cannot be nested: name ONE container \
+                         (or one cell) and address the element inside it"
+            .into()));
+    }
+    Some(Ok((scope, rest)))
+}
+
+const ORDINAL_SCOPE: &str = "an ordinal cannot address a scoped target: the target is \
+                             identified by its container and anchor, not by position";
+const ORDINAL_CELL: &str = "an ordinal cannot address a cell: a cell is identified by its \
+                            column and row anchor, not by position";
+
+/// Split an optional scope phrase off a target's tail. A malformed phrase
+/// is a parse error for the whole step.
+fn split_scope<'a>(
+    step: &str,
+    tail: &'a str,
+) -> Result<(Option<Scope>, std::borrow::Cow<'a, str>), RulesError> {
+    match strip_scope_suffix(tail) {
+        None => Ok((None, std::borrow::Cow::Borrowed(tail))),
+        Some(Err(reason)) => Err(unresolvable(step, reason)),
+        Some(Ok((scope, rest))) => Ok((Some(scope), std::borrow::Cow::Owned(rest))),
+    }
+}
+
+/// The final target for a quoted label with an optional ordinal and an
+/// optional scope. Ordinals are rejected on BOTH halves here, so every slot
+/// rejects them identically.
+fn scoped_target(
+    step: &str,
+    nth: Option<u32>,
+    label: &str,
+    scope: Option<Scope>,
+) -> Result<Target, RulesError> {
+    let Some(scope) = scope else {
+        return Ok(with_nth(nth, target_from_label(label)));
+    };
+    if nth.is_some() {
+        return Err(unresolvable(
+            step,
+            match scope {
+                Scope::Cell { .. } => ORDINAL_CELL,
+                Scope::Container { .. } => ORDINAL_SCOPE,
+            },
+        ));
+    }
+    Ok(match scope {
+        Scope::Cell { anchor } => Target::Cell {
+            column: label.to_string(),
+            anchor,
+        },
+        Scope::Container { container, anchor } => Target::Scoped {
+            container,
+            anchor,
+            inner: Box::new(target_from_label(label)),
+        },
+    })
+}
+
 /// The PROVENANCE-AGNOSTIC assertion grammar, shared by every app profile.
 /// Forms describe WHAT to check; how each target resolves is the adapter's
 /// business (surface = page / window subtree / OCR frame; `<id>` = DOM id /
@@ -688,36 +911,16 @@ mod assertions {
             let (nth, rest) = split_ordinal(rest.trim());
             if let Some(quoted) = rest.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    let mut target = with_nth(nth, target_from_label(label));
-                    let mut tail = tail;
-                    // Cell target: `"<column>" column of|in the row
-                    // containing "<anchor>" <predicate>`. Rebinding target
-                    // and tail here means every predicate below composes
-                    // with a cell for free.
-                    if let Some(after) = strip_prefix_ci(tail, "column of the row containing ")
-                        .or_else(|| strip_prefix_ci(tail, "column in the row containing "))
-                    {
-                        let after = after.trim_start();
-                        let anchor_quoted = after.strip_prefix('"').ok_or_else(|| {
-                            unresolvable(
-                                trimmed,
-                                "expected a quoted row anchor after 'row containing'",
-                            )
-                        })?;
-                        let (anchor, rest_tail) = quoted_label(anchor_quoted)
-                            .ok_or_else(|| unresolvable(trimmed, "unterminated row anchor"))?;
-                        if nth.is_some() {
-                            return Err(unresolvable(
-                                trimmed,
-                                "an ordinal cannot address a cell: a cell is identified by its                                  column and row anchor, not by position",
-                            ));
-                        }
-                        target = Target::Cell {
-                            column: label.to_string(),
-                            anchor: anchor.to_string(),
-                        };
-                        tail = rest_tail;
-                    }
+                    // Scope target: the cell form (`"<column>" column
+                    // of|in the row containing "<anchor>"`) or the
+                    // container form (`"<inner>" in|inside the item
+                    // containing "<anchor>"`). Rebinding target and tail
+                    // here means every predicate below composes with a
+                    // scope for free.
+                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    let in_container = matches!(scope, Some(Scope::Container { .. }));
+                    let target = scoped_target(trimmed, nth, label, scope)?;
+                    let tail = tail.as_ref();
                     if let Some(expected) = strip_prefix_ci(tail, "field contains ")
                         .or_else(|| strip_prefix_ci(tail, "shows "))
                     {
@@ -761,6 +964,17 @@ mod assertions {
                                 trimmed,
                                 "an ordinal cannot be counted: drop the `Nth` and count the \
                                  anchor itself",
+                            ));
+                        }
+                        // Counting INSIDE a container is a second question
+                        // (how many per item?) that this slice does not
+                        // answer; saying so beats counting page-wide and
+                        // calling it scoped.
+                        if in_container {
+                            return Err(unresolvable(
+                                trimmed,
+                                "`appears <N> times` cannot be scoped to a container yet: \
+                                 count the anchor itself, or assert on one container",
                             ));
                         }
                         return Ok(vec![ResolvedAction::AssertCount {
@@ -1195,6 +1409,11 @@ fn target_uses_css(target: &Target) -> bool {
     match target {
         Target::Css(_) => true,
         Target::Nth(_, inner) => target_uses_css(inner),
+        // Either half of a scoped target may be a `css:` selector, and a
+        // UIA tree has no CSS on either.
+        Target::Scoped {
+            container, inner, ..
+        } => container.starts_with("css:") || target_uses_css(inner),
         _ => false,
     }
 }
@@ -1448,9 +1667,12 @@ mod web {
             let (nth, field) = split_ordinal(field);
             if let Some(quoted) = field.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    if tail.eq_ignore_ascii_case("field") {
+                    // The shared scope suffix: `… field in the item
+                    // containing "<anchor>"`, or a cell.
+                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    if tail.eq_ignore_ascii_case("field") || (tail.is_empty() && scope.is_some()) {
                         return Ok(vec![ResolvedAction::TypeText {
-                            target: with_nth(nth, target_from_label(label)),
+                            target: scoped_target(trimmed, nth, label, scope)?,
                             text: value.to_string(),
                         }]);
                     }
@@ -1607,7 +1829,8 @@ mod web {
             let (nth, tail) = split_ordinal(rest.trim());
             if let Some(quoted) = tail.strip_prefix('"') {
                 if let Some((label, after)) = quoted_label(quoted) {
-                    if let Some(name) = strip_prefix_ci(after, "as ").map(str::trim) {
+                    let (scope, after) = split_scope(trimmed, after)?;
+                    if let Some(name) = strip_prefix_ci(after.as_ref(), "as ").map(str::trim) {
                         if !valid_capture_name(name) {
                             return Err(unresolvable(
                                 trimmed,
@@ -1616,7 +1839,7 @@ mod web {
                             ));
                         }
                         return Ok(vec![ResolvedAction::Capture {
-                            target: with_nth(nth, target_from_label(label)),
+                            target: scoped_target(trimmed, nth, label, scope)?,
                             name: name.to_string(),
                         }]);
                     }
@@ -1640,9 +1863,11 @@ mod web {
             let (nth, field) = split_ordinal(rest.trim());
             if let Some(quoted) = field.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    if tail.eq_ignore_ascii_case("checkbox") {
+                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    if tail.eq_ignore_ascii_case("checkbox") || (tail.is_empty() && scope.is_some())
+                    {
                         return Ok(vec![ResolvedAction::SetChecked {
-                            target: with_nth(nth, target_from_label(label)),
+                            target: scoped_target(trimmed, nth, label, scope)?,
                             checked,
                         }]);
                     }
@@ -1664,9 +1889,10 @@ mod web {
             let (nth, field) = split_ordinal(rest.trim());
             if let Some(quoted) = field.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    if tail.eq_ignore_ascii_case("field") {
+                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    if tail.eq_ignore_ascii_case("field") || (tail.is_empty() && scope.is_some()) {
                         return Ok(vec![ResolvedAction::Clear {
-                            target: with_nth(nth, target_from_label(label)),
+                            target: scoped_target(trimmed, nth, label, scope)?,
                         }]);
                     }
                 }
@@ -1691,9 +1917,10 @@ mod web {
             let (nth, target_text) = split_ordinal(rest.trim());
             if let Some(quoted) = target_text.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    if tail.eq_ignore_ascii_case("button") {
+                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    if tail.eq_ignore_ascii_case("button") || (tail.is_empty() && scope.is_some()) {
                         return Ok(vec![ResolvedAction::Press {
-                            target: with_nth(nth, target_from_label(label)),
+                            target: scoped_target(trimmed, nth, label, scope)?,
                             label: label.to_string(),
                         }]);
                     }
@@ -1744,9 +1971,10 @@ mod web {
             };
             if let Some(quoted) = rest.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
+                    let (scope, tail) = split_scope(trimmed, tail)?;
                     if tail.is_empty() {
                         return Ok(vec![ResolvedAction::ContextClick {
-                            target: with_nth(nth, target_from_label(label)),
+                            target: scoped_target(trimmed, nth, label, scope)?,
                             label: label.to_string(),
                         }]);
                     }
@@ -1768,9 +1996,15 @@ mod web {
             };
             if let Some(quoted) = rest.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
+                    // The scope suffix again: `Click the "Actions" column of
+                    // the row containing "Grace Hopper"` was documented for
+                    // two releases and never parsed, because this slot
+                    // required an EMPTY tail and the cell parse lived only
+                    // in the assertion resolver.
+                    let (scope, tail) = split_scope(trimmed, tail)?;
                     if tail.is_empty() {
                         return Ok(vec![ResolvedAction::Press {
-                            target: with_nth(nth, target_from_label(label)),
+                            target: scoped_target(trimmed, nth, label, scope)?,
                             label: label.to_string(),
                         }]);
                     }
@@ -2458,6 +2692,61 @@ mod tests {
             ("web", r#"Scroll the "css:.transactions-list" to the top"#),
             ("web", r#"Scroll "Grace Hopper" into view"#),
             ("web", "Scroll to the bottom"),
+            // Scoped targets - cells and containers - as ACTIONS. These
+            // were documented and untested: the cell examples below never
+            // parsed at all until the scope suffix became shared.
+            (
+                "web",
+                r#"Click the "Actions" column of the row containing "Grace Hopper""#,
+            ),
+            (
+                "web",
+                r#"Type Paid into the "Status" column of the row containing "Grace Hopper""#,
+            ),
+            (
+                "web",
+                r#"Clear the "Balance" column of the row containing "Grace Hopper""#,
+            ),
+            (
+                "web",
+                r#"Check the "Select" column of the row containing "Grace Hopper""#,
+            ),
+            (
+                "web",
+                r#"Click the "Pay" in the item containing "Invoice 4711""#,
+            ),
+            (
+                "web",
+                r#"Click the "Pay" inside the item containing "Invoice 4711""#,
+            ),
+            (
+                "web",
+                r#"Type 50 into the "Amount" field in the item containing "Invoice 4711""#,
+            ),
+            (
+                "web",
+                r#"Clear the "Amount" field in the item containing "Invoice 4711""#,
+            ),
+            (
+                "web",
+                r#"Check the "Select" checkbox in the item containing "Invoice 4711""#,
+            ),
+            (
+                "web",
+                r#"Press the "Pay" button in the item containing "Invoice 4711""#,
+            ),
+            (
+                "web",
+                r#"Remember the "Amount" in the item containing "Invoice 4711" as amount"#,
+            ),
+            (
+                "web",
+                r#"Right-click the "Pay" in the item containing "Invoice 4711""#,
+            ),
+            (
+                "web",
+                r#"Click the "Pay" in the "css:[data-test=transaction]" containing "Invoice 4711""#,
+            ),
             ("sap", "Go to /nVA01"),
             ("sap", r#"Type ZOR into the "Order Type" field"#),
             ("vision", r#"Press the "Submit" button"#),
@@ -2498,6 +2787,55 @@ mod tests {
             (
                 "web",
                 r#"the "Amount" column of the row containing "Deposit" style color is green"#,
+            ),
+            ("web", r#"the "Row" appears 3 times"#),
+            ("web", r#"the "Remember me" checkbox is checked"#),
+            ("web", r#"the "Balance" is empty"#),
+            // Scoped targets as ASSERTIONS: the cell examples the doc has
+            // always shown, plus the container forms.
+            (
+                "web",
+                r#"the "Status" column of the row containing "Grace Hopper" shows Suspended"#,
+            ),
+            (
+                "web",
+                r#"the "Balance" column of the row containing "Grace Hopper" is empty"#,
+            ),
+            (
+                "web",
+                r#"the "Status" column in the row containing "Grace Hopper" shows Suspended"#,
+            ),
+            (
+                "web",
+                r#"the "Amount" in the item containing "Invoice 4711" shows 50"#,
+            ),
+            (
+                "web",
+                r#"the "Amount" inside the item containing "Invoice 4711" shows 50"#,
+            ),
+            (
+                "web",
+                r#"the "Amount" field in the item containing "Invoice 4711" contains 50"#,
+            ),
+            (
+                "web",
+                r#"the "Amount" in the item containing "Invoice 4711" is not empty"#,
+            ),
+            (
+                "web",
+                r#"the "Pay" in the item containing "Invoice 4711" is visible"#,
+            ),
+            (
+                "web",
+                r#"the "Pay" in the item containing "Invoice 4711" is enabled"#,
+            ),
+            (
+                "web",
+                r#"the "Select" checkbox in the item containing "Invoice 4711" is checked"#,
+            ),
+            (
+                "web",
+                r#"the "Amount" in the "css:[data-test=transaction]" containing "Invoice 4711" shows 50"#,
             ),
             ("calc", "display shows 8"),
             ("notepad", "document contains hello"),
@@ -3266,5 +3604,404 @@ mod element_count_tests {
             assert_step("page shows Row 3 times").as_deref(),
             Ok([ResolvedAction::AssertText { .. }])
         ));
+    }
+}
+
+#[cfg(test)]
+mod scoped_target_tests {
+    use super::*;
+
+    fn plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step("web", &SpecStep::Plain(text.to_string()))
+    }
+
+    fn assert_step(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: text.to_string(),
+            },
+        )
+    }
+
+    fn item(anchor: &str, inner: Target) -> Target {
+        Target::Scoped {
+            container: "item".into(),
+            anchor: anchor.into(),
+            inner: Box::new(inner),
+        }
+    }
+
+    /// The point of rebinding the TARGET rather than teaching each
+    /// predicate about containers: every predicate composes with a scope
+    /// for free, and none of them knows it happened.
+    #[test]
+    fn the_scoped_target_composes_with_every_predicate_without_special_casing() {
+        let wanted = item("Invoice 4711", Target::text("Amount"));
+        type Shape = fn(&ResolvedAction) -> bool;
+        let cases: &[(&str, Shape)] = &[
+            (
+                r#"the "Amount" in the item containing "Invoice 4711" shows 50"#,
+                |a| {
+                    matches!(
+                        a,
+                        ResolvedAction::AssertText {
+                            matcher: TextMatch::Contains,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                r#"the "Amount" field in the item containing "Invoice 4711" contains 50"#,
+                |a| {
+                    matches!(
+                        a,
+                        ResolvedAction::AssertText {
+                            matcher: TextMatch::Contains,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                r#"the "Amount" in the item containing "Invoice 4711" shows ${captured.total} - 5"#,
+                |a| {
+                    matches!(
+                        a,
+                        ResolvedAction::AssertCaptured {
+                            offset: Some(_),
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                r#"the "Amount" in the item containing "Invoice 4711" is empty"#,
+                |a| {
+                    matches!(
+                        a,
+                        ResolvedAction::AssertText {
+                            matcher: TextMatch::Empty(true),
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                r#"the "Amount" in the item containing "Invoice 4711" is not empty"#,
+                |a| {
+                    matches!(
+                        a,
+                        ResolvedAction::AssertText {
+                            matcher: TextMatch::Empty(false),
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                r#"the "Amount" in the item containing "Invoice 4711" is visible"#,
+                |a| matches!(a, ResolvedAction::AssertPresence { present: true, .. }),
+            ),
+            (
+                r#"the "Amount" in the item containing "Invoice 4711" is not visible"#,
+                |a| matches!(a, ResolvedAction::AssertPresence { present: false, .. }),
+            ),
+            (
+                r#"the "Amount" in the item containing "Invoice 4711" is enabled"#,
+                |a| matches!(a, ResolvedAction::AssertEnabled { enabled: true, .. }),
+            ),
+            (
+                r#"the "Amount" in the item containing "Invoice 4711" is disabled"#,
+                |a| matches!(a, ResolvedAction::AssertEnabled { enabled: false, .. }),
+            ),
+            (
+                r#"the "Amount" checkbox in the item containing "Invoice 4711" is checked"#,
+                |a| matches!(a, ResolvedAction::AssertChecked { checked: true, .. }),
+            ),
+            (
+                r#"the "Amount" checkbox in the item containing "Invoice 4711" is not checked"#,
+                |a| matches!(a, ResolvedAction::AssertChecked { checked: false, .. }),
+            ),
+        ];
+        for (step, shape) in cases {
+            let actions = assert_step(step).unwrap_or_else(|e| panic!("'{step}' must parse: {e}"));
+            assert!(shape(&actions[0]), "'{step}' resolved to {:?}", actions[0]);
+            let target = match &actions[0] {
+                ResolvedAction::AssertText { target, .. }
+                | ResolvedAction::AssertCaptured { target, .. }
+                | ResolvedAction::AssertPresence { target, .. }
+                | ResolvedAction::AssertEnabled { target, .. }
+                | ResolvedAction::AssertChecked { target, .. } => target,
+                other => panic!("'{step}' has no target: {other:?}"),
+            };
+            assert_eq!(*target, wanted, "'{step}' lost the scope");
+        }
+    }
+
+    /// The same for actions - the half that never worked for the CELL
+    /// target, because the suffix parse lived only in the assertions.
+    #[test]
+    fn the_scoped_target_composes_with_the_documented_actions() {
+        let wanted = item("Invoice 4711", Target::text("Amount"));
+        assert_eq!(
+            plain(r#"Click the "Amount" in the item containing "Invoice 4711""#).expect("parses"),
+            vec![ResolvedAction::Press {
+                target: wanted.clone(),
+                label: "Amount".into()
+            }]
+        );
+        assert_eq!(
+            plain(r#"Type 50 into the "Amount" field in the item containing "Invoice 4711""#)
+                .expect("parses"),
+            vec![ResolvedAction::TypeText {
+                target: wanted.clone(),
+                text: "50".into()
+            }]
+        );
+        assert_eq!(
+            plain(r#"Clear the "Amount" field in the item containing "Invoice 4711""#)
+                .expect("parses"),
+            vec![ResolvedAction::Clear {
+                target: wanted.clone()
+            }]
+        );
+        assert_eq!(
+            plain(r#"Check the "Amount" checkbox in the item containing "Invoice 4711""#)
+                .expect("parses"),
+            vec![ResolvedAction::SetChecked {
+                target: wanted.clone(),
+                checked: true
+            }]
+        );
+        assert_eq!(
+            plain(r#"Press the "Amount" button in the item containing "Invoice 4711""#)
+                .expect("parses"),
+            vec![ResolvedAction::Press {
+                target: wanted.clone(),
+                label: "Amount".into()
+            }]
+        );
+        assert_eq!(
+            plain(r#"Remember the "Amount" in the item containing "Invoice 4711" as total"#)
+                .expect("parses"),
+            vec![ResolvedAction::Capture {
+                target: wanted.clone(),
+                name: "total".into()
+            }]
+        );
+        assert_eq!(
+            plain(r#"Right-click the "Amount" in the item containing "Invoice 4711""#)
+                .expect("parses"),
+            vec![ResolvedAction::ContextClick {
+                target: wanted,
+                label: "Amount".into()
+            }]
+        );
+    }
+
+    /// PART A, pinned: the CELL target composes with every action too. The
+    /// docs said so for two releases while `Click the "Actions" column of
+    /// the row containing "Grace Hopper"` did not parse at all.
+    #[test]
+    fn the_cell_target_composes_with_the_documented_actions() {
+        let cell = Target::Cell {
+            column: "Actions".into(),
+            anchor: "Grace Hopper".into(),
+        };
+        assert_eq!(
+            plain(r#"Click the "Actions" column of the row containing "Grace Hopper""#)
+                .expect("the documented cell click must parse"),
+            vec![ResolvedAction::Press {
+                target: cell,
+                label: "Actions".into()
+            }]
+        );
+        assert!(matches!(
+            plain(r#"Type Paid into the "Status" column of the row containing "Grace Hopper""#)
+                .as_deref(),
+            Ok([ResolvedAction::TypeText {
+                target: Target::Cell { .. },
+                ..
+            }])
+        ));
+        assert!(matches!(
+            plain(r#"Clear the "Balance" column of the row containing "Grace Hopper""#).as_deref(),
+            Ok([ResolvedAction::Clear {
+                target: Target::Cell { .. }
+            }])
+        ));
+        assert!(matches!(
+            plain(r#"Check the "Select" column of the row containing "Grace Hopper""#).as_deref(),
+            Ok([ResolvedAction::SetChecked {
+                target: Target::Cell { .. },
+                checked: true
+            }])
+        ));
+        assert!(matches!(
+            plain(r#"Right-click the "Actions" column in the row containing "Grace Hopper""#)
+                .as_deref(),
+            Ok([ResolvedAction::ContextClick {
+                target: Target::Cell { .. },
+                ..
+            }])
+        ));
+        // And the assertion half is untouched.
+        assert!(matches!(
+            assert_step(
+                r#"the "Status" column of the row containing "Grace Hopper" shows Suspended"#
+            )
+            .as_deref(),
+            Ok([ResolvedAction::AssertText {
+                target: Target::Cell { .. },
+                ..
+            }])
+        ));
+    }
+
+    #[test]
+    fn inside_means_in() {
+        assert_eq!(
+            assert_step(r#"the "Amount" inside the item containing "Invoice 4711" shows 50"#)
+                .expect("parses"),
+            assert_step(r#"the "Amount" in the item containing "Invoice 4711" shows 50"#)
+                .expect("parses"),
+        );
+    }
+
+    #[test]
+    fn an_explicit_container_selector_is_kept_verbatim() {
+        let actions = assert_step(
+            r#"the "Amount" in the "css:[data-test=transaction]" containing "Invoice 4711" shows 50"#,
+        )
+        .expect("parses");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText { target: Target::Scoped { container, .. }, .. }
+                if container == "css:[data-test=transaction]"
+        ));
+        let actions =
+            assert_step(r#"the "Amount" in the "id:txn-183" containing "Invoice 4711" shows 50"#)
+                .expect("parses");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText { target: Target::Scoped { container, .. }, .. }
+                if container == "id:txn-183"
+        ));
+        // The inner target keeps its own escape hatches.
+        let actions =
+            assert_step(r#"the "css:.amount" in the item containing "Invoice 4711" shows 50"#)
+                .expect("parses");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText { target: Target::Scoped { inner, .. }, .. }
+                if matches!(&**inner, Target::Css(css) if css == ".amount")
+        ));
+    }
+
+    /// Both halves: position is exactly what a scoped target replaces, so
+    /// an ordinal on either side is a parse error, not a narrowing.
+    #[test]
+    fn ordinals_are_rejected_on_both_halves() {
+        for step in [
+            r#"the 2nd "Amount" in the item containing "Invoice 4711" shows 50"#,
+            r#"the "Amount" in the 2nd item containing "Invoice 4711" shows 50"#,
+        ] {
+            let err = assert_step(step).expect_err("an ordinal cannot address a scoped target");
+            assert!(err.to_string().contains("ordinal"), "step '{step}': {err}");
+        }
+        // Actions reject it identically - the same helper, the same error.
+        let err = plain(r#"Click the 2nd "Amount" in the item containing "Invoice 4711""#)
+            .expect_err("an ordinal cannot address a scoped target");
+        assert!(err.to_string().contains("ordinal"), "{err}");
+        // And the cell's own rejection is unchanged.
+        let err = assert_step(r#"the 2nd "Status" column of the row containing "X" shows Y"#)
+            .expect_err("an ordinal cannot address a cell");
+        assert!(err.to_string().contains("ordinal"), "{err}");
+    }
+
+    /// One container, or one cell, and no stacking: nesting would need a
+    /// resolution order nobody has specified.
+    #[test]
+    fn nesting_is_rejected_in_every_direction() {
+        for step in [
+            // scope in scope
+            r#"the "Amount" in the item containing "A" in the item containing "B" shows 50"#,
+            // cell in scope
+            r#"the "Amount" in the item containing "A" column of the row containing "B" shows 50"#,
+            // scope in cell
+            r#"the "Status" column of the row containing "A" in the item containing "B" shows 50"#,
+        ] {
+            let err = assert_step(step).expect_err("nesting must not parse");
+            assert!(err.to_string().contains("nested"), "step '{step}': {err}");
+        }
+    }
+
+    /// A quoted noun is not a container: the DOM has no "Transaction". The
+    /// error points at the two spellings that ARE containers.
+    #[test]
+    fn a_plain_text_container_is_a_parse_error_naming_item_and_css() {
+        for step in [
+            r#"the "Amount" in the "Transaction" containing "Invoice 4711" shows 50"#,
+            r#"the "Amount" in the transaction containing "Invoice 4711" shows 50"#,
+        ] {
+            let err = assert_step(step).expect_err("a plain container must not parse");
+            let message = err.to_string();
+            assert!(message.contains("item"), "step '{step}': {message}");
+            assert!(message.contains("css:"), "step '{step}': {message}");
+        }
+    }
+
+    /// Counting inside a container is a different question (how many per
+    /// item?) and says so rather than counting page-wide.
+    #[test]
+    fn counting_inside_a_container_is_rejected_for_now() {
+        let err = assert_step(r#"the "Row" in the item containing "A" appears 3 times"#)
+            .expect_err("scoped counting is not in this slice");
+        assert!(err.to_string().contains("appears <N> times"), "{err}");
+    }
+
+    /// Prose that merely says "in the" is not a scope phrase and must not
+    /// become one - the grammar only claims the `… containing "<anchor>"`
+    /// shape.
+    #[test]
+    fn ordinary_prose_is_not_hijacked() {
+        let actions = assert_step(r#"the "Total" shows 5 items in the basket"#).expect("parses");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText { target: Target::Text(t), expected, .. }
+                if t == "Total" && expected == "5 items in the basket"
+        ));
+    }
+
+    /// The `within` bound is parsed off the whole step first, so it works
+    /// on a scoped assertion exactly like on any other.
+    #[test]
+    fn a_scoped_assertion_still_takes_a_within_bound() {
+        let actions =
+            assert_step(r#"the "Amount" in the item containing "Invoice 4711" shows 50 within 5s"#)
+                .expect("parses");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::AssertText {
+                timeout_ms: 5000,
+                ..
+            }
+        ));
+    }
+
+    /// A `css:` selector is a web-ism on either half, and the windows
+    /// profile rejects it at parse time like any other.
+    #[test]
+    fn css_halves_stay_web_only_on_windows() {
+        for step in [
+            r#"Click the "css:.pay" in the item containing "Invoice 4711""#,
+            r#"Click the "Pay" in the "css:.card" containing "Invoice 4711""#,
+        ] {
+            let err = resolve_step("windows", &SpecStep::Plain(step.to_string()))
+                .expect_err("css is web-only");
+            assert!(err.to_string().contains("web-only"), "step '{step}': {err}");
+        }
     }
 }

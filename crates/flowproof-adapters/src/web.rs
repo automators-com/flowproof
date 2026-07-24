@@ -132,6 +132,74 @@ const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID){
   return sawHeader ? 'no_match' : 'no_header';
 }"#;
 
+/// The rung-2 container list: what the bare word `item` means. CLOSED by
+/// design - a heuristic ("the nearest ancestor that looks like a card")
+/// resolves differently as the DOM drifts, which is exactly the silent
+/// wrong-element class this target exists to remove. Anything else is
+/// named explicitly with `css:`.
+const ITEM_CONTAINERS: &str = "li, [role=listitem], [role=row], [role=option], [role=article], tr";
+
+/// The container resolver, run in the page. Candidates come from ONE of two
+/// rungs (explicit selector, or the closed `item` list); survivors are those
+/// whose trimmed subtree text CONTAINS the anchor - the same substring rule
+/// the row resolver uses - and a survivor that CONTAINS another survivor is
+/// discarded, so the INNERMOST wins. Exactly one must remain. Returns a
+/// status: `ok`, `no_match`, `anchor_without_container`, `ambiguous:<n>`,
+/// or `bad_container`.
+const SCOPE_RESOLVER: &str = r#"function(CONTAINER, ANCHOR, CONTAINERID, ITEMS){
+  document.querySelectorAll('[data-flowproof-scope]').forEach(function(e){
+    e.removeAttribute('data-flowproof-scope');
+  });
+  function txt(e){ return (e.textContent||'').trim(); }
+  function idOf(e){
+    if (!e.getAttribute) return null;
+    return e.getAttribute('id') || e.getAttribute('data-id')
+      || e.getAttribute('data-test') || e.getAttribute('data-testid') || null;
+  }
+  var selector = null;
+  if (CONTAINER === 'item') selector = ITEMS;
+  else if (CONTAINER.indexOf('css:') === 0) selector = CONTAINER.slice(4);
+  else if (CONTAINER.indexOf('id:') === 0) selector = '#' + CONTAINER.slice(3).replace(/([^\w-])/g, '\\$1');
+  if (!selector) return 'bad_container';
+  var candidates;
+  try { candidates = Array.prototype.slice.call(document.querySelectorAll(selector)); }
+  catch (e) { return 'bad_container'; }
+  var matching = candidates.filter(function(c){ return txt(c).indexOf(ANCHOR) !== -1; });
+  // Innermost wins: drop any survivor that contains another survivor.
+  var inner = matching.filter(function(c){
+    return !matching.some(function(o){ return o !== c && c !== o && c.contains(o); });
+  });
+  var idEl = CONTAINERID
+    ? candidates.filter(function(c){ return idOf(c) === CONTAINERID; })[0]
+    : null;
+  var chosen = null;
+  if (idEl){
+    if (txt(idEl).indexOf(ANCHOR) !== -1) chosen = idEl;
+    else if (inner.length === 0) chosen = idEl;
+    else if (inner.length === 1) chosen = inner[0];
+    else return 'ambiguous:'+inner.length;
+  } else {
+    if (inner.length > 1) return 'ambiguous:'+inner.length;
+    if (inner.length === 0){
+      var surface = (document.body && document.body.textContent) || '';
+      return surface.indexOf(ANCHOR) !== -1 ? 'anchor_without_container' : 'no_match';
+    }
+    chosen = inner[0];
+  }
+  chosen.setAttribute('data-flowproof-scope','1');
+  return 'ok';
+}"#;
+
+/// Read the container's record-time hint off the tagged element: the first
+/// present of id/data-id/data-test/data-testid (the `row_id` analog).
+const SCOPE_HINTS: &str = r#"function(){
+  var c = document.querySelector('[data-flowproof-scope]');
+  if (!c || !c.getAttribute) return 'null';
+  var id = c.getAttribute('id') || c.getAttribute('data-id')
+    || c.getAttribute('data-test') || c.getAttribute('data-testid') || null;
+  return JSON.stringify({ id: id });
+}"#;
+
 /// The Date-pinning shim (GAP-P), injected before any page script. It reads
 /// `at` with the REAL date parser, computes a fixed offset against the real
 /// clock ONCE, and overrides `Date` so the page's "now" starts at `at` and
@@ -407,6 +475,16 @@ impl WebAppDriver {
                 text: None,
                 nth: None,
                 cell: Some(cell.clone()),
+                scope: None,
+            });
+        }
+        if let Some(scope) = &selector.scope {
+            return Some(WebLocator {
+                css: None,
+                text: None,
+                nth: None,
+                cell: None,
+                scope: Some(scope.clone()),
             });
         }
         if let Some(css) = selector.css_selector() {
@@ -415,6 +493,7 @@ impl WebAppDriver {
                 text: None,
                 nth,
                 cell: None,
+                scope: None,
             });
         }
         // Text anchor: find by visible text / accessible label / placeholder
@@ -425,6 +504,7 @@ impl WebAppDriver {
             text: Some(text.clone()),
             nth,
             cell: None,
+            scope: None,
         })
     }
 
@@ -483,6 +563,7 @@ impl WebAppDriver {
                     text: None,
                     nth: None,
                     cell: None,
+                    scope: None,
                 })
             }
             // A miss is a miss - the auto-wait loop will retry, and the
@@ -509,6 +590,92 @@ impl WebAppDriver {
         }
     }
 
+    /// The container-resolver JS call, with its params JSON-injected.
+    fn scope_resolver_js(scope: &flowproof_driver::ScopeQuery) -> String {
+        let opt = |v: &Option<String>| {
+            v.as_deref()
+                .map(|x| serde_json::Value::from(x).to_string())
+                .unwrap_or_else(|| "null".into())
+        };
+        format!(
+            "({SCOPE_RESOLVER})({container},{anchor},{id},{items})",
+            container = serde_json::Value::from(scope.container.as_str()),
+            anchor = serde_json::Value::from(scope.anchor.as_str()),
+            id = opt(&scope.container_id),
+            items = serde_json::Value::from(ITEM_CONTAINERS),
+        )
+    }
+
+    /// Run the container resolver, which TAGS the winning container, and
+    /// return its status. Shared by resolve_scope and scope_hints.
+    fn tag_scope(&self, scope: &flowproof_driver::ScopeQuery) -> Result<String, DriverError> {
+        Ok(self
+            .tab()?
+            .evaluate(&Self::scope_resolver_js(scope), false)
+            .map_err(|e| web_err("resolving a scoped container", e))?
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
+    }
+
+    /// Resolve a scoped-container target: find the container by identity,
+    /// TAG it, then run the ORDINARY resolution ladder rooted at the tag -
+    /// the same tag-then-find trick `resolve_cell` uses. Ambiguity is a
+    /// hard error; a clean miss returns `Ok(None)` like any element miss.
+    fn resolve_scope(
+        &self,
+        scope: &flowproof_driver::ScopeQuery,
+    ) -> Result<Option<headless_chrome::Element<'_>>, DriverError> {
+        let status = self.tag_scope(scope)?;
+        match status.as_str() {
+            "ok" => {
+                if let Some(css) = scope.inner_css_selector() {
+                    return self.try_find(&WebLocator {
+                        css: Some(format!("[data-flowproof-scope] {css}")),
+                        text: None,
+                        nth: None,
+                        cell: None,
+                        scope: None,
+                    });
+                }
+                let Some(text) = &scope.inner_text else {
+                    return Err(DriverError::Browser(
+                        "a scoped target needs an inner css, id, or text".into(),
+                    ));
+                };
+                let tab = self.tab()?;
+                for xpath in text_xpaths(text) {
+                    if let Ok(element) = tab.find_element_by_xpath(&rooted_xpath(&xpath)) {
+                        return Ok(Some(element));
+                    }
+                }
+                Ok(None)
+            }
+            // Both are misses: the auto-wait loop retries, and the failure
+            // message names the container. `anchor_without_container` is
+            // still a miss - it only changes what the TIMEOUT says.
+            "no_match" | "anchor_without_container" => Ok(None),
+            other => {
+                let detail = if let Some(n) = other.strip_prefix("ambiguous:") {
+                    format!(
+                        "container anchor '{}' matches {n} items - use a more specific anchor \
+                         or a css: container",
+                        scope.anchor
+                    )
+                } else if other == "bad_container" {
+                    format!(
+                        "'{}' is not a usable container - use the word `item` or a \
+                         \"css:<selector>\"",
+                        scope.container
+                    )
+                } else {
+                    format!("could not resolve the container ({other})")
+                };
+                Err(DriverError::Browser(detail))
+            }
+        }
+    }
+
     /// One resolution attempt, in preference order: css, then exact text
     /// anchor, then prefix text anchor (Playwright's name matching accepts
     /// a leading match when the accessible name carries trailing detail —
@@ -520,6 +687,9 @@ impl WebAppDriver {
         let tab = self.tab()?;
         if let Some(cell) = &locator.cell {
             return self.resolve_cell(cell);
+        }
+        if let Some(scope) = &locator.scope {
+            return self.resolve_scope(scope);
         }
         if let Some(css) = &locator.css {
             return Ok(match locator.nth {
@@ -610,6 +780,28 @@ struct WebLocator {
     text: Option<String>,
     nth: Option<u32>,
     cell: Option<flowproof_driver::CellQuery>,
+    scope: Option<flowproof_driver::ScopeQuery>,
+}
+
+/// Root every union branch of a text-anchor XPath under the tagged
+/// container, so the ordinary ladder searches INSIDE the scope instead of
+/// page-wide. Branches are joined with ` | ` and each starts at the
+/// document root; splitting on ` | //` (not ` | `) keeps a literal that
+/// happens to contain a pipe from being mistaken for a branch break.
+fn rooted_xpath(xpath: &str) -> String {
+    const ROOT: &str = "//*[@data-flowproof-scope]";
+    xpath
+        .split(" | //")
+        .enumerate()
+        .map(|(i, branch)| {
+            if i == 0 {
+                format!("{ROOT}{branch}")
+            } else {
+                format!("{ROOT}//{branch}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 impl std::fmt::Display for WebLocator {
@@ -619,6 +811,17 @@ impl std::fmt::Display for WebLocator {
                 f,
                 "the \"{}\" column of the row containing \"{}\"",
                 cell.column, cell.anchor
+            );
+        }
+        if let Some(scope) = &self.scope {
+            let inner = scope
+                .inner_css_selector()
+                .or_else(|| scope.inner_text.clone())
+                .unwrap_or_default();
+            return write!(
+                f,
+                "the \"{inner}\" in the {} containing \"{}\"",
+                scope.container, scope.anchor
             );
         }
         match (&self.css, &self.text) {
@@ -783,6 +986,45 @@ impl AppDriver for WebAppDriver {
         Ok(Some(flowproof_driver::CellHints {
             column_field: field,
             row_id: id,
+        }))
+    }
+
+    fn scope_hints(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<Option<flowproof_driver::ScopeHints>, DriverError> {
+        let Some(scope) = &selector.scope else {
+            return Ok(None);
+        };
+        // Tag the winning container, then read its id off the tag. The same
+        // pass answers the failure question: `anchor_without_container`
+        // means the anchor IS on the page but no container holds it, which
+        // is the one miss whose message should name the fix.
+        let status = self.tag_scope(scope)?;
+        if status == "anchor_without_container" {
+            return Ok(Some(flowproof_driver::ScopeHints {
+                container_id: None,
+                anchor_without_container: true,
+            }));
+        }
+        if status != "ok" {
+            return Ok(None);
+        }
+        let raw = self
+            .tab()?
+            .evaluate(&format!("({SCOPE_HINTS})()"), false)
+            .map_err(|e| web_err("reading container hints", e))?
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+        Ok(Some(flowproof_driver::ScopeHints {
+            container_id: parsed
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            anchor_without_container: false,
         }))
     }
 

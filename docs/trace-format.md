@@ -130,12 +130,34 @@ rather than bending the step-log format. A step-log reader never opens one.
   the same element on every provenance.
 
   A `structural` rung may instead carry a **cell** payload
-  (`{"kind":"cell","column":"Status","anchor":"Grace Hopper"}`), addressing a
+  (`{"kind":"cell","column_text":"Status","row_anchor":"Grace Hopper"}`),
+  addressing a
   table cell by its column-header text and a row anchor rather than a tree
   path, so a row insert or a column reorder does not move the target (see
-  [authoring.md](authoring.md#table-cells-by-identity)). Record may attach
+  [authoring.md](authoring.md#scoped-targets-table-cells-and-list-items-by-identity)). Record may attach
   `column_field` / `row_id` hints read from the live grid, used as fallbacks
   if the header text or the anchor later fails to resolve.
+
+  Its sibling is the **scoped** payload, which addresses an element inside a
+  container identified by an anchor:
+
+  ```json
+  {"kind":"scoped","container":"item","container_anchor":"Invoice 4711",
+   "inner_text":"Amount","container_id":"transaction-183VHWyuQMS"}
+  ```
+
+  `container` is the literal `item` (the closed list of list-ish roles) or
+  the `css:…`/`id:…` string exactly as the spec wrote it; `container_id` is
+  the record-time hint (the `row_id` analog), harvested from the container's
+  first present of `id`/`data-id`/`data-test`/`data-testid`. The inner
+  target's keys are **prefixed** - `inner_text`, `inner_css`, `inner_id`,
+  `inner_name` - and that is load-bearing, not cosmetic: an engine that
+  predates this rung reads bare `css`/`text` off any structural payload, so
+  bare keys here would make it resolve the inner target PAGE-WIDE and pass
+  on the wrong element. Prefixed, the old decode yields an empty selector,
+  skips the rung, and fails loudly. For the same reason a scoped target
+  records **no fallback rung**: an unscoped text anchor would match any
+  "Amount" on the page and pass green-degraded on a lie.
 
   **Replay semantics**: the engine walks rungs in order and acts on the
   first one that resolves to a live element. Tiers 1–3 execute today

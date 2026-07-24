@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8"><title>Orders</title>
+<style>
+  body{font:14px system-ui;margin:2rem}
+  .card{border:1px solid #ccc;margin:.4rem 0;padding:.6rem;width:20rem}
+  .amount,.state{margin-right:1rem}
+</style>
+<!-- Cards, addressed by an explicit `css:` container: divs are not list
+     items, so rung 2 cannot see them and the spec names the container. -->
+<h1>Orders</h1>
+<div class="board">
+  <div class="card" data-test="order-8801">
+    <h2>Order 8801</h2>
+    <span class="amount">120.00</span>
+    <span class="state">Open</span>
+    <button>Ship</button>
+  </div>
+  <div class="card" data-test="order-8802">
+    <h2>Order 8802</h2>
+    <span class="amount">240.00</span>
+    <span class="state">Open</span>
+    <button>Ship</button>
+  </div>
+</div>
+<script>
+  document.querySelectorAll('.card button').forEach(function (button) {
+    button.addEventListener('click', function () {
+      button.closest('.card').querySelector('.state').textContent = 'Shipped';
+    });
+  });
+</script>
