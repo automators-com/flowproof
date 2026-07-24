@@ -4,8 +4,12 @@
   "title": "flowproof trace v1 (one JSON-lines line)",
   "description": "A trace file is JSON-lines: line 1 matches $defs/header, every subsequent line matches $defs/step.",
   "oneOf": [
-    { "$ref": "#/$defs/header" },
-    { "$ref": "#/$defs/step" }
+    {
+      "$ref": "#/$defs/header"
+    },
+    {
+      "$ref": "#/$defs/step"
+    }
   ],
   "$defs": {
     "sha256": {
@@ -16,39 +20,79 @@
       "type": "array",
       "description": "[x, y, width, height] in physical pixels",
       "prefixItems": [
-        { "type": "integer" },
-        { "type": "integer" },
-        { "type": "integer", "minimum": 0 },
-        { "type": "integer", "minimum": 0 }
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "integer",
+          "minimum": 0
+        }
       ],
       "minItems": 4,
       "maxItems": 4
     },
     "adapter": {
-      "enum": ["uia", "sap-com", "web", "vision"]
+      "enum": [
+        "uia",
+        "sap-com",
+        "web",
+        "vision"
+      ]
     },
     "recording_ref": {
       "type": "object",
-      "required": ["format", "dir"],
+      "required": [
+        "format",
+        "dir"
+      ],
       "additionalProperties": false,
       "properties": {
-        "format": { "type": "string" },
-        "dir": { "type": "string" },
-        "started_at": { "type": "string", "format": "date-time" }
+        "format": {
+          "type": "string"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        }
       }
     },
     "header": {
       "type": "object",
-      "required": ["format", "version", "trace_id", "recorded_at", "app", "env"],
+      "required": [
+        "format",
+        "version",
+        "trace_id",
+        "recorded_at",
+        "app",
+        "env"
+      ],
       "additionalProperties": false,
       "properties": {
-        "format": { "const": "flowproof-trace" },
-        "version": { "const": 1 },
-        "recording": { "$ref": "#/$defs/recording_ref" },
+        "format": {
+          "const": "flowproof-trace"
+        },
+        "version": {
+          "const": 1
+        },
+        "recording": {
+          "$ref": "#/$defs/recording_ref"
+        },
         "redaction": {
           "type": "array",
           "description": "Redaction rules copied from the spec at record time; the driver's redaction layer owns their schema.",
-          "items": { "type": "object" }
+          "items": {
+            "type": "object"
+          }
         },
         "session": {
           "type": "object",
@@ -59,14 +103,26 @@
           "description": "Network mock rules applied identically at record and replay.",
           "items": {
             "type": "object",
-            "required": ["url_contains"],
+            "required": [
+              "url_contains"
+            ],
             "additionalProperties": false,
             "properties": {
-              "url_contains": { "type": "string" },
-              "method": { "type": "string" },
-              "status": { "type": "integer" },
-              "content_type": { "type": "string" },
-              "body": { "description": "Any JSON: a string is served verbatim, anything else as JSON." }
+              "url_contains": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string"
+              },
+              "status": {
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "body": {
+                "description": "Any JSON: a string is served verbatim, anything else as JSON."
+              }
             }
           }
         },
@@ -77,122 +133,262 @@
           "properties": {
             "viewport": {
               "type": "object",
-              "required": ["width", "height"],
+              "required": [
+                "width",
+                "height"
+              ],
               "additionalProperties": false,
               "properties": {
-                "width": { "type": "integer" },
-                "height": { "type": "integer" },
-                "device_scale_factor": { "type": "number" },
-                "mobile": { "type": "boolean" },
-                "touch": { "type": "boolean" }
+                "width": {
+                  "type": "integer"
+                },
+                "height": {
+                  "type": "integer"
+                },
+                "device_scale_factor": {
+                  "type": "number"
+                },
+                "mobile": {
+                  "type": "boolean"
+                },
+                "touch": {
+                  "type": "boolean"
+                }
               }
             },
-            "user_agent": { "type": "string" },
-            "args": { "type": "array", "items": { "type": "string" } },
+            "user_agent": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "clock": {
               "type": "object",
               "description": "A pinned clock (GAP-P): the page reads `at` as 'now', advancing at wall rate, with an optional timezone override. Both literal, applied identically at record and replay.",
-              "required": ["at"],
+              "required": [
+                "at"
+              ],
               "additionalProperties": false,
               "properties": {
-                "at": { "type": "string", "format": "date-time" },
-                "timezone": { "type": "string" }
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "timezone": {
+                  "type": "string"
+                }
               }
             }
           }
         },
-        "trace_id": { "type": "string", "format": "uuid" },
-        "recorded_at": { "type": "string", "format": "date-time" },
+        "trace_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
         "spec": {
           "type": "object",
-          "required": ["name"],
+          "required": [
+            "name"
+          ],
           "additionalProperties": false,
           "properties": {
-            "name": { "type": "string" },
-            "path": { "type": "string" },
-            "hash": { "$ref": "#/$defs/sha256" }
+            "name": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "hash": {
+              "$ref": "#/$defs/sha256"
+            }
           }
         },
         "app": {
           "type": "object",
-          "required": ["name", "adapter"],
+          "required": [
+            "name",
+            "adapter"
+          ],
           "additionalProperties": false,
           "properties": {
-            "name": { "type": "string" },
-            "adapter": { "$ref": "#/$defs/adapter" },
-            "window_title": { "type": "string" },
+            "name": {
+              "type": "string"
+            },
+            "adapter": {
+              "$ref": "#/$defs/adapter"
+            },
+            "window_title": {
+              "type": "string"
+            },
             "url": {
               "type": "string",
               "description": "For web traces: the URL the flow was recorded against."
             },
-            "version": { "type": "string" }
+            "version": {
+              "type": "string"
+            }
           }
         },
         "agent": {
           "type": "object",
-          "required": ["backend"],
+          "required": [
+            "backend"
+          ],
           "additionalProperties": false,
           "properties": {
-            "backend": { "enum": ["anthropic", "openai-compatible"] },
-            "model": { "type": "string" }
+            "backend": {
+              "enum": [
+                "anthropic",
+                "openai-compatible"
+              ]
+            },
+            "model": {
+              "type": "string"
+            }
           }
         },
         "env": {
           "type": "object",
-          "required": ["os", "resolution"],
+          "required": [
+            "os",
+            "resolution"
+          ],
           "additionalProperties": false,
           "properties": {
-            "os": { "type": "string" },
+            "os": {
+              "type": "string"
+            },
             "resolution": {
               "type": "array",
               "prefixItems": [
-                { "type": "integer", "minimum": 1 },
-                { "type": "integer", "minimum": 1 }
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "integer",
+                  "minimum": 1
+                }
               ],
               "minItems": 2,
               "maxItems": 2
             },
-            "dpi_scale": { "type": "number", "exclusiveMinimum": 0 },
-            "locale": { "type": "string" }
+            "dpi_scale": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "locale": {
+              "type": "string"
+            }
+          }
+        },
+        "control": {
+          "type": "object",
+          "description": "The named security control this flow validates, copied from the spec's control: block. Additive/optional; absent for flows without a control block.",
+          "additionalProperties": false,
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Author-chosen dotted lowercase id, stable across renames and re-records."
+            },
+            "title": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            }
           }
         }
       }
     },
     "step": {
       "type": "object",
-      "required": ["id", "intent", "action", "selectors", "sync", "artifacts"],
+      "required": [
+        "id",
+        "intent",
+        "action",
+        "selectors",
+        "sync",
+        "artifacts"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "pattern": "^s[0-9]{4,}$" },
-        "intent": { "type": "string", "minLength": 1 },
-        "action": { "$ref": "#/$defs/action" },
+        "id": {
+          "type": "string",
+          "pattern": "^s[0-9]{4,}$"
+        },
+        "intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "$ref": "#/$defs/action"
+        },
         "selectors": {
           "type": "array",
-          "items": { "$ref": "#/$defs/selector" },
+          "items": {
+            "$ref": "#/$defs/selector"
+          },
           "minItems": 1
         },
         "sync": {
           "type": "object",
-          "required": ["pre", "post"],
+          "required": [
+            "pre",
+            "post"
+          ],
           "additionalProperties": false,
           "properties": {
-            "pre": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
-            "post": { "type": "array", "items": { "$ref": "#/$defs/condition" } }
+            "pre": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/condition"
+              }
+            },
+            "post": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/condition"
+              }
+            }
           }
         },
         "artifacts": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "pre_screenshot": { "$ref": "#/$defs/sha256" },
-            "post_screenshot": { "$ref": "#/$defs/sha256" },
+            "pre_screenshot": {
+              "$ref": "#/$defs/sha256"
+            },
+            "post_screenshot": {
+              "$ref": "#/$defs/sha256"
+            },
             "recording": {
               "type": "object",
-              "required": ["start_ms", "end_ms"],
+              "required": [
+                "start_ms",
+                "end_ms"
+              ],
               "additionalProperties": false,
               "properties": {
-                "start_ms": { "type": "integer", "minimum": 0 },
-                "end_ms": { "type": "integer", "minimum": 0 }
+                "start_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                }
               }
             }
           }
@@ -201,7 +397,10 @@
     },
     "action": {
       "type": "object",
-      "required": ["type", "params"],
+      "required": [
+        "type",
+        "params"
+      ],
       "additionalProperties": false,
       "properties": {
         "type": {
@@ -220,34 +419,31 @@
             "assert"
           ]
         },
-        "params": { "type": "object" }
+        "params": {
+          "type": "object"
+        }
       },
       "allOf": [
         {
-          "if": { "properties": { "type": { "const": "type_text" } } },
-          "then": {
+          "if": {
             "properties": {
-              "params": {
-                "required": ["text"],
-                "properties": {
-                  "text": { "type": "string" },
-                  "submit": { "type": "boolean" }
-                }
+              "type": {
+                "const": "type_text"
               }
             }
-          }
-        },
-        {
-          "if": { "properties": { "type": { "const": "press_key" } } },
+          },
           "then": {
             "properties": {
               "params": {
-                "required": ["key"],
+                "required": [
+                  "text"
+                ],
                 "properties": {
-                  "key": { "type": "string" },
-                  "modifiers": {
-                    "type": "array",
-                    "items": { "enum": ["ctrl", "alt", "shift", "win", "mod"] }
+                  "text": {
+                    "type": "string"
+                  },
+                  "submit": {
+                    "type": "boolean"
                   }
                 }
               }
@@ -255,23 +451,76 @@
           }
         },
         {
-          "if": { "properties": { "type": { "const": "upload" } } },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "press_key"
+              }
+            }
+          },
           "then": {
             "properties": {
               "params": {
-                "required": ["path"],
+                "required": [
+                  "key"
+                ],
                 "properties": {
-                  "path": { "type": "string" }
+                  "key": {
+                    "type": "string"
+                  },
+                  "modifiers": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        "ctrl",
+                        "alt",
+                        "shift",
+                        "win",
+                        "mod"
+                      ]
+                    }
+                  }
                 }
               }
             }
           }
         },
         {
-          "if": { "properties": { "type": { "const": "assert" } } },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "upload"
+              }
+            }
+          },
           "then": {
             "properties": {
-              "params": { "$ref": "#/$defs/assertion" }
+              "params": {
+                "required": [
+                  "path"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "assert"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/assertion"
+              }
             }
           }
         }
@@ -279,80 +528,164 @@
     },
     "assertion": {
       "type": "object",
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
-        "kind": { "enum": ["element_state", "ocr_text", "visual_diff", "sql", "api"] }
+        "kind": {
+          "enum": [
+            "element_state",
+            "ocr_text",
+            "visual_diff",
+            "sql",
+            "api"
+          ]
+        }
       },
       "allOf": [
         {
-          "if": { "properties": { "kind": { "const": "element_state" } } },
-          "then": { "required": ["expect"] }
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "element_state"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "expect"
+            ]
+          }
         },
         {
-          "if": { "properties": { "kind": { "const": "ocr_text" } } },
-          "then": {
-            "required": ["text"],
+          "if": {
             "properties": {
-              "text": { "type": "string" },
-              "match": { "enum": ["equals", "contains", "regex"] },
-              "region": { "$ref": "#/$defs/region" }
+              "kind": {
+                "const": "ocr_text"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "match": {
+                "enum": [
+                  "equals",
+                  "contains",
+                  "regex"
+                ]
+              },
+              "region": {
+                "$ref": "#/$defs/region"
+              }
             }
           }
         },
         {
-          "if": { "properties": { "kind": { "const": "visual_diff" } } },
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "visual_diff"
+              }
+            }
+          },
           "then": {
-            "required": ["baseline"],
+            "required": [
+              "baseline"
+            ],
             "properties": {
               "baseline": {
                 "type": "string",
                 "description": "Baseline PNG file name inside the trace's sibling <trace-stem>.baselines/ directory."
               },
-              "region": { "$ref": "#/$defs/region" },
-              "threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+              "region": {
+                "$ref": "#/$defs/region"
+              },
+              "threshold": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
               "masks": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "description": "Selector strings whose element rects are blanked before compare, at record and replay alike."
               }
             }
           }
         },
         {
-          "if": { "properties": { "kind": { "const": "sql" } } },
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "sql"
+              }
+            }
+          },
           "then": {
-            "required": ["connection", "query"],
+            "required": [
+              "connection",
+              "query"
+            ],
             "properties": {
               "connection": {
                 "type": "string",
                 "description": "Named connection resolved from local config; never credentials."
               },
-              "query": { "type": "string" }
+              "query": {
+                "type": "string"
+              }
             }
           }
         },
         {
-          "if": { "properties": { "kind": { "const": "api" } } },
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "api"
+              }
+            }
+          },
           "then": {
-            "required": ["request"],
+            "required": [
+              "request"
+            ],
             "properties": {
               "request": {
                 "type": "object",
-                "required": ["method", "url"],
+                "required": [
+                  "method",
+                  "url"
+                ],
                 "properties": {
-                  "method": { "type": "string" },
-                  "url": { "type": "string" },
+                  "method": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
                   "body": {
                     "description": "Request body (any JSON); ${VAR} refs in string leaves resolve at probe time."
                   },
                   "headers": {
                     "type": "object",
-                    "additionalProperties": { "type": "string" },
+                    "additionalProperties": {
+                      "type": "string"
+                    },
                     "description": "Request headers; values may be ${VAR} refs, resolved at probe time."
                   }
                 }
               },
-              "status": { "type": "integer" }
+              "status": {
+                "type": "integer"
+              }
             }
           }
         }
@@ -360,7 +693,11 @@
     },
     "selector": {
       "type": "object",
-      "required": ["tier", "provenance", "payload"],
+      "required": [
+        "tier",
+        "provenance",
+        "payload"
+      ],
       "additionalProperties": false,
       "properties": {
         "tier": {
@@ -372,49 +709,100 @@
             "ai_relocation"
           ]
         },
-        "provenance": { "$ref": "#/$defs/adapter" },
-        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-        "payload": { "type": "object" }
+        "provenance": {
+          "$ref": "#/$defs/adapter"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "payload": {
+          "type": "object"
+        }
       },
       "allOf": [
         {
-          "if": { "properties": { "tier": { "const": "text_anchor" } } },
+          "if": {
+            "properties": {
+              "tier": {
+                "const": "text_anchor"
+              }
+            }
+          },
           "then": {
             "properties": {
               "payload": {
-                "required": ["text"],
+                "required": [
+                  "text"
+                ],
                 "properties": {
-                  "text": { "type": "string" },
-                  "relation": {
-                    "enum": ["left_of", "right_of", "above", "below", "inside"]
+                  "text": {
+                    "type": "string"
                   },
-                  "max_distance_px": { "type": "integer", "minimum": 0 }
+                  "relation": {
+                    "enum": [
+                      "left_of",
+                      "right_of",
+                      "above",
+                      "below",
+                      "inside"
+                    ]
+                  },
+                  "max_distance_px": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
                 }
               }
             }
           }
         },
         {
-          "if": { "properties": { "tier": { "const": "visual_template" } } },
+          "if": {
+            "properties": {
+              "tier": {
+                "const": "visual_template"
+              }
+            }
+          },
           "then": {
             "properties": {
               "payload": {
-                "required": ["template"],
+                "required": [
+                  "template"
+                ],
                 "properties": {
-                  "template": { "$ref": "#/$defs/sha256" },
-                  "region": { "$ref": "#/$defs/region" }
+                  "template": {
+                    "$ref": "#/$defs/sha256"
+                  },
+                  "region": {
+                    "$ref": "#/$defs/region"
+                  }
                 }
               }
             }
           }
         },
         {
-          "if": { "properties": { "tier": { "const": "ai_relocation" } } },
+          "if": {
+            "properties": {
+              "tier": {
+                "const": "ai_relocation"
+              }
+            }
+          },
           "then": {
             "properties": {
               "payload": {
-                "required": ["context"],
-                "properties": { "context": { "type": "string" } }
+                "required": [
+                  "context"
+                ],
+                "properties": {
+                  "context": {
+                    "type": "string"
+                  }
+                }
               }
             }
           }
@@ -423,7 +811,10 @@
     },
     "condition": {
       "type": "object",
-      "required": ["kind", "timeout_ms"],
+      "required": [
+        "kind",
+        "timeout_ms"
+      ],
       "properties": {
         "kind": {
           "enum": [
@@ -434,7 +825,10 @@
             "visual_stable"
           ]
         },
-        "timeout_ms": { "type": "integer", "minimum": 0 },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
         "selector_ref": {
           "type": "integer",
           "minimum": 0,
@@ -443,27 +837,63 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "kind": { "const": "window_title" } } },
-          "then": {
-            "required": ["equals"],
-            "properties": { "equals": { "type": "string" } }
-          }
-        },
-        {
-          "if": { "properties": { "kind": { "const": "ocr_text_present" } } },
-          "then": {
-            "required": ["text"],
+          "if": {
             "properties": {
-              "text": { "type": "string" },
-              "region": { "$ref": "#/$defs/region" }
+              "kind": {
+                "const": "window_title"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "equals"
+            ],
+            "properties": {
+              "equals": {
+                "type": "string"
+              }
             }
           }
         },
         {
-          "if": { "properties": { "kind": { "const": "element_state" } } },
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "ocr_text_present"
+              }
+            }
+          },
           "then": {
-            "required": ["expect"],
-            "properties": { "expect": { "type": "object" } }
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "region": {
+                "$ref": "#/$defs/region"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "element_state"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "expect"
+            ],
+            "properties": {
+              "expect": {
+                "type": "object"
+              }
+            }
           }
         }
       ]

@@ -31,6 +31,7 @@ fn freeform_spec(url: String) -> FlowSpec {
         tools: Vec::new(),
         mcp: Vec::new(),
         strict: false,
+        control: None,
         steps: vec![
             SpecStep::Plain("Put Ada into the box labelled with the name".into()),
             SpecStep::Plain("Smash the greeting button".into()),

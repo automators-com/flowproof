@@ -29,6 +29,8 @@ flowproof-replay = { workspace = true }
 flowproof-trace = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The `audit` report renders as YAML (default) or JSON.
+serde_yaml = { workspace = true }
 
 [lints]
 workspace = true

@@ -87,6 +87,29 @@ pub struct Header {
     /// viewport/mobile emulation, user-agent, extra Chrome flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserSetup>,
+    /// The named security control this flow validates, copied from the
+    /// spec's `control:` block at record time. ADDITIVE and OMITTED when the
+    /// flow has no `control:` block, so a flow that does not use the feature
+    /// serializes BYTE-IDENTICAL to before. The id is the stable join key an
+    /// audit report folds flows by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<Control>,
+}
+
+/// A named security control a flow validates. The `id` is author-chosen,
+/// dotted, lowercase, and STABLE across renames, moves between suites, and
+/// re-records, because it is the join key between what an auditor tracks and
+/// what CI ran. `title`/`description` are author metadata. The id's format
+/// and per-suite uniqueness are enforced in the spec crate; this type is the
+/// trace-shared carrier.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Control {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// One network mock: match by URL substring (and optionally method), answer
@@ -545,4 +568,82 @@ pub struct Artifacts {
     /// This step's time range in the header's recording bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<StepRecording>,
+}
+
+#[cfg(test)]
+mod control_header_tests {
+    use super::*;
+
+    fn base_header() -> Header {
+        Header {
+            format: crate::FORMAT_NAME.to_string(),
+            version: crate::FORMAT_VERSION,
+            trace_id: "t-1".into(),
+            recorded_at: "2026-07-24T00:00:00Z".into(),
+            spec: None,
+            app: AppInfo {
+                name: "web".into(),
+                adapter: Adapter::Web,
+                window_title: None,
+                command: None,
+                geometry: None,
+                url: Some("http://x".into()),
+                version: None,
+            },
+            agent: None,
+            env: EnvInfo {
+                os: "test".into(),
+                resolution: (1, 1),
+                dpi_scale: None,
+                locale: None,
+            },
+            recording: None,
+            redaction: Vec::new(),
+            session: None,
+            mock: Vec::new(),
+            browser: None,
+            control: None,
+        }
+    }
+
+    /// The additive invariant: a header with NO `control:` block serializes
+    /// byte-identical to before the field existed - the `control` key is
+    /// absent entirely, so an old reader and a byte-for-byte diff are both
+    /// unaffected.
+    #[test]
+    fn a_header_without_control_omits_the_key_and_round_trips() {
+        let header = base_header();
+        let json = serde_json::to_string(&header).expect("serializes");
+        assert!(
+            !json.contains("control"),
+            "no control key on a control-less header: {json}"
+        );
+        let back: Header = serde_json::from_str(&json).expect("round-trips");
+        assert_eq!(back, header);
+        assert!(back.control.is_none());
+
+        // A pre-feature header (no `control` field at all) still deserializes.
+        let stripped: Header = serde_json::from_str(&json).expect("legacy parses");
+        assert!(
+            stripped.control.is_none(),
+            "absent control defaults to None"
+        );
+    }
+
+    /// A control-bearing header carries the id (and optional metadata) and
+    /// survives a serialize round-trip unchanged.
+    #[test]
+    fn a_control_header_round_trips_with_its_id() {
+        let mut header = base_header();
+        header.control = Some(Control {
+            id: "ac.customers.delete.viewer-denied".into(),
+            title: Some("Viewer role is denied customer deletion".into()),
+            description: None,
+        });
+        let json = serde_json::to_string(&header).expect("serializes");
+        assert!(json.contains("ac.customers.delete.viewer-denied"), "{json}");
+        assert!(!json.contains("description"), "absent metadata is omitted");
+        let back: Header = serde_json::from_str(&json).expect("round-trips");
+        assert_eq!(back, header);
+    }
 }

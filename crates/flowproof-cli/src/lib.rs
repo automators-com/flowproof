@@ -126,6 +126,23 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Fold a suite's control-bearing flows into a control-coverage report:
+    /// one entry per `control:` block with its pass/fail/capability-error
+    /// verdict, and for `assert_no_secret_leak` flows the secrets_checked /
+    /// corpus / excluded fields. A rendering of results that already exist -
+    /// each flow is replayed and its verdict read - emitted as YAML (default)
+    /// or JSON.
+    Audit {
+        /// Directory of specs to audit as a suite.
+        dir: PathBuf,
+        /// Emit JSON instead of YAML.
+        #[arg(long)]
+        json: bool,
+        /// Re-run a FAILED flow up to this many extra times before calling
+        /// it failed (default 0, no retries): absorbs infra flakiness.
+        #[arg(long, default_value_t = 0)]
+        retries: u8,
+    },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
     Heal {
@@ -237,8 +254,11 @@ fn cmd_record(
     // Suite-level browser defaults apply only when the spec has none —
     // recording bakes the result into the trace header.
     if spec.browser.is_none() {
-        spec.browser = manifest.and_then(|m| m.browser);
+        spec.browser = manifest.as_ref().and_then(|m| m.browser.clone());
     }
+    // A `session: <name>` ref is dereferenced against the suite's identities
+    // now, so record copies the identity's inline setup into the trace.
+    dereference_identity(&mut spec, manifest.as_ref())?;
     if let Some(reason) = spec.skip_reason() {
         if json {
             println!("{}", serde_json::json!({ "skipped": reason }));
@@ -529,6 +549,21 @@ pub fn apply_suite_context(
     Ok(Some(manifest))
 }
 
+/// Dereference a flow's `session: <name>` ref against its suite's
+/// `identities:`, replacing it with the named identity's inline setup - a
+/// load-time copy, so the trace stays self-contained. `manifest.is_some()`
+/// is the "has a governing suite" signal: a bare name with no suite is a
+/// load-time error naming the missing suite. A no-op for an inline `session:`
+/// or a flow with no session.
+fn dereference_identity(
+    spec: &mut FlowSpec,
+    manifest: Option<&flowproof_agent::SuiteManifest>,
+) -> Result<(), String> {
+    let empty = std::collections::BTreeMap::new();
+    let identities = manifest.map(|m| &m.identities).unwrap_or(&empty);
+    spec.dereference_session(identities, manifest.is_some())
+}
+
 /// Reorder discovered specs to honor the manifest's explicit `order`
 /// (paths relative to the suite dir); unlisted specs keep their sorted
 /// position, after the listed ones.
@@ -586,12 +621,15 @@ pub enum MissingTrace {
 fn record_one(
     spec_path: &Path,
     out: &Path,
-    suite_browser: Option<&flowproof_trace::format::BrowserSetup>,
+    manifest: &flowproof_agent::SuiteManifest,
 ) -> Result<(), String> {
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     if spec.browser.is_none() {
-        spec.browser = suite_browser.cloned();
+        spec.browser = manifest.browser.clone();
     }
+    // A directory run is a suite context, so a `session: <name>` resolves
+    // against the manifest's identities (empty if none declared).
+    spec.dereference_session(&manifest.identities, true)?;
     let mut driver = driver_for(spec.app.id())?;
     flowproof_agent::record(&spec, &mut driver, out)
         .map(|_| ())
@@ -641,6 +679,16 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
     apply_env_from(&manifest, dir)?;
     apply_suite_env(&manifest);
     order_specs(&mut specs, dir, &manifest.order);
+
+    // Control-id uniqueness is a suite-level property, enforced at load: two
+    // flows sharing a control id would corrupt the audit coverage map. Only
+    // parseable specs are considered here; a spec that will not parse is
+    // reported as one broken flow in the loop below.
+    let loaded: Vec<(String, FlowSpec)> = specs
+        .iter()
+        .filter_map(|p| FlowSpec::load(p).ok().map(|s| (p.display().to_string(), s)))
+        .collect();
+    flowproof_agent::check_control_ids(loaded.iter().map(|(p, s)| (p.as_str(), s)))?;
 
     let mut reports: Vec<flowproof_replay::RunReport> = Vec::new();
     let mut flows = Vec::new();
@@ -700,7 +748,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
                     if !json {
                         println!("[RECORD] {} (no trace yet)", spec_path.display());
                     }
-                    if let Err(e) = record_one(spec_path, &trace_path, manifest.browser.as_ref()) {
+                    if let Err(e) = record_one(spec_path, &trace_path, &manifest) {
                         errored_flow(
                             spec_path,
                             &gated_spec.name,
@@ -899,7 +947,10 @@ fn cmd_run(
     let manifest = apply_suite_context(spec_path)?;
     // Load the spec for its gate (this also surfaces spec parse errors on
     // single runs, deliberately — a typo'd spec should not replay).
-    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    // Surface a bad `session: <name>` the same way record would: a bare name
+    // with no governing suite is a load-time error naming the missing suite.
+    dereference_identity(&mut spec, manifest.as_ref())?;
     if let Some(reason) = spec.skip_reason() {
         let report = flowproof_replay::RunReport::skipped(&spec.name, &reason);
         if json {
@@ -1060,6 +1111,214 @@ fn cmd_run(
     Ok(if report.passed { EXIT_PASS } else { EXIT_FAIL })
 }
 
+/// A control's verdict in an audit report. Three verdicts, kept distinct so
+/// a report can never launder "we could not check" into "it held":
+/// `pass`, `fail`, and `capability-error` (the platform could not enforce or
+/// observe the lane, or the flow never ran).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum AuditVerdict {
+    Pass,
+    Fail,
+    CapabilityError,
+}
+
+/// One control's row in the audit report.
+#[derive(Debug, serde::Serialize)]
+struct AuditControl {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    flow: String,
+    verdict: AuditVerdict,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    /// The `${VAR}` names an `assert_no_secret_leak` flow checked - NAMES,
+    /// never values. Empty for a flow with no secret-leak assertion.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secrets_checked: Vec<String>,
+    /// What the secret scan actually covered, so nobody mistakes it for a
+    /// proof about channels the engine never saw.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    corpus: Vec<String>,
+    /// The corpus exclusions, echoed so the report is honest about its gaps.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    excluded: Vec<String>,
+}
+
+/// The rendered audit report: a suite's control-bearing flows folded into a
+/// stable, diffable coverage map.
+#[derive(Debug, serde::Serialize)]
+struct AuditReport {
+    suite: String,
+    run: String,
+    controls: Vec<AuditControl>,
+}
+
+/// Whether a replay failure is really a capability error (the lane could not
+/// be enforced or observed) rather than a control that failed. Mirrors the
+/// egress honesty wording so a "not contained" run reads as capability-error.
+fn is_capability_error(message: &str) -> bool {
+    message.contains("not contained")
+        || message.contains("cannot certify")
+        || message.contains("not enforced")
+}
+
+/// Replay one control-bearing flow and read its verdict. Agent flows replay
+/// their cassette through the model boundary; every other app kind replays
+/// through the step engine. A missing trace is a capability error (the
+/// control never ran), never a silent pass.
+fn control_verdict(
+    spec_path: &Path,
+    spec: &FlowSpec,
+    manifest: &flowproof_agent::SuiteManifest,
+    retries: u8,
+) -> (AuditVerdict, Option<String>) {
+    let trace_path = default_trace_path(spec_path);
+    if !trace_path.exists() {
+        return (
+            AuditVerdict::CapabilityError,
+            Some(format!(
+                "no trace recorded; run flowproof record {}",
+                spec_path.display()
+            )),
+        );
+    }
+    if let Some(cmd) = &manifest.before_each {
+        if let Err(e) = run_hook(cmd, spec_path, "before_each") {
+            return (AuditVerdict::CapabilityError, Some(e));
+        }
+    }
+    let outcome = if spec.app.id() == "agent" {
+        match agent_flow::replay(spec, &trace_path) {
+            Ok(()) => (AuditVerdict::Pass, None),
+            Err(e) if is_capability_error(&e) => (AuditVerdict::CapabilityError, Some(e)),
+            Err(e) => (AuditVerdict::Fail, Some(e)),
+        }
+    } else {
+        match flowproof_replay::load_trace(&trace_path)
+            .map_err(|e| e.to_string())
+            .and_then(|(header, _)| {
+                replay_with_retries(&trace_path, &header.app.name, retries, false)
+            }) {
+            Ok((report, _, _)) if report.passed => (AuditVerdict::Pass, None),
+            Ok((report, _, _)) => (
+                AuditVerdict::Fail,
+                report.steps.iter().find_map(|s| s.detail.clone()),
+            ),
+            Err(e) => (AuditVerdict::CapabilityError, Some(e)),
+        }
+    };
+    if let Some(cmd) = &manifest.after_each {
+        let _ = run_hook(cmd, spec_path, "after_each");
+    }
+    outcome
+}
+
+/// `flowproof audit <dir>`: fold a suite's control-bearing flows into a
+/// control-coverage report. A rendering of results that already exist - each
+/// control-bearing flow is replayed and its verdict read - emitted as YAML
+/// (default) or JSON. Full report diffing across runs is a later leaf; this
+/// minimal renderer is the spine.
+fn cmd_audit(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
+    if !dir.is_dir() {
+        return Err(format!(
+            "audit runs over a suite directory; {} is not a directory",
+            dir.display()
+        ));
+    }
+    let mut specs = Vec::new();
+    discover_specs(dir, &mut specs)?;
+    if specs.is_empty() {
+        return Err(format!("no *.flow.yaml specs under {}", dir.display()));
+    }
+    let manifest = flowproof_agent::SuiteManifest::load_from_dir(dir)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
+    apply_env_from(&manifest, dir)?;
+    apply_suite_env(&manifest);
+    order_specs(&mut specs, dir, &manifest.order);
+
+    // Load every spec once; a spec that will not parse is a hard audit error
+    // (an auditor must not silently drop a control that failed to load).
+    let mut loaded: Vec<(PathBuf, FlowSpec)> = Vec::new();
+    for path in &specs {
+        let spec = FlowSpec::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        loaded.push((path.clone(), spec));
+    }
+    // Control-id uniqueness is a suite-level property, enforced at load.
+    let names: Vec<(String, &FlowSpec)> = loaded
+        .iter()
+        .map(|(p, s)| (p.display().to_string(), s))
+        .collect();
+    flowproof_agent::check_control_ids(names.iter().map(|(p, s)| (p.as_str(), *s)))?;
+
+    let mut controls = Vec::new();
+    for (spec_path, spec) in &loaded {
+        let Some(control) = &spec.control else {
+            continue;
+        };
+        let (verdict, reason) = control_verdict(spec_path, spec, &manifest, retries);
+        let secrets_checked = spec.secret_leak_selectors();
+        // The corpus + exclusions are named ONLY for a flow that actually
+        // ran a secret-leak scan, and describe exactly what v1 scans on an
+        // agent flow (the model-boundary corpus).
+        let (corpus, excluded) = if secrets_checked.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                vec![
+                    "model-boundary trajectory (cassette request and response bodies)".to_string(),
+                    "MCP lanes".to_string(),
+                ],
+                vec![
+                    "channels the engine never observed (server logs, third-party sinks)"
+                        .to_string(),
+                ],
+            )
+        };
+        let flow = spec_path
+            .strip_prefix(dir)
+            .unwrap_or(spec_path)
+            .display()
+            .to_string();
+        controls.push(AuditControl {
+            id: control.id.clone(),
+            title: control.title.clone(),
+            flow,
+            verdict,
+            reason,
+            secrets_checked,
+            corpus,
+            excluded,
+        });
+    }
+
+    let suite = dir
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| dir.display().to_string());
+    let report = AuditReport {
+        suite,
+        run: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        controls,
+    };
+
+    let any_failed = report
+        .controls
+        .iter()
+        .any(|c| c.verdict == AuditVerdict::Fail);
+    let rendered = if json {
+        serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+    } else {
+        serde_yaml::to_string(&report).map_err(|e| e.to_string())?
+    };
+    println!("{rendered}");
+    Ok(if any_failed { EXIT_FAIL } else { EXIT_PASS })
+}
+
 fn cmd_heal(
     spec_path: &Path,
     trace: Option<PathBuf>,
@@ -1175,6 +1434,7 @@ where
             };
             cmd_run(&spec, trace, json, retries, missing)
         }
+        Command::Audit { dir, json, retries } => cmd_audit(&dir, json, retries),
         Command::Capture { port, out, json } => capture::cmd_capture(port, Some(out), json),
         Command::Heal {
             spec,

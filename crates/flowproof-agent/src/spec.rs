@@ -34,6 +34,8 @@ pub enum SpecError {
     Window(String),
     #[error("invalid agent flow: {0}")]
     Agent(String),
+    #[error("invalid control: {0}")]
+    Control(String),
 }
 
 /// `app:` is either a registry id (`web`, `calc`, `notepad`, `sap`,
@@ -135,6 +137,41 @@ impl WindowSpec {
                 ..WindowConfig::default()
             },
             WindowSpec::Full(c) => c.clone(),
+        }
+    }
+}
+
+/// `session:` is an untagged string-or-mapping, distinguished by YAML type
+/// the same way `app:` and `window:` are: a bare STRING names a declared
+/// suite identity (resolved at flow load), a MAPPING is an inline session
+/// setup exactly as before this feature. Nothing shipped changes meaning -
+/// every existing spec wrote the mapping form, which stays `Inline`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SessionRef {
+    /// A bare name resolved against the suite's `identities:` at flow load.
+    Named(String),
+    /// An inline session setup, the shipped shape.
+    Inline(flowproof_trace::format::SessionSetup),
+}
+
+impl SessionRef {
+    /// The inline session setup, if this ref is already an inline mapping
+    /// (or was dereferenced from a named identity). A still-unresolved
+    /// `Named` ref returns `None`; load-time dereference turns every `Named`
+    /// into `Inline` before record, so record never sees a `Named`.
+    pub fn inline(&self) -> Option<&flowproof_trace::format::SessionSetup> {
+        match self {
+            SessionRef::Inline(setup) => Some(setup),
+            SessionRef::Named(_) => None,
+        }
+    }
+
+    /// The identity name this ref points at, if it is still a bare name.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            SessionRef::Named(name) => Some(name),
+            SessionRef::Inline(_) => None,
         }
     }
 }
@@ -300,8 +337,12 @@ pub struct FlowSpec {
     /// Accepted strictness gap: `SessionSetup` is the trace-shared type
     /// (trace v1 allows additive optional fields), so unknown keys INSIDE
     /// `session:` are not rejected — only spec-owned types deny them.
+    ///
+    /// Untagged string-or-mapping (`SessionRef`): a bare string names a
+    /// suite `identities:` entry (dereferenced to an inline mapping at flow
+    /// load), a mapping is inline setup as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session: Option<flowproof_trace::format::SessionSetup>,
+    pub session: Option<SessionRef>,
     /// Skip this flow (visible as junit `skipped`, exit 0) unless every
     /// listed environment variable is set and non-empty — first-class
     /// env-flag gating (`RUN_AGENT_E2E`-style) instead of invisible bash
@@ -341,6 +382,13 @@ pub struct FlowSpec {
     /// contract.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strict: bool,
+    /// The named security control this flow validates: a stable id plus
+    /// optional title/description. At most one per flow. The id is the join
+    /// key an audit report folds by; its format is validated here and its
+    /// per-suite uniqueness at suite load (`check_control_ids`). Copied into
+    /// the trace header at record so the evidence is self-describing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<flowproof_trace::format::Control>,
     pub steps: Vec<SpecStep>,
 }
 
@@ -365,6 +413,7 @@ impl FlowSpec {
                     | SpecStep::AssertToolCall { .. }
                     | SpecStep::AssertNoToolCall { .. }
                     | SpecStep::AssertNoEgress
+                    | SpecStep::AssertNoSecretLeak { .. }
             )
         });
 
@@ -709,6 +758,107 @@ impl FlowSpec {
         }
     }
 
+    /// Check the `control:` block: the id is required, dotted, lowercase
+    /// (`[a-z0-9._-]+`), and non-empty. Its ONE hard property is stability
+    /// (it is the join key across a suite's coverage map), but the format is
+    /// enforced so a stray uppercase or space is a parse error rather than a
+    /// silently-unmatchable id. Per-suite UNIQUENESS is a suite-level
+    /// property, enforced at suite load by `check_control_ids`, not here.
+    fn validate_control(&self) -> Result<(), SpecError> {
+        let Some(control) = &self.control else {
+            return Ok(());
+        };
+        let bad = |m: String| Err(SpecError::Control(m));
+        let id = control.id.trim();
+        if id.is_empty() {
+            return bad("`control.id` is required and must not be empty".into());
+        }
+        if id != control.id {
+            return bad(format!(
+                "`control.id` `{}` has leading or trailing whitespace",
+                control.id
+            ));
+        }
+        let valid = id.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-'
+        });
+        if !valid {
+            return bad(format!(
+                "`control.id` `{id}` must be dotted lowercase, matching [a-z0-9._-]+"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The control id this flow declares, if any.
+    pub fn control_id(&self) -> Option<&str> {
+        self.control.as_ref().map(|c| c.id.as_str())
+    }
+
+    /// Every `${VAR}` selector named by an `assert_no_secret_leak` step,
+    /// deduped and in first-seen order. The audit report's `secrets_checked`
+    /// list, and a convenience for callers building the corpus scan.
+    pub fn secret_leak_selectors(&self) -> Vec<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        for step in &self.steps {
+            if let SpecStep::AssertNoSecretLeak {
+                assert_no_secret_leak,
+            } = step
+            {
+                for selector in assert_no_secret_leak {
+                    if seen.insert(selector.clone()) {
+                        out.push(selector.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Dereference a `session: <name>` ref against a suite's `identities:`
+    /// map, replacing it with the named identity's inline setup - a
+    /// LOAD-TIME COPY, so the trace stays self-contained (it carries the
+    /// identity's `${VAR}`-bearing setup, not a pointer to the suite). An
+    /// inline `session:` mapping is left untouched. `has_suite` distinguishes
+    /// "no governing suite" (a bare name is a load-time error naming the
+    /// missing suite) from "a suite with no such identity" (a parse error
+    /// listing the declared names). A no-op when there is no named ref.
+    pub fn dereference_session(
+        &mut self,
+        identities: &std::collections::BTreeMap<String, flowproof_trace::format::SessionSetup>,
+        has_suite: bool,
+    ) -> Result<(), String> {
+        let Some(name) = self
+            .session
+            .as_ref()
+            .and_then(|s| s.name())
+            .map(str::to_string)
+        else {
+            return Ok(());
+        };
+        if !has_suite {
+            return Err(format!(
+                "`session: {name}` names a suite identity, but this flow has no governing \
+                 suite.yaml to resolve it against; add a `suite.yaml` with an `identities:` \
+                 block, or write an inline `session:` mapping"
+            ));
+        }
+        let Some(setup) = identities.get(&name) else {
+            let declared = if identities.is_empty() {
+                "none declared".to_string()
+            } else {
+                identities.keys().cloned().collect::<Vec<_>>().join(", ")
+            };
+            return Err(format!(
+                "`session: {name}` names an identity the suite does not declare; \
+                 declared identities: {declared}"
+            ));
+        };
+        self.session = Some(SessionRef::Inline(setup.clone()));
+        Ok(())
+    }
+
     /// The reason to skip this flow, if its `skip_unless_env` gate is not
     /// satisfied — naming every missing/empty variable.
     pub fn skip_reason(&self) -> Option<String> {
@@ -765,14 +915,48 @@ pub enum SpecStep {
     /// phase, and a capability error on any platform where containment is
     /// not enforced.
     AssertNoEgress,
+    /// `app: agent`: assert NO declared secret appeared in the run's output
+    /// corpus. The named-selector form: one or more `${VAR}` names, each a
+    /// secret that must never surface. The `${VAR}` values resolve at
+    /// execution (both phases) and the resolved value is substring-scanned
+    /// against the model-boundary corpus; only the variable NAMES are stored.
+    AssertNoSecretLeak {
+        /// The `${VAR}` selectors, as written (e.g. `["${DB_PASSWORD}"]`).
+        /// Each is validated at parse to be exactly `${NAME}` syntax.
+        assert_no_secret_leak: Vec<String>,
+    },
     Plain(String),
+}
+
+/// Validate one `assert_no_secret_leak` selector: it must be exactly a
+/// single `${NAME}` reference, nothing else. Returns the bare variable name.
+/// A non-`${VAR}` selector is a clear parse error, since the whole point is
+/// to name a secret variable, not a literal or a predicate.
+fn parse_secret_selector(selector: &str) -> Result<String, String> {
+    let s = selector.trim();
+    let inner = s
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .ok_or_else(|| {
+            format!("`{selector}` is not a `${{VAR}}` selector; `assert_no_secret_leak` names a secret variable, e.g. `${{DB_PASSWORD}}`")
+        })?;
+    let mut chars = inner.chars();
+    let valid = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid {
+        return Err(format!(
+            "`{selector}` is not a valid `${{VAR}}` selector; the name must match [A-Za-z_][A-Za-z0-9_]*"
+        ));
+    }
+    Ok(inner.to_string())
 }
 
 impl SpecStep {
     const FORMS: &'static str = "a plain string, `assert: <text>`, \
          `assert_sql: {...}`, `assert_api: {...}`, `assert_screenshot: {...}`, \
          `prompt: <text>`, `assert_tool_call: <text>`, \
-         `assert_no_tool_call: <text>`, `assert_no_egress`, or `foreach: {...}`";
+         `assert_no_tool_call: <text>`, `assert_no_egress`, \
+         `assert_no_secret_leak: ${VAR}`, or `foreach: {...}`";
 
     fn from_yaml(value: serde_yaml::Value) -> Result<Self, String> {
         use serde_yaml::Value;
@@ -823,6 +1007,47 @@ impl SpecStep {
                         }),
                         _ => Err("`assert_no_tool_call:` takes a string (a tool name)".into()),
                     },
+                    // `assert_no_secret_leak:` takes a single `${VAR}`
+                    // selector or a LIST of them. Each is validated to be
+                    // `${VAR}` syntax here, so a literal or a predicate is a
+                    // parse error rather than a silently-never-matching scan.
+                    Some("assert_no_secret_leak") => {
+                        let selectors = match inner {
+                            Value::String(s) => vec![s],
+                            Value::Sequence(items) => items
+                                .into_iter()
+                                .map(|item| match item {
+                                    Value::String(s) => Ok(s),
+                                    other => Err(format!(
+                                        "`assert_no_secret_leak:` list entries are `${{VAR}}` \
+                                         strings; got {}",
+                                        yaml_kind(&other)
+                                    )),
+                                })
+                                .collect::<Result<Vec<_>, String>>()?,
+                            other => {
+                                return Err(format!(
+                                    "`assert_no_secret_leak:` takes a `${{VAR}}` selector or a \
+                                     list of them; got {}",
+                                    yaml_kind(&other)
+                                ))
+                            }
+                        };
+                        if selectors.is_empty() {
+                            return Err(
+                                "`assert_no_secret_leak:` names at least one `${VAR}` secret"
+                                    .into(),
+                            );
+                        }
+                        // Validate every selector is `${VAR}` syntax; keep the
+                        // raw text so the spec serializes as written.
+                        for selector in &selectors {
+                            parse_secret_selector(selector)?;
+                        }
+                        Ok(SpecStep::AssertNoSecretLeak {
+                            assert_no_secret_leak: selectors,
+                        })
+                    }
                     Some("assert_sql") => serde_yaml::from_value(inner)
                         .map(|assert_sql| SpecStep::AssertSql { assert_sql })
                         .map_err(|e| format!("in `assert_sql` step: {e}")),
@@ -905,6 +1130,14 @@ impl Serialize for SpecStep {
         match self {
             SpecStep::Plain(text) => serializer.serialize_str(text),
             SpecStep::AssertNoEgress => serializer.serialize_str("assert_no_egress"),
+            // A single selector serializes as the string form it was written
+            // in; several serialize as the list form. Both reparse identically.
+            SpecStep::AssertNoSecretLeak {
+                assert_no_secret_leak,
+            } => match assert_no_secret_leak.as_slice() {
+                [one] => single(serializer, "assert_no_secret_leak", one),
+                many => single(serializer, "assert_no_secret_leak", &many.to_vec()),
+            },
             SpecStep::Assert { assert } => single(serializer, "assert", assert),
             SpecStep::Prompt { prompt } => single(serializer, "prompt", prompt),
             SpecStep::AssertToolCall { assert_tool_call } => {
@@ -1032,6 +1265,14 @@ impl SpecStep {
                 format!("assert_no_tool_call: {assert_no_tool_call}")
             }
             SpecStep::AssertNoEgress => "assert_no_egress".to_string(),
+            SpecStep::AssertNoSecretLeak {
+                assert_no_secret_leak,
+            } => {
+                format!(
+                    "assert_no_secret_leak: {}",
+                    assert_no_secret_leak.join(", ")
+                )
+            }
         }
     }
 }
@@ -1053,6 +1294,7 @@ impl FlowSpec {
         spec.validate_window()?;
         spec.validate_agent()?;
         spec.validate_clock()?;
+        spec.validate_control()?;
         Ok(spec)
     }
 
@@ -1312,6 +1554,41 @@ pub struct SuiteManifest {
     /// (web): a flow's own `browser:` wins outright when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<flowproof_trace::format::BrowserSetup>,
+    /// Named browser-session fixtures shared across the suite: `name ->`
+    /// exactly the inline `session:` shape (cookies + localStorage, values
+    /// `${VAR}` refs resolved at apply time, never stored). A flow's
+    /// `session: <name>` dereferences against this map at load. An identity
+    /// carries the BROWSER SESSION ONLY; API credentials stay plain suite
+    /// `env` by convention.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub identities: std::collections::BTreeMap<String, flowproof_trace::format::SessionSetup>,
+}
+
+/// Check control-id uniqueness across a suite's loaded flows. Each item
+/// pairs a flow's display name (its path) with its spec. A duplicated
+/// control id is a suite-load error NAMING BOTH flows, because silently
+/// letting two flows share a join key would corrupt the audit coverage map.
+/// Flows without a `control:` block are ignored. This is a SUITE-level
+/// property: a standalone flow run sees one flow and cannot (need not) check
+/// it, which is accepted by design.
+pub fn check_control_ids<'a, I>(flows: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = (&'a str, &'a FlowSpec)>,
+{
+    let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    for (path, spec) in flows {
+        let Some(id) = spec.control_id() else {
+            continue;
+        };
+        if let Some(first) = seen.insert(id, path) {
+            return Err(format!(
+                "control id `{id}` is declared by two flows in this suite: `{first}` and \
+                 `{path}`; a control id is the join key across a suite's coverage map and \
+                 must be unique"
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl SuiteManifest {
@@ -2234,5 +2511,285 @@ steps:
             err.to_string().contains("at") || err.to_string().contains("missing"),
             "{err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod security_spine_tests {
+    use super::*;
+
+    fn spec(yaml: &str) -> Result<FlowSpec, SpecError> {
+        FlowSpec::parse(yaml)
+    }
+
+    // ---- assert_no_secret_leak ----
+
+    /// The named-selector form: one `${VAR}`, or a list of them.
+    #[test]
+    fn assert_no_secret_leak_parses_named_and_list_forms() {
+        let flow = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_secret_leak: ${DB_PASSWORD}\n",
+        )
+        .expect("single selector parses");
+        assert!(matches!(
+            &flow.steps[1],
+            SpecStep::AssertNoSecretLeak { assert_no_secret_leak } if assert_no_secret_leak == &["${DB_PASSWORD}"]
+        ));
+
+        let flow = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_secret_leak:\n      - ${DB_PASSWORD}\n      - ${API_TOKEN}\n",
+        )
+        .expect("list form parses");
+        let SpecStep::AssertNoSecretLeak {
+            assert_no_secret_leak,
+        } = &flow.steps[1]
+        else {
+            panic!("expected assert_no_secret_leak");
+        };
+        assert_eq!(assert_no_secret_leak, &["${DB_PASSWORD}", "${API_TOKEN}"]);
+        // The selectors surface for the audit report.
+        assert_eq!(
+            flow.secret_leak_selectors(),
+            vec!["${DB_PASSWORD}".to_string(), "${API_TOKEN}".to_string()]
+        );
+    }
+
+    /// A non-`${VAR}` selector is a clear parse error: the point is to name a
+    /// secret variable, not a literal or a predicate.
+    #[test]
+    fn assert_no_secret_leak_rejects_non_var_selectors() {
+        for bad in [
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_secret_leak: hunter2\n",
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_secret_leak: ${1BAD}\n",
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_secret_leak:\n      - ${OK}\n      - literal\n",
+        ] {
+            let err = spec(bad).expect_err("non-${VAR} selector must fail");
+            assert!(
+                err.to_string().contains("${VAR}") || err.to_string().contains("${"),
+                "names the required form: {err}"
+            );
+        }
+    }
+
+    /// Agent-only in v1, exactly like `assert_no_egress`: the corpus this
+    /// lane scans is only wired for the model boundary today.
+    #[test]
+    fn assert_no_secret_leak_is_rejected_off_agent_flows() {
+        let err = spec(
+            "name: n\napp: web\nurl: http://x\nsteps:\n  - assert_no_secret_leak: ${DB_PASSWORD}\n",
+        )
+        .expect_err("secret-leak on web");
+        assert!(err.to_string().contains("agent step"), "{err}");
+        assert!(err.to_string().contains("assert_no_secret_leak"), "{err}");
+    }
+
+    /// It round-trips through serialize/reparse: one selector as a string,
+    /// several as a list.
+    #[test]
+    fn assert_no_secret_leak_round_trips() {
+        for yaml in [
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_secret_leak: ${DB_PASSWORD}\n",
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_secret_leak:\n      - ${A}\n      - ${B}\n",
+        ] {
+            let flow = spec(yaml).expect("parses");
+            let text = serde_yaml::to_string(&flow.steps).expect("serializes");
+            let back: Vec<SpecStep> = serde_yaml::from_str(&text).expect("round-trips");
+            assert_eq!(back, flow.steps);
+        }
+    }
+
+    // ---- control: block ----
+
+    #[test]
+    fn a_control_block_parses_with_id_and_optional_metadata() {
+        let flow = spec(
+            "name: n\napp: web\nurl: http://x\ncontrol:\n  id: ac.customers.delete.viewer-denied\n  title: Viewer is denied deletion\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect("control parses");
+        let control = flow.control.as_ref().expect("control present");
+        assert_eq!(control.id, "ac.customers.delete.viewer-denied");
+        assert_eq!(control.title.as_deref(), Some("Viewer is denied deletion"));
+        assert_eq!(flow.control_id(), Some("ac.customers.delete.viewer-denied"));
+    }
+
+    #[test]
+    fn a_control_id_must_be_dotted_lowercase() {
+        // Uppercase, spaces, and a missing id are all parse errors.
+        let err = spec(
+            "name: n\napp: web\nurl: http://x\ncontrol:\n  id: AC.Customers\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect_err("uppercase id");
+        assert!(err.to_string().contains("dotted lowercase"), "{err}");
+
+        let err = spec(
+            "name: n\napp: web\nurl: http://x\ncontrol:\n  id: \"has spaces\"\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect_err("spaces in id");
+        assert!(err.to_string().contains("[a-z0-9._-]"), "{err}");
+
+        // A typo'd key inside control: is a named parse error (deny_unknown).
+        let err = spec(
+            "name: n\napp: web\nurl: http://x\ncontrol:\n  ident: x\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect_err("unknown control key");
+        assert!(err.to_string().contains("ident"), "{err}");
+    }
+
+    /// Per-suite control-id uniqueness is a suite-load property: a duplicate
+    /// names both flows.
+    #[test]
+    fn duplicate_control_ids_are_a_suite_load_error_naming_both() {
+        let a = spec(
+            "name: A\napp: web\nurl: http://x\ncontrol:\n  id: ac.dup\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect("a parses");
+        let b = spec(
+            "name: B\napp: web\nurl: http://y\ncontrol:\n  id: ac.dup\nsteps:\n  - assert: page shows y\n",
+        )
+        .expect("b parses");
+        let c = spec(
+            "name: C\napp: web\nurl: http://z\ncontrol:\n  id: ac.other\nsteps:\n  - assert: page shows z\n",
+        )
+        .expect("c parses");
+        // Unique ids pass.
+        check_control_ids([("a.flow.yaml", &a), ("c.flow.yaml", &c)]).expect("unique ids pass");
+        // A duplicate fails, naming both flows.
+        let err = check_control_ids([("a.flow.yaml", &a), ("b.flow.yaml", &b)])
+            .expect_err("dup id fails");
+        assert!(err.contains("ac.dup"), "names the id: {err}");
+        assert!(
+            err.contains("a.flow.yaml") && err.contains("b.flow.yaml"),
+            "names both flows: {err}"
+        );
+        // Flows without a control block are simply ignored.
+        let plain = spec("name: P\napp: web\nurl: http://x\nsteps:\n  - assert: page shows x\n")
+            .expect("plain parses");
+        check_control_ids([("a.flow.yaml", &a), ("p.flow.yaml", &plain)])
+            .expect("control-less flows are ignored");
+    }
+
+    // ---- identities + untagged session ----
+
+    #[test]
+    fn a_bare_session_string_is_an_identity_name_and_a_mapping_is_inline() {
+        let named = spec(
+            "name: n\napp: web\nurl: http://x\nsession: viewer\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect("named session parses");
+        assert_eq!(
+            named.session.as_ref().and_then(|s| s.name()),
+            Some("viewer")
+        );
+        assert!(named.session.as_ref().and_then(|s| s.inline()).is_none());
+
+        let inline = spec(
+            "name: n\napp: web\nurl: http://x\nsession:\n  cookies:\n    - name: app.session\n      value: ${VIEWER_COOKIE}\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect("inline session parses");
+        let setup = inline
+            .session
+            .as_ref()
+            .and_then(|s| s.inline())
+            .expect("inline setup");
+        assert_eq!(setup.cookies[0].value, "${VIEWER_COOKIE}");
+    }
+
+    #[test]
+    fn a_named_session_dereferences_against_suite_identities() {
+        let mut flow = spec(
+            "name: n\napp: web\nurl: http://x\nsession: viewer\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect("parses");
+        let manifest: SuiteManifest = serde_yaml::from_str(
+            "identities:\n  viewer:\n    cookies:\n      - name: app.session\n        value: ${VIEWER_COOKIE}\n",
+        )
+        .expect("manifest with identities parses");
+        assert!(manifest.identities.contains_key("viewer"));
+        flow.dereference_session(&manifest.identities, true)
+            .expect("dereferences");
+        // The named ref is now the identity's inline setup, copied in.
+        let setup = flow
+            .session
+            .as_ref()
+            .and_then(|s| s.inline())
+            .expect("dereferenced to inline");
+        assert_eq!(setup.cookies[0].name, "app.session");
+        assert_eq!(setup.cookies[0].value, "${VIEWER_COOKIE}");
+    }
+
+    #[test]
+    fn a_named_session_with_no_suite_is_a_load_time_error_naming_the_missing_suite() {
+        let mut flow = spec(
+            "name: n\napp: web\nurl: http://x\nsession: viewer\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect("parses");
+        let empty = std::collections::BTreeMap::new();
+        let err = flow
+            .dereference_session(&empty, false)
+            .expect_err("no governing suite");
+        assert!(err.contains("suite.yaml"), "names the missing suite: {err}");
+        assert!(err.contains("viewer"), "names the identity: {err}");
+    }
+
+    #[test]
+    fn an_unknown_identity_name_lists_the_declared_ones() {
+        let mut flow = spec(
+            "name: n\napp: web\nurl: http://x\nsession: admin\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect("parses");
+        let manifest: SuiteManifest = serde_yaml::from_str(
+            "identities:\n  viewer:\n    cookies:\n      - name: c\n        value: ${V}\n",
+        )
+        .expect("manifest parses");
+        let err = flow
+            .dereference_session(&manifest.identities, true)
+            .expect_err("unknown identity");
+        assert!(err.contains("admin"), "names the missing identity: {err}");
+        assert!(err.contains("viewer"), "lists the declared ones: {err}");
+    }
+
+    /// An inline `session:` mapping (or no session) is untouched by
+    /// dereference - the shipped behavior is unchanged.
+    #[test]
+    fn dereference_is_a_noop_for_inline_and_absent_sessions() {
+        let empty = std::collections::BTreeMap::new();
+        let mut inline = spec(
+            "name: n\napp: web\nurl: http://x\nsession:\n  cookies:\n    - name: c\n      value: ${V}\nsteps:\n  - assert: page shows x\n",
+        )
+        .expect("parses");
+        inline
+            .dereference_session(&empty, false)
+            .expect("inline needs no suite");
+        assert!(inline.session.as_ref().and_then(|s| s.inline()).is_some());
+
+        let mut none = spec("name: n\napp: web\nurl: http://x\nsteps:\n  - assert: page shows x\n")
+            .expect("parses");
+        none.dereference_session(&empty, false).expect("no session");
+        assert!(none.session.is_none());
+    }
+
+    #[test]
+    fn a_suite_identities_block_parses_with_the_session_shape() {
+        let manifest: SuiteManifest = serde_yaml::from_str(
+            "identities:\n  admin:\n    cookies:\n      - name: app.session\n        value: ${ADMIN_COOKIE}\n    local_storage:\n      role: admin\n",
+        )
+        .expect("identities parse");
+        let admin = manifest.identities.get("admin").expect("admin identity");
+        assert_eq!(admin.cookies[0].value, "${ADMIN_COOKIE}");
+        assert_eq!(
+            admin.local_storage.get("role").map(String::as_str),
+            Some("admin")
+        );
+    }
+
+    /// A flow using NONE of the new fields (no control, inline session) is
+    /// unchanged by this feature: no `control` key appears when serialized.
+    #[test]
+    fn a_flow_without_new_fields_omits_the_control_key() {
+        let flow = spec("name: n\napp: web\nurl: http://x\nsteps:\n  - assert: page shows x\n")
+            .expect("parses");
+        assert!(flow.control.is_none());
+        let yaml = serde_yaml::to_string(&flow).expect("serializes");
+        assert!(!yaml.contains("control"), "no control key: {yaml}");
     }
 }

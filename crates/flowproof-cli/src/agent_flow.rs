@@ -553,7 +553,25 @@ struct Plan {
     /// contained - identical in record and replay, so both install (or skip)
     /// the seccomp filter the same way.
     engages_egress: bool,
+    /// The `assert_no_secret_leak` steps, each naming one or more `${VAR}`
+    /// selectors and its 1-based position in the flow's `steps:` (for the
+    /// failure message). Only the variable NAMES travel here - never a value.
+    secret_leaks: Vec<SecretLeakStep>,
 }
+
+/// One `assert_no_secret_leak` step: the `${VAR}` selectors it declares and
+/// its 1-based step position (named in the failure message).
+struct SecretLeakStep {
+    step_index: usize,
+    selectors: Vec<String>,
+}
+
+/// The smallest resolved secret length the corpus scan will accept.
+/// Scanning for a one- or two-character value would fire on almost any
+/// output (the doc's `"1"` example), so a secret shorter than this is
+/// REFUSED at execution rather than asserted imprecisely - a control that
+/// cannot be checked precisely is refused, not weakened.
+const MIN_SECRET_LEN: usize = 4;
 
 impl Plan {
     /// The port the proxy binds: the fixed `proxy_port` for an http driver,
@@ -673,10 +691,20 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
     let mut tool_calls = Vec::new();
     let mut forbidden = Vec::new();
     let mut reply_contains = Vec::new();
-    for step in &spec.steps {
+    let mut secret_leaks = Vec::new();
+    for (i, step) in spec.steps.iter().enumerate() {
         match step {
             SpecStep::AssertToolCall { assert_tool_call } => {
                 tool_calls.push(parse_expectation(assert_tool_call)?);
+            }
+            SpecStep::AssertNoSecretLeak {
+                assert_no_secret_leak,
+            } => {
+                secret_leaks.push(SecretLeakStep {
+                    // 1-based, so the message reads as an author counts steps.
+                    step_index: i + 1,
+                    selectors: assert_no_secret_leak.clone(),
+                });
             }
             SpecStep::AssertNoToolCall {
                 assert_no_tool_call,
@@ -716,6 +744,7 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
         allow_unresolved,
         assert_no_egress,
         engages_egress: engages_egress(spec),
+        secret_leaks,
     })
 }
 
@@ -822,6 +851,88 @@ fn egress_failure_message(undeclared: &[EgressEvent]) -> String {
     )
 }
 
+/// The secret-leak corpus for an `app: agent` flow: the model-boundary
+/// trajectory (the cassette's request + response bodies) plus each MCP lane,
+/// each as a NAMED element so a failure can say WHERE a secret appeared. A
+/// closed corpus, not "everything": the audit output lists exactly these so
+/// nobody mistakes it for a proof about channels the engine never saw.
+fn secret_corpus(
+    cassette: &Cassette,
+    mcp: &BTreeMap<String, McpServerTrace>,
+) -> Vec<(String, String)> {
+    let mut corpus = Vec::new();
+    // The cassette element is always present on an agent flow (a run with an
+    // empty trajectory fails the progress guard long before this), so the
+    // corpus is never empty and the empty-corpus capability error cannot
+    // arise here.
+    corpus.push((
+        "the model-boundary trajectory".to_string(),
+        serde_json::to_string(cassette).unwrap_or_default(),
+    ));
+    for (name, lane) in mcp {
+        corpus.push((
+            format!("the `{name}` MCP lane"),
+            serde_json::to_string(lane).unwrap_or_default(),
+        ));
+    }
+    corpus
+}
+
+/// Scan the run's captured corpus for any declared secret, by the SAME
+/// mechanism at record and replay, so an unchanged system yields the same
+/// verdict. Resolves each asserted `${VAR}` through the shared resolve-refs
+/// machinery and substring-scans the in-memory corpus; only variable NAMES
+/// are ever stored or printed. A leak names ALL matching variables in a
+/// stable order, the corpus element, and the step index - never the value.
+/// A resolved secret under the minimum length is refused (both phases), in
+/// the same shape as the shipped `MissingSecret` error.
+fn check_secret_leak(
+    plan: &Plan,
+    cassette: &Cassette,
+    mcp: &BTreeMap<String, McpServerTrace>,
+) -> Result<(), String> {
+    if plan.secret_leaks.is_empty() {
+        return Ok(());
+    }
+    let corpus = secret_corpus(cassette, mcp);
+    for leak in &plan.secret_leaks {
+        // (selector, corpus element) for every variable that appeared,
+        // collected then sorted so two leaks report in a stable order.
+        let mut hits: Vec<(String, String)> = Vec::new();
+        for selector in &leak.selectors {
+            let value =
+                flowproof_trace::secret::resolve_refs(selector).map_err(|e| e.to_string())?;
+            if value.chars().count() < MIN_SECRET_LEN {
+                // Named like MissingSecret: the variable and the minimum,
+                // never the value.
+                return Err(format!(
+                    "assert_no_secret_leak (step {}): {selector} resolves to a value shorter \
+                     than the {MIN_SECRET_LEN}-character minimum needed to scan for it \
+                     precisely; a secret that short cannot be asserted without false positives",
+                    leak.step_index
+                ));
+            }
+            if let Some((element, _)) = corpus.iter().find(|(_, text)| text.contains(&value)) {
+                hits.push((selector.clone(), element.clone()));
+            }
+        }
+        if !hits.is_empty() {
+            hits.sort();
+            let list = hits
+                .iter()
+                .map(|(selector, element)| format!("{selector} in {element}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(format!(
+                "assert_no_secret_leak (step {}): a declared secret appeared in the run \
+                 output: {list}",
+                leak.step_index
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn parse_expectation(text: &str) -> Result<ToolCallExpectation, String> {
     flowproof_agent::agent_steps::parse(text).map_err(|e| e.to_string())
 }
@@ -902,6 +1013,10 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
     // trajectory assertions. The returned lane is the audit record written
     // into the trace.
     let egress = check_egress(&plan, &run, &containment(spec))?;
+    // The secret-leak scan runs BEFORE the trace is minted: a leak fails the
+    // run so NO trace is written. That doubles as a store-guard - a secret
+    // leaked into a cassette body never reaches disk.
+    check_secret_leak(&plan, &cassette, &mcp_trace)?;
 
     let trace = AgentTrace {
         app: "agent".into(),
@@ -960,6 +1075,10 @@ pub fn replay(spec: &FlowSpec, trace_path: &Path) -> Result<(), String> {
     // enforcement uses the current spec's set both phases, and the trace's
     // lane is an audit record only.
     check_egress(&plan, &run, &containment(spec))?;
+    // Re-scan the recorded corpus for declared secrets by the SAME mechanism
+    // as record, so an unchanged system replays the same verdict. The corpus
+    // is the recorded cassette + MCP lanes (the proxy consumed the live one).
+    check_secret_leak(&plan, &trace.cassette, &trace.mcp)?;
     Ok(())
 }
 
@@ -1229,6 +1348,7 @@ mod tests {
             engages_egress: !allow_unresolved.is_empty() || assert_no_egress,
             allow_unresolved,
             assert_no_egress,
+            secret_leaks: Vec::new(),
         }
     }
 
