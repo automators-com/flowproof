@@ -166,6 +166,139 @@ proc.wait()
 print(reply)
 "#;
 
+/// A deterministic stdio MCP server that sends a server NOTIFICATION. On
+/// `tools/list` it writes `notifications/tools/list_changed` BEFORE the
+/// response, so the notification crosses while the client is still blocked on
+/// the list response - anchoring it deterministically at the count of calls
+/// issued so far (initialize + tools/list = 2).
+const FAKE_MCP_SERVER_NOTIFY: &str = r#"
+import json, sys
+log = open(sys.argv[1], "a")
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    log.write(line + "\n"); log.flush()
+    mid = msg.get("id")
+    if mid is None:
+        continue
+    method = msg.get("method")
+    if method == "tools/list":
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0",
+            "method": "notifications/tools/list_changed", "params": {}}) + "\n")
+        sys.stdout.flush()
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid,
+            "result": {"tools": [{"name": "get_weather"}]}}) + "\n")
+        sys.stdout.flush()
+        continue
+    if method == "initialize":
+        result = {"protocolVersion": "2024-11-05",
+                  "serverInfo": {"name": "weather", "version": "1"},
+                  "capabilities": {"tools": {}}}
+    elif method == "tools/call":
+        name = msg["params"]["name"]
+        result = {"content": [{"type": "text", "text": "REAL:" + name}], "isError": False}
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid, "result": result}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// A stdio MCP server that sends a server-initiated REQUEST (a message with
+/// BOTH `method` and `id`) right after answering `initialize` - the v3.4
+/// case v3.3 must FAIL LOUDLY on, not capture. It still answers every client
+/// request so the agent does not hang.
+const FAKE_MCP_SERVER_REQUEST: &str = r#"
+import json, sys
+log = open(sys.argv[1], "a")
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    log.write(line + "\n"); log.flush()
+    mid = msg.get("id")
+    if mid is None:
+        continue
+    method = msg.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": "2024-11-05",
+                  "serverInfo": {"name": "weather", "version": "1"},
+                  "capabilities": {"tools": {}}}
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid, "result": result}) + "\n")
+        sys.stdout.flush()
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": 999,
+            "method": "sampling/createMessage", "params": {}}) + "\n")
+        sys.stdout.flush()
+        continue
+    if method == "tools/list":
+        result = {"tools": [{"name": "get_weather"}]}
+    elif method == "tools/call":
+        name = msg["params"]["name"]
+        result = {"content": [{"type": "text", "text": "REAL:" + name}], "isError": False}
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid, "result": result}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// A notification-aware fake agent: like FAKE_AGENT, but it dispatches lines
+/// by JSON-RPC shape - a server notification (a method, no id) is collected
+/// rather than mistaken for a response - and writes the notifications it
+/// received to `notifications.txt`, so a test can prove the agent got them.
+const NOTIFY_AGENT: &str = r#"
+import json, os, shlex, subprocess, urllib.request
+
+here = os.path.dirname(os.path.abspath(__file__))
+base = os.environ["OPENAI_BASE_URL"]
+prompt = os.environ["FLOWPROOF_PROMPT"]
+
+payload = json.dumps({"model": "gpt-4o",
+                      "messages": [{"role": "user", "content": prompt}]}).encode()
+req = urllib.request.Request(base + "/chat/completions", data=payload,
+                             headers={"content-type": "application/json"})
+with urllib.request.urlopen(req) as resp:
+    reply = json.load(resp)["choices"][0]["message"].get("content", "")
+
+cmd = os.environ["FLOWPROOF_MCP_SERVER_WEATHER"]
+proc = subprocess.Popen(shlex.split(cmd), stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
+notifications = []
+
+def read_message():
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            return None
+        msg = json.loads(line)
+        if "method" in msg and msg.get("id") is None:
+            notifications.append(msg["method"])
+            continue
+        return msg
+
+def rpc(obj):
+    proc.stdin.write((json.dumps(obj) + "\n").encode()); proc.stdin.flush()
+    return read_message()
+
+def notify(obj):
+    proc.stdin.write((json.dumps(obj) + "\n").encode()); proc.stdin.flush()
+
+rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+     "params": {"protocolVersion": "2024-11-05",
+                "clientInfo": {"name": "fake-agent", "version": "1"},
+                "capabilities": {}}})
+notify({"jsonrpc": "2.0", "method": "notifications/initialized"})
+rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+     "params": {"name": "get_weather", "arguments": {"city": "Nairobi"}}})
+
+proc.stdin.close()
+proc.wait()
+open(os.path.join(here, "notifications.txt"), "w").write("\n".join(notifications))
+print(reply)
+"#;
+
 /// A model-only fake agent: it makes its model call but NEVER spawns the MCP
 /// stand-in - the mispointed-agent case the record wiring guard catches.
 const MODEL_ONLY_AGENT: &str = r#"
@@ -391,6 +524,94 @@ fn a_declared_server_the_agent_ignores_fails_the_record() {
     assert!(
         !dir.join("weather.trace.jsonl").exists(),
         "no trace when a declared MCP server was never contacted"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A server NOTIFICATION is captured into the mcp lane at the right anchor at
+/// record, and re-emitted to the agent at replay after the anchoring call -
+/// with ZERO real-server spawns. The run passes both times: a notification is
+/// an emission, not an assertion.
+#[test]
+fn records_and_replays_a_server_notification() {
+    use_real_flowproof_exe();
+    let dir = work_dir("notify");
+    let agent_py = dir.join("agent.py");
+    let server_py = dir.join("server.py");
+    let log = dir.join("server.log");
+    write(&agent_py, NOTIFY_AGENT);
+    write(&server_py, FAKE_MCP_SERVER_NOTIFY);
+    let spec = write_spec(&dir, &agent_py, &server_py, &log, &[]);
+
+    std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
+    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    assert_eq!(code, 0, "recording a notifying MCP server should succeed");
+
+    // The trace lane carries the notification as an event, anchored after the
+    // two calls issued when it crossed (initialize + tools/list).
+    let trace = dir.join("weather.trace.jsonl");
+    let contents = std::fs::read_to_string(&trace).expect("trace readable");
+    let doc: serde_json::Value = serde_json::from_str(&contents).expect("trace is json");
+    let event = &doc["mcp"]["weather"]["events"][0];
+    assert_eq!(
+        event["method"], "notifications/tools/list_changed",
+        "notification captured: {contents}"
+    );
+    assert_eq!(event["after"], 2, "anchored after initialize + tools/list");
+
+    // The agent received the notification at record too.
+    let got = std::fs::read_to_string(dir.join("notifications.txt")).expect("notifications");
+    assert!(
+        got.contains("notifications/tools/list_changed"),
+        "agent got the notification at record: {got}"
+    );
+
+    // REPLAY with the real server deleted: the notification is re-emitted from
+    // the trace, not the server.
+    std::fs::remove_file(&server_py).expect("remove the real server");
+    std::fs::remove_file(dir.join("notifications.txt")).ok();
+    std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+    std::env::remove_var("OPENAI_BASE_URL");
+    let code = flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]);
+    assert_eq!(
+        code, 0,
+        "replay reproduces the lane and re-emits the notification"
+    );
+
+    let got = std::fs::read_to_string(dir.join("notifications.txt")).expect("notifications");
+    assert!(
+        got.contains("notifications/tools/list_changed"),
+        "agent received the notification at replay too: {got}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// STDIO PARITY (v3.3): a server-initiated REQUEST (a `method` AND an `id`)
+/// mid-record fails the record LOUDLY - like the HTTP transport - rather than
+/// mis-parking the client's answer and corrupting the lane silently. No trace
+/// is written.
+#[test]
+fn a_server_initiated_request_fails_the_record_loudly() {
+    use_real_flowproof_exe();
+    let dir = work_dir("server-request");
+    let agent_py = dir.join("agent.py");
+    let server_py = dir.join("server.py");
+    let log = dir.join("server.log");
+    write(&agent_py, NOTIFY_AGENT);
+    write(&server_py, FAKE_MCP_SERVER_REQUEST);
+    let spec = write_spec(&dir, &agent_py, &server_py, &log, &[]);
+
+    std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
+    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    assert_ne!(
+        code, 0,
+        "a server-initiated request mid-record must fail the record"
+    );
+    assert!(
+        !dir.join("weather.trace.jsonl").exists(),
+        "no trace is minted when a server-initiated request was seen"
     );
 
     std::fs::remove_dir_all(&dir).ok();

@@ -30,6 +30,60 @@ pub struct McpDivergence {
     pub detail: String,
 }
 
+/// One server-initiated MCP message that crossed toward the agent out of
+/// band of a client call: a NOTIFICATION (a `method`, no `id`) in v3.3, and
+/// - reserved for v3.4 - a server-initiated REQUEST (`id` + `answer`).
+///
+/// `after` is the lane counter's value when the event crossed toward the
+/// agent: the number of client calls answered before it. It is RECORDED and
+/// REPLAYED, never MATCHED - a notification racing at n vs n+1 changes bytes,
+/// not the verdict, so the anchor is an emission cue, not an assertion.
+///
+/// The v3.4 fields (`id`, `answer`) stay skipped when absent so a v3.3 event
+/// (a notification) serializes with just `after`/`method`/`params`, and a
+/// future request event adds them without a format break.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerEvent {
+    /// The lane counter's value when the event crossed toward the agent.
+    pub after: usize,
+    /// The JSON-RPC method (`notifications/...` for a notification).
+    pub method: String,
+    /// The notification's params, verbatim.
+    #[serde(default)]
+    pub params: Value,
+    /// v3.4 only: a server-initiated request's id. Kept skipped in v3.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Value>,
+    /// v3.4 only: the agent's answer to a server-initiated request. Kept
+    /// skipped in v3.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<Value>,
+}
+
+impl McpServerEvent {
+    /// A v3.3 notification event anchored at `after`.
+    pub fn notification(after: usize, method: String, params: Value) -> Self {
+        Self {
+            after,
+            method,
+            params,
+            id: None,
+            answer: None,
+        }
+    }
+}
+
+/// The named record failure BOTH transports raise on a server-initiated
+/// REQUEST (sampling / elicitation / roots-list): recording it is v3.4, so
+/// v3.3 fails loudly rather than corrupt a lane. Shared so the stdio bridge
+/// and the HTTP forwarder word it identically.
+pub(crate) fn server_request_named(method: &str) -> String {
+    format!(
+        "the real MCP server sent a server-initiated request (`{method}`) mid-response; \
+         recording server-initiated traffic is v3.4"
+    )
+}
+
 /// Match an incoming request against the recorded lane entry, mirroring the
 /// cassette's method-first, envelope-then-body doctrine. `initialize`
 /// matches `protocolVersion` but NOT `clientInfo`/`capabilities` (the
@@ -175,6 +229,13 @@ pub(crate) fn error_envelope(id: &Value, detail: &str) -> Value {
         "id": id,
         "error": { "code": -32000, "message": detail },
     })
+}
+
+/// The JSON-RPC notification envelope (a method and params, NO id) a
+/// recorded server event is re-emitted as at replay. Shared so the stdio
+/// pipe writer and the HTTP SSE framer never disagree on shape.
+pub(crate) fn notification_envelope(method: &str, params: &Value) -> Value {
+    serde_json::json!({ "jsonrpc": "2.0", "method": method, "params": params })
 }
 
 /// Render an optional JSON value for a divergence line.

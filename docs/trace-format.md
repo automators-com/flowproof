@@ -28,6 +28,25 @@ document (`{"app":"agent","mocks":{…},"cassette":{…}}`), not JSON-lines and
 without the header below, because a new app kind gets a new trace shape
 rather than bending the step-log format. A step-log reader never opens one.
 
+An agent flow that mocks MCP tool servers adds one more key, `mcp`, a map
+from server name to that server's lane. Each lane is
+`{"mocks":{…},"calls":[…],"events":[…]}`, where the fields are additive and
+skipped when empty, so a trace with no MCP servers (or one recorded before
+these fields existed) is byte-identical:
+
+- `calls` is the strict-positional JSON-RPC lane: an ordered list of
+  `{"method":…,"params":…,"result":…}`, matched by position at replay (method
+  first, then for `tools/call` the tool name, then a field-level diff of the
+  arguments). This is the only lane the verdict judges.
+- `events` is the server-initiated NOTIFICATIONS captured on the lane (a
+  JSON-RPC message with a `method` and no `id`), re-emitted at replay. Each is
+  `{"after":<n>,"method":…,"params":…}`, where `after` is the count of client
+  calls answered when the notification crossed toward the agent. `after` is an
+  emission cue, RECORDED and REPLAYED but never MATCHED, so a notification
+  racing at call n versus n+1 changes only the byte ordering, not the verdict.
+  (Two further fields, `id` and `answer`, are reserved for the v3.4
+  server-initiated REQUEST slice and stay absent until then.)
+
 ## Header line
 
 ```json
