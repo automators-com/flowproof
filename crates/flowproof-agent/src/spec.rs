@@ -200,26 +200,50 @@ pub struct ToolMock {
     pub result: serde_json::Value,
 }
 
-/// One stdio MCP server the system under test uses as a tool boundary
-/// (`app: agent`). flowproof stands in AS the `command` the agent spawns:
-/// it records the JSON-RPC traffic once against the real server, then
-/// replays it deterministically with zero external processes.
+/// One MCP server the system under test uses as a tool boundary
+/// (`app: agent`). flowproof interposes on it and records the JSON-RPC
+/// traffic once against the real server, then replays it deterministically
+/// with zero external processes.
 ///
-/// `command` is executed code at record time, the same trust surface as
-/// `agent.command` - a spec is code. It may carry `${VAR}` references,
-/// resolved at execution and never stored. A tool listed here with a
-/// `result:` is mocked AT THE MCP BOUNDARY: the real server is never asked
-/// for it (record) and the mock is served (replay), which is how a
-/// dangerous tool is intercepted.
+/// Exactly ONE transport per server, mirroring the `agent:` block's
+/// command/url choice:
+///
+/// - `command:` - a STDIO server the agent spawns over a subprocess pipe.
+///   flowproof stands in AS that command (the `FLOWPROOF_MCP_SERVER_<NAME>`
+///   env var the SUT's config points its server command at).
+/// - `url:` - a streamable-HTTP server the agent dials. flowproof hosts an
+///   in-process loopback listener and injects `FLOWPROOF_MCP_URL_<NAME>`
+///   (`http://127.0.0.1:<port>/mcp`) for the SUT's config to point at.
+///
+/// `command`/`url` are executed/dialed at record time, the same trust
+/// surface as `agent.command`/`agent.url` - a spec is code. Both may carry
+/// `${VAR}` references, resolved at execution and never stored. A tool
+/// listed here with a `result:` is mocked AT THE MCP BOUNDARY: the real
+/// server is never asked for it (record) and the mock is served (replay),
+/// which is how a dangerous tool is intercepted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerSpec {
-    /// The server's name, distinct within a flow. Names the per-server
-    /// `FLOWPROOF_MCP_SERVER_<NAME>` env var the SUT's MCP config points at.
+    /// The server's name, distinct within a flow. Names the per-server env
+    /// var (`FLOWPROOF_MCP_SERVER_<NAME>` for stdio,
+    /// `FLOWPROOF_MCP_URL_<NAME>` for http) the SUT's MCP config points at.
     pub name: String,
-    /// The command that starts the REAL server at record time. `${VAR}`
-    /// references resolve at execution, exactly like `agent.command`.
-    pub command: String,
+    /// The command that starts the REAL stdio server at record time.
+    /// Exactly one of `command`/`url` is set. `${VAR}` references resolve at
+    /// execution, exactly like `agent.command`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// The URL of the REAL streamable-HTTP server, dialed at record time.
+    /// Exactly one of `command`/`url` is set. May carry `${VAR}` references.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The fixed local port flowproof's in-process HTTP listener binds
+    /// (`url:` only). Optional: the default is an ephemeral port read back
+    /// from the bind. A fixed port is for a flow whose agent is itself
+    /// `url:`-driven and cannot be handed the listener's port at launch, so
+    /// its MCP config must name a port known ahead of time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     /// Tools mocked at the MCP boundary. Reuses `ToolMock`: a non-null
     /// `result:` is served in place of the real tool; a name-only entry is
     /// a declaration only. A tool name may not appear in BOTH top-level
@@ -294,9 +318,11 @@ pub struct FlowSpec {
     /// Tools mocked at the model boundary (`app: agent`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolMock>,
-    /// Stdio MCP servers this flow's agent uses as tool boundaries
-    /// (`app: agent`). flowproof stands in as each server command, records
-    /// the JSON-RPC traffic once, and replays it deterministically.
+    /// MCP servers this flow's agent uses as tool boundaries
+    /// (`app: agent`). Each speaks exactly one transport - a stdio
+    /// `command:` flowproof stands in as, or a streamable-HTTP `url:`
+    /// flowproof hosts an in-process listener for. flowproof records the
+    /// JSON-RPC traffic once, then replays it deterministically.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp: Vec<McpServerSpec>,
     /// Forbid any tool call no `assert_tool_call` listed (`app: agent`).
@@ -425,20 +451,73 @@ impl FlowSpec {
                     return bad(format!("tool `{}` is mocked twice", tool.name));
                 }
             }
-            // MCP servers: names distinct, command non-blank, tool names
-            // distinct within a server, and no tool mocked at BOTH the model
-            // boundary (`tools:`) and the MCP boundary (`mcp.*.tools`) - two
-            // mocks for one name has no defined winner.
+            // MCP servers: names distinct, exactly-one transport
+            // (command|url) with the same named-error discipline the
+            // `agent:` block gets, tool names distinct within a server, and
+            // no tool mocked at BOTH the model boundary (`tools:`) and the
+            // MCP boundary (`mcp.*.tools`) - two mocks for one name has no
+            // defined winner. A `url:` server in a flow whose own agent is
+            // `url:`-driven needs a fixed `port:`, since a service flowproof
+            // did not start cannot be handed the listener's ephemeral port.
+            let agent_is_url = self
+                .agent
+                .as_ref()
+                .map(|a| a.url.is_some())
+                .unwrap_or(false);
             let model_tools: std::collections::BTreeSet<&str> =
                 self.tools.iter().map(|t| t.name.as_str()).collect();
             let mut server_names = std::collections::BTreeSet::new();
             for server in &self.mcp {
-                if server.command.trim().is_empty() {
-                    return bad(format!(
-                        "mcp server `{}` has a blank command; a spec is code, but an empty \
-                         command is not",
-                        server.name
-                    ));
+                match (&server.command, &server.url) {
+                    (None, None) => {
+                        return bad(format!(
+                            "mcp server `{}` names neither command nor url; a server speaks \
+                             exactly one transport (a stdio `command:` or a streamable-HTTP \
+                             `url:`)",
+                            server.name
+                        ));
+                    }
+                    (Some(_), Some(_)) => {
+                        return bad(format!(
+                            "mcp server `{}` names both command and url; a server speaks exactly \
+                             one transport",
+                            server.name
+                        ));
+                    }
+                    (Some(command), None) => {
+                        if command.trim().is_empty() {
+                            return bad(format!(
+                                "mcp server `{}` has a blank command; a spec is code, but an \
+                                 empty command is not",
+                                server.name
+                            ));
+                        }
+                        if server.port.is_some() {
+                            return bad(format!(
+                                "mcp server `{}` sets a `port:` on a `command:` server; a stdio \
+                                 server is spawned, not dialed, so it has no port to bind",
+                                server.name
+                            ));
+                        }
+                    }
+                    (None, Some(url)) => {
+                        if url.trim().is_empty() {
+                            return bad(format!(
+                                "mcp server `{}` has a blank url; a spec is code, but an empty \
+                                 url is not",
+                                server.name
+                            ));
+                        }
+                        if agent_is_url && server.port.is_none() {
+                            return bad(format!(
+                                "mcp server `{}` is a `url:` server in a flow whose agent is \
+                                 itself `url:`-driven; give it a fixed `port:`, since a service \
+                                 flowproof did not start cannot be handed the listener's \
+                                 ephemeral port",
+                                server.name
+                            ));
+                        }
+                    }
                 }
                 if !server_names.insert(server.name.as_str()) {
                     return bad(format!("mcp server `{}` is declared twice", server.name));
@@ -1800,7 +1879,8 @@ steps:
         assert_eq!(flow.mcp[0].name, "weather");
         // `${VAR}` in the command survives unresolved, exactly like
         // `agent.command`.
-        assert_eq!(flow.mcp[0].command, "python3 ${SERVER}");
+        assert_eq!(flow.mcp[0].command.as_deref(), Some("python3 ${SERVER}"));
+        assert_eq!(flow.mcp[0].url, None);
         assert_eq!(flow.mcp[0].tools[0].name, "send_alert");
         assert_eq!(
             flow.mcp[0].tools[0].result,
@@ -1852,6 +1932,92 @@ steps:
         )
         .expect_err("typo'd mcp field");
         assert!(err.to_string().contains("commnd"), "{err}");
+    }
+
+    /// v3.2: a `url:` MCP server parses, keeps its `${VAR}` refs raw, and
+    /// carries an optional `port:`.
+    #[test]
+    fn an_http_mcp_server_parses() {
+        let flow = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: remote\n    url: https://api.example.com/mcp?k=${KEY}\n    port: 8931\n    tools:\n      - name: send_alert\n        result: { delivered: true }\nsteps:\n  - prompt: hi\n",
+        )
+        .expect("parses");
+        assert_eq!(flow.mcp[0].name, "remote");
+        assert_eq!(flow.mcp[0].command, None);
+        assert_eq!(
+            flow.mcp[0].url.as_deref(),
+            Some("https://api.example.com/mcp?k=${KEY}"),
+            "the reference must survive unresolved"
+        );
+        assert_eq!(flow.mcp[0].port, Some(8931));
+    }
+
+    /// v3.2: each new transport rule fails with its own named error.
+    #[test]
+    fn the_http_mcp_rules_are_enforced_with_named_errors() {
+        // Neither command nor url.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: s\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("neither transport");
+        assert!(err.to_string().contains("exactly one transport"), "{err}");
+
+        // Both command and url.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: s\n    command: a\n    url: http://y/mcp\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("both transports");
+        assert!(
+            err.to_string().contains("names both command and url"),
+            "{err}"
+        );
+
+        // blank url.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: s\n    url: '   '\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("blank url");
+        assert!(err.to_string().contains("blank url"), "{err}");
+
+        // port with a command (stdio) server.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: s\n    command: a\n    port: 8000\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("port on stdio");
+        assert!(err.to_string().contains("spawned, not dialed"), "{err}");
+
+        // a url: server in a url:-driven flow needs a fixed port.
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  url: http://svc/run\n  proxy_port: 9000\nmcp:\n  - name: s\n    url: http://y/mcp\nsteps:\n  - prompt: hi\n",
+        )
+        .expect_err("url server in url flow needs port");
+        assert!(err.to_string().contains("give it a fixed `port:`"), "{err}");
+
+        // ... and with the fixed port it is accepted.
+        spec(
+            "name: n\napp: agent\nagent:\n  url: http://svc/run\n  proxy_port: 9000\nmcp:\n  - name: s\n    url: http://y/mcp\n    port: 8123\nsteps:\n  - prompt: hi\n",
+        )
+        .expect("a fixed port satisfies the rule");
+    }
+
+    /// Backward compat: an existing stdio-only `mcp:` spec still serializes
+    /// byte-identical (no `url`/`port` keys appear).
+    #[test]
+    fn a_stdio_mcp_spec_round_trips_without_new_keys() {
+        let flow = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nmcp:\n  - name: s\n    command: run-server\nsteps:\n  - prompt: hi\n",
+        )
+        .expect("parses");
+        let yaml = serde_yaml::to_string(&flow.mcp).expect("serializes");
+        assert!(
+            !yaml.contains("url"),
+            "no url key on a stdio server: {yaml}"
+        );
+        assert!(
+            !yaml.contains("port"),
+            "no port key on a stdio server: {yaml}"
+        );
+        assert!(yaml.contains("command"), "command is present: {yaml}");
     }
 
     /// A tool mock's result defaults to an empty object, for a tool whose
