@@ -846,6 +846,134 @@ fn check_assertion<D: AppDriver>(
                 }
             }
 
+            // Attribute assertion: EXACT, case-sensitive value comparison
+            // (no text ladder) or presence. Web-only at execution; a non-web
+            // adapter's `element_attribute` refuses with a reason. Checked
+            // before the text branch because it also uses `value_equals`.
+            if let Some(name) = expect.get("attribute").and_then(|v| v.as_str()) {
+                let present = expect.get("present").and_then(|v| v.as_bool());
+                let value_raw = expect.get("value_equals").and_then(|v| v.as_str());
+                let negate = expect.get("negate").and_then(|v| v.as_bool()) == Some(true);
+                // A value form may carry a `${VAR}` secret: resolve for the
+                // comparison only, keep the raw reference in messages.
+                let wanted = match value_raw {
+                    Some(raw) => match flowproof_trace::secret::resolve_refs(raw) {
+                        Ok(v) => Some(v),
+                        Err(e) => return Ok((Err(e.to_string()), None)),
+                    },
+                    None => None,
+                };
+                let mut last: Option<Option<String>> = None;
+                let mut fault: Option<flowproof_driver::DriverError> = None;
+                loop {
+                    if let Some((uia, rung)) = resolve(driver, &mut fault)? {
+                        if let Some(attr) =
+                            tolerate(driver.element_attribute(&uia, name), &mut fault)?
+                        {
+                            let holds = match present {
+                                Some(want) => attr.is_some() == want,
+                                None => flowproof_driver::attribute_value_matches(
+                                    wanted.as_deref().unwrap_or_default(),
+                                    negate,
+                                    attr.as_deref(),
+                                ),
+                            };
+                            if holds {
+                                return Ok((Ok(()), Some(rung)));
+                            }
+                            last = Some(attr);
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        if last.is_none() && fault.is_some() {
+                            return Err(exhausted(fault));
+                        }
+                        let word = |p: bool| if p { "present" } else { "absent" };
+                        let msg = match (present, &last) {
+                            (Some(want), Some(attr)) => format!(
+                                "expected attribute `{name}` {}, got {}",
+                                word(want),
+                                word(attr.is_some())
+                            ),
+                            (None, Some(attr)) => {
+                                let raw = value_raw.unwrap_or_default();
+                                let want_phrase = if negate {
+                                    format!("attribute `{name}` not '{raw}'")
+                                } else {
+                                    format!("attribute `{name}` = '{raw}'")
+                                };
+                                let got = match attr {
+                                    None => format!("the element has no `{name}` attribute"),
+                                    Some(v) => {
+                                        let shown = if flowproof_trace::secret::has_refs(raw) {
+                                            "<masked>".to_string()
+                                        } else {
+                                            format!("'{v}'")
+                                        };
+                                        format!("attribute `{name}` = {shown}")
+                                    }
+                                };
+                                format!("expected {want_phrase}, got {got}")
+                            }
+                            (_, None) => {
+                                format!(
+                                    "expected attribute `{name}`, but the element was not found"
+                                )
+                            }
+                        };
+                        return Ok((Err(msg), None));
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            }
+
+            // Computed-style assertion: colors compare canonically, keywords
+            // case-insensitively (see `style_matches`, shared with record).
+            // Web-only at execution.
+            if let Some(prop) = expect.get("style").and_then(|v| v.as_str()) {
+                let raw = expect
+                    .get("value_equals")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let negate = expect.get("negate").and_then(|v| v.as_bool()) == Some(true);
+                let wanted = match flowproof_trace::secret::resolve_refs(raw) {
+                    Ok(v) => v,
+                    Err(e) => return Ok((Err(e.to_string()), None)),
+                };
+                let mut last: Option<String> = None;
+                let mut fault: Option<flowproof_driver::DriverError> = None;
+                loop {
+                    if let Some((uia, rung)) = resolve(driver, &mut fault)? {
+                        if let Some(actual) =
+                            tolerate(driver.element_computed_style(&uia, prop), &mut fault)?
+                        {
+                            match flowproof_driver::style_matches(prop, &wanted, negate, &actual) {
+                                Ok(true) => return Ok((Ok(()), Some(rung))),
+                                Ok(false) => last = Some(actual),
+                                // Unparseable computed / non-color expected:
+                                // waiting cannot fix it, so fail now.
+                                Err(why) => return Ok((Err(why), Some(rung))),
+                            }
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        if last.is_none() && fault.is_some() {
+                            return Err(exhausted(fault));
+                        }
+                        let want = if negate {
+                            format!("style {prop} is not '{raw}'")
+                        } else {
+                            format!("style {prop} is '{raw}'")
+                        };
+                        let shown = last
+                            .map(|s| format!("computed {prop} '{s}'"))
+                            .unwrap_or_else(|| "<element not found>".to_string());
+                        return Ok((Err(format!("expected {want}, got {shown}")), None));
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            }
+
             let Some((raw, negated)) = text_expectation(expect) else {
                 return Ok((
                     Err(format!("unsupported element_state expectation: {expect}")),
@@ -1261,6 +1389,45 @@ fn execute_step<D: AppDriver>(
                 StepMatch::default(),
             ),
         },
+        // Scroll a container/element/page. An empty selector list is a page
+        // scroll (`Scroll to the bottom`); otherwise the target scrolls (as a
+        // container for top/bottom, or into the viewport). Instant, no
+        // settle-wait: the driver verifies it took, and the next assertion
+        // auto-waits.
+        Action::Scroll(params) => {
+            let to = if params.get("into_view").and_then(|v| v.as_bool()) == Some(true) {
+                Some(flowproof_driver::ScrollTo::IntoView)
+            } else {
+                match params.get("to").and_then(|v| v.as_str()) {
+                    Some("bottom") => Some(flowproof_driver::ScrollTo::Bottom),
+                    Some("top") => Some(flowproof_driver::ScrollTo::Top),
+                    _ => None,
+                }
+            };
+            match to {
+                None => (
+                    Err("scroll step has neither `to` nor `into_view`".to_string()),
+                    StepMatch::default(),
+                ),
+                Some(to) if step.selectors.is_empty() => {
+                    driver.scroll(None, to)?;
+                    (Ok(()), StepMatch::default())
+                }
+                Some(to) => match resolve_target(driver, &step.selectors)? {
+                    Some((target, rung)) => {
+                        let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                        match driver.scroll(Some(&target), to) {
+                            Ok(()) => (Ok(()), matched),
+                            Err(e) => (Err(e.to_string()), matched),
+                        }
+                    }
+                    None => (
+                        Err("no selector rung resolved to a live element".to_string()),
+                        StepMatch::default(),
+                    ),
+                },
+            }
+        }
         // Visual assertions need filesystem context the generic checker
         // doesn't have (baselines + run artifacts) — handled here.
         Action::Assert(Assertion::VisualDiff {

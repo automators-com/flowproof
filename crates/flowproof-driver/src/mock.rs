@@ -89,6 +89,15 @@ pub struct MockAppDriver {
     /// `u32::MAX` never recovers, which is how the "budget expired without
     /// a single reading" path is exercised.
     pub surface_faults: u32,
+    /// DOM attributes by element key -> (attribute name -> value). A name
+    /// present with value `""` models `download=""`; a name absent from the
+    /// inner map models a missing attribute (`element_attribute` -> None).
+    pub attributes: HashMap<String, HashMap<String, String>>,
+    /// Computed CSS values by element key -> (property -> value).
+    pub styles: HashMap<String, HashMap<String, String>>,
+    /// Scroll calls in order: `(element key or None for the page, edge)`
+    /// where edge is `"top"`, `"bottom"`, or `"into_view"`.
+    pub scrolls: Vec<(Option<String>, String)>,
 }
 
 impl MockAppDriver {
@@ -129,6 +138,26 @@ impl MockAppDriver {
 
     pub fn with_url(mut self, url: &str) -> Self {
         self.url = Some(url.into());
+        self
+    }
+
+    /// Give element `key` a DOM attribute. A value of `""` models a present
+    /// but empty attribute (`download=""`); an attribute never added at all
+    /// reads back as absent (`None`).
+    pub fn with_attribute(mut self, key: &str, name: &str, value: &str) -> Self {
+        self.attributes
+            .entry(key.into())
+            .or_default()
+            .insert(name.to_ascii_lowercase(), value.into());
+        self
+    }
+
+    /// Give element `key` a computed value for CSS property `prop`.
+    pub fn with_style(mut self, key: &str, prop: &str, value: &str) -> Self {
+        self.styles
+            .entry(key.into())
+            .or_default()
+            .insert(prop.to_ascii_lowercase(), value.into());
         self
     }
 
@@ -260,6 +289,52 @@ impl AppDriver for MockAppDriver {
             return Err(DriverError::Uia(format!("{id} is not a checkbox")));
         }
         self.checked.insert(id, checked);
+        Ok(())
+    }
+
+    fn element_attribute(
+        &mut self,
+        selector: &UiaSelector,
+        name: &str,
+    ) -> Result<Option<String>, DriverError> {
+        let id = Self::id_of(selector)?;
+        // ASCII case-insensitive on the attribute name, like the DOM.
+        Ok(self
+            .attributes
+            .get(id)
+            .and_then(|attrs| attrs.get(&name.to_ascii_lowercase()))
+            .cloned())
+    }
+
+    fn element_computed_style(
+        &mut self,
+        selector: &UiaSelector,
+        prop: &str,
+    ) -> Result<String, DriverError> {
+        let id = Self::id_of(selector)?;
+        Ok(self
+            .styles
+            .get(id)
+            .and_then(|s| s.get(&prop.to_ascii_lowercase()))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn scroll(
+        &mut self,
+        selector: Option<&UiaSelector>,
+        to: crate::app::ScrollTo,
+    ) -> Result<(), DriverError> {
+        let key = match selector {
+            Some(s) => Some(Self::id_of(s)?.to_string()),
+            None => None,
+        };
+        let edge = match to {
+            crate::app::ScrollTo::Top => "top",
+            crate::app::ScrollTo::Bottom => "bottom",
+            crate::app::ScrollTo::IntoView => "into_view",
+        };
+        self.scrolls.push((key, edge.into()));
         Ok(())
     }
 
@@ -415,6 +490,33 @@ impl AppDriver for MockAppDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn element_attribute_distinguishes_missing_from_empty() {
+        // `download=""` is PRESENT with an empty value; a never-set attribute
+        // is ABSENT. The two are different answers a value assertion needs.
+        let mut driver = MockAppDriver::new(&["#export"])
+            .with_attribute("#export", "download", "")
+            .with_attribute("#export", "href", "/file.csv");
+        let sel = UiaSelector::css("#export");
+        assert_eq!(
+            driver.element_attribute(&sel, "download").expect("read"),
+            Some(String::new())
+        );
+        assert_eq!(
+            driver.element_attribute(&sel, "href").expect("read"),
+            Some("/file.csv".into())
+        );
+        // A missing attribute reads back as None (case-insensitive name).
+        assert_eq!(
+            driver.element_attribute(&sel, "HREF").expect("read"),
+            Some("/file.csv".into())
+        );
+        assert_eq!(
+            driver.element_attribute(&sel, "target").expect("read"),
+            None
+        );
+    }
 
     #[test]
     fn mock_scripts_a_ui() {

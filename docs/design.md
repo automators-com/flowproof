@@ -145,3 +145,19 @@ shaping → `browser:`; reading values → assertions (and, when designed,
 named captures above). If a flow genuinely needs custom code, that code
 belongs in the app under test or in a suite hook (`before_each`), where
 it is visible, versioned, and outside the deterministic replay path.
+
+### Generic `style <prop>` / `has css` assertions: rejected
+
+By the same principle, the `style` assertion is a CLOSED allowlist -
+`color`, `background-color`, `text-transform` - not a generic
+`getComputedStyle` reader, and there is no `has css` form. A generic
+computed-style assertion invites the used-value flakiness a screenshot
+diff already handles better: computed geometry (`width`, `height`, `top`)
+resolves to px values that shift with the viewport, fonts, and zoom, so an
+equality on them is a test that fails for reasons unrelated to intent.
+Geometry belongs in `assert_screenshot` (pixel-exact against a pinned
+viewport), visibility in `is visible`, and layout regressions in a visual
+baseline. The allowlist is the small set of computed values that read like
+semantic state (is this amount red? is this heading uppercased?) rather
+than like layout arithmetic. A property outside it is a parse error that
+names the allowed set and points at those alternatives.
