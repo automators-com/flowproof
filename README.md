@@ -159,8 +159,8 @@ with `flowproof audit`
 capture endpoint: point a tool-under-test at it and every request is printed
 and saved verbatim (method, path, all headers, raw body as text and hexdump,
 plus any SAP `/BA1/`-style namespace field names), answered 200 so the send
-side completes. One signed binary instead of a Python install
-([docs/capture.md](docs/capture.md)).
+side completes. It ships inside the flowproof binary, so it is one command to
+run ([docs/capture.md](docs/capture.md)).
 
 All of it ships as one wheel (PyO3/maturin): Rust engine, Python API,
 CLI, MCP server. Proven in CI on every push: a Notepad flow records and
