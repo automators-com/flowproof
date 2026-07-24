@@ -4,6 +4,7 @@
 //! a model) is a separate, explicit workflow that produces a reviewable diff.
 
 pub mod report;
+pub mod runrecord;
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -13,6 +14,9 @@ use flowproof_trace::format::{Action, Assertion, Condition, Header, Selector, St
 use flowproof_trace::{SelectorTier, TraceLine};
 
 pub use report::{RunReport, StepResult, StepStatus};
+pub use runrecord::{
+    ControlRecord, ControlVerdict, Evidence, FlowRecord, FlowStatus, RunDiff, RunEnv, RunRecord,
+};
 
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);

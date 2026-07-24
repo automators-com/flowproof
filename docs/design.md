@@ -82,8 +82,19 @@ See [`trace-format.md`](trace-format.md) and the JSON Schema in
 ## Open questions
 
 - Grounding model choice and packaging for the local perception stack.
-- Artifact store layout and retention (`.flowproof/artifacts/`).
 - Heal-diff UX: trace-line diff vs. side-by-side screenshot review.
+
+### Answered
+
+- **Artifact store layout and retention.** Each `flowproof run` writes one
+  structured record at `.flowproof/runs/<run-id>/report.json`, beside the
+  merged `junit.xml`; large blobs (screenshots, GIFs) stay in the
+  content-addressed `.flowproof/artifacts/<sha256>` store the record points at.
+  A `run-id` leads with a filesystem-safe RFC3339 stamp so a plain sort is
+  chronological. Retention keeps the most recent 10 records per suite, pruning
+  older ones after each run (logged, never silent); `.flowproof/` is gitignored.
+  `flowproof audit` reads the latest record, and `audit --since <run-id>` diffs
+  two of them by `control.id`.
 
 ## Agent-boundary testing
 

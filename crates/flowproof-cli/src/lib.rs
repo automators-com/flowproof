@@ -129,19 +129,22 @@ enum Command {
     /// Fold a suite's control-bearing flows into a control-coverage report:
     /// one entry per `control:` block with its pass/fail/capability-error
     /// verdict, and for `assert_no_secret_leak` flows the secrets_checked /
-    /// corpus / excluded fields. A rendering of results that already exist -
-    /// each flow is replayed and its verdict read - emitted as YAML (default)
-    /// or JSON.
+    /// corpus / excluded fields. READS the persisted run record `flowproof
+    /// run` wrote (never re-replays); emitted as YAML (default) or JSON. With
+    /// `--since <run-id>` it diffs the latest record against that one instead.
     Audit {
         /// Directory of specs to audit as a suite.
         dir: PathBuf,
         /// Emit JSON instead of YAML.
         #[arg(long)]
         json: bool,
-        /// Re-run a FAILED flow up to this many extra times before calling
-        /// it failed (default 0, no retries): absorbs infra flakiness.
-        #[arg(long, default_value_t = 0)]
-        retries: u8,
+        /// Audit a specific run record by id, instead of the latest.
+        #[arg(long)]
+        run: Option<String>,
+        /// Diff the latest run record against this earlier run-id: emit added,
+        /// removed, and verdict-changed controls.
+        #[arg(long, conflicts_with = "run")]
+        since: Option<String>,
     },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
@@ -888,6 +891,29 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
     )
     .map_err(|e| e.to_string())?;
 
+    // The structured run record: every flow, folded with its control verdict,
+    // read from the reports just produced (no re-replay). `flows` and `reports`
+    // are pushed in lockstep, so they align 1:1; each flow's spec is looked up
+    // for its `control:` block (a spec that would not parse has no control).
+    let spec_by_path: std::collections::HashMap<&str, &FlowSpec> =
+        loaded.iter().map(|(p, s)| (p.as_str(), s)).collect();
+    let flow_records: Vec<flowproof_replay::FlowRecord> = flows
+        .iter()
+        .zip(&reports)
+        .map(|(entry, report)| {
+            let spec_path = entry
+                .get("spec")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let spec = spec_by_path
+                .get(spec_path.to_string_lossy().as_ref())
+                .copied();
+            flow_record_from_report(&spec_path, dir, spec, report)
+        })
+        .collect();
+    write_run_record(dir, flow_records);
+
     let skipped = reports.iter().filter(|r| r.trace_id == "skipped").count();
     let errored = reports.iter().filter(|r| r.trace_id == "errored").count();
     let passed = reports.iter().filter(|r| r.passed).count() - skipped;
@@ -934,6 +960,155 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
     })
 }
 
+/// How many run records to keep under a suite's `.flowproof/runs/`. Older
+/// records are pruned after each new one, so the history stays bounded while
+/// leaving a `--since` window to diff against.
+const RUN_RECORD_RETENTION: usize = 10;
+
+/// Mint a run-id and its RFC3339 start stamp. The run-id leads with a
+/// filesystem-safe RFC3339 timestamp (colons rewritten to dashes) so a plain
+/// string sort is chronological, and ends with a short suffix that
+/// disambiguates same-second runs. The real clock is fine here: the record is
+/// an OUTPUT artifact, not a trace input, so it never touches replay
+/// determinism.
+fn mint_run_id() -> (String, String) {
+    let now = chrono::Utc::now();
+    let started_at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let stamp = now.format("%Y-%m-%dT%H-%M-%SZ");
+    // A cheap, dependency-free suffix: the pid mixed with the sub-second
+    // nanos. It only needs to break ties between runs in the same second.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let suffix = (std::process::id() ^ nanos) & 0xffff;
+    (format!("{stamp}-{suffix:04x}"), started_at)
+}
+
+/// A path relative to the suite directory, for the record's stable, portable
+/// references (the flow path, the evidence trace pointer).
+fn rel(dir: &Path, path: &Path) -> String {
+    path.strip_prefix(dir).unwrap_or(path).display().to_string()
+}
+
+/// The suite directory containing a single spec, for a single-spec run's
+/// record. `.` when the spec has no parent component.
+fn spec_dir(spec_path: &Path) -> PathBuf {
+    spec_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Build a flow's `control:` row for the run record from a control verdict
+/// already read (from the flow's replay report or an agent flow's outcome).
+/// Returns `None` for a flow with no `control:` block. Everything else - the
+/// lanes, the secret names, the corpus/exclusion descriptors, the evidence
+/// pointers - comes from the spec, never a resolved value.
+fn build_control_record(
+    spec_path: &Path,
+    dir: &Path,
+    spec: &FlowSpec,
+    verdict: flowproof_replay::ControlVerdict,
+    reason: Option<String>,
+) -> Option<flowproof_replay::ControlRecord> {
+    let control = spec.control.as_ref()?;
+    let secrets_checked = spec.secret_leak_selectors();
+    // The corpus + exclusions describe ONLY a flow that actually ran a
+    // secret-leak scan, exactly as the live audit renderer always has.
+    let (corpus, excluded) = if secrets_checked.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        secret_scan_corpus_report(spec.app.id())
+    };
+    let mut lanes = Vec::new();
+    if agent_flow::engages_egress(spec) {
+        lanes.push("egress".to_string());
+    }
+    if !secrets_checked.is_empty() {
+        lanes.push("secret_leak".to_string());
+    }
+    let trace_path = default_trace_path(spec_path);
+    // The egress blocked lane is an agent-flow concept; it is a value-free
+    // audit descriptor, safe to read off any agent trace.
+    let blocked = if spec.app.id() == "agent" {
+        agent_flow::egress_blocked(&trace_path)
+    } else {
+        Vec::new()
+    };
+    Some(flowproof_replay::ControlRecord {
+        id: control.id.clone(),
+        title: control.title.clone(),
+        verdict,
+        reason,
+        lanes,
+        evidence: flowproof_replay::Evidence {
+            trace: rel(dir, &trace_path),
+            blocked,
+        },
+        secrets_checked,
+        corpus,
+        excluded,
+    })
+}
+
+/// Fold one flow's replay report into its record row, reading the control
+/// verdict from the report (never re-replaying). `spec` is `None` for a flow
+/// whose spec would not parse.
+fn flow_record_from_report(
+    spec_path: &Path,
+    dir: &Path,
+    spec: Option<&FlowSpec>,
+    report: &flowproof_replay::RunReport,
+) -> flowproof_replay::FlowRecord {
+    let control = match spec {
+        Some(spec) if spec.control.is_some() => {
+            let (verdict, reason) = flowproof_replay::ControlVerdict::from_run_report(report);
+            build_control_record(spec_path, dir, spec, verdict, reason)
+        }
+        _ => None,
+    };
+    flowproof_replay::FlowRecord {
+        flow: rel(dir, spec_path),
+        status: flowproof_replay::FlowStatus::from_run_report(report),
+        degraded: report.degraded,
+        control,
+    }
+}
+
+/// Write a run record under `dir/.flowproof/runs/<run-id>/report.json`, then
+/// prune the history to the most recent [`RUN_RECORD_RETENTION`]. Best-effort:
+/// the record is an output, so a write failure warns but never changes the
+/// run's exit code. Pruning is logged, never silent.
+fn write_run_record(dir: &Path, flows: Vec<flowproof_replay::FlowRecord>) {
+    let (run_id, started_at) = mint_run_id();
+    let record = flowproof_replay::RunRecord {
+        run_id,
+        started_at,
+        flowproof_version: env!("CARGO_PKG_VERSION").to_string(),
+        env: flowproof_replay::RunEnv::current(),
+        flows,
+    };
+    match record.write(dir, RUN_RECORD_RETENTION) {
+        Ok((path, pruned)) => {
+            eprintln!("wrote run record -> {}", path.display());
+            if !pruned.is_empty() {
+                eprintln!(
+                    "pruned {} old run record(s), keeping the most recent \
+                     {RUN_RECORD_RETENTION}: {}",
+                    pruned.len(),
+                    pruned.join(", ")
+                );
+            }
+        }
+        Err(e) => eprintln!(
+            "warning: could not write run record under {}: {e}",
+            dir.display()
+        ),
+    }
+}
+
 fn cmd_run(
     spec_path: &Path,
     trace: Option<PathBuf>,
@@ -960,6 +1135,11 @@ fn cmd_run(
     dereference_identity(&mut spec, manifest.as_ref())?;
     if let Some(reason) = spec.skip_reason() {
         let report = flowproof_replay::RunReport::skipped(&spec.name, &reason);
+        // A skip is still a run: record it, so audit sees the flow's control
+        // as a capability-error (it never ran) rather than nothing at all.
+        let dir = spec_dir(spec_path);
+        let flow = flow_record_from_report(spec_path, &dir, Some(&spec), &report);
+        write_run_record(&dir, vec![flow]);
         if json {
             let payload = serde_json::json!({
                 "report": report,
@@ -1000,6 +1180,27 @@ fn cmd_run(
         if let Some(cmd) = manifest.as_ref().and_then(|m| m.after_each.as_ref()) {
             run_hook(cmd, spec_path, "after_each")?;
         }
+        // Fold this agent flow into a run record before reporting. Agent flows
+        // never reach the step engine, so the verdict is read from the replay
+        // OUTCOME rather than a step report.
+        let dir = spec_dir(spec_path);
+        let (verdict, reason) = flowproof_replay::ControlVerdict::from_outcome(&outcome);
+        let control = if spec.control.is_some() {
+            build_control_record(spec_path, &dir, &spec, verdict, reason)
+        } else {
+            None
+        };
+        let flow = flowproof_replay::FlowRecord {
+            flow: rel(&dir, spec_path),
+            status: if outcome.is_ok() {
+                flowproof_replay::FlowStatus::Pass
+            } else {
+                flowproof_replay::FlowStatus::Fail
+            },
+            degraded: false,
+            control,
+        };
+        write_run_record(&dir, vec![flow]);
         return match outcome {
             Ok(()) => {
                 if json {
@@ -1069,6 +1270,12 @@ fn cmd_run(
 
     let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;
 
+    // Fold this single flow into a run record beside the spec, so `flowproof
+    // audit <dir>` can read its control verdict without re-replaying.
+    let dir = spec_dir(spec_path);
+    let flow = flow_record_from_report(spec_path, &dir, Some(&spec), &report);
+    write_run_record(&dir, vec![flow]);
+
     if json {
         // The human-readable lines below are a rendering of this same
         // structure — the JSON is the primary output.
@@ -1124,28 +1331,24 @@ fn cmd_run(
     Ok(if report.passed { EXIT_PASS } else { EXIT_FAIL })
 }
 
-/// A control's verdict in an audit report. Three verdicts, kept distinct so
-/// a report can never launder "we could not check" into "it held":
-/// `pass`, `fail`, and `capability-error` (the platform could not enforce or
-/// observe the lane, or the flow never ran).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum AuditVerdict {
-    Pass,
-    Fail,
-    CapabilityError,
-}
-
-/// One control's row in the audit report.
+/// One control's row in the audit report. A rendering of the persisted run
+/// record's control row, so the output shape is stable across the record and
+/// the CLI.
 #[derive(Debug, serde::Serialize)]
 struct AuditControl {
     id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     flow: String,
-    verdict: AuditVerdict,
+    verdict: flowproof_replay::ControlVerdict,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// Which control lanes the flow asserted (`egress`, `secret_leak`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    lanes: Vec<String>,
+    /// Where the control's proof lives: the trace pointer and any blocked
+    /// egress destinations.
+    evidence: flowproof_replay::Evidence,
     /// The `${VAR}` names an `assert_no_secret_leak` flow checked - NAMES,
     /// never values. Empty for a flow with no secret-leak assertion.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1201,157 +1404,121 @@ fn secret_scan_corpus_report(app: &str) -> (Vec<String>, Vec<String>) {
     }
 }
 
-/// Whether a replay failure is really a capability error (the lane could not
-/// be enforced or observed) rather than a control that failed. Mirrors the
-/// egress honesty wording so a "not contained" run reads as capability-error.
-fn is_capability_error(message: &str) -> bool {
-    message.contains("not contained")
-        || message.contains("cannot certify")
-        || message.contains("not enforced")
+/// The suite's display name: the directory's file name (canonicalized so a
+/// trailing `.` or `..` resolves), falling back to the path as given.
+fn suite_name(dir: &Path) -> String {
+    dir.canonicalize()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| dir.display().to_string())
 }
 
-/// Replay one control-bearing flow and read its verdict. Agent flows replay
-/// their cassette through the model boundary; every other app kind replays
-/// through the step engine. A missing trace is a capability error (the
-/// control never ran), never a silent pass.
-fn control_verdict(
-    spec_path: &Path,
-    spec: &FlowSpec,
-    manifest: &flowproof_agent::SuiteManifest,
-    retries: u8,
-) -> (AuditVerdict, Option<String>) {
-    let trace_path = default_trace_path(spec_path);
-    if !trace_path.exists() {
-        return (
-            AuditVerdict::CapabilityError,
-            Some(format!(
-                "no trace recorded; run flowproof record {}",
-                spec_path.display()
-            )),
-        );
+/// The error shown when audit finds no run record: point the user at `run`
+/// rather than silently re-replaying.
+fn no_record_error(dir: &Path) -> String {
+    format!(
+        "no run record under {}/.flowproof/runs - run `flowproof run {}` first, \
+         then audit reads the record it wrote",
+        dir.display(),
+        dir.display()
+    )
+}
+
+/// Render a persisted run record as the audit control map: the same output
+/// shape audit has always emitted, now sourced from the record instead of a
+/// re-replay. Only control-bearing flows appear.
+fn audit_report_from_record(dir: &Path, record: &flowproof_replay::RunRecord) -> AuditReport {
+    let controls = record
+        .controls()
+        .map(|(flow, control)| AuditControl {
+            id: control.id.clone(),
+            title: control.title.clone(),
+            flow: flow.flow.clone(),
+            verdict: control.verdict,
+            reason: control.reason.clone(),
+            lanes: control.lanes.clone(),
+            evidence: control.evidence.clone(),
+            secrets_checked: control.secrets_checked.clone(),
+            corpus: control.corpus.clone(),
+            excluded: control.excluded.clone(),
+        })
+        .collect();
+    AuditReport {
+        suite: suite_name(dir),
+        run: record.run_id.clone(),
+        controls,
     }
-    if let Some(cmd) = &manifest.before_each {
-        if let Err(e) = run_hook(cmd, spec_path, "before_each") {
-            return (AuditVerdict::CapabilityError, Some(e));
-        }
-    }
-    let outcome = if spec.app.id() == "agent" {
-        match agent_flow::replay(spec, &trace_path) {
-            Ok(()) => (AuditVerdict::Pass, None),
-            Err(e) if is_capability_error(&e) => (AuditVerdict::CapabilityError, Some(e)),
-            Err(e) => (AuditVerdict::Fail, Some(e)),
-        }
+}
+
+/// `flowproof audit <dir> --since <run-id>`: diff the latest run record
+/// against an earlier one, by `control.id`. Emits controls added, removed
+/// (present in the older record, gone in the newer - coverage that shrank),
+/// and verdict-changed (old -> new). Exits non-zero on a regression.
+fn cmd_audit_diff(dir: &Path, json: bool, base_id: &str) -> Result<u8, String> {
+    let head = flowproof_replay::RunRecord::latest(dir)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| no_record_error(dir))?;
+    let base = flowproof_replay::RunRecord::load(dir, base_id).map_err(|e| {
+        format!(
+            "no run record '{base_id}' under {}/.flowproof/runs: {e}",
+            dir.display()
+        )
+    })?;
+    let diff = flowproof_replay::RunDiff::between(&base, &head);
+    let rendered = if json {
+        serde_json::to_string_pretty(&diff).map_err(|e| e.to_string())?
     } else {
-        let secret_scan = flowproof_replay::SecretScan {
-            assertions: spec.secret_leak_assertions(),
-        };
-        match flowproof_replay::load_trace(&trace_path)
-            .map_err(|e| e.to_string())
-            .and_then(|(header, _)| {
-                replay_with_retries(&trace_path, &header.app.name, retries, false, &secret_scan)
-            }) {
-            Ok((report, _, _)) if report.passed => (AuditVerdict::Pass, None),
-            Ok((report, _, _)) => (
-                AuditVerdict::Fail,
-                report.steps.iter().find_map(|s| s.detail.clone()),
-            ),
-            Err(e) => (AuditVerdict::CapabilityError, Some(e)),
-        }
+        serde_yaml::to_string(&diff).map_err(|e| e.to_string())?
     };
-    if let Some(cmd) = &manifest.after_each {
-        let _ = run_hook(cmd, spec_path, "after_each");
-    }
-    outcome
+    println!("{rendered}");
+    // A shrunk coverage map or a control that regressed to `fail` is a CI
+    // failure; other changes (new controls, a fixed control) are informational.
+    Ok(if diff.is_regression() {
+        EXIT_FAIL
+    } else {
+        EXIT_PASS
+    })
 }
 
-/// `flowproof audit <dir>`: fold a suite's control-bearing flows into a
-/// control-coverage report. A rendering of results that already exist - each
-/// control-bearing flow is replayed and its verdict read - emitted as YAML
-/// (default) or JSON. Full report diffing across runs is a later leaf; this
-/// minimal renderer is the spine.
-fn cmd_audit(dir: &Path, json: bool, retries: u8) -> Result<u8, String> {
+/// `flowproof audit <dir>`: render a suite's control-coverage map by READING
+/// the persisted run record `flowproof run` wrote (never re-replaying). The
+/// latest record by default, a specific one with `--run <id>`, or a cross-run
+/// diff with `--since <run-id>`. Emitted as YAML (default) or JSON. When no
+/// record exists, a clear error points the user at `run` rather than silently
+/// re-replaying.
+fn cmd_audit(
+    dir: &Path,
+    json: bool,
+    run: Option<String>,
+    since: Option<String>,
+) -> Result<u8, String> {
     if !dir.is_dir() {
         return Err(format!(
             "audit runs over a suite directory; {} is not a directory",
             dir.display()
         ));
     }
-    let mut specs = Vec::new();
-    discover_specs(dir, &mut specs)?;
-    if specs.is_empty() {
-        return Err(format!("no *.flow.yaml specs under {}", dir.display()));
-    }
-    let manifest = flowproof_agent::SuiteManifest::load_from_dir(dir)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
-    manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
-    apply_env_from(&manifest, dir)?;
-    apply_suite_env(&manifest);
-    order_specs(&mut specs, dir, &manifest.order);
-
-    // Load every spec once; a spec that will not parse is a hard audit error
-    // (an auditor must not silently drop a control that failed to load).
-    let mut loaded: Vec<(PathBuf, FlowSpec)> = Vec::new();
-    for path in &specs {
-        let spec = FlowSpec::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        loaded.push((path.clone(), spec));
-    }
-    // Control-id uniqueness is a suite-level property, enforced at load.
-    let names: Vec<(String, &FlowSpec)> = loaded
-        .iter()
-        .map(|(p, s)| (p.display().to_string(), s))
-        .collect();
-    flowproof_agent::check_control_ids(names.iter().map(|(p, s)| (p.as_str(), *s)))?;
-
-    let mut controls = Vec::new();
-    for (spec_path, spec) in &loaded {
-        let Some(control) = &spec.control else {
-            continue;
-        };
-        let (verdict, reason) = control_verdict(spec_path, spec, &manifest, retries);
-        let secrets_checked = spec.secret_leak_selectors();
-        // The corpus + exclusions are named ONLY for a flow that actually ran
-        // a secret-leak scan, and describe exactly what v1 scanned for THIS
-        // flow kind, so nobody mistakes the report for a proof about channels
-        // the engine never saw. The two web exclusions are part of the corpus
-        // definition, echoed here exactly as the OCR exclusion is.
-        let (corpus, excluded) = if secrets_checked.is_empty() {
-            (Vec::new(), Vec::new())
-        } else {
-            secret_scan_corpus_report(spec.app.id())
-        };
-        let flow = spec_path
-            .strip_prefix(dir)
-            .unwrap_or(spec_path)
-            .display()
-            .to_string();
-        controls.push(AuditControl {
-            id: control.id.clone(),
-            title: control.title.clone(),
-            flow,
-            verdict,
-            reason,
-            secrets_checked,
-            corpus,
-            excluded,
-        });
+    if let Some(base_id) = since {
+        return cmd_audit_diff(dir, json, &base_id);
     }
 
-    let suite = dir
-        .canonicalize()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_else(|| dir.display().to_string());
-    let report = AuditReport {
-        suite,
-        run: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        controls,
+    let record = match &run {
+        Some(id) => flowproof_replay::RunRecord::load(dir, id).map_err(|e| {
+            format!(
+                "no run record '{id}' under {}/.flowproof/runs: {e}",
+                dir.display()
+            )
+        })?,
+        None => flowproof_replay::RunRecord::latest(dir)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| no_record_error(dir))?,
     };
 
+    let report = audit_report_from_record(dir, &record);
     let any_failed = report
         .controls
         .iter()
-        .any(|c| c.verdict == AuditVerdict::Fail);
+        .any(|c| c.verdict == flowproof_replay::ControlVerdict::Fail);
     let rendered = if json {
         serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
     } else {
@@ -1476,7 +1643,12 @@ where
             };
             cmd_run(&spec, trace, json, retries, missing)
         }
-        Command::Audit { dir, json, retries } => cmd_audit(&dir, json, retries),
+        Command::Audit {
+            dir,
+            json,
+            run,
+            since,
+        } => cmd_audit(&dir, json, run, since),
         Command::Capture { port, out, json } => capture::cmd_capture(port, Some(out), json),
         Command::Heal {
             spec,

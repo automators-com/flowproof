@@ -503,9 +503,10 @@ What v1 ships, stated plainly so nothing here is mistaken for more:
 - `assert_no_secret_leak: ${VAR}`, the **named form only**, and **agent
   flows only** (`app: agent`). The web/api output corpus is not captured
   yet, so this step is a parse error on any non-agent flow.
-- `flowproof audit`, the minimal in-run control map. It replays each
-  control-bearing flow and renders its verdict. There are no evidence-path
-  links and no cross-run diffing in v1.
+- `flowproof audit`, the control map. It reads the structured run record
+  `flowproof run` persists (never re-replays), renders each control-bearing
+  flow's verdict with an evidence pointer, and with `--since <run-id>` diffs
+  two runs by control id (added, removed, verdict-changed).
 
 ### Naming a control: the `control:` block
 
@@ -623,35 +624,72 @@ nearly every flow).
 
 ### `flowproof audit`: the control map
 
-A suite run already yields per-flow verdicts. `flowproof audit <dir>` folds
-the flows that carry a `control:` block into a control-coverage report. It is
-a rendering of results that already exist, not a new pipeline: each
-control-bearing flow is replayed and its verdict read.
+A suite run already yields per-flow verdicts and writes one structured run
+record at `.flowproof/runs/<run-id>/report.json`. `flowproof audit <dir>` READS
+that record and folds the flows that carry a `control:` block into a
+control-coverage report. It never re-replays: the verdicts come from the record
+`flowproof run` wrote, so audit is a pure rendering and stays fast and
+side-effect-free. If no run has been recorded yet, audit refuses with an error
+pointing you at `flowproof run` rather than silently re-running anything.
 
 ```text
+$ flowproof run examples/access-control              # writes the run record
 $ flowproof audit examples/access-control            # YAML on stdout
 $ flowproof audit examples/access-control --json     # JSON instead
-$ flowproof audit examples/access-control --retries 2   # absorb infra flakiness
+$ flowproof audit examples/access-control --run <id> # a specific past record
 ```
 
 ```yaml
 suite: access-control
-run: 2026-07-24T09:14:03Z
+run: 2026-07-24T09-14-03Z-a1b2
 controls:
   - id: ac.customers.delete.viewer-denied
     title: Viewer role is denied customer deletion
     flow: viewer-cannot-delete.flow.yaml
     verdict: pass
+    evidence:
+      trace: viewer-cannot-delete.trace.jsonl
   - id: sec.assistant.no-db-password-leak
     title: The DB password never surfaces in agent output
     flow: assistant-no-leak.flow.yaml
     verdict: pass
+    lanes: [secret_leak]
+    evidence:
+      trace: assistant-no-leak.trace.jsonl
     secrets_checked: ["${DB_PASSWORD}"]        # variable names, never values
     corpus:
       - model-boundary trajectory (cassette request and response bodies)
       - MCP lanes
     excluded:
       - channels the engine never observed (server logs, third-party sinks)
+```
+
+Each control row carries an `evidence` pointer to the trace its proof lives in
+(and, for a contained agent flow, any egress destinations containment blocked),
+so a reader can go from the coverage map to the underlying artifact.
+
+**Diffing runs.** `flowproof audit <dir> --since <run-id>` compares the latest
+record against an earlier one, folded by `control.id`: controls **added**,
+controls **removed** (present in the older record, gone in the newer - coverage
+that shrank), and controls whose **verdict changed** (old -> new). It exits
+non-zero on a regression - a removed control or a control that changed to
+`fail` - so CI catches coverage silently shrinking.
+
+```text
+$ flowproof audit examples/access-control --since 2026-07-24T09-14-03Z-a1b2
+```
+
+```yaml
+base: 2026-07-24T09-14-03Z-a1b2
+head: 2026-07-24T11-02-55Z-9f3c
+added:
+  - id: ac.orders.refund.viewer-denied
+    verdict: pass
+removed: []
+changed:
+  - id: sec.assistant.no-db-password-leak
+    old: pass
+    new: fail
 ```
 
 Three verdicts, kept distinct so a report can never launder "we could not
@@ -665,12 +703,13 @@ check" into "it held":
   `flowproof record` to run, never a silent pass).
 
 `secrets_checked` / `corpus` / `excluded` appear only for a flow that ran a
-secret-leak scan. That is the whole audit surface in v1: a stable file
-external tooling can ingest. Deliberately absent for now, and called out here
-so nothing reads as shipped: **evidence-path links** into the run bundle, and
-**cross-run report diffing** (the coverage map over time, including
-removed-control detection). Both are planned once a durable structured run
-record exists to point at and diff against.
+secret-leak scan. The audit surface is a stable file external tooling can
+ingest, sourced from the persisted run record at
+`.flowproof/runs/<run-id>/report.json`. Both once-absent pieces now ship on top
+of that record: **evidence pointers** (the `evidence.trace` on each control row)
+and **cross-run report diffing** (`audit --since <run-id>`, including
+removed-control detection). Retention keeps the most recent 10 records per
+suite, pruned after each run, so the `--since` window stays bounded.
 
 ## When a step doesn't parse
 

@@ -747,6 +747,29 @@ pub fn engages_egress(spec: &FlowSpec) -> bool {
     declares_allow || asserts_no_egress
 }
 
+/// The egress destinations containment DENIED during the recorded run, read
+/// from the trace's egress lane as value-free `destination (protocol)`
+/// descriptors. Empty for a flow with no egress lane, an unreadable trace, or
+/// a run that attempted no undeclared egress - so it is safe to call on any
+/// agent trace. Feeds the run record's `evidence.blocked`.
+pub fn egress_blocked(trace_path: &Path) -> Vec<String> {
+    let Ok(raw) = std::fs::read_to_string(trace_path) else {
+        return Vec::new();
+    };
+    let Ok(trace) = serde_json::from_str::<AgentTrace>(&raw) else {
+        return Vec::new();
+    };
+    trace
+        .egress
+        .map(|e| {
+            e.blocked
+                .iter()
+                .map(|ev| format!("{} ({})", ev.destination, ev.protocol))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The containment tier a flow's run achieves, on this platform. Pure and
 /// cheap (a kernel probe on Linux); computed both here, to print the report's
 /// tier line, and inside record/replay, to gate `assert_no_egress` and build
