@@ -471,6 +471,11 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                     .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
             }]);
         }
+        // A whole-run control assertion, not a per-step driver action: the
+        // record-time store-guard and the replay scan enforce it out of band
+        // against the captured corpus. It performs nothing on the UI, so it
+        // resolves to zero actions on every app kind.
+        SpecStep::AssertNoSecretLeak { .. } => return Ok(Vec::new()),
         SpecStep::AssertScreenshot { assert_screenshot } => {
             if assert_screenshot.name.trim().is_empty()
                 || assert_screenshot.name.contains(['/', '\\'])

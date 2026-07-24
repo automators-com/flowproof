@@ -250,3 +250,140 @@ steps:
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// `assert_no_secret_leak` on an `app: api` flow: a secret echoed into an
+/// `assert_api` response body is caught by the record-time store-guard, which
+/// fails the run and mints NO trace, so the leaked value never reaches disk.
+/// The failure names the variable and the step, never the value.
+#[test]
+fn a_secret_in_an_api_response_body_fails_the_record_and_mints_no_trace() {
+    // The server echoes the resolved secret into the JSON body.
+    let secret = "s3cr3t-connection-string-value";
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let body = format!("{{\"dsn\":\"{secret}\"}}");
+    let server_thread = std::thread::spawn(move || {
+        // Record probes once, then the run fails at the store-guard: no
+        // replay, so a single request is served.
+        if let Ok(request) = server.recv() {
+            let response = tiny_http::Response::from_string(body).with_status_code(200);
+            request.respond(response).ok();
+        }
+    });
+    std::env::set_var("LEAK_API_BASE", &base);
+    std::env::set_var("LEAK_DB_DSN", secret);
+
+    let spec_yaml = "\
+name: DSN must not surface
+app: api
+steps:
+  - assert_api:
+      request: GET ${LEAK_API_BASE}/config
+      status: 200
+  - assert_no_secret_leak: ${LEAK_DB_DSN}
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-api-secret-leak");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("dsn.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let err = flowproof_agent::record(&spec, &mut driver, &trace_path)
+        .expect_err("a leaked secret must fail the record");
+    let message = err.to_string();
+
+    // Names the variable and the asserting step...
+    assert!(
+        message.contains("${LEAK_DB_DSN}"),
+        "names the var: {message}"
+    );
+    assert!(message.contains("step 2"), "names the step: {message}");
+    assert!(
+        message.contains("assert_api response body"),
+        "names the corpus element: {message}"
+    );
+    // ...but NEVER the value.
+    assert!(
+        !message.contains(secret),
+        "message must not leak the value: {message}"
+    );
+    // And the store-guard minted NO trace.
+    assert!(
+        !trace_path.exists(),
+        "a leak must mint no trace; {} exists",
+        trace_path.display()
+    );
+
+    server_thread.join().ok();
+    std::env::remove_var("LEAK_API_BASE");
+    std::env::remove_var("LEAK_DB_DSN");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The clean counterpart: the same secret is declared but never appears in the
+/// response body, so record mints a trace whose bytes never contain the value,
+/// and replay passes deterministically re-scanning the absent secret.
+#[test]
+fn a_clean_api_flow_records_without_the_secret_and_replays_deterministically() {
+    let secret = "s3cr3t-connection-string-value";
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    // Body carries NO secret. Record probes once, replay probes once.
+    let server_thread = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok(request) = server.recv() else { break };
+            let response =
+                tiny_http::Response::from_string(r#"{"status":"ok"}"#).with_status_code(200);
+            request.respond(response).ok();
+        }
+    });
+    std::env::set_var("CLEAN_API_BASE", &base);
+    std::env::set_var("CLEAN_DB_DSN", secret);
+
+    let spec_yaml = "\
+name: DSN stays contained
+app: api
+steps:
+  - assert_api:
+      request: GET ${CLEAN_API_BASE}/health
+      status: 200
+  - assert_no_secret_leak: ${CLEAN_DB_DSN}
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-api-secret-clean");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("clean.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("clean flow records");
+
+    let trace = std::fs::read_to_string(&trace_path).expect("trace written");
+    assert!(
+        !trace.contains(secret),
+        "the value must never reach the trace"
+    );
+    // assert_no_secret_leak is additive: it mints no trace step, so the
+    // secret's `${VAR}` never appears in the trace. Ordinary refs still do.
+    assert!(
+        !trace.contains("${CLEAN_DB_DSN}"),
+        "the secret-leak selector is not persisted"
+    );
+    assert!(trace.contains("${CLEAN_API_BASE}"), "ordinary refs stay");
+
+    // Replay through the scanning path: the secret is re-scanned and absent.
+    let scan = flowproof_replay::SecretScan {
+        assertions: spec.secret_leak_assertions(),
+    };
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace_with_secret_scan(&trace_path, &mut driver, &scan)
+            .expect("replay runs");
+    assert!(report.passed, "clean api flow must replay: {report:#?}");
+
+    server_thread.join().ok();
+    std::env::remove_var("CLEAN_API_BASE");
+    std::env::remove_var("CLEAN_DB_DSN");
+    std::fs::remove_dir_all(&dir).ok();
+}

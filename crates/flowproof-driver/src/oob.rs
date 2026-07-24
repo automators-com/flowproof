@@ -54,12 +54,13 @@ pub fn sql_connection_var(name: &str) -> String {
     format!("FLOWPROOF_SQL_{suffix}")
 }
 
-/// One evaluation attempt. `Ok(Ok(()))` — the expectation holds.
-/// `Ok(Err(reason))` — it does not YET hold (the caller's auto-wait loop
-/// may poll again: the row may still be committing, the API converging).
-/// `Err(_)` — a configuration error polling cannot fix (missing
-/// connection env), failed immediately and loudly.
-pub fn check(probe: &OobProbe) -> Result<Result<(), String>, DriverError> {
+/// One evaluation attempt. `Ok(Ok(body))`: the expectation holds; `body` is
+/// the API response text for an `Api` probe (the corpus a secret-leak scan
+/// reads) and `None` for a `Sql` probe. `Ok(Err(reason))`: it does not YET
+/// hold (the caller's auto-wait loop may poll again: the row may still be
+/// committing, the API converging). `Err(_)`: a configuration error polling
+/// cannot fix (missing connection env), failed immediately and loudly.
+pub fn check(probe: &OobProbe) -> Result<Result<Option<String>, String>, DriverError> {
     match probe {
         OobProbe::Sql {
             connection,
@@ -85,11 +86,11 @@ pub fn check(probe: &OobProbe) -> Result<Result<(), String>, DriverError> {
                 return Ok(Err("query returned no rows".into()));
             };
             let Some(expected) = equals else {
-                return Ok(Ok(()));
+                return Ok(Ok(None));
             };
             let actual = first_column_as_text(row);
             if actual.as_deref() == Some(expected.as_str()) {
-                Ok(Ok(()))
+                Ok(Ok(None))
             } else {
                 Ok(Err(format!(
                     "expected first column '{expected}', got '{}'",
@@ -170,7 +171,11 @@ pub fn check(probe: &OobProbe) -> Result<Result<(), String>, DriverError> {
                     )));
                 }
             }
-            Ok(Ok(()))
+            // The response body IS the corpus element an `assert_no_secret_leak`
+            // scan reads: return it so the caller can scan it in memory. It is
+            // never persisted: the trace keeps only the request and the raw
+            // `${VAR}` expectations.
+            Ok(Ok(Some(text)))
         }
     }
 }

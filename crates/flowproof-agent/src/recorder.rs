@@ -63,6 +63,11 @@ pub enum RecordError {
     Driver(#[from] flowproof_driver::DriverError),
     #[error(transparent)]
     Secret(#[from] flowproof_trace::secret::MissingSecret),
+    /// A declared secret leaked into the run's observable corpus, or the
+    /// corpus could not be scanned (a too-short secret, a corpus-less flow
+    /// kind). Names variables and the corpus element, never the value.
+    #[error("{0}")]
+    SecretLeak(String),
     #[error("cannot write trace {path}: {source}")]
     Io {
         path: String,
@@ -1225,15 +1230,18 @@ fn web_browser_from_setup(
 /// Poll an out-of-band probe until it holds or the bound elapses — the row
 /// may still be committing, the API still converging. Configuration errors
 /// (missing connection env) fail immediately.
+/// Returns the probe's response body (an `Api` probe's response text, the
+/// corpus a secret-leak scan reads; `None` for `Sql`) once the expectation
+/// holds.
 fn poll_oob(
     probe: &flowproof_driver::oob::OobProbe,
     timeout_ms: u64,
     intent: &str,
-) -> Result<(), RecordError> {
+) -> Result<Option<String>, RecordError> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         match flowproof_driver::oob::check(probe)? {
-            Ok(()) => return Ok(()),
+            Ok(body) => return Ok(body),
             Err(reason) => {
                 if std::time::Instant::now() >= deadline {
                     return Err(RecordError::AssertMismatch {
@@ -1518,6 +1526,22 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
     old_steps: Option<&[Step]>,
 ) -> Result<RecordSummary, RecordError> {
     let mut reuse = old_steps.map(ReuseCursor::new);
+    // `assert_no_secret_leak` selectors, grouped by asserting step. The scan
+    // is a whole-run store-guard: it runs on the in-memory corpus BEFORE the
+    // trace is minted, so a leak fails the run and NO trace is written. A flow
+    // that never uses the feature builds no corpus and behaves byte-for-byte
+    // as before.
+    let leak_assertions = spec.secret_leak_assertions();
+    let scan_secrets = !leak_assertions.is_empty();
+    // Honesty, not a vacuous pass: a flow kind with no readable corpus is
+    // refused at execution (the same rule `assert_no_egress` follows), before
+    // launching anything, so nothing is minted for a control that cannot be
+    // checked. web and api are covered; agent never reaches this recorder.
+    if scan_secrets && !flowproof_trace::secret_scan::has_readable_corpus(spec.app.id()) {
+        return Err(RecordError::SecretLeak(
+            flowproof_trace::secret_scan::capability_error(spec.app.id()),
+        ));
+    }
     let target = launch_target(spec)?;
     // The session is an inline mapping by now: a `session: <name>` ref is
     // dereferenced to its identity's inline setup at flow load, so record
@@ -1581,6 +1605,12 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
     let mut captures: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut prior_intents: Vec<String> = Vec::new();
     let mut llm_used = false;
+    // The secret-leak corpus, held in memory for this run only, exactly like a
+    // resolved `${VAR}` value: (a) the web surface text read at each step
+    // boundary (the same text `page shows` reads, not the page source) and
+    // (b) every `assert_api` response body probed. Populated only when the
+    // flow asserts `assert_no_secret_leak`.
+    let mut secret_corpus: Vec<(String, String)> = Vec::new();
     for spec_step in &spec.steps {
         let intent = spec_step.intent().to_string();
         let actions = author_actions(
@@ -1714,7 +1744,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                             None => None,
                         },
                     };
-                    poll_oob(&probe, *timeout_ms, &spec_step.intent())?
+                    poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
                 }
                 ResolvedAction::AssertApi {
                     method,
@@ -1747,7 +1777,14 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                             None => None,
                         },
                     };
-                    poll_oob(&probe, *timeout_ms, &spec_step.intent())?
+                    let body = poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
+                    // The response body joins the corpus a secret-leak scan
+                    // reads. Held in memory, never written to the trace.
+                    if scan_secrets {
+                        if let Some(text) = body {
+                            secret_corpus.push(("an assert_api response body".to_string(), text));
+                        }
+                    }
                 }
                 ResolvedAction::PressKey { key, modifiers } => {
                     let mods: Vec<flowproof_driver::KeyMod> =
@@ -2063,6 +2100,25 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 }
             }
         }
+        // Step boundary: sample the web surface text (the same text `page
+        // shows` reads, not the page source). Per-step, not continuous: a
+        // secret that flashes into the DOM between boundaries is invisible to
+        // this control, an exclusion the audit output echoes.
+        if scan_secrets && spec.app.id() == "web" {
+            secret_corpus.push((
+                "the surface text at a step boundary".to_string(),
+                driver.surface_text()?,
+            ));
+        }
+    }
+
+    // STORE-GUARD: scan the in-memory corpus BEFORE any trace is minted, by
+    // the SAME mechanism replay uses. A leak (or a too-short secret, or a
+    // corpus-less kind) fails the run here, so the leaked value never reaches
+    // disk and no trace is written.
+    if scan_secrets {
+        flowproof_trace::secret_scan::scan_corpus(&leak_assertions, &secret_corpus)
+            .map_err(RecordError::SecretLeak)?;
     }
 
     let recording = recorder.and_then(flowproof_driver::RunRecorder::finish);
