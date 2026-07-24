@@ -12,6 +12,19 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
+/// Serializes the tests that mutate the process-global `FLOWPROOF_AGENT_UPSTREAM`
+/// env var. `cargo test` runs a binary's tests on parallel threads and env vars
+/// are process-global, so without this lock one test's `set_var`/`remove_var`
+/// races another's read: the agent child can pick up a different test's upstream
+/// address and the run flakes (a fake model refuses the connection). Each such
+/// test holds this guard for its whole body. Poison-tolerant so one panicking
+/// test does not cascade a failure into all the others.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Point flowproof's stand-in at the REAL `flowproof` binary. In-process
 /// `run_cli` makes `current_exe()` the test harness, so without this the
 /// agent would spawn the test binary instead of `flowproof mcp-stdio`.
@@ -360,6 +373,7 @@ fn write_spec(
 /// reproduces it with ZERO real-server spawns.
 #[test]
 fn records_and_replays_the_mcp_lane() {
+    let _env = lock_env();
     use_real_flowproof_exe();
     let dir = work_dir("basic");
     let agent_py = dir.join("agent.py");
@@ -426,6 +440,7 @@ fn records_and_replays_the_mcp_lane() {
 /// NEVER asked for it (record), and replay serves the mock.
 #[test]
 fn a_mocked_tool_is_intercepted_and_never_forwarded() {
+    let _env = lock_env();
     use_real_flowproof_exe();
     let dir = work_dir("mocked");
     let agent_py = dir.join("agent.py");
@@ -481,6 +496,7 @@ fn a_mocked_tool_is_intercepted_and_never_forwarded() {
 /// JSON-RPC error, and the run fails naming the divergent path.
 #[test]
 fn a_divergent_argument_fails_replay_naming_the_path() {
+    let _env = lock_env();
     use_real_flowproof_exe();
     let dir = work_dir("divergence");
     let agent_py = dir.join("agent.py");
@@ -509,6 +525,7 @@ fn a_divergent_argument_fails_replay_naming_the_path() {
 /// the record with the named message.
 #[test]
 fn a_declared_server_the_agent_ignores_fails_the_record() {
+    let _env = lock_env();
     use_real_flowproof_exe();
     let dir = work_dir("guard");
     let agent_py = dir.join("agent.py");
@@ -535,6 +552,7 @@ fn a_declared_server_the_agent_ignores_fails_the_record() {
 /// an emission, not an assertion.
 #[test]
 fn records_and_replays_a_server_notification() {
+    let _env = lock_env();
     use_real_flowproof_exe();
     let dir = work_dir("notify");
     let agent_py = dir.join("agent.py");
@@ -594,6 +612,7 @@ fn records_and_replays_a_server_notification() {
 /// is written.
 #[test]
 fn a_server_initiated_request_fails_the_record_loudly() {
+    let _env = lock_env();
     use_real_flowproof_exe();
     let dir = work_dir("server-request");
     let agent_py = dir.join("agent.py");

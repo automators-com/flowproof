@@ -12,6 +12,18 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
+/// Serializes the tests that mutate the process-global `FLOWPROOF_AGENT_UPSTREAM`
+/// env var. `cargo test` runs a binary's tests on parallel threads and env vars
+/// are process-global, so without this lock one test's `set_var` races another's
+/// read: the agent child can pick up a different test's upstream address and the
+/// run flakes. Each such test holds this guard for its whole body. Poison-tolerant
+/// so one panicking test does not cascade a failure into all the others.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 fn work_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("flowproof-agent-e2e-{name}"));
     std::fs::remove_dir_all(&dir).ok();
@@ -144,6 +156,7 @@ fn write_spec(dir: &Path, agent_py: &Path) -> PathBuf {
 
 #[test]
 fn records_and_replays_an_agent_flow() {
+    let _env = lock_env();
     let dir = work_dir("weather");
     let agent_py = dir.join("agent.py");
     std::fs::write(&agent_py, FAKE_AGENT).expect("agent");
@@ -183,6 +196,7 @@ fn records_and_replays_an_agent_flow() {
 /// calls.
 #[test]
 fn a_failing_assertion_refuses_the_trace() {
+    let _env = lock_env();
     let dir = work_dir("refuse");
     let agent_py = dir.join("agent.py");
     std::fs::write(&agent_py, FAKE_AGENT).expect("agent");
