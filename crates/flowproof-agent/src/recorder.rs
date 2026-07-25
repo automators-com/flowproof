@@ -493,6 +493,8 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 }
                 TextMatch::UrlEquals => serde_json::json!({ "url_equals": expected }),
                 TextMatch::UrlContains => serde_json::json!({ "url_contains": expected }),
+                TextMatch::TitleEquals => serde_json::json!({ "title_equals": expected }),
+                TextMatch::TitleContains => serde_json::json!({ "title_contains": expected }),
                 TextMatch::Empty(want_empty) => serde_json::json!({ "value_empty": want_empty }),
             };
             expect["timeout_ms"] = serde_json::json!(timeout_ms);
@@ -1485,6 +1487,10 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
         // assertion that holds while recording must hold when replayed.
         TextMatch::UrlEquals => flowproof_driver::url_matches(expected, true, actual),
         TextMatch::UrlContains => flowproof_driver::url_matches(expected, false, actual),
+        // A title is compared as plain text, not with the url's path/query
+        // rules: it is a human-facing string, not a structured locator.
+        TextMatch::TitleEquals => actual.trim() == expected.trim(),
+        TextMatch::TitleContains => flowproof_driver::text_contains(actual, expected),
         TextMatch::Empty(want_empty) => actual.trim().is_empty() == want_empty,
     }
 }
@@ -1992,6 +1998,13 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                 // The URL is a different reading of the surface,
                                 // not a different target: same poll, same bound.
                                 Some(driver.current_url()?)
+                            } else if matches!(
+                                matcher,
+                                TextMatch::TitleEquals | TextMatch::TitleContains
+                            ) {
+                                // The title is another reading of the same
+                                // surface, on the same poll and bound.
+                                Some(driver.page_title()?)
                             } else if selector.is_none() {
                                 Some(driver.surface_text()?)
                             } else if driver.element_exists(targeted())? {
