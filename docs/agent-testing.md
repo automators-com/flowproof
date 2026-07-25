@@ -65,6 +65,17 @@ MCP boundary. What v1 guarantees is that the model's view is
 spec-controlled, and that replay is hermetic AT THE MODEL BOUNDARY: zero
 model calls, canned responses.
 
+Hermetic at the model boundary is not hermetic at the tool boundary, and
+the difference bites hardest at REPLAY. Replay serves the recorded
+assistant message - tool calls included - to a live agent process, so a
+tool that fired once while recording fires again on EVERY replay, which
+for most teams means every CI run. A side effect you accepted once as the
+cost of recording is not a one-off. The runtime says so: a flow that mocks
+or forbids a tool nothing intercepts prints a warning naming that tool, at
+both record and replay. Declaring the tool under `mcp:` with a `result:`
+is what actually stops it running, and silences the warning by fixing the
+cause.
+
 This mirrors how flowproof already treats the browser's network: mock at
 the boundary, identically at record and replay, with the rules traveling
 in the trace — with the one honest caveat that the browser mock intercepts
@@ -123,8 +134,11 @@ Semantics:
   multi-step agents.
 - `tools:` entries provide the mocked results the trajectory needs to
   continue past each call (a multi-step agent cannot proceed without
-  them). In cassette replay these are recorded anyway; the block is what
-  lets **record** avoid executing anything real. A `tools:` entry with NO
+  them). In cassette replay these are recorded anyway. Note what the block
+  does NOT do: at the model boundary it rewrites what the model is TOLD a
+  tool returned, so record still executes the system's own tools for real
+  (see the boundary caveat above). Only the `mcp:` boundary keeps a tool
+  from running. A `tools:` entry with NO
   `result:` is a **declaration only**: it is not mocked, so the tool's real
   result passes through unsubstituted. It still validates an
   `assert_tool_call` target and documents which tools the flow expects.
