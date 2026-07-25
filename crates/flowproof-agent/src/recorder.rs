@@ -1264,6 +1264,8 @@ impl ReuseCursor {
                     | ResolvedAction::AssertEnabled { .. }
                     | ResolvedAction::AssertAttribute { .. }
                     | ResolvedAction::AssertStyle { .. }
+                    | ResolvedAction::AssertChecked { .. }
+                    | ResolvedAction::AssertCaptured { .. }
                     | ResolvedAction::AssertSql { .. }
                     | ResolvedAction::AssertApi { .. }
             );
@@ -1758,6 +1760,8 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     | ResolvedAction::AssertAttribute { .. }
                     | ResolvedAction::AssertStyle { .. }
                     | ResolvedAction::AssertCount { .. }
+                    | ResolvedAction::AssertChecked { .. }
+                    | ResolvedAction::AssertCaptured { .. }
             );
             if !is_assert {
                 if let Some(selector) = &selector {
@@ -1817,7 +1821,25 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     };
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
-                        let actual = driver.read_text(targeted())?;
+                        // The element may not have rendered yet (the value
+                        // this compares against usually arrives with an
+                        // async fetch), so absence is a reason to keep
+                        // polling, not to read a missing element.
+                        let Some(actual) = driver
+                            .element_exists(targeted())?
+                            .then(|| driver.read_text(targeted()))
+                            .transpose()?
+                        else {
+                            if std::time::Instant::now() >= deadline {
+                                return Err(RecordError::AssertMismatch {
+                                    intent: spec_step.intent().to_string(),
+                                    expected: describe_capture(name, &captured, *offset),
+                                    actual: "element never appeared".to_string(),
+                                });
+                            }
+                            std::thread::sleep(ASSERT_POLL_INTERVAL);
+                            continue;
+                        };
                         match flowproof_driver::capture_matches(&captured, *offset, &actual) {
                             Ok(true) => break,
                             Ok(false) => {
