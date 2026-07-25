@@ -599,27 +599,22 @@ fn session_seeding_and_navigation_drive_real_pages() {
     let dir = std::env::temp_dir().join("flowproof-web-session-e2e");
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).expect("temp dir");
-    // Page 1 renders the seeded localStorage value AT LOAD TIME — this only
-    // works if seeding ran before the page script.
-    std::fs::write(
-        dir.join("home.html"),
-        r#"<!doctype html><html><body><div id="who"></div><script>
+    // Both pages come from ONE http origin, not from `file://`. The
+    // sessionStorage load counter below has to survive a reload, and
+    // file documents are opaque origins in Chrome, so their storage is not
+    // reliably carried across one - which made this test fail
+    // intermittently on CI for a reason unrelated to what it asserts.
+    const HOME: &str = r#"<!doctype html><html><body><div id="who"></div><script>
             document.getElementById('who').textContent =
                 'project: ' + (localStorage.getItem('projectId') || 'MISSING');
-        </script></body></html>"#,
-    )
-    .expect("page 1 written");
-    // Page 2 counts its own loads via sessionStorage — reload observable.
-    std::fs::write(
-        dir.join("settings.html"),
-        r#"<!doctype html><html><body><div id="loads"></div><script>
+        </script></body></html>"#;
+    const SETTINGS: &str = r#"<!doctype html><html><body><div id="loads"></div><script>
             const n = Number(sessionStorage.getItem('loads') || 0) + 1;
             sessionStorage.setItem('loads', n);
             document.getElementById('loads').textContent =
                 'Settings page, load ' + n + ', project ' + (localStorage.getItem('projectId') || 'MISSING');
-        </script></body></html>"#,
-    )
-    .expect("page 2 written");
+        </script></body></html>"#;
+    let base = serve_site(&[("/home", HOME), ("/settings", SETTINGS)]);
     let trace_path = dir.join("session.trace.jsonl");
 
     let mut local_storage = std::collections::BTreeMap::new();
@@ -630,7 +625,7 @@ fn session_seeding_and_navigation_drive_real_pages() {
     let spec = flowproof_agent::FlowSpec {
         name: "Seeded session".into(),
         app: "web".into(),
-        url: Some(format!("file://{}/home.html", dir.display())),
+        url: Some(format!("{base}/home")),
         redact: vec![],
         connection: None,
         window: None,
@@ -652,10 +647,7 @@ fn session_seeding_and_navigation_drive_real_pages() {
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows project: ${FLOWPROOF_E2E_PROJECT}".into(),
             },
-            flowproof_agent::SpecStep::Plain(format!(
-                "Go to file://{}/settings.html",
-                dir.display()
-            )),
+            flowproof_agent::SpecStep::Plain(format!("Go to {base}/settings")),
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows Settings page, load 1, project ${FLOWPROOF_E2E_PROJECT}".into(),
             },
@@ -2137,6 +2129,45 @@ fn appears_zero_times_passes_on_a_real_page() {
 /// The init script reruns on every document (CDP semantics), so without
 /// the sessionStorage seed-once sentinel the navigation re-seeds and
 /// silently resets the cart to "[4]" - failing the final assert.
+/// Serve several pages from ONE loopback port, which is ONE origin, so
+/// localStorage and sessionStorage are shared across them exactly as they
+/// are for a real site. Routes are matched on the request path.
+///
+/// This exists because `file://` is not a usable substrate for storage
+/// tests: Chrome treats file documents as opaque origins, so sessionStorage
+/// is not reliably carried across a reload and localStorage is not reliably
+/// shared between two files. A test written on file:// can therefore fail
+/// for a reason that has nothing to do with the behaviour it asserts.
+fn serve_site(routes: &'static [(&'static str, &'static str)]) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(64) {
+            let Ok(mut stream) = stream else { continue };
+            use std::io::{BufRead, BufReader, Write};
+            let requested = {
+                let mut line = String::new();
+                let mut reader = BufReader::new(&mut stream);
+                let _ = reader.read_line(&mut line);
+                line.split_whitespace().nth(1).unwrap_or("/").to_string()
+            };
+            let body = routes
+                .iter()
+                .find(|(path, _)| *path == requested)
+                .map(|(_, html)| *html)
+                .unwrap_or("<!doctype html><html><body>404</body></html>");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\
+                 Cache-Control: no-store\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
 /// Serve one page on its own loopback PORT, which is its own ORIGIN.
 /// Returns the base url; the thread dies with the test.
 fn serve_page(html: &'static str) -> String {
