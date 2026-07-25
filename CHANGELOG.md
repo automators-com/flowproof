@@ -19,6 +19,12 @@ together).
   - `page title is|contains <title>` - the url pair's missing sibling. Web
     only, and auto-waiting, because an SPA sets `document.title` after the
     route commits.
+  - **iframe-scoped assertions**: `the "<inner>" in the iframe "<frame>"`,
+    same-origin only. The frame is a FENCE, not a hint: a miss inside it
+    never falls back to a same-named element on the page outside, a
+    cross-origin frame ERRORS rather than reading as absent, and an ACTION
+    inside a frame is a parse error, because it would resolve against the
+    main document and could pass without acting.
   - **Cookie security controls**: `cookie "<name>" exists | is httpOnly |
     is secure | is persistent`. A cookie's VALUE cannot be asserted, by
     design: it is a credential, so no value can reach a trace or a failure
