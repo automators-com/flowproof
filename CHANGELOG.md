@@ -4,6 +4,56 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## 0.6.0
+
+### Added
+
+- **Web action and assertion grammar**, each one a gap found by migrating a
+  real OSS suite rather than picked from a list:
+  - `Double-click [the [2nd ]]"<text>"` and `Hover over [the [2nd ]]"<text>"`.
+    Hover verifies the element actually matches `:hover` after the move, so a
+    move onto an occluded element fails instead of passing.
+  - **Native browser dialogs** (`alert`/`confirm`/`prompt`) handled by a
+    suffix on the action that triggers them, since a JS dialog blocks
+    synchronously and cannot be a step of its own.
+  - `page title is|contains <title>` - the url pair's missing sibling. Web
+    only, and auto-waiting, because an SPA sets `document.title` after the
+    route commits.
+  - **Cookie security controls**: `cookie "<name>" exists | is httpOnly |
+    is secure | is persistent`. A cookie's VALUE cannot be asserted, by
+    design: it is a credential, so no value can reach a trace or a failure
+    message. `is secure` passes over plain http but warns, because browsers
+    exempt localhost and the run would otherwise certify nothing.
+- **`assert_api` response assertions**: `body_json <dotted.path>` with
+  `equals`, response `header` assertions, and array `count` /
+  `count_at_least`.
+- **Agent tool-boundary warning.** A flow that mocks or forbids a tool
+  nothing intercepts is told so at runtime, at record AND at replay: the
+  model boundary does not stop a tool executing, and replay re-serves the
+  recorded tool calls to a live agent on every run.
+
+### Fixed
+
+- **`session:` seeding no longer overwrites what a flow changed.** The
+  seed script is dropped once the first document has run it, instead of
+  guarding itself with a `sessionStorage` sentinel. The sentinel was scoped
+  per ORIGIN, so any navigation crossing one (a login host to an app host)
+  re-seeded and silently reset the flow's own mutations.
+- **The run record states the containment tier it actually ran under.** A
+  flow declaring `allow_egress` runs uncontained off Linux and still passes;
+  the record now distinguishes that from a genuinely certified run, and
+  blocked-destination evidence is only claimed when this run was contained.
+- **npm packaging.** The platform binaries are published under the
+  `@automators` scope: the unscoped names were rejected by npm's
+  spam heuristic, which is why npm sat at a 0.0.1 placeholder while PyPI
+  shipped. A `versions agree` CI job now checks every version location on
+  every PR, so the registries cannot drift again.
+- Assertions that own their waiting (`checkbox is checked`,
+  `shows ${captured.x}`) wait for a late-rendering target instead of failing
+  on the up-front probe, and an absent target is told apart from a
+  wrong-kind one.
+- `assert_api` sends a failing write once instead of re-firing it.
+
 ## 0.5.0
 
 ### Added
