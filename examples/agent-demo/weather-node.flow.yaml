@@ -1,0 +1,19 @@
+# The npm-path twin of weather.flow.yaml: the same flow against a Node agent,
+# so a reader who installed with `npx flowproof` needs no Python to reach a
+# first green agent test.
+#
+# get_weather is mocked, so the trajectory is driven by spec-authored data and
+# the assertion on the threaded `city` argument is static. The agent's real
+# tool returns a live timestamp; replay is deterministic only because the mock
+# is substituted at the model boundary.
+name: Weather assistant answers with the forecast (Node)
+app: agent
+agent:
+  command: node examples/agent-demo/weather_agent.mjs
+tools:
+  - name: get_weather
+    result: { city: Nairobi, sky: sunny, temp_c: 26 }
+steps:
+  - prompt: What is the weather in Nairobi right now? Use your tools.
+  - assert_tool_call: get_weather where city contains Nairobi
+  - assert: reply contains sunny
