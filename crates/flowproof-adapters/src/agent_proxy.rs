@@ -1916,15 +1916,52 @@ mod tests {
 
     /// A local fake model, so record mode can be exercised without a real
     /// API or any tokens - the same bet the SAP simulator makes.
+    /// Read an HTTP/1.1 request to the END of its declared body.
+    ///
+    /// A single `read` is not enough and the difference is not cosmetic: a
+    /// POST body can arrive across several TCP segments, and responding then
+    /// closing with bytes still unread makes the stack RST the client. ureq
+    /// surfaces that reset as a send failure, the proxy turns it into a 502,
+    /// and the test fails an `assert_eq!(status, 200)` that has nothing to
+    /// do with what it meant to prove. It is timing-dependent, so it shows up
+    /// on the Windows runner and almost never locally.
+    ///
+    /// `agent_flow_e2e.rs` already carries this helper for the same reason;
+    /// these in-crate fakes never got it.
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        use std::io::{BufRead, Read};
+        let mut reader = std::io::BufReader::new(stream);
+        let mut head = String::new();
+        let mut length = 0usize;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = v.trim().parse().unwrap_or(0);
+            }
+            let done = line == "\r\n" || line == "\n";
+            head.push_str(&line);
+            if done {
+                break;
+            }
+        }
+        let mut body = vec![0u8; length];
+        if length > 0 {
+            let _ = reader.read_exact(&mut body);
+        }
+        head + &String::from_utf8_lossy(&body)
+    }
+
     fn fake_model(reply: serde_json::Value) -> String {
-        use std::io::{Read, Write};
+        use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
-                let mut buf = [0u8; 8192];
-                let _ = stream.read(&mut buf);
+                let _ = read_http_request(&mut stream);
                 let body = reply.to_string();
                 let _ = stream.write_all(
                     format!(
@@ -2004,9 +2041,10 @@ mod tests {
         std::thread::spawn(move || {
             if let Some(stream) = listener.incoming().next() {
                 let mut stream = stream.expect("accept");
-                let mut buf = vec![0u8; 8192];
-                let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                // Drained in full for the reset reason above, and because
+                // this fake READS the request: a header split across
+                // segments would otherwise read as "(none)".
+                let req = read_http_request(&mut stream);
                 let seen = req
                     .lines()
                     .find(|l| l.to_ascii_lowercase().starts_with("authorization:"))
