@@ -11,8 +11,11 @@ CI fails).
 Conventions: forms are case-insensitive in their keywords. `<text>` is
 literal text (may carry `${VAR}` secret references). A quoted `"<label>"`
 is a **text anchor** — matched against visible text, accessible label
-(`aria-label`), placeholder, or an associated `<label>` (both
-`<label>Name: <input/></label>` wrapping and `<label for>`/`id` pairing).
+(`aria-label`), placeholder, an associated `<label>` (both
+`<label>Name: <input/></label>` wrapping and `<label for>`/`id` pairing),
+or, for `<input type="submit|button|reset">`, the `value` attribute (the
+accessible name of a void button-type input, so `Press the "Login"
+button` finds `<input type="submit" value="Login">`).
 Matching is exact first, then prefix (`"Name"` finds the field labelled
 `Name:`), then ASCII case-insensitive as a last resort (`"Close Account"`
 still finds the button reading `Close account`) — a case-sensitive match
