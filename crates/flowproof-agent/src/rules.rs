@@ -290,6 +290,13 @@ pub enum ResolvedAction {
         /// Expected value at `body_json` (string/number/bool). A string leaf
         /// may carry a raw `${VAR}` ref, resolved only at probe time.
         equals: Option<serde_json::Value>,
+        /// A response-header NAME (case-insensitive); a presence check on its
+        /// own, a value check paired with `header_equals`/`header_contains`.
+        header: Option<String>,
+        /// Exact expected header value; may carry a raw `${VAR}` ref.
+        header_equals: Option<String>,
+        /// Expected header substring; may carry a raw `${VAR}` ref.
+        header_contains: Option<String>,
         timeout_ms: u64,
     },
 }
@@ -574,6 +581,24 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                     ));
                 }
             }
+            // `header_equals`/`header_contains` are response-side checks against
+            // the header named by `header`; without a name there is nothing to
+            // match (mirrors `equals` requiring `body_json`).
+            if (assert_api.header_equals.is_some() || assert_api.header_contains.is_some())
+                && assert_api.header.is_none()
+            {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api header_equals/header_contains requires header (the response header name)",
+                ));
+            }
+            // At most one value predicate per header: equals OR contains.
+            if assert_api.header_equals.is_some() && assert_api.header_contains.is_some() {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api sets at most one of header_equals/header_contains",
+                ));
+            }
             return Ok(vec![ResolvedAction::AssertApi {
                 method,
                 url: url.to_string(),
@@ -583,6 +608,9 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                 body_contains: assert_api.body_contains.clone(),
                 body_json: assert_api.body_json.clone(),
                 equals: assert_api.equals.clone(),
+                header: assert_api.header.clone(),
+                header_equals: assert_api.header_equals.clone(),
+                header_contains: assert_api.header_contains.clone(),
                 timeout_ms: assert_api
                     .timeout_seconds
                     .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
@@ -2447,6 +2475,68 @@ mod tests {
         };
         assert_eq!(body_json.as_deref(), Some("results.0.balance"));
         assert_eq!(*equals, Some(serde_json::json!(150953)));
+    }
+
+    #[test]
+    fn assert_api_header_equals_without_header_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec =
+            serde_yaml::from_str("request: GET ${API}/x\nheader_equals: application/json\n")
+                .expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("header_equals without header must fail early");
+        assert!(
+            err.to_string().contains("header"),
+            "names the missing field: {err}"
+        );
+    }
+
+    #[test]
+    fn assert_api_header_contains_without_header_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec =
+            serde_yaml::from_str("request: GET ${API}/x\nheader_contains: json\n").expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("header_contains without header must fail early");
+        assert!(
+            err.to_string().contains("header"),
+            "names the missing field: {err}"
+        );
+    }
+
+    #[test]
+    fn assert_api_both_header_predicates_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec = serde_yaml::from_str(
+            "request: GET ${API}/x\nheader: Content-Type\n\
+             header_equals: application/json\nheader_contains: json\n",
+        )
+        .expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("both predicates must fail early");
+        assert!(
+            err.to_string().contains("at most one"),
+            "names the conflict: {err}"
+        );
+    }
+
+    #[test]
+    fn assert_api_header_fields_thread_through() {
+        let spec: crate::spec::ApiAssertSpec = serde_yaml::from_str(
+            "request: GET ${API}/users\nheader: Content-Type\nheader_contains: json\n",
+        )
+        .expect("parses");
+        let actions =
+            resolve_step("web", &SpecStep::AssertApi { assert_api: spec }).expect("resolves");
+        let ResolvedAction::AssertApi {
+            header,
+            header_equals,
+            header_contains,
+            ..
+        } = &actions[0]
+        else {
+            panic!("expected AssertApi");
+        };
+        assert_eq!(header.as_deref(), Some("Content-Type"));
+        assert_eq!(*header_equals, None);
+        assert_eq!(header_contains.as_deref(), Some("json"));
     }
 
     #[test]

@@ -46,6 +46,21 @@ pub enum OobProbe {
         /// `${VAR}` reference in a string has already been resolved by the
         /// caller (the trace keeps the raw ref, never the value).
         equals: Option<serde_json::Value>,
+        /// A response-header NAME (case-INSENSITIVE, per HTTP). When set and
+        /// the header repeats, its values join with ", " (HTTP field-value
+        /// semantics) before matching. Alone it is an existence check (the
+        /// header must be present). Evaluated after `body_json`.
+        header: Option<String>,
+        /// When set (only meaningful with `header`), the joined header value
+        /// must EQUAL this string (exact, case-SENSITIVE value). Any `${VAR}`
+        /// reference has already been resolved by the caller. Mutually
+        /// exclusive with `header_contains`.
+        header_equals: Option<String>,
+        /// When set (only meaningful with `header`), the joined header value
+        /// must CONTAIN this substring (case-SENSITIVE value). Any `${VAR}`
+        /// reference has already been resolved by the caller. Mutually
+        /// exclusive with `header_equals`.
+        header_contains: Option<String>,
     },
 }
 
@@ -117,6 +132,9 @@ pub fn check(probe: &OobProbe) -> Result<Result<Option<String>, String>, DriverE
             body_contains,
             body_json,
             equals,
+            header,
+            header_equals,
+            header_contains,
         } => {
             // Non-2xx statuses are data here, not transport errors — the
             // expectation decides what counts as passing.
@@ -172,6 +190,14 @@ pub fn check(probe: &OobProbe) -> Result<Result<Option<String>, String>, DriverE
                 Err(e) => return Ok(Err(format!("request failed: {e}"))),
             };
             let code = response.status().as_u16();
+            // Pluck the named header while the immutable borrow is live, BEFORE
+            // the mutable body read. The outer Option mirrors `header` (is an
+            // assertion present); the inner Option is presence in the response
+            // (None = absent). Repeats join with ", " per HTTP field-value
+            // semantics. The value never enters the trace: it lives only here.
+            let header_actual: Option<Option<String>> = header
+                .as_ref()
+                .map(|name| joined_header(response.headers(), name));
             let text = response.body_mut().read_to_string().unwrap_or_default();
             if let Err(reason) = check_status(*status, code) {
                 return Ok(Err(reason));
@@ -212,6 +238,19 @@ pub fn check(probe: &OobProbe) -> Result<Result<Option<String>, String>, DriverE
                     if let Err(reason) = compare_json_leaf(leaf, expected, code) {
                         return Ok(Err(reason));
                     }
+                }
+            }
+            if let Some(name) = header {
+                // `header_actual` is Some(..) here (it was built from `header`).
+                let actual = header_actual.as_ref().and_then(|inner| inner.as_deref());
+                if let Err(reason) = check_header(
+                    name,
+                    actual,
+                    header_equals.as_deref(),
+                    header_contains.as_deref(),
+                    code,
+                ) {
+                    return Ok(Err(reason));
                 }
             }
             // The response body IS the corpus element an `assert_no_secret_leak`
@@ -312,6 +351,54 @@ fn json_leaf_as_text(value: &serde_json::Value) -> String {
         serde_json::Value::Null => "null".to_string(),
         other => other.to_string(),
     }
+}
+
+/// Pluck a response header by NAME (case-INSENSITIVE, per HTTP: `http`'s
+/// `HeaderMap` lowercases and compares names insensitively). Returns `None`
+/// when the header is absent; when it repeats, the values join with ", "
+/// (HTTP field-value semantics). Non-UTF-8 values are skipped.
+fn joined_header(headers: &ureq::http::HeaderMap, name: &str) -> Option<String> {
+    let values: Vec<&str> = headers
+        .get_all(name)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.join(", "))
+    }
+}
+
+/// Match a response header against the expectation. `actual` is the joined
+/// header value (`None` = the header is absent). With neither `equals` nor
+/// `contains` the check is existence (present passes). Value comparison is
+/// case-SENSITIVE (exact for `equals`, substring for `contains`). At most one
+/// of `equals`/`contains` is set (the caller enforces this at parse time).
+fn check_header(
+    name: &str,
+    actual: Option<&str>,
+    equals: Option<&str>,
+    contains: Option<&str>,
+    code: u16,
+) -> Result<(), String> {
+    let Some(actual) = actual else {
+        return Err(format!("response has no '{name}' header (status {code})"));
+    };
+    if let Some(want) = equals {
+        if actual != want {
+            return Err(format!(
+                "header '{name}' is '{actual}', expected equals '{want}' (status {code})"
+            ));
+        }
+    } else if let Some(want) = contains {
+        if !actual.contains(want) {
+            return Err(format!(
+                "header '{name}' is '{actual}', expected contains '{want}' (status {code})"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -451,5 +538,116 @@ mod tests {
         assert_eq!(json_leaf_as_text(&serde_json::json!(true)), "true");
         assert_eq!(json_leaf_as_text(&serde_json::json!(150953)), "150953");
         assert_eq!(json_leaf_as_text(&serde_json::json!("hi")), "hi");
+    }
+
+    fn header_map(pairs: &[(&str, &str)]) -> ureq::http::HeaderMap {
+        use ureq::http::header::{HeaderName, HeaderValue};
+        let mut map = ureq::http::HeaderMap::new();
+        for (name, value) in pairs {
+            map.append(
+                HeaderName::from_bytes(name.as_bytes()).expect("valid name"),
+                HeaderValue::from_str(value).expect("valid value"),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn header_lookup_is_case_insensitive_on_the_name() {
+        // The response spells it `Content-Type`; the spec may ask for any case.
+        let headers = header_map(&[("Content-Type", "application/json")]);
+        assert_eq!(
+            joined_header(&headers, "content-type").as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(
+            joined_header(&headers, "CONTENT-TYPE").as_deref(),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn header_absent_lookup_is_none() {
+        let headers = header_map(&[("Content-Type", "application/json")]);
+        assert_eq!(joined_header(&headers, "X-Missing"), None);
+    }
+
+    #[test]
+    fn repeated_header_values_join_with_comma_space() {
+        // A repeated field folds to one value per HTTP field-value semantics.
+        let headers = header_map(&[("Set-Cookie", "a=1"), ("Set-Cookie", "b=2")]);
+        assert_eq!(
+            joined_header(&headers, "set-cookie").as_deref(),
+            Some("a=1, b=2")
+        );
+    }
+
+    #[test]
+    fn header_present_equals_matches_exactly() {
+        assert!(check_header(
+            "Content-Type",
+            Some("application/json"),
+            Some("application/json"),
+            None,
+            200,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn header_present_contains_matches_substring() {
+        assert!(check_header(
+            "Content-Type",
+            Some("application/json; charset=utf-8"),
+            None,
+            Some("application/json"),
+            200,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn header_alone_is_an_existence_check() {
+        // Present with neither equals nor contains: existence passes.
+        assert!(check_header("Content-Type", Some("text/html"), None, None, 200).is_ok());
+    }
+
+    #[test]
+    fn absent_header_soft_fails_with_a_named_message() {
+        let err = check_header("X-Does-Not-Exist", None, None, Some("json"), 200)
+            .expect_err("absent header must fail");
+        assert_eq!(
+            err,
+            "response has no 'X-Does-Not-Exist' header (status 200)"
+        );
+    }
+
+    #[test]
+    fn header_value_mismatch_names_actual_and_expected() {
+        let err = check_header(
+            "Content-Type",
+            Some("application/json"),
+            Some("text/html"),
+            None,
+            200,
+        )
+        .expect_err("mismatch must fail");
+        assert_eq!(
+            err,
+            "header 'Content-Type' is 'application/json', expected equals 'text/html' (status 200)"
+        );
+        // The contains tier reports its own predicate in the message.
+        let err = check_header(
+            "Content-Type",
+            Some("application/json"),
+            None,
+            Some("xml"),
+            200,
+        )
+        .expect_err("contains mismatch must fail");
+        assert_eq!(
+            err,
+            "header 'Content-Type' is 'application/json', expected contains 'xml' (status 200)"
+        );
     }
 }

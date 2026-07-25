@@ -469,6 +469,160 @@ steps:
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The RWA-shaped header case: `GET /testData/users` answers with an explicit
+/// `Content-Type: application/json`. Serves until idle so both the passing
+/// (record + replay) and failing (a few polls) flows can share one helper.
+fn serve_users_json(server: tiny_http::Server) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let body = r#"{"results":[{"id":"uBmeaz5pX","balance":150953}]}"#;
+        let ctype = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .expect("valid header");
+        while let Ok(Some(request)) = server.recv_timeout(std::time::Duration::from_millis(500)) {
+            let response = if request.url() == "/testData/users" {
+                tiny_http::Response::from_string(body)
+                    .with_status_code(200)
+                    .with_header(ctype.clone())
+            } else {
+                tiny_http::Response::from_string(r#"{"error":"not found"}"#).with_status_code(404)
+            };
+            request.respond(response).ok();
+        }
+    })
+}
+
+#[test]
+fn header_contains_the_content_type_records_and_replays() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let server_thread = serve_users_json(server);
+    std::env::set_var("HDR_API_BASE", &base);
+
+    let spec_yaml = "\
+name: Content type assertion
+app: api
+steps:
+  - assert_api:
+      request: GET ${HDR_API_BASE}/testData/users
+      status: 200
+      header: Content-Type
+      header_contains: json
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+
+    let dir = std::env::temp_dir().join("flowproof-api-header-pass");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("ctype.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("header flow records");
+
+    let trace = std::fs::read_to_string(&trace_path).expect("trace written");
+    // The header name and predicate travel; the live value never does.
+    assert!(
+        trace.contains("\"header\":\"Content-Type\""),
+        "trace carries the header name: {trace}"
+    );
+    assert!(
+        trace.contains("\"header_contains\":\"json\""),
+        "trace carries the predicate: {trace}"
+    );
+    assert!(
+        trace.contains("${HDR_API_BASE}"),
+        "trace keeps the host ref"
+    );
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "header flow must replay: {report:#?}");
+
+    server_thread.join().ok();
+    std::env::remove_var("HDR_API_BASE");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn header_equals_a_wrong_value_fails_the_record() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let server_thread = serve_users_json(server);
+    std::env::set_var("BADHDR_API_BASE", &base);
+
+    // The response is application/json; the spec asserts text/html.
+    let spec_yaml = "\
+name: Wrong content type
+app: api
+steps:
+  - assert_api:
+      request: GET ${BADHDR_API_BASE}/testData/users
+      status: 200
+      header: Content-Type
+      header_equals: text/html
+      timeout_seconds: 1
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+
+    let dir = std::env::temp_dir().join("flowproof-api-header-fail");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("wrong-ctype.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let err = flowproof_agent::record(&spec, &mut driver, &trace_path)
+        .expect_err("a wrong header_equals must fail the record");
+    let message = err.to_string();
+    // The mismatch message names the header, the actual value, and the want.
+    assert!(
+        message.contains("Content-Type")
+            && message.contains("application/json")
+            && message.contains("text/html"),
+        "failure names header, actual, and expected: {message}"
+    );
+
+    server_thread.join().ok();
+    std::env::remove_var("BADHDR_API_BASE");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn header_existence_of_an_absent_header_fails_the_record() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let server_thread = serve_users_json(server);
+    std::env::set_var("ABSHDR_API_BASE", &base);
+
+    let spec_yaml = "\
+name: Missing header
+app: api
+steps:
+  - assert_api:
+      request: GET ${ABSHDR_API_BASE}/testData/users
+      status: 200
+      header: X-Does-Not-Exist
+      timeout_seconds: 1
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+
+    let dir = std::env::temp_dir().join("flowproof-api-header-absent");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("absent-header.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let err = flowproof_agent::record(&spec, &mut driver, &trace_path)
+        .expect_err("an absent header must fail the record");
+    let message = err.to_string();
+    assert!(
+        message.contains("no 'X-Does-Not-Exist' header"),
+        "failure names the absent header: {message}"
+    );
+
+    server_thread.join().ok();
+    std::env::remove_var("ABSHDR_API_BASE");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn body_json_equals_a_wrong_value_fails_the_record() {
     let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");

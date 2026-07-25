@@ -703,6 +703,9 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             body_contains,
             body_json,
             equals,
+            header,
+            header_equals,
+            header_contains,
             timeout_ms,
         } => {
             let mut expect = serde_json::Map::new();
@@ -716,6 +719,17 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             // response value is compared only inside the live probe, never stored.
             if let Some(value) = equals {
                 expect.insert("equals".into(), value.clone());
+            }
+            // Header name plus its RAW predicate (a `${VAR}` stays a ref): the
+            // live header value is matched only inside the probe, never stored.
+            if let Some(name) = header {
+                expect.insert("header".into(), name.as_str().into());
+            }
+            if let Some(want) = header_equals {
+                expect.insert("header_equals".into(), want.as_str().into());
+            }
+            if let Some(want) = header_contains {
+                expect.insert("header_contains".into(), want.as_str().into());
             }
             expect.insert("timeout_ms".into(), (*timeout_ms).into());
             (
@@ -1171,6 +1185,21 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
             equals: expect.as_ref().and_then(|e| e.get("equals")).cloned(),
+            header: expect
+                .as_ref()
+                .and_then(|e| e.get("header"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            header_equals: expect
+                .as_ref()
+                .and_then(|e| e.get("header_equals"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            header_contains: expect
+                .as_ref()
+                .and_then(|e| e.get("header_contains"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             timeout_ms: oob_timeout_from(expect.as_ref()),
         }),
         _ => None,
@@ -1854,6 +1883,9 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     body_contains,
                     body_json,
                     equals,
+                    header,
+                    header_equals,
+                    header_contains,
                     timeout_ms,
                 } => {
                     // Resolved like `equals` above: the trace keeps the raw
@@ -1885,6 +1917,17 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                 flowproof_trace::secret::resolve_refs(s)?,
                             )),
                             Some(other) => Some(other.clone()),
+                            None => None,
+                        },
+                        // The header name is literal; a `${VAR}` in the value
+                        // predicate resolves here, exactly like `body_contains`.
+                        header: header.clone(),
+                        header_equals: match header_equals {
+                            Some(want) => Some(flowproof_trace::secret::resolve_refs(want)?),
+                            None => None,
+                        },
+                        header_contains: match header_contains {
+                            Some(want) => Some(flowproof_trace::secret::resolve_refs(want)?),
                             None => None,
                         },
                     };

@@ -1277,6 +1277,22 @@ pub struct ApiAssertSpec {
     /// carry a `${VAR}` ref; the trace keeps the raw ref, never the value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equals: Option<serde_json::Value>,
+    /// A response-header NAME (case-insensitive). Alone it is an existence
+    /// check (the header must be present); with `header_equals` or
+    /// `header_contains` the value must match. Coexists with `body_contains`
+    /// and `body_json`. One header per step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// Exact expected value for `header` (case-sensitive). Requires `header`;
+    /// `header_equals` without it is a parse-time error. Mutually exclusive
+    /// with `header_contains`. May carry a `${VAR}` ref (kept raw in the trace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_equals: Option<String>,
+    /// Expected substring for `header` (case-sensitive). Requires `header`;
+    /// `header_contains` without it is a parse-time error. Mutually exclusive
+    /// with `header_equals`. May carry a `${VAR}` ref (kept raw in the trace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_contains: Option<String>,
     /// Auto-wait bound override (default 10s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
