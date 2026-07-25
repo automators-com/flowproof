@@ -27,6 +27,13 @@ quoted label: `"css:<selector>"` (web) and `"id:<native id>"` (DOM id,
 UIA AutomationId, SAP scripting id). `[2nd ]` marks an optional 1-based
 ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 
+Steps are only half the spec. Starting state that a flow should not
+rebuild through the UI (an authenticated session, a pre-filled cart or
+other app-state fixture) is declared in the spec-level `session:` block,
+and network shaping in `mock:` - see
+[test-context seeding](getting-started.md#test-context-seeding-sessions-fixtures-and-navigation)
+before migrating a suite's setup helpers step by step.
+
 ## Actions (web, sap, vision — the generic grammar)
 
 | Step | Notes |
