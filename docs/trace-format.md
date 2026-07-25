@@ -130,6 +130,31 @@ these fields existed) is byte-identical:
   bare `Clear the … field` step is a replace-typing of the empty string).
   `press_key` carries `{key, modifiers[]}` and never has selectors — it
   goes to the focused element by definition.
+
+  A **trigger** action (`click`, `double_click`, `right_click`, `hover`) may
+  carry an optional `params.dialog` object folding in how a native
+  JavaScript dialog (`alert`/`confirm`/`prompt`/`beforeunload`) that the
+  trigger opens is answered. A JS dialog blocks JS synchronously, so it
+  cannot be a step AFTER the trigger; the disposition is armed BEFORE the
+  trigger dispatches and a one-shot listener answers it the instant it opens.
+
+  ```json
+  {"disposition":"accept","message":"Are you sure?","match":"contains","reply":"New name"}
+  ```
+
+  `disposition` is `accept` (OK, supplying any `reply`) or `dismiss`
+  (Cancel/close); `message` is the recorded text matched per `match` (always
+  `contains` in v1), omitted to match any message; `reply` is a prompt answer,
+  authored input like `type_text` text (a `${VAR}` reference resolves at
+  execution, so only the reference travels, never the value the page
+  received). The object is **strictly additive**: a trace without it is
+  **byte-identical** to before the field existed, and only a trigger action
+  ever carries it. A trace that USES `dialog` needs an engine at least the
+  version that introduced it: an older replayer ignores the field and never
+  arms the handler, so the declared dialog would hang rather than be answered.
+  That is a forward-compat note, not a format break. Web-only: non-web adapters
+  reject a step carrying `dialog`, since a native desktop message box is a
+  real window driven by ordinary steps.
 - `selectors` — the ladder, ordered deterministic-first. Tiers:
   1. `native_id` — UIA AutomationId, SAP GUI Scripting ID, DOM id/CSS.
   2. `structural` — path through the accessibility/DOM tree.

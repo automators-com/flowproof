@@ -346,6 +346,25 @@ pub struct WebAppDriver {
     /// the next `launch`: viewport/UA per-tab; extra flags swap in a
     /// private browser (flags only apply at process start).
     staged_browser: Option<flowproof_driver::WebBrowserConfig>,
+    /// Native-dialog handling state, shared with the flow-wide
+    /// `Page.javascriptDialogOpening` listener registered at launch. The
+    /// listener runs on the tab's own event thread, so it responds to a
+    /// dialog the instant it opens - a main-path CDP call would block behind
+    /// the open dialog.
+    dialogs: Arc<Mutex<DialogState>>,
+}
+
+/// Shared state between the driver and the flow-wide dialog listener.
+#[derive(Default)]
+struct DialogState {
+    /// A one-shot disposition armed for the NEXT trigger, consumed by the
+    /// listener when the declared dialog opens. `None` = nothing armed, so
+    /// any dialog is UNDECLARED and hits the safety net.
+    armed: Option<flowproof_driver::DialogArm>,
+    /// What the armed handler observed and did, drained by the post-condition.
+    fired: Option<flowproof_driver::FiredDialog>,
+    /// An UNDECLARED dialog the safety net dismissed, drained to fail its step.
+    unexpected: Option<flowproof_driver::FiredDialog>,
 }
 
 /// Cap on retained console lines — enough context for a failure, bounded
@@ -393,6 +412,7 @@ impl WebAppDriver {
                 console: Default::default(),
                 staged_mocks: Vec::new(),
                 staged_browser: None,
+                dialogs: Default::default(),
             });
         }
         let browser = shared_browser()?;
@@ -408,6 +428,7 @@ impl WebAppDriver {
             console: Default::default(),
             staged_mocks: Vec::new(),
             staged_browser: None,
+            dialogs: Default::default(),
         })
     }
 
@@ -1226,6 +1247,81 @@ impl AppDriver for WebAppDriver {
             };
             tab.add_event_listener(Arc::new(listener)).ok();
         }
+        // Flow-wide native-dialog handler. `Page.enable` (already called at
+        // tab creation) makes `javascriptDialogOpening` fire. The listener
+        // runs on the tab's own event thread, so it answers the dialog the
+        // instant it opens - a JS dialog blocks JS synchronously, and the
+        // main path is meanwhile blocked inside the click that opened it. An
+        // ARMED disposition wins for the declared step; everything else is
+        // dismissed and recorded as UNEXPECTED so its step fails rather than
+        // hangs. Both directions are deterministic.
+        {
+            // Fresh state per launch: a prior flow's arming must not leak.
+            *self.dialogs.lock().unwrap_or_else(|e| e.into_inner()) = DialogState::default();
+            let dialogs = self.dialogs.clone();
+            let dialog_tab = tab.clone();
+            let listener = move |event: &headless_chrome::protocol::cdp::types::Event| {
+                use headless_chrome::protocol::cdp::types::Event;
+                let Event::PageJavascriptDialogOpening(opening) = event else {
+                    return;
+                };
+                let dialog_type = match opening.params.Type {
+                    Page::DialogType::Alert => "alert",
+                    Page::DialogType::Confirm => "confirm",
+                    Page::DialogType::Prompt => "prompt",
+                    Page::DialogType::Beforeunload => "beforeunload",
+                };
+                let message = opening.params.message.clone();
+                // Decide under the lock, then release it BEFORE the CDP call
+                // so nothing holds the state mutex across transport I/O.
+                let armed = {
+                    let mut state = dialogs.lock().unwrap_or_else(|e| e.into_inner());
+                    state.armed.take()
+                };
+                let handle = dialog_tab.get_dialog();
+                // Record the outcome BEFORE answering the dialog. Answering
+                // unblocks the renderer, which lets the click command that
+                // opened the dialog return on the main thread; recording
+                // first guarantees the driver sees this outcome by the time
+                // that click returns, with no race between the two threads.
+                match armed {
+                    Some(arm) => {
+                        let accept =
+                            matches!(arm.disposition, flowproof_driver::DialogDisposition::Accept);
+                        let reply = if accept { arm.reply.clone() } else { None };
+                        {
+                            let mut state = dialogs.lock().unwrap_or_else(|e| e.into_inner());
+                            state.fired = Some(flowproof_driver::FiredDialog {
+                                dialog_type: dialog_type.to_string(),
+                                message,
+                                accepted: accept,
+                                reply: reply.clone(),
+                            });
+                        }
+                        let _ = if accept {
+                            handle.accept(reply)
+                        } else {
+                            handle.dismiss()
+                        };
+                    }
+                    None => {
+                        // Safety net: record the undeclared dialog, then
+                        // dismiss it so the page unblocks and its step fails.
+                        {
+                            let mut state = dialogs.lock().unwrap_or_else(|e| e.into_inner());
+                            state.unexpected = Some(flowproof_driver::FiredDialog {
+                                dialog_type: dialog_type.to_string(),
+                                message,
+                                accepted: false,
+                                reply: None,
+                            });
+                        }
+                        let _ = handle.dismiss();
+                    }
+                }
+            };
+            tab.add_event_listener(Arc::new(listener)).ok();
+        }
         tab.navigate_to(command)
             .map_err(|e| web_err(&format!("navigating to {command}"), e))?;
         tab.wait_until_navigated()
@@ -1754,6 +1850,29 @@ impl AppDriver for WebAppDriver {
             )));
         }
         Ok(())
+    }
+
+    fn arm_dialog(&mut self, arm: flowproof_driver::DialogArm) -> Result<(), DriverError> {
+        // The flow-wide listener is installed at launch; arming just hands it
+        // the one-shot disposition for the next trigger. A stale record from
+        // an earlier step is cleared so this step's verify reads only its own.
+        let mut state = self.dialogs.lock().unwrap_or_else(|e| e.into_inner());
+        state.fired = None;
+        state.armed = Some(arm);
+        Ok(())
+    }
+
+    fn take_fired_dialog(&mut self) -> Option<flowproof_driver::FiredDialog> {
+        let mut state = self.dialogs.lock().unwrap_or_else(|e| e.into_inner());
+        // Disarm too: a declared dialog that never fired must not linger and
+        // swallow a later, undeclared one that the safety net should catch.
+        state.armed = None;
+        state.fired.take()
+    }
+
+    fn take_unexpected_dialog(&mut self) -> Option<flowproof_driver::FiredDialog> {
+        let mut state = self.dialogs.lock().unwrap_or_else(|e| e.into_inner());
+        state.unexpected.take()
     }
 
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {

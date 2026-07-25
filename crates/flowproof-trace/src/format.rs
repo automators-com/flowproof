@@ -332,6 +332,49 @@ pub enum Action {
     Assert(Assertion),
 }
 
+/// A native JavaScript dialog (`alert`/`confirm`/`prompt`/`beforeunload`)
+/// disposition, folded into a trigger action's open `params` bag under the
+/// `dialog` key. STRICTLY ADDITIVE: a trace without a dialog serializes
+/// byte-identically to before this field existed. A trace that USES `dialog`
+/// needs an engine at least the version that introduced it - an older
+/// replayer would ignore the field and never arm the handler, so the
+/// declared dialog would hang rather than be answered (a normal
+/// forward-compat note, not a format break). Web-only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dialog {
+    pub disposition: DialogDisposition,
+    /// The recorded message text, matched `contains`. Omitted for the bare
+    /// `accepting the dialog` / `dismissing the dialog` forms (match any
+    /// message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// How `message` is matched. Always `contains` in v1 - the one match
+    /// mode - and always serialized, so the assertion semantics are explicit
+    /// in the trace.
+    #[serde(rename = "match", default = "default_dialog_match")]
+    pub match_mode: String,
+    /// The prompt reply supplied on accept. Authored input like
+    /// `TypeText.text`: a `${VAR}` reference resolves at execution (record
+    /// and every replay), so only the reference travels here - never the
+    /// value the page received. Omitted for a plain accept/dismiss.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
+}
+
+fn default_dialog_match() -> String {
+    "contains".to_string()
+}
+
+/// Accept (OK, supplying any prompt reply) or dismiss (Cancel / close) a
+/// native JavaScript dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DialogDisposition {
+    Accept,
+    Dismiss,
+}
+
 /// Params for `upload`: set a file on a file-chooser input. The path is
 /// stored as written in the spec; relative paths resolve against the
 /// process working directory at execution time (record and replay alike).

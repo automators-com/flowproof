@@ -61,6 +61,11 @@ pub enum RecordError {
     },
     #[error("driver error: {0}")]
     Driver(#[from] flowproof_driver::DriverError),
+    /// A declared dialog did not fire as recorded, or an UNDECLARED dialog
+    /// opened (the safety net's "an unexpected dialog opened: …"). `reason`
+    /// is a complete phrase.
+    #[error("step '{intent}': {reason}")]
+    Dialog { intent: String, reason: String },
     #[error(transparent)]
     Secret(#[from] flowproof_trace::secret::MissingSecret),
     /// A declared secret leaked into the run's observable corpus, or the
@@ -329,11 +334,44 @@ fn enrich_scope_hints(step: &mut Step, hints: &flowproof_driver::ScopeHints) {
     }
 }
 
+/// Encode a trigger action's optional folded-in dialog into its params bag.
+/// STRICTLY ADDITIVE: with no dialog the bag stays empty, so the action
+/// serializes byte-identically to before the feature (the `dialog` key never
+/// appears). The reply travels VALUE-FREE - a `${VAR}` reference is stored as
+/// written and resolved only at execution.
+fn dialog_params(
+    dialog: &Option<flowproof_trace::format::Dialog>,
+) -> flowproof_trace::format::Params {
+    let mut params = serde_json::Map::new();
+    if let Some(dialog) = dialog {
+        params.insert(
+            "dialog".to_string(),
+            serde_json::to_value(dialog).expect("dialog serializes"),
+        );
+    }
+    params
+}
+
+/// Decode a folded-in dialog back out of a trigger action's params bag.
+/// A bag without a `dialog` key yields `None` - the common case, and what
+/// keeps an old trace byte-identical.
+fn dialog_from_params(
+    params: &flowproof_trace::format::Params,
+) -> Option<flowproof_trace::format::Dialog> {
+    params
+        .get("dialog")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
 fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step {
     let (mut selectors, trace_action) = match action {
-        ResolvedAction::Press { target, label } => (
+        ResolvedAction::Press {
+            target,
+            label,
+            dialog,
+        } => (
             selectors_for(app, target, Some(label)),
-            Action::Click(serde_json::Map::new()),
+            Action::Click(dialog_params(dialog)),
         ),
         ResolvedAction::TypeText { target, text } => (
             selectors_for(app, target, None),
@@ -386,17 +424,29 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 extra: serde_json::Map::new(),
             }),
         ),
-        ResolvedAction::ContextClick { target, label } => (
+        ResolvedAction::ContextClick {
+            target,
+            label,
+            dialog,
+        } => (
             selectors_for(app, target, Some(label)),
-            Action::RightClick(serde_json::Map::new()),
+            Action::RightClick(dialog_params(dialog)),
         ),
-        ResolvedAction::DoubleClick { target, label } => (
+        ResolvedAction::DoubleClick {
+            target,
+            label,
+            dialog,
+        } => (
             selectors_for(app, target, Some(label)),
-            Action::DoubleClick(serde_json::Map::new()),
+            Action::DoubleClick(dialog_params(dialog)),
         ),
-        ResolvedAction::Hover { target, label } => (
+        ResolvedAction::Hover {
+            target,
+            label,
+            dialog,
+        } => (
             selectors_for(app, target, Some(label)),
-            Action::Hover(serde_json::Map::new()),
+            Action::Hover(dialog_params(dialog)),
         ),
         // Whole-surface capture: no selectors; masks travel as raw
         // selector strings so replay blanks the SAME regions.
@@ -916,9 +966,10 @@ fn target_from_selector(selectors: &[Selector]) -> Option<Target> {
 fn decode_step(step: &Step) -> Option<ResolvedAction> {
     use flowproof_trace::format::Assertion;
     match &step.action {
-        Action::Click(_) => Some(ResolvedAction::Press {
+        Action::Click(params) => Some(ResolvedAction::Press {
             target: target_from_selector(&step.selectors)?,
             label: step.intent.clone(),
+            dialog: dialog_from_params(params),
         }),
         Action::TypeText(params) => {
             let replace = params.extra.get("replace").and_then(|v| v.as_bool()) == Some(true);
@@ -949,17 +1000,20 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
             target: target_from_selector(&step.selectors)?,
             path: params.path.clone(),
         }),
-        Action::RightClick(_) => Some(ResolvedAction::ContextClick {
+        Action::RightClick(params) => Some(ResolvedAction::ContextClick {
             target: target_from_selector(&step.selectors)?,
             label: step.intent.clone(),
+            dialog: dialog_from_params(params),
         }),
-        Action::DoubleClick(_) => Some(ResolvedAction::DoubleClick {
+        Action::DoubleClick(params) => Some(ResolvedAction::DoubleClick {
             target: target_from_selector(&step.selectors)?,
             label: step.intent.clone(),
+            dialog: dialog_from_params(params),
         }),
-        Action::Hover(_) => Some(ResolvedAction::Hover {
+        Action::Hover(params) => Some(ResolvedAction::Hover {
             target: target_from_selector(&step.selectors)?,
             label: step.intent.clone(),
+            dialog: dialog_from_params(params),
         }),
         Action::Assert(Assertion::VisualDiff {
             baseline,
@@ -1686,6 +1740,14 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 }
             }
             let targeted = || selector.as_ref().expect("targeted action has a selector");
+            // A folded-in dialog is armed BEFORE the trigger dispatches: a JS
+            // dialog blocks JS synchronously, so the one-shot handler must be
+            // in place before the click opens it. The `${VAR}` in a prompt
+            // reply resolves here, exactly like TypeText.
+            let armed_dialog = crate::rules::action_dialog(&action).cloned();
+            if let Some(dialog) = &armed_dialog {
+                driver.arm_dialog(crate::rules::dialog_arm(dialog)?)?;
+            }
             match &action {
                 ResolvedAction::Press { .. } => driver.invoke(targeted())?,
                 ResolvedAction::TypeText { text, .. } => {
@@ -2118,6 +2180,29 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     }
                 }
             }
+            // Dialog post-condition: a DECLARED dialog must have fired and
+            // been handled as recorded (parallel to set_checked verifying its
+            // state took). The armed one-shot handler already responded on
+            // the listener thread; here we read what it observed.
+            if let Some(dialog) = &armed_dialog {
+                let arm = crate::rules::dialog_arm(dialog)?;
+                let fired = driver.take_fired_dialog();
+                if let Err(reason) = flowproof_driver::verify_dialog(&arm, fired.as_ref()) {
+                    return Err(RecordError::Dialog {
+                        intent: spec_step.intent().to_string(),
+                        reason,
+                    });
+                }
+            }
+            // Safety net: an UNDECLARED dialog was dismissed by the flow-wide
+            // listener and fails this step, rather than hanging on an
+            // unanswered dialog (the least diagnosable failure).
+            if let Some(unexpected) = driver.take_unexpected_dialog() {
+                return Err(RecordError::Dialog {
+                    intent: spec_step.intent().to_string(),
+                    reason: format!("an unexpected dialog opened: {}", unexpected.message),
+                });
+            }
             if let Some(rec) = recorder.as_mut() {
                 rec.step_finished(driver);
             }
@@ -2533,6 +2618,7 @@ steps:
         let context_click = ResolvedAction::ContextClick {
             target: Target::text("Accounts"),
             label: "Right-click Accounts".into(),
+            dialog: None,
         };
         let step = step_for(2, "Right-click Accounts", "web", &context_click);
         match decode_step(&step) {
@@ -2545,6 +2631,7 @@ steps:
         let double_click = ResolvedAction::DoubleClick {
             target: Target::text("Accounts"),
             label: "Double-click Accounts".into(),
+            dialog: None,
         };
         let step = step_for(3, "Double-click Accounts", "web", &double_click);
         match decode_step(&step) {
@@ -2557,6 +2644,7 @@ steps:
         let hover = ResolvedAction::Hover {
             target: Target::text("Accounts"),
             label: "Hover over Accounts".into(),
+            dialog: None,
         };
         let step = step_for(4, "Hover over Accounts", "web", &hover);
         match decode_step(&step) {
@@ -2565,6 +2653,77 @@ steps:
             }
             other => panic!("hover must decode to Hover, got {other:?}"),
         }
+    }
+
+    /// A folded-in dialog round-trips through the trace `params` bag as a
+    /// `dialog` object and decodes back byte-for-byte, so `record --reuse`
+    /// re-arms it. The reply travels as the raw `${VAR}` reference.
+    #[test]
+    fn dialog_round_trips_through_the_trace() {
+        use flowproof_trace::format::{Dialog, DialogDisposition};
+        let dialog = Dialog {
+            disposition: DialogDisposition::Accept,
+            message: Some("Are you sure?".into()),
+            match_mode: "contains".into(),
+            reply: Some("${NEW_NAME}".into()),
+        };
+        let press = ResolvedAction::Press {
+            target: Target::text("Delete"),
+            label: "Delete".into(),
+            dialog: Some(dialog.clone()),
+        };
+        let step = step_for(1, "Delete", "web", &press);
+        // The dialog is serialized under params.dialog with match=contains.
+        let Action::Click(params) = &step.action else {
+            panic!("expected click");
+        };
+        let encoded = params.get("dialog").expect("dialog param present");
+        assert_eq!(encoded["disposition"], "accept");
+        assert_eq!(encoded["match"], "contains");
+        assert_eq!(encoded["message"], "Are you sure?");
+        // Value-free: only the reference travels, never a resolved value.
+        assert_eq!(encoded["reply"], "${NEW_NAME}");
+        // And it decodes back identically.
+        assert_eq!(decode_step(&step), Some(press));
+    }
+
+    /// STRICTLY ADDITIVE: a trigger with no dialog serializes with an EMPTY
+    /// params bag, byte-identical to before the field existed (no `dialog`
+    /// key ever appears).
+    #[test]
+    fn no_dialog_is_byte_identical() {
+        let press = ResolvedAction::Press {
+            target: Target::text("Save"),
+            label: "Save".into(),
+            dialog: None,
+        };
+        let step = step_for(1, "Save", "web", &press);
+        let Action::Click(params) = &step.action else {
+            panic!("expected click");
+        };
+        assert!(
+            params.is_empty(),
+            "no-dialog params must be empty: {params:?}"
+        );
+        let line = serde_json::to_string(&step.action).expect("serializes");
+        assert_eq!(line, r#"{"type":"click","params":{}}"#);
+    }
+
+    /// SCOPE: a native (UIA) driver rejects arming a dialog with the
+    /// web-only message - a desktop message box is a real window, driven by
+    /// ordinary steps.
+    #[test]
+    fn non_web_driver_rejects_dialog() {
+        use flowproof_driver::{AppDriver, DialogArm, DialogDisposition};
+        let mut driver = flowproof_driver::mock::MockAppDriver::default();
+        let err = driver
+            .arm_dialog(DialogArm {
+                disposition: DialogDisposition::Accept,
+                message: None,
+                reply: None,
+            })
+            .expect_err("native driver has no dialogs");
+        assert!(err.to_string().contains("web-only"), "{err}");
     }
 
     #[test]
@@ -3013,6 +3172,7 @@ steps:
             &ResolvedAction::Press {
                 target: scoped(Target::text("Amount")),
                 label: "Amount".into(),
+                dialog: None,
             },
         );
         enrich_scope_hints(
@@ -3040,6 +3200,7 @@ steps:
                     anchor: "Grace Hopper".into(),
                 },
                 label: "Actions".into(),
+                dialog: None,
             },
         );
         enrich_scope_hints(

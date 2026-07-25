@@ -123,6 +123,7 @@ fn parse_and_ground(
         "click" => Ok(ResolvedAction::Press {
             target,
             label: intent.to_string(),
+            dialog: None,
         }),
         "type_text" => {
             let text = authored

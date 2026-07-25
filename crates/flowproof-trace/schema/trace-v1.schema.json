@@ -524,8 +524,62 @@
               }
             }
           }
+        },
+        {
+          "comment": "A trigger action (click/double_click/right_click/hover) MAY carry an optional folded-in native-dialog disposition under params.dialog. A trace WITHOUT it is byte-identical to before this field existed; a trace WITH it needs an engine at least the version that introduced it (an older replayer ignores the field and never arms the handler). Web-only.",
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "click",
+                  "double_click",
+                  "right_click",
+                  "hover"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "properties": {
+                  "dialog": {
+                    "$ref": "#/$defs/dialog"
+                  }
+                }
+              }
+            }
+          }
         }
       ]
+    },
+    "dialog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disposition",
+        "match"
+      ],
+      "properties": {
+        "disposition": {
+          "enum": [
+            "accept",
+            "dismiss"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "description": "Recorded message text, matched per `match`. Omitted for the bare accept/dismiss forms (match any message)."
+        },
+        "match": {
+          "const": "contains",
+          "description": "How `message` is matched. Always `contains` in v1."
+        },
+        "reply": {
+          "type": "string",
+          "description": "Prompt reply supplied on accept. Authored input like type_text.text: a ${VAR} reference resolves at execution, so only the reference travels here, never the value."
+        }
+      }
     },
     "assertion": {
       "type": "object",
