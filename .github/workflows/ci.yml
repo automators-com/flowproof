@@ -269,6 +269,8 @@ jobs:
         env:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome
+      - name: cookie flag controls hold against real Set-Cookie headers
+        run: cargo test -p flowproof-cli --test cookie_e2e -- --nocapture --test-threads=1
       - name: page title assertions wait for a late title
         run: cargo test -p flowproof-cli --test page_title_e2e -- --nocapture --test-threads=1
         env:

@@ -700,6 +700,56 @@ fn url_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
 /// Mirrors [`check_text_expectation`]: transport faults are misses, a
 /// budget that expires with no reading at all is a driver error, and the
 /// message keeps the RAW expectation so a `${VAR}` never leaks.
+/// `{"cookie": "<name>", "cookie_fact": "..."}` - the cookie assertions.
+fn cookie_expectation(expect: &serde_json::Value) -> Option<(&str, &str)> {
+    let name = expect.get("cookie").and_then(|v| v.as_str())?;
+    let fact = expect
+        .get("cookie_fact")
+        .and_then(|v| v.as_str())
+        .unwrap_or("exists");
+    Some((name, fact))
+}
+
+/// Judge a cookie assertion. Auto-waits like the url pair: a cookie lands
+/// with a login RESPONSE, which races the navigation that preceded it.
+/// Value-free throughout - the probe carries no value to compare or print.
+fn check_cookie_expectation<D: AppDriver>(
+    driver: &mut D,
+    name: &str,
+    fact: &str,
+    deadline: Instant,
+) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
+    let mut fault: Option<flowproof_driver::DriverError> = None;
+    let mut last: Option<String> = None;
+    loop {
+        if let Some(probe) = tolerate(driver.probe_cookie(name), &mut fault)? {
+            match flowproof_driver::cookie_verdict(name, fact, &probe) {
+                Ok(()) => {
+                    // Passing `is secure` over plain http certifies nothing:
+                    // browsers exempt localhost. The step passes, and the run
+                    // says why it may not mean what it looks like.
+                    if let Some(url) = tolerate(driver.current_url(), &mut fault)? {
+                        if let Some(warning) =
+                            flowproof_driver::secure_over_http_warning(fact, &url)
+                        {
+                            eprintln!("{warning}");
+                        }
+                    }
+                    return Ok((Ok(()), None));
+                }
+                Err(reason) => last = Some(reason),
+            }
+        }
+        if Instant::now() >= deadline {
+            let Some(reason) = last else {
+                return Err(exhausted(fault));
+            };
+            return Ok((Err(reason), None));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
 /// `title_equals` / `title_contains`, the document-title siblings of the url
 /// pair. `true` means exact.
 fn title_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
@@ -900,6 +950,12 @@ fn check_assertion<D: AppDriver>(
                 return check_url_expectation(expect, raw, exact, deadline, || {
                     driver.current_url()
                 });
+            }
+            // A cookie is a fact about the surface, not a reading of its
+            // text: same poll, same recorded bound.
+            if let Some((name, fact)) = cookie_expectation(expect) {
+                let (name, fact) = (name.to_string(), fact.to_string());
+                return check_cookie_expectation(driver, &name, &fact, deadline);
             }
             // The title is another reading of the same surface, on the same
             // poll and the same recorded bound.

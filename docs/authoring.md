@@ -117,6 +117,10 @@ append `within <N>s` to any form to change the bound.
 | `page does not show <text>` | waits for it to be GONE |
 | `page url is <expected>` | the surface's URL. A `<expected>` starting with `/` compares the PATHNAME exactly, including the query only when `<expected>` carries a `?` and the fragment only when it carries a `#` (so `/orders` ignores `?page=2`); one containing `://` compares the whole URL exactly. Web flows only: a window or an OCR frame has no URL, and the error says so |
 | `page url contains <text>` | substring of the whole URL |
+| `cookie "<name>" exists` | the cookie is set. Web flows only; auto-waits, since a cookie lands with a response |
+| `cookie "<name>" is httpOnly` | not readable by page scripts - the control that stops an XSS exfiltrating a session |
+| `cookie "<name>" is secure` | only sent over TLS. See the honesty note below |
+| `cookie "<name>" is persistent` | carries an explicit expiry, so it outlives the browser session |
 | `page title is <expected>` | the document title, compared whole (trimmed). Auto-waits like `page url`, because an SPA sets `document.title` after the route commits. Web flows only: a desktop window has a window CAPTION, which is a different property, and the error says so |
 | `page title contains <text>` | substring of the document title |
 | `the [2nd ]"<label>" field contains <text>` | input VALUE, by label |
@@ -323,6 +327,41 @@ Limits in v1, each for a reason rather than for later:
 - **One frame, no combining.** A frame scope cannot be nested inside a
   container or cell scope yet; one context per target.
 - An ordinal cannot address a frame (`the 2nd iframe`): name it.
+### Cookie controls (web, security)
+
+"The session cookie is httpOnly" is a control that regresses SILENTLY: an
+auth library config changes, the cookie becomes readable by page scripts,
+and nothing about the UI looks different. These assertions pin it.
+
+```yaml
+control:
+  id: sec.session.cookie-flags
+  title: The session cookie is not readable by page scripts
+steps:
+  - assert: cookie "session_token" exists
+  - assert: cookie "session_token" is httpOnly
+  - assert: cookie "remember_me" is persistent
+```
+
+**A cookie's VALUE cannot be asserted, and never will be.** A session
+cookie's value is a credential. There is no `cookie "x" is <value>` form,
+no `contains`, and no redacted comparison: the moment a value can be
+compared, the expected value has to live in the trace and the failure
+message tempts someone to print the actual one. flowproof's traces are
+meant to be safe to commit and safe to attach to a bug report. A failure
+names the cookie, which fact failed, and - for a missing cookie - the NAMES
+of the cookies that were set, which is what fixes a typo.
+
+**The `is secure` honesty note.** Browsers exempt localhost from the secure
+requirement, so `is secure` can pass over plain http and certify nothing
+about production. The step still passes, because teams do run
+TLS-terminated staging, but the run prints a warning saying it does not
+certify production behaviour. Read that warning as a finding: a control
+that has only ever passed over http is an unverified control.
+
+Out of v1: `sameSite` (three-valued, so it does not fit the `is <flag>`
+shape), exact expiry timestamps (nondeterministic across record and
+replay), and domain/path matchers.
 
 ## Repeating a block (`foreach`)
 

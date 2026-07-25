@@ -371,6 +371,73 @@ pub fn verify_dialog(expected: &DialogArm, fired: Option<&FiredDialog>) -> Resul
 }
 
 /// Drives a single application window through UIA.
+/// The security-relevant facts about one cookie. Deliberately NO value: a
+/// session cookie's value is a credential, and a fact that cannot be
+/// compared cannot leak into a trace or a failure message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CookieFacts {
+    pub http_only: bool,
+    pub secure: bool,
+    /// Has an explicit expiry, so it outlives the browser session.
+    pub persistent: bool,
+}
+
+/// What a cookie probe learned. `Absent` carries the NAMES present on the
+/// page, which is the debugging affordance a failure needs - names only,
+/// never values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CookieProbe {
+    Found(CookieFacts),
+    Absent { present: Vec<String> },
+}
+
+/// Judge one cookie fact. Shared by record and replay so the two phases
+/// cannot disagree, and value-free by construction: the probe carries no
+/// value to compare or print.
+///
+/// Returns `Ok(())`, or the reason it failed. `present` names are the
+/// debugging affordance for a missing cookie - names only.
+pub fn cookie_verdict(name: &str, fact: &str, probe: &CookieProbe) -> Result<(), String> {
+    let facts = match probe {
+        CookieProbe::Found(facts) => facts,
+        CookieProbe::Absent { present } => {
+            let seen = if present.is_empty() {
+                "no cookies are set on this page".to_string()
+            } else {
+                format!("cookies present: {}", present.join(", "))
+            };
+            return Err(format!("cookie '{name}' was never set ({seen})"));
+        }
+    };
+    let (held, label) = match fact {
+        "exists" => (true, "present"),
+        "http_only" => (facts.http_only, "httpOnly"),
+        "secure" => (facts.secure, "secure"),
+        "persistent" => (facts.persistent, "persistent"),
+        other => return Err(format!("unknown cookie fact '{other}'")),
+    };
+    if held {
+        Ok(())
+    } else {
+        Err(format!("cookie '{name}' is set, but not {label}"))
+    }
+}
+
+/// `is secure` can pass without certifying anything: browsers exempt
+/// localhost from the secure requirement, so a cookie can carry the flag
+/// over plain http and prove nothing about production. The step still
+/// passes - teams do run TLS-terminated staging - but the run says so.
+pub fn secure_over_http_warning(fact: &str, url: &str) -> Option<String> {
+    if fact != "secure" || url.starts_with("https://") {
+        return None;
+    }
+    Some(format!(
+        "warning: `is secure` passed over {}, not https - browsers exempt localhost from the \
+         secure requirement, so this run does not certify production behaviour",
+        url.split('/').take(3).collect::<Vec<_>>().join("/")
+    ))
+}
+
 pub trait AppDriver {
     /// Record-time hints for a resolved table cell (#58). Only the web
     /// adapter overrides this - a cell is a DOM concept - and it does so
@@ -557,6 +624,16 @@ pub trait AppDriver {
     fn current_url(&mut self) -> Result<String, DriverError> {
         Err(DriverError::Uia(
             "this app has no URL: `page url` assertions are for web flows".into(),
+        ))
+    }
+
+    /// The security facts about one cookie, for `cookie "<name>" is ...`.
+    /// Web-only: cookies are a browser concept, and answering "absent" on a
+    /// surface that simply has no cookie jar would fail an `exists`
+    /// assertion for a reason the author never asked about.
+    fn probe_cookie(&mut self, _name: &str) -> Result<CookieProbe, DriverError> {
+        Err(DriverError::Uia(
+            "this app has no cookies: `cookie` assertions are for web flows".into(),
         ))
     }
 
@@ -1495,6 +1572,10 @@ impl AppDriver for Box<dyn AppDriver> {
         (**self).current_url()
     }
 
+    fn probe_cookie(&mut self, name: &str) -> Result<CookieProbe, DriverError> {
+        (**self).probe_cookie(name)
+    }
+
     fn page_title(&mut self) -> Result<String, DriverError> {
         (**self).page_title()
     }
@@ -2077,6 +2158,47 @@ mod stub_impl {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The verdict is shared by record and replay so the phases cannot
+    /// disagree, and it never has a value to leak.
+    #[test]
+    fn a_cookie_verdict_names_the_fact_that_failed_and_no_value() {
+        let facts = CookieFacts {
+            http_only: false,
+            secure: true,
+            persistent: false,
+        };
+        let probe = CookieProbe::Found(facts);
+        assert!(cookie_verdict("sid", "exists", &probe).is_ok());
+        assert!(cookie_verdict("sid", "secure", &probe).is_ok());
+        let err = cookie_verdict("sid", "http_only", &probe).expect_err("not httpOnly");
+        assert!(err.contains("not httpOnly"), "{err}");
+        assert!(err.contains("sid"), "{err}");
+    }
+
+    /// A missing cookie names the ones that ARE there, so a typo is
+    /// fixable - names only, because a cookie jar is full of credentials.
+    #[test]
+    fn a_missing_cookie_names_the_others_but_never_a_value() {
+        let probe = CookieProbe::Absent {
+            present: vec!["csrf".into(), "locale".into()],
+        };
+        let err = cookie_verdict("sid", "http_only", &probe).expect_err("absent");
+        assert!(err.contains("never set"), "{err}");
+        assert!(err.contains("csrf") && err.contains("locale"), "{err}");
+    }
+
+    /// `is secure` over plain http proves nothing: browsers exempt
+    /// localhost. It passes, but the run must say so.
+    #[test]
+    fn secure_over_http_warns_but_https_is_silent() {
+        assert!(secure_over_http_warning("secure", "https://app.example.com/x").is_none());
+        assert!(secure_over_http_warning("http_only", "http://localhost:3000/x").is_none());
+        let warning = secure_over_http_warning("secure", "http://localhost:3000/login")
+            .expect("http + secure must warn");
+        assert!(warning.contains("does not certify"), "{warning}");
+    }
 
     /// A non-web surface refuses a page-title assertion by name instead of
     /// answering an empty string, which would make the assertion quietly
@@ -2095,7 +2217,6 @@ mod tests {
         // The url sibling refuses for the same reason.
         assert!(NoOpDriver.current_url().is_err());
     }
-    use super::*;
 
     #[test]
     fn colors_compare_canonically() {
