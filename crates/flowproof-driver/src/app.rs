@@ -35,6 +35,11 @@ pub struct UiaSelector {
     /// like `cell`: the container is found first, then the ordinary
     /// resolution ladder runs rooted at it.
     pub scope: Option<ScopeQuery>,
+    /// An element addressed inside a SAME-ORIGIN iframe (`the "Total" in the
+    /// iframe "checkout"`). Web-only. The frame is resolved first and the
+    /// inner target is looked up in THAT document; a frame scope is a hard
+    /// fence, never a hint that falls back to the main document.
+    pub frame: Option<FrameQuery>,
 }
 
 /// A table cell to resolve by IDENTITY, not position (#58). `column` is the
@@ -77,6 +82,63 @@ pub struct ScopeQuery {
     /// Record-time hint: the container's own id, used as a fallback when
     /// the anchor text has since changed (the `row_id` analog).
     pub container_id: Option<String>,
+}
+/// An element inside a SAME-ORIGIN iframe. `frame` names the frame the way
+/// any target names itself: a human anchor matched against the iframe's
+/// title/name/id/aria-label, or an explicit `css:<selector>`. The inner
+/// keys are the ordinary target, resolved inside the frame's own document.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrameQuery {
+    pub frame: String,
+    pub inner_css: Option<String>,
+    pub inner_id: Option<String>,
+    pub inner_text: Option<String>,
+}
+
+/// THE frame-miss wording, so a failure reads the same whether it surfaced
+/// while recording or while replaying. Each state says what it actually is:
+/// waiting cannot fix a cross-origin wall, and a frame that is simply absent
+/// must name the frames that ARE there rather than leave a bare "not found".
+pub fn frame_miss(frame: &str, probe: &FrameProbe) -> String {
+    match probe {
+        FrameProbe::CrossOrigin => format!(
+            "iframe '{frame}' is cross-origin: flowproof reads same-origin frames only, so \
+             this step cannot be checked (it was not silently passed)"
+        ),
+        FrameProbe::NoFrame { available } => {
+            let seen = if available.is_empty() {
+                "no iframes are on the page".to_string()
+            } else {
+                format!("iframes present: {}", available.join(", "))
+            };
+            format!("iframe '{frame}' was never found ({seen})")
+        }
+        FrameProbe::Ready { .. } => format!("the target was not found inside iframe '{frame}'"),
+    }
+}
+
+/// What a frame probe learned. The three states are deliberately distinct so
+/// nothing is ever conflated into a silent pass:
+///
+/// - `Ready` - the frame was reached and read.
+/// - `NoFrame` - no iframe matched that name YET. A soft miss: the caller
+///   keeps polling, because a frame can still be appearing.
+/// - `CrossOrigin` - the frame exists but its document is walled off by the
+///   same-origin policy. A hard stop with its own message: waiting cannot
+///   fix it, and pretending the element is absent would be a lie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameProbe {
+    Ready {
+        /// Whether the inner target was found inside the frame.
+        present: bool,
+        /// Its text, when found (empty otherwise).
+        text: String,
+    },
+    NoFrame {
+        /// The iframes actually on the page, to name in the failure.
+        available: Vec<String>,
+    },
+    CrossOrigin,
 }
 
 impl ScopeQuery {
@@ -127,6 +189,7 @@ impl UiaSelector {
             && self.css.is_none()
             && self.cell.is_none()
             && self.scope.is_none()
+            && self.frame.is_none()
     }
 
     pub fn with_nth(mut self, nth: Option<u32>) -> Self {
@@ -391,6 +454,15 @@ pub trait AppDriver {
     /// text-only scoped payload still resolves by identity.
     fn scope_hints(&mut self, _selector: &UiaSelector) -> Result<Option<ScopeHints>, DriverError> {
         Ok(None)
+    }
+
+    /// Read the inner target INSIDE a same-origin iframe. Only the web
+    /// adapter implements it; every other surface says so rather than
+    /// answering as if the frame were not there, because a default `false`
+    /// would read as "the element is absent" and pass a `does not show`
+    /// assertion that was never actually checked.
+    fn probe_frame(&mut self, _query: &FrameQuery) -> Result<FrameProbe, DriverError> {
+        Err(DriverError::UnsupportedPlatform)
     }
 
     /// Launch (or attach to) the target application and wait until a window
@@ -1405,6 +1477,10 @@ impl AppDriver for Box<dyn AppDriver> {
     // falls back to the DEFAULT body, which no mock-driver test can catch.
     fn scope_hints(&mut self, selector: &UiaSelector) -> Result<Option<ScopeHints>, DriverError> {
         (**self).scope_hints(selector)
+    }
+
+    fn probe_frame(&mut self, query: &FrameQuery) -> Result<FrameProbe, DriverError> {
+        (**self).probe_frame(query)
     }
 
     fn launch(

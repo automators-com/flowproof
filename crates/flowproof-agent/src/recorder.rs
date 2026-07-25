@@ -249,6 +249,30 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
                 payload,
             }]
         }
+        // A framed target is structural too: the frame's own identity plus
+        // the ordinary inner target. The inner keys are PREFIXED for the
+        // same reason the scoped rung prefixes them - an engine that
+        // predates this rung must see an EMPTY selector and fail loudly,
+        // never resolve `inner_text` against the MAIN document and pass on
+        // an element that was never in the frame at all.
+        Target::Framed { frame, inner } => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("kind".into(), "framed".into());
+            payload.insert("frame".into(), frame.as_str().into());
+            match inner.as_ref() {
+                Target::Css(css) => payload.insert("inner_css".into(), css.as_str().into()),
+                Target::AutomationId(id) => payload.insert("inner_id".into(), id.as_str().into()),
+                Target::Text(text) => payload.insert("inner_text".into(), text.as_str().into()),
+                // The parser builds only those three inners for a frame.
+                _ => None,
+            };
+            vec![Selector {
+                tier: SelectorTier::Structural,
+                provenance: flowproof_trace::format::Adapter::Web,
+                confidence: Some(0.9),
+                payload,
+            }]
+        }
         // A text anchor IS the primary selector here: the element is
         // addressed the way a user sees it (visible text / placeholder).
         Target::Text(text) => {
@@ -802,6 +826,21 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
     }
 }
 
+/// Why a target was never read. For a framed target this asks the driver
+/// what it actually saw, so record-time failures carry the same reason
+/// replay reports; anything else keeps the ordinary wording.
+fn frame_miss_detail<D: AppDriver + ?Sized>(driver: &mut D, selector: &UiaSelector) -> String {
+    let Some(query) = &selector.frame else {
+        return "element not found".to_string();
+    };
+    match driver.probe_frame(query) {
+        Ok(probe) => flowproof_driver::frame_miss(&query.frame, &probe),
+        // The probe itself failing says nothing new: keep the plain answer
+        // rather than dressing an unknown up as a diagnosis.
+        Err(_) => "element not found".to_string(),
+    }
+}
+
 fn target_selector(target: &Target) -> Option<UiaSelector> {
     match target {
         Target::AutomationId(id) => Some(UiaSelector::automation_id(id.clone())),
@@ -813,6 +852,18 @@ fn target_selector(target: &Target) -> Option<UiaSelector> {
         // The surface is not an element — it resolves via `surface_text`.
         Target::Surface => None,
         Target::Nth(n, inner) => target_selector(inner).map(|s| s.with_nth(Some(*n))),
+        Target::Framed { frame, inner } => {
+            let inner_sel = target_selector(inner)?;
+            Some(UiaSelector {
+                frame: Some(flowproof_driver::FrameQuery {
+                    frame: frame.clone(),
+                    inner_css: inner_sel.css.clone(),
+                    inner_id: inner_sel.automation_id.clone(),
+                    inner_text: inner_sel.name.clone(),
+                }),
+                ..UiaSelector::default()
+            })
+        }
         Target::Cell { column, anchor } => Some(UiaSelector {
             cell: Some(flowproof_driver::CellQuery {
                 column: column.clone(),
@@ -2141,9 +2192,16 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                 (_, Some(text)) => {
                                     (format!("'{expected}'"), format!("{subject} shows '{text}'"))
                                 }
-                                (_, None) => {
-                                    (format!("'{expected}'"), "element not found".to_string())
-                                }
+                                // A framed target that was never read says
+                                // WHY - the frame was absent, walled off by
+                                // the same-origin policy, or reached without
+                                // the element inside it. A bare "not found"
+                                // would send someone hunting the page for an
+                                // element that was never meant to be there.
+                                (_, None) => (
+                                    format!("'{expected}'"),
+                                    frame_miss_detail(driver, targeted()),
+                                ),
                             };
                             return Err(RecordError::AssertMismatch {
                                 intent: spec_step.intent().to_string(),

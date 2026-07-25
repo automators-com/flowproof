@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Frames</title>
+    <style>
+      body { font-family: system-ui, sans-serif; }
+      iframe { width: 22rem; height: 7rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Checkout</h1>
+
+    <!-- The SAME text lives on the page and inside the frame. An assertion
+         scoped to the frame must read the frame's copy, and an unscoped one
+         must read the page's - that is the fence this fixture exists to
+         prove. -->
+    <p id="total" class="total">Total 10.00</p>
+
+    <iframe
+      title="checkout"
+      srcdoc="
+        <p id='total' class='total'>Total 42.00</p>
+        <p class='status'>Card accepted</p>
+        <input name='coupon' value='SAVE20'>
+      "
+    ></iframe>
+
+    <iframe title="receipt" srcdoc="<p class='status'>Receipt pending</p>"></iframe>
+  </body>
+</html>

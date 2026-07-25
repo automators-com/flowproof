@@ -52,6 +52,15 @@ pub enum Target {
         anchor: String,
         inner: Box<Target>,
     },
+    /// An element addressed inside a SAME-ORIGIN iframe:
+    /// `the "Total" in the iframe "checkout"`. The frame is found first by
+    /// its own identity (title/name/id/aria-label, or an explicit
+    /// `css:` selector), and the inner target resolves inside THAT
+    /// document - never the main one. Web-only, assertions only in v1.
+    Framed {
+        frame: String,
+        inner: Box<Target>,
+    },
 }
 
 impl Target {
@@ -560,7 +569,10 @@ fn ci_positions<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usiz
 /// this is the backstop for the variant nobody has written yet.
 pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        resolve_step_inner(app, step)
+        resolve_step_inner(app, step).and_then(|actions| {
+            reject_framed_actions(&step.intent(), &actions)?;
+            Ok(actions)
+        })
     }))
     .unwrap_or_else(|panic| {
         let detail = panic
@@ -573,6 +585,51 @@ pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, R
             format!("internal parser error ({detail}) — please report this step text"),
         ))
     })
+}
+
+/// v1 fences iframe scoping to ASSERTIONS. An assertion reads inside the
+/// frame's own document with plain DOM calls, which is deterministic; an
+/// ACTION clicks or types at composited coordinates resolved against the
+/// MAIN document, which would either miss the frame silently or act on the
+/// wrong element. Rather than ship an action that can pass without doing
+/// anything, a framed action is a parse error that says so.
+fn reject_framed_actions(step: &str, actions: &[ResolvedAction]) -> Result<(), RulesError> {
+    fn is_framed(target: &Target) -> bool {
+        match target {
+            Target::Framed { .. } => true,
+            Target::Nth(_, inner) | Target::Scoped { inner, .. } => is_framed(inner),
+            _ => false,
+        }
+    }
+    for action in actions {
+        let acting = match action {
+            ResolvedAction::Press { target, .. }
+            | ResolvedAction::TypeText { target, .. }
+            | ResolvedAction::Upload { target, .. }
+            | ResolvedAction::ContextClick { target, .. }
+            | ResolvedAction::DoubleClick { target, .. }
+            | ResolvedAction::Hover { target, .. }
+            | ResolvedAction::Clear { target }
+            | ResolvedAction::Capture { target, .. }
+            | ResolvedAction::SetChecked { target, .. } => target,
+            // Scroll's target is optional (a bare `Scroll to the bottom`).
+            ResolvedAction::Scroll {
+                target: Some(target),
+                ..
+            } => target,
+            _ => continue,
+        };
+        if is_framed(acting) {
+            return Err(unresolvable(
+                step,
+                "iframe scoping is supported for ASSERTIONS in v1: an action inside a \
+                 frame is not yet supported, because it would resolve against the main \
+                 document and could pass without acting - assert inside the frame, and \
+                 drive the action from the page itself",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
@@ -819,8 +876,19 @@ fn parse_scroll_edge(s: &str) -> Option<ScrollTo> {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Scope {
-    Cell { anchor: String },
-    Container { container: String, anchor: String },
+    Cell {
+        anchor: String,
+    },
+    Container {
+        container: String,
+        anchor: String,
+    },
+    /// `in|inside the iframe "<frame>"` - a whole separate document, not a
+    /// narrower root in this one. It is a Scope because it occupies the
+    /// same target-tail slot and obeys the same one-per-target rule.
+    Frame {
+        frame: String,
+    },
 }
 
 /// A container must name itself: the bare word `item` (the closed list of
@@ -920,6 +988,60 @@ fn parse_container_phrase(after: &str) -> Option<Result<(Scope, String), String>
     first_error.map(Err)
 }
 
+/// `iframe "<frame>"` given the text after `in the `/`inside the `. The frame
+/// names itself the way any target does: a quoted human anchor matched
+/// against the iframe's own title/name/id/aria-label, or an explicit
+/// `"css:<selector>"`. `None` means this was not an iframe phrase at all
+/// (ordinary prose that happened to say "in the"), which is not an error.
+fn parse_frame_phrase(after: &str) -> Option<Result<(Scope, String), String>> {
+    let after = strip_prefix_ci(after.trim_start(), "iframe ")?;
+    let Some(quoted) = after.trim_start().strip_prefix('"') else {
+        return Some(Err(FRAME_FORM.into()));
+    };
+    let Some((frame, rest)) = quoted_label(quoted) else {
+        return Some(Err("unterminated iframe name".into()));
+    };
+    if frame.trim().is_empty() {
+        return Some(Err(FRAME_FORM.into()));
+    }
+    Some(Ok((
+        Scope::Frame {
+            frame: frame.to_string(),
+        },
+        rest.trim().to_string(),
+    )))
+}
+
+/// An iframe must be NAMED: a quoted human anchor (its title/name/id/
+/// aria-label) or a quoted `css:` selector. An unnamed `in the iframe` is a
+/// parse error rather than a guess at which frame was meant.
+const FRAME_FORM: &str = "an iframe must be named: `in the iframe \"<title>\"` or \
+                          `in the iframe \"css:<selector>\"`";
+
+/// Find an iframe phrase anywhere in `tail` and cut it OUT, exactly as
+/// `strip_container_suffix` does for containers - so a role noun before the
+/// phrase and a predicate after it end up adjacent.
+fn strip_frame_suffix(tail: &str) -> Option<Result<(Scope, String), String>> {
+    for (pos, keyword) in container_keyword_positions(tail) {
+        let after = &tail[pos + keyword.len()..];
+        match parse_frame_phrase(after) {
+            None => continue,
+            Some(Err(reason)) => return Some(Err(reason)),
+            Some(Ok((scope, rest))) => {
+                let head = tail[..pos].trim();
+                let rest = rest.trim();
+                let spliced = match (head.is_empty(), rest.is_empty()) {
+                    (true, _) => rest.to_string(),
+                    (false, true) => head.to_string(),
+                    (false, false) => format!("{head} {rest}"),
+                };
+                return Some(Ok((scope, spliced)));
+            }
+        }
+    }
+    None
+}
+
 /// Find a container phrase anywhere in `tail` and cut it OUT, returning the
 /// scope plus the tail without it - so a role noun before the phrase and a
 /// predicate after it end up adjacent, and the caller's own dispatch is
@@ -955,7 +1077,9 @@ fn strip_container_suffix(tail: &str) -> Option<Result<(Scope, String), String>>
 /// anything else and is malformed, which is a parse error rather than a
 /// silent page-wide target.
 fn strip_scope_suffix(tail: &str) -> Option<Result<(Scope, String), String>> {
-    let found = strip_cell_suffix(tail).or_else(|| strip_container_suffix(tail))?;
+    let found = strip_cell_suffix(tail)
+        .or_else(|| strip_frame_suffix(tail))
+        .or_else(|| strip_container_suffix(tail))?;
     let (scope, rest) = match found {
         Ok(parsed) => parsed,
         Err(reason) => return Some(Err(reason)),
@@ -972,6 +1096,8 @@ fn strip_scope_suffix(tail: &str) -> Option<Result<(Scope, String), String>> {
 
 const ORDINAL_SCOPE: &str = "an ordinal cannot address a scoped target: the target is \
                              identified by its container and anchor, not by position";
+const ORDINAL_FRAME: &str = "an ordinal cannot address an iframe: name the frame by its \
+                             title, name, or id, not by position";
 const ORDINAL_CELL: &str = "an ordinal cannot address a cell: a cell is identified by its \
                             column and row anchor, not by position";
 
@@ -1127,6 +1253,7 @@ fn scoped_target(
             match scope {
                 Scope::Cell { .. } => ORDINAL_CELL,
                 Scope::Container { .. } => ORDINAL_SCOPE,
+                Scope::Frame { .. } => ORDINAL_FRAME,
             },
         ));
     }
@@ -1138,6 +1265,10 @@ fn scoped_target(
         Scope::Container { container, anchor } => Target::Scoped {
             container,
             anchor,
+            inner: Box::new(target_from_label(label)),
+        },
+        Scope::Frame { frame } => Target::Framed {
+            frame,
             inner: Box::new(target_from_label(label)),
         },
     })
@@ -4372,6 +4503,111 @@ mod role_noun_tail_tests {
     fn a_noun_without_a_state_tail_is_still_an_error() {
         let err = assert_step(r#"the "Username" field is huge"#).expect_err("must not resolve");
         assert!(err.to_string().contains("role noun"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod framed_target_tests {
+    use super::*;
+
+    fn plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step("web", &SpecStep::Plain(text.to_string()))
+    }
+
+    fn assert_step(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: text.to_string(),
+            },
+        )
+    }
+
+    #[test]
+    fn an_iframe_scope_parses_by_name_and_by_selector() {
+        for text in [
+            r#"the "Total" in the iframe "checkout" shows 42.00"#,
+            r#"the "Total" inside the iframe "checkout" shows 42.00"#,
+        ] {
+            assert!(
+                matches!(
+                    assert_step(text).as_deref(),
+                    Ok([ResolvedAction::AssertText {
+                        target: Target::Framed { frame, .. },
+                        ..
+                    }]) if frame == "checkout"
+                ),
+                "{text} must parse as a framed target"
+            );
+        }
+        // A `css:` frame travels exactly as written, like a css container.
+        assert!(matches!(
+            assert_step(r#"the "Total" in the iframe "css:#pay" shows 42.00"#).as_deref(),
+            Ok([ResolvedAction::AssertText {
+                target: Target::Framed { frame, .. },
+                ..
+            }]) if frame == "css:#pay"
+        ));
+    }
+
+    #[test]
+    fn the_frame_scope_composes_with_the_ordinary_predicates() {
+        // The phrase is CUT OUT of the tail, so the predicate after it
+        // parses exactly as it would unscoped - no per-predicate wiring.
+        assert!(matches!(
+            assert_step(r#"the "Status" in the iframe "checkout" is visible"#).as_deref(),
+            Ok([ResolvedAction::AssertPresence {
+                target: Target::Framed { .. },
+                ..
+            }])
+        ));
+        assert!(matches!(
+            assert_step(r#"the "Coupon" field in the iframe "checkout" contains SAVE20"#)
+                .as_deref(),
+            Ok([ResolvedAction::AssertText {
+                target: Target::Framed { .. },
+                ..
+            }])
+        ));
+    }
+
+    #[test]
+    fn an_unnamed_or_ordinal_frame_is_a_parse_error() {
+        let err = assert_step(r#"the "Total" in the iframe shows 42.00"#)
+            .expect_err("an unnamed frame cannot be guessed at");
+        assert!(err.to_string().contains("an iframe must be named"), "{err}");
+        let err = assert_step(r#"the 2nd "Total" in the iframe "checkout" shows 42.00"#)
+            .expect_err("position does not identify a frame");
+        assert!(err.to_string().contains("ordinal cannot address"), "{err}");
+    }
+
+    #[test]
+    fn an_action_inside_a_frame_is_rejected_rather_than_silently_missing() {
+        // v1 is assertions-only: an action would resolve against the MAIN
+        // document, so it could "succeed" without touching the frame. That
+        // must be a loud parse error, never a green step.
+        for text in [
+            r#"Click the "Pay" in the iframe "checkout""#,
+            r#"Type "x" into the "Coupon" in the iframe "checkout""#,
+            r#"Hover over the "Pay" in the iframe "checkout""#,
+        ] {
+            let err = plain(text).expect_err("a framed action must be rejected");
+            assert!(
+                err.to_string().contains("ASSERTIONS in v1"),
+                "{text}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_frame_cannot_be_combined_with_another_scope_yet() {
+        // One context per target: the nesting rule that already rejects
+        // scope-in-scope covers frame-in-scope too, with the same message.
+        let err = assert_step(
+            r#"the "Amount" in the item containing "Invoice 4711" in the iframe "checkout" shows 50"#,
+        )
+        .expect_err("two scopes on one target");
+        assert!(err.to_string().contains("cannot be nested"), "{err}");
     }
 }
 

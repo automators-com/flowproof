@@ -20,12 +20,13 @@ pub mod window;
 
 pub use app::{
     absolute_url, attribute_value_matches, capture_matches, cookie_verdict, count_matching,
-    numeric_value, parse_css_color, resolve_app, secure_over_http_warning, split_command_line,
-    style_matches, text_contains, text_occurrences, url_matches, url_origin, verify_dialog,
-    AppDriver, AppTarget, CellHints, CellQuery, CookieFacts, CookieProbe, DebugBundle, DialogArm,
-    DialogDisposition, FiredDialog, KeyMod, NoOpDriver, PixelRect, ScopeHints, ScopeQuery,
-    ScrollTo, UiaAppDriver, UiaSelector, WebBrowserConfig, WebClock, WebMock, WebSession,
-    WebViewport, COUNT_DIAGNOSTIC_CAP, STYLE_PROPS,
+    frame_miss, numeric_value, parse_css_color, resolve_app, secure_over_http_warning,
+    split_command_line, style_matches, text_contains, text_occurrences, url_matches, url_origin,
+    verify_dialog, AppDriver, AppTarget, CellHints, CellQuery, CookieFacts, CookieProbe,
+    DebugBundle, DialogArm, DialogDisposition, FiredDialog, FrameProbe, FrameQuery, KeyMod,
+    NoOpDriver, PixelRect, ScopeHints, ScopeQuery, ScrollTo, UiaAppDriver, UiaSelector,
+    WebBrowserConfig, WebClock, WebMock, WebSession, WebViewport, COUNT_DIAGNOSTIC_CAP,
+    STYLE_PROPS,
 };
 pub use backend::PlatformBackend;
 pub use recording::{FrameRef, Recording, RunRecorder, StepTiming};

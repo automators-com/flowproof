@@ -200,6 +200,75 @@ const SCOPE_HINTS: &str = r#"function(){
   return JSON.stringify({ id: id });
 }"#;
 
+/// The frame prober, run in the page. It answers THREE distinct states in
+/// one round trip, so the caller never has to conflate them:
+/// `no_frame:<names>`, `cross_origin`, or `ok:<json>` with the inner
+/// target's presence and text. The inner lookup happens INSIDE the frame's
+/// own document: there is deliberately no fallback to the main document, so
+/// a target that is not in the frame reads as absent rather than silently
+/// matching a same-named element on the page outside it.
+/// The frame-miss wording lives in the driver crate so record time and
+/// replay report the same reason.
+fn cross_origin(frame: &str) -> DriverError {
+    DriverError::Browser(flowproof_driver::frame_miss(
+        frame,
+        &flowproof_driver::FrameProbe::CrossOrigin,
+    ))
+}
+
+const FRAME_PROBE: &str = r#"function(FRAME, CSS, ID, TEXT){
+  function nameOf(f){
+    return f.getAttribute('title') || f.getAttribute('name') || f.getAttribute('id')
+      || f.getAttribute('aria-label') || '';
+  }
+  var frames = Array.prototype.slice.call(document.querySelectorAll('iframe, frame'));
+  var chosen = null;
+  if (FRAME.indexOf('css:') === 0){
+    try { chosen = document.querySelector(FRAME.slice(4)); } catch (e) { chosen = null; }
+    if (chosen && chosen.tagName !== 'IFRAME' && chosen.tagName !== 'FRAME') chosen = null;
+  } else {
+    var exact = frames.filter(function(f){ return nameOf(f) === FRAME; });
+    var loose = frames.filter(function(f){ return nameOf(f).indexOf(FRAME) !== -1; });
+    chosen = exact.length ? exact[0] : (loose.length === 1 ? loose[0] : null);
+  }
+  if (!chosen){
+    return 'no_frame:' + JSON.stringify(frames.map(nameOf).filter(function(n){ return n; }));
+  }
+  var doc = null;
+  // A cross-origin frame throws OR yields null - both mean walled off.
+  try { doc = chosen.contentDocument; } catch (e) { doc = null; }
+  if (!doc) return 'cross_origin';
+  var el = null;
+  if (CSS){ try { el = doc.querySelector(CSS); } catch (e) { el = null; } }
+  else if (ID){ try { el = doc.getElementById(ID); } catch (e) { el = null; } }
+  else if (TEXT){
+    var all = Array.prototype.slice.call(doc.querySelectorAll('*'));
+    // Innermost element whose own text is the anchor, mirroring the
+    // page-level text rung.
+    var hits = all.filter(function(e){
+      return (e.textContent || '').indexOf(TEXT) !== -1
+        && !Array.prototype.some.call(e.children, function(c){
+             return (c.textContent || '').indexOf(TEXT) !== -1; });
+    });
+    el = hits.length ? hits[0] : null;
+    if (!el){
+      // Inputs show their anchor as a value/placeholder, not as text.
+      var fields = Array.prototype.slice.call(doc.querySelectorAll('input, textarea, select'));
+      var f = fields.filter(function(e){
+        return (e.placeholder || '') === TEXT || (e.name || '') === TEXT
+          || (e.getAttribute('aria-label') || '') === TEXT;
+      });
+      el = f.length ? f[0] : null;
+    }
+  }
+  if (!el) return 'ok:' + JSON.stringify({ present: false, text: '' });
+  var tag = el.tagName;
+  var text = (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')
+    ? el.value
+    : (el.innerText !== undefined ? el.innerText : (el.textContent || ''));
+  return 'ok:' + JSON.stringify({ present: true, text: text });
+}"#;
+
 /// The Date-pinning shim (GAP-P), injected before any page script. It reads
 /// `at` with the REAL date parser, computes a fixed offset against the real
 /// clock ONCE, and overrides `Date` so the page's "now" starts at `at` and
@@ -1562,6 +1631,17 @@ impl AppDriver for WebAppDriver {
     }
 
     fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        // A framed target lives in another document, so the ordinary
+        // locator cannot see it. Answering `false` here would be a lie
+        // that reads as "absent" - the probe answers from inside the
+        // frame, and a cross-origin frame is an error, not a `false`.
+        if let Some(query) = &selector.frame {
+            return match self.probe_frame(query)? {
+                flowproof_driver::FrameProbe::Ready { present, .. } => Ok(present),
+                flowproof_driver::FrameProbe::NoFrame { .. } => Ok(false),
+                flowproof_driver::FrameProbe::CrossOrigin => Err(cross_origin(&query.frame)),
+            };
+        }
         let Some(locator) = Self::locator_of(selector) else {
             return Ok(false); // non-web ladder rungs simply don't match
         };
@@ -1966,7 +2046,81 @@ impl AppDriver for WebAppDriver {
         state.unexpected.take()
     }
 
+    /// Probe a same-origin iframe: resolve the frame, then look the inner
+    /// target up INSIDE its document. The three states come back distinct so
+    /// the caller can auto-wait on a frame that has not rendered yet, stop
+    /// hard on a cross-origin one, and never mistake either for "absent".
+    fn probe_frame(
+        &mut self,
+        query: &flowproof_driver::FrameQuery,
+    ) -> Result<flowproof_driver::FrameProbe, DriverError> {
+        use flowproof_driver::FrameProbe;
+        let js = |v: &Option<String>| {
+            v.as_deref()
+                .map(|x| serde_json::Value::from(x).to_string())
+                .unwrap_or_else(|| "null".into())
+        };
+        let call = format!(
+            "({FRAME_PROBE})({frame},{css},{id},{text})",
+            frame = serde_json::Value::from(query.frame.as_str()),
+            css = js(&query.inner_css),
+            id = js(&query.inner_id),
+            text = js(&query.inner_text),
+        );
+        let status = self
+            .tab()?
+            .evaluate(&call, false)
+            .map_err(|e| web_err("probing an iframe", e))?
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        if status == "cross_origin" {
+            return Ok(FrameProbe::CrossOrigin);
+        }
+        if let Some(names) = status.strip_prefix("no_frame:") {
+            let available: Vec<String> = serde_json::from_str(names).unwrap_or_default();
+            return Ok(FrameProbe::NoFrame { available });
+        }
+        let Some(payload) = status.strip_prefix("ok:") else {
+            return Err(DriverError::Browser(format!(
+                "could not probe iframe '{}' ({status})",
+                query.frame
+            )));
+        };
+        let parsed: serde_json::Value = serde_json::from_str(payload)
+            .map_err(|e| DriverError::Browser(format!("malformed iframe probe: {e}")))?;
+        Ok(FrameProbe::Ready {
+            present: parsed
+                .get("present")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            text: parsed
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        })
+    }
+
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
+        if let Some(query) = &selector.frame {
+            return match self.probe_frame(query)? {
+                flowproof_driver::FrameProbe::Ready {
+                    present: true,
+                    text,
+                } => Ok(text),
+                flowproof_driver::FrameProbe::Ready { present: false, .. } => {
+                    Err(DriverError::Browser(format!(
+                        "the target was not found inside iframe '{}'",
+                        query.frame
+                    )))
+                }
+                probe @ flowproof_driver::FrameProbe::NoFrame { .. } => Err(DriverError::Browser(
+                    flowproof_driver::frame_miss(&query.frame, &probe),
+                )),
+                flowproof_driver::FrameProbe::CrossOrigin => Err(cross_origin(&query.frame)),
+            };
+        }
         let locator = Self::locator(selector)?;
         // Inner text covers most elements; inputs expose their VALUE — the
         // text a user sees in the box (Playwright's toHaveValue reading).
