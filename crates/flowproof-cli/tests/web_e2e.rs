@@ -2137,6 +2137,106 @@ fn appears_zero_times_passes_on_a_real_page() {
 /// The init script reruns on every document (CDP semantics), so without
 /// the sessionStorage seed-once sentinel the navigation re-seeds and
 /// silently resets the cart to "[4]" - failing the final assert.
+/// Serve one page on its own loopback PORT, which is its own ORIGIN.
+/// Returns the base url; the thread dies with the test.
+fn serve_page(html: &'static str) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(16) {
+            let Ok(mut stream) = stream else { continue };
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                html.len(),
+                html
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// The seed must run ONCE, and "once" cannot be enforced from inside the
+/// page: it used to be guarded by a `sessionStorage` sentinel, which is
+/// per ORIGIN, so any navigation crossing an origin could not see it and
+/// re-seeded - silently overwriting whatever the flow had changed.
+///
+/// Two loopback PORTS are two origins, so this fails on every platform if
+/// the guard lives in page storage, and passes only when the seed script is
+/// dropped after the first document. The second origin must show MISSING:
+/// the seed belongs to the first document alone.
+#[test]
+fn the_seed_does_not_follow_a_cross_origin_navigation() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping cross-origin seed E2E: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    const PAGE: &str = r#"<!doctype html><html><body><div id="cart"></div><script>
+        document.getElementById('cart').textContent =
+            'cart: ' + (localStorage.getItem('cart-contents') || 'MISSING');
+    </script></body></html>"#;
+    let origin_a = serve_page(PAGE);
+    let origin_b = serve_page(PAGE);
+
+    let dir = std::env::temp_dir().join("flowproof-web-seed-cross-origin-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("cross-origin.trace.jsonl");
+
+    let mut local_storage = std::collections::BTreeMap::new();
+    local_storage.insert("cart-contents".to_string(), "[4]".to_string());
+    let spec = flowproof_agent::FlowSpec {
+        name: "Seed does not cross an origin".into(),
+        app: "web".into(),
+        url: Some(origin_a.clone()),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: Some(flowproof_agent::SessionRef::Inline(
+            flowproof_trace::format::SessionSetup {
+                cookies: vec![],
+                local_storage,
+            },
+        )),
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        agent: None,
+        tools: Vec::new(),
+        mcp: Vec::new(),
+        strict: false,
+        control: None,
+        steps: vec![
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows cart: [4]".into(),
+            },
+            flowproof_agent::SpecStep::Plain(format!("Go to {origin_b}")),
+            // The seed is a fixture for the flow's FIRST document, not a
+            // rule the browser carries everywhere.
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows cart: MISSING".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "the seed must not re-run on a second origin: {report:#?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn seeded_fixture_mutation_survives_navigation() {
     if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {

@@ -504,6 +504,8 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                         crate::rules::CookieFact::Persistent => "persistent",
                     },
                 }),
+                TextMatch::TitleEquals => serde_json::json!({ "title_equals": expected }),
+                TextMatch::TitleContains => serde_json::json!({ "title_contains": expected }),
                 TextMatch::Empty(want_empty) => serde_json::json!({ "value_empty": want_empty }),
             };
             expect["timeout_ms"] = serde_json::json!(timeout_ms);
@@ -717,6 +719,9 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             header,
             header_equals,
             header_contains,
+            count,
+            count_at_least,
+            retry,
             timeout_ms,
         } => {
             let mut expect = serde_json::Map::new();
@@ -741,6 +746,17 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             }
             if let Some(want) = header_contains {
                 expect.insert("header_contains".into(), want.as_str().into());
+            }
+            if let Some(n) = count {
+                expect.insert("count".into(), (*n).into());
+            }
+            if let Some(n) = count_at_least {
+                expect.insert("count_at_least".into(), (*n).into());
+            }
+            // Only written when the author overrode the method-derived
+            // policy, so a trace without an override is byte-identical.
+            if let Some(retry) = retry {
+                expect.insert("retry".into(), (*retry).into());
             }
             expect.insert("timeout_ms".into(), (*timeout_ms).into());
             (
@@ -1180,6 +1196,18 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
             status,
             expect,
         }) => Some(ResolvedAction::AssertApi {
+            count: expect
+                .as_ref()
+                .and_then(|e| e.get("count"))
+                .and_then(|v| v.as_u64()),
+            count_at_least: expect
+                .as_ref()
+                .and_then(|e| e.get("count_at_least"))
+                .and_then(|v| v.as_u64()),
+            retry: expect
+                .as_ref()
+                .and_then(|e| e.get("retry"))
+                .and_then(|v| v.as_bool()),
             method: request.method.clone(),
             url: request.url.clone(),
             headers: request.headers.clone(),
@@ -1368,22 +1396,41 @@ fn poll_oob(
     timeout_ms: u64,
     intent: &str,
 ) -> Result<Option<String>, RecordError> {
+    // A mutation is sent ONCE: re-firing it to wait for convergence would
+    // deliver the write again on every tick (see oob::is_retryable).
+    let retryable = flowproof_driver::oob::is_retryable(probe);
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         match flowproof_driver::oob::check(probe)? {
             Ok(body) => return Ok(body),
             Err(reason) => {
-                if std::time::Instant::now() >= deadline {
+                if !retryable || std::time::Instant::now() >= deadline {
+                    let actual = if retryable {
+                        reason
+                    } else {
+                        format!("{reason} ({})", flowproof_driver::oob::RETRY_HINT)
+                    };
                     return Err(RecordError::AssertMismatch {
                         intent: intent.to_string(),
                         expected: intent.to_string(),
-                        actual: reason,
+                        actual,
                     });
                 }
                 std::thread::sleep(ASSERT_POLL_INTERVAL);
             }
         }
     }
+}
+
+/// Build the probe's count from the two spec keys. Parse rejects setting
+/// both, so at most one is Some here.
+fn array_count(
+    count: Option<u64>,
+    count_at_least: Option<u64>,
+) -> Option<flowproof_driver::oob::ArrayCount> {
+    count
+        .map(flowproof_driver::oob::ArrayCount::Exactly)
+        .or_else(|| count_at_least.map(flowproof_driver::oob::ArrayCount::AtLeast))
 }
 
 /// Capture names currently in scope, sorted, for a "you meant one of these"
@@ -1499,6 +1546,10 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
         // A cookie fact is not a reading of any text, so it never reaches
         // the text comparison: the recorder probes the cookie jar directly.
         TextMatch::Cookie(_) => false,
+        // A title is compared as plain text, not with the url's path/query
+        // rules: it is a human-facing string, not a structured locator.
+        TextMatch::TitleEquals => actual.trim() == expected.trim(),
+        TextMatch::TitleContains => flowproof_driver::text_contains(actual, expected),
         TextMatch::Empty(want_empty) => actual.trim().is_empty() == want_empty,
     }
 }
@@ -1911,6 +1962,9 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
                 }
                 ResolvedAction::AssertApi {
+                    count,
+                    count_at_least,
+                    retry,
                     method,
                     url,
                     headers,
@@ -1928,6 +1982,8 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     // ${VAR}; only the live probe sees values — including
                     // header tokens and body string leaves.
                     let probe = flowproof_driver::oob::OobProbe::Api {
+                        count: array_count(*count, *count_at_least),
+                        retry: *retry,
                         method: method.clone(),
                         url: flowproof_trace::secret::resolve_refs(url)?,
                         body: match body {
@@ -2001,10 +2057,13 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     let wanted = flowproof_trace::secret::resolve_refs(expected)?;
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
+                        // ONE chain over every surface reading the grammar
+                        // has: a cookie fact, the url, the title, the whole
+                        // surface, or a resolved element.
                         let actual = if let TextMatch::Cookie(fact) = matcher {
-                            // A cookie is not text: probe the jar, judge
-                            // with the shared verdict, and keep polling
-                            // while it is still landing.
+                            // A cookie is not text: probe the jar, judge with
+                            // the shared verdict, and keep polling while it is
+                            // still landing.
                             let fact = match fact {
                                 crate::rules::CookieFact::Exists => "exists",
                                 crate::rules::CookieFact::HttpOnly => "http_only",
@@ -2040,6 +2099,13 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                             // The URL is a different reading of the surface,
                             // not a different target: same poll, same bound.
                             Some(driver.current_url()?)
+                        } else if matches!(
+                            matcher,
+                            TextMatch::TitleEquals | TextMatch::TitleContains
+                        ) {
+                            // The title is another reading of the same surface,
+                            // on the same poll and bound.
+                            Some(driver.page_title()?)
                         } else if selector.is_none() {
                             Some(driver.surface_text()?)
                         } else if driver.element_exists(targeted())? {

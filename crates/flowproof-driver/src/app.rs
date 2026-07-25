@@ -565,6 +565,19 @@ pub trait AppDriver {
         ))
     }
 
+    /// The surface's document title, for `page title is|contains`. Web-only
+    /// on purpose: a desktop window HAS a caption, but a caption is not a
+    /// document title (a browser's own caption carries the app-name suffix),
+    /// so one phrase must not silently mean two different reads. A desktop
+    /// caption gets its own phrase if a flow ever needs one.
+    fn page_title(&mut self) -> Result<String, DriverError> {
+        Err(DriverError::Uia(
+            "this app has no page title: `page title` assertions are for web flows \
+             (a windows app has a window caption, which is a different thing)"
+                .into(),
+        ))
+    }
+
     /// Stage session state (cookies, localStorage) to be applied by the
     /// NEXT `launch` before the page loads.
     fn stage_session(&mut self, _session: WebSession) -> Result<(), DriverError> {
@@ -1487,6 +1500,10 @@ impl AppDriver for Box<dyn AppDriver> {
         (**self).probe_cookie(name)
     }
 
+    fn page_title(&mut self) -> Result<String, DriverError> {
+        (**self).page_title()
+    }
+
     fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
         (**self).stage_session(session)
     }
@@ -2065,6 +2082,7 @@ mod stub_impl {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     /// The verdict is shared by record and replay so the phases cannot
     /// disagree, and it never has a value to leak.
@@ -2105,7 +2123,24 @@ mod tests {
             .expect("http + secure must warn");
         assert!(warning.contains("does not certify"), "{warning}");
     }
-    use super::*;
+
+    /// A non-web surface refuses a page-title assertion by name instead of
+    /// answering an empty string, which would make the assertion quietly
+    /// pass. Same rule the url sibling follows.
+    #[test]
+    fn a_non_web_surface_refuses_a_page_title_read() {
+        let err = NoOpDriver
+            .page_title()
+            .expect_err("no page title off the web");
+        let message = err.to_string();
+        assert!(message.contains("page title"), "{message}");
+        assert!(
+            message.contains("window caption"),
+            "the refusal must say what a desktop app has INSTEAD: {message}"
+        );
+        // The url sibling refuses for the same reason.
+        assert!(NoOpDriver.current_url().is_err());
+    }
 
     #[test]
     fn colors_compare_canonically() {

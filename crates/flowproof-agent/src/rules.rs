@@ -297,6 +297,12 @@ pub enum ResolvedAction {
         header_equals: Option<String>,
         /// Expected header substring; may carry a raw `${VAR}` ref.
         header_contains: Option<String>,
+        /// Exact element count for the array at `body_json`.
+        count: Option<u64>,
+        /// Minimum element count for the array at `body_json`.
+        count_at_least: Option<u64>,
+        /// Override the method-derived retry policy (see `oob::is_retryable`).
+        retry: Option<bool>,
         timeout_ms: u64,
     },
 }
@@ -354,6 +360,12 @@ pub enum TextMatch {
     /// credential, and a fact that cannot be compared cannot leak into a
     /// trace or a failure message.
     Cookie(CookieFact),
+    /// The surface's document title equals the expectation -
+    /// `page title is Settings`. Web-only: a desktop window has a caption,
+    /// which is a different property under a different (future) phrase.
+    TitleEquals,
+    /// The surface's document title contains the expectation.
+    TitleContains,
     /// The target's trimmed visible text (or input value) is empty
     /// (`true`) or non-empty (`false`). A first-class predicate: `shows ""`
     /// cannot express it - empty expected text is rejected and
@@ -614,6 +626,33 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                     ));
                 }
             }
+            // A count asks how many elements are at `body_json`; without a
+            // path there is nothing to count (mirrors `equals`).
+            if (assert_api.count.is_some() || assert_api.count_at_least.is_some())
+                && assert_api.body_json.is_none()
+            {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api count/count_at_least requires body_json (the path to the array)",
+                ));
+            }
+            // Exactly-N and at-least-N are one question asked two ways.
+            if assert_api.count.is_some() && assert_api.count_at_least.is_some() {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api sets at most one of count/count_at_least",
+                ));
+            }
+            // `equals` wants a scalar leaf, a count wants an array: asking for
+            // both at one path is a contradiction, not a refinement.
+            if (assert_api.count.is_some() || assert_api.count_at_least.is_some())
+                && assert_api.equals.is_some()
+            {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api count/count_at_least cannot pair with equals (a count needs an array, equals needs a scalar leaf)",
+                ));
+            }
             // `header_equals`/`header_contains` are response-side checks against
             // the header named by `header`; without a name there is nothing to
             // match (mirrors `equals` requiring `body_json`).
@@ -644,6 +683,9 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                 header: assert_api.header.clone(),
                 header_equals: assert_api.header_equals.clone(),
                 header_contains: assert_api.header_contains.clone(),
+                count: assert_api.count,
+                count_at_least: assert_api.count_at_least,
+                retry: assert_api.retry,
                 timeout_ms: assert_api
                     .timeout_seconds
                     .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
@@ -1219,6 +1261,35 @@ mod assertions {
             }]);
         }
 
+        // `page title is <expected>` / `page title contains <text>`, the
+        // document-title siblings of the url pair. They auto-wait for the
+        // same reason: an SPA sets `document.title` after the route
+        // commits, so a single read would be racy by construction.
+        if let Some(rest) = strip_prefix_ci(trimmed, "page title is ") {
+            let expected = rest.trim();
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected title"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: expected.to_string(),
+                matcher: TextMatch::TitleEquals,
+                timeout_ms,
+            }]);
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "page title contains ") {
+            let expected = rest.trim();
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected title"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: expected.to_string(),
+                matcher: TextMatch::TitleContains,
+                timeout_ms,
+            }]);
+        }
+
         if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
             let (expected, count) = split_count(rest.trim());
             if expected.is_empty() {
@@ -1552,7 +1623,8 @@ mod assertions {
         Err(unresolvable(
             trimmed,
             "expected '[the ]page shows <text>[ N times]', '[the ]page url is|contains \
-             <url>', 'the \"<target>\" checkbox is [not] checked', \
+             <url>', '[the ]page title is|contains <title>', \
+             'the \"<target>\" checkbox is [not] checked', \
              '[the ]page does not show \
              <text>', 'the \"<label>\" field contains <text>', 'the \"<target>\" shows \
              <text>', 'the \"<target>\" is [not] visible', 'the \"<target>\" is \
@@ -2564,6 +2636,48 @@ mod tests {
         assert!(
             err.to_string().contains("header"),
             "names the missing field: {err}"
+        );
+    }
+
+    #[test]
+    fn count_without_body_json_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec =
+            serde_yaml::from_str("request: GET ${API}/x\ncount: 3\n").expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("count without body_json must fail early");
+        assert!(
+            err.to_string()
+                .contains("count/count_at_least requires body_json"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn count_and_count_at_least_together_are_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec = serde_yaml::from_str(
+            "request: GET ${API}/x\nbody_json: results\ncount: 3\ncount_at_least: 1\n",
+        )
+        .expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("one question, two spellings");
+        assert!(
+            err.to_string()
+                .contains("at most one of count/count_at_least"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn count_with_equals_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec = serde_yaml::from_str(
+            "request: GET ${API}/x\nbody_json: results\ncount: 3\nequals: \"x\"\n",
+        )
+        .expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("a count needs an array, equals a scalar");
+        assert!(
+            err.to_string().contains("cannot pair with equals"),
+            "got: {err:?}"
         );
     }
 
@@ -4322,6 +4436,75 @@ mod cookie_assertion_tests {
     fn an_unnamed_cookie_is_a_parse_error() {
         let err = assert_step("cookie exists").expect_err("a cookie must be named");
         assert!(err.to_string().contains("must be named"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod page_title_tests {
+    use super::*;
+
+    fn assert_step(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: text.to_string(),
+            },
+        )
+    }
+
+    #[test]
+    fn the_title_pair_parses_as_a_surface_assertion() {
+        assert!(matches!(
+            assert_step("page title is Settings").as_deref(),
+            Ok([ResolvedAction::AssertText {
+                target: Target::Surface,
+                matcher: TextMatch::TitleEquals,
+                expected,
+                ..
+            }]) if expected == "Settings"
+        ));
+        assert!(matches!(
+            assert_step("page title contains Strapi").as_deref(),
+            Ok([ResolvedAction::AssertText {
+                target: Target::Surface,
+                matcher: TextMatch::TitleContains,
+                ..
+            }])
+        ));
+    }
+
+    /// A title runs to the end of the line, spaces and all - titles are
+    /// human-facing strings, not locators.
+    #[test]
+    fn a_title_may_contain_spaces_and_punctuation() {
+        assert!(matches!(
+            assert_step("page title is Settings - Strapi Admin").as_deref(),
+            Ok([ResolvedAction::AssertText { expected, .. }])
+                if expected == "Settings - Strapi Admin"
+        ));
+    }
+
+    /// An empty title cannot assert anything, so it is rejected rather than
+    /// matching whatever the page happens to have. The step is trimmed
+    /// before parsing, so this lands on the near-miss - which names the
+    /// form, exactly as it should.
+    #[test]
+    fn an_empty_expected_title_is_a_parse_error() {
+        let err = assert_step("page title is ").expect_err("an empty title asserts nothing");
+        assert!(
+            err.to_string().contains("page title is|contains"),
+            "the error must name the form: {err}"
+        );
+        // Same story for the same reason as the url sibling.
+        assert!(assert_step("page url is ").is_err());
+    }
+
+    /// The near-miss message must name the form, or the grammar is
+    /// undiscoverable from the error a typo produces.
+    #[test]
+    fn the_near_miss_names_the_title_form() {
+        let err = assert_step("page titel is Settings").expect_err("a typo is a near miss");
+        assert!(err.to_string().contains("page title is|contains"), "{err}");
     }
 }
 

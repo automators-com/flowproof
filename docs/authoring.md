@@ -121,6 +121,8 @@ append `within <N>s` to any form to change the bound.
 | `cookie "<name>" is httpOnly` | not readable by page scripts - the control that stops an XSS exfiltrating a session |
 | `cookie "<name>" is secure` | only sent over TLS. See the honesty note below |
 | `cookie "<name>" is persistent` | carries an explicit expiry, so it outlives the browser session |
+| `page title is <expected>` | the document title, compared whole (trimmed). Auto-waits like `page url`, because an SPA sets `document.title` after the route commits. Web flows only: a desktop window has a window CAPTION, which is a different property, and the error says so |
+| `page title contains <text>` | substring of the document title |
 | `the [2nd ]"<label>" field contains <text>` | input VALUE, by label |
 | `the <id> field contains <text>` | input VALUE, by native id |
 | `the [2nd ]"<target>" shows <text>` | element-scoped substring |
@@ -163,6 +165,8 @@ assertion, because an SPA redirect lands asynchronously:
 ```yaml
 - assert: page url is /signin
 - assert: page url contains checkout
+- assert: page title is Orders - Acme Admin
+- assert: page title contains Acme
 - assert: page url is /orders?page=2 within 15s
 ```
 
@@ -441,6 +445,11 @@ the one a suite needs.
     status: 200
     body_json: results.0.balance # a dotted path into the JSON response
     equals: 150953               # the leaf at that path must equal this
+- assert_api:                    # how many elements are in a collection
+    request: GET ${API}/testData/users
+    status: 200
+    body_json: results           # the path must resolve to an ARRAY
+    count: 5                     # exactly 5 elements (count_at_least: 2 = a minimum)
 - assert_api:                    # response-header assertion
     request: GET ${API}/testData/users
     status: 200
@@ -507,6 +516,44 @@ trace: it exists solely inside the comparison, re-fetched on both record and
 replay. The failure modes are soft: an absent header reports "response has no
 '<name>' header (status <code>)", and a value mismatch reports "header
 '<name>' is '<actual>', expected <equals|contains> '<want>' (status <code>)".
+
+`count` (exactly N) and `count_at_least` (a minimum) ask how many elements
+are in the array at `body_json`. Either requires `body_json`, at most one of
+the two may appear, and neither pairs with `equals` (a count needs an array,
+`equals` needs a scalar leaf) - all three are parse-time errors. When the
+path resolves to something other than an array, the failure names what was
+actually there: "path 'page' is an object, count requires an array (status
+200)". A wrong count reports both sides: "path 'results' has 3 elements,
+expected exactly 9 (status 200)". Both are soft failures, so on a `GET` they
+auto-wait: "poll until the collection has N rows" is a real pattern.
+
+### Retries: reads are polled, writes are sent once
+
+A failing assertion auto-waits by RE-SENDING its probe until the bound
+expires. That is right for a read (the API is still converging) and wrong
+for a write, because the probe IS the mutation: polling a failing `POST`
+delivers it once per tick, and a single failing step was measured
+delivering 41 `POST`s inside the default 10s bound. So only `GET` and
+`HEAD` are retried. `POST`, `PUT`, `PATCH` and `DELETE` are sent exactly
+once, and their failure says so. (`DELETE` is idempotent per HTTP but not
+side-effect-free, so it is grouped with the writes.) `assert_sql` is a
+read and keeps polling.
+
+Override per step when the default is wrong:
+
+```yaml
+- assert_api:                    # poll a write until it converges
+    request: POST ${API}/jobs
+    status: 202
+    retry: true
+- assert_api:                    # ask a read exactly once
+    request: GET ${API}/jobs/1
+    status: 200
+    retry: false
+```
+
+On releases without `retry:`, `timeout_seconds: 0` is the mitigation: it
+leaves no wait budget, so the probe fires once.
 
 ## Visual assertions (structured step)
 
@@ -813,7 +860,17 @@ controls:
 
 Each control row carries an `evidence` pointer to the trace its proof lives in
 (and, for a contained agent flow, any egress destinations containment blocked),
-so a reader can go from the coverage map to the underlying artifact.
+so a reader can go from the coverage map to the underlying artifact. Blocked
+destinations appear only when THIS run was contained: they are read from the
+recorded trace, so a recording made under containment and replayed on a host
+without it would otherwise present another machine's blocks as evidence here.
+
+A flow that engages egress also carries `containment:` - the tier the run
+actually ran under (`enforced (linux seccomp)`, or the honest reason it was
+not). `lanes` says what the flow ASSERTED; `containment` says what was
+ENFORCED. On a host where the mechanism does not exist the flow can still
+pass, so without this field a passing row would imply a certification the
+run never made.
 
 **Diffing runs.** `flowproof audit <dir> --since <run-id>` compares the latest
 record against an earlier one, folded by `control.id`: controls **added**,
