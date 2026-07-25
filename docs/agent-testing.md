@@ -7,6 +7,90 @@ Status: **shipped**. v1 (OpenAI-compatible proxy, `assert_tool_call`), v2
 "Settled in review" records the design calls. A complete, runnable example
 ships in [`examples/agent-demo/`](../examples/agent-demo/).
 
+## How a test runs with no model
+
+The question this page has to answer first, because everything else depends
+on it: if there is no LLM at replay, who decides to call the tool?
+
+**The model's decisions are RECORDED, not mocked.**
+
+1. **Record, once, against a real model.** Your agent runs for real.
+   flowproof points its SDK at a local proxy (the standard
+   `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`), forwards each call to the real
+   model, and captures the request and the reply - *including the model's
+   tool-call decisions* - as a **cassette** in the trace.
+2. **Replay, every run after that, against nothing.** The agent runs for
+   real AGAIN: same code, same SDK, same tool loop. But when it asks the
+   model what to do next, the proxy answers from the cassette. No model is
+   contacted, so a CI run is free, offline, and cannot flake on sampling.
+
+Nobody needs an LLM to decide to call `get_weather` at replay, because that
+decision was already made and written down. The agent still issues the call;
+it is being told what to do by a recording instead of by a live model.
+
+**Then what are the `tools:` mocks for?** Not for replacing the model - for
+keeping the conversation reproducible. Your real tool returns something
+volatile (a timestamp, a generated id), and that value goes back into the
+NEXT request to the model. Replay matches each incoming request against the
+recorded one, so a fresh timestamp would be a mismatch. The `result:` mock
+substitutes a fixed value at the boundary, so the second turn is identical
+every run.
+
+Two mechanisms, two jobs:
+
+| | replaces | so that |
+|---|---|---|
+| **cassette** | the model's decisions | no LLM is called at replay |
+| **`tools:` mock** | a volatile tool result | those decisions still match |
+
+And this is where a regression surfaces: if the agent calls a different tool
+or passes a different argument, the request no longer matches what was
+recorded, and replay fails with a divergence rather than passing quietly.
+
+### So what is actually under test?
+
+A fair objection: if the model is a recording and the tools are mocks, what
+is left? The answer is specific, and it is worth being blunt about both
+halves.
+
+**Under test: your agent's own code and configuration.** That is the glue
+between the model and the tools, and it is where agent bugs actually live:
+
+- the tool-call is parsed and dispatched to the right function
+- arguments are threaded correctly (`assert_tool_call ... where city
+  contains Nairobi` is checking YOUR mapping, not the model's spelling)
+- the tool result is fed back in the right shape, so the loop continues
+- the loop terminates instead of spinning
+- a message carrying several tool calls is still handled
+- the request you SEND still looks the same: the system prompt, the tool
+  schemas, the model id, the message history you construct. Edit any of
+  them and the recorded request stops matching, which is the point.
+
+**Not under test: whether the model is any good.** A cassette cannot tell
+you the model got worse after an upgrade, or that your prompt is weak. That
+is an evaluation problem with statistical answers, and it is deliberately
+out of scope (see "Decision: model-output evals are out of scope"). Nor does
+it test your tool's implementation - that is an ordinary unit test - or a
+real MCP server's behaviour.
+
+The closest familiar thing is HTTP cassette testing (VCR, nock, `responses`).
+You are not testing Stripe's servers; you are testing your integration with
+them, on every commit, for free. Same trade here, with the same honest
+limit: a green suite means "the deterministic half still behaves", not "the
+system is smart".
+
+Where that pays off most sharply is the guard path. Record one adversarial
+model response - a jailbreak, an injected instruction - and then assert
+FOREVER, at no per-run cost, that your scaffolding refuses to act on it:
+
+```yaml
+  - assert_no_tool_call: transfer_funds
+```
+
+The model said "call it"; the test proves your agent did not. That is a
+regression test you cannot practically run against a live model, because
+you would be paying to re-roll a dice you already know the face of.
+
 **Two limits to know before you start**, because they shape what a flow can
 express rather than being details you hit later:
 
