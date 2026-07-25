@@ -1142,6 +1142,20 @@ fn check_assertion<D: AppDriver>(
                     Some(needle) => Some(flowproof_trace::secret::resolve_refs(needle)?),
                     None => None,
                 },
+                body_json: expect
+                    .as_ref()
+                    .and_then(|e| e.get("body_json"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                // A `${VAR}` in `equals` resolves here at probe time, exactly
+                // like `body_contains`: the trace carries only the raw ref.
+                equals: match expect.as_ref().and_then(|e| e.get("equals")) {
+                    Some(serde_json::Value::String(s)) => Some(serde_json::Value::String(
+                        flowproof_trace::secret::resolve_refs(s)?,
+                    )),
+                    Some(other) => Some(other.clone()),
+                    None => None,
+                },
             };
             let (verdict, rung, body) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
             // The response body joins the corpus a secret-leak scan reads, held

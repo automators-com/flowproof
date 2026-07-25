@@ -228,6 +228,12 @@ pub enum ResolvedAction {
         body: Option<serde_json::Value>,
         status: Option<u16>,
         body_contains: Option<String>,
+        /// A dotted path into the JSON response body; a scalar-leaf existence
+        /// check on its own, an equality check paired with `equals`.
+        body_json: Option<String>,
+        /// Expected value at `body_json` (string/number/bool). A string leaf
+        /// may carry a raw `${VAR}` ref, resolved only at probe time.
+        equals: Option<serde_json::Value>,
         timeout_ms: u64,
     },
 }
@@ -466,6 +472,24 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                     "assert_api body is only sent for POST/PUT/PATCH",
                 ));
             }
+            // `equals` is a response-side check against the leaf named by
+            // `body_json`; without a path there is nothing to compare.
+            if assert_api.equals.is_some() && assert_api.body_json.is_none() {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api equals requires body_json (the response path to compare)",
+                ));
+            }
+            // Only scalar leaves compare: object/array `equals` has no
+            // meaning here (no deep equality). String/number/bool only.
+            if let Some(value) = &assert_api.equals {
+                if value.is_object() || value.is_array() {
+                    return Err(unresolvable(
+                        &assert_api.request,
+                        "assert_api equals must be a string, number, or boolean",
+                    ));
+                }
+            }
             return Ok(vec![ResolvedAction::AssertApi {
                 method,
                 url: url.to_string(),
@@ -473,6 +497,8 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                 body: assert_api.body.clone(),
                 status: assert_api.status,
                 body_contains: assert_api.body_contains.clone(),
+                body_json: assert_api.body_json.clone(),
+                equals: assert_api.equals.clone(),
                 timeout_ms: assert_api
                     .timeout_seconds
                     .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
@@ -2115,6 +2141,49 @@ mod tests {
             err.to_string().contains("POST/PUT/PATCH"),
             "names the allowed methods: {err}"
         );
+    }
+
+    #[test]
+    fn assert_api_equals_without_body_json_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec =
+            serde_yaml::from_str("request: GET ${API}/x\nequals: 5\n").expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("equals without body_json must fail early");
+        assert!(
+            err.to_string().contains("body_json"),
+            "names the missing field: {err}"
+        );
+    }
+
+    #[test]
+    fn assert_api_non_scalar_equals_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec =
+            serde_yaml::from_str("request: GET ${API}/x\nbody_json: a.b\nequals:\n  nested: 1\n")
+                .expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("object equals must fail early");
+        assert!(
+            err.to_string().contains("string, number, or boolean"),
+            "names the allowed types: {err}"
+        );
+    }
+
+    #[test]
+    fn assert_api_body_json_and_equals_thread_through() {
+        let spec: crate::spec::ApiAssertSpec = serde_yaml::from_str(
+            "request: GET ${API}/users\nbody_json: results.0.balance\nequals: 150953\n",
+        )
+        .expect("parses");
+        let actions =
+            resolve_step("web", &SpecStep::AssertApi { assert_api: spec }).expect("resolves");
+        let ResolvedAction::AssertApi {
+            body_json, equals, ..
+        } = &actions[0]
+        else {
+            panic!("expected AssertApi");
+        };
+        assert_eq!(body_json.as_deref(), Some("results.0.balance"));
+        assert_eq!(*equals, Some(serde_json::json!(150953)));
     }
 
     #[test]

@@ -387,3 +387,126 @@ steps:
     std::env::remove_var("CLEAN_DB_DSN");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The RWA-shaped case: a `GET /testData/users` returns a users array whose
+/// first element carries a numeric `balance`. `body_json: results.0.balance`
+/// with `equals:` the REAL value records and replays; a WRONG `equals` fails
+/// the record (the two-tier compare catches the mismatch). The extracted
+/// value lives only inside the probe: the trace keeps the request and the
+/// raw expectation, never the plucked response value.
+fn serve_users(server: tiny_http::Server, balance: i64) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let body = format!(
+            "{{\"results\":[{{\"id\":\"uBmeaz5pX\",\"balance\":{balance}}},\
+             {{\"id\":\"GjWovtg2hr\",\"balance\":42}}]}}"
+        );
+        // Serve until idle: the passing flow makes 2 requests (record + replay),
+        // the failing flow polls a handful of times before the record errors.
+        // Serve until idle: `recv_timeout` yields `Ok(None)` after the poll
+        // stops requesting, so the `while let` exits on its own.
+        while let Ok(Some(request)) = server.recv_timeout(std::time::Duration::from_millis(500)) {
+            let (code, text): (u16, &str) = if request.url() == "/testData/users" {
+                (200, body.as_str())
+            } else {
+                (404, "{\"error\":\"not found\"}")
+            };
+            let response = tiny_http::Response::from_string(text).with_status_code(code);
+            request.respond(response).ok();
+        }
+    })
+}
+
+#[test]
+fn body_json_equals_the_real_first_user_balance_records_and_replays() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let server_thread = serve_users(server, 150953);
+    std::env::set_var("BAL_API_BASE", &base);
+
+    let spec_yaml = "\
+name: Balance assertion
+app: api
+steps:
+  - assert_api:
+      request: GET ${BAL_API_BASE}/testData/users
+      status: 200
+      body_json: results.0.balance
+      equals: 150953
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+
+    let dir = std::env::temp_dir().join("flowproof-api-body-json-pass");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("balance.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("body_json flow records");
+
+    let trace = std::fs::read_to_string(&trace_path).expect("trace written");
+    // The path and the raw expectation travel; the host ref stays a ref.
+    assert!(
+        trace.contains("\"body_json\":\"results.0.balance\""),
+        "trace carries the path: {trace}"
+    );
+    assert!(trace.contains("\"equals\":150953"), "trace carries equals");
+    assert!(
+        trace.contains("${BAL_API_BASE}"),
+        "trace keeps the host ref"
+    );
+    assert!(
+        !trace.contains(&base),
+        "resolved host must not leak into the trace"
+    );
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "body_json flow must replay: {report:#?}");
+
+    server_thread.join().ok();
+    std::env::remove_var("BAL_API_BASE");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn body_json_equals_a_wrong_value_fails_the_record() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    // The server returns the REAL balance; the spec asserts the wrong one.
+    let server_thread = serve_users(server, 150953);
+    std::env::set_var("BADBAL_API_BASE", &base);
+
+    let spec_yaml = "\
+name: Wrong balance
+app: api
+steps:
+  - assert_api:
+      request: GET ${BADBAL_API_BASE}/testData/users
+      status: 200
+      body_json: results.0.balance
+      equals: 999
+      timeout_seconds: 1
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+
+    let dir = std::env::temp_dir().join("flowproof-api-body-json-fail");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("wrong.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let err = flowproof_agent::record(&spec, &mut driver, &trace_path)
+        .expect_err("a wrong equals must fail the record");
+    let message = err.to_string();
+    // The failure carries the two-tier compare's text ("expected '999', got
+    // '150953'"): a wrong scalar is caught, not silently passed.
+    assert!(
+        message.contains("999") && message.contains("150953"),
+        "failure names expected and actual: {message}"
+    );
+
+    server_thread.join().ok();
+    std::env::remove_var("BADBAL_API_BASE");
+    std::fs::remove_dir_all(&dir).ok();
+}

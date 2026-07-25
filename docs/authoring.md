@@ -352,14 +352,51 @@ the one a suite needs.
       connectionString: ${TEST_CONN_STRING}
     status: 200
     body_contains: "Database not yet supported!"
+- assert_api:                    # response-side JSON-field assertion
+    request: GET ${API}/testData/users
+    status: 200
+    body_json: results.0.balance # a dotted path into the JSON response
+    equals: 150953               # the leaf at that path must equal this
 ```
 
-`headers` values and `body` string values may carry `${VAR}` refs — the
+`headers` values and `body` string values may carry `${VAR}` refs. The
 trace stores only the raw reference; tokens and connection strings resolve
 when the probe fires (record and every replay). `body` is any YAML
 (mapping, list, or string), sent as JSON with `content-type:
-application/json` unless you set your own `content-type` header — yours
-wins. A `body` on GET/HEAD/DELETE is rejected at parse time.
+application/json` unless you set your own `content-type` header (yours
+wins). A `body` on GET/HEAD/DELETE is rejected at parse time.
+
+`body_json` reads a value out of the JSON response and asserts on it,
+alongside `status` and `body_contains` (all three may appear on one step;
+they are checked in the order status, then body_contains, then body_json).
+The path is a dotted sequence of segments, each a plain object key or a
+decimal array index: `results.0.balance` means "the `balance` field of the
+first element of the `results` array". That is the whole path language:
+there are no wildcards, filters, brackets, or quoting, so a key that
+literally contains a dot cannot be reached. One `body_json` per step; to
+assert several fields, use several steps.
+
+`body_json` on its own is an existence check: the path must resolve to a
+scalar leaf (mirroring `assert_sql`, where omitting `equals` means a row
+merely has to exist). Add `equals` (a string, number, or boolean) to also
+check the value; `equals` without `body_json` is a parse-time error. A
+string `equals` may carry a `${VAR}` ref, resolved at probe time exactly
+like `body_contains` (only the ref travels in the trace). Comparison has
+two tiers: when both the leaf and `equals` are numbers, they compare
+numerically (`150953` equals `150953`); otherwise they compare by exact
+canonical text, so a string leaf never numeric-matches a number (the
+leaf `"0953"` does not equal the number `953`). Only leaves compare, so
+there is no deep object equality.
+
+The extracted response value never enters the trace: only the request and
+the raw expectation are stored, and the plucked value exists solely inside
+the live comparison, re-fetched on both record and replay. The failure
+modes are soft (the auto-wait loop keeps polling until they clear or the
+timeout elapses): a non-JSON body reports "response body is not valid
+JSON"; a path that runs off the document names the segment where it died
+(`path 'results.0.balance' stops at segment 'balance'`); a path that lands
+on an object or array reports "path resolves to a non-scalar; assert a leaf
+value".
 
 ## Visual assertions (structured step)
 

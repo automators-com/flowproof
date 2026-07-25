@@ -647,11 +647,21 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             body,
             status,
             body_contains,
+            body_json,
+            equals,
             timeout_ms,
         } => {
             let mut expect = serde_json::Map::new();
             if let Some(needle) = body_contains {
                 expect.insert("body_contains".into(), needle.as_str().into());
+            }
+            if let Some(path) = body_json {
+                expect.insert("body_json".into(), path.as_str().into());
+            }
+            // The RAW `equals` (a `${VAR}` string stays a ref): the extracted
+            // response value is compared only inside the live probe, never stored.
+            if let Some(value) = equals {
+                expect.insert("equals".into(), value.clone());
             }
             expect.insert("timeout_ms".into(), (*timeout_ms).into());
             (
@@ -1092,6 +1102,12 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
                 .and_then(|e| e.get("body_contains"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
+            body_json: expect
+                .as_ref()
+                .and_then(|e| e.get("body_json"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            equals: expect.as_ref().and_then(|e| e.get("equals")).cloned(),
             timeout_ms: oob_timeout_from(expect.as_ref()),
         }),
         _ => None,
@@ -1763,6 +1779,8 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     body,
                     status,
                     body_contains,
+                    body_json,
+                    equals,
                     timeout_ms,
                 } => {
                     // Resolved like `equals` above: the trace keeps the raw
@@ -1784,6 +1802,16 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                         status: *status,
                         body_contains: match body_contains {
                             Some(needle) => Some(flowproof_trace::secret::resolve_refs(needle)?),
+                            None => None,
+                        },
+                        body_json: body_json.clone(),
+                        // A `${VAR}` in `equals` resolves here at probe time,
+                        // exactly like `body_contains`: only the ref travels.
+                        equals: match equals {
+                            Some(serde_json::Value::String(s)) => Some(serde_json::Value::String(
+                                flowproof_trace::secret::resolve_refs(s)?,
+                            )),
+                            Some(other) => Some(other.clone()),
                             None => None,
                         },
                     };
