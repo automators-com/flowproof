@@ -1,0 +1,87 @@
+name: npx smoke test
+
+# The npm launcher is what most new users now touch first, and it is the one
+# artifact CI could not previously see: `cargo test` proves the engine, not
+# the published package. This installs flowproof FROM npm on all three
+# platforms exactly as a newcomer would, and runs it.
+#
+# It deliberately tests the PUBLISHED package rather than the checkout, so it
+# catches things a repo-local test cannot: a missing platform binary, a wrong
+# os/cpu field, a corrupt tarball, a binary built for the wrong architecture.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "npm version to smoke test (default: latest)"
+        required: false
+        default: "latest"
+  schedule:
+    # Daily. A published package can break without anyone pushing a commit:
+    # npm can serve a bad tarball, or a platform package can go missing.
+    - cron: "0 6 * * *"
+
+jobs:
+  npx:
+    name: npx flowproof (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # NOT macos-13. The Intel macOS image stopped being schedulable (a
+        # publish sat queued on it for over two hours with no runner), so a
+        # job asking for it would hang rather than report. That leaves ONE
+        # honest gap: darwin-x64 is verified by architecture at publish time
+        # (`file` reports Mach-O x86_64) but is never EXECUTED in CI. Add it
+        # back the day Intel macOS runners are schedulable again.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # No checkout on purpose: a newcomer has no clone. A clean cache too,
+      # so a stale local copy cannot make a broken publish look fine.
+      - name: npx flowproof --version, from a clean cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version || 'latest' }}'
+          cache="$(mktemp -d)"
+          out="$(npm_config_cache="$cache" npx --yes "flowproof@$version" --version 2>&1)"
+          echo "$out"
+          echo "$out" | grep -qE '^flowproof [0-9]+\.[0-9]+\.[0-9]+' \
+            || { echo "::error::--version did not print a version"; exit 1; }
+
+      # The binary must actually be the platform's own: a package that
+      # installs but cannot exec is worse than one that fails to install.
+      - name: the resolved binary runs and reports the same version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version || 'latest' }}'
+          dir="$(mktemp -d)" && cd "$dir"
+          npm install --silent "flowproof@$version"
+          node node_modules/flowproof/bin/flowproof.js --help > help.txt 2>&1
+          grep -qi "record" help.txt || { echo "::error::--help lost its commands"; cat help.txt; exit 1; }
+          echo "help ok"
+
+      # The failure a real user is most likely to hit: a package manager that
+      # skipped optional dependencies. It must fail LOUDLY (non-zero), say
+      # what to do, and keep stdout clean so `--json` consumers are not
+      # corrupted by a diagnostic.
+      - name: a missing platform binary fails loudly and says what to do
+        shell: bash
+        run: |
+          set -uo pipefail
+          version='${{ inputs.version || 'latest' }}'
+          dir="$(mktemp -d)" && cd "$dir"
+          npm install --silent --no-optional "flowproof@$version"
+          set +e
+          node node_modules/flowproof/bin/flowproof.js --version >out.txt 2>err.txt
+          code=$?
+          set -e
+          echo "exit=$code"; echo "--- stdout ---"; cat out.txt; echo "--- stderr ---"; cat err.txt
+          [ "$code" -ne 0 ] || { echo "::error::a missing binary exited 0 - CI would go green without running"; exit 1; }
+          [ ! -s out.txt ] || { echo "::error::diagnostics went to stdout, which corrupts --json output"; exit 1; }
+          grep -qi "not installed" err.txt || { echo "::error::the error does not name the problem"; exit 1; }
+          grep -qi "optional" err.txt || { echo "::error::the error does not tell the user how to fix it"; exit 1; }
