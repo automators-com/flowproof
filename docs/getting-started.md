@@ -423,9 +423,11 @@ covers two idioms, and the `session:` block handles both:
 Declare either in the spec; it's applied **before the page loads**
 (cookies via CDP, localStorage before any page script runs), travels in
 the trace with `${VAR}` references intact, and is re-applied identically
-at every replay. Seeding runs **once per tab**: state the flow mutates
-afterwards (an item added to the seeded cart) survives mid-flow
-navigation and reload instead of being reset to the fixture:
+at every replay. Seeding runs **once, on the flow's first document**:
+state the flow mutates afterwards (an item added to the seeded cart)
+survives mid-flow navigation and reload instead of being reset to the
+fixture, and that holds across a navigation that changes ORIGIN (a login
+host to an app host) as well as within one:
 
 ```yaml
 name: Templates workspace
