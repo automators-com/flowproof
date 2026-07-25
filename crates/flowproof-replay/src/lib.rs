@@ -1156,6 +1156,29 @@ fn check_assertion<D: AppDriver>(
                     Some(other) => Some(other.clone()),
                     None => None,
                 },
+                // The header name is literal; a `${VAR}` in the value predicate
+                // resolves here at probe time, exactly like `body_contains`.
+                header: expect
+                    .as_ref()
+                    .and_then(|e| e.get("header"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                header_equals: match expect
+                    .as_ref()
+                    .and_then(|e| e.get("header_equals"))
+                    .and_then(|v| v.as_str())
+                {
+                    Some(want) => Some(flowproof_trace::secret::resolve_refs(want)?),
+                    None => None,
+                },
+                header_contains: match expect
+                    .as_ref()
+                    .and_then(|e| e.get("header_contains"))
+                    .and_then(|v| v.as_str())
+                {
+                    Some(want) => Some(flowproof_trace::secret::resolve_refs(want)?),
+                    None => None,
+                },
             };
             let (verdict, rung, body) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
             // The response body joins the corpus a secret-leak scan reads, held

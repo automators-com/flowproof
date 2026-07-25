@@ -391,6 +391,11 @@ the one a suite needs.
     status: 200
     body_json: results.0.balance # a dotted path into the JSON response
     equals: 150953               # the leaf at that path must equal this
+- assert_api:                    # response-header assertion
+    request: GET ${API}/testData/users
+    status: 200
+    header: Content-Type         # response header name (case-insensitive)
+    header_contains: json        # a substring of the header value
 ```
 
 `headers` values and `body` string values may carry `${VAR}` refs. The
@@ -431,6 +436,27 @@ JSON"; a path that runs off the document names the segment where it died
 (`path 'results.0.balance' stops at segment 'balance'`); a path that lands
 on an object or array reports "path resolves to a non-scalar; assert a leaf
 value".
+
+`header` asserts on a response header, alongside `status`, `body_contains`,
+and `body_json` (all may appear on one step; they are checked in the order
+status, then body_contains, then body_json, then header). The header NAME is
+case-insensitive, per HTTP: `header: Content-Type` matches a response that
+spells it `content-type`. If the response repeats the header, its values are
+joined with ", " (HTTP field-value semantics) before matching. One header per
+step; to assert several headers, use several steps.
+
+`header` on its own is an existence check: the header must be present
+(mirroring `body_json` alone, where reaching a scalar leaf is the whole
+assertion). Add `header_equals` (exact value) or `header_contains` (a
+substring) to also check the value; at most one of the two per step, and
+either without `header` is a parse-time error. Value comparison is
+case-SENSITIVE (unlike the name). A `header_equals`/`header_contains` value
+may carry a `${VAR}` ref, resolved at probe time exactly like `body_contains`
+(only the ref travels in the trace). The live header value never enters the
+trace: it exists solely inside the comparison, re-fetched on both record and
+replay. The failure modes are soft: an absent header reports "response has no
+'<name>' header (status <code>)", and a value mismatch reports "header
+'<name>' is '<actual>', expected <equals|contains> '<want>' (status <code>)".
 
 ## Visual assertions (structured step)
 
