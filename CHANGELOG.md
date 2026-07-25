@@ -89,11 +89,15 @@ See [docs/authoring.md](docs/authoring.md#security-controls) and
   gate, so a single non-waiting probe failed the record with ElementNotFound
   before the assertion's own poll loop could run. The `--reuse` drift check had
   the same omission (a late target forced a spurious re-author).
-- `session:` localStorage seeding runs once per tab instead of on every
-  document: the init script (CDP re-runs it on each navigation) now guards on
-  a sessionStorage sentinel, so fixture state a flow mutates through the UI
-  (an item added to a seeded cart) survives mid-flow navigation and reload
-  instead of being silently reset to the fixture.
+- `session:` localStorage seeding runs once, on the flow's first document,
+  instead of on every document: the init script (CDP re-runs it on each
+  navigation) is now DROPPED once that document has run it, so fixture state
+  a flow mutates through the UI (an item added to a seeded cart) survives
+  mid-flow navigation and reload instead of being silently reset to the
+  fixture. This holds across a navigation that changes origin too: the first
+  cut of this fix guarded on a sessionStorage sentinel, which is per origin,
+  so a cross-origin navigation could not see it and re-seeded over the
+  mutation.
 
 ## 0.4.1
 

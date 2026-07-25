@@ -335,6 +335,9 @@ pub struct WebAppDriver {
     /// Session staged via [`AppDriver::stage_session`], applied by the next
     /// `launch` before the page loads.
     staged_session: Option<WebSession>,
+    /// The CDP id of the localStorage seed script, held only until the
+    /// first document has run it. See `drop_seed_script`.
+    seed_script: Option<String>,
     /// Recent console/log lines from the page (bounded ring buffer),
     /// filled by a CDP event listener registered at launch — read
     /// retroactively when a step fails ([`AppDriver::debug_bundle`]).
@@ -409,6 +412,7 @@ impl WebAppDriver {
                 context_id: None,
                 tab: None,
                 staged_session: None,
+                seed_script: None,
                 console: Default::default(),
                 staged_mocks: Vec::new(),
                 staged_browser: None,
@@ -425,6 +429,7 @@ impl WebAppDriver {
             context_id: Some(context_id),
             tab: None,
             staged_session: None,
+            seed_script: None,
             console: Default::default(),
             staged_mocks: Vec::new(),
             staged_browser: None,
@@ -437,29 +442,44 @@ impl WebAppDriver {
     /// addInitScript pattern — it runs before any page script on every
     /// navigation, so the app boots already seeded).
     ///
-    /// The script re-runs on EVERY document in the tab (CDP semantics),
-    /// but seeding is a one-time fixture, not an invariant: a flow that
-    /// seeds a cart, mutates it through the UI, then navigates must keep
-    /// the mutation. A sessionStorage sentinel (same-tab lifetime, so it
-    /// survives navigations and reloads but not a new tab) makes the
-    /// seed run once per tab.
-    fn apply_session(tab: &Arc<Tab>, session: &WebSession, url: &str) -> Result<(), DriverError> {
+    /// The script re-runs on EVERY document in the tab (CDP semantics), but
+    /// seeding is a one-time fixture, not an invariant: a flow that seeds a
+    /// cart, mutates it through the UI, then navigates must KEEP the
+    /// mutation. So the registration id comes back to the caller, which
+    /// drops the script once the first document has it (see
+    /// `drop_seed_script`).
+    ///
+    /// It used to guard itself with a `sessionStorage` sentinel instead.
+    /// That made seeding depend on the PAGE's storage semantics, which do
+    /// not hold where it matters: sessionStorage is per ORIGIN, so any
+    /// navigation that crosses one (a login host to an app host, or two
+    /// `file://` documents, which modern Chrome treats as separate origins)
+    /// could not see the sentinel, re-seeded, and silently overwrote the
+    /// user's mutation. Removing the script instead is decided entirely on
+    /// our side of the boundary, so no page or origin can defeat it.
+    fn apply_session(
+        tab: &Arc<Tab>,
+        session: &WebSession,
+        url: &str,
+    ) -> Result<Option<String>, DriverError> {
+        let mut seed_script = None;
         if !session.local_storage.is_empty() {
-            let mut source =
-                String::from("try{if(!sessionStorage.getItem('__flowproof_seeded__')){");
+            let mut source = String::from("try{");
             for (key, value) in &session.local_storage {
                 let key = serde_json::to_string(key).unwrap_or_default();
                 let value = serde_json::to_string(value).unwrap_or_default();
                 source.push_str(&format!("localStorage.setItem({key},{value});"));
             }
-            source.push_str("sessionStorage.setItem('__flowproof_seeded__','1');}}catch(e){}");
-            tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
-                source,
-                world_name: None,
-                include_command_line_api: None,
-                run_immediately: None,
-            })
-            .map_err(|e| web_err("seeding localStorage", e))?;
+            source.push_str("}catch(e){}");
+            let added = tab
+                .call_method(Page::AddScriptToEvaluateOnNewDocument {
+                    source,
+                    world_name: None,
+                    include_command_line_api: None,
+                    run_immediately: None,
+                })
+                .map_err(|e| web_err("seeding localStorage", e))?;
+            seed_script = Some(added.identifier);
         }
         if !session.cookies.is_empty() {
             let cookies = session
@@ -487,7 +507,21 @@ impl WebAppDriver {
             tab.set_cookies(cookies)
                 .map_err(|e| web_err("setting session cookies", e))?;
         }
-        Ok(())
+        Ok(seed_script)
+    }
+
+    /// Drop the seed script once the first document has run it, so no later
+    /// navigation re-seeds over what the flow has since changed. Best
+    /// effort: if the removal fails the run is still correct for the common
+    /// same-origin case, and failing the flow over a cleanup call would be
+    /// worse than the stale registration.
+    fn drop_seed_script(&mut self) {
+        let Some(identifier) = self.seed_script.take() else {
+            return;
+        };
+        if let Ok(tab) = self.tab() {
+            let _ = tab.call_method(Page::RemoveScriptToEvaluateOnNewDocument { identifier });
+        }
     }
 
     fn tab(&self) -> Result<&Arc<Tab>, DriverError> {
@@ -1164,7 +1198,7 @@ impl AppDriver for WebAppDriver {
             }
         }
         if let Some(session) = self.staged_session.take() {
-            Self::apply_session(&tab, &session, command)?;
+            self.seed_script = Self::apply_session(&tab, &session, command)?;
         }
         // Network mocks: install interception BEFORE navigation so even the
         // first document's subresources are answerable. Unlike the console
@@ -1348,6 +1382,9 @@ impl AppDriver for WebAppDriver {
         tab.wait_until_navigated()
             .map_err(|e| web_err("waiting for page load", e))?;
         self.tab = Some(tab);
+        // The first document has now run the seed. Drop the script so no
+        // later navigation re-seeds over what the flow has since changed.
+        self.drop_seed_script();
         Ok(())
     }
 
