@@ -706,6 +706,8 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             header,
             header_equals,
             header_contains,
+            count,
+            count_at_least,
             retry,
             timeout_ms,
         } => {
@@ -731,6 +733,12 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             }
             if let Some(want) = header_contains {
                 expect.insert("header_contains".into(), want.as_str().into());
+            }
+            if let Some(n) = count {
+                expect.insert("count".into(), (*n).into());
+            }
+            if let Some(n) = count_at_least {
+                expect.insert("count_at_least".into(), (*n).into());
             }
             // Only written when the author overrode the method-derived
             // policy, so a trace without an override is byte-identical.
@@ -1175,6 +1183,14 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
             status,
             expect,
         }) => Some(ResolvedAction::AssertApi {
+            count: expect
+                .as_ref()
+                .and_then(|e| e.get("count"))
+                .and_then(|v| v.as_u64()),
+            count_at_least: expect
+                .as_ref()
+                .and_then(|e| e.get("count_at_least"))
+                .and_then(|v| v.as_u64()),
             retry: expect
                 .as_ref()
                 .and_then(|e| e.get("retry"))
@@ -1391,6 +1407,17 @@ fn poll_oob(
             }
         }
     }
+}
+
+/// Build the probe's count from the two spec keys. Parse rejects setting
+/// both, so at most one is Some here.
+fn array_count(
+    count: Option<u64>,
+    count_at_least: Option<u64>,
+) -> Option<flowproof_driver::oob::ArrayCount> {
+    count
+        .map(flowproof_driver::oob::ArrayCount::Exactly)
+        .or_else(|| count_at_least.map(flowproof_driver::oob::ArrayCount::AtLeast))
 }
 
 /// Capture names currently in scope, sorted, for a "you meant one of these"
@@ -1915,6 +1942,8 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
                 }
                 ResolvedAction::AssertApi {
+                    count,
+                    count_at_least,
                     retry,
                     method,
                     url,
@@ -1933,6 +1962,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     // ${VAR}; only the live probe sees values — including
                     // header tokens and body string leaves.
                     let probe = flowproof_driver::oob::OobProbe::Api {
+                        count: array_count(*count, *count_at_least),
                         retry: *retry,
                         method: method.clone(),
                         url: flowproof_trace::secret::resolve_refs(url)?,
