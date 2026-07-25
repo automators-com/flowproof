@@ -203,11 +203,35 @@ fn message_divergence(recorded: &[Message], incoming: &[Message]) -> Option<Stri
                     .collect::<Vec<_>>()
                     .join(", ")
             };
+            // When the SAME tools were called and only their arguments
+            // moved, the two name lists are identical and printing them
+            // says nothing at all - the reader is told something changed
+            // and left to find it. Name the argument PATH instead.
+            let (want_names, got_names) = (names(&want.tool_calls), names(&got.tool_calls));
+            if want_names == got_names {
+                let changes: Vec<String> = want
+                    .tool_calls
+                    .iter()
+                    .zip(&got.tool_calls)
+                    .flat_map(|(a, b)| {
+                        crate::cassette_diff::argument_changes(a, b)
+                            .into_iter()
+                            .map(move |(path, before, after)| {
+                                format!("{}.{path}: recorded {before}, replayed {after}", a.name)
+                            })
+                    })
+                    .collect();
+                if !changes.is_empty() {
+                    return Some(format!(
+                        "message {i} ({}) tool call arguments changed\n  {}",
+                        want.role,
+                        changes.join("\n  "),
+                    ));
+                }
+            }
             return Some(format!(
                 "message {i} ({}) tool calls changed\n  recorded: [{}]\n  replayed: [{}]",
-                want.role,
-                names(&want.tool_calls),
-                names(&got.tool_calls),
+                want.role, want_names, got_names,
             ));
         }
         return Some(format!("message {i} ({}) changed", want.role));
@@ -378,6 +402,68 @@ mod tests {
                 stop_reason: None,
             },
         }
+    }
+
+    /// An argument-only change used to print two IDENTICAL tool-name lists
+    /// ("recorded: [book] / replayed: [book]"), telling the reader that
+    /// something moved but not what. It names the PATH now.
+    #[test]
+    fn an_argument_only_change_names_the_path_that_moved() {
+        let recorded = assistant_with(vec![call("book", r#"{"flight":{"id":"KQ311"},"seats":2}"#)]);
+        let replayed = assistant_with(vec![call("book", r#"{"flight":{"id":"KQ999"},"seats":2}"#)]);
+        let detail =
+            message_divergence(&[recorded], &[replayed]).expect("a change is a divergence");
+        assert!(
+            detail.contains("book.flight.id"),
+            "names the path: {detail}"
+        );
+        assert!(
+            detail.contains("KQ311"),
+            "shows what was recorded: {detail}"
+        );
+        assert!(
+            detail.contains("KQ999"),
+            "shows what was replayed: {detail}"
+        );
+        // The unchanged argument must not be listed as noise.
+        assert!(!detail.contains("seats"), "only the moved path: {detail}");
+    }
+
+    /// An argument that APPEARS is drift too, and the most likely shape of
+    /// a real regression: an agent starts passing something extra.
+    #[test]
+    fn an_added_argument_is_reported_as_absent_before() {
+        let recorded = assistant_with(vec![call("book", r#"{"id":"KQ311"}"#)]);
+        let replayed = assistant_with(vec![call("book", r#"{"id":"KQ311","override":true}"#)]);
+        let detail =
+            message_divergence(&[recorded], &[replayed]).expect("an added argument diverges");
+        assert!(detail.contains("book.override"), "{detail}");
+        assert!(detail.contains("absent"), "{detail}");
+    }
+
+    /// A DIFFERENT tool is a different failure and must keep the name lists,
+    /// which are the useful thing in that case.
+    #[test]
+    fn a_different_tool_still_reports_the_names() {
+        let recorded = assistant_with(vec![call("book", "{}")]);
+        let replayed = assistant_with(vec![call("cancel", "{}")]);
+        let detail =
+            message_divergence(&[recorded], &[replayed]).expect("a different tool diverges");
+        assert!(detail.contains("tool calls changed"), "{detail}");
+        assert!(
+            detail.contains("book") && detail.contains("cancel"),
+            "{detail}"
+        );
+    }
+
+    /// Arguments that are not JSON cannot be diffed field by field. Say the
+    /// whole thing moved rather than pretending to be precise about it.
+    #[test]
+    fn unparseable_arguments_report_the_whole_payload() {
+        let recorded = assistant_with(vec![call("book", "not json")]);
+        let replayed = assistant_with(vec![call("book", "also not json")]);
+        let detail = message_divergence(&[recorded], &[replayed]).expect("still a divergence");
+        assert!(detail.contains("book.arguments"), "{detail}");
     }
 
     /// A two-turn booking trajectory: the model asks for a tool, the tool

@@ -205,7 +205,11 @@ this trades away is a value that must itself contain the word `and`.
 
 A structured `args:` mapping and an `args_exact:` deep-equality form are on
 the roadmap but are NOT in v1: today every argument assertion is the prose
-line above.
+line above. Note what already covers most of the ground `args_exact` would:
+the cassette pins every argument byte-exactly, so an argument you did NOT
+assert still fails replay if it changes, naming the path. `args_exact` would
+add the ability to say "these arguments and no others" as reviewable INTENT
+in the spec, which is a smaller gap than it first appears.
 
 **Chained arguments are statically assertable.** Because tool results
 are spec-authored mocks, the expected arguments of *downstream* calls
@@ -221,10 +225,13 @@ idempotency keys): assert shape, not value — `matches` a pattern, or
 for regression purposes; the spec assertion names only what must hold
 across re-records.
 
-**Two layers, two jobs.** The cassette pins EVERY argument byte-exactly:
-at replay, any argument drift is a cassette mismatch reported as a
-field-level diff of the call's arguments (naming the path that changed),
-so even unasserted arguments are regression-protected by default.
+**Two layers, two jobs.** The cassette pins EVERY argument byte-exactly
+(the raw wire string, so key order and whitespace count too): at replay,
+argument drift is a cassette mismatch reported as a field-level diff naming
+the path that moved - `book.flight.id: recorded KQ311, replayed KQ999` - so
+even unasserted arguments are regression-protected by default. Arguments
+that are not valid JSON cannot be compared field by field, and the whole
+payload is reported instead rather than a precise-looking half-answer.
 `assert_tool_call` is the *intent* layer on top: it is checked at record
 time (no trace is minted for a trajectory that fails it — same rule as
 UI flows), re-checked against the new trajectory after every re-record,
