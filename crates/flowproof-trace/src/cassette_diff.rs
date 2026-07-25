@@ -271,7 +271,10 @@ fn prompt_change(before: &[Message], after: &[Message]) -> Option<String> {
 ///
 /// Field-level on purpose. Two JSON blobs side by side make a reviewer do
 /// the diffing; `flight.id KQ311 -> KQ999` is the finding itself.
-fn argument_changes(before: &ToolCall, after: &ToolCall) -> Vec<(String, String, String)> {
+pub(crate) fn argument_changes(
+    before: &ToolCall,
+    after: &ToolCall,
+) -> Vec<(String, String, String)> {
     let (Some(old), Some(new)) = (before.arguments_json(), after.arguments_json()) else {
         // Unparseable arguments cannot be compared field by field. Say
         // the whole thing moved rather than pretending to be precise.
