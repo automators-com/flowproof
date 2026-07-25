@@ -1246,6 +1246,8 @@ pub struct SqlAssertSpec {
 ///       provider: postgres             # ${VAR} refs resolve in string leaves
 ///     status: 200                      # optional; default = any 2xx
 ///     body_contains: TestTemplate      # optional
+///     body_json: results.0.balance     # optional; a dotted response path
+///     equals: 150953                   # optional; requires body_json
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1264,6 +1266,17 @@ pub struct ApiAssertSpec {
     pub status: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_contains: Option<String>,
+    /// A dotted path into the JSON response body (object keys and decimal
+    /// array indices, e.g. `results.0.balance`). Alone it is an existence
+    /// check (the path must resolve to a scalar leaf); with `equals` the
+    /// leaf must match. Coexists with `body_contains`. One per step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_json: Option<String>,
+    /// Expected value at `body_json` (string/number/bool). Requires
+    /// `body_json`; `equals` without it is a parse-time error. A string may
+    /// carry a `${VAR}` ref; the trace keeps the raw ref, never the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equals: Option<serde_json::Value>,
     /// Auto-wait bound override (default 10s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
