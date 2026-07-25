@@ -2131,3 +2131,102 @@ fn appears_zero_times_passes_on_a_real_page() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Seeding is a one-time fixture, not an invariant: a flow that seeds a
+/// cart, mutates it through the UI, then navigates must KEEP the mutation.
+/// The init script reruns on every document (CDP semantics), so without
+/// the sessionStorage seed-once sentinel the navigation re-seeds and
+/// silently resets the cart to "[4]" - failing the final assert.
+#[test]
+fn seeded_fixture_mutation_survives_navigation() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web seed-once E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-seed-once-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    // Page 1 renders the cart at load time and mutates it on click.
+    std::fs::write(
+        dir.join("shop.html"),
+        r#"<!doctype html><html><body>
+            <div id="cart"></div>
+            <button onclick="
+                const c = JSON.parse(localStorage.getItem('cart-contents') || '[]');
+                c.push(5);
+                localStorage.setItem('cart-contents', JSON.stringify(c));
+                render();
+            ">Add item</button>
+            <script>
+                function render() {
+                    document.getElementById('cart').textContent =
+                        'cart: ' + (localStorage.getItem('cart-contents') || 'MISSING');
+                }
+                render();
+            </script></body></html>"#,
+    )
+    .expect("page 1 written");
+    // Page 2 renders the cart at load time - AFTER the init script reran.
+    std::fs::write(
+        dir.join("cart.html"),
+        r#"<!doctype html><html><body><div id="cart"></div><script>
+            document.getElementById('cart').textContent =
+                'cart: ' + (localStorage.getItem('cart-contents') || 'MISSING');
+        </script></body></html>"#,
+    )
+    .expect("page 2 written");
+    let trace_path = dir.join("seed-once.trace.jsonl");
+
+    let mut local_storage = std::collections::BTreeMap::new();
+    local_storage.insert("cart-contents".to_string(), "[4]".to_string());
+    let spec = flowproof_agent::FlowSpec {
+        name: "Seeded cart mutation survives navigation".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}/shop.html", dir.display())),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: Some(flowproof_agent::SessionRef::Inline(
+            flowproof_trace::format::SessionSetup {
+                cookies: vec![],
+                local_storage,
+            },
+        )),
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        agent: None,
+        tools: Vec::new(),
+        mcp: Vec::new(),
+        strict: false,
+        control: None,
+        steps: vec![
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows cart: [4]".into(),
+            },
+            flowproof_agent::SpecStep::Plain("Click \"Add item\"".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows cart: [4,5]".into(),
+            },
+            flowproof_agent::SpecStep::Plain(format!("Go to file://{}/cart.html", dir.display())),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows cart: [4,5]".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "mutation must survive navigation: {report:#?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

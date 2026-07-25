@@ -69,6 +69,11 @@ See [docs/authoring.md](docs/authoring.md#security-controls) and
   visible`, `is enabled|disabled`, `is [not] empty`) now resolves exactly like
   the noun-less form. The noun is dropped, not enforced; `checkbox is [not]
   checked` keeps its required noun.
+- `session:` localStorage seeding runs once per tab instead of on every
+  document: the init script (CDP re-runs it on each navigation) now guards on
+  a sessionStorage sentinel, so fixture state a flow mutates through the UI
+  (an item added to a seeded cart) survives mid-flow navigation and reload
+  instead of being silently reset to the fixture.
 
 ## 0.4.1
 
