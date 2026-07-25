@@ -210,6 +210,11 @@ jobs:
         env:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome
+      - name: iframe-scoped assertions fence to the frame's own document
+        run: cargo test -p flowproof-cli --test iframe_e2e -- --nocapture --test-threads=1
+        env:
+          FLOWPROOF_E2E: "1"
+          CHROME: /usr/bin/google-chrome
       - name: pinned clock is deterministic (GAP-P)
         run: cargo test -p flowproof-cli --test clock_e2e -- --nocapture
         env:
