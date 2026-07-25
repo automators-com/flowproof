@@ -1,8 +1,11 @@
 # flowproof
 
-A generic open-source automation framework for the AI-agent era:
-automated testing and agentic process automation across web, desktop,
-and Citrix.
+Run your AI agent once, keep the recording, and assert against it from then
+on. flowproof captures the run at the model boundary - every request and
+every tool-call decision - and serves it back on later runs, so replay makes
+**zero LLM calls**. You assert which tools were called, with which arguments,
+in which order, and which were not. The same engine drives web, desktop and
+Citrix.
 
 **Agents author, a deterministic engine executes.** A flow is described in
 YAML with natural-language steps, recorded once against the live app, and

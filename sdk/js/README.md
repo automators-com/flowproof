@@ -1,9 +1,11 @@
 # flowproof
 
-A generic open-source automation framework for the AI-agent era:
-automated testing and agentic process automation across web, desktop,
-and Citrix. Agents author flows from natural-language intent; a
-deterministic engine executes them.
+Run your AI agent once, keep the recording, and assert against it from then
+on. flowproof captures the run at the model boundary - every request and
+every tool-call decision - and serves it back on later runs, so replay makes
+**zero LLM calls**. You assert which tools were called, with which arguments,
+in which order, and which were not. The same engine drives web, desktop and
+Citrix.
 
 This package ships the `flowproof` CLI as platform-native binaries
 (linux-x64, darwin-x64/arm64, win32-x64) — no Python required:
