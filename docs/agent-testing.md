@@ -1,11 +1,25 @@
 # Agent-boundary testing
 
-Status: **shipped (v1)** in the 0.3.x line. This page is the reference for
-the feature as built. The `## Phasing` section below marks what is v1 versus
-the v2/v3 roadmap (Anthropic messages API, streaming replay, http-target
-agents, the MCP boundary); "Settled in review" records the design calls that
-went into v1. A complete, runnable example ships in
-[`examples/agent-demo/`](../examples/agent-demo/).
+Status: **shipped**. v1 (OpenAI-compatible proxy, `assert_tool_call`), v2
+(Anthropic Messages API, streaming replay, http-target agents) and v3.1/v3.2
+(the MCP tool boundary, stdio and streamable-HTTP) are all built; the
+`## Phasing` section below is authoritative on what landed when, and
+"Settled in review" records the design calls. A complete, runnable example
+ships in [`examples/agent-demo/`](../examples/agent-demo/).
+
+**Two limits to know before you start**, because they shape what a flow can
+express rather than being details you hit later:
+
+- **A flow is ONE turn, not a conversation.** Every `prompt:` step is joined
+  into a single task string delivered up front; flowproof then observes the
+  trajectory the agent produces on its own. There is no follow-up user turn,
+  and no step that replies to the agent mid-run. A conversational system can
+  be tested this way only for what one task produces. See
+  [Single-turn, and what multi-turn would cost](#single-turn-and-what-multi-turn-would-cost).
+- **The model boundary is not the tool boundary.** A `tools:` mock rewrites
+  what the model is TOLD a tool returned; the system under test still ran
+  that tool. Only the `mcp:` boundary keeps a tool from executing. Flows that
+  mock or forbid a tool nothing intercepts get a runtime warning.
 
 ## The problem
 
@@ -226,8 +240,12 @@ Five facts about the runtime contract, all exercised by
 
 - **The prompt arrives in `FLOWPROOF_PROMPT`.** Every `prompt:` step is joined
   by newlines into ONE task string, set on the process environment before it
-  starts. v1 delivers the whole task up front and reads the trajectory the
-  agent produces; it is a single turn, not a back-and-forth conversation.
+  starts. flowproof delivers the whole task up front and reads the trajectory
+  the agent produces; it is a single turn, not a back-and-forth conversation.
+  Note the joining is positional-blind: a spec written as
+  `prompt -> assert_tool_call -> prompt` concatenates BOTH prompts and
+  delivers them before the agent starts. The second `prompt:` is not a second
+  turn, and its position relative to the assertion is discarded.
 - **The proxy URL is injected for you.** flowproof points the agent at its
   local proxy by setting `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_BASE`,
   and `FLOWPROOF_LLM_PROXY`, plus a placeholder `OPENAI_API_KEY` so a client
@@ -618,14 +636,70 @@ Built and tested, each independently:
 | `assert_tool_call` grammar | the prose form |
 | `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
 | egress containment | `allow_egress` / `assert_no_egress`, enforced by a Linux seccomp supervisor (proven by the Linux CI E2E); "not contained" and honestly reported on macOS/Windows and for `url:` flows |
+| MCP tool boundary | stdio (v3.1) and streamable-HTTP (v3.2): flowproof stands in as the server, records the JSON-RPC traffic once and replays it with no server running. A tool with a `result:` here is answered by the stand-in and never forwarded, in either phase - the one boundary that stops a tool executing |
+| Anthropic / http-target | the Messages API dialect, streaming replay, and `agent.url` services are built. Their REPLAY paths are covered by tests; their RECORD paths are not yet - see the test-coverage note below |
 
-Not built yet: per-call result sequences (v1 is one static result per
-tool), the structured `args:` / `args_exact:` assertion forms, and the v3
-MCP tool boundary. The `matches` argument matcher shipped in 0.3.x. v1's
+Not built yet: per-call result sequences (one static result per tool),
+the structured `args:` / `args_exact:` assertion forms, and multi-turn
+conversations. The `matches` argument matcher shipped in 0.3.x. The MCP tool
+boundary is BUILT (v3.1 stdio, v3.2 streamable-HTTP) - an earlier revision of
+this paragraph listed it as unbuilt, contradicting the Phasing section. v1's
 acceptance bar (a real external agent recording and replaying through the
 proxy) is met by [`examples/agent-demo/`](../examples/agent-demo/) (a real
 OpenAI-SDK agent against a live model); the in-tree E2E proves the same path
 with a fake agent and a fake model.
+
+**Where the tests are, and are not.** Worth stating plainly, because "built"
+and "covered by a test that would fail if it broke" are different claims:
+
+| Capability | Coverage |
+|---|---|
+| OpenAI proxy + `assert_tool_call` | full: CLI record -> trace -> replay, agent as a real subprocess, on every PR |
+| MCP stdio (v3.1) | full: real stand-in binary, real server, real agent subprocess, including "a mocked tool is never forwarded" |
+| MCP streamable-HTTP (v3.2) | the boundary is exercised over real HTTP, but driven directly rather than through `flowproof record`/`run` with a real agent |
+| Streaming replay | covered; the record-mode stream synthesis is not |
+| Anthropic Messages | replay covered; the RECORD path (auth conversion, upstream URL) has no test |
+| http-target (`agent.url`) | replay covered; the RECORD path has no test |
+| `assert_no_tool_call` | the failing direction is unit-tested; the end-to-end case only exercises the passing direction |
+
+The unmarked gaps are all RECORD paths. Nothing there is known broken - the
+mode-blind code is shared with the tested replay paths - but "we test that"
+should not be said of them until they have one.
+
+## Single-turn, and what multi-turn would cost
+
+A flow delivers one task and observes what follows. For a conversational
+system under test, that means a flow can assert what ONE task produces, and
+cannot express "the user replies, then the agent should ...".
+
+The limit is not in the spec grammar, which is why it is worth being precise
+about the cost. It is in the runtime contract. flowproof hands the task to
+the agent in one shot - an environment variable for a `command:` agent, a
+single POST body for a `url:` one - and thereafter only observes the model
+boundary. The agent runs its own loop; flowproof never drives it. A second
+user turn has nowhere to go: there is no channel back into a process that
+was given its instructions at startup and is now running.
+
+So multi-turn is not a step type; it is a new driver contract. Roughly what
+it needs:
+
+1. **A conversational interface the SUT opts into** - a stdio protocol, or a
+   `url:` service that accepts a conversation id and returns between turns.
+   Every existing agent would need to adopt it, which cuts against the design
+   rule that flowproof starts the same command a developer would, with one
+   environment variable changed.
+2. **Turn-scoped cassette matching**, so replay serves the right recorded
+   response to turn 2 rather than the whole trajectory.
+3. **A spec surface** for interleaving assertions between turns, which the
+   positional-blind joining above would have to stop discarding.
+
+(1) is the expensive one and it is a compatibility decision, not an
+implementation detail. Until it is settled, this is a real limit on testing
+conversational agents, stated here rather than discovered mid-page.
+
+A useful workaround today: for a system whose conversation is driven by an
+outer loop you control, test that loop's single-shot entry point, or record
+one flow per turn with the conversation state seeded through `agent.env`.
 
 ## Decision: model-output evals are out of scope
 
