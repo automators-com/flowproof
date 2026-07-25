@@ -436,15 +436,23 @@ impl WebAppDriver {
     /// via CDP, localStorage via an on-new-document script (Playwright's
     /// addInitScript pattern — it runs before any page script on every
     /// navigation, so the app boots already seeded).
+    ///
+    /// The script re-runs on EVERY document in the tab (CDP semantics),
+    /// but seeding is a one-time fixture, not an invariant: a flow that
+    /// seeds a cart, mutates it through the UI, then navigates must keep
+    /// the mutation. A sessionStorage sentinel (same-tab lifetime, so it
+    /// survives navigations and reloads but not a new tab) makes the
+    /// seed run once per tab.
     fn apply_session(tab: &Arc<Tab>, session: &WebSession, url: &str) -> Result<(), DriverError> {
         if !session.local_storage.is_empty() {
-            let mut source = String::from("try{");
+            let mut source =
+                String::from("try{if(!sessionStorage.getItem('__flowproof_seeded__')){");
             for (key, value) in &session.local_storage {
                 let key = serde_json::to_string(key).unwrap_or_default();
                 let value = serde_json::to_string(value).unwrap_or_default();
                 source.push_str(&format!("localStorage.setItem({key},{value});"));
             }
-            source.push_str("}catch(e){}");
+            source.push_str("sessionStorage.setItem('__flowproof_seeded__','1');}}catch(e){}");
             tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
                 source,
                 world_name: None,
