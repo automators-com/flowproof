@@ -1,22 +1,118 @@
-# Getting started: your first flow (Windows Calculator)
+# Getting started
 
 flowproof records a flow once from a natural-language YAML spec, then replays
-it deterministically — zero LLM calls at replay time. This walkthrough drives
-Windows Calculator to compute **5 + 3 = 8**.
+it deterministically - **zero LLM calls at replay time**.
 
-Requirements: **Windows 10/11** with the Calculator app, Python ≥ 3.9.
+Start with the agent quickstart below. The UI walkthrough after it is the
+same idea applied to a desktop app, and needs Windows.
 
 ## Install
 
-From PyPI (once 0.1.0 is published) or from a built wheel:
+Either package ships the same engine as a native binary. Pick whichever
+matches the project you are testing:
 
-```powershell
-pip install flowproof
-# or: pip install .\flowproof-0.1.0-cp39-abi3-win_amd64.whl
+```bash
+npx flowproof --version      # no install, no Python
 ```
+
+```bash
+npm install --save-dev flowproof
+```
+
+```bash
+pip install flowproof
+```
+
+The npm package resolves a platform binary for linux-x64, darwin-x64,
+darwin-arm64 and win32-x64. On any other platform install from PyPI instead;
+`npx flowproof` will say so rather than fail obscurely.
 
 Building from source instead? You need Rust and maturin: `pip install .`
 from `sdk/python` compiles the engine automatically.
+
+## Quickstart: test an agent
+
+The thing flowproof is for: an agent calls tools, and you want a test that
+fails when it calls the wrong one - without paying a model on every CI run.
+
+[`examples/agent-demo/`](../examples/agent-demo/) has a real agent built on
+the official OpenAI SDK, in two languages. Use the Node one if you installed
+from npm; nothing here needs Python.
+
+```yaml
+# examples/agent-demo/weather-node.flow.yaml
+name: Weather assistant answers with the forecast (Node)
+app: agent
+agent:
+  command: node examples/agent-demo/weather_agent.mjs
+tools:
+  - name: get_weather
+    result: { city: Nairobi, sky: sunny, temp_c: 26 }
+steps:
+  - prompt: What is the weather in Nairobi right now? Use your tools.
+  - assert_tool_call: get_weather where city contains Nairobi
+  - assert: reply contains sunny
+```
+
+**Record once.** This is the only step that calls a real model, so it is the
+only step that needs a key:
+
+```bash
+npm install openai
+export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY
+npx flowproof record examples/agent-demo/weather-node.flow.yaml
+```
+
+**Replay for ever.** No key, no model, no network to the provider:
+
+```bash
+npx flowproof run examples/agent-demo/weather-node.flow.yaml
+```
+
+```text
+  [PASS] s0001 prompt
+  [PASS] s0002 get_weather where city contains Nairobi
+  [PASS] s0003 reply contains sunny
+PASS: Weather assistant answers with the forecast (Node)
+```
+
+What just happened, and why it is worth having:
+
+- The agent ran **for real** both times - same client, same tool loop.
+- At record, flowproof sat at the model boundary and captured the exchange.
+  At replay it served that recording back, so the trajectory is fixed and
+  **no model was called**. A CI run costs nothing and cannot flake on
+  sampling.
+- `assert_tool_call: get_weather where city contains Nairobi` is the part
+  that fails when the agent regresses: wrong tool, wrong argument, or a
+  tool called out of order.
+- `get_weather` returns a live timestamp. Replay is deterministic anyway,
+  because the spec's `result:` is substituted at the model boundary.
+
+Two limits worth knowing before you build on this, rather than discovering
+them later:
+
+- **A flow is one turn, not a conversation.** Every `prompt:` step is joined
+  into a single task delivered up front; there is no follow-up user turn.
+  See [agent-testing.md](agent-testing.md).
+- **The model boundary is not the tool boundary.** A `tools:` mock changes
+  what the model is TOLD a tool returned; the agent still ran its own tool.
+  Only the `mcp:` boundary stops a tool executing. flowproof warns at
+  runtime when a flow relies on this.
+
+Python instead of Node? Same flow, same assertions:
+[`weather.flow.yaml`](../examples/agent-demo/weather.flow.yaml) runs
+`python3 examples/agent-demo/weather_agent.py` (`pip install openai`).
+
+Next: [agent-testing.md](agent-testing.md) for the full assertion grammar,
+the MCP tool boundary, and egress containment.
+
+## Walkthrough: a UI flow (Windows Calculator)
+
+The same record-once/replay-deterministically idea, applied to a desktop
+app. This drives Windows Calculator to compute **5 + 3 = 8**.
+
+Requirements: **Windows 10/11** with the Calculator app.
 
 ## 1. Write a spec
 

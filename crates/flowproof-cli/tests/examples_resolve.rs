@@ -8,6 +8,10 @@ use flowproof_agent::{FlowSpec, SuiteManifest};
 const FIORI_SPEC: &str = include_str!("../../../examples/fiori/manage-info-records.flow.yaml");
 const FIORI_SUITE: &str = include_str!("../../../examples/fiori/suite.yaml");
 const CONN_TEST_SPEC: &str = include_str!("../../../examples/api/connection-test.flow.yaml");
+/// The npm-path agent quickstart. It is the first example a reader coming
+/// from `npx flowproof` runs, so it has to keep parsing.
+const AGENT_NODE_SPEC: &str = include_str!("../../../examples/agent-demo/weather-node.flow.yaml");
+const AGENT_PY_SPEC: &str = include_str!("../../../examples/agent-demo/weather.flow.yaml");
 
 #[test]
 fn connection_test_example_resolves_with_body_and_headers() {
@@ -69,4 +73,82 @@ fn fiori_suite_manifest_declares_the_data_leg() {
         "data comes from the DataMaker CLI"
     );
     assert!(manifest.env.contains_key("FIORI_BASE_URL"));
+}
+
+/// The quickstart's two agent demos must stay runnable and stay TWINS: the
+/// docs present them as the same flow in two languages, so a change to one
+/// that is not mirrored in the other makes the documentation lie.
+#[test]
+fn both_agent_demos_resolve_and_assert_the_same_thing() {
+    let node = FlowSpec::parse(AGENT_NODE_SPEC).expect("node example parses");
+    let py = FlowSpec::parse(AGENT_PY_SPEC).expect("python example parses");
+
+    for spec in [&node, &py] {
+        assert_eq!(spec.app.id(), "agent");
+        // A mocked tool is what makes replay deterministic here; without a
+        // result the demo would depend on a live timestamp.
+        let mocked = spec
+            .tools
+            .iter()
+            .find(|t| t.name == "get_weather")
+            .expect("get_weather declared");
+        assert!(!mocked.result.is_null(), "get_weather must carry a result:");
+    }
+
+    // Same trajectory, same assertions - only the runtime differs.
+    assert_eq!(
+        node.steps.len(),
+        py.steps.len(),
+        "the two demos must stay the same flow"
+    );
+
+    // The Node demo must not need Python, which is the entire reason it
+    // exists: the npm install path has to stand on its own.
+    let command = node
+        .agent
+        .as_ref()
+        .and_then(|a| a.command.clone())
+        .expect("node demo has a command");
+    assert!(
+        command.starts_with("node "),
+        "the npm-path demo must run under node, got: {command}"
+    );
+    assert!(
+        !command.contains("python"),
+        "the npm-path demo must not need Python: {command}"
+    );
+}
+
+/// The quickstart is the most-read page we have and it is now the front
+/// door for the npm audience, so its YAML must not drift from the file it
+/// claims to quote. A reader who copies a block that no longer parses is
+/// the worst possible first experience.
+#[test]
+fn the_quickstart_quotes_the_shipped_agent_example_verbatim() {
+    const DOC: &str = include_str!("../../../docs/getting-started.md");
+
+    // Pull the fenced block that names the example file.
+    let marker = "```yaml\n# examples/agent-demo/weather-node.flow.yaml\n";
+    let start = DOC
+        .find(marker)
+        .expect("quickstart quotes the node example")
+        + marker.len();
+    let block = &DOC[start..];
+    let block = &block[..block.find("```").expect("fence closes")];
+
+    // The shipped file, minus its comment header.
+    let shipped: String = AGENT_NODE_SPEC
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_eq!(
+        block.trim(),
+        shipped.trim(),
+        "docs/getting-started.md has drifted from examples/agent-demo/weather-node.flow.yaml"
+    );
+
+    // And it must still parse, so the block a reader copies actually runs.
+    FlowSpec::parse(block).expect("the quoted quickstart block parses");
 }
