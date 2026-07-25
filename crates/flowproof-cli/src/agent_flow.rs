@@ -831,7 +831,9 @@ fn check_egress(
 
 /// The short containment tag stored in the trace lane (the parenthetical of
 /// the report line): `enforced (linux seccomp)` or `not contained (<reason>)`.
-fn containment_tag(containment: &Containment) -> String {
+/// The run record stores the SAME string, so the trace and the artifact an
+/// auditor reads cannot describe the run differently.
+pub fn containment_tag(containment: &Containment) -> String {
     containment
         .report_line()
         .strip_prefix("egress containment: ")
@@ -949,8 +951,77 @@ fn require_progress(run: &AgentRun, cassette: &Cassette, plan: &Plan) -> Result<
 
 /// Record an `app: agent` flow: run it against a real model, capture the
 /// trajectory, check the assertions, and write the cassette to `out`.
+/// Warn when a flow reasons about a tool that nothing actually intercepts.
+///
+/// flowproof sits at the MODEL boundary: a `tools:` mock rewrites what the
+/// model is told a tool returned, but the system under test ran that tool
+/// itself, for real. So `assert_no_tool_call` proves the agent did not ASK
+/// for the tool - it does not stop one from firing. The docs have always
+/// said so; this says it at the moment it can actually cost something.
+///
+/// The replay half is the part prose never covered: replay serves the
+/// RECORDED assistant message, tool calls included, to a live agent process.
+/// A tool that fired once during record therefore fires again on every CI
+/// run. That is the sentence worth printing.
+///
+/// A tool declared under `mcp:` with a `result:` IS intercepted - flowproof
+/// answers it and the real server never sees it - so those are silent. The
+/// remedy named here is that boundary, not a mute switch: a warning you can
+/// turn off without changing what runs is worth nothing.
+fn unprotected_tool_warning(spec: &FlowSpec, plan: &Plan, phase: &str) -> Option<String> {
+    // Everything the MCP boundary answers on the flow's behalf.
+    let intercepted: std::collections::BTreeSet<&str> = spec
+        .mcp
+        .iter()
+        .flat_map(|server| server.tools.iter())
+        .filter(|t| !t.result.is_null())
+        .map(|t| t.name.as_str())
+        .collect();
+
+    // Tools the flow reasons about at the MODEL boundary: a substitution
+    // (the model is lied to, the real tool still ran) or a forbid assertion
+    // (proved not-asked-for, not prevented).
+    let mut exposed: Vec<&str> = spec
+        .tools
+        .iter()
+        .filter(|t| !t.result.is_null())
+        .map(|t| t.name.as_str())
+        .chain(plan.forbidden.iter().map(|f| f.tool.as_str()))
+        .filter(|name| !intercepted.contains(name))
+        .collect();
+    exposed.sort_unstable();
+    exposed.dedup();
+    if exposed.is_empty() {
+        return None;
+    }
+
+    let names = exposed.join(", ");
+    let consequence = if phase == "replay" {
+        "replay serves the RECORDED tool calls to a live agent, so any side effect fires \
+         again on every run"
+    } else {
+        "the agent executes its own tools for real during record, so any side effect fires"
+    };
+    Some(format!(
+        "warning: {names} is asserted or mocked at the MODEL boundary, which does not \
+         intercept tool execution - {consequence}.\n         \
+         For a tool with real side effects, declare it under `mcp:` with a `result:` \
+         (flowproof answers it and the real server never runs it), or stub/sandbox it \
+         author-side. See docs/agent-testing.md."
+    ))
+}
+
+/// Print the warning above, if this flow earns one. Stderr, so `--json`
+/// keeps its stdout contract.
+fn warn_unprotected_tools(spec: &FlowSpec, plan: &Plan, phase: &str) {
+    if let Some(warning) = unprotected_tool_warning(spec, plan, phase) {
+        eprintln!("{warning}");
+    }
+}
+
 pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
     let mut plan = plan(spec)?;
+    warn_unprotected_tools(spec, &plan, "record");
     // Set up the MCP boundary BEFORE the agent starts: write the plans and
     // inject the env that points the agent's MCP config at the stand-in.
     let mcp = McpContext::setup(spec, "record", &BTreeMap::new())?;
@@ -1001,6 +1072,7 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
 /// still hold.
 pub fn replay(spec: &FlowSpec, trace_path: &Path) -> Result<(), String> {
     let mut plan = plan(spec)?;
+    warn_unprotected_tools(spec, &plan, "replay");
     let raw = std::fs::read_to_string(trace_path)
         .map_err(|e| format!("reading {}: {e}", trace_path.display()))?;
     let trace: AgentTrace = serde_json::from_str(&raw)
@@ -1348,6 +1420,96 @@ mod tests {
         let not = Containment::NotContained("kernel lacks seccomp user-notification".into());
         let err = check_egress(&plan, &run, &not).expect_err("cannot certify");
         assert!(err.contains("cannot certify"), "{err}");
+    }
+
+    /// A spec whose only shape that matters here is its tools/mcp blocks.
+    fn tool_spec(yaml: &str) -> FlowSpec {
+        FlowSpec::parse(yaml).expect("spec parses")
+    }
+
+    fn forbidding(plan_tools: &[&str]) -> Plan {
+        let mut plan = egress_plan(false, vec![]);
+        plan.forbidden = plan_tools
+            .iter()
+            .map(|t| ToolCallExpectation::new(t))
+            .collect();
+        plan
+    }
+
+    /// A model-boundary mock does NOT stop the tool running, so a flow that
+    /// mocks one gets told - at record, where the side effect fires.
+    #[test]
+    fn a_model_boundary_mock_warns_that_the_real_tool_still_runs() {
+        let spec = tool_spec(
+            "name: charge\napp: agent\nagent:\n  command: ./agent\n\
+             tools:\n  - name: charge_card\n    result: {ok: true}\n\
+             steps:\n  - prompt: pay the invoice\n",
+        );
+        let warning = unprotected_tool_warning(&spec, &egress_plan(false, vec![]), "record")
+            .expect("a model-boundary mock earns a warning");
+        assert!(warning.contains("charge_card"), "{warning}");
+        assert!(warning.contains("MODEL boundary"), "{warning}");
+        assert!(warning.contains("side effect fires"), "{warning}");
+    }
+
+    /// The half no prose covered: replay re-serves the RECORDED tool calls
+    /// to a live agent, so a side effect recorded once fires on every CI
+    /// run. The replay wording must say that, not repeat the record line.
+    #[test]
+    fn the_replay_warning_says_the_side_effect_fires_every_run() {
+        let spec = tool_spec(
+            "name: charge\napp: agent\nagent:\n  command: ./agent\n\
+             tools:\n  - name: charge_card\n    result: {ok: true}\n\
+             steps:\n  - prompt: pay the invoice\n",
+        );
+        let warning = unprotected_tool_warning(&spec, &egress_plan(false, vec![]), "replay")
+            .expect("replay warns too");
+        assert!(warning.contains("every run"), "{warning}");
+        assert!(warning.contains("RECORDED"), "{warning}");
+    }
+
+    /// `assert_no_tool_call` proves the agent did not ASK for the tool. It
+    /// does not prevent one, so it earns the same warning.
+    #[test]
+    fn a_forbid_assertion_alone_earns_the_warning() {
+        let spec = tool_spec(
+            "name: no alert\napp: agent\nagent:\n  command: ./agent\n\
+             steps:\n  - prompt: summarise\n  - assert_no_tool_call: send_alert\n",
+        );
+        let warning = unprotected_tool_warning(&spec, &forbidding(&["send_alert"]), "record")
+            .expect("a forbid assertion earns a warning");
+        assert!(warning.contains("send_alert"), "{warning}");
+    }
+
+    /// The MCP boundary DOES intercept: flowproof answers the tool and the
+    /// real server never runs it. Warning there would be false, and a
+    /// warning that cries wolf is one people learn to skip past.
+    #[test]
+    fn an_mcp_intercepted_tool_is_silent() {
+        let spec = tool_spec(
+            "name: charge\napp: agent\nagent:\n  command: ./agent\n\
+             mcp:\n  - name: billing\n    command: ./server\n\
+             \x20   tools:\n      - name: charge_card\n        result: {ok: true}\n\
+             steps:\n  - prompt: pay the invoice\n  - assert_no_tool_call: charge_card\n",
+        );
+        assert_eq!(
+            unprotected_tool_warning(&spec, &forbidding(&["charge_card"]), "record"),
+            None,
+            "an MCP-answered tool must not warn"
+        );
+    }
+
+    /// A flow that neither mocks nor forbids anything says nothing.
+    #[test]
+    fn a_plain_flow_is_silent() {
+        let spec = tool_spec(
+            "name: plain\napp: agent\nagent:\n  command: ./agent\n\
+             steps:\n  - prompt: summarise\n",
+        );
+        assert_eq!(
+            unprotected_tool_warning(&spec, &egress_plan(false, vec![]), "record"),
+            None
+        );
     }
 
     /// Under enforcement, an undeclared attempt fails the assertion, naming

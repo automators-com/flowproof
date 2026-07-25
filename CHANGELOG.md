@@ -58,6 +58,32 @@ See [docs/authoring.md](docs/authoring.md#security-controls) and
   the correct element. Only those three types: text-like inputs hold user data
   in `value`, not a name, and are still never matched by it.
 
+### Added
+
+- **`assert_api` counts array elements: `count` and `count_at_least`.** Pair
+  either with `body_json` to assert how many elements are in the collection at
+  that path (`body_json: results` + `count: 5`, or `count_at_least: 2` for a
+  minimum). Previously the only way to ask "how many rows came back" was to
+  assert that some index exists (`results.1.id`), which cannot express
+  "exactly N" and forces you to name a leaf key that element happens to carry;
+  11 of ~30 assertions in a migrated real-world API suite are of this shape.
+  A non-array at the path fails naming the actual kind, and a wrong count
+  reports both found and wanted.
+
+### Changed
+
+- **Breaking: a failing `assert_api` no longer re-sends a write.** Auto-wait
+  polls a failing probe until its bound expires, which is correct for a read
+  and dangerous for a write: the probe IS the mutation, so a failing `POST`
+  was delivered once per tick (41 deliveries measured against a counting
+  server inside the default 10s bound), and only ever when a test FAILED.
+  `GET`, `HEAD` and `assert_sql` still poll; `POST`, `PUT`, `PATCH` and
+  `DELETE` are sent exactly once and their failure names the opt-in. A flow
+  that relied on polling a write now fails loudly instead of silently
+  duplicating writes: add `retry: true` to the step to restore it (or
+  `retry: false` to send a read once). On older releases, `timeout_seconds: 0`
+  is the mitigation.
+
 ### Fixed
 
 - `the "<target>" appears 0 times` no longer fails recording with
@@ -69,11 +95,21 @@ See [docs/authoring.md](docs/authoring.md#security-controls) and
   visible`, `is enabled|disabled`, `is [not] empty`) now resolves exactly like
   the noun-less form. The noun is dropped, not enforced; `checkbox is [not]
   checked` keeps its required noun.
-- `session:` localStorage seeding runs once per tab instead of on every
-  document: the init script (CDP re-runs it on each navigation) now guards on
-  a sessionStorage sentinel, so fixture state a flow mutates through the UI
-  (an item added to a seeded cart) survives mid-flow navigation and reload
-  instead of being silently reset to the fixture.
+- `the "<target>" checkbox is [not] checked` and `the "<target>" shows
+  ${captured.<name>}` now wait for a target that renders late, like every other
+  targeted assertion. Both were missing from the assertions-do-their-own-waiting
+  gate, so a single non-waiting probe failed the record with ElementNotFound
+  before the assertion's own poll loop could run. The `--reuse` drift check had
+  the same omission (a late target forced a spurious re-author).
+- `session:` localStorage seeding runs once, on the flow's first document,
+  instead of on every document: the init script (CDP re-runs it on each
+  navigation) is now DROPPED once that document has run it, so fixture state
+  a flow mutates through the UI (an item added to a seeded cart) survives
+  mid-flow navigation and reload instead of being silently reset to the
+  fixture. This holds across a navigation that changes origin too: the first
+  cut of this fix guarded on a sessionStorage sentinel, which is per origin,
+  so a cross-origin navigation could not see it and re-seeded over the
+  mutation.
 
 ## 0.4.1
 

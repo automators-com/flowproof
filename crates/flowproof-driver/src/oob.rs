@@ -13,6 +13,10 @@ use crate::DriverError;
 /// by the caller (the engine owns secret indirection; this module never
 /// sees a raw reference).
 #[derive(Debug, Clone, PartialEq)]
+// Never stored in bulk: one probe is built per assertion step and consumed
+// immediately, so the Sql/Api size imbalance costs nothing worth an extra
+// indirection on the hot field.
+#[allow(clippy::large_enum_variant)]
 pub enum OobProbe {
     /// Run `query` on the named connection; the FIRST COLUMN of the FIRST
     /// ROW, rendered as text, must equal `equals` (when set — otherwise the
@@ -61,8 +65,69 @@ pub enum OobProbe {
         /// reference has already been resolved by the caller. Mutually
         /// exclusive with `header_equals`.
         header_contains: Option<String>,
+        /// When set (only meaningful with `body_json`), the path must resolve
+        /// to an ARRAY satisfying this count. Mutually exclusive with
+        /// `equals`; exactly-N and at-least-N are one field, so the two
+        /// cannot contradict each other by construction.
+        count: Option<ArrayCount>,
+        /// Override the method-derived retry policy (see `is_retryable`):
+        /// `Some(true)` polls a write until the expectation holds,
+        /// `Some(false)` sends a read exactly once.
+        retry: Option<bool>,
     },
 }
+
+/// How many elements the array at `body_json` must hold. One value rather
+/// than two optional ones: "exactly N" and "at least N" are the same
+/// question asked two ways, so they cannot both be set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayCount {
+    Exactly(u64),
+    AtLeast(u64),
+}
+
+/// The JSON kind at a path, for a failure that says what was actually
+/// there instead of only what was wanted.
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
+/// Whether a failing probe may be re-sent while auto-waiting.
+///
+/// Auto-wait re-fires the probe until the expectation holds, which is right
+/// for an OBSERVATION (the row is still committing, the API is converging)
+/// and wrong for a MUTATION: the probe IS the write, so polling a failing
+/// `POST` delivers it once per interval. A single failing step measured 41
+/// deliveries against a counting server, which in a real suite means ~41
+/// duplicate payments - and it only happens when a test fails, when the
+/// state is hardest to reason about.
+///
+/// The rule is the METHOD, not the error kind. A response mismatch proves
+/// the request was delivered, but a transport error does NOT prove it was
+/// not: a connection reset after the bytes were flushed is the canonical
+/// duplicate-write case, and the underlying client does not distinguish
+/// that from a refusal reliably enough to bet writes on it.
+pub fn is_retryable(probe: &OobProbe) -> bool {
+    match probe {
+        // A query is a read for this purpose; `assert_sql` asserts state.
+        OobProbe::Sql { .. } => true,
+        OobProbe::Api { method, retry, .. } => {
+            retry.unwrap_or_else(|| matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD"))
+        }
+    }
+}
+
+/// The hint appended to a non-retried probe's failure, so a flow that
+/// relied on polling a write self-diagnoses on its first failure.
+pub const RETRY_HINT: &str =
+    "this method is not retried, so it was sent once; add `retry: true` to the step to poll until the expectation holds";
 
 /// Environment variable name for a SQL connection: `FLOWPROOF_SQL_<NAME>`.
 pub fn sql_connection_var(name: &str) -> String {
@@ -124,6 +189,9 @@ pub fn check(probe: &OobProbe) -> Result<Result<Option<String>, String>, DriverE
             }
         }
         OobProbe::Api {
+            // `retry` steers the caller's poll loop, not this single send.
+            retry: _,
+            count,
             method,
             url,
             body,
@@ -226,17 +294,40 @@ pub fn check(probe: &OobProbe) -> Result<Result<Option<String>, String>, DriverE
                         )))
                     }
                 };
-                if leaf.is_object() || leaf.is_array() {
-                    return Ok(Err(
-                        "path resolves to a non-scalar; assert a leaf value".to_string()
-                    ));
-                }
-                // `body_json` with no `equals` is an existence check: reaching
-                // a scalar leaf is the whole assertion (mirrors assert_sql,
-                // where an omitted `equals` means a row merely has to exist).
-                if let Some(expected) = equals {
-                    if let Err(reason) = compare_json_leaf(leaf, expected, code) {
-                        return Ok(Err(reason));
+                // A count asks about a COLLECTION, so it is the one predicate
+                // that wants a non-scalar. Its own type error is more precise
+                // than the generic leaf rule, so it is checked first.
+                if let Some(want) = count {
+                    let Some(items) = leaf.as_array() else {
+                        return Ok(Err(format!(
+                            "path '{path}' is {}, count requires an array (status {code})",
+                            json_kind(leaf)
+                        )));
+                    };
+                    let found = items.len() as u64;
+                    let (holds, expectation) = match want {
+                        ArrayCount::Exactly(n) => (found == *n, format!("exactly {n}")),
+                        ArrayCount::AtLeast(n) => (found >= *n, format!("at least {n}")),
+                    };
+                    if !holds {
+                        return Ok(Err(format!(
+                            "path '{path}' has {found} elements, expected {expectation} (status {code})"
+                        )));
+                    }
+                } else {
+                    if leaf.is_object() || leaf.is_array() {
+                        return Ok(Err(
+                            "path resolves to a non-scalar; assert a leaf value".to_string()
+                        ));
+                    }
+                    // `body_json` with no `equals` is an existence check:
+                    // reaching a scalar leaf is the whole assertion (mirrors
+                    // assert_sql, where an omitted `equals` means a row merely
+                    // has to exist).
+                    if let Some(expected) = equals {
+                        if let Err(reason) = compare_json_leaf(leaf, expected, code) {
+                            return Ok(Err(reason));
+                        }
                     }
                 }
             }

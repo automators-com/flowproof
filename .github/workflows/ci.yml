@@ -69,6 +69,60 @@ jobs:
           fi
 
   # Fast feedback: lint + unit tests on Linux (driver uses its stub backend).
+  # The six places a version lives must move together, or a release skews.
+  # This ran only inside the two publish workflows before, which is to say
+  # only at the moment of release - so npm drifted to a 0.0.1 placeholder
+  # while PyPI shipped 0.5.0 and nothing said so for weeks. Checking it on
+  # every PR is cheap (no toolchain, no cache) and turns a release-day
+  # surprise into a review comment.
+  versions:
+    name: versions agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: every version location matches Cargo.toml
+        run: |
+          cargo=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "Cargo.toml: $cargo"
+          fail=0
+          check() {
+            if [ "$2" != "$cargo" ]; then
+              echo "::error file=$1::$1 is at '$2', Cargo.toml is at '$cargo' - bump them together"
+              fail=1
+            else
+              echo "ok: $1 ($2)"
+            fi
+          }
+          check sdk/python/pyproject.toml \
+            "$(grep -m1 '^version = ' sdk/python/pyproject.toml | cut -d'"' -f2)"
+          check sdk/python/flowproof/__init__.py \
+            "$(grep -m1 '__version__' sdk/python/flowproof/__init__.py | cut -d'"' -f2)"
+          check sdk/js/package.json \
+            "$(node -p "require('./sdk/js/package.json').version")"
+          # Each platform package is pinned to the launcher's own version:
+          # the launcher and the binary it starts are one artifact.
+          for dep in $(node -p "Object.keys(require('./sdk/js/package.json').optionalDependencies).join(' ')"); do
+            check "sdk/js/package.json ($dep)" \
+              "$(node -p "require('./sdk/js/package.json').optionalDependencies['$dep']")"
+          done
+          # Every workspace crate in the lockfile, so a stale Cargo.lock
+          # cannot ship a version nobody bumped.
+          locked=$(grep -A1 '^name = "flowproof' Cargo.lock | grep '^version' | cut -d'"' -f2 | sort -u)
+          for v in $locked; do check Cargo.lock "$v"; done
+          exit $fail
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # `npx flowproof` is the entry point the website advertises, so the
+      # launcher's platform map is user-facing surface, not a detail.
+      - name: launcher resolves the packages it declares
+        # An explicit file path, not the directory: `node --test <dir>`
+        # resolves the directory as a module on Node 22 and dies with
+        # MODULE_NOT_FOUND, and a glob is Node 22+ only. A file path
+        # works on every supported Node. Runs from the repo root
+        # because the version test reads Cargo.toml relative to cwd.
+        run: node --test sdk/js/test/launcher.test.js
+
   lint:
     name: fmt + clippy + test (ubuntu)
     needs: scope
@@ -212,6 +266,11 @@ jobs:
           CHROME: /usr/bin/google-chrome
       - name: iframe-scoped assertions fence to the frame's own document
         run: cargo test -p flowproof-cli --test iframe_e2e -- --nocapture --test-threads=1
+        env:
+          FLOWPROOF_E2E: "1"
+          CHROME: /usr/bin/google-chrome
+      - name: page title assertions wait for a late title
+        run: cargo test -p flowproof-cli --test page_title_e2e -- --nocapture --test-threads=1
         env:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome

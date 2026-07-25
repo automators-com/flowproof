@@ -1030,12 +1030,23 @@ fn build_control_record(
         lanes.push("secret_leak".to_string());
     }
     let trace_path = default_trace_path(spec_path);
+    // The containment tier THIS host actually ran under. A flow that engages
+    // no egress claims no tier, so the field stays absent rather than
+    // recording a "not contained" that was never in question.
+    let containment = agent_flow::engages_egress(spec)
+        .then(|| agent_flow::containment(spec))
+        .filter(|_| spec.app.id() == "agent");
     // The egress blocked lane is an agent-flow concept; it is a value-free
     // audit descriptor, safe to read off any agent trace.
-    let blocked = if spec.app.id() == "agent" {
-        agent_flow::egress_blocked(&trace_path)
-    } else {
-        Vec::new()
+    //
+    // It is read from the RECORDED trace, so it is only evidence about THIS
+    // run when this run was itself contained. A Linux recording replayed on
+    // a host without containment would otherwise present destinations some
+    // other machine blocked, on some other day, as proof for an uncontained
+    // run - the record's most misleading possible sentence.
+    let blocked = match (spec.app.id(), &containment) {
+        ("agent", Some(tier)) if tier.is_enforced() => agent_flow::egress_blocked(&trace_path),
+        _ => Vec::new(),
     };
     Some(flowproof_replay::ControlRecord {
         id: control.id.clone(),
@@ -1043,6 +1054,7 @@ fn build_control_record(
         verdict,
         reason,
         lanes,
+        containment: containment.as_ref().map(agent_flow::containment_tag),
         evidence: flowproof_replay::Evidence {
             trace: rel(dir, &trace_path),
             blocked,
@@ -1346,6 +1358,11 @@ struct AuditControl {
     /// Which control lanes the flow asserted (`egress`, `secret_leak`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     lanes: Vec<String>,
+    /// The containment tier the run actually ran under. An `egress` lane
+    /// says what was ASSERTED; this says what was ENFORCED, and without it
+    /// the two are indistinguishable in the artifact auditors read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    containment: Option<String>,
     /// Where the control's proof lives: the trace pointer and any blocked
     /// egress destinations.
     evidence: flowproof_replay::Evidence,
@@ -1437,6 +1454,7 @@ fn audit_report_from_record(dir: &Path, record: &flowproof_replay::RunRecord) ->
             verdict: control.verdict,
             reason: control.reason.clone(),
             lanes: control.lanes.clone(),
+            containment: control.containment.clone(),
             evidence: control.evidence.clone(),
             secrets_checked: control.secrets_checked.clone(),
             corpus: control.corpus.clone(),
@@ -1676,6 +1694,153 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A flow that engages egress records the tier it ACTUALLY ran under.
+    /// Without this, an `egress` lane on a host with no containment reads
+    /// exactly like one that was enforced and certified - the record would
+    /// imply a certification the run never made, which is the whole reason
+    /// the field exists.
+    #[test]
+    fn a_control_record_states_the_containment_tier_it_ran_under() {
+        let dir = std::env::temp_dir().join("flowproof-containment-record-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec_path = dir.join("egress.flow.yaml");
+        let spec = FlowSpec::parse(
+            "name: contained\napp: agent\nagent:\n  command: ./agent\n  \
+             allow_egress:\n    - api.example.com:443\n\
+             control:\n  id: sec.egress.declared\n\
+             steps:\n  - prompt: fetch the invoice\n",
+        )
+        .expect("spec parses");
+        let record = build_control_record(
+            &spec_path,
+            &dir,
+            &spec,
+            flowproof_replay::ControlVerdict::Pass,
+            None,
+        )
+        .expect("a control-bearing flow has a record");
+
+        assert!(
+            record.lanes.contains(&"egress".to_string()),
+            "the flow asserted the egress lane: {record:?}"
+        );
+        let tier = record
+            .containment
+            .as_deref()
+            .expect("a flow that engages egress must state its tier");
+        // Whatever this host can do, the record says which it was, and the
+        // wording matches the trace lane's tag exactly.
+        if cfg!(target_os = "linux") {
+            assert_eq!(tier, "enforced (linux seccomp)", "{record:?}");
+        } else {
+            assert!(
+                tier.starts_with("not contained ("),
+                "off Linux the record must say so, not stay silent: {tier}"
+            );
+            assert!(tier.contains("Linux-only"), "and say why: {tier}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Blocked destinations are read from the RECORDED trace, so they are
+    /// evidence about THIS run only when this run was contained. A Linux
+    /// recording replayed on a host without containment must not present
+    /// destinations another machine blocked as proof for an uncontained run.
+    #[test]
+    fn blocked_evidence_is_dropped_when_this_run_was_not_contained() {
+        let dir = std::env::temp_dir().join("flowproof-blocked-attribution-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec_path = dir.join("egress.flow.yaml");
+        // A trace carrying a blocked lane, exactly as a contained Linux run
+        // would have written it.
+        let trace = default_trace_path(&spec_path);
+        std::fs::write(
+            &trace,
+            serde_json::json!({
+                "app": "agent",
+                "mocks": {},
+                "cassette": {"turns": []},
+                "egress": {
+                    "containment": "enforced (linux seccomp)",
+                    "blocked": [{
+                        "destination": "evil.example.com:443",
+                        "protocol": "tcp",
+                        "at_ms": 12
+                    }]
+                }
+            })
+            .to_string(),
+        )
+        .expect("trace written");
+        let spec = FlowSpec::parse(
+            "name: contained\napp: agent\nagent:\n  command: ./agent\n  \
+             allow_egress:\n    - api.example.com:443\n\
+             control:\n  id: sec.egress.declared\n\
+             steps:\n  - prompt: fetch the invoice\n",
+        )
+        .expect("spec parses");
+        // Prove the FIXTURE first. The platform assertion below is
+        // "empty" off Linux, which a malformed trace would satisfy for the
+        // wrong reason - and did: a missing `at_ms` made the lane fail to
+        // parse, so this test passed on macOS while proving nothing.
+        assert!(
+            !agent_flow::egress_blocked(&trace).is_empty(),
+            "the fixture must actually carry a blocked lane, or this test proves nothing"
+        );
+
+        let record = build_control_record(
+            &spec_path,
+            &dir,
+            &spec,
+            flowproof_replay::ControlVerdict::Pass,
+            None,
+        )
+        .expect("a control-bearing flow has a record");
+
+        if cfg!(target_os = "linux") {
+            assert!(
+                record
+                    .evidence
+                    .blocked
+                    .iter()
+                    .any(|b| b.contains("evil.example.com")),
+                "a contained run keeps its blocked evidence: {record:?}"
+            );
+        } else {
+            assert!(
+                record.evidence.blocked.is_empty(),
+                "an uncontained run must claim no blocked evidence: {record:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A flow that engages no egress claims no tier at all, rather than
+    /// recording a "not contained" that was never in question.
+    #[test]
+    fn a_flow_that_engages_no_egress_claims_no_tier() {
+        let dir = std::env::temp_dir().join("flowproof-no-tier-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec_path = dir.join("plain.flow.yaml");
+        let spec = FlowSpec::parse(
+            "name: plain\napp: agent\nagent:\n  command: ./agent\n\
+             control:\n  id: sec.plain\n\
+             steps:\n  - prompt: summarise\n",
+        )
+        .expect("spec parses");
+        let record = build_control_record(
+            &spec_path,
+            &dir,
+            &spec,
+            flowproof_replay::ControlVerdict::Pass,
+            None,
+        )
+        .expect("a control-bearing flow has a record");
+        assert_eq!(record.containment, None, "{record:?}");
+        assert!(!record.lanes.contains(&"egress".to_string()), "{record:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn cli_definition_is_valid() {

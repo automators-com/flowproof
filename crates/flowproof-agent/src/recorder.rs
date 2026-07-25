@@ -517,6 +517,8 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 }
                 TextMatch::UrlEquals => serde_json::json!({ "url_equals": expected }),
                 TextMatch::UrlContains => serde_json::json!({ "url_contains": expected }),
+                TextMatch::TitleEquals => serde_json::json!({ "title_equals": expected }),
+                TextMatch::TitleContains => serde_json::json!({ "title_contains": expected }),
                 TextMatch::Empty(want_empty) => serde_json::json!({ "value_empty": want_empty }),
             };
             expect["timeout_ms"] = serde_json::json!(timeout_ms);
@@ -730,6 +732,9 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             header,
             header_equals,
             header_contains,
+            count,
+            count_at_least,
+            retry,
             timeout_ms,
         } => {
             let mut expect = serde_json::Map::new();
@@ -754,6 +759,17 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             }
             if let Some(want) = header_contains {
                 expect.insert("header_contains".into(), want.as_str().into());
+            }
+            if let Some(n) = count {
+                expect.insert("count".into(), (*n).into());
+            }
+            if let Some(n) = count_at_least {
+                expect.insert("count_at_least".into(), (*n).into());
+            }
+            // Only written when the author overrode the method-derived
+            // policy, so a trace without an override is byte-identical.
+            if let Some(retry) = retry {
+                expect.insert("retry".into(), (*retry).into());
             }
             expect.insert("timeout_ms".into(), (*timeout_ms).into());
             (
@@ -1220,6 +1236,18 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
             status,
             expect,
         }) => Some(ResolvedAction::AssertApi {
+            count: expect
+                .as_ref()
+                .and_then(|e| e.get("count"))
+                .and_then(|v| v.as_u64()),
+            count_at_least: expect
+                .as_ref()
+                .and_then(|e| e.get("count_at_least"))
+                .and_then(|v| v.as_u64()),
+            retry: expect
+                .as_ref()
+                .and_then(|e| e.get("retry"))
+                .and_then(|v| v.as_bool()),
             method: request.method.clone(),
             url: request.url.clone(),
             headers: request.headers.clone(),
@@ -1315,6 +1343,8 @@ impl ReuseCursor {
                     | ResolvedAction::AssertEnabled { .. }
                     | ResolvedAction::AssertAttribute { .. }
                     | ResolvedAction::AssertStyle { .. }
+                    | ResolvedAction::AssertChecked { .. }
+                    | ResolvedAction::AssertCaptured { .. }
                     | ResolvedAction::AssertSql { .. }
                     | ResolvedAction::AssertApi { .. }
             );
@@ -1406,22 +1436,41 @@ fn poll_oob(
     timeout_ms: u64,
     intent: &str,
 ) -> Result<Option<String>, RecordError> {
+    // A mutation is sent ONCE: re-firing it to wait for convergence would
+    // deliver the write again on every tick (see oob::is_retryable).
+    let retryable = flowproof_driver::oob::is_retryable(probe);
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         match flowproof_driver::oob::check(probe)? {
             Ok(body) => return Ok(body),
             Err(reason) => {
-                if std::time::Instant::now() >= deadline {
+                if !retryable || std::time::Instant::now() >= deadline {
+                    let actual = if retryable {
+                        reason
+                    } else {
+                        format!("{reason} ({})", flowproof_driver::oob::RETRY_HINT)
+                    };
                     return Err(RecordError::AssertMismatch {
                         intent: intent.to_string(),
                         expected: intent.to_string(),
-                        actual: reason,
+                        actual,
                     });
                 }
                 std::thread::sleep(ASSERT_POLL_INTERVAL);
             }
         }
     }
+}
+
+/// Build the probe's count from the two spec keys. Parse rejects setting
+/// both, so at most one is Some here.
+fn array_count(
+    count: Option<u64>,
+    count_at_least: Option<u64>,
+) -> Option<flowproof_driver::oob::ArrayCount> {
+    count
+        .map(flowproof_driver::oob::ArrayCount::Exactly)
+        .or_else(|| count_at_least.map(flowproof_driver::oob::ArrayCount::AtLeast))
 }
 
 /// Capture names currently in scope, sorted, for a "you meant one of these"
@@ -1534,6 +1583,10 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
         // assertion that holds while recording must hold when replayed.
         TextMatch::UrlEquals => flowproof_driver::url_matches(expected, true, actual),
         TextMatch::UrlContains => flowproof_driver::url_matches(expected, false, actual),
+        // A title is compared as plain text, not with the url's path/query
+        // rules: it is a human-facing string, not a structured locator.
+        TextMatch::TitleEquals => actual.trim() == expected.trim(),
+        TextMatch::TitleContains => flowproof_driver::text_contains(actual, expected),
         TextMatch::Empty(want_empty) => actual.trim().is_empty() == want_empty,
     }
 }
@@ -1809,6 +1862,8 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     | ResolvedAction::AssertAttribute { .. }
                     | ResolvedAction::AssertStyle { .. }
                     | ResolvedAction::AssertCount { .. }
+                    | ResolvedAction::AssertChecked { .. }
+                    | ResolvedAction::AssertCaptured { .. }
             );
             if !is_assert {
                 if let Some(selector) = &selector {
@@ -1868,7 +1923,25 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     };
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
-                        let actual = driver.read_text(targeted())?;
+                        // The element may not have rendered yet (the value
+                        // this compares against usually arrives with an
+                        // async fetch), so absence is a reason to keep
+                        // polling, not to read a missing element.
+                        let Some(actual) = driver
+                            .element_exists(targeted())?
+                            .then(|| driver.read_text(targeted()))
+                            .transpose()?
+                        else {
+                            if std::time::Instant::now() >= deadline {
+                                return Err(RecordError::AssertMismatch {
+                                    intent: spec_step.intent().to_string(),
+                                    expected: describe_capture(name, &captured, *offset),
+                                    actual: format!("no element matched [{}]", targeted()),
+                                });
+                            }
+                            std::thread::sleep(ASSERT_POLL_INTERVAL);
+                            continue;
+                        };
                         match flowproof_driver::capture_matches(&captured, *offset, &actual) {
                             Ok(true) => break,
                             Ok(false) => {
@@ -1926,6 +1999,9 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
                 }
                 ResolvedAction::AssertApi {
+                    count,
+                    count_at_least,
+                    retry,
                     method,
                     url,
                     headers,
@@ -1943,6 +2019,8 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     // ${VAR}; only the live probe sees values — including
                     // header tokens and body string leaves.
                     let probe = flowproof_driver::oob::OobProbe::Api {
+                        count: array_count(*count, *count_at_least),
+                        retry: *retry,
                         method: method.clone(),
                         url: flowproof_trace::secret::resolve_refs(url)?,
                         body: match body {
@@ -2021,6 +2099,13 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                 // The URL is a different reading of the surface,
                                 // not a different target: same poll, same bound.
                                 Some(driver.current_url()?)
+                            } else if matches!(
+                                matcher,
+                                TextMatch::TitleEquals | TextMatch::TitleContains
+                            ) {
+                                // The title is another reading of the same
+                                // surface, on the same poll and bound.
+                                Some(driver.page_title()?)
                             } else if selector.is_none() {
                                 Some(driver.surface_text()?)
                             } else if driver.element_exists(targeted())? {
@@ -2143,11 +2228,17 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     let state = |c: bool| if c { "checked" } else { "unchecked" };
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
-                        let seen = driver
-                            .element_exists(targeted())?
-                            .then(|| driver.element_checked(targeted()))
-                            .transpose()?
-                            .flatten();
+                        // Absent and present-but-not-a-checkbox are DIFFERENT
+                        // diagnoses (a drifted anchor versus a mislabelled
+                        // target), so they are read separately and reported
+                        // separately - one message covering both sends the
+                        // reader looking in the wrong place.
+                        let exists = driver.element_exists(targeted())?;
+                        let seen = if exists {
+                            driver.element_checked(targeted())?
+                        } else {
+                            None
+                        };
                         if seen == Some(*checked) {
                             break;
                         }
@@ -2155,9 +2246,14 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                             return Err(RecordError::AssertMismatch {
                                 intent: spec_step.intent().to_string(),
                                 expected: format!("checkbox {}", state(*checked)),
-                                actual: match seen {
-                                    Some(c) => format!("checkbox {}", state(c)),
-                                    None => "not a checkbox, or not found".to_string(),
+                                actual: match (exists, seen) {
+                                    (_, Some(c)) => format!("checkbox {}", state(c)),
+                                    (true, None) => {
+                                        format!("[{}] is not a checkbox", targeted())
+                                    }
+                                    (false, None) => {
+                                        format!("no element matched [{}]", targeted())
+                                    }
                                 },
                             });
                         }
@@ -2587,6 +2683,68 @@ steps:
         let out = dir.join("zero.trace.jsonl");
         let summary = record(&spec, &mut driver, &out).expect("zero-count assert records");
         assert_eq!(summary.steps, 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_checkbox_assert_names_the_selector_when_nothing_matched() {
+        // Absent target: the message must name what failed to resolve, the
+        // way ElementNotFound did before this assertion started waiting.
+        let spec = FlowSpec::parse(
+            "name: Ghost checkbox
+app: web
+url: https://e.test/x
+steps:
+  - assert: the \"id:tos\" checkbox is checked within 1s
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&[]);
+        let dir = std::env::temp_dir().join("flowproof-recorder-checkbox-absent");
+        let err = record(&spec, &mut driver, &dir.join("t.trace.jsonl"))
+            .expect_err("an absent checkbox must fail");
+        match err {
+            RecordError::AssertMismatch { actual, .. } => {
+                assert!(
+                    actual.contains("no element matched") && actual.contains("tos"),
+                    "absent target must name the selector, got: {actual}"
+                );
+            }
+            other => panic!("expected AssertMismatch, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_checkbox_assert_says_so_when_the_target_is_not_a_checkbox() {
+        // Present but not a checkbox is a DIFFERENT diagnosis from absent:
+        // the anchor resolved, it is the wrong kind of element.
+        let spec = FlowSpec::parse(
+            "name: Not a checkbox
+app: web
+url: https://e.test/x
+steps:
+  - assert: the \"id:tos\" checkbox is checked within 1s
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["tos"]);
+        let dir = std::env::temp_dir().join("flowproof-recorder-checkbox-wrongkind");
+        let err = record(&spec, &mut driver, &dir.join("t.trace.jsonl"))
+            .expect_err("a non-checkbox must fail");
+        match err {
+            RecordError::AssertMismatch { actual, .. } => {
+                assert!(
+                    actual.contains("is not a checkbox"),
+                    "a resolved non-checkbox must say so, got: {actual}"
+                );
+                assert!(
+                    !actual.contains("no element matched"),
+                    "must not also claim nothing matched, got: {actual}"
+                );
+            }
+            other => panic!("expected AssertMismatch, got {other:?}"),
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -14,10 +14,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "flowproof-cli-linux-x64": "0.5.0",
-    "flowproof-cli-darwin-x64": "0.5.0",
-    "flowproof-cli-darwin-arm64": "0.5.0",
-    "flowproof-cli-win32-x64": "0.5.0"
+    "@automators/flowproof-cli-linux-x64": "0.5.0",
+    "@automators/flowproof-cli-darwin-x64": "0.5.0",
+    "@automators/flowproof-cli-darwin-arm64": "0.5.0",
+    "@automators/flowproof-cli-win32-x64": "0.5.0"
   },
   "repository": {
     "type": "git",
