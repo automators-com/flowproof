@@ -203,6 +203,21 @@ these fields existed) is byte-identical:
   records **no fallback rung**: an unscoped text anchor would match any
   "Amount" on the page and pass green-degraded on a lie.
 
+  The **framed** payload is the third of the family, for an element inside a
+  same-origin iframe:
+
+  ```json
+  {"kind":"framed","frame":"checkout","inner_css":"#total"}
+  ```
+
+  `frame` is the quoted anchor matched against the iframe's own
+  `title`/`name`/`id`/`aria-label`, or the `css:…` string exactly as the
+  spec wrote it. The inner keys are prefixed for exactly the reason above,
+  and here the stakes are the same: an old engine resolving a bare `css`
+  would read the MAIN document, which is precisely the element the frame
+  scope exists to exclude. Framed rungs are recorded for assertions only
+  (see [authoring.md](authoring.md#iframes-same-origin-assertions)).
+
   **Replay semantics**: the engine walks rungs in order and acts on the
   first one that resolves to a live element. Tiers 1–3 execute today
   (`text_anchor` currently via accessible-name matching; OCR arrives with

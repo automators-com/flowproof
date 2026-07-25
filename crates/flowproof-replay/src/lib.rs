@@ -127,6 +127,19 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             // predates this rung gets an EMPTY selector, skips the rung and
             // fails loudly, instead of resolving `inner_text` page-wide and
             // passing on the wrong element.
+            // A `kind: "framed"` structural payload decodes into the frame
+            // query. Its inner keys are PREFIXED for the same reason the
+            // scoped rung prefixes them: an engine that predates this rung
+            // sees an EMPTY selector and fails loudly instead of resolving
+            // the inner target against the MAIN document.
+            frame: (get("kind").as_deref() == Some("framed")).then(|| {
+                flowproof_driver::FrameQuery {
+                    frame: get("frame").unwrap_or_default(),
+                    inner_css: get("inner_css"),
+                    inner_id: get("inner_id"),
+                    inner_text: get("inner_text"),
+                }
+            }),
             scope: (get("kind").as_deref() == Some("scoped")).then(|| {
                 flowproof_driver::ScopeQuery {
                     container: get("container").unwrap_or_default(),
@@ -472,6 +485,132 @@ fn text_matches(expect: &serde_json::Value, expected: &str, negated: bool, text:
 /// Poll `read` until the text expectation in `expect` holds or `deadline`
 /// passes. Provenance-agnostic: the caller decides what "read the text"
 /// means (an element, the whole surface).
+/// Judge an assertion whose target sits inside a same-origin iframe.
+///
+/// The three probe states stay distinct all the way to the verdict:
+/// a frame that has not rendered yet keeps polling (it may still appear), a
+/// cross-origin frame stops immediately with its own message (waiting cannot
+/// fix a same-origin-policy wall, and reporting it as "absent" would be a
+/// lie that passes a `does not show` assertion), and a reached frame is
+/// judged on what is actually inside it.
+fn check_framed_expectation<D: AppDriver>(
+    driver: &mut D,
+    expect: &serde_json::Value,
+    query: &flowproof_driver::FrameQuery,
+    deadline: Instant,
+    rung: usize,
+) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
+    use flowproof_driver::FrameProbe;
+    let inner = query
+        .inner_css
+        .as_deref()
+        .or(query.inner_id.as_deref())
+        .or(query.inner_text.as_deref())
+        .unwrap_or("the target");
+    let wanted_present = expect.get("element_present").and_then(|v| v.as_bool());
+    let text_want = text_expectation(expect);
+    let expected = match text_want {
+        Some((raw, _)) => match flowproof_trace::secret::resolve_refs(raw) {
+            Ok(resolved) => Some(resolved),
+            Err(e) => return Ok((Err(e.to_string()), Some(rung))),
+        },
+        None => None,
+    };
+    let mut fault: Option<flowproof_driver::DriverError> = None;
+    let mut last: Option<String> = None;
+    let mut missing_frame: Option<Vec<String>> = None;
+    let mut read_ok = false;
+    loop {
+        match tolerate(driver.probe_frame(query), &mut fault)? {
+            // A cross-origin frame is a hard stop, not a failed
+            // expectation: the flow asked for something this engine
+            // cannot honestly answer.
+            Some(FrameProbe::CrossOrigin) => {
+                return Err(ReplayError::Driver(flowproof_driver::DriverError::Browser(
+                    flowproof_driver::frame_miss(&query.frame, &FrameProbe::CrossOrigin),
+                )));
+            }
+            Some(FrameProbe::NoFrame { available }) => {
+                read_ok = true;
+                missing_frame = Some(available);
+            }
+            Some(FrameProbe::Ready { present, text }) => {
+                read_ok = true;
+                missing_frame = None;
+                if let Some(want) = wanted_present {
+                    if present == want {
+                        return Ok((Ok(()), Some(rung)));
+                    }
+                } else if let (Some((_, negated)), Some(expected)) = (text_want, expected.as_ref())
+                {
+                    // A target that is not in the frame has no text to
+                    // judge: an absent element must not satisfy a `does
+                    // not show` assertion by accident.
+                    if present && text_matches(expect, expected, negated, &text) {
+                        return Ok((Ok(()), Some(rung)));
+                    }
+                    last = present.then_some(text);
+                } else {
+                    return Ok((
+                        Err(format!("unsupported iframe expectation: {expect}")),
+                        Some(rung),
+                    ));
+                }
+            }
+            None => {}
+        }
+        if Instant::now() >= deadline {
+            if !read_ok {
+                return Err(exhausted(fault));
+            }
+            if let Some(available) = missing_frame {
+                return Ok((
+                    Err(flowproof_driver::frame_miss(
+                        &query.frame,
+                        &FrameProbe::NoFrame { available },
+                    )),
+                    Some(rung),
+                ));
+            }
+            let reason = match (wanted_present, text_want) {
+                (Some(true), _) => format!(
+                    "expected '{inner}' inside iframe '{}', but it never appeared there",
+                    query.frame
+                ),
+                (Some(false), _) => format!(
+                    "expected '{inner}' to be gone from iframe '{}', but it is still there",
+                    query.frame
+                ),
+                (None, Some((raw, negated))) => {
+                    let verb = if negated { "no text" } else { "text" };
+                    match &last {
+                        // Named as INSIDE the frame, so a passing-looking
+                        // page element outside it cannot be mistaken for
+                        // the thing that was read.
+                        Some(text) => {
+                            let shown = if flowproof_trace::secret::has_refs(raw) {
+                                "<masked>"
+                            } else {
+                                text.as_str()
+                            };
+                            format!(
+                                "expected {verb} '{raw}' inside iframe '{}', got '{shown}'",
+                                query.frame
+                            )
+                        }
+                        None => {
+                            format!("'{inner}' was never found inside iframe '{}'", query.frame)
+                        }
+                    }
+                }
+                (None, None) => format!("unsupported iframe expectation: {expect}"),
+            };
+            return Ok((Err(reason), Some(rung)));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn check_text_expectation<F>(
     expect: &serde_json::Value,
     deadline: Instant,
@@ -690,6 +829,19 @@ fn check_assertion<D: AppDriver>(
             }
             if expect.get("scope").and_then(|v| v.as_str()) == Some("surface") {
                 return check_text_expectation(expect, deadline, None, || driver.surface_text());
+            }
+
+            // Framed: the target lives in a same-origin iframe, which is a
+            // separate document. It gets its own reader rather than the
+            // ordinary ladder, and the frame is a HARD FENCE - a miss
+            // inside the frame never falls back to a same-named element on
+            // the page outside it.
+            if let Some(query) = selectors
+                .get(primary)
+                .and_then(selector_to_uia)
+                .and_then(|uia| uia.frame.clone())
+            {
+                return check_framed_expectation(driver, expect, &query, deadline, primary);
             }
 
             // Count expectations: how MANY match, which the ordinal every

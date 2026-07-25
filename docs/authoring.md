@@ -132,6 +132,7 @@ append `within <N>s` to any form to change the bound.
 | `the [2nd ]"<target>" style <prop> is <value>` / `is not <value>` | a COMPUTED CSS value. `<prop>` is a closed allowlist: `color`, `background-color`, `text-transform` (anything else is a parse error - geometry belongs in `assert_screenshot`, visibility in `is visible`). Colors compare CANONICALLY (named / `#rgb` / `#rrggbb` / `rgb()` / `rgba()` all parse to RGBA); `text-transform` compares its keyword case-insensitively. `style`, not `css`: `css:` is the selector escape hatch. Web only |
 | `the "<column>" column of the row containing "<anchor>" <predicate>` | a table cell, by IDENTITY. See below |
 | `the "<inner>" in the item containing "<anchor>" <predicate>` | an element inside the list item holding `<anchor>`. See below |
+| `the "<inner>" in the iframe "<frame>" <predicate>` | an element inside a same-origin iframe. Assertions only. See [iframes](#iframes-same-origin-assertions) |
 | `the "<inner>" in the "css:<container>" containing "<anchor>" <predicate>` | the same, with the container named explicitly |
 
 Two different questions share the word "times", and picking the wrong one
@@ -274,6 +275,50 @@ capture reference, optionally one `+` or `-`, and one plain number. There is
 no second capture, no nesting, no `*` or `/`. A capture may only be
 referenced in an ASSERTION - using one in an action is a parse error,
 because that would let the app under test steer execution.
+
+### iframes (same-origin, assertions)
+
+An element inside an iframe is addressed with the same target-tail shape as
+a container scope:
+
+```yaml
+- assert: the "css:#total" in the iframe "checkout" shows Total 42.00
+- assert: the "Status" inside the iframe "checkout" is visible
+- assert: the "css:#total" in the iframe "css:iframe[title=checkout]" shows Total 42.00
+```
+
+The frame names itself the way any target does: a quoted anchor matched
+against the iframe's own `title`, `name`, `id`, or `aria-label`, or an
+explicit `"css:<selector>"`. The phrase is cut out of the tail like the
+container phrase, so every predicate composes without special casing, and a
+role noun still goes before it.
+
+**The frame is a fence, not a hint.** The inner target is looked up in the
+frame's own document and nowhere else: if it is not in the frame, the
+assertion fails even when an identically named element sits on the page
+outside it. That is the whole point - a scope that silently fell back to
+the main document would pass green on the wrong element.
+
+Three failures are kept distinct so none of them can read as a pass:
+
+| Situation | What happens |
+|---|---|
+| the named iframe is not on the page | fails naming the frames that ARE there (`iframe 'invoice' was never found (iframes present: checkout, receipt)`) |
+| the iframe is cross-origin | the run ERRORS - the same-origin policy walls off the document, so the assertion cannot be checked, and it is never silently passed |
+| the element is not inside the frame | an ordinary miss, reported as `inside iframe '<frame>'` so it is not confused with a page-wide miss |
+
+Limits in v1, each for a reason rather than for later:
+
+- **Assertions only.** An action (`Click`, `Type`) inside a frame is a parse
+  error. Actions act at composited coordinates resolved against the main
+  document, so a framed action could "succeed" without touching the frame -
+  a false green. Assert inside the frame, and drive the action from the page.
+- **Same-origin only.** A cross-origin frame's document is unreachable, and
+  the CDP per-frame execution-context path is not deterministic enough to
+  ship behind a grammar that looks identical.
+- **One frame, no combining.** A frame scope cannot be nested inside a
+  container or cell scope yet; one context per target.
+- An ordinal cannot address a frame (`the 2nd iframe`): name it.
 
 ## Repeating a block (`foreach`)
 
