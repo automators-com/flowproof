@@ -763,3 +763,121 @@ steps:
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A server whose `/users` returns a 3-element array, the shape the field
+/// suite asserts against (`expect(body.results).length.to.be.greaterThan(1)`).
+fn serve_collection(server: tiny_http::Server) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        while let Ok(request) = server.recv() {
+            let body = r#"{"results":[{"id":"a"},{"id":"b"},{"id":"c"}],"page":{"total":3}}"#;
+            let response = tiny_http::Response::from_string(body).with_status_code(200);
+            request.respond(response).ok();
+        }
+    })
+}
+
+/// `count` / `count_at_least` on the array at `body_json`. Before these, the
+/// only way to ask "how many rows came back" was to assert that some index
+/// exists (`results.1.id`), which cannot express "exactly N" and forces you
+/// to name a leaf key that element happens to carry. 11 of ~30 assertions in
+/// the migrated field suite are of this shape.
+#[test]
+fn an_api_flow_asserts_array_counts() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    serve_collection(server);
+    std::env::set_var("COUNT_BASE", &base);
+
+    let spec = FlowSpec::parse(
+        "\
+name: Counts
+app: api
+steps:
+  - assert_api:
+      request: GET ${COUNT_BASE}/users
+      status: 200
+      body_json: results
+      count: 3
+  - assert_api:
+      request: GET ${COUNT_BASE}/users
+      status: 200
+      body_json: results
+      count_at_least: 2
+",
+    )
+    .expect("spec parses");
+
+    let dir = std::env::temp_dir().join(format!("flowproof-api-count-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let trace = dir.join("c.trace.jsonl");
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    flowproof_agent::record(&spec, &mut driver, &trace).expect("counts record");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let (report, _run_dir) = flowproof_replay::run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "counts must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A wrong count fails, and a count against a non-array says which kind it
+/// actually found rather than a bare "does not hold".
+#[test]
+fn a_wrong_count_and_a_non_array_fail_with_the_actual_shape() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    serve_collection(server);
+    std::env::set_var("COUNT_FAIL_BASE", &base);
+
+    let dir = std::env::temp_dir().join(format!("flowproof-api-count-bad-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+
+    let wrong = FlowSpec::parse(
+        "\
+name: Wrong count
+app: api
+steps:
+  - assert_api:
+      request: GET ${COUNT_FAIL_BASE}/users
+      status: 200
+      body_json: results
+      count: 9
+      timeout_seconds: 1
+",
+    )
+    .expect("spec parses");
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let err = flowproof_agent::record(&wrong, &mut driver, &dir.join("w.trace.jsonl"))
+        .expect_err("3 elements is not 9");
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("has 3 elements") && rendered.contains("exactly 9"),
+        "the failure must name found and wanted, got: {rendered}"
+    );
+
+    // `page` is an object, not an array.
+    let not_array = FlowSpec::parse(
+        "\
+name: Not an array
+app: api
+steps:
+  - assert_api:
+      request: GET ${COUNT_FAIL_BASE}/users
+      status: 200
+      body_json: page
+      count: 1
+      timeout_seconds: 1
+",
+    )
+    .expect("spec parses");
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let err = flowproof_agent::record(&not_array, &mut driver, &dir.join("n.trace.jsonl"))
+        .expect_err("an object has no element count");
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("is an object") && rendered.contains("count requires an array"),
+        "the failure must name the actual kind, got: {rendered}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

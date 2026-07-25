@@ -1118,6 +1118,18 @@ fn check_assertion<D: AppDriver>(
             expect,
         } => {
             let probe = flowproof_driver::oob::OobProbe::Api {
+                count: expect
+                    .as_ref()
+                    .and_then(|e| e.get("count"))
+                    .and_then(|v| v.as_u64())
+                    .map(flowproof_driver::oob::ArrayCount::Exactly)
+                    .or_else(|| {
+                        expect
+                            .as_ref()
+                            .and_then(|e| e.get("count_at_least"))
+                            .and_then(|v| v.as_u64())
+                            .map(flowproof_driver::oob::ArrayCount::AtLeast)
+                    }),
                 retry: expect
                     .as_ref()
                     .and_then(|e| e.get("retry"))
