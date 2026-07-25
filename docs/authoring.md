@@ -773,7 +773,17 @@ controls:
 
 Each control row carries an `evidence` pointer to the trace its proof lives in
 (and, for a contained agent flow, any egress destinations containment blocked),
-so a reader can go from the coverage map to the underlying artifact.
+so a reader can go from the coverage map to the underlying artifact. Blocked
+destinations appear only when THIS run was contained: they are read from the
+recorded trace, so a recording made under containment and replayed on a host
+without it would otherwise present another machine's blocks as evidence here.
+
+A flow that engages egress also carries `containment:` - the tier the run
+actually ran under (`enforced (linux seccomp)`, or the honest reason it was
+not). `lanes` says what the flow ASSERTED; `containment` says what was
+ENFORCED. On a host where the mechanism does not exist the flow can still
+pass, so without this field a passing row would imply a certification the
+run never made.
 
 **Diffing runs.** `flowproof audit <dir> --since <run-id>` compares the latest
 record against an earlier one, folded by `control.id`: controls **added**,
