@@ -116,7 +116,12 @@ jobs:
       # `npx flowproof` is the entry point the website advertises, so the
       # launcher's platform map is user-facing surface, not a detail.
       - name: launcher resolves the packages it declares
-        run: node --test sdk/js/test
+        # An explicit file path, not the directory: `node --test <dir>`
+        # resolves the directory as a module on Node 22 and dies with
+        # MODULE_NOT_FOUND, and a glob is Node 22+ only. A file path
+        # works on every supported Node. Runs from the repo root
+        # because the version test reads Cargo.toml relative to cwd.
+        run: node --test sdk/js/test/launcher.test.js
 
   lint:
     name: fmt + clippy + test (ubuntu)
