@@ -2029,3 +2029,105 @@ fn undeclared_dialog_fails_and_does_not_hang() {
         Err(_) => panic!("undeclared dialog HUNG the step: no failure within the timeout"),
     }
 }
+
+/// A classic form submit button is a VOID element: `<input type="submit"
+/// value="Login">` has no text node and no aria-label, so its accessible
+/// name is the `value` attribute (HTML-AAM). Before the value-anchor rung
+/// this element was unreachable by text and recording failed with
+/// ElementNotFound; now `Press the "Login" button` resolves it, really
+/// presses it against real Chromium, and the page's onsubmit proves the
+/// submit fired.
+#[test]
+fn submit_input_is_pressed_by_its_value_on_a_real_form() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web submit-input E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-submit-input-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("login.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Login</title>
+<main>
+  <form onsubmit="document.getElementById('status').textContent = 'submitted'; return false">
+    <input type="submit" value="Login">
+  </form>
+  <div id="status">waiting</div>
+</main>"#,
+    )
+    .expect("page written");
+
+    let spec = FlowSpec::parse(&format!(
+        "name: Submit a classic form\napp: web\nurl: file://{}\nsteps:\n  \
+         - Press the \"Login\" button\n  \
+         - assert: page shows submitted\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("login.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "submit-input flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `appears 0 times` asserts ABSENCE: zero elements match, and that is the
+/// pass condition. The recorder's up-front element_exists probe used to
+/// fire ElementNotFound before the count logic ran; AssertCount now sits
+/// in the assertions-do-their-own-waiting gate, so record and replay both
+/// pass on a real page where the selector matches nothing.
+#[test]
+fn appears_zero_times_passes_on_a_real_page() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web zero-count E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-zero-count-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("login.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Login</title>
+<main>
+  <form onsubmit="document.getElementById('status').textContent = 'submitted'; return false">
+    <input type="submit" value="Login">
+  </form>
+  <div id="status">waiting</div>
+</main>"#,
+    )
+    .expect("page written");
+
+    let spec = FlowSpec::parse(&format!(
+        "name: Nothing matches\napp: web\nurl: file://{}\nsteps:\n  \
+         - assert: the \"css:.gone\" appears 0 times\n  \
+         - assert: the \"css:form input\" appears 1 time\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("zero.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let summary =
+        flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    assert_eq!(summary.steps, 2);
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "zero-count flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

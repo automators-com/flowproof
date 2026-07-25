@@ -454,6 +454,34 @@ fn strip_suffix_ci<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
     tail.eq_ignore_ascii_case(suffix).then(|| &text[..split])
 }
 
+/// Drop ONE leading role noun (`field`, `button`, `link`, `dropdown`,
+/// `checkbox`) from an assert tail when what follows is exactly a
+/// visibility/enabled/empty state, so `the "Username" field is visible`
+/// resolves like `the "Username" is visible`. The noun is dropped, not
+/// enforced: it never changes which element resolves. `checkbox is
+/// checked` is untouched (`is checked` is not in this tail set), so that
+/// noun stays required and load-bearing.
+fn strip_role_noun(tail: &str) -> &str {
+    const NOUNS: [&str; 5] = ["field", "button", "link", "dropdown", "checkbox"];
+    const STATE_TAILS: [&str; 6] = [
+        "is visible",
+        "is not visible",
+        "is enabled",
+        "is disabled",
+        "is empty",
+        "is not empty",
+    ];
+    for noun in NOUNS {
+        if let Some(rest) = strip_prefix_ci(tail, &format!("{noun} ")) {
+            let rest = rest.trim_start();
+            if STATE_TAILS.iter().any(|t| rest.eq_ignore_ascii_case(t)) {
+                return rest;
+            }
+        }
+    }
+    tail
+}
+
 /// Byte index of the last case-insensitive occurrence of ASCII `needle`
 /// in `text`, ALWAYS valid for slicing `text` itself. The
 /// `text.to_lowercase().find(…)` idiom is the sibling of the slice-panic
@@ -1198,6 +1226,10 @@ mod assertions {
                             timeout_ms,
                         }]);
                     }
+                    // Role nouns compose with the state tails: `the
+                    // "Username" field is visible` resolves exactly like
+                    // `the "Username" is visible` (see strip_role_noun).
+                    let tail = strip_role_noun(tail);
                     if tail.eq_ignore_ascii_case("is empty")
                         || tail.eq_ignore_ascii_case("is not empty")
                     {
@@ -1406,7 +1438,9 @@ mod assertions {
                  'the \"<target>\" is [not] visible', 'the \"<target>\" is \
                  enabled|disabled', 'the \"<target>\" attribute <name> is [not] \
                  <value>', 'the \"<target>\" has|does not have attribute <name>', \
-                 or 'the \"<target>\" style <prop> is [not] <value>'",
+                 or 'the \"<target>\" style <prop> is [not] <value>' (an optional \
+                 role noun field|button|link|dropdown|checkbox may precede \
+                 'is [not] visible', 'is enabled|disabled', and 'is [not] empty')",
             ));
         }
 
@@ -1419,7 +1453,9 @@ mod assertions {
              <text>', 'the \"<target>\" is [not] visible', 'the \"<target>\" is \
              enabled|disabled', 'the \"<target>\" attribute <name> is [not] <value>', \
              'the \"<target>\" has|does not have attribute <name>', or 'the \
-             \"<target>\" style <prop> is [not] <value>' (see docs/authoring.md for \
+             \"<target>\" style <prop> is [not] <value>' (an optional role noun \
+             field|button|link|dropdown|checkbox may precede 'is [not] visible', \
+             'is enabled|disabled', and 'is [not] empty'; see docs/authoring.md for \
              the full grammar)",
         ))
     }
@@ -3964,6 +4000,97 @@ mod element_count_tests {
             assert_step("page shows Row 3 times").as_deref(),
             Ok([ResolvedAction::AssertText { .. }])
         ));
+    }
+}
+
+#[cfg(test)]
+mod role_noun_tail_tests {
+    use super::*;
+
+    fn assert_step(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: text.to_string(),
+            },
+        )
+    }
+
+    /// The noun is dropped, not enforced: `the "Username" field is
+    /// visible` must resolve to EXACTLY the action of `the "Username" is
+    /// visible`.
+    #[test]
+    fn role_nouns_compose_with_visibility_enabled_and_empty_tails() {
+        for (with_noun, bare) in [
+            (
+                r#"the "Username" field is visible"#,
+                r#"the "Username" is visible"#,
+            ),
+            (
+                r#"the "Username" field is not visible"#,
+                r#"the "Username" is not visible"#,
+            ),
+            (
+                r#"the "Save" button is enabled"#,
+                r#"the "Save" is enabled"#,
+            ),
+            (
+                r#"the "Save" button is disabled"#,
+                r#"the "Save" is disabled"#,
+            ),
+            (
+                r#"the "Country" dropdown is empty"#,
+                r#"the "Country" is empty"#,
+            ),
+            (
+                r#"the "Country" dropdown is not empty"#,
+                r#"the "Country" is not empty"#,
+            ),
+            (
+                r#"the "Terms" checkbox is visible"#,
+                r#"the "Terms" is visible"#,
+            ),
+            (r#"the "Docs" link is visible"#, r#"the "Docs" is visible"#),
+            // The noun composes with a scope: split_scope rebinds the
+            // tail, then the noun drops in the rebound tail.
+            (
+                r#"the "Amount" field in the item containing "Invoice 4711" is visible"#,
+                r#"the "Amount" in the item containing "Invoice 4711" is visible"#,
+            ),
+        ] {
+            let noun_actions =
+                assert_step(with_noun).unwrap_or_else(|e| panic!("'{with_noun}' must parse: {e}"));
+            let bare_actions =
+                assert_step(bare).unwrap_or_else(|e| panic!("'{bare}' must parse: {e}"));
+            assert_eq!(
+                noun_actions, bare_actions,
+                "'{with_noun}' must resolve like '{bare}'"
+            );
+        }
+    }
+
+    /// `checkbox is checked` keeps its REQUIRED noun: the form is
+    /// untouched by the optional-noun rule, and the bare spelling stays
+    /// an error.
+    #[test]
+    fn checkbox_is_checked_keeps_its_required_noun() {
+        assert!(matches!(
+            assert_step(r#"the "Terms" checkbox is checked"#).as_deref(),
+            Ok([ResolvedAction::AssertChecked { checked: true, .. }])
+        ));
+        assert!(matches!(
+            assert_step(r#"the "Terms" checkbox is not checked"#).as_deref(),
+            Ok([ResolvedAction::AssertChecked { checked: false, .. }])
+        ));
+        assert!(assert_step(r#"the "Terms" is checked"#).is_err());
+    }
+
+    /// A noun with anything OTHER than a state tail after it is still the
+    /// error it always was, and the error now teaches the optional noun.
+    #[test]
+    fn a_noun_without_a_state_tail_is_still_an_error() {
+        let err = assert_step(r#"the "Username" field is huge"#).expect_err("must not resolve");
+        assert!(err.to_string().contains("role noun"), "{err}");
     }
 }
 

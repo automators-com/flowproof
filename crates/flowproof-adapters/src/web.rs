@@ -873,6 +873,12 @@ impl std::fmt::Display for WebLocator {
 /// are case-insensitive in Playwright, and real pages disagree with specs
 /// about capitalization ("Close Account" vs "Close account"). A
 /// case-sensitive match always wins over a case-insensitive one.
+///
+/// Button-type inputs (`type=submit|button|reset`) are void elements whose
+/// accessible name comes from the `value` attribute (HTML-AAM), so every
+/// build rung also matches them by `@value` with the rung's own comparison
+/// (exact, prefix, or case-insensitive). Only those three types: text-like
+/// inputs hold user data in `value`, not a name.
 fn text_xpaths(text: &str) -> Vec<String> {
     const UPPER: &str = "'ABCDEFGHIJKLMNOPQRSTUVWXYZ'";
     const LOWER: &str = "'abcdefghijklmnopqrstuvwxyz'";
@@ -881,11 +887,12 @@ fn text_xpaths(text: &str) -> Vec<String> {
     let ci = |expr: &str| format!("translate({expr}, {UPPER}, {LOWER})={lower_lit}");
     let ci_prefix =
         |expr: &str| format!("starts-with(translate({expr}, {UPPER}, {LOWER}), {lower_lit})");
-    let build = |by_text: String, by_label: String, by_placeholder: String| {
+    let build = |by_text: String, by_label: String, by_placeholder: String, by_value: String| {
         format!(
             "//*[self::button or self::a or self::summary or @role='button' or \
              @role='tab' or @role='option' or @type='submit']\
              [{by_text} or {by_label}] | \
+             //input[(@type='submit' or @type='button' or @type='reset') and {by_value}] | \
              //input[{by_placeholder} or {by_label}] | \
              //textarea[{by_placeholder} or {by_label}]"
         )
@@ -908,22 +915,26 @@ fn text_xpaths(text: &str) -> Vec<String> {
             format!("text()[normalize-space(.)={lit}]"),
             format!("@aria-label={lit}"),
             format!("@placeholder={lit}"),
+            format!("@value={lit}"),
         ),
         build(
             format!("normalize-space()={lit}"),
             format!("@aria-label={lit}"),
             format!("@placeholder={lit}"),
+            format!("@value={lit}"),
         ),
         by_label_assoc(format!("normalize-space()={lit}")),
         build(
             format!("text()[starts-with(normalize-space(.), {lit})]"),
             format!("starts-with(@aria-label, {lit})"),
             format!("starts-with(@placeholder, {lit})"),
+            format!("starts-with(@value, {lit})"),
         ),
         build(
             format!("starts-with(normalize-space(), {lit})"),
             format!("starts-with(@aria-label, {lit})"),
             format!("starts-with(@placeholder, {lit})"),
+            format!("starts-with(@value, {lit})"),
         ),
         by_label_assoc(format!("starts-with(normalize-space(), {lit})")),
         format!(
@@ -932,6 +943,7 @@ fn text_xpaths(text: &str) -> Vec<String> {
                 ci("normalize-space()"),
                 ci("@aria-label"),
                 ci("@placeholder"),
+                ci("@value"),
             ),
             by_label_assoc(ci("normalize-space()")),
         ),
@@ -941,6 +953,7 @@ fn text_xpaths(text: &str) -> Vec<String> {
                 ci_prefix("normalize-space()"),
                 ci_prefix("@aria-label"),
                 ci_prefix("@placeholder"),
+                ci_prefix("@value"),
             ),
             by_label_assoc(ci_prefix("normalize-space()")),
         ),
@@ -2113,6 +2126,47 @@ mod tests {
                 !rung.contains("translate("),
                 "case-sensitive rung uses translate: {rung}"
             );
+        }
+    }
+
+    #[test]
+    fn text_xpath_ladder_matches_button_type_inputs_by_value() {
+        let rungs = super::text_xpaths("Login");
+        const TYPES: &str = "(@type='submit' or @type='button' or @type='reset')";
+        // Exact rungs (1-2): @value equality, gated to button-type inputs.
+        for rung in [&rungs[0], &rungs[1]] {
+            assert!(
+                rung.contains(&format!("//input[{TYPES} and @value='Login']")),
+                "exact rung missing value branch: {rung}"
+            );
+        }
+        // Prefix rungs (4-5): starts-with on @value.
+        for rung in [&rungs[3], &rungs[4]] {
+            assert!(
+                rung.contains(&format!(
+                    "//input[{TYPES} and starts-with(@value, 'Login')]"
+                )),
+                "prefix rung missing value branch: {rung}"
+            );
+        }
+        // CI rungs (7-8): translate()-lowered @value comparison.
+        assert!(rungs[6].contains(&format!(
+            "//input[{TYPES} and translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='login']"
+        )));
+        assert!(rungs[7].contains(&format!(
+            "//input[{TYPES} and starts-with(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login')]"
+        )));
+        // Label-association rungs (3, 6) never consult @value.
+        assert!(!rungs[2].contains("@value"));
+        assert!(!rungs[5].contains("@value"));
+        // The gate is exactly the three button-ish types: no text inputs by
+        // value, no input[type=image]/@alt.
+        for rung in &rungs {
+            assert!(
+                !rung.contains("@type='image'"),
+                "image input leaked: {rung}"
+            );
+            assert!(!rung.contains("@alt"), "alt matching leaked: {rung}");
         }
     }
 

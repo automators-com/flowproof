@@ -1728,6 +1728,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     | ResolvedAction::AssertEnabled { .. }
                     | ResolvedAction::AssertAttribute { .. }
                     | ResolvedAction::AssertStyle { .. }
+                    | ResolvedAction::AssertCount { .. }
             );
             if !is_assert {
                 if let Some(selector) = &selector {
@@ -2464,6 +2465,47 @@ steps:
         let out = std::env::temp_dir().join("flowproof-recorder-missing.trace.jsonl");
         let err = record(&spec, &mut driver, &out).expect_err("must fail");
         assert!(matches!(err, RecordError::ElementNotFound { .. }));
+    }
+
+    #[test]
+    fn appears_zero_times_records_with_no_matching_elements() {
+        // AssertCount does its own counting: the up-front element_exists
+        // probe must not fire ElementNotFound when zero elements match and
+        // zero is exactly what the flow asserts.
+        let spec = FlowSpec::parse(
+            "name: Nothing there
+app: web
+url: https://e.test/x
+steps:
+  - assert: the \"css:.gone\" appears 0 times
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&[]);
+        let dir = std::env::temp_dir().join("flowproof-recorder-count-zero");
+        let out = dir.join("zero.trace.jsonl");
+        let summary = record(&spec, &mut driver, &out).expect("zero-count assert records");
+        assert_eq!(summary.steps, 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn nonzero_count_assert_still_records_against_matching_elements() {
+        let spec = FlowSpec::parse(
+            "name: Two rows
+app: web
+url: https://e.test/x
+steps:
+  - assert: the \"css:.row\" appears 2 times
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&[".row"]).with_occurrences(".row", 2);
+        let dir = std::env::temp_dir().join("flowproof-recorder-count-two");
+        let out = dir.join("two.trace.jsonl");
+        let summary = record(&spec, &mut driver, &out).expect("two-count assert records");
+        assert_eq!(summary.steps, 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

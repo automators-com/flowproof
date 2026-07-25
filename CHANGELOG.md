@@ -44,6 +44,32 @@ together).
 See [docs/authoring.md](docs/authoring.md#security-controls) and
 [examples/access-control/](examples/access-control/).
 
+### Changed
+
+- **Text anchors now match button-type inputs by their `value` attribute.**
+  `<input type="submit|button|reset" value="Login">` is a void element whose
+  accessible name is its `value` (HTML-AAM), so every rung of the text-anchor
+  XPath ladder now also matches these three input types by `@value` with the
+  rung's own comparison (exact, prefix, case-insensitive). This is a minor
+  matching-semantics change that affects replay-time resolution of EXISTING
+  text anchors: the ladder is re-evaluated at replay, so a page where a legacy
+  element and a button-type input share an accessible name at the same rung may
+  now resolve differently, matching what Playwright and WebdriverIO consider
+  the correct element. Only those three types: text-like inputs hold user data
+  in `value`, not a name, and are still never matched by it.
+
+### Fixed
+
+- `the "<target>" appears 0 times` no longer fails recording with
+  ElementNotFound before the count runs: AssertCount now sits in the
+  assertions-do-their-own-waiting gate, so asserting absence passes when zero
+  elements match and nonzero counts auto-wait like every other assertion.
+- Role nouns compose with the state assert tails: `the "Username" field is
+  visible` (and `button`/`link`/`dropdown`/`checkbox` before `is [not]
+  visible`, `is enabled|disabled`, `is [not] empty`) now resolves exactly like
+  the noun-less form. The noun is dropped, not enforced; `checkbox is [not]
+  checked` keeps its required noun.
+
 ## 0.4.1
 
 ### Fixed
