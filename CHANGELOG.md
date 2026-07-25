@@ -58,6 +58,20 @@ See [docs/authoring.md](docs/authoring.md#security-controls) and
   the correct element. Only those three types: text-like inputs hold user data
   in `value`, not a name, and are still never matched by it.
 
+### Changed
+
+- **Breaking: a failing `assert_api` no longer re-sends a write.** Auto-wait
+  polls a failing probe until its bound expires, which is correct for a read
+  and dangerous for a write: the probe IS the mutation, so a failing `POST`
+  was delivered once per tick (41 deliveries measured against a counting
+  server inside the default 10s bound), and only ever when a test FAILED.
+  `GET`, `HEAD` and `assert_sql` still poll; `POST`, `PUT`, `PATCH` and
+  `DELETE` are sent exactly once and their failure names the opt-in. A flow
+  that relied on polling a write now fails loudly instead of silently
+  duplicating writes: add `retry: true` to the step to restore it (or
+  `retry: false` to send a read once). On older releases, `timeout_seconds: 0`
+  is the mitigation.
+
 ### Fixed
 
 - `the "<target>" appears 0 times` no longer fails recording with

@@ -1296,6 +1296,13 @@ pub struct ApiAssertSpec {
     /// Auto-wait bound override (default 10s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
+    /// Override the method-derived retry policy. Auto-wait re-sends a
+    /// failing probe until the expectation holds, which is right for a read
+    /// and wrong for a write (the probe IS the mutation), so only GET and
+    /// HEAD are retried by default. `retry: true` polls a write anyway;
+    /// `retry: false` sends a read exactly once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<bool>,
 }
 
 impl SpecStep {

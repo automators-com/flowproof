@@ -1197,6 +1197,10 @@ fn check_assertion<D: AppDriver>(
             expect,
         } => {
             let probe = flowproof_driver::oob::OobProbe::Api {
+                retry: expect
+                    .as_ref()
+                    .and_then(|e| e.get("retry"))
+                    .and_then(|v| v.as_bool()),
                 method: request.method.clone(),
                 url: flowproof_trace::secret::resolve_refs(&request.url)?,
                 // Trace carries raw ${VAR} refs in body leaves and header
@@ -1294,11 +1298,18 @@ fn poll_oob(
     probe: &flowproof_driver::oob::OobProbe,
     timeout_ms: u64,
 ) -> Result<ProbeOutcome, ReplayError> {
+    // A mutation is sent ONCE: re-firing it to wait for convergence would
+    // deliver the write again on every tick (see oob::is_retryable).
+    let retryable = flowproof_driver::oob::is_retryable(probe);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         match flowproof_driver::oob::check(probe)? {
             Ok(body) => return Ok((Ok(()), None, body)),
             Err(reason) => {
+                if !retryable {
+                    let reason = format!("{reason} ({})", flowproof_driver::oob::RETRY_HINT);
+                    return Ok((Err(reason), None, None));
+                }
                 if Instant::now() >= deadline {
                     return Ok((Err(reason), None, None));
                 }

@@ -664,3 +664,102 @@ steps:
     std::env::remove_var("BADBAL_API_BASE");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A counting server that always answers 200, so an assertion demanding 201
+/// can never hold. Returns the handle plus the shared counter.
+fn serve_counting(server: tiny_http::Server) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = seen.clone();
+    std::thread::spawn(move || {
+        while let Ok(request) = server.recv() {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let response = tiny_http::Response::from_string(r#"{"ok":true}"#).with_status_code(200);
+            request.respond(response).ok();
+        }
+    });
+    seen
+}
+
+/// A failing assertion auto-waits by RE-SENDING its probe, which is right
+/// for a read and catastrophic for a write: the probe IS the mutation, so a
+/// failing `POST` used to deliver ~40 duplicate writes (measured 41 against
+/// a counting server over the 10s bound) - and only ever when a test FAILS,
+/// when the state is hardest to reason about. Writes are now sent once.
+#[test]
+fn a_failing_write_assertion_is_sent_exactly_once() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let seen = serve_counting(server);
+    std::env::set_var("RETRY_BASE", &base);
+
+    let spec = FlowSpec::parse(
+        "\
+name: Failing write
+app: api
+steps:
+  - assert_api:
+      request: POST ${RETRY_BASE}/orders
+      body:
+        item: widget
+      status: 201
+",
+    )
+    .expect("spec parses");
+
+    let dir = std::env::temp_dir().join(format!("flowproof-api-retry-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let err = flowproof_agent::record(&spec, &mut driver, &dir.join("w.trace.jsonl"))
+        .expect_err("the assertion cannot hold");
+
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a failing write must be delivered exactly once, not re-sent while auto-waiting"
+    );
+    // The failure teaches the migration, so a flow that relied on polling a
+    // write self-diagnoses the first time it fails.
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("retry: true"),
+        "the failure must name the opt-in, got: {rendered}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The read side is unchanged: a failing GET still polls, because re-asking
+/// a question is free and "the API is converging" is the whole point.
+#[test]
+fn a_failing_read_assertion_still_polls() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let seen = serve_counting(server);
+    std::env::set_var("RETRY_READ_BASE", &base);
+
+    let spec = FlowSpec::parse(
+        "\
+name: Failing read
+app: api
+steps:
+  - assert_api:
+      request: GET ${RETRY_READ_BASE}/orders
+      status: 201
+      timeout_seconds: 2
+",
+    )
+    .expect("spec parses");
+
+    let dir = std::env::temp_dir().join(format!("flowproof-api-retry-read-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    flowproof_agent::record(&spec, &mut driver, &dir.join("r.trace.jsonl"))
+        .expect_err("the assertion cannot hold");
+
+    assert!(
+        seen.load(std::sync::atomic::Ordering::SeqCst) > 1,
+        "a failing read must keep polling within its bound"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

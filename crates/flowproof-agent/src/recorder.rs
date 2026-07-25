@@ -708,6 +708,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             header,
             header_equals,
             header_contains,
+            retry,
             timeout_ms,
         } => {
             let mut expect = serde_json::Map::new();
@@ -732,6 +733,11 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             }
             if let Some(want) = header_contains {
                 expect.insert("header_contains".into(), want.as_str().into());
+            }
+            // Only written when the author overrode the method-derived
+            // policy, so a trace without an override is byte-identical.
+            if let Some(retry) = retry {
+                expect.insert("retry".into(), (*retry).into());
             }
             expect.insert("timeout_ms".into(), (*timeout_ms).into());
             (
@@ -1171,6 +1177,10 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
             status,
             expect,
         }) => Some(ResolvedAction::AssertApi {
+            retry: expect
+                .as_ref()
+                .and_then(|e| e.get("retry"))
+                .and_then(|v| v.as_bool()),
             method: request.method.clone(),
             url: request.url.clone(),
             headers: request.headers.clone(),
@@ -1359,16 +1369,24 @@ fn poll_oob(
     timeout_ms: u64,
     intent: &str,
 ) -> Result<Option<String>, RecordError> {
+    // A mutation is sent ONCE: re-firing it to wait for convergence would
+    // deliver the write again on every tick (see oob::is_retryable).
+    let retryable = flowproof_driver::oob::is_retryable(probe);
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         match flowproof_driver::oob::check(probe)? {
             Ok(body) => return Ok(body),
             Err(reason) => {
-                if std::time::Instant::now() >= deadline {
+                if !retryable || std::time::Instant::now() >= deadline {
+                    let actual = if retryable {
+                        reason
+                    } else {
+                        format!("{reason} ({})", flowproof_driver::oob::RETRY_HINT)
+                    };
                     return Err(RecordError::AssertMismatch {
                         intent: intent.to_string(),
                         expected: intent.to_string(),
-                        actual: reason,
+                        actual,
                     });
                 }
                 std::thread::sleep(ASSERT_POLL_INTERVAL);
@@ -1903,6 +1921,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
                 }
                 ResolvedAction::AssertApi {
+                    retry,
                     method,
                     url,
                     headers,
@@ -1920,6 +1939,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     // ${VAR}; only the live probe sees values — including
                     // header tokens and body string leaves.
                     let probe = flowproof_driver::oob::OobProbe::Api {
+                        retry: *retry,
                         method: method.clone(),
                         url: flowproof_trace::secret::resolve_refs(url)?,
                         body: match body {

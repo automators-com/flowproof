@@ -472,6 +472,34 @@ replay. The failure modes are soft: an absent header reports "response has no
 '<name>' header (status <code>)", and a value mismatch reports "header
 '<name>' is '<actual>', expected <equals|contains> '<want>' (status <code>)".
 
+### Retries: reads are polled, writes are sent once
+
+A failing assertion auto-waits by RE-SENDING its probe until the bound
+expires. That is right for a read (the API is still converging) and wrong
+for a write, because the probe IS the mutation: polling a failing `POST`
+delivers it once per tick, and a single failing step was measured
+delivering 41 `POST`s inside the default 10s bound. So only `GET` and
+`HEAD` are retried. `POST`, `PUT`, `PATCH` and `DELETE` are sent exactly
+once, and their failure says so. (`DELETE` is idempotent per HTTP but not
+side-effect-free, so it is grouped with the writes.) `assert_sql` is a
+read and keeps polling.
+
+Override per step when the default is wrong:
+
+```yaml
+- assert_api:                    # poll a write until it converges
+    request: POST ${API}/jobs
+    status: 202
+    retry: true
+- assert_api:                    # ask a read exactly once
+    request: GET ${API}/jobs/1
+    status: 200
+    retry: false
+```
+
+On releases without `retry:`, `timeout_seconds: 0` is the mitigation: it
+leaves no wait budget, so the probe fires once.
+
 ## Visual assertions (structured step)
 
 ```yaml

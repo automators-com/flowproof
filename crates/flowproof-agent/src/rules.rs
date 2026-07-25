@@ -297,6 +297,8 @@ pub enum ResolvedAction {
         header_equals: Option<String>,
         /// Expected header substring; may carry a raw `${VAR}` ref.
         header_contains: Option<String>,
+        /// Override the method-derived retry policy (see `oob::is_retryable`).
+        retry: Option<bool>,
         timeout_ms: u64,
     },
 }
@@ -617,6 +619,7 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                 header: assert_api.header.clone(),
                 header_equals: assert_api.header_equals.clone(),
                 header_contains: assert_api.header_contains.clone(),
+                retry: assert_api.retry,
                 timeout_ms: assert_api
                     .timeout_seconds
                     .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),

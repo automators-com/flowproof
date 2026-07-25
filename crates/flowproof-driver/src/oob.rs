@@ -61,8 +61,42 @@ pub enum OobProbe {
         /// reference has already been resolved by the caller. Mutually
         /// exclusive with `header_equals`.
         header_contains: Option<String>,
+        /// Override the method-derived retry policy (see `is_retryable`):
+        /// `Some(true)` polls a write until the expectation holds,
+        /// `Some(false)` sends a read exactly once.
+        retry: Option<bool>,
     },
 }
+
+/// Whether a failing probe may be re-sent while auto-waiting.
+///
+/// Auto-wait re-fires the probe until the expectation holds, which is right
+/// for an OBSERVATION (the row is still committing, the API is converging)
+/// and wrong for a MUTATION: the probe IS the write, so polling a failing
+/// `POST` delivers it once per interval. A single failing step measured 41
+/// deliveries against a counting server, which in a real suite means ~41
+/// duplicate payments - and it only happens when a test fails, when the
+/// state is hardest to reason about.
+///
+/// The rule is the METHOD, not the error kind. A response mismatch proves
+/// the request was delivered, but a transport error does NOT prove it was
+/// not: a connection reset after the bytes were flushed is the canonical
+/// duplicate-write case, and the underlying client does not distinguish
+/// that from a refusal reliably enough to bet writes on it.
+pub fn is_retryable(probe: &OobProbe) -> bool {
+    match probe {
+        // A query is a read for this purpose; `assert_sql` asserts state.
+        OobProbe::Sql { .. } => true,
+        OobProbe::Api { method, retry, .. } => {
+            retry.unwrap_or_else(|| matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD"))
+        }
+    }
+}
+
+/// The hint appended to a non-retried probe's failure, so a flow that
+/// relied on polling a write self-diagnoses on its first failure.
+pub const RETRY_HINT: &str =
+    "this method is not retried, so it was sent once; add `retry: true` to the step to poll until the expectation holds";
 
 /// Environment variable name for a SQL connection: `FLOWPROOF_SQL_<NAME>`.
 pub fn sql_connection_var(name: &str) -> String {
@@ -124,6 +158,8 @@ pub fn check(probe: &OobProbe) -> Result<Result<Option<String>, String>, DriverE
             }
         }
         OobProbe::Api {
+            // `retry` steers the caller's poll loop, not this single send.
+            retry: _,
             method,
             url,
             body,
