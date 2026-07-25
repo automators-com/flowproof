@@ -69,6 +69,12 @@ See [docs/authoring.md](docs/authoring.md#security-controls) and
   visible`, `is enabled|disabled`, `is [not] empty`) now resolves exactly like
   the noun-less form. The noun is dropped, not enforced; `checkbox is [not]
   checked` keeps its required noun.
+- `the "<target>" checkbox is [not] checked` and `the "<target>" shows
+  ${captured.<name>}` now wait for a target that renders late, like every other
+  targeted assertion. Both were missing from the assertions-do-their-own-waiting
+  gate, so a single non-waiting probe failed the record with ElementNotFound
+  before the assertion's own poll loop could run. The `--reuse` drift check had
+  the same omission (a late target forced a spurious re-author).
 - `session:` localStorage seeding runs once per tab instead of on every
   document: the init script (CDP re-runs it on each navigation) now guards on
   a sessionStorage sentinel, so fixture state a flow mutates through the UI

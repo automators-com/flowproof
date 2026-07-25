@@ -2230,3 +2230,60 @@ fn seeded_fixture_mutation_survives_navigation() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Assertions do their own waiting, so a target that renders LATE must be
+/// waited for, not failed on. `checkbox is checked` and `shows
+/// ${captured.x}` were missing from the assertions-do-their-own-waiting
+/// gate, so the up-front existence probe failed the record before either
+/// assertion's own poll loop could run. Both targets here appear ~700ms
+/// after load: inside the default 10s assert bound, but past the recorder
+/// overhead that precedes the assert, so the single-shot probe cannot
+/// find them and only the assertion's own poll loop can pass this.
+#[test]
+fn late_rendered_assert_targets_are_waited_for() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web late-assert E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-late-assert-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("late.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body>
+            <div id="total">42</div>
+            <div id="slot"></div>
+            <script>
+                setTimeout(function () {
+                    document.getElementById('slot').innerHTML =
+                        '<label for="tos">Terms</label>' +
+                        '<input id="tos" type="checkbox" checked>' +
+                        '<div id="echo">42</div>';
+                }, 7000);
+            </script></body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("late.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec::parse(&format!(
+        "name: Late assert targets\napp: web\nurl: file://{}\nsteps:\n  \
+         - Remember the \"css:#total\" as total\n  \
+         - assert: the \"Terms\" checkbox is checked\n  \
+         - assert: the \"css:#echo\" shows ${{captured.total}}\n",
+        page.display()
+    ))
+    .expect("spec parses");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "late assert targets must pass: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
