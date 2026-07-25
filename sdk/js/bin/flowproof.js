@@ -7,11 +7,16 @@
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 
+// Scoped names: the unscoped ones tripped npm's spam heuristic for new
+// packages and could not be published at all. Keep these in step with
+// package.json's optionalDependencies - test/launcher.test.js fails if they
+// drift, because a mismatch here is an "unsupported platform" error for a
+// platform that is actually supported.
 const PLATFORM_PACKAGES = {
-  "linux-x64": "flowproof-cli-linux-x64",
-  "darwin-x64": "flowproof-cli-darwin-x64",
-  "darwin-arm64": "flowproof-cli-darwin-arm64",
-  "win32-x64": "flowproof-cli-win32-x64",
+  "linux-x64": "@automators/flowproof-cli-linux-x64",
+  "darwin-x64": "@automators/flowproof-cli-darwin-x64",
+  "darwin-arm64": "@automators/flowproof-cli-darwin-arm64",
+  "win32-x64": "@automators/flowproof-cli-win32-x64",
 };
 
 function binaryPath() {

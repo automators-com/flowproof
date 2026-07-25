@@ -27,25 +27,42 @@ jobs:
     name: build + publish ${{ matrix.pkg }}
     needs: guard
     strategy:
-      # Publish each platform package independently: one leg failing (an npm
-      # spam-detection hold on a brand-new name, a flaky runner) must not
-      # cancel the others, or a partial publish strands the rest. Combined
-      # with the skip-if-already-published guard below, a re-run converges on
-      # whatever is still missing.
+      # The platform packages are SCOPED (@automators/...) because the
+      # unscoped names were not publishable: npm answered
+      #   403 - Package name triggered spam detection
+      # for `flowproof-cli-darwin-x64` and `flowproof-cli-win32-x64` on every
+      # attempt, a heuristic that fires on brand-new unscoped names. Two legs
+      # stuck there permanently, and since `publish` needs this job, the
+      # launcher itself never shipped - which is why npm sat at the 0.0.1
+      # placeholder while PyPI was at 0.5.0. Names under an existing org are
+      # not subject to that heuristic.
+      #
+      # Each leg still publishes independently: one failing (a flaky runner,
+      # a registry hiccup) must not cancel the others, or a partial publish
+      # strands the rest. With the skip-if-already-published guard below, a
+      # re-run converges on whatever is still missing.
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            pkg: flowproof-cli-linux-x64
+            pkg: "@automators/flowproof-cli-linux-x64"
+            os_field: linux
+            cpu_field: x64
             bin: flowproof
           - os: macos-13
-            pkg: flowproof-cli-darwin-x64
+            pkg: "@automators/flowproof-cli-darwin-x64"
+            os_field: darwin
+            cpu_field: x64
             bin: flowproof
           - os: macos-latest
-            pkg: flowproof-cli-darwin-arm64
+            pkg: "@automators/flowproof-cli-darwin-arm64"
+            os_field: darwin
+            cpu_field: arm64
             bin: flowproof
           - os: windows-latest
-            pkg: flowproof-cli-win32-x64
+            pkg: "@automators/flowproof-cli-win32-x64"
+            os_field: win32
+            cpu_field: x64
             bin: flowproof.exe
     runs-on: ${{ matrix.os }}
     permissions:
@@ -64,8 +81,8 @@ jobs:
         shell: bash
         run: |
           version=$(node -p "require('./sdk/js/package.json').version")
-          os_field=$(node -p "'${{ matrix.pkg }}'.split('-')[2]")
-          cpu_field=$(node -p "'${{ matrix.pkg }}'.split('-').slice(3).join('-')")
+          os_field='${{ matrix.os_field }}'
+          cpu_field='${{ matrix.cpu_field }}'
           mkdir -p dist-npm
           cp "target/release/${{ matrix.bin }}" dist-npm/
           node -e "
