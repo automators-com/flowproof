@@ -1763,7 +1763,11 @@ mod tests {
                 "cassette": {"turns": []},
                 "egress": {
                     "containment": "enforced (linux seccomp)",
-                    "blocked": [{"destination": "evil.example.com:443", "protocol": "tcp"}]
+                    "blocked": [{
+                        "destination": "evil.example.com:443",
+                        "protocol": "tcp",
+                        "at_ms": 12
+                    }]
                 }
             })
             .to_string(),
@@ -1776,6 +1780,15 @@ mod tests {
              steps:\n  - prompt: fetch the invoice\n",
         )
         .expect("spec parses");
+        // Prove the FIXTURE first. The platform assertion below is
+        // "empty" off Linux, which a malformed trace would satisfy for the
+        // wrong reason - and did: a missing `at_ms` made the lane fail to
+        // parse, so this test passed on macOS while proving nothing.
+        assert!(
+            !agent_flow::egress_blocked(&trace).is_empty(),
+            "the fixture must actually carry a blocked lane, or this test proves nothing"
+        );
+
         let record = build_control_record(
             &spec_path,
             &dir,
