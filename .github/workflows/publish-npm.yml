@@ -49,10 +49,18 @@ jobs:
             os_field: linux
             cpu_field: x64
             bin: flowproof
-          - os: macos-13
+          # CROSS-COMPILED from Apple Silicon, not built on an Intel mac.
+          # `macos-13` is the Intel image, and it stopped being schedulable:
+          # a 0.6.0 publish sat QUEUED on it for over two hours with no
+          # runner ever assigned, which blocked the launcher below (it
+          # `needs` every leg) and left npm on its placeholder. Cross
+          # compiling costs one rustup target and removes the dependency on
+          # a runner we do not control the supply of.
+          - os: macos-latest
             pkg: "@automators/flowproof-cli-darwin-x64"
             os_field: darwin
             cpu_field: x64
+            target: x86_64-apple-darwin
             bin: flowproof
           - os: macos-latest
             pkg: "@automators/flowproof-cli-darwin-arm64"
@@ -75,8 +83,17 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+      - name: Add the cross-compilation target
+        if: matrix.target != ''
+        run: rustup target add ${{ matrix.target }}
       - name: Build the CLI binary
-        run: cargo build --release -p flowproof-cli
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo build --release -p flowproof-cli --target ${{ matrix.target }}
+          else
+            cargo build --release -p flowproof-cli
+          fi
       - name: Assemble the platform package
         shell: bash
         run: |
@@ -84,7 +101,16 @@ jobs:
           os_field='${{ matrix.os_field }}'
           cpu_field='${{ matrix.cpu_field }}'
           mkdir -p dist-npm
-          cp "target/release/${{ matrix.bin }}" dist-npm/
+          # A cross build lands under target/<triple>/release, not target/release.
+          built="target/release/${{ matrix.bin }}"
+          if [ -n "${{ matrix.target }}" ]; then
+            built="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          fi
+          cp "$built" dist-npm/
+          # Prove the binary is actually the architecture we are about to
+          # publish as: a silently-native build would install and then fail
+          # to exec on the user's machine.
+          file dist-npm/${{ matrix.bin }} || true
           node -e "
             const fs = require('fs');
             fs.writeFileSync('dist-npm/package.json', JSON.stringify({
