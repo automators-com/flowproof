@@ -311,8 +311,13 @@ pub fn check_trajectory(
 /// the trajectory, regardless of position.
 ///
 /// This is the guard-path assertion, and arguably the highest-value one
-/// in the feature. The dangerous tool is mocked at the boundary, so even
-/// a misbehaving agent causes no harm while the test proves it misbehaved.
+/// in the feature. It proves the agent never ASKED for the tool - which is
+/// not the same as the tool being unable to run. At the MCP boundary the
+/// call is genuinely intercepted, so a misbehaving agent causes no harm
+/// while the test proves it misbehaved; at the MODEL boundary the system
+/// under test still executes its own tools, so a real side effect can fire
+/// while this assertion passes. `agent_flow` warns when a flow relies on
+/// this without an interception.
 /// An expectation with `args` narrows it: "never called with an amount
 /// above the limit" rather than "never called".
 pub fn check_absent(
