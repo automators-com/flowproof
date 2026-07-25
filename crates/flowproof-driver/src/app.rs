@@ -234,6 +234,79 @@ pub enum ScrollTo {
     IntoView,
 }
 
+/// How a declared JavaScript dialog (`alert`/`confirm`/`prompt`/
+/// `beforeunload`) is answered, folded into the action that triggers it. A
+/// JS dialog blocks JS synchronously, so it cannot be a step AFTER the
+/// trigger: the disposition is armed BEFORE the trigger dispatches, and a
+/// one-shot listener responds the instant the dialog opens. Web-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialogArm {
+    pub disposition: DialogDisposition,
+    /// Recorded message text, matched `contains`. `None` = match any
+    /// message (the bare `dismissing the dialog` / `accepting the dialog`
+    /// forms).
+    pub message: Option<String>,
+    /// Prompt reply supplied on accept. Authored input like `TypeText.text`:
+    /// a `${VAR}` reference resolves at execution, so only the reference ever
+    /// travels in the trace. `None` for a plain accept/dismiss.
+    pub reply: Option<String>,
+}
+
+/// Accept (press OK, supplying any prompt reply) or dismiss (press Cancel /
+/// close) a JavaScript dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogDisposition {
+    Accept,
+    Dismiss,
+}
+
+/// What a dialog listener observed and did - the material a post-condition
+/// reads. Captured on the event-listener thread the instant the dialog
+/// opens (the message IS the assertion), so a declared dialog that never
+/// opens leaves `None` and fails its step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FiredDialog {
+    /// `alert` | `confirm` | `prompt` | `beforeunload`.
+    pub dialog_type: String,
+    pub message: String,
+    /// `true` = accepted (OK), `false` = dismissed (Cancel).
+    pub accepted: bool,
+    /// The reply actually supplied to a prompt, if any.
+    pub reply: Option<String>,
+}
+
+/// Verify a DECLARED dialog fired exactly as the step recorded: it opened,
+/// its message contains the recorded text, and it was handled with the
+/// recorded disposition. `Err(reason)` fails the step (parallel to
+/// `set_checked` verifying its state took). A no-fire is a failure, not a
+/// pass: a declared dialog that does not open is a broken flow.
+pub fn verify_dialog(expected: &DialogArm, fired: Option<&FiredDialog>) -> Result<(), String> {
+    let Some(fired) = fired else {
+        return Err("the declared dialog did not open".to_string());
+    };
+    if let Some(message) = &expected.message {
+        if !fired.message.contains(message.as_str()) {
+            return Err(format!(
+                "the dialog said '{}', which does not contain the declared '{}'",
+                fired.message, message
+            ));
+        }
+    }
+    let want_accept = matches!(expected.disposition, DialogDisposition::Accept);
+    if fired.accepted != want_accept {
+        return Err(format!(
+            "the dialog was {} but the step declared {}",
+            if fired.accepted {
+                "accepted"
+            } else {
+                "dismissed"
+            },
+            if want_accept { "accept" } else { "dismiss" },
+        ));
+    }
+    Ok(())
+}
+
 /// Drives a single application window through UIA.
 pub trait AppDriver {
     /// Record-time hints for a resolved table cell (#58). Only the web
@@ -526,6 +599,32 @@ pub trait AppDriver {
         Err(DriverError::Uia(format!(
             "hover is not supported by this driver yet: [{selector}]"
         )))
+    }
+
+    /// Arm a ONE-SHOT native-dialog handler for the NEXT trigger action. A
+    /// JS dialog blocks JS synchronously, so it must be armed BEFORE the
+    /// click/press dispatches; the handler responds from the event-listener
+    /// thread the instant the dialog opens (a main-path call would block
+    /// behind the open dialog). Web-only: a native desktop message box is a
+    /// real window driven by ordinary steps, so every other adapter refuses.
+    fn arm_dialog(&mut self, _arm: DialogArm) -> Result<(), DriverError> {
+        Err(DriverError::Uia("dialog handling is web-only".to_string()))
+    }
+
+    /// Consume what the ARMED one-shot handler observed and did since the
+    /// last `arm_dialog`, for the post-condition. `None` = the declared
+    /// dialog never opened (a step failure). Web-only; the default has no
+    /// dialogs and reports none.
+    fn take_fired_dialog(&mut self) -> Option<FiredDialog> {
+        None
+    }
+
+    /// Consume the record of any UNDECLARED dialog the flow-wide safety net
+    /// caught and dismissed since it was last drained. A step that did not
+    /// declare a dialog but triggered one FAILS with this, rather than
+    /// hanging on an unanswered dialog. Web-only; the default reports none.
+    fn take_unexpected_dialog(&mut self) -> Option<FiredDialog> {
+        None
     }
 
     /// Stage browser launch/emulation config (viewport, user-agent, extra
@@ -1370,6 +1469,21 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn hover(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         (**self).hover(selector)
+    }
+
+    // Must forward explicitly: a boxed driver otherwise hits the trait
+    // DEFAULT and reports "dialog handling is web-only" even for the web
+    // adapter, so no armed dialog would ever be handled.
+    fn arm_dialog(&mut self, arm: DialogArm) -> Result<(), DriverError> {
+        (**self).arm_dialog(arm)
+    }
+
+    fn take_fired_dialog(&mut self) -> Option<FiredDialog> {
+        (**self).take_fired_dialog()
+    }
+
+    fn take_unexpected_dialog(&mut self) -> Option<FiredDialog> {
+        (**self).take_unexpected_dialog()
     }
 
     fn stage_browser(&mut self, config: WebBrowserConfig) -> Result<(), DriverError> {

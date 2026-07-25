@@ -72,6 +72,40 @@ impl Target {
     }
 }
 
+/// Build the execution-time dialog arm from a recorded trace dialog,
+/// resolving any `${VAR}` in the prompt reply NOW - at record and every
+/// replay alike, exactly like `TypeText.text`, so only the reference ever
+/// lived in the trace. Shared by the record and replay execution loops.
+pub fn dialog_arm(
+    dialog: &flowproof_trace::format::Dialog,
+) -> Result<flowproof_driver::DialogArm, flowproof_trace::secret::MissingSecret> {
+    use flowproof_trace::format::DialogDisposition as D;
+    let reply = match &dialog.reply {
+        Some(reply) => Some(flowproof_trace::secret::resolve_refs(reply)?),
+        None => None,
+    };
+    Ok(flowproof_driver::DialogArm {
+        disposition: match dialog.disposition {
+            D::Accept => flowproof_driver::DialogDisposition::Accept,
+            D::Dismiss => flowproof_driver::DialogDisposition::Dismiss,
+        },
+        message: dialog.message.clone(),
+        reply,
+    })
+}
+
+/// The dialog folded into a resolved trigger action, if any. Only the four
+/// trigger actions can carry one.
+pub fn action_dialog(action: &ResolvedAction) -> Option<&flowproof_trace::format::Dialog> {
+    match action {
+        ResolvedAction::Press { dialog, .. }
+        | ResolvedAction::ContextClick { dialog, .. }
+        | ResolvedAction::DoubleClick { dialog, .. }
+        | ResolvedAction::Hover { dialog, .. } => dialog.as_ref(),
+        _ => None,
+    }
+}
+
 /// Parse a leading `"quoted label"` off `rest`, returning (label, tail).
 fn quoted_label(rest: &str) -> Option<(&str, &str)> {
     let end = rest.find('"')?;
@@ -89,6 +123,11 @@ pub enum ResolvedAction {
         target: Target,
         /// Human-readable label (recorded as the selector name hint).
         label: String,
+        /// A native dialog disposition folded into this trigger via the
+        /// dialog suffix (`Click "Delete", accepting the "…" dialog`). The
+        /// handler is armed BEFORE the click dispatches, since a JS dialog
+        /// blocks synchronously. Web-only at execution.
+        dialog: Option<flowproof_trace::format::Dialog>,
     },
     /// Type literal text into an element.
     TypeText { target: Target, text: String },
@@ -100,6 +139,9 @@ pub enum ResolvedAction {
         target: Target,
         /// Human-readable label (recorded as the selector name hint).
         label: String,
+        /// A native dialog disposition folded into this trigger via the
+        /// dialog suffix. Web-only at execution.
+        dialog: Option<flowproof_trace::format::Dialog>,
     },
     /// Double-click an element (fire a real `dblclick`). The post-condition
     /// is app-defined, exactly like a plain click's.
@@ -107,6 +149,9 @@ pub enum ResolvedAction {
         target: Target,
         /// Human-readable label (recorded as the selector name hint).
         label: String,
+        /// A native dialog disposition folded into this trigger via the
+        /// dialog suffix. Web-only at execution.
+        dialog: Option<flowproof_trace::format::Dialog>,
     },
     /// Hover over an element: move the pointer onto it, no press/release.
     /// Hover state persists until the next explicit pointer action; the
@@ -115,6 +160,9 @@ pub enum ResolvedAction {
         target: Target,
         /// Human-readable label (recorded as the selector name hint).
         label: String,
+        /// A native dialog disposition folded into this trigger via the
+        /// dialog suffix. Web-only at execution.
+        dialog: Option<flowproof_trace::format::Dialog>,
     },
     /// Screenshot comparison against a named baseline. Record mints the
     /// masked baseline; replay compares with the same masks.
@@ -809,6 +857,127 @@ fn split_scope<'a>(
     }
 }
 
+/// Split an optional dialog suffix off a trigger action's tail. The suffix
+/// is a comma clause folded onto the action that triggers the dialog, since
+/// a JS dialog blocks synchronously and cannot be a step AFTER the trigger:
+///
+/// ```text
+/// , accepting the "<message>" dialog     (accept, message matched `contains`)
+/// , accepting the dialog                 (accept, match any message)
+/// , dismissing the "<message>" dialog    (dismiss, message matched `contains`)
+/// , dismissing the dialog                (dismiss, match any message)
+/// , answering the prompt with "<text>"   (accept a prompt + supply reply)
+/// ```
+///
+/// The clause always begins at a comma, AFTER any scope phrase, so this runs
+/// first and hands the target half (without the clause) to `split_scope`.
+fn split_dialog<'a>(
+    step: &str,
+    tail: &'a str,
+) -> Result<
+    (
+        Option<flowproof_trace::format::Dialog>,
+        std::borrow::Cow<'a, str>,
+    ),
+    RulesError,
+> {
+    // Find the first comma that introduces a dialog keyword; everything from
+    // there is the clause, everything before is the target half.
+    let markers = ["accepting", "dismissing", "answering"];
+    let mut split_at = None;
+    for (idx, _) in tail.match_indices(',') {
+        let after = tail[idx + 1..].trim_start();
+        if markers.iter().any(|m| starts_with_word_ci(after, m)) {
+            split_at = Some(idx);
+            break;
+        }
+    }
+    let Some(idx) = split_at else {
+        return Ok((None, std::borrow::Cow::Borrowed(tail)));
+    };
+    let clause = tail[idx + 1..].trim();
+    let dialog = parse_dialog_clause(step, clause)?;
+    Ok((
+        Some(dialog),
+        std::borrow::Cow::Owned(tail[..idx].trim().to_string()),
+    ))
+}
+
+/// Whether `text` starts with `word` (ASCII case-insensitive) as a whole
+/// word - the next char must be whitespace or the end, so `answering` never
+/// matches a longer accidental prefix.
+fn starts_with_word_ci(text: &str, word: &str) -> bool {
+    strip_prefix_ci(text, word)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+/// Parse the dialog clause (the text after the introducing comma).
+fn parse_dialog_clause(
+    step: &str,
+    clause: &str,
+) -> Result<flowproof_trace::format::Dialog, RulesError> {
+    use flowproof_trace::format::{Dialog, DialogDisposition};
+    let dialog = |disposition, message, reply| Dialog {
+        disposition,
+        message,
+        match_mode: "contains".to_string(),
+        reply,
+    };
+    let near_miss = || {
+        unresolvable(
+            step,
+            "expected a dialog suffix: 'accepting [the \"<message>\"] dialog', \
+             'dismissing [the \"<message>\"] dialog', or 'answering the prompt with \"<text>\"'",
+        )
+    };
+    if let Some(rest) = strip_prefix_ci(clause, "accepting") {
+        let message = parse_dialog_message(step, rest)?;
+        return Ok(dialog(DialogDisposition::Accept, message, None));
+    }
+    if let Some(rest) = strip_prefix_ci(clause, "dismissing") {
+        let message = parse_dialog_message(step, rest)?;
+        return Ok(dialog(DialogDisposition::Dismiss, message, None));
+    }
+    if let Some(rest) = strip_prefix_ci(clause, "answering") {
+        // `answering the prompt with "<text>"` implies accept + reply.
+        let rest = strip_prefix_ci(rest.trim_start(), "the prompt with ").ok_or_else(near_miss)?;
+        let quoted = rest.trim_start().strip_prefix('"').ok_or_else(near_miss)?;
+        let (text, tail) = quoted_label(quoted).ok_or_else(near_miss)?;
+        if !tail.trim().is_empty() {
+            return Err(near_miss());
+        }
+        return Ok(dialog(
+            DialogDisposition::Accept,
+            None,
+            Some(text.to_string()),
+        ));
+    }
+    Err(near_miss())
+}
+
+/// Parse the `the ["<message>" ]dialog` tail of an accept/dismiss clause.
+/// `None` = the bare `the dialog` form (match any message).
+fn parse_dialog_message(step: &str, rest: &str) -> Result<Option<String>, RulesError> {
+    let near_miss = || {
+        unresolvable(
+            step,
+            "expected 'the \"<message>\" dialog' or 'the dialog' after \
+             accepting/dismissing",
+        )
+    };
+    let rest = strip_prefix_ci(rest.trim_start(), "the ").ok_or_else(near_miss)?;
+    let rest = rest.trim();
+    if rest.eq_ignore_ascii_case("dialog") {
+        return Ok(None);
+    }
+    let quoted = rest.strip_prefix('"').ok_or_else(near_miss)?;
+    let (message, tail) = quoted_label(quoted).ok_or_else(near_miss)?;
+    if !tail.trim().eq_ignore_ascii_case("dialog") {
+        return Err(near_miss());
+    }
+    Ok(Some(message.to_string()))
+}
+
 /// The final target for a quoted label with an optional ordinal and an
 /// optional scope. Ordinals are rejected on BOTH halves here, so every slot
 /// rejects them identically.
@@ -1335,6 +1504,7 @@ mod calc {
                 actions.push(ResolvedAction::Press {
                     target: Target::AutomationId(automation_id),
                     label,
+                    dialog: None,
                 });
             }
             return Some(Ok(actions));
@@ -1346,6 +1516,7 @@ mod calc {
                 Some((automation_id, label)) => Ok(vec![ResolvedAction::Press {
                     target: Target::id(automation_id),
                     label: label.into(),
+                    dialog: None,
                 }]),
                 None => Err(unresolvable(
                     trimmed,
@@ -1967,20 +2138,24 @@ mod web {
             let (nth, target_text) = split_ordinal(rest.trim());
             if let Some(quoted) = target_text.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    let (dialog, tail) = split_dialog(trimmed, tail)?;
+                    let (scope, tail) = split_scope(trimmed, &tail)?;
                     if tail.eq_ignore_ascii_case("button") || (tail.is_empty() && scope.is_some()) {
                         return Ok(vec![ResolvedAction::Press {
                             target: scoped_target(trimmed, nth, label, scope)?,
                             label: label.to_string(),
+                            dialog,
                         }]);
                     }
                 }
             } else if nth.is_none() {
-                if let Some(id) = strip_suffix_ci(target_text, " button").map(str::trim) {
+                let (dialog, target_text) = split_dialog(trimmed, target_text)?;
+                if let Some(id) = strip_suffix_ci(&target_text, " button").map(str::trim) {
                     if !id.is_empty() {
                         return Ok(vec![ResolvedAction::Press {
                             target: Target::id(id),
                             label: id.to_string(),
+                            dialog,
                         }]);
                     }
                 }
@@ -2021,11 +2196,13 @@ mod web {
             };
             if let Some(quoted) = rest.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    let (dialog, tail) = split_dialog(trimmed, tail)?;
+                    let (scope, tail) = split_scope(trimmed, &tail)?;
                     if tail.is_empty() {
                         return Ok(vec![ResolvedAction::ContextClick {
                             target: scoped_target(trimmed, nth, label, scope)?,
                             label: label.to_string(),
+                            dialog,
                         }]);
                     }
                 }
@@ -2049,11 +2226,13 @@ mod web {
             };
             if let Some(quoted) = rest.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    let (dialog, tail) = split_dialog(trimmed, tail)?;
+                    let (scope, tail) = split_scope(trimmed, &tail)?;
                     if tail.is_empty() {
                         return Ok(vec![ResolvedAction::DoubleClick {
                             target: scoped_target(trimmed, nth, label, scope)?,
                             label: label.to_string(),
+                            dialog,
                         }]);
                     }
                 }
@@ -2086,11 +2265,13 @@ mod web {
             };
             if let Some(quoted) = rest.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
-                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    let (dialog, tail) = split_dialog(trimmed, tail)?;
+                    let (scope, tail) = split_scope(trimmed, &tail)?;
                     if tail.is_empty() {
                         return Ok(vec![ResolvedAction::Hover {
                             target: scoped_target(trimmed, nth, label, scope)?,
                             label: label.to_string(),
+                            dialog,
                         }]);
                     }
                 }
@@ -2113,11 +2294,13 @@ mod web {
                     // two releases and never parsed, because this slot
                     // required an EMPTY tail and the cell parse lived only
                     // in the assertion resolver.
-                    let (scope, tail) = split_scope(trimmed, tail)?;
+                    let (dialog, tail) = split_dialog(trimmed, tail)?;
+                    let (scope, tail) = split_scope(trimmed, &tail)?;
                     if tail.is_empty() {
                         return Ok(vec![ResolvedAction::Press {
                             target: scoped_target(trimmed, nth, label, scope)?,
                             label: label.to_string(),
+                            dialog,
                         }]);
                     }
                 }
@@ -2239,11 +2422,13 @@ mod tests {
             vec![
                 ResolvedAction::Press {
                     target: Target::id("num5Button"),
-                    label: "Five".into()
+                    label: "Five".into(),
+                    dialog: None,
                 },
                 ResolvedAction::Press {
                     target: Target::id("num3Button"),
-                    label: "Three".into()
+                    label: "Three".into(),
+                    dialog: None,
                 },
             ]
         );
@@ -2257,7 +2442,8 @@ mod tests {
             actions,
             vec![ResolvedAction::Press {
                 target: Target::id("plusButton"),
-                label: "Plus".into()
+                label: "Plus".into(),
+                dialog: None,
             }]
         );
     }
@@ -2340,6 +2526,7 @@ mod tests {
             vec![ResolvedAction::Press {
                 target: Target::id("greet"),
                 label: "greet".into(),
+                dialog: None,
             }]
         );
     }
@@ -2446,6 +2633,7 @@ mod tests {
             vec![ResolvedAction::Press {
                 target: Target::text("Save"),
                 label: "Save".into(),
+                dialog: None,
             }]
         );
 
@@ -2456,6 +2644,7 @@ mod tests {
             vec![ResolvedAction::Press {
                 target: Target::text("Templates"),
                 label: "Templates".into(),
+                dialog: None,
             }]
         );
 
@@ -3920,7 +4109,8 @@ mod scoped_target_tests {
             plain(r#"Click the "Amount" in the item containing "Invoice 4711""#).expect("parses"),
             vec![ResolvedAction::Press {
                 target: wanted.clone(),
-                label: "Amount".into()
+                label: "Amount".into(),
+                dialog: None,
             }]
         );
         assert_eq!(
@@ -3951,7 +4141,8 @@ mod scoped_target_tests {
                 .expect("parses"),
             vec![ResolvedAction::Press {
                 target: wanted.clone(),
-                label: "Amount".into()
+                label: "Amount".into(),
+                dialog: None,
             }]
         );
         assert_eq!(
@@ -3967,7 +4158,8 @@ mod scoped_target_tests {
                 .expect("parses"),
             vec![ResolvedAction::ContextClick {
                 target: wanted.clone(),
-                label: "Amount".into()
+                label: "Amount".into(),
+                dialog: None,
             }]
         );
         assert_eq!(
@@ -3975,7 +4167,8 @@ mod scoped_target_tests {
                 .expect("parses"),
             vec![ResolvedAction::DoubleClick {
                 target: wanted.clone(),
-                label: "Amount".into()
+                label: "Amount".into(),
+                dialog: None,
             }]
         );
         assert_eq!(
@@ -3983,7 +4176,8 @@ mod scoped_target_tests {
                 .expect("parses"),
             vec![ResolvedAction::Hover {
                 target: wanted,
-                label: "Amount".into()
+                label: "Amount".into(),
+                dialog: None,
             }]
         );
     }
@@ -3996,14 +4190,16 @@ mod scoped_target_tests {
             plain(r#"Double-click "Accounts""#).expect("parses"),
             vec![ResolvedAction::DoubleClick {
                 target: Target::text("Accounts"),
-                label: "Accounts".into()
+                label: "Accounts".into(),
+                dialog: None,
             }]
         );
         assert_eq!(
             plain(r#"double click "Accounts""#).expect("case-insensitive, no hyphen"),
             vec![ResolvedAction::DoubleClick {
                 target: Target::text("Accounts"),
-                label: "Accounts".into()
+                label: "Accounts".into(),
+                dialog: None,
             }]
         );
         assert!(matches!(
@@ -4028,21 +4224,24 @@ mod scoped_target_tests {
             plain(r#"Hover over "Accounts""#).expect("parses"),
             vec![ResolvedAction::Hover {
                 target: Target::text("Accounts"),
-                label: "Accounts".into()
+                label: "Accounts".into(),
+                dialog: None,
             }]
         );
         assert_eq!(
             plain(r#"hover over "Accounts""#).expect("case-insensitive"),
             vec![ResolvedAction::Hover {
                 target: Target::text("Accounts"),
-                label: "Accounts".into()
+                label: "Accounts".into(),
+                dialog: None,
             }]
         );
         assert_eq!(
             plain(r#"Hover over the "Accounts""#).expect("`the` accepted"),
             vec![ResolvedAction::Hover {
                 target: Target::text("Accounts"),
-                label: "Accounts".into()
+                label: "Accounts".into(),
+                dialog: None,
             }]
         );
         assert!(matches!(
@@ -4075,7 +4274,8 @@ mod scoped_target_tests {
                 .expect("the documented cell click must parse"),
             vec![ResolvedAction::Press {
                 target: cell,
-                label: "Actions".into()
+                label: "Actions".into(),
+                dialog: None,
             }]
         );
         assert!(matches!(
@@ -4279,5 +4479,115 @@ mod scoped_target_tests {
                 .expect_err("css is web-only");
             assert!(err.to_string().contains("web-only"), "step '{step}': {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod dialog_suffix_tests {
+    use super::*;
+    use flowproof_trace::format::DialogDisposition;
+
+    fn plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step("web", &SpecStep::Plain(text.to_string()))
+    }
+
+    fn dialog_of(text: &str) -> flowproof_trace::format::Dialog {
+        let actions = plain(text).expect("parses");
+        action_dialog(&actions[0])
+            .expect("carries a dialog")
+            .clone()
+    }
+
+    /// `accepting the "<msg>" dialog` on a Click: accept, message matched
+    /// `contains`, no reply.
+    #[test]
+    fn click_accepting_with_message() {
+        let dialog = dialog_of(r#"Click "Delete", accepting the "Are you sure?" dialog"#);
+        assert_eq!(dialog.disposition, DialogDisposition::Accept);
+        assert_eq!(dialog.message.as_deref(), Some("Are you sure?"));
+        assert_eq!(dialog.match_mode, "contains");
+        assert_eq!(dialog.reply, None);
+        // The target half still parses to the plain click.
+        assert!(matches!(
+            plain(r#"Click "Delete", accepting the "Are you sure?" dialog"#).as_deref(),
+            Ok([ResolvedAction::Press { target: Target::Text(t), .. }]) if t == "Delete"
+        ));
+    }
+
+    /// `dismissing the dialog`: dismiss, no message (match any), no reply.
+    #[test]
+    fn click_dismissing_bare() {
+        let dialog = dialog_of(r#"Click "Cancel", dismissing the dialog"#);
+        assert_eq!(dialog.disposition, DialogDisposition::Dismiss);
+        assert_eq!(dialog.message, None);
+        assert_eq!(dialog.reply, None);
+    }
+
+    /// `dismissing the "<msg>" dialog`: dismiss WITH a matched message.
+    #[test]
+    fn click_dismissing_with_message() {
+        let dialog = dialog_of(r#"Click "Cancel", dismissing the "Discard changes?" dialog"#);
+        assert_eq!(dialog.disposition, DialogDisposition::Dismiss);
+        assert_eq!(dialog.message.as_deref(), Some("Discard changes?"));
+    }
+
+    /// `answering the prompt with "<text>"` implies accept + reply, no
+    /// message. The reply is stored verbatim (a `${VAR}` ref travels, not a
+    /// value).
+    #[test]
+    fn press_button_answering_prompt() {
+        let dialog =
+            dialog_of(r#"Press the "Rename" button, answering the prompt with "New name""#);
+        assert_eq!(dialog.disposition, DialogDisposition::Accept);
+        assert_eq!(dialog.message, None);
+        assert_eq!(dialog.reply.as_deref(), Some("New name"));
+        let ref_dialog =
+            dialog_of(r#"Press the "Rename" button, answering the prompt with "${NEW_NAME}""#);
+        assert_eq!(ref_dialog.reply.as_deref(), Some("${NEW_NAME}"));
+    }
+
+    /// The suffix rides on every trigger, and composes with the scope suffix.
+    #[test]
+    fn suffix_on_every_trigger_and_scoped() {
+        for step in [
+            r#"Right-click "Row", dismissing the dialog"#,
+            r#"Double-click "Row", accepting the dialog"#,
+            r#"Hover over "Row", accepting the dialog"#,
+        ] {
+            assert!(
+                action_dialog(&plain(step).expect("parses")[0]).is_some(),
+                "no dialog on: {step}"
+            );
+        }
+        // Scope suffix + dialog suffix together: the scoped target survives.
+        let actions =
+            plain(r#"Click the "Pay" in the item containing "Invoice 4711", accepting the dialog"#)
+                .expect("parses");
+        assert!(matches!(
+            actions[0],
+            ResolvedAction::Press {
+                target: Target::Scoped { .. },
+                ..
+            }
+        ));
+        assert!(action_dialog(&actions[0]).is_some());
+    }
+
+    /// A malformed dialog clause is a parse error naming the forms, not a
+    /// silently dropped suffix.
+    #[test]
+    fn malformed_dialog_clause_is_an_error() {
+        let err = plain(r#"Click "Delete", accepting the box"#).expect_err("not 'dialog'");
+        assert!(err.to_string().contains("dialog"), "{err}");
+    }
+
+    /// A trigger with no suffix carries no dialog: the common case stays
+    /// exactly as before.
+    #[test]
+    fn no_suffix_no_dialog() {
+        assert_eq!(
+            action_dialog(&plain(r#"Click "Delete""#).expect("parses")[0]),
+            None
+        );
     }
 }

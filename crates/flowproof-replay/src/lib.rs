@@ -1295,6 +1295,69 @@ fn check_visual<D: AppDriver>(
     )))
 }
 
+/// Build the execution-time dialog arm from a recorded trace dialog,
+/// resolving any `${VAR}` in the prompt reply NOW (record and replay alike,
+/// exactly like `TypeText.text`), so only the reference ever lived in the
+/// trace. Mirrors the record-side `flowproof_agent::rules::dialog_arm`.
+fn dialog_arm(
+    dialog: &flowproof_trace::format::Dialog,
+) -> Result<flowproof_driver::DialogArm, flowproof_trace::secret::MissingSecret> {
+    use flowproof_trace::format::DialogDisposition as D;
+    let reply = match &dialog.reply {
+        Some(reply) => Some(flowproof_trace::secret::resolve_refs(reply)?),
+        None => None,
+    };
+    Ok(flowproof_driver::DialogArm {
+        disposition: match dialog.disposition {
+            D::Accept => flowproof_driver::DialogDisposition::Accept,
+            D::Dismiss => flowproof_driver::DialogDisposition::Dismiss,
+        },
+        message: dialog.message.clone(),
+        reply,
+    })
+}
+
+/// Decode a folded-in dialog out of a trigger action's params bag. A bag
+/// with no `dialog` key yields `None` - the common case, and what keeps an
+/// old trace replaying unchanged.
+fn dialog_from_params(
+    params: &flowproof_trace::format::Params,
+) -> Option<flowproof_trace::format::Dialog> {
+    params
+        .get("dialog")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// Arm a folded-in dialog, dispatch the trigger, then verify the DECLARED
+/// dialog fired as recorded - the replay-side mirror of the record path. An
+/// unresolved `${VAR}` in the reply, or a declared dialog that did not open
+/// or was handled differently, is a step FAILURE (`Ok(Err(reason))`), not a
+/// hard error. With no dialog this is a plain dispatch.
+fn dispatch_with_dialog<D: AppDriver>(
+    driver: &mut D,
+    dialog: Option<&flowproof_trace::format::Dialog>,
+    dispatch: impl FnOnce(&mut D) -> Result<(), flowproof_driver::DriverError>,
+) -> Result<Result<(), String>, ReplayError> {
+    let arm = match dialog {
+        Some(dialog) => match dialog_arm(dialog) {
+            Ok(arm) => {
+                driver.arm_dialog(arm.clone())?;
+                Some(arm)
+            }
+            Err(missing) => return Ok(Err(missing.to_string())),
+        },
+        None => None,
+    };
+    dispatch(driver)?;
+    if let Some(arm) = arm {
+        let fired = driver.take_fired_dialog();
+        if let Err(reason) = flowproof_driver::verify_dialog(&arm, fired.as_ref()) {
+            return Ok(Err(reason));
+        }
+    }
+    Ok(Ok(()))
+}
+
 fn execute_step<D: AppDriver>(
     driver: &mut D,
     step: &Step,
@@ -1334,13 +1397,15 @@ fn execute_step<D: AppDriver>(
                 )
             }
         }
-        Action::Click(_) => match resolve_target(driver, &step.selectors)? {
+        Action::Click(params) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
                 match wait_actionable(driver, &target, actionable_timeout(step))? {
                     Ok(()) => {
-                        driver.invoke(&target)?;
-                        (Ok(()), matched)
+                        let dialog = dialog_from_params(params);
+                        let outcome =
+                            dispatch_with_dialog(driver, dialog.as_ref(), |d| d.invoke(&target))?;
+                        (outcome, matched)
                     }
                     Err(reason) => (Err(reason), matched),
                 }
@@ -1467,13 +1532,16 @@ fn execute_step<D: AppDriver>(
                 StepMatch::default(),
             ),
         },
-        Action::RightClick(_) => match resolve_target(driver, &step.selectors)? {
+        Action::RightClick(params) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
                 match wait_actionable(driver, &target, actionable_timeout(step))? {
                     Ok(()) => {
-                        driver.context_click(&target)?;
-                        (Ok(()), matched)
+                        let dialog = dialog_from_params(params);
+                        let outcome = dispatch_with_dialog(driver, dialog.as_ref(), |d| {
+                            d.context_click(&target)
+                        })?;
+                        (outcome, matched)
                     }
                     Err(reason) => (Err(reason), matched),
                 }
@@ -1483,13 +1551,16 @@ fn execute_step<D: AppDriver>(
                 StepMatch::default(),
             ),
         },
-        Action::DoubleClick(_) => match resolve_target(driver, &step.selectors)? {
+        Action::DoubleClick(params) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
                 match wait_actionable(driver, &target, actionable_timeout(step))? {
                     Ok(()) => {
-                        driver.double_click(&target)?;
-                        (Ok(()), matched)
+                        let dialog = dialog_from_params(params);
+                        let outcome = dispatch_with_dialog(driver, dialog.as_ref(), |d| {
+                            d.double_click(&target)
+                        })?;
+                        (outcome, matched)
                     }
                     Err(reason) => (Err(reason), matched),
                 }
@@ -1503,13 +1574,15 @@ fn execute_step<D: AppDriver>(
         // engine synthesizes no pointer movement between steps, so the
         // hover state persists until the author's next explicit pointer
         // action.
-        Action::Hover(_) => match resolve_target(driver, &step.selectors)? {
+        Action::Hover(params) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
                 match wait_actionable(driver, &target, actionable_timeout(step))? {
                     Ok(()) => {
-                        driver.hover(&target)?;
-                        (Ok(()), matched)
+                        let dialog = dialog_from_params(params);
+                        let outcome =
+                            dispatch_with_dialog(driver, dialog.as_ref(), |d| d.hover(&target))?;
+                        (outcome, matched)
                     }
                     Err(reason) => (Err(reason), matched),
                 }
@@ -1586,6 +1659,20 @@ fn execute_step<D: AppDriver>(
             StepMatch::default(),
         ),
     };
+    // Safety net: an UNDECLARED dialog was dismissed by the flow-wide
+    // listener and fails this step deterministically, rather than hanging on
+    // an unanswered dialog. A step that already failed keeps its own reason.
+    if outcome.is_ok() {
+        if let Some(unexpected) = driver.take_unexpected_dialog() {
+            return Ok((
+                Err(format!(
+                    "an unexpected dialog opened: {}",
+                    unexpected.message
+                )),
+                matched,
+            ));
+        }
+    }
     if outcome.is_err() {
         return Ok((outcome, matched));
     }

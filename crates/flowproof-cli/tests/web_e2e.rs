@@ -1857,3 +1857,175 @@ fn a_clean_web_flow_records_and_replays_with_the_secret_absent() {
     std::fs::remove_dir_all(&dir).ok();
     std::env::remove_var("FLOWPROOF_E2E_CLEAN_PW");
 }
+
+/// Native dialogs (GAP): a folded-in dialog suffix arms a one-shot handler
+/// BEFORE the trigger, answers the dialog on the listener thread, and
+/// verifies it fired as declared. Accept lets the page proceed, dismiss does
+/// not, and a prompt reply reaches the page - all against real headless
+/// Chromium, recorded and replayed.
+#[test]
+fn native_dialogs_arm_and_verify() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web dialog E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-dialog-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("dialogs.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><html><body>
+            <button onclick="del.textContent = window.confirm('Delete this?') ? 'Deleted' : 'still-here'">Delete</button>
+            <button onclick="keep.textContent = window.confirm('Discard changes?') ? 'discarded' : 'Kept'">Keep</button>
+            <button onclick="ren.textContent = 'Renamed: ' + (window.prompt('New name?') || 'none')">Rename</button>
+            <div id="del"></div><div id="keep"></div><div id="ren"></div>
+        </body></html>"#,
+    )
+    .expect("page written");
+    let trace_path = dir.join("dialogs.trace.jsonl");
+
+    let spec = FlowSpec {
+        name: "Native dialogs".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: None,
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        agent: None,
+        tools: Vec::new(),
+        mcp: Vec::new(),
+        strict: false,
+        control: None,
+        steps: vec![
+            // Accept a confirm: the page proceeds (marker shows "Deleted").
+            flowproof_agent::SpecStep::Plain(
+                "Click \"Delete\", accepting the \"Delete this?\" dialog".into(),
+            ),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Deleted".into(),
+            },
+            // Dismiss a confirm: the page does NOT proceed (marker "Kept",
+            // never "discarded").
+            flowproof_agent::SpecStep::Plain("Click \"Keep\", dismissing the dialog".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Kept".into(),
+            },
+            flowproof_agent::SpecStep::Assert {
+                assert: "page does not show discarded".into(),
+            },
+            // Answer a prompt: the supplied reply reaches the page.
+            flowproof_agent::SpecStep::Plain(
+                "Press the \"Rename\" button, answering the prompt with \"Fable\"".into(),
+            ),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Renamed: Fable".into(),
+            },
+        ],
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    // The dialog folds into the trigger action's params, matched `contains`.
+    let persisted = std::fs::read_to_string(&trace_path).expect("trace readable");
+    assert!(persisted.contains("\"dialog\""), "dialog encoded in trace");
+    assert!(
+        persisted.contains("\"disposition\":\"accept\""),
+        "accept encoded"
+    );
+    assert!(
+        persisted.contains("\"disposition\":\"dismiss\""),
+        "dismiss encoded"
+    );
+    assert!(
+        persisted.contains("\"match\":\"contains\""),
+        "match mode encoded"
+    );
+    // Value-free: the prompt reply travels as authored input, and here it is
+    // a literal, so it appears; a ${VAR} would appear only as the reference.
+    assert!(persisted.contains("\"reply\":\"Fable\""), "reply encoded");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    assert!(!report.degraded, "report: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The safety net (GAP): a step that triggers an UNDECLARED dialog must FAIL
+/// deterministically with "an unexpected dialog opened", NOT hang on the
+/// unanswered dialog. A watchdog thread enforces a hard timeout, so a
+/// regression that reintroduces the hang fails this test instead of blocking
+/// the suite forever.
+#[test]
+fn undeclared_dialog_fails_and_does_not_hang() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web undeclared-dialog E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let dir = std::env::temp_dir().join("flowproof-web-undeclared-dialog-e2e");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let page = dir.join("undeclared.html");
+        // The click fires a confirm the step never declares.
+        std::fs::write(
+            &page,
+            r#"<!doctype html><html><body>
+                <button onclick="window.confirm('Surprise!'); done.textContent = 'proceeded'">Danger</button>
+                <div id="done"></div>
+            </body></html>"#,
+        )
+        .expect("page written");
+        let trace_path = dir.join("undeclared.trace.jsonl");
+
+        let spec = FlowSpec {
+            name: "Undeclared dialog".into(),
+            app: "web".into(),
+            url: Some(format!("file://{}", page.display())),
+            redact: vec![],
+            connection: None,
+            window: None,
+            session: None,
+            skip_unless_env: Vec::new(),
+            mock: Vec::new(),
+            browser: None,
+            agent: None,
+            tools: Vec::new(),
+            mcp: Vec::new(),
+            strict: false,
+            control: None,
+            // A PLAIN click, no dialog suffix: the dialog is undeclared.
+            steps: vec![flowproof_agent::SpecStep::Plain("Click \"Danger\"".into())],
+        };
+
+        let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+        let result = flowproof_agent::record(&spec, &mut driver, &trace_path);
+        std::fs::remove_dir_all(&dir).ok();
+        let _ = tx.send(result.map_err(|e| e.to_string()));
+    });
+
+    // Hard timeout: the dialog must be dismissed and the step failed well
+    // within this bound. A hang would leave the recv waiting.
+    match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+        Ok(Ok(_)) => panic!("recording should FAIL on an undeclared dialog, but it succeeded"),
+        Ok(Err(msg)) => {
+            assert!(
+                msg.contains("an unexpected dialog opened"),
+                "expected the unexpected-dialog message, got: {msg}"
+            );
+        }
+        Err(_) => panic!("undeclared dialog HUNG the step: no failure within the timeout"),
+    }
+}

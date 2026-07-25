@@ -54,6 +54,7 @@ ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 | `Press <Key>` / `Press <Mod>+<Key>` | `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `Space`, arrows, `Home`/`End`, `PageUp`/`PageDown`; chords `Control+V`, `Alt+Shift+Backspace`. `Mod` (aliases `CtrlOrMeta`, `ControlOrMeta`) is the **portable** primary modifier: stored neutrally in the trace and resolved at execution — Meta on macOS, Ctrl elsewhere — so `Press Mod+K` recorded on a Mac replays on Linux CI |
 | `Go to <path-or-URL>` / `Navigate to <path-or-URL>` | relative paths resolve against the flow URL's origin; on SAP this is transaction navigation (`Go to /nVA01`) |
 | `Reload the page` | web |
+| `<trigger>, accepting the "<message>" dialog` / `, dismissing [the "<message>"] dialog` / `, answering the prompt with "<text>"` | a **dialog suffix** on any trigger (`Click`, `Press the … button`, `Right-click`, `Double-click`, `Hover`) that opens a native `alert`/`confirm`/`prompt`/`beforeunload`. See [Native dialogs](#native-dialogs) below. Web only |
 | `Wait until page shows <text> [within <N>s]` | long-bound auto-waiting assert (default 60s) |
 
 There is deliberately **no `Blur` step**. Blur is not something a user does;
@@ -61,6 +62,38 @@ it is a DOM event that a user action causes. `Press Tab` is that action, it
 already works, and it additionally tests what the user really experiences -
 that focus lands somewhere sensible. Blur-triggered form validation is
 exercised with `Press Tab`.
+
+### Native dialogs
+
+A native `window.alert` / `confirm` / `prompt` (and the navigation
+`beforeunload`) blocks JavaScript **synchronously**: nothing else runs until
+it is answered. So it cannot be its own step AFTER the click that opens it -
+by then the page is already frozen waiting. Instead the disposition folds
+into the **triggering action** as a comma suffix, and the engine arms a
+one-shot handler BEFORE dispatching the click:
+
+```yaml
+- Click "Delete", accepting the "Are you sure?" dialog
+- Click "Cancel", dismissing the dialog
+- Press the "Rename" button, answering the prompt with "New name"
+```
+
+`accepting` presses OK, `dismissing` presses Cancel. The message is optional;
+when present it is matched `contains`, and it IS the assertion - a dialog
+whose text does not contain it fails the step. `answering the prompt with
+"<text>"` accepts a `prompt` and supplies the reply; the reply is authored
+input like `Type`, so a `${VAR}` reference resolves at execution and only the
+reference is stored. The suffix works on every trigger - `Click`, `Press the
+… button`, `Right-click`, `Double-click`, `Hover` - and composes with the
+scoped `in the item containing "<anchor>"` form.
+
+The post-condition is verified: a **declared** dialog that does not open
+fails the step (parallel to `Check` verifying its state took). And a
+flow-wide safety net catches the other direction - a step that triggers a
+dialog it did NOT declare is **dismissed and failed** with `an unexpected
+dialog opened: <message>`, never left to hang (the least diagnosable
+failure). Both directions are deterministic. Native dialogs are **web only**;
+a desktop message box is a real window, driven by ordinary steps.
 
 ## Assertions (every app — the shared grammar)
 
