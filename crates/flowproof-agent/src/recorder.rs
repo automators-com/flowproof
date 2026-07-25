@@ -1834,7 +1834,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                 return Err(RecordError::AssertMismatch {
                                     intent: spec_step.intent().to_string(),
                                     expected: describe_capture(name, &captured, *offset),
-                                    actual: "element never appeared".to_string(),
+                                    actual: format!("no element matched [{}]", targeted()),
                                 });
                             }
                             std::thread::sleep(ASSERT_POLL_INTERVAL);
@@ -2107,11 +2107,17 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     let state = |c: bool| if c { "checked" } else { "unchecked" };
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
-                        let seen = driver
-                            .element_exists(targeted())?
-                            .then(|| driver.element_checked(targeted()))
-                            .transpose()?
-                            .flatten();
+                        // Absent and present-but-not-a-checkbox are DIFFERENT
+                        // diagnoses (a drifted anchor versus a mislabelled
+                        // target), so they are read separately and reported
+                        // separately - one message covering both sends the
+                        // reader looking in the wrong place.
+                        let exists = driver.element_exists(targeted())?;
+                        let seen = if exists {
+                            driver.element_checked(targeted())?
+                        } else {
+                            None
+                        };
                         if seen == Some(*checked) {
                             break;
                         }
@@ -2119,9 +2125,14 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                             return Err(RecordError::AssertMismatch {
                                 intent: spec_step.intent().to_string(),
                                 expected: format!("checkbox {}", state(*checked)),
-                                actual: match seen {
-                                    Some(c) => format!("checkbox {}", state(c)),
-                                    None => "not a checkbox, or not found".to_string(),
+                                actual: match (exists, seen) {
+                                    (_, Some(c)) => format!("checkbox {}", state(c)),
+                                    (true, None) => {
+                                        format!("[{}] is not a checkbox", targeted())
+                                    }
+                                    (false, None) => {
+                                        format!("no element matched [{}]", targeted())
+                                    }
                                 },
                             });
                         }
@@ -2551,6 +2562,68 @@ steps:
         let out = dir.join("zero.trace.jsonl");
         let summary = record(&spec, &mut driver, &out).expect("zero-count assert records");
         assert_eq!(summary.steps, 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_checkbox_assert_names_the_selector_when_nothing_matched() {
+        // Absent target: the message must name what failed to resolve, the
+        // way ElementNotFound did before this assertion started waiting.
+        let spec = FlowSpec::parse(
+            "name: Ghost checkbox
+app: web
+url: https://e.test/x
+steps:
+  - assert: the \"id:tos\" checkbox is checked within 1s
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&[]);
+        let dir = std::env::temp_dir().join("flowproof-recorder-checkbox-absent");
+        let err = record(&spec, &mut driver, &dir.join("t.trace.jsonl"))
+            .expect_err("an absent checkbox must fail");
+        match err {
+            RecordError::AssertMismatch { actual, .. } => {
+                assert!(
+                    actual.contains("no element matched") && actual.contains("tos"),
+                    "absent target must name the selector, got: {actual}"
+                );
+            }
+            other => panic!("expected AssertMismatch, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_checkbox_assert_says_so_when_the_target_is_not_a_checkbox() {
+        // Present but not a checkbox is a DIFFERENT diagnosis from absent:
+        // the anchor resolved, it is the wrong kind of element.
+        let spec = FlowSpec::parse(
+            "name: Not a checkbox
+app: web
+url: https://e.test/x
+steps:
+  - assert: the \"id:tos\" checkbox is checked within 1s
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["tos"]);
+        let dir = std::env::temp_dir().join("flowproof-recorder-checkbox-wrongkind");
+        let err = record(&spec, &mut driver, &dir.join("t.trace.jsonl"))
+            .expect_err("a non-checkbox must fail");
+        match err {
+            RecordError::AssertMismatch { actual, .. } => {
+                assert!(
+                    actual.contains("is not a checkbox"),
+                    "a resolved non-checkbox must say so, got: {actual}"
+                );
+                assert!(
+                    !actual.contains("no element matched"),
+                    "must not also claim nothing matched, got: {actual}"
+                );
+            }
+            other => panic!("expected AssertMismatch, got {other:?}"),
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
