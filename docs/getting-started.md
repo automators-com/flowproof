@@ -408,11 +408,19 @@ the `FLOWPROOF_SQL_<NAME>` variable — never a silent pass.
 (YAML note: an `assert:` value cannot *start* with a `"` — that's why
 quoted targets always follow `the `.)
 
-## Authenticated flows: sessions and navigation
+## Test-context seeding: sessions, fixtures, and navigation
 
-Real app suites don't walk the login UI in every test — they inject a
-session and start on the page under test (Playwright's storageState
-pattern). Declare it in the spec; it's applied **before the page loads**
+Real app suites don't rebuild their starting state through the UI in
+every test: they inject it and start on the page under test. That
+covers two idioms, and the `session:` block handles both:
+
+- **an authenticated session** (Playwright's storageState pattern), so
+  a flow skips the login UI;
+- **an app-state fixture** (a pre-filled cart, a chosen project, a
+  dismissed banner), so a flow skips the setup clicks that are not what
+  it is testing.
+
+Declare either in the spec; it's applied **before the page loads**
 (cookies via CDP, localStorage before any page script runs), travels in
 the trace with `${VAR}` references intact, and is re-applied identically
 at every replay:
@@ -432,6 +440,32 @@ steps:
   - Go to /settings                    # same-origin navigation mid-flow
   - Reload the page
 ```
+
+Fixture values that are not secrets can be plain literals. A checkout
+flow that needs an item already in the cart seeds it directly instead of
+clicking through the catalog first:
+
+```yaml
+name: Checkout with a seeded cart
+app: web
+url: http://localhost:3000/cart.html
+session:
+  cookies:
+    - name: session-username
+      value: standard_user             # a plain literal is fine here
+  local_storage:
+    cart-contents: "[4]"               # the fixture the flow starts from
+steps:
+  - assert: the "css:.cart_item" appears 1 time
+  - Press the "Checkout" button
+```
+
+Two notes on values. Real credentials and tokens always go through
+`${VAR}` references: they resolve when the session is applied and the
+trace stores only the reference, never the value. And seeded `${VAR}`s
+are not automatically part of an `assert_no_secret_leak` scan; a flow
+that seeds `${SESSION_TOKEN}` and wants leak coverage for it must list
+it in the assertion explicitly.
 
 `Go to` takes a path (resolved against the flow URL's origin) or a full
 URL.
