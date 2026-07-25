@@ -831,7 +831,9 @@ fn check_egress(
 
 /// The short containment tag stored in the trace lane (the parenthetical of
 /// the report line): `enforced (linux seccomp)` or `not contained (<reason>)`.
-fn containment_tag(containment: &Containment) -> String {
+/// The run record stores the SAME string, so the trace and the artifact an
+/// auditor reads cannot describe the run differently.
+pub fn containment_tag(containment: &Containment) -> String {
     containment
         .report_line()
         .strip_prefix("egress containment: ")

@@ -135,6 +135,14 @@ pub struct ControlRecord {
     /// Which control lanes the flow asserted (`egress`, `secret_leak`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lanes: Vec<String>,
+    /// The containment tier THIS run actually ran under, for a flow that
+    /// engages egress: `enforced (linux seccomp)`, or the honest reason it
+    /// was not. Without it, an `egress` lane on a host where containment
+    /// does not exist reads exactly like one that was enforced and
+    /// certified - the record would imply a claim the run never made. It is
+    /// absent for a flow that engages no egress, which claims no tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub containment: Option<String>,
     pub evidence: Evidence,
     /// The `${VAR}` names an `assert_no_secret_leak` flow checked - NAMES,
     /// never values.
@@ -412,6 +420,7 @@ mod tests {
                 verdict,
                 reason: None,
                 lanes: vec![],
+                containment: None,
                 evidence: Evidence {
                     trace: format!("flows/{id}.trace.jsonl"),
                     blocked: vec![],
@@ -609,6 +618,7 @@ mod tests {
                     verdict: ControlVerdict::Pass,
                     reason: None,
                     lanes: vec!["secret_leak".into()],
+                    containment: None,
                     evidence: Evidence {
                         trace: "flows/no-leak.trace.jsonl".into(),
                         blocked: vec![],

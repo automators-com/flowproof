@@ -526,7 +526,15 @@ steps:
   - assert_no_egress               # certify: nothing undeclared was reached
 ```
 
-`allow_egress` names the destinations the agent may reach. An entry is
+`allow_egress` names the destinations the agent may reach ON LINUX. Say
+that part out loud: the enforcement mechanism is Linux-only, so on macOS and
+Windows the declaration is inert - it restricts nothing, and the agent
+reaches whatever it likes. A flow that declares `allow_egress` WITHOUT an
+`assert_no_egress` step therefore still passes on those hosts, which is why
+the run record now carries the containment tier the run actually ran under
+(see below): the artifact has to distinguish "contained and certified" from
+"containment was not available here", because the verdict alone cannot. An
+entry is
 `host:port`, `ip:port`, `cidr:port`, or a bare `host`/`ip` for any port;
 `${VAR}` references resolve at execution and are stored UNRESOLVED (a
 resolved allow-list would leak the destination into the trace). Loopback
@@ -543,7 +551,11 @@ vacuously. Containment is enforced LIVE in both record and replay, so the two
 phases share a denial environment and reproduce the same trajectory - a
 determinism requirement, not an add-on.
 
-Every agent run prints its containment tier, on every platform:
+A single-spec agent run prints its containment tier on every platform, and
+every run that engages egress RECORDS it in the run record's control row
+(`containment:`), where `flowproof audit` surfaces it. The printed line is
+stdout on the single-spec path only; the recorded field is the one to read
+in CI, and it is the one an auditor should ask for:
 
 | Platform / driver | Tier |
 |---|---|
@@ -551,6 +563,25 @@ Every agent run prints its containment tier, on every platform:
 | macOS / Windows, `command:` | not contained (mechanism is Linux-only) |
 | any `url:` service | not contained (flowproof did not start it, so it cannot contain it) |
 | kernel < 5.6 | not contained (no seccomp user-notification / `pidfd_getfd`) |
+
+The tier is recorded, not just printed. A control-bearing flow that engages
+egress writes it into `.flowproof/runs/<id>/report.json`:
+
+```yaml
+control:
+  id: sec.egress.declared
+  verdict: pass
+  lanes: [egress]                       # what the flow ASSERTED
+  containment: not contained (egress containment is Linux-only; this platform is not contained)
+```
+
+`lanes` says what was asserted; `containment` says what was ENFORCED. A pass
+on a host without containment is still a pass of the flow's other
+assertions, but it is no longer indistinguishable from a certified one.
+Blocked destinations travel in `evidence.blocked` only when THIS run was
+contained: they are read from the recorded trace, so a Linux recording
+replayed on a host without containment would otherwise present destinations
+another machine blocked, on another day, as evidence for an uncontained run.
 
 **How it works (Linux).** The child installs the filter in `pre_exec`
 (`no_new_privs` then `seccomp(SECCOMP_SET_MODE_FILTER,
