@@ -58,6 +58,18 @@ See [docs/authoring.md](docs/authoring.md#security-controls) and
   the correct element. Only those three types: text-like inputs hold user data
   in `value`, not a name, and are still never matched by it.
 
+### Added
+
+- **`assert_api` counts array elements: `count` and `count_at_least`.** Pair
+  either with `body_json` to assert how many elements are in the collection at
+  that path (`body_json: results` + `count: 5`, or `count_at_least: 2` for a
+  minimum). Previously the only way to ask "how many rows came back" was to
+  assert that some index exists (`results.1.id`), which cannot express
+  "exactly N" and forces you to name a leaf key that element happens to carry;
+  11 of ~30 assertions in a migrated real-world API suite are of this shape.
+  A non-array at the path fails naming the actual kind, and a wrong count
+  reports both found and wanted.
+
 ### Changed
 
 - **Breaking: a failing `assert_api` no longer re-sends a write.** Auto-wait
