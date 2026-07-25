@@ -1464,6 +1464,29 @@ impl AppDriver for WebAppDriver {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_default())
     }
+    fn probe_cookie(&mut self, name: &str) -> Result<flowproof_driver::CookieProbe, DriverError> {
+        use flowproof_driver::{CookieFacts, CookieProbe};
+        let cookies = self
+            .tab()?
+            .get_cookies()
+            .map_err(|e| web_err("reading cookies", e))?;
+        match cookies.iter().find(|c| c.name == name) {
+            Some(cookie) => Ok(CookieProbe::Found(CookieFacts {
+                http_only: cookie.http_only,
+                secure: cookie.secure,
+                // Session cookies report no expiry; anything with one
+                // outlives the browser session.
+                persistent: !cookie.session,
+            })),
+            // Names only. A cookie jar is full of credentials, and the
+            // point of naming what IS there is to fix a typo, not to dump
+            // the jar.
+            None => Ok(CookieProbe::Absent {
+                present: cookies.iter().map(|c| c.name.clone()).collect(),
+            }),
+        }
+    }
+
     fn page_title(&mut self) -> Result<String, DriverError> {
         let value = self
             .tab()?
