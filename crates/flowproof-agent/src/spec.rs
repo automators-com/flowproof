@@ -1296,6 +1296,14 @@ pub struct ApiAssertSpec {
     /// Auto-wait bound override (default 10s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
+    /// The path from `body_json` must resolve to an array with exactly this
+    /// many elements. Requires `body_json`; mutually exclusive with `equals`
+    /// and `count_at_least`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+    /// Like `count`, but the array must hold AT LEAST this many elements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count_at_least: Option<u64>,
     /// Override the method-derived retry policy. Auto-wait re-sends a
     /// failing probe until the expectation holds, which is right for a read
     /// and wrong for a write (the probe IS the mutation), so only GET and

@@ -405,6 +405,11 @@ the one a suite needs.
     status: 200
     body_json: results.0.balance # a dotted path into the JSON response
     equals: 150953               # the leaf at that path must equal this
+- assert_api:                    # how many elements are in a collection
+    request: GET ${API}/testData/users
+    status: 200
+    body_json: results           # the path must resolve to an ARRAY
+    count: 5                     # exactly 5 elements (count_at_least: 2 = a minimum)
 - assert_api:                    # response-header assertion
     request: GET ${API}/testData/users
     status: 200
@@ -471,6 +476,16 @@ trace: it exists solely inside the comparison, re-fetched on both record and
 replay. The failure modes are soft: an absent header reports "response has no
 '<name>' header (status <code>)", and a value mismatch reports "header
 '<name>' is '<actual>', expected <equals|contains> '<want>' (status <code>)".
+
+`count` (exactly N) and `count_at_least` (a minimum) ask how many elements
+are in the array at `body_json`. Either requires `body_json`, at most one of
+the two may appear, and neither pairs with `equals` (a count needs an array,
+`equals` needs a scalar leaf) - all three are parse-time errors. When the
+path resolves to something other than an array, the failure names what was
+actually there: "path 'page' is an object, count requires an array (status
+200)". A wrong count reports both sides: "path 'results' has 3 elements,
+expected exactly 9 (status 200)". Both are soft failures, so on a `GET` they
+auto-wait: "poll until the collection has N rows" is a real pattern.
 
 ### Retries: reads are polled, writes are sent once
 

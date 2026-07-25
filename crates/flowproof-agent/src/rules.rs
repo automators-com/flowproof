@@ -297,6 +297,10 @@ pub enum ResolvedAction {
         header_equals: Option<String>,
         /// Expected header substring; may carry a raw `${VAR}` ref.
         header_contains: Option<String>,
+        /// Exact element count for the array at `body_json`.
+        count: Option<u64>,
+        /// Minimum element count for the array at `body_json`.
+        count_at_least: Option<u64>,
         /// Override the method-derived retry policy (see `oob::is_retryable`).
         retry: Option<bool>,
         timeout_ms: u64,
@@ -589,6 +593,33 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                     ));
                 }
             }
+            // A count asks how many elements are at `body_json`; without a
+            // path there is nothing to count (mirrors `equals`).
+            if (assert_api.count.is_some() || assert_api.count_at_least.is_some())
+                && assert_api.body_json.is_none()
+            {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api count/count_at_least requires body_json (the path to the array)",
+                ));
+            }
+            // Exactly-N and at-least-N are one question asked two ways.
+            if assert_api.count.is_some() && assert_api.count_at_least.is_some() {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api sets at most one of count/count_at_least",
+                ));
+            }
+            // `equals` wants a scalar leaf, a count wants an array: asking for
+            // both at one path is a contradiction, not a refinement.
+            if (assert_api.count.is_some() || assert_api.count_at_least.is_some())
+                && assert_api.equals.is_some()
+            {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    "assert_api count/count_at_least cannot pair with equals (a count needs an array, equals needs a scalar leaf)",
+                ));
+            }
             // `header_equals`/`header_contains` are response-side checks against
             // the header named by `header`; without a name there is nothing to
             // match (mirrors `equals` requiring `body_json`).
@@ -619,6 +650,8 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                 header: assert_api.header.clone(),
                 header_equals: assert_api.header_equals.clone(),
                 header_contains: assert_api.header_contains.clone(),
+                count: assert_api.count,
+                count_at_least: assert_api.count_at_least,
                 retry: assert_api.retry,
                 timeout_ms: assert_api
                     .timeout_seconds
@@ -2526,6 +2559,48 @@ mod tests {
         assert!(
             err.to_string().contains("header"),
             "names the missing field: {err}"
+        );
+    }
+
+    #[test]
+    fn count_without_body_json_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec =
+            serde_yaml::from_str("request: GET ${API}/x\ncount: 3\n").expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("count without body_json must fail early");
+        assert!(
+            err.to_string()
+                .contains("count/count_at_least requires body_json"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn count_and_count_at_least_together_are_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec = serde_yaml::from_str(
+            "request: GET ${API}/x\nbody_json: results\ncount: 3\ncount_at_least: 1\n",
+        )
+        .expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("one question, two spellings");
+        assert!(
+            err.to_string()
+                .contains("at most one of count/count_at_least"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn count_with_equals_is_a_spec_error() {
+        let spec: crate::spec::ApiAssertSpec = serde_yaml::from_str(
+            "request: GET ${API}/x\nbody_json: results\ncount: 3\nequals: \"x\"\n",
+        )
+        .expect("parses");
+        let err = resolve_step("web", &SpecStep::AssertApi { assert_api: spec })
+            .expect_err("a count needs an array, equals a scalar");
+        assert!(
+            err.to_string().contains("cannot pair with equals"),
+            "got: {err:?}"
         );
     }
 
