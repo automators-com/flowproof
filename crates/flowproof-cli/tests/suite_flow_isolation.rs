@@ -8,8 +8,18 @@
 
 use std::path::PathBuf;
 
+/// A temp dir unique to THIS process. The name used to be fixed, which
+/// made it shared state across test-binary invocations: a lingering
+/// process from an earlier run (a hook subprocess, the server thread)
+/// could execute its own end-of-test cleanup on the same path and delete
+/// the directory out from under a later run, so `after_each` failed with
+/// "No such file or directory" and the run looked like a hook bug. The
+/// pid scopes the path to one process; each test still gets its own name.
 fn suite_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("flowproof-flow-isolation-{name}"));
+    let dir = std::env::temp_dir().join(format!(
+        "flowproof-flow-isolation-{name}-{}",
+        std::process::id()
+    ));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).expect("suite dir");
     dir
