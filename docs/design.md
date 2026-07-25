@@ -172,3 +172,29 @@ baseline. The allowlist is the small set of computed values that read like
 semantic state (is this amount red? is this heading uppercased?) rather
 than like layout arithmetic. A property outside it is a parse error that
 names the allowed set and points at those alternatives.
+
+### Drag-and-drop: deferred, not rejected
+
+`Drag "<source>" onto "<target>"` is a real gap with unmet prerequisites, not
+a puncture like `page.evaluate`. Two house rules block the naive form. First,
+there is no single honest MECHANISM: native HTML5 drag-and-drop responds to
+synthetic `dragstart`/`drop` events, mouse-based libraries (SortableJS,
+react-dnd's HTML5 backend) listen to `mousedown`/`mousemove`/`mouseup` with
+movement thresholds and rAF timing, and CDP's own drag interception is the
+historically flaky path in headless Chrome. Whichever family an implementation
+picks, it silently no-ops on the others - a release-without-effect false green,
+the exact failure the eval-rejection philosophy above exists to name and
+refuse. Second, there is no intrinsic VERIFY: a drop's effect is app-defined (a
+DOM reorder, a data mutation that re-renders identically, a file drop with no
+visible move), so nothing app-independent proves the drag was not a no-op, and
+"events dispatched" is not a verification (`Check` and `Scroll` both verify the
+state actually took).
+
+What would have to exist first: (1) the grammar `Drag [the [2nd ]]"<source>"
+onto [the [2nd ]]"<target>"` is a COMPILE error unless the following step
+asserts the drop's outcome, so a silent no-op turns red at the assert instead
+of green; (2) one mechanism proven deterministic in headless CI against all
+three families (a trusted CDP input stream with drag interception, Playwright's
+approach), or a per-flow declared `browser: dnd: html5|mouse` if that flakes,
+never a guess; (3) same-frame only at first, since cross-frame drag is where
+CDP interception breaks. Until those hold, a Drag step would be worse than none.
