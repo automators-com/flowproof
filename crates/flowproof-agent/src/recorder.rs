@@ -493,6 +493,17 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 }
                 TextMatch::UrlEquals => serde_json::json!({ "url_equals": expected }),
                 TextMatch::UrlContains => serde_json::json!({ "url_contains": expected }),
+                // The cookie NAME travels, and which FACT was asserted.
+                // The value does not exist here by construction.
+                TextMatch::Cookie(fact) => serde_json::json!({
+                    "cookie": expected,
+                    "cookie_fact": match fact {
+                        crate::rules::CookieFact::Exists => "exists",
+                        crate::rules::CookieFact::HttpOnly => "http_only",
+                        crate::rules::CookieFact::Secure => "secure",
+                        crate::rules::CookieFact::Persistent => "persistent",
+                    },
+                }),
                 TextMatch::Empty(want_empty) => serde_json::json!({ "value_empty": want_empty }),
             };
             expect["timeout_ms"] = serde_json::json!(timeout_ms);
@@ -1485,6 +1496,9 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
         // assertion that holds while recording must hold when replayed.
         TextMatch::UrlEquals => flowproof_driver::url_matches(expected, true, actual),
         TextMatch::UrlContains => flowproof_driver::url_matches(expected, false, actual),
+        // A cookie fact is not a reading of any text, so it never reaches
+        // the text comparison: the recorder probes the cookie jar directly.
+        TextMatch::Cookie(_) => false,
         TextMatch::Empty(want_empty) => actual.trim().is_empty() == want_empty,
     }
 }
@@ -1987,18 +2001,52 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     let wanted = flowproof_trace::secret::resolve_refs(expected)?;
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
-                        let actual =
-                            if matches!(matcher, TextMatch::UrlEquals | TextMatch::UrlContains) {
-                                // The URL is a different reading of the surface,
-                                // not a different target: same poll, same bound.
-                                Some(driver.current_url()?)
-                            } else if selector.is_none() {
-                                Some(driver.surface_text()?)
-                            } else if driver.element_exists(targeted())? {
-                                Some(driver.read_text(targeted())?)
-                            } else {
-                                None
+                        let actual = if let TextMatch::Cookie(fact) = matcher {
+                            // A cookie is not text: probe the jar, judge
+                            // with the shared verdict, and keep polling
+                            // while it is still landing.
+                            let fact = match fact {
+                                crate::rules::CookieFact::Exists => "exists",
+                                crate::rules::CookieFact::HttpOnly => "http_only",
+                                crate::rules::CookieFact::Secure => "secure",
+                                crate::rules::CookieFact::Persistent => "persistent",
                             };
+                            let probe = driver.probe_cookie(&wanted)?;
+                            match flowproof_driver::cookie_verdict(&wanted, fact, &probe) {
+                                Ok(()) => {
+                                    if let Some(warning) =
+                                        flowproof_driver::secure_over_http_warning(
+                                            fact,
+                                            &driver.current_url().unwrap_or_default(),
+                                        )
+                                    {
+                                        eprintln!("{warning}");
+                                    }
+                                    break;
+                                }
+                                Err(reason) => {
+                                    if std::time::Instant::now() >= deadline {
+                                        return Err(RecordError::AssertMismatch {
+                                            intent: spec_step.intent().to_string(),
+                                            expected: format!("cookie '{wanted}'"),
+                                            actual: reason,
+                                        });
+                                    }
+                                    std::thread::sleep(ASSERT_POLL_INTERVAL);
+                                    continue;
+                                }
+                            }
+                        } else if matches!(matcher, TextMatch::UrlEquals | TextMatch::UrlContains) {
+                            // The URL is a different reading of the surface,
+                            // not a different target: same poll, same bound.
+                            Some(driver.current_url()?)
+                        } else if selector.is_none() {
+                            Some(driver.surface_text()?)
+                        } else if driver.element_exists(targeted())? {
+                            Some(driver.read_text(targeted())?)
+                        } else {
+                            None
+                        };
                         if let Some(actual) = &actual {
                             if assert_holds(actual, &wanted, *matcher) {
                                 break;

@@ -303,6 +303,33 @@ pub enum ResolvedAction {
 
 /// How an [`ResolvedAction::AssertText`] expectation compares against the
 /// element's live text.
+/// Which security fact about a cookie an assertion checks. Value is NOT a
+/// member and never will be: see `TextMatch::Cookie`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CookieFact {
+    /// The cookie is present at all.
+    Exists,
+    /// Not readable by page scripts - the control that stops an XSS from
+    /// exfiltrating a session.
+    HttpOnly,
+    /// Only sent over TLS.
+    Secure,
+    /// Carries an explicit expiry, so it outlives the browser session.
+    Persistent,
+}
+
+impl CookieFact {
+    /// How the fact reads in a failure message.
+    pub fn label(self) -> &'static str {
+        match self {
+            CookieFact::Exists => "present",
+            CookieFact::HttpOnly => "httpOnly",
+            CookieFact::Secure => "secure",
+            CookieFact::Persistent => "persistent",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextMatch {
     /// Substring present.
@@ -321,6 +348,12 @@ pub enum TextMatch {
     UrlEquals,
     /// The surface's URL contains the expectation - `page url contains x`.
     UrlContains,
+    /// A cookie FACT - `cookie "session" is httpOnly`. The expectation
+    /// carries the cookie NAME; this carries which fact. There is
+    /// deliberately no value form: a session cookie's value is a
+    /// credential, and a fact that cannot be compared cannot leak into a
+    /// trace or a failure message.
+    Cookie(CookieFact),
     /// The target's trimmed visible text (or input value) is empty
     /// (`true`) or non-empty (`false`). A first-class predicate: `shows ""`
     /// cannot express it - empty expected text is rejected and
@@ -1138,6 +1171,50 @@ mod assertions {
                 target: Target::Surface,
                 expected: expected.to_string(),
                 matcher: TextMatch::UrlContains,
+                timeout_ms,
+            }]);
+        }
+
+        // `cookie "<name>" exists|is httpOnly|is secure|is persistent`.
+        // Surface-scoped like the url pair, and auto-waiting for the same
+        // reason: a cookie lands with a login RESPONSE, which races the
+        // navigation the step just made.
+        if let Some(rest) = strip_prefix_ci(trimmed, "cookie ") {
+            let quoted = rest.trim_start().strip_prefix('"').ok_or_else(|| {
+                unresolvable(
+                    trimmed,
+                    "a cookie must be named: `cookie \"<name>\" is httpOnly`",
+                )
+            })?;
+            let (name, tail) = quoted_label(quoted)
+                .ok_or_else(|| unresolvable(trimmed, "unterminated cookie name"))?;
+            let tail = tail.trim();
+            let fact = if tail.eq_ignore_ascii_case("exists") {
+                CookieFact::Exists
+            } else if tail.eq_ignore_ascii_case("is httponly") {
+                CookieFact::HttpOnly
+            } else if tail.eq_ignore_ascii_case("is secure") {
+                CookieFact::Secure
+            } else if tail.eq_ignore_ascii_case("is persistent") {
+                CookieFact::Persistent
+            } else {
+                // Naming the forms matters more than usual here: the one
+                // people reach for first is a VALUE comparison, which this
+                // grammar refuses on purpose.
+                return Err(unresolvable(
+                    trimmed,
+                    "expected `cookie \"<name>\" exists`, `is httpOnly`, `is secure`, or \
+                     `is persistent`. A cookie's VALUE cannot be asserted: it is a \
+                     credential, and flowproof never puts one in a trace or a failure",
+                ));
+            };
+            if name.trim().is_empty() {
+                return Err(unresolvable(trimmed, "no cookie name"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: name.to_string(),
+                matcher: TextMatch::Cookie(fact),
                 timeout_ms,
             }]);
         }
@@ -4181,6 +4258,70 @@ mod role_noun_tail_tests {
     fn a_noun_without_a_state_tail_is_still_an_error() {
         let err = assert_step(r#"the "Username" field is huge"#).expect_err("must not resolve");
         assert!(err.to_string().contains("role noun"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod cookie_assertion_tests {
+    use super::*;
+
+    fn assert_step(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: text.to_string(),
+            },
+        )
+    }
+
+    #[test]
+    fn the_four_facts_parse() {
+        for (text, want) in [
+            (r#"cookie "sid" exists"#, CookieFact::Exists),
+            (r#"cookie "sid" is httpOnly"#, CookieFact::HttpOnly),
+            (r#"cookie "sid" is secure"#, CookieFact::Secure),
+            (r#"cookie "sid" is persistent"#, CookieFact::Persistent),
+        ] {
+            let got = assert_step(text).unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [ResolvedAction::AssertText {
+                        target: Target::Surface,
+                        matcher: TextMatch::Cookie(fact),
+                        expected,
+                        ..
+                    }] if *fact == want && expected == "sid"
+                ),
+                "{text} parsed as {got:?}"
+            );
+        }
+        // The flag spelling is not case-sensitive, like the rest of the grammar.
+        assert!(assert_step(r#"cookie "sid" is HTTPONLY"#).is_ok());
+    }
+
+    /// The whole point of the design: a cookie's VALUE is a credential, so
+    /// there is no form that can compare one. The refusal has to SAY that,
+    /// because value comparison is the first thing an author reaches for.
+    #[test]
+    fn a_value_assertion_is_refused_and_says_why() {
+        for text in [
+            r#"cookie "sid" is abc123"#,
+            r#"cookie "sid" contains abc123"#,
+            r#"cookie "sid" is ${SESSION}"#,
+        ] {
+            let err = assert_step(text).expect_err("a cookie value cannot be asserted");
+            assert!(
+                err.to_string().contains("credential"),
+                "{text} must be refused as a credential: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unnamed_cookie_is_a_parse_error() {
+        let err = assert_step("cookie exists").expect_err("a cookie must be named");
+        assert!(err.to_string().contains("must be named"), "{err}");
     }
 }
 
