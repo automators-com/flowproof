@@ -561,6 +561,80 @@ fn url_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
 /// Mirrors [`check_text_expectation`]: transport faults are misses, a
 /// budget that expires with no reading at all is a driver error, and the
 /// message keeps the RAW expectation so a `${VAR}` never leaks.
+/// `title_equals` / `title_contains`, the document-title siblings of the url
+/// pair. `true` means exact.
+fn title_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
+    expect
+        .get("title_equals")
+        .and_then(|v| v.as_str())
+        .map(|e| (e, true))
+        .or_else(|| {
+            expect
+                .get("title_contains")
+                .and_then(|v| v.as_str())
+                .map(|e| (e, false))
+        })
+}
+
+/// Judge a page-title assertion. Auto-waits like the url pair, and for the
+/// same reason: an SPA sets `document.title` after the route commits, so a
+/// single read would be racy by construction. An empty title is reported as
+/// empty rather than as a bare '' the reader has to decode.
+fn check_title_expectation<F>(
+    raw: &str,
+    exact: bool,
+    deadline: Instant,
+    mut read: F,
+) -> Result<(Result<(), String>, Option<usize>), ReplayError>
+where
+    F: FnMut() -> Result<String, flowproof_driver::DriverError>,
+{
+    let expected = match flowproof_trace::secret::resolve_refs(raw) {
+        Ok(expected) => expected,
+        Err(e) => return Ok((Err(e.to_string()), None)),
+    };
+    let mut fault: Option<flowproof_driver::DriverError> = None;
+    let mut last: Option<String> = None;
+    loop {
+        if let Some(title) = tolerate(read(), &mut fault)? {
+            let hit = if exact {
+                title.trim() == expected.trim()
+            } else {
+                flowproof_driver::text_contains(&title, &expected)
+            };
+            if hit {
+                return Ok((Ok(()), None));
+            }
+            last = Some(title);
+        }
+        if Instant::now() >= deadline {
+            let Some(title) = last else {
+                return Err(exhausted(fault));
+            };
+            let verb = if exact {
+                "page title"
+            } else {
+                "page title containing"
+            };
+            if title.trim().is_empty() {
+                return Ok((
+                    Err(format!(
+                        "expected {verb} '{raw}', but the page title is empty"
+                    )),
+                    None,
+                ));
+            }
+            let shown = if flowproof_trace::secret::has_refs(raw) {
+                "<masked>".to_string()
+            } else {
+                title
+            };
+            return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), None));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn check_url_expectation<F>(
     expect: &serde_json::Value,
     raw: &str,
@@ -687,6 +761,11 @@ fn check_assertion<D: AppDriver>(
                 return check_url_expectation(expect, raw, exact, deadline, || {
                     driver.current_url()
                 });
+            }
+            // The title is another reading of the same surface, on the same
+            // poll and the same recorded bound.
+            if let Some((raw, exact)) = title_expectation(expect) {
+                return check_title_expectation(raw, exact, deadline, || driver.page_title());
             }
             if expect.get("scope").and_then(|v| v.as_str()) == Some("surface") {
                 return check_text_expectation(expect, deadline, None, || driver.surface_text());

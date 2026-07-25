@@ -1427,6 +1427,16 @@ impl AppDriver for WebAppDriver {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_default())
     }
+    fn page_title(&mut self) -> Result<String, DriverError> {
+        let value = self
+            .tab()?
+            .evaluate("document.title", false)
+            .map_err(|e| web_err("reading page title", e))?;
+        Ok(value
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
+    }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
         // Visible text PLUS the accessible names of visible elements:

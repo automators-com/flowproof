@@ -321,6 +321,12 @@ pub enum TextMatch {
     UrlEquals,
     /// The surface's URL contains the expectation - `page url contains x`.
     UrlContains,
+    /// The surface's document title equals the expectation -
+    /// `page title is Settings`. Web-only: a desktop window has a caption,
+    /// which is a different property under a different (future) phrase.
+    TitleEquals,
+    /// The surface's document title contains the expectation.
+    TitleContains,
     /// The target's trimmed visible text (or input value) is empty
     /// (`true`) or non-empty (`false`). A first-class predicate: `shows ""`
     /// cannot express it - empty expected text is rejected and
@@ -1142,6 +1148,35 @@ mod assertions {
             }]);
         }
 
+        // `page title is <expected>` / `page title contains <text>`, the
+        // document-title siblings of the url pair. They auto-wait for the
+        // same reason: an SPA sets `document.title` after the route
+        // commits, so a single read would be racy by construction.
+        if let Some(rest) = strip_prefix_ci(trimmed, "page title is ") {
+            let expected = rest.trim();
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected title"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: expected.to_string(),
+                matcher: TextMatch::TitleEquals,
+                timeout_ms,
+            }]);
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "page title contains ") {
+            let expected = rest.trim();
+            if expected.is_empty() {
+                return Err(unresolvable(trimmed, "no expected title"));
+            }
+            return Ok(vec![ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: expected.to_string(),
+                matcher: TextMatch::TitleContains,
+                timeout_ms,
+            }]);
+        }
+
         if let Some(rest) = strip_prefix_ci(trimmed, "page shows ") {
             let (expected, count) = split_count(rest.trim());
             if expected.is_empty() {
@@ -1475,7 +1510,8 @@ mod assertions {
         Err(unresolvable(
             trimmed,
             "expected '[the ]page shows <text>[ N times]', '[the ]page url is|contains \
-             <url>', 'the \"<target>\" checkbox is [not] checked', \
+             <url>', '[the ]page title is|contains <title>', \
+             'the \"<target>\" checkbox is [not] checked', \
              '[the ]page does not show \
              <text>', 'the \"<label>\" field contains <text>', 'the \"<target>\" shows \
              <text>', 'the \"<target>\" is [not] visible', 'the \"<target>\" is \
@@ -4181,6 +4217,75 @@ mod role_noun_tail_tests {
     fn a_noun_without_a_state_tail_is_still_an_error() {
         let err = assert_step(r#"the "Username" field is huge"#).expect_err("must not resolve");
         assert!(err.to_string().contains("role noun"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod page_title_tests {
+    use super::*;
+
+    fn assert_step(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
+        resolve_step(
+            "web",
+            &SpecStep::Assert {
+                assert: text.to_string(),
+            },
+        )
+    }
+
+    #[test]
+    fn the_title_pair_parses_as_a_surface_assertion() {
+        assert!(matches!(
+            assert_step("page title is Settings").as_deref(),
+            Ok([ResolvedAction::AssertText {
+                target: Target::Surface,
+                matcher: TextMatch::TitleEquals,
+                expected,
+                ..
+            }]) if expected == "Settings"
+        ));
+        assert!(matches!(
+            assert_step("page title contains Strapi").as_deref(),
+            Ok([ResolvedAction::AssertText {
+                target: Target::Surface,
+                matcher: TextMatch::TitleContains,
+                ..
+            }])
+        ));
+    }
+
+    /// A title runs to the end of the line, spaces and all - titles are
+    /// human-facing strings, not locators.
+    #[test]
+    fn a_title_may_contain_spaces_and_punctuation() {
+        assert!(matches!(
+            assert_step("page title is Settings - Strapi Admin").as_deref(),
+            Ok([ResolvedAction::AssertText { expected, .. }])
+                if expected == "Settings - Strapi Admin"
+        ));
+    }
+
+    /// An empty title cannot assert anything, so it is rejected rather than
+    /// matching whatever the page happens to have. The step is trimmed
+    /// before parsing, so this lands on the near-miss - which names the
+    /// form, exactly as it should.
+    #[test]
+    fn an_empty_expected_title_is_a_parse_error() {
+        let err = assert_step("page title is ").expect_err("an empty title asserts nothing");
+        assert!(
+            err.to_string().contains("page title is|contains"),
+            "the error must name the form: {err}"
+        );
+        // Same story for the same reason as the url sibling.
+        assert!(assert_step("page url is ").is_err());
+    }
+
+    /// The near-miss message must name the form, or the grammar is
+    /// undiscoverable from the error a typo produces.
+    #[test]
+    fn the_near_miss_names_the_title_form() {
+        let err = assert_step("page titel is Settings").expect_err("a typo is a near miss");
+        assert!(err.to_string().contains("page title is|contains"), "{err}");
     }
 }
 

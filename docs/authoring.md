@@ -117,6 +117,8 @@ append `within <N>s` to any form to change the bound.
 | `page does not show <text>` | waits for it to be GONE |
 | `page url is <expected>` | the surface's URL. A `<expected>` starting with `/` compares the PATHNAME exactly, including the query only when `<expected>` carries a `?` and the fragment only when it carries a `#` (so `/orders` ignores `?page=2`); one containing `://` compares the whole URL exactly. Web flows only: a window or an OCR frame has no URL, and the error says so |
 | `page url contains <text>` | substring of the whole URL |
+| `page title is <expected>` | the document title, compared whole (trimmed). Auto-waits like `page url`, because an SPA sets `document.title` after the route commits. Web flows only: a desktop window has a window CAPTION, which is a different property, and the error says so |
+| `page title contains <text>` | substring of the document title |
 | `the [2nd ]"<label>" field contains <text>` | input VALUE, by label |
 | `the <id> field contains <text>` | input VALUE, by native id |
 | `the [2nd ]"<target>" shows <text>` | element-scoped substring |
@@ -159,6 +161,8 @@ assertion, because an SPA redirect lands asynchronously:
 ```yaml
 - assert: page url is /signin
 - assert: page url contains checkout
+- assert: page title is Orders - Acme Admin
+- assert: page title contains Acme
 - assert: page url is /orders?page=2 within 15s
 ```
 
