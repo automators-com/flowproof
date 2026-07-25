@@ -2,13 +2,29 @@
 
 [![CI](https://github.com/automators-com/flowproof/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/automators-com/flowproof/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/flowproof)](https://pypi.org/project/flowproof/)
+[![npm](https://img.shields.io/npm/v/flowproof)](https://www.npmjs.com/package/flowproof)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-A generic open-source automation framework for the AI-agent era:
-**automated testing and agentic process automation** across web, desktop,
-and Citrix. Agents author flows from natural-language intent; a
-deterministic engine executes them. Humans shift from authoring to
-reviewing.
+Test an AI agent the way you test everything else: run it once, keep the
+recording, and assert against it from then on.
+
+flowproof sits at the model boundary. It captures your agent's real run -
+every model request and every tool-call decision it made - into a trace,
+then serves that recording back on later runs. Replay makes **zero LLM
+calls**, so a suite that used to cost money on every commit and flake on
+sampling becomes free and repeatable.
+
+What you assert is behaviour rather than prose: which tools were called,
+with which arguments, in which order, and which were not. Record one
+adversarial model response and you can prove from then on, at no per-run
+cost, that your agent refused to act on it.
+
+Flows are plain YAML - short enough for an agent to write, readable enough
+for a human to review in a diff. The same engine also drives web, desktop
+and Citrix, so the interface a workflow ends in is covered by the same
+trace.
+
+Product page: [automators.ai/flowproof](https://automators.ai/flowproof)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lineage-dark.svg">
@@ -43,7 +59,12 @@ and maintain the automation, and what matters is that their output is
 ## Quick start
 
 ```bash
-pip install flowproof
+npx flowproof --version      # no install, no Python
+```
+
+```bash
+npm install --save-dev flowproof
+# or: pip install flowproof
 ```
 
 Write a spec — natural-language steps, no selectors:

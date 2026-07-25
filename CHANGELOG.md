@@ -4,6 +4,49 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## 0.6.1
+
+### Fixed
+
+- **A drifted tool-call argument now names the path that moved.** Replay
+  compared arguments byte-exactly but reported only the tool NAMES, so an
+  argument-only change printed two identical lists and told the reader
+  nothing on the exact failure the comparison exists to catch. It now reads
+  `create_booking.flight.id: recorded KQ311, replayed KQ999`. A different
+  tool still reports the names, and arguments that are not valid JSON report
+  the whole payload rather than a precise-looking half-answer.
+- **The npm darwin-x64 binary is cross-compiled from Apple Silicon.** It
+  previously needed the `macos-13` Intel runner, which stopped being
+  schedulable: a publish sat queued on it for over two hours, and because the
+  launcher job waits for every platform leg, `flowproof` itself never
+  published. The assembled binary's architecture is now checked at publish
+  time, so a build that silently came out native is visible in the log rather
+  than at a user's shell.
+
+### Changed
+
+- **The quickstart leads with an agent test, and installs with npm.**
+  `docs/getting-started.md` opened with a Windows Calculator flow, required
+  Python, offered pip only, and referenced a version five releases old.
+  It now shows npx/npm/pip side by side and reaches a green agent test
+  first; the UI walkthrough is kept, one section down.
+- **`examples/agent-demo/` ships a Node agent** (`weather_agent.mjs` and
+  `weather-node.flow.yaml`) alongside the Python one. The only agent example
+  used to be Python, so the npm install path dead-ended at a second language
+  runtime.
+- **`docs/agent-testing.md` answers "how does this run with no model" on its
+  first screen**, and says plainly what is and is not under test: the agent's
+  own code and configuration, not whether the model is any good. The
+  mechanism was previously explained 40% down the page.
+
+### Added
+
+- **A daily npx smoke test** installs the PUBLISHED package from npm on
+  Linux, macOS and Windows and runs it. It asserts that a missing platform
+  binary fails with a non-zero exit, keeps stdout clean, and says how to fix
+  itself - a green CI run with flowproof never executing was the failure
+  worth guarding against. The launcher previously had no test at all.
+
 ## 0.6.0
 
 ### Added

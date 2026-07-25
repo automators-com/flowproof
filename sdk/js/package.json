@@ -1,7 +1,7 @@
 {
   "name": "flowproof",
-  "version": "0.6.0",
-  "description": "Generic open-source automation framework for the AI-agent era: automated testing and agentic process automation across web, desktop, and Citrix.",
+  "version": "0.6.1",
+  "description": "Deterministic tests for AI agents: record a run once, replay it with zero LLM calls. Assert which tools an agent called, with which arguments, in which order.",
   "bin": {
     "flowproof": "bin/flowproof.js"
   },
@@ -14,10 +14,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@automators/flowproof-cli-linux-x64": "0.6.0",
-    "@automators/flowproof-cli-darwin-x64": "0.6.0",
-    "@automators/flowproof-cli-darwin-arm64": "0.6.0",
-    "@automators/flowproof-cli-win32-x64": "0.6.0"
+    "@automators/flowproof-cli-linux-x64": "0.6.1",
+    "@automators/flowproof-cli-darwin-x64": "0.6.1",
+    "@automators/flowproof-cli-darwin-arm64": "0.6.1",
+    "@automators/flowproof-cli-win32-x64": "0.6.1"
   },
   "repository": {
     "type": "git",
