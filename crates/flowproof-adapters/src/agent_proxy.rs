@@ -17,7 +17,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use flowproof_trace::cassette::{
@@ -64,6 +64,12 @@ pub struct AgentProxy {
     thread: Option<std::thread::JoinHandle<()>>,
     /// Turns captured in record mode, in order. Empty in replay mode.
     captured: Arc<Mutex<Vec<Turn>>>,
+    /// Bumped once when a request starts and again when it finishes, so a
+    /// caller can tell "nothing is happening" from "between two requests".
+    /// See [`AgentProxy::quiesce`].
+    activity: Arc<AtomicUsize>,
+    /// Requests started but not yet finished.
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl AgentProxy {
@@ -126,16 +132,29 @@ impl AgentProxy {
         let log = Arc::new(Mutex::new(ProxyLog::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let captured = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(AtomicUsize::new(0));
+        let in_flight = Arc::new(AtomicUsize::new(0));
         let thread = {
             let (log, stop, captured) =
                 (Arc::clone(&log), Arc::clone(&stop), Arc::clone(&captured));
+            let (activity, in_flight) = (Arc::clone(&activity), Arc::clone(&in_flight));
             std::thread::spawn(move || {
                 let mut turn = 0usize;
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             stream.set_nonblocking(false).ok();
+                            // Mark the request in flight BEFORE serving it.
+                            // A record run reads the cassette as soon as the
+                            // agent exits; without this an agent that fired a
+                            // call and did not wait for it would have that
+                            // call forwarded, answered, and then silently
+                            // missed from the trace.
+                            in_flight.fetch_add(1, Ordering::SeqCst);
+                            activity.fetch_add(1, Ordering::SeqCst);
                             serve_one(stream, &mode, &mocks, &mut turn, &log, &captured);
+                            in_flight.fetch_sub(1, Ordering::SeqCst);
+                            activity.fetch_add(1, Ordering::SeqCst);
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -151,7 +170,38 @@ impl AgentProxy {
             stop,
             thread: Some(thread),
             captured,
+            activity,
+            in_flight,
         })
+    }
+
+    /// Wait until the proxy has been idle for `grace`, or `cap` elapses.
+    ///
+    /// An agent process exiting does NOT mean the proxy is done: an agent
+    /// can fire a model call and exit without waiting for it (goose does
+    /// exactly this, generating a session title). That call is still being
+    /// forwarded when the agent's exit status arrives, so reading the
+    /// cassette right then races it - and loses, non-deterministically,
+    /// whenever the upstream is slow enough. A dropped turn is invisible:
+    /// `record` still exits 0 and still writes a trace, which then cannot
+    /// replay, because replay serves instantly and always sees the call.
+    ///
+    /// Idle means both: nothing in flight, AND no request started or
+    /// finished during the last `grace` window. The second half matters
+    /// because the accept loop is sequential - between finishing one
+    /// request and accepting the next that is already queued, `in_flight`
+    /// is briefly zero.
+    pub fn quiesce(&self, grace: std::time::Duration, cap: std::time::Duration) {
+        let deadline = std::time::Instant::now() + cap;
+        loop {
+            let before = self.activity.load(Ordering::SeqCst);
+            std::thread::sleep(grace);
+            let settled = self.activity.load(Ordering::SeqCst) == before
+                && self.in_flight.load(Ordering::SeqCst) == 0;
+            if settled || std::time::Instant::now() >= deadline {
+                return;
+            }
+        }
     }
 
     /// The cassette captured in record mode, in order. Empty in replay.
