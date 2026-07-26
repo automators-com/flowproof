@@ -220,30 +220,32 @@ run bundle                     ← result.json · junit.xml · report.html ·
 
 ## Status
 
-Early, in active development. v0.2 on PyPI. The record→replay spine, all
-five adapters, healing, suites, and the MCP surface are real and tested in
-CI; interfaces may still change between minor versions.
+Early, in active development; interfaces may still change between minor
+versions. The badges above carry the current release — the Rust crates, the
+Python wheel and the npm package move together, so they are the same number.
+
+Real and tested in CI: the record→replay spine, all six adapters (`web`,
+Windows desktop, `sap`, `vision`, `api`, `agent`), model-grounded authoring,
+healing with reviewable diffs, suites, the security-control surface
+(`flowproof audit`), the MCP server, and — at the agent boundary — the
+OpenAI-compatible proxy with `assert_tool_call` plus the MCP tool boundary
+over stdio.
+
+Built, but with thinner coverage: the Anthropic Messages dialect, streaming
+replay, `agent.url` services, and the MCP boundary over streamable HTTP.
+[docs/agent-testing.md](docs/agent-testing.md) names each gap in a
+per-capability table rather than leaving "built" to imply "tested".
+
+Two limits to know before you start: an agent flow is **one turn**, not a
+conversation, and **egress containment is Linux-only** — elsewhere a
+`command:` agent is reported "not contained" rather than silently trusted.
 
 **Choosing between flowproof and an existing browser-automation suite?**
 [docs/comparison.md](docs/comparison.md) is an honest read on when
 flowproof fits and when to keep what you have.
 
-## Roadmap
-
-Planned, not yet shipped — feature bullets above only claim what works:
-
-- Network interception/mocking for web flows
-- Failure debug bundle (DOM snapshot, console tail, nearest-anchor hints)
-- Incremental re-record: re-author only drifted steps
-- npm distribution of the CLI (the wheel stays the primary SDK)
-- Visual-template matching, OCR sync conditions, DXGI capture for vision
-- Healing over the clarification-payload surface; worker parallelism
-- Egress containment on macOS and Windows (`command:` agents there are
-  reported "not contained" today; the mechanism is Linux-only)
-
-See [docs/design.md](docs/design.md) for the design notes behind these.
-
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under
-[Apache-2.0](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md), and
+[docs/design.md](docs/design.md) for the design notes behind the engine.
+Licensed under [Apache-2.0](LICENSE).
