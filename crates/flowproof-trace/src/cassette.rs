@@ -12,11 +12,21 @@
 //! the same reason: a test that quietly tolerates drift stops being a
 //! test.
 //!
-//! 1. **Strict, by position.** Turn K of the replay must match turn K of
-//!    the recording. No searching forward for a turn that fits, and no
-//!    tolerance holes: a prompt template that changed is exactly the
-//!    thing this feature exists to catch, so matching it loosely would
-//!    defeat the purpose.
+//! 1. **Strict by body, consumed exactly once.** A replayed call must
+//!    match a recorded turn BYTE-FOR-BYTE, and every recorded turn is
+//!    served at most once, so an extra call still fails. No tolerance
+//!    holes: a prompt template that changed is exactly the thing this
+//!    feature exists to catch.
+//!
+//!    Position was the contract in v1, and it assumed a strictly
+//!    sequential trajectory. Real agents break that: goose issues its
+//!    task call and a session-title call concurrently, so record sees one
+//!    order and replay sees the other, and a positional matcher called
+//!    that a divergence when nothing about the agent had changed. Order
+//!    BETWEEN CONCURRENT CALLS is therefore no longer asserted - the
+//!    agent does not guarantee it, so a recording cannot either. A
+//!    sequential trajectory still matches turn-for-turn, because the
+//!    earliest unconsumed match wins.
 //! 2. **Fail at the first divergent turn.** A trajectory that has already
 //!    diverged tells you nothing about its later turns, and continuing
 //!    would report cascading failures whose only real cause was the first.
@@ -411,12 +421,75 @@ impl Cassette {
     /// A trajectory whose last turn is a tool call has no reply yet, which
     /// is a real state and returns `None` rather than an empty string.
     pub fn reply(&self) -> Option<&str> {
+        let primary = self.primary_thread();
         self.turns
             .iter()
+            .enumerate()
+            .filter(|(i, _)| primary.as_ref().is_none_or(|p| p.contains(i)))
+            .map(|(_, turn)| &turn.response.message)
             .rev()
-            .map(|turn| &turn.response.message)
             .find(|m| m.role == "assistant" && m.content.is_some())
             .and_then(|m| m.content.as_deref())
+    }
+
+    /// Which turns belong to the conversation the flow is actually about,
+    /// or `None` when they all do (the ordinary case, where this changes
+    /// nothing).
+    ///
+    /// An agent may talk to the model about something other than the task:
+    /// goose asks it to name the session, in a call with its OWN system
+    /// prompt, issued concurrently with the real one and not waited for. Its
+    /// answer ("France's capital city") is an assistant message, and taking
+    /// the trajectory's last one made `reply` a coin flip - whichever call
+    /// happened to land second won.
+    ///
+    /// A side conversation is recognisable by its system prompt: turns that
+    /// continue one conversation share one, and a housekeeping call brings a
+    /// different one. So group by system prompt and keep the thread with the
+    /// most turns; ties go to the thread carrying the most request text,
+    /// because the conversation doing the work carries the agent's real
+    /// system prompt and its tool schemas, and a housekeeping call is small.
+    ///
+    /// Both halves are order-independent, which is the point: the answer
+    /// cannot depend on which concurrent call happened to arrive first.
+    ///
+    /// The limit, stated plainly: this is a heuristic, and an agent whose
+    /// side conversation is BIGGER than its real one would defeat the
+    /// tie-break. Nothing here fabricates a reply - a single-thread cassette
+    /// takes the identical path it always did.
+    fn primary_thread(&self) -> Option<Vec<usize>> {
+        let system_of = |turn: &Turn| -> String {
+            turn.request
+                .messages
+                .iter()
+                .find(|m| m.role == "system")
+                .and_then(|m| m.content.clone())
+                .unwrap_or_default()
+        };
+        let mut threads: Vec<(String, Vec<usize>, usize)> = Vec::new();
+        for (i, turn) in self.turns.iter().enumerate() {
+            let key = system_of(turn);
+            let weight: usize = turn
+                .request
+                .messages
+                .iter()
+                .map(|m| m.content.as_deref().unwrap_or("").len())
+                .sum();
+            match threads.iter_mut().find(|(k, _, _)| *k == key) {
+                Some((_, idx, w)) => {
+                    idx.push(i);
+                    *w += weight;
+                }
+                None => threads.push((key, vec![i], weight)),
+            }
+        }
+        if threads.len() < 2 {
+            return None;
+        }
+        threads
+            .into_iter()
+            .max_by_key(|(_, idx, weight)| (idx.len(), *weight))
+            .map(|(_, idx, _)| idx)
     }
 }
 
@@ -460,6 +533,121 @@ mod tests {
                 stop_reason: None,
             },
         }
+    }
+
+    fn msg(role: &str, content: &str) -> Message {
+        Message {
+            role: role.into(),
+            content: Some(content.into()),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }
+    }
+
+    fn said(content: &str) -> Message {
+        msg("assistant", content)
+    }
+
+    /// goose asks the model to name the session, with its OWN system prompt,
+    /// concurrently with the real call and without waiting for it. Whichever
+    /// landed second used to become `reply`, so a passing record was luck.
+    /// The real conversation wins regardless of arrival order.
+    #[test]
+    fn a_side_conversation_does_not_become_the_reply() {
+        let agent_system = "You are a general-purpose AI agent called goose, \
+            with tools and a long standing system prompt that carries the work.";
+        let task = openai_turn(
+            request(
+                vec![msg("system", agent_system), msg("user", "capital of France?")],
+                &[],
+            ),
+            said("Paris"),
+        );
+        let title = openai_turn(
+            request(
+                vec![
+                    msg("system", "Generate a short title."),
+                    msg("user", "capital of France?"),
+                ],
+                &[],
+            ),
+            said("France's capital city"),
+        );
+
+        // Recorded task-first, then title-first: the answer must not move.
+        for turns in [
+            vec![task.clone(), title.clone()],
+            vec![title.clone(), task.clone()],
+        ] {
+            let cassette = Cassette { turns };
+            assert_eq!(
+                cassette.reply(),
+                Some("Paris"),
+                "the side conversation must never supply the reply"
+            );
+        }
+    }
+
+    /// The ordinary case is untouched: one conversation, the reply is its
+    /// last assistant message, exactly as before.
+    #[test]
+    fn a_single_conversation_still_replies_with_its_last_message() {
+        let sys = "You are a helpful assistant.";
+        let cassette = Cassette {
+            turns: vec![
+                openai_turn(
+                    request(vec![msg("system", sys), msg("user", "hi")], &[]),
+                    said("hello"),
+                ),
+                openai_turn(
+                    request(
+                        vec![msg("system", sys), msg("user", "hi"), msg("user", "and now?")],
+                        &[],
+                    ),
+                    said("goodbye"),
+                ),
+            ],
+        };
+        assert_eq!(cassette.reply(), Some("goodbye"));
+    }
+
+    /// Concurrent calls arrive in either order, so a cassette recorded in one
+    /// order must replay against the other. Bodies still have to match
+    /// byte-for-byte, and each recorded turn is consumed exactly once.
+    #[test]
+    fn a_cassette_replays_when_concurrent_calls_swap_order() {
+        let a = openai_turn(
+            request(vec![msg("system", "A"), msg("user", "one")], &[]),
+            said("first"),
+        );
+        let b = openai_turn(
+            request(vec![msg("system", "B"), msg("user", "two")], &[]),
+            said("second"),
+        );
+        let cassette = Cassette {
+            turns: vec![a.clone(), b.clone()],
+        };
+        let mut consumed = Vec::new();
+
+        // Replay hands them over in the OPPOSITE order to the recording.
+        let (i, got) = cassette
+            .match_turn(&mut consumed, &b.request, "openai")
+            .expect("the later-recorded turn still matches");
+        assert_eq!((i, got.message.content.as_deref()), (1, Some("second")));
+        let (i, got) = cassette
+            .match_turn(&mut consumed, &a.request, "openai")
+            .expect("the earlier-recorded turn still matches");
+        assert_eq!((i, got.message.content.as_deref()), (0, Some("first")));
+
+        // Every turn consumed exactly once: a third call is still a failure.
+        let err = cassette
+            .match_turn(&mut consumed, &a.request, "openai")
+            .expect_err("an extra call must not be served twice");
+        assert!(
+            err.detail.contains("made 3 model calls"),
+            "counts the extra call: {}",
+            err.detail
+        );
     }
 
     /// An argument-only change used to print two IDENTICAL tool-name lists
