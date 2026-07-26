@@ -1068,6 +1068,14 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
     let proxy = AgentProxy::record(&upstream, auth, plan.mocks.clone(), plan.proxy_port())
         .map_err(|e| format!("starting the record proxy: {e}"))?;
     let run = plan.drive(&proxy)?;
+    // The agent has exited, which is not the same as the proxy being done:
+    // a call the agent fired without waiting for is still in flight, and
+    // reading the cassette now would drop it whenever the upstream is slow.
+    // See AgentProxy::quiesce.
+    proxy.quiesce(
+        std::time::Duration::from_millis(300),
+        std::time::Duration::from_secs(15),
+    );
     let cassette = proxy.captured();
     drop(proxy);
 
