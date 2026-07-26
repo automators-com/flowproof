@@ -277,10 +277,52 @@ fn configure(
     child.env("FLOWPROOF_LLM_PROXY", base);
     // The spec's own env goes on LAST so a flow can override any of the
     // above; it knows its client better than this module does.
+    //
+    // Values may reference runtime handles the spec cannot know when it is
+    // written, because the proxy binds an ephemeral port. Without this, an
+    // agent whose client reads a non-standard variable (an AI gateway URL,
+    // say) cannot be pointed at the proxy from the spec at all, and every
+    // such adopter writes the same wrapper script.
     for (key, value) in env {
-        child.env(key, value);
+        child.env(key, substitute_runtime_handles(value, base, env));
     }
     Ok(child)
+}
+
+/// Replace the `${flowproof.*}` handles with values only known at spawn time.
+///
+/// - `${flowproof.proxy_url}` - the model proxy, `/v1` included, the form
+///   OpenAI-compatible clients expect.
+/// - `${flowproof.proxy_url_no_v1}` - the same origin without `/v1`, for a
+///   client that appends its own path (the Anthropic SDK does).
+/// - `${flowproof.mcp_url.<name>}` - the stand-in URL for that MCP server,
+///   for a client that builds its endpoints from a base rather than taking
+///   one URL per server.
+///
+/// Anything else is left untouched: an unknown handle is far more likely to
+/// be a value that happens to look like one than a typo worth failing on,
+/// and `${VAR}` secret refs have already been resolved by this point.
+fn substitute_runtime_handles(value: &str, base: &str, env: &BTreeMap<String, String>) -> String {
+    if !value.contains("${flowproof.") {
+        return value.to_string();
+    }
+    let mut out = value
+        .replace("${flowproof.proxy_url_no_v1}", &anthropic_base(base))
+        .replace("${flowproof.proxy_url}", base);
+    // The MCP stand-in URLs are already in this same map, injected as
+    // `FLOWPROOF_MCP_URL_<NAME>`; this is a friendlier spelling of the same
+    // value, so the two can never disagree.
+    for (key, url) in env {
+        if let Some(name) = key.strip_prefix("FLOWPROOF_MCP_URL_") {
+            out = out.replace(&format!("${{flowproof.mcp_url.{name}}}"), url);
+            // Server names are lowercase in the spec; the env var is upper.
+            out = out.replace(
+                &format!("${{flowproof.mcp_url.{}}}", name.to_ascii_lowercase()),
+                url,
+            );
+        }
+    }
+    out
 }
 
 /// Wait for `child` to the deadline, killing it at the timeout. Returns the
@@ -434,6 +476,77 @@ pub fn run_against_contained(
 
 #[cfg(test)]
 mod tests {
+
+    /// The gap a real adopter hit: their client reads AI_GATEWAY_URL, and
+    /// the proxy's port is not known when the spec is written, so a static
+    /// `agent.env` value could not reach it.
+    #[test]
+    fn the_proxy_url_is_addressable_from_a_spec_env_value() {
+        let env = BTreeMap::new();
+        let got =
+            substitute_runtime_handles("${flowproof.proxy_url}", "http://127.0.0.1:51234/v1", &env);
+        assert_eq!(got, "http://127.0.0.1:51234/v1");
+    }
+
+    /// Some clients append their own `/v1`, so handing them the suffixed
+    /// form produces `/v1/v1`. The no-suffix handle is for those.
+    #[test]
+    fn the_no_v1_handle_strips_the_suffix() {
+        let env = BTreeMap::new();
+        let got = substitute_runtime_handles(
+            "${flowproof.proxy_url_no_v1}",
+            "http://127.0.0.1:51234/v1",
+            &env,
+        );
+        assert_eq!(got, "http://127.0.0.1:51234");
+    }
+
+    /// A client that builds several endpoints off one base (`<base>/mcp`,
+    /// `<base>/mcp-exec/sap`) has no per-server variable to override, so it
+    /// needs the stand-in's base by name.
+    #[test]
+    fn an_mcp_stand_in_is_addressable_by_server_name() {
+        let mut env = BTreeMap::new();
+        env.insert(
+            "FLOWPROOF_MCP_URL_DATAMAKER_EXEC".to_string(),
+            "http://127.0.0.1:44100/mcp".to_string(),
+        );
+        // Upper (as the var is spelled) and lower (as the spec names it).
+        for handle in [
+            "${flowproof.mcp_url.DATAMAKER_EXEC}",
+            "${flowproof.mcp_url.datamaker_exec}",
+        ] {
+            let got = substitute_runtime_handles(handle, "http://127.0.0.1:1/v1", &env);
+            assert_eq!(got, "http://127.0.0.1:44100/mcp", "{handle}");
+        }
+    }
+
+    /// Handles interpolate INTO a larger value, because that is how a base
+    /// URL is actually used.
+    #[test]
+    fn a_handle_substitutes_inside_a_longer_value() {
+        let env = BTreeMap::new();
+        let got = substitute_runtime_handles(
+            "${flowproof.proxy_url_no_v1}/custom/path",
+            "http://127.0.0.1:9/v1",
+            &env,
+        );
+        assert_eq!(got, "http://127.0.0.1:9/custom/path");
+    }
+
+    /// A value that is not a handle must survive untouched - including one
+    /// that merely looks shell-ish. Failing on an unknown handle would be
+    /// worse than passing it through.
+    #[test]
+    fn ordinary_values_and_unknown_handles_pass_through() {
+        let env = BTreeMap::new();
+        for value in ["plain", "$HOME/x", "${flowproof.not_a_handle}"] {
+            assert_eq!(
+                substitute_runtime_handles(value, "http://127.0.0.1:1/v1", &env),
+                value
+            );
+        }
+    }
     use super::*;
     use flowproof_trace::cassette::{Message, ToolCall, Turn, TurnRequest, TurnResponse};
 
