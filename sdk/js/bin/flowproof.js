@@ -6,6 +6,7 @@
 
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
+const fs = require("node:fs");
 
 // Scoped names: the unscoped ones tripped npm's spam heuristic for new
 // packages and could not be published at all. Keep these in step with
@@ -20,6 +21,24 @@ const PLATFORM_PACKAGES = {
 };
 
 function binaryPath() {
+  // An explicit binary wins over the resolved platform package. This is
+  // what makes a tight adopter loop possible: a team hitting a gap can
+  // point at a build from a branch or a CI artifact and keep testing,
+  // instead of waiting for a release for every fix. It is a development
+  // handle, so it is deliberately loud - a silently swapped engine would
+  // make a green run mean nothing.
+  const override = process.env.FLOWPROOF_BIN;
+  if (override) {
+    if (!fs.existsSync(override)) {
+      console.error(
+        `flowproof: FLOWPROOF_BIN points at ${override}, which does not exist.`
+      );
+      process.exit(2);
+    }
+    console.error(`flowproof: using FLOWPROOF_BIN=${override}`);
+    return override;
+  }
+
   const key = `${process.platform}-${process.arch}`;
   const pkg = PLATFORM_PACKAGES[key];
   if (!pkg) {
