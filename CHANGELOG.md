@@ -16,6 +16,20 @@ together).
   `record` against a model, and a `run` that replays it with zero model calls.
   The same change of direction as 0.6.1's quickstart, applied to the hero
   image.
+- **The README's Quick start leads with an agent test, not Windows
+  Calculator.** The one worked example on the front page was `app: calc`,
+  which needs a Windows desktop — so the section that exists to get a reader
+  to a first green run dead-ended for most of them, and the paragraph under it
+  had to apologise for the example above it. It now quotes the shipped
+  `examples/agent-demo/weather-node.flow.yaml` (the npm path, no Python),
+  records once with a key and replays for ever without one, and points at
+  `app: web` / `app: api` for UI and no-UI flows; the Calculator walkthrough
+  is where it already lived, in `docs/getting-started.md`. This finishes the
+  move 0.6.1 started in the quickstart doc. `flowproof run
+  scripts/demo/order-status.flow.yaml` is offered as a green run needing no
+  key at all, since that cassette is committed. The
+  `the_quickstart_quotes_the_shipped_agent_example_verbatim` test now holds
+  the README's block to the shipped file too, not just the doc's.
 - **The README's Status section stopped claiming v0.2.** It named a release
   four minor versions behind the wheel it describes, and undercounted the
   adapters ("all five" against six shipped). It now points at the badges for

@@ -73,32 +73,55 @@ npm install --save-dev flowproof
 # or: pip install flowproof
 ```
 
-Write a spec — natural-language steps, no selectors:
+A spec is natural-language steps and no selectors. This one tests an agent —
+a real one, built on the official OpenAI SDK, shipped in
+[`examples/agent-demo/`](examples/agent-demo/):
 
 ```yaml
-# calc.flow.yaml
-name: Add two numbers
-app: calc
+# examples/agent-demo/weather-node.flow.yaml
+name: Weather assistant answers with the forecast (Node)
+app: agent
+agent:
+  command: node examples/agent-demo/weather_agent.mjs
+tools:
+  - name: get_weather
+    result: { city: Nairobi, sky: sunny, temp_c: 26 }
 steps:
-  - Type 5
-  - Press plus
-  - Type 3
-  - Press equals
-  - assert: display shows 8
+  - prompt: What is the weather in Nairobi right now? Use your tools.
+  - assert_tool_call: get_weather where city contains Nairobi
+  - assert: reply contains sunny
 ```
 
-Record once, replay forever:
+**Record once.** The only step that calls a real model, so the only one that
+needs a key:
 
 ```bash
-flowproof record calc.flow.yaml   # performs the flow live, writes calc.trace.jsonl
-flowproof run calc.flow.yaml      # deterministic replay: per-step PASS/FAIL, exit 0/1
+npm install openai
+export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY
+npx flowproof record examples/agent-demo/weather-node.flow.yaml
 ```
 
-The Calculator walkthrough needs a Windows desktop; on any OS, point
-`app: web` at a page instead (see [examples/](examples/)) or use
-`app: api` for flows with no UI at all. Add `--json` for the full
-structured report on stdout. [docs/getting-started.md](docs/getting-started.md)
-is the complete walkthrough.
+**Replay for ever.** No key, no model, no network to the provider:
+
+```bash
+npx flowproof run examples/agent-demo/weather-node.flow.yaml
+```
+
+The agent ran for real both times — same client, same tool loop. At record
+flowproof captured the exchange at the model boundary; at replay it served
+that recording back, so the trajectory is fixed and nothing was billed.
+`assert_tool_call` is the part that fails when the agent regresses: wrong
+tool, wrong argument, or a tool called out of order.
+
+Want a green run before you have a key? The GIF's cassette is committed, so
+`pip install openai && flowproof run scripts/demo/order-status.flow.yaml`
+passes on a fresh clone — no key, no provider network.
+
+Any OS. For a UI instead of an agent, point `app: web` at a page, or `app: api`
+at a flow with no UI at all ([examples/](examples/)); the Windows Calculator
+walkthrough lives in [docs/getting-started.md](docs/getting-started.md), which
+is the complete version of this section. Add `--json` for the structured
+report on stdout.
 
 ## Python API
 
