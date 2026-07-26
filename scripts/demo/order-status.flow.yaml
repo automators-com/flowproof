@@ -1,0 +1,11 @@
+# An AI agent tested at the model boundary: record its run once, replay it free.
+name: Support agent looks up an order
+app: agent
+agent:
+  command: python3 scripts/demo/support_agent.py
+tools:
+  - name: lookup_order      # declared: a deterministic tool needs no result mock
+steps:
+  - prompt: Where is my order A-4471?
+  - assert_tool_call: lookup_order where order_id contains A-4471
+  - assert: reply contains shipped

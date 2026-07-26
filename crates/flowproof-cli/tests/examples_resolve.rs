@@ -12,6 +12,7 @@ const CONN_TEST_SPEC: &str = include_str!("../../../examples/api/connection-test
 /// from `npx flowproof` runs, so it has to keep parsing.
 const AGENT_NODE_SPEC: &str = include_str!("../../../examples/agent-demo/weather-node.flow.yaml");
 const AGENT_PY_SPEC: &str = include_str!("../../../examples/agent-demo/weather.flow.yaml");
+const DEMO_SPEC: &str = include_str!("../../../scripts/demo/order-status.flow.yaml");
 
 #[test]
 fn connection_test_example_resolves_with_body_and_headers() {
@@ -151,4 +152,35 @@ fn the_quickstart_quotes_the_shipped_agent_example_verbatim() {
 
     // And it must still parse, so the block a reader copies actually runs.
     FlowSpec::parse(block).expect("the quoted quickstart block parses");
+}
+
+/// The flow behind the README's demo GIF. The GIF is a capture of this spec
+/// running, so a grammar change that breaks it would silently make the README's
+/// hero image a picture of something that no longer works.
+#[test]
+fn readme_demo_spec_resolves() {
+    let spec = FlowSpec::parse(DEMO_SPEC).expect("demo spec parses");
+    assert_eq!(spec.app.id(), "agent");
+
+    // Deliberately unmocked: the demo's tool returns a deterministic result, so
+    // replay needs no substitution and the run earns no unprotected-tool
+    // warning. That is what keeps the captured output to five lines.
+    let tool = spec
+        .tools
+        .iter()
+        .find(|t| t.name == "lookup_order")
+        .expect("lookup_order declared");
+    assert!(
+        tool.result.is_null(),
+        "the demo tool must stay declaration-only"
+    );
+
+    // Paths are relative to the repository root, because that is where the GIF
+    // runs its commands and therefore what a reader copies.
+    let command = spec
+        .agent
+        .as_ref()
+        .and_then(|a| a.command.clone())
+        .expect("demo has a command");
+    assert_eq!(command, "python3 scripts/demo/support_agent.py");
 }
