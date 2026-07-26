@@ -41,7 +41,7 @@
         "response": {
           "message": {
             "role": "assistant",
-            "content": "Paris"
+            "content": "Paris\n\n(Heads up: no extensions are currently enabled, so I can't read files or run commands. You can add extensions to give me those capabilities.)"
           }
         }
       }

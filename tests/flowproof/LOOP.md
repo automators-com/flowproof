@@ -18,21 +18,19 @@ test pass.
 | flowproof version | **0.7.0** (npm) |
 | specs committed | **1** (`goose/smoke.flow.yaml`) |
 | traces recorded | **1**, re-recorded ~10× while characterising B1 |
-| **does it replay green?** | **NO — blocked by B1, now root-caused** |
+| **does it replay green?** | **NO — blocked by B1** |
 | CI state | **no job committed** (correct — nothing replays green) |
-| iterations with no green trace | **3** |
+| iterations with no green trace | **4** |
 
 ## Current verdict
 
-flowproof's interception works on goose with ~4 lines of glue, but **goose cannot
-be recorded at all**, and the reason is a design assumption rather than a bug:
-flowproof matches cassette turns strictly by position, while goose issues its two
-model calls *concurrently*, so their arrival order varies run to run and no
-recording can reliably describe the next run. Whichever order gets recorded, the
-replay may see the other one — measured at **3 of 6 runs producing an unusable
-cassette, with `record` exiting 0 every time**. This is the single blocker; the
-fix is scoped to one function, and it does not require weakening byte-exact
-matching.
+flowproof's interception works on goose for about 4 lines of glue — that part is a
+genuine success and the measurements back it. But goose still cannot be recorded,
+because `record` **non-deterministically drops a model call it forwarded and got an
+answer for**, and it exits 0 while doing so. The drop is driven by upstream
+latency, reproduces with **no model and no network** (a canned responder with a
+2.5 s delay drops in 2 of 6 runs; the same responder with no delay drops in 0 of
+6), and is the single thing between this suite and a green gate.
 
 ---
 
@@ -42,88 +40,80 @@ matching.
 |---|---|
 | wall-clock, iteration 1 (spike) | ~6 min |
 | wall-clock, iteration 2 (first record) | ~35 min |
-| wall-clock, iteration 3 (root-cause B1) | ~25 min |
+| wall-clock, iteration 3 (mis-diagnosed B1) | ~25 min |
+| wall-clock, iteration 4 (corrected B1, built minimal repro) | ~30 min |
 | **time to first GREEN replay** | **not reached** |
 | **adoption glue** (what a real goose adopter writes) | **4 lines**, all in the spec — 1 line of `sh -c "IFS=; …"` command form, 3 lines of clock-freezing env. Plus the `libfaketime` system package. No entry point, no wrapper, no `config.yaml` templating. |
 | environment workaround (NOT adoption glue) | 69 lines — `spike/tls_relay.py`, needed only because this container has a TLS-terminating proxy (B2) |
 | diagnostic code (NOT adoption glue) | ~200 lines in `spike/` — probe server, marker MCP server, and three throwaway agents used to isolate B1 |
 | **reads of goose SOURCE** | **0.** Everything from `goose --help`, `goose run --help`, and observed wire traffic. |
-| **reads of flowproof SOURCE** | **2.** `Cargo.toml` (TLS stack, for B2) and `crates/flowproof-trace/src/cassette.rs` (to locate B1's fix site, after the behaviour was already established from outside). |
+| **reads of flowproof SOURCE** | **3.** `Cargo.toml` (TLS stack), `crates/flowproof-trace/src/cassette.rs` (iteration 3, chasing the wrong cause), `crates/flowproof-adapters/src/agent_proxy.rs` + `crates/flowproof-cli/src/agent_flow.rs` (capture path). Worth noting against the black-box discipline: reading the source is what produced the WRONG answer in iteration 3; isolating the upstream from outside is what produced the right one. |
 
 ---
 
-## B1 — THE BLOCKER, root-caused
+## B1 — THE BLOCKER
 
-### What goose does
+> **Correction (iteration 4).** Iteration 3 committed the claim that B1 was
+> *positional cassette matching meeting a concurrent client*. **That was wrong.**
+> It was inferred from a correlation between arrival order and turn count, without
+> isolating the upstream. Isolating it reversed the result. The matcher is not
+> implicated, and the fix approved on that basis — matching unconsumed turns by
+> body — would not have fixed anything. Corrected account below.
 
-goose issues **two** model calls for a one-line task: the task itself, and a
-session-title generation call. It makes them **concurrently**, and it does this
-even under `--no-session`.
+### What is actually true
 
-### What flowproof does
+`record` **non-deterministically drops a model call that it forwarded and got an
+answer for**, and whether it does depends on **upstream latency**.
 
-`Cassette::turn(index, …)` in `crates/flowproof-trace/src/cassette.rs:250` serves
-turn *N* by position and refuses to look elsewhere. Its own doc comment states the
-contract:
+Minimal reproduction, needing **no model, no network and no TLS** — a canned
+local responder with an artificial delay (`spike/probe_server.py`, `PROBE_DELAY`):
 
-> *"Position is the whole contract: this does NOT scan for a turn that happens to
-> fit."*
-
-And `docs/agent-testing.md:832`, under "Settled in review":
-
-> *"Reordering tolerance can be added if the field ever demands it; nothing has."*
-
-**The field now demands it.** This is the first real third-party agent tried, and
-it fails on exactly this.
-
-### The measurement
-
-Six consecutive `record` runs, counting calls at the upstream (which sits *behind*
-flowproof's proxy, so it sees what flowproof saw) against turns in the cassette:
-
-| run | calls at upstream | turns captured | which call arrived first |
-|---|---|---|---|
-| 1 | 2 | **1** | task |
-| 2 | 2 | **1** | task |
-| 3 | 2 | **1** | task |
-| 4 | 2 | 2 | title |
-| 5 | 2 | 2 | title |
-| 6 | 2 | 2 | title |
-
-Perfect correlation with arrival order, and `record` **exited 0 in all six**.
-
-Both outcomes are unusable:
-
-- **1-turn cassette** → `FAIL: turn 2: the system under test made 2 model calls, the recording has 1`
-- **2-turn cassette** → `FAIL: turn 1: message 0 (system) content changed` — because turn 1 was recorded as the *title* call, and on replay the *task* call arrived first.
-
-### Why this is flowproof's, not goose's
-
-Ruled out by construction, each with a purpose-built agent in `spike/`:
-
-| hypothesis | agent | result |
+| upstream | runs | turns captured |
 |---|---|---|
-| recorder drops trailing calls | `trailing_agent.mjs` | 2 calls → **2 turns**. Not it. |
-| recorder mishandles concurrency | `concurrent_agent.mjs` | 2 calls → **2 turns** (won the race that sample). Not deterministic. |
-| recorder mishandles streaming | `streaming_agent.mjs` | 2 calls → **2 turns**. Not it. |
-| flowproof's own example still works | `examples/agent-demo/weather-node.flow.yaml` | 2 calls → **2 turns**. Recorder is not generally lossy. |
+| canned, instant | 6 | **2, 2, 2, 2, 2, 2** — never drops |
+| canned, 2.5 s delay | 6 | **2, 1, 1, 2, 2, 2** — drops in 2 of 6 |
+| real model (~1–3 s) | 6 | **1, 2, 1, 2, 2, 2** — drops in 2 of 6 |
 
-The recorder captures fine. What breaks is the *positional* contract meeting a
-*concurrent* client.
+goose makes two calls (the task, and a session-title call it makes even under
+`--no-session`). Both are forwarded — confirmed at the upstream, which sits
+*behind* flowproof's proxy — and both are answered. Only one reliably reaches the
+cassette. `record` exits **0** every time.
 
-### The fix, and why it needs a human decision
+Replay then fails whichever way the race went:
 
-Match an incoming request against any **unconsumed** recorded turn by byte-exact
-body equality, consuming it — instead of by index. This keeps every existing
-guarantee (bodies still match byte-for-byte; an edited prompt template still
-fails) and relaxes only the assumption that a trajectory is strictly sequential.
+- 1-turn cassette → `FAIL: turn 2: the system under test made 2 model calls, the recording has 1`
+- 2-turn cassette → `FAIL: turn 1: message 0 (system) content changed` (it recorded the title call as turn 1)
 
-**It overturns a decision the docs record as deliberate.** That is a design call,
-not a bug fix, so it wants sign-off rather than a quiet patch. The blast radius is
-small: one function, plus the divergence-reporting path that currently says "turn
-N" and would need to say which recorded turn went unmatched.
+### What ruled out the alternatives
 
----
+| suspected | test | verdict |
+|---|---|---|
+| my TLS relay's chunked encoding | rewrote it to buffer with `content-length` | still drops — **not the relay** |
+| the relay at all | canned upstream, relay removed from the path | still drops when slow — **not the relay** |
+| the real model | canned responder, zero model calls | still drops — **not the model** |
+| recorder is generally lossy | `weather-node`, plus purpose-built trailing / concurrent / streaming agents in `spike/` | all record 2-for-2 — **not general** |
+| positional matching | isolated upstream | **disproven — this was the iteration-3 error** |
+
+### Mechanism: inferred, NOT yet proven
+
+Reading `crates/flowproof-cli/src/agent_flow.rs:1071`, record does:
+
+```rust
+let run = plan.drive(&proxy)?;   // returns when the agent process exits
+let cassette = proxy.captured(); // read immediately
+drop(proxy);
+```
+
+and `agent_proxy.rs` pushes a turn to `captured` only *after* `forward()` returns
+from the upstream. So a call the agent fired but did not wait for is still being
+forwarded when the agent exits, and `captured()` reads before the push lands. A
+fast upstream wins the race; a slow one loses it. At replay the cassette is served
+instantly, so the same call always completes and always counts — which is exactly
+the record/replay asymmetry observed.
+
+**This is consistent with every measurement above but has not been proven
+directly.** Proving it means draining in-flight requests before `captured()` and
+re-running the slow-canned experiment; the fix is correct iff that goes 6-for-6.
 
 ## Secondary findings (both worked around, neither blocking)
 
@@ -173,7 +163,34 @@ started** — the gate forbids it.
 
 ## Iteration log
 
-### Iteration 3 — root-cause B1 (12:00 → 12:25 UTC)
+### Iteration 4 — correct iteration 3, build a model-free reproduction (12:25 → 12:55 UTC)
+
+**Shipped:** the corrected B1 account above, and a minimal reproduction that needs
+no model, no network and no TLS — `spike/probe_server.py` with `PROBE_DELAY` set.
+
+**Found:** iteration 3's root cause was **wrong**. The drop is latency-driven, not
+ordering-driven. Ruled out, each by isolation rather than argument: my relay's
+chunked encoding (rewrote it), the relay entirely (removed it from the path), the
+real model (replaced with a canned responder), and positional matching (the
+iteration-3 claim).
+
+**The process lesson, worth keeping:** iteration 3 reached for flowproof's source
+and reasoned from it to a confident, wrong conclusion. Iteration 4 changed one
+variable at a time from outside and got the right one in three experiments. The
+black-box discipline this brief imposes on *goose* would have been worth applying
+to *flowproof* too.
+
+**Deliberately not built:** the approved matcher fix — it targets a cause that has
+since been disproven, so building it would have been waste. No second spec, no CI
+job, no fake-model baseline.
+
+**Next iteration should:** prove the inferred mechanism by draining in-flight
+requests before `proxy.captured()` in `crates/flowproof-cli/src/agent_flow.rs`,
+then re-run the slow-canned experiment. The fix is correct iff it goes 6-for-6 at
+2 turns. Only then re-record goose, check the gate, and start flow 1
+(`assert_no_egress`, which CAN run here — this container is Linux).
+
+### Iteration 3 — MIS-diagnosed B1 (12:00 → 12:25 UTC) — superseded by iteration 4
 
 **Shipped:** three diagnostic agents in `spike/` that eliminate the wrong
 explanations, the six-run measurement table above, and the exact fix site.
