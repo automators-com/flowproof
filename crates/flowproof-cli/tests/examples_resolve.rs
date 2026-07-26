@@ -120,22 +120,16 @@ fn both_agent_demos_resolve_and_assert_the_same_thing() {
     );
 }
 
-/// The quickstart is the most-read page we have and it is now the front
-/// door for the npm audience, so its YAML must not drift from the file it
-/// claims to quote. A reader who copies a block that no longer parses is
-/// the worst possible first experience.
+/// The two quickstarts are the most-read prose we have and they are now the
+/// front door for the npm audience, so their YAML must not drift from the file
+/// they claim to quote. A reader who copies a block that no longer parses is
+/// the worst possible first experience. Both the README and
+/// docs/getting-started.md open on the same shipped example, so both are held
+/// to it here.
 #[test]
 fn the_quickstart_quotes_the_shipped_agent_example_verbatim() {
+    const README: &str = include_str!("../../../README.md");
     const DOC: &str = include_str!("../../../docs/getting-started.md");
-
-    // Pull the fenced block that names the example file.
-    let marker = "```yaml\n# examples/agent-demo/weather-node.flow.yaml\n";
-    let start = DOC
-        .find(marker)
-        .expect("quickstart quotes the node example")
-        + marker.len();
-    let block = &DOC[start..];
-    let block = &block[..block.find("```").expect("fence closes")];
 
     // The shipped file, minus its comment header.
     let shipped: String = AGENT_NODE_SPEC
@@ -144,14 +138,25 @@ fn the_quickstart_quotes_the_shipped_agent_example_verbatim() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert_eq!(
-        block.trim(),
-        shipped.trim(),
-        "docs/getting-started.md has drifted from examples/agent-demo/weather-node.flow.yaml"
-    );
+    for (name, prose) in [("README.md", README), ("docs/getting-started.md", DOC)] {
+        // Pull the fenced block that names the example file.
+        let marker = "```yaml\n# examples/agent-demo/weather-node.flow.yaml\n";
+        let start = prose
+            .find(marker)
+            .unwrap_or_else(|| panic!("{name} quotes the node example"))
+            + marker.len();
+        let block = &prose[start..];
+        let block = &block[..block.find("```").expect("fence closes")];
 
-    // And it must still parse, so the block a reader copies actually runs.
-    FlowSpec::parse(block).expect("the quoted quickstart block parses");
+        assert_eq!(
+            block.trim(),
+            shipped.trim(),
+            "{name} has drifted from examples/agent-demo/weather-node.flow.yaml"
+        );
+
+        // And it must still parse, so the block a reader copies actually runs.
+        FlowSpec::parse(block).expect("the quoted quickstart block parses");
+    }
 }
 
 /// The flow behind the README's demo GIF. The GIF is a capture of this spec
