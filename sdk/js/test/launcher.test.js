@@ -70,3 +70,23 @@ test("the launcher declares a bin and ships the files it needs", () => {
     assert.ok(pkg.files.includes(needed), `${needed} must be published`);
   }
 });
+
+test("FLOWPROOF_BIN is honoured, announced, and validated", () => {
+  // The handle that makes an adopter loop possible: point at a build from a
+  // branch or a CI artifact and keep testing, instead of waiting for a
+  // release per fix.
+  assert.match(launcher, /process\.env\.FLOWPROOF_BIN/);
+  // It must be LOUD. A silently swapped engine would make a green run mean
+  // nothing, which is the opposite of what this tool is for.
+  assert.match(launcher, /using FLOWPROOF_BIN/);
+  // And it must not fail obscurely when the path is wrong.
+  assert.match(launcher, /does not exist/);
+  // The notice goes to stderr, so `--json` keeps its stdout contract.
+  const noticeLine = launcher
+    .split("\n")
+    .find((l) => l.includes("using FLOWPROOF_BIN"));
+  assert.ok(
+    noticeLine.includes("console.error"),
+    "the override notice must go to stderr, not stdout"
+  );
+});

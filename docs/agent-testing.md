@@ -145,6 +145,24 @@ SUBSTRING of the path, so a base URL with a doubled `/v1` still reaches it.
 Picking `${flowproof.proxy_url}` where you wanted `${flowproof.proxy_url_no_v1}`
 is therefore not a silent failure mode.
 
+**Testing an unreleased fix.** An adopter who hits a gap should not have to
+wait for a release to test the fix. `FLOWPROOF_BIN` points the launcher at
+any build:
+
+```bash
+export FLOWPROOF_BIN=/path/to/flowproof/target/release/flowproof
+npx flowproof run specs/
+```
+
+It wins over the resolved platform package, is announced on stderr every run
+(`flowproof: using FLOWPROOF_BIN=...`), and exits 2 if the path does not
+exist rather than falling back. Deliberately noisy: an engine swapped
+silently would make a green run mean nothing. Build one with
+`cargo build --release -p flowproof-cli`, or take the binary from a CI run of
+the branch carrying the fix. CI should NOT set this - a suite whose job is to
+prove the RELEASED package works must use the released package.
+
+
 **Recording needs a real model.** Replay needs nothing, but `record` has to
 call something. The upstream is read from, in order:
 
