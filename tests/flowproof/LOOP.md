@@ -15,22 +15,25 @@ test pass.
 | | |
 |---|---|
 | goose tag (PINNED) | **v1.44.0** |
-| flowproof version | **0.7.0** (npm) |
+| flowproof version | **0.7.0** + two local fixes (`26a5922`, `854a9f1`), NOT in any release |
 | specs committed | **1** (`goose/smoke.flow.yaml`) |
-| traces recorded | **1**, re-recorded ~10× while characterising B1 |
-| **does it replay green?** | **NO — blocked by B1** |
-| CI state | **no job committed** (correct — nothing replays green) |
-| iterations with no green trace | **4** |
+| traces recorded | **1**, real, against `claude-opus-5` |
+| **does it replay green?** | **YES — 3/3 offline, provider env unset, relay down** |
+| CI state | **no job committed** — blocked on a RELEASE, not on the suite (see B4) |
+| iterations with no green trace | **4, then green on the 5th** |
 
 ## Current verdict
 
-flowproof's interception works on goose for about 4 lines of glue — that part is a
-genuine success and the measurements back it. But goose still cannot be recorded,
-because `record` **non-deterministically drops a model call it forwarded and got an
-answer for**, and it exits 0 while doing so. The drop is driven by upstream
-latency, reproduces with **no model and no network** (a canned responder with a
-2.5 s delay drops in 2 of 6 runs; the same responder with no delay drops in 0 of
-6), and is the single thing between this suite and a green gate.
+**flowproof now works on an agent we do not own.** goose v1.44.0 records once
+against a real model and replays green offline with zero model calls, for about
+4 lines of glue and zero reads of goose's internals — the adoption story holds.
+Getting there required fixing **three** defects in flowproof itself, none of
+which its own examples could surface, because all three need an agent that makes
+a model call the harness does not expect: `record` dropped in-flight calls
+(fixed), positional matching could not survive concurrent calls (fixed), and
+`reply` picks whichever call happens to land last (**still open** — it makes
+`record` a coin flip, 2 successes in 3, though replay is stable once a good
+cassette exists).
 
 ---
 
@@ -51,69 +54,88 @@ latency, reproduces with **no model and no network** (a canned responder with a
 
 ---
 
-## B1 — THE BLOCKER
+## Defects found in flowproof, and their status
 
-> **Correction (iteration 4).** Iteration 3 committed the claim that B1 was
-> *positional cassette matching meeting a concurrent client*. **That was wrong.**
-> It was inferred from a correlation between arrival order and turn count, without
-> isolating the upstream. Isolating it reversed the result. The matcher is not
-> implicated, and the fix approved on that basis — matching unconsumed turns by
-> body — would not have fixed anything. Corrected account below.
+All three were found by running a third-party agent. flowproof's own
+`weather-node` example records and replays 2-for-2 throughout and could not have
+surfaced any of them: each needs an agent that makes a model call the harness
+does not expect. goose makes two — its task, and a session-title call it issues
+**concurrently** and does **not wait for**, even under `--no-session`.
 
-### What is actually true
+### D1 — `record` dropped in-flight model calls. FIXED (`26a5922`), verified.
 
-`record` **non-deterministically drops a model call that it forwarded and got an
-answer for**, and whether it does depends on **upstream latency**.
+Record read the cassette the moment the agent process exited, while the proxy
+pushes a turn only after the upstream answers. A call the agent fired without
+waiting for was still in flight, so it was forwarded, answered, and then silently
+missing from the trace. `record` exited **0** while doing it.
 
-Minimal reproduction, needing **no model, no network and no TLS** — a canned
-local responder with an artificial delay (`spike/probe_server.py`, `PROBE_DELAY`):
+Latency-driven, so a fast fake upstream hides it entirely. Verified by control —
+same tree, same build, back to back, slow canned upstream, 8 runs each:
 
-| upstream | runs | turns captured |
+| binary | turns captured | drops |
 |---|---|---|
-| canned, instant | 6 | **2, 2, 2, 2, 2, 2** — never drops |
-| canned, 2.5 s delay | 6 | **2, 1, 1, 2, 2, 2** — drops in 2 of 6 |
-| real model (~1–3 s) | 6 | **1, 2, 1, 2, 2, 2** — drops in 2 of 6 |
+| control (`26a5922~1`) | `2 1 1 2 2 2 1 2` | **3/8** |
+| with `AgentProxy::quiesce` | `2 2 2 2 2 2 2 2` | **0/8** |
 
-goose makes two calls (the task, and a session-title call it makes even under
-`--no-session`). Both are forwarded — confirmed at the upstream, which sits
-*behind* flowproof's proxy — and both are answered. Only one reliably reaches the
-cassette. `record` exits **0** every time.
+### D2 — positional matching could not survive concurrent calls. FIXED (`854a9f1`).
 
-Replay then fails whichever way the race went:
+With D1 fixed the cassette was complete and replay *still* failed:
 
-- 1-turn cassette → `FAIL: turn 2: the system under test made 2 model calls, the recording has 1`
-- 2-turn cassette → `FAIL: turn 1: message 0 (system) content changed` (it recorded the title call as turn 1)
-
-### What ruled out the alternatives
-
-| suspected | test | verdict |
-|---|---|---|
-| my TLS relay's chunked encoding | rewrote it to buffer with `content-length` | still drops — **not the relay** |
-| the relay at all | canned upstream, relay removed from the path | still drops when slow — **not the relay** |
-| the real model | canned responder, zero model calls | still drops — **not the model** |
-| recorder is generally lossy | `weather-node`, plus purpose-built trailing / concurrent / streaming agents in `spike/` | all record 2-for-2 — **not general** |
-| positional matching | isolated upstream | **disproven — this was the iteration-3 error** |
-
-### Mechanism: inferred, NOT yet proven
-
-Reading `crates/flowproof-cli/src/agent_flow.rs:1071`, record does:
-
-```rust
-let run = plan.drive(&proxy)?;   // returns when the agent process exits
-let cassette = proxy.captured(); // read immediately
-drop(proxy);
+```
+FAIL: turn 1: message 0 (system) content changed
+  recorded: Generate a short title (four words or less)...
+  replayed: You are a general-purpose AI agent called goose...
 ```
 
-and `agent_proxy.rs` pushes a turn to `captured` only *after* `forward()` returns
-from the upstream. So a call the agent fired but did not wait for is still being
-forwarded when the agent exits, and `captured()` reads before the push lands. A
-fast upstream wins the race; a slow one loses it. At replay the cassette is served
-instantly, so the same call always completes and always counts — which is exactly
-the record/replay asymmetry observed.
+At record the slow upstream call lands second; at replay the cassette answers
+instantly and the order inverts. `Cassette::match_turn` now consumes the earliest
+unconsumed turn whose body matches byte-for-byte. Bodies are still compared
+byte-for-byte, every turn is still consumed exactly once, an extra call still
+fails — only the order *between concurrent calls* is no longer asserted, because
+the agent does not guarantee it and a recording therefore cannot either.
 
-**This is consistent with every measurement above but has not been proven
-directly.** Proving it means draining in-flight requests before `captured()` and
-re-running the slow-canned experiment; the fix is correct iff that goes 6-for-6.
+This overturns "Position is the whole contract" (`cassette.rs`) and the deferral
+in `docs/agent-testing.md`: *"Reordering tolerance can be added if the field ever
+demands it; nothing has."* The field demanded it on the first third-party agent.
+
+### D3 — `reply` is whichever call lands last. **OPEN.**
+
+`reply` is defined as the last assistant message in the trajectory. goose's
+trailing title call is an assistant message, so with capture now correct the
+"reply" is often the **title** rather than the answer:
+
+```
+error: reply does not contain `Paris`; the agent's final message was `France's capital city`
+```
+
+Racy, measured over 3 records: title-last → record FAILS; task-last → record
+succeeds. **2 of 3 succeeded.** Before D1 was fixed this was masked, because the
+title call was usually dropped.
+
+Replay is unaffected once a good cassette exists — stored turn order is fixed, so
+the 3/3 green replays are stable. But `record` is a coin flip, and a spec author
+cannot tell a lucky record from a correct one.
+
+**Not fixed, deliberately.** "What is the reply when an agent makes
+non-conversational side calls?" is a semantics decision, not a bug with an
+obvious answer, and this loop has already been burned twice by acting on
+inference. Candidate answers worth weighing: the last message of the longest
+conversation thread; the last message of the turn whose history the agent
+actually continued; or an explicit spec-level selector.
+
+### D4 — the released package cannot run this suite. **OPEN, blocks CI.**
+
+Both fixes are local. npm `flowproof@0.7.0` has neither, and it also predates
+`FLOWPROOF_BIN`, so an adopter cannot point the released launcher at a patched
+build — it ignores the variable **silently**, with no error and no warning. That
+silence cost a full wrong measurement in iteration 5: a run that reported
+`1,2,2,2,1,1` and looked like "the fix failed" was the OLD binary all along. The
+only tell is the absent `flowproof: using FLOWPROOF_BIN=...` line the docs
+promise on every run.
+
+Consequence: **no CI job can be committed yet.** A CI job pinned to released
+0.7.0 would fail; one pinned to a local build would not be testing the released
+package. CI is unblocked by a release containing D1 and D2, not by more work here.
 
 ## Secondary findings (both worked around, neither blocking)
 
@@ -152,16 +174,54 @@ most adopters will not think of and that does not exist on macOS.
 
 | flow | recorded? | replays green? |
 |---|---|---|
-| `goose/smoke.flow.yaml` | YES | **NO** — B1 |
+| `goose/smoke.flow.yaml` | **YES**, against `claude-opus-5` | **YES — 3/3 offline** |
 
-Committed as the reproduction for B1, **not** as a passing test. No CI job, because
-nothing would pass. Priority flows 1–4 (`assert_no_egress`,
-`assert_no_secret_leak`, `mcp:` destructive guard, `strict: true`) are **not
-started** — the gate forbids it.
+The gate is **passed**: one real recorded trace, replaying green offline with the
+relay down and `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `FLOWPROOF_AGENT_UPSTREAM`
+and `OPENAI_BASE_URL` all unset. goose runs for real; the cassette drives it.
+
+Requires the patched binary (D1 + D2). No CI job yet — see D4, which is a release
+problem, not a suite problem. Priority flows 1–4 (`assert_no_egress`, `assert_no_secret_leak`, `mcp:`
+destructive guard, `strict: true`) are **now unblocked** and none is started.
+Flow 1 CAN run here — this container is Linux.
 
 ---
 
 ## Iteration log
+
+### Iteration 5 — fix D1 and D2, pass the gate
+
+**Shipped:** `AgentProxy::quiesce` (D1) and `Cassette::match_turn` (D2), both
+committed; **the first green offline replay of a third-party agent**, 3/3.
+Tests: `flowproof-trace` 67 passed, `flowproof-adapters` 62 passed with
+`--features agent`, 0 failed.
+
+**Found:**
+- D1 verified by proper control (worktree at the pre-fix commit, separate target
+  dir, main tree never dirtied): 3/8 drops without the fix, 0/8 with it.
+- D2 was hiding underneath D1 — fixing capture alone leaves goose unrecordable.
+- **D3, new and open:** `reply` picks whichever concurrent call lands last, so
+  `record` succeeds 2 times in 3. Masked until D1 was fixed.
+- **D4:** the `agent` cargo feature is **off by default**, so
+  `cargo test -p flowproof-adapters` compiles none of the agent-boundary code and
+  runs **1** test. Worth checking what CI passes for this crate.
+
+**Two process errors worth keeping, both mine:**
+1. A verification run using `FLOWPROOF_BIN` silently measured the OLD binary
+   (0.7.0 predates the flag). It reported what looked like "the fix failed". Only
+   the missing announcement line gave it away. **Check the tool honoured your
+   override before believing a measurement.**
+2. Reverting files in the working tree to build a control fights the commit hook.
+   A `git worktree` is the right instrument and cost nothing.
+
+**Deliberately not built:** D3's fix (a semantics decision, escalated); any second
+spec; any CI job (D4); the fake-model baseline.
+
+**Next iteration should:** decide D3, then build flow 1 (`assert_no_egress`) —
+the highest-value flow, runnable here, and the one no cheap substitute covers.
+Then the fake-model baseline, which is now a fair fight: the honest comparison is
+a ~100-line scripted server against a harness whose real cost included finding
+and fixing three defects.
 
 ### Iteration 4 — correct iteration 3, build a model-free reproduction (12:25 → 12:55 UTC)
 
