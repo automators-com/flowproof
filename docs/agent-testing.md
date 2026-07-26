@@ -91,6 +91,70 @@ The model said "call it"; the test proves your agent did not. That is a
 regression test you cannot practically run against a live model, because
 you would be paying to re-roll a dice you already know the face of.
 
+### Wiring a real agent: env, handles, and the record upstream
+
+The runtime contract, in one place, because an adopter whose agent is not a
+plain SDK loop hits all of it at once.
+
+**What flowproof injects into a `command:` agent:**
+
+| variable | value |
+|---|---|
+| `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_BASE` | the proxy, with `/v1` |
+| `ANTHROPIC_BASE_URL` | the proxy WITHOUT `/v1` (that SDK appends its own path) |
+| `FLOWPROOF_LLM_PROXY` | the same base again, for a client that takes it as an argument |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | placeholders, so a client that refuses to start without a key still starts |
+| `FLOWPROOF_PROMPT` | the task |
+| `FLOWPROOF_MCP_SERVER_<NAME>` / `FLOWPROOF_MCP_URL_<NAME>` | the stand-in for each declared MCP server |
+
+**If your client reads a different variable**, map it in `agent.env` using a
+runtime handle. The proxy binds an ephemeral port, so its URL cannot be
+written into a spec ahead of time; these are substituted at spawn:
+
+```yaml
+agent:
+  command: ./start-agent
+  env:
+    AI_GATEWAY_URL: "${flowproof.proxy_url}"          # includes /v1
+    OTHER_GATEWAY: "${flowproof.proxy_url_no_v1}"     # client appends its own
+    EXEC_MCP_BASE: "${flowproof.mcp_url.datamaker_exec}"
+```
+
+`agent.env` is applied LAST, so a mapping here overrides anything injected
+above. An unknown `${flowproof.*}` handle is passed through untouched rather
+than failing the run.
+
+**MCP paths.** The HTTP stand-in matches any path CONTAINING `/mcp`, so a
+client that derives `<base>/mcp`, `<base>/mcp-exec` and `<base>/mcp-exec/sap`
+from one base all route to the same stand-in. You do not need one listener
+per path; you need the base to point at the stand-in, which is what
+`${flowproof.mcp_url.<name>}` is for.
+
+**Recording needs a real model.** Replay needs nothing, but `record` has to
+call something. The upstream is read from, in order:
+
+1. `FLOWPROOF_AGENT_UPSTREAM` - an OpenAI-compatible base URL, including a
+   gateway. Use this when `OPENAI_BASE_URL` in your shell points somewhere
+   else.
+2. `OPENAI_BASE_URL` - the one a developer usually already has set.
+
+The key is read from `FLOWPROOF_AGENT_KEY`, then `ANTHROPIC_API_KEY`, then
+`OPENAI_API_KEY`. It goes into the outbound `Authorization` header and
+nowhere else: the trace stores request bodies only, so no key reaches disk.
+
+**What `assert: reply contains` reads.** The content of the LAST assistant
+message in the trajectory - taken from the model boundary, NOT from the
+agent's stdout. This matters for any agent that returns its answer over SSE,
+polling, a queue, or a subprocess boundary: none of that affects the
+assertion, because the reply is read where the model produced it. A
+trajectory whose last turn is a tool call has no reply yet, which is a real
+state rather than an empty string.
+
+**`assert_no_egress` is enforced on Linux only.** On macOS and Windows the
+run reports "not contained" and the assertion fails as a capability error
+rather than passing vacuously, so it will not silently certify nothing. See
+[Egress containment](#egress-containment).
+
 **Two limits to know before you start**, because they shape what a flow can
 express rather than being details you hit later:
 

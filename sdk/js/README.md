@@ -17,5 +17,7 @@ npx flowproof run specs/
 ```
 
 The Python SDK (`pip install flowproof`) remains the primary SDK and
-adds the programmatic API and MCP server. Docs and source:
-[github.com/automators-com/flowproof](https://github.com/automators-com/flowproof)
+adds the programmatic API and MCP server. Docs: [agent testing](https://github.com/automators-com/flowproof/blob/main/docs/agent-testing.md)
+(the runtime contract, assertion grammar, and the model-vs-MCP boundary) and
+[getting started](https://github.com/automators-com/flowproof/blob/main/docs/getting-started.md).
+Source: [github.com/automators-com/flowproof](https://github.com/automators-com/flowproof)

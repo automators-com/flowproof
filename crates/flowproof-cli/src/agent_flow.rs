@@ -1007,7 +1007,8 @@ fn unprotected_tool_warning(spec: &FlowSpec, plan: &Plan, phase: &str) -> Option
          intercept tool execution - {consequence}.\n         \
          For a tool with real side effects, declare it under `mcp:` with a `result:` \
          (flowproof answers it and the real server never runs it), or stub/sandbox it \
-         author-side. See docs/agent-testing.md."
+         author-side. See \
+         https://github.com/automators-com/flowproof/blob/main/docs/agent-testing.md."
     ))
 }
 
