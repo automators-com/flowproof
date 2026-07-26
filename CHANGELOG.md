@@ -16,6 +16,20 @@ together).
   `record` against a model, and a `run` that replays it with zero model calls.
   The same change of direction as 0.6.1's quickstart, applied to the hero
   image.
+- **The README's Status section stopped claiming v0.2.** It named a release
+  four minor versions behind the wheel it describes, and undercounted the
+  adapters ("all five" against six shipped). It now points at the badges for
+  the current release rather than hardcoding a number that can go stale again,
+  separates what is tested in CI from what is built with thinner coverage
+  (naming the agent-boundary paths whose record legs have no test), and states
+  the two limits a reader should know up front: an agent flow is one turn, and
+  egress containment is Linux-only.
+- **The README's Roadmap section is gone.** It listed shipped work as
+  "Planned, not yet shipped" — npm distribution of the CLI, and incremental
+  re-record, which is `record --reuse` today — so the one section whose job was
+  to separate plans from reality had stopped doing it. What works is covered by
+  "What works today"; the design notes it linked are now linked from
+  Contributing.
 - **The GIF is reproducible.** `scripts/demo/` holds the flow, the agent under
   test, a local OpenAI-compatible upstream so `record` needs no API key, and
   `make_readme_gif.py`, which captures the three commands and renders the
