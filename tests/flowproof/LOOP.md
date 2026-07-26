@@ -15,25 +15,24 @@ test pass.
 | | |
 |---|---|
 | goose tag (PINNED) | **v1.44.0** |
-| flowproof version | **0.7.0** + two local fixes (`26a5922`, `854a9f1`), NOT in any release |
+| flowproof version | **0.7.0** + three fixes (D1 `26a5922`, D2 `854a9f1`, D3 `a7338b7`) |
 | specs committed | **1** (`goose/smoke.flow.yaml`) |
 | traces recorded | **1**, real, against `claude-opus-5` |
-| **does it replay green?** | **YES — 3/3 offline, provider env unset, relay down** |
+| **does it replay green?** | **YES — record 6/6, replay 3/3 offline, provider env unset, relay down** |
 | CI state | **no job committed** — blocked on a RELEASE, not on the suite (see B4) |
 | iterations with no green trace | **4, then green on the 5th** |
 
 ## Current verdict
 
-**flowproof now works on an agent we do not own.** goose v1.44.0 records once
-against a real model and replays green offline with zero model calls, for about
-4 lines of glue and zero reads of goose's internals — the adoption story holds.
-Getting there required fixing **three** defects in flowproof itself, none of
-which its own examples could surface, because all three need an agent that makes
-a model call the harness does not expect: `record` dropped in-flight calls
-(fixed), positional matching could not survive concurrent calls (fixed), and
-`reply` picks whichever call happens to land last (**still open** — it makes
-`record` a coin flip, 2 successes in 3, though replay is stable once a good
-cassette exists).
+**flowproof works on an agent we do not own.** goose v1.44.0 records against a
+real model 6 times out of 6 and replays green offline 3 for 3, for 4 lines of
+glue in the spec and zero reads of goose's internals — the adoption story holds
+and was never the obstacle. What stood in the way was **three defects in
+flowproof**, all fixed and each verified by measurement: `record` dropped
+in-flight calls, positional matching could not survive concurrent calls, and
+`reply` took whichever call landed last. None could surface from flowproof's own
+examples, because all three need an agent that makes a model call the harness
+does not expect.
 
 ---
 
@@ -98,7 +97,7 @@ This overturns "Position is the whole contract" (`cassette.rs`) and the deferral
 in `docs/agent-testing.md`: *"Reordering tolerance can be added if the field ever
 demands it; nothing has."* The field demanded it on the first third-party agent.
 
-### D3 — `reply` is whichever call lands last. **OPEN.**
+### D3 — `reply` was whichever call landed last. FIXED (`a7338b7`), verified.
 
 `reply` is defined as the last assistant message in the trajectory. goose's
 trailing title call is an assistant message, so with capture now correct the
@@ -116,14 +115,23 @@ Replay is unaffected once a good cassette exists — stored turn order is fixed,
 the 3/3 green replays are stable. But `record` is a coin flip, and a spec author
 cannot tell a lucky record from a correct one.
 
-**Not fixed, deliberately.** "What is the reply when an agent makes
-non-conversational side calls?" is a semantics decision, not a bug with an
-obvious answer, and this loop has already been burned twice by acting on
-inference. Candidate answers worth weighing: the last message of the longest
-conversation thread; the last message of the turn whose history the agent
-actually continued; or an explicit spec-level selector.
+**Fixed.** Turns are grouped by system prompt — turns continuing one
+conversation share one, a housekeeping call brings its own. The thread with the
+most turns wins; ties go to the thread carrying the most request text, because
+the working conversation carries the agent's system prompt and tool schemas
+while a title call is small. Both halves are order-independent, which is the
+point.
 
-### D4 — the released package cannot run this suite. **OPEN, blocks CI.**
+Measured after the fix: **record 6/6** (was 2/3), replay unchanged at 3/3.
+
+**It is a heuristic and the limit is stated in the code and the docs:** an agent
+whose side conversation is BIGGER than its real one would defeat the tie-break.
+A single-system-prompt cassette — the ordinary case — takes the identical path
+it always did. Rejected alternatives: stdout (already rejected in the design,
+for good reasons) and history-prefix threading (both goose calls are
+single-turn, so it does not discriminate).
+
+### D4 — the released package cannot run this suite. **OPEN until a release ships.**
 
 Both fixes are local. npm `flowproof@0.7.0` has neither, and it also predates
 `FLOWPROOF_BIN`, so an adopter cannot point the released launcher at a patched
@@ -202,9 +210,11 @@ Tests: `flowproof-trace` 67 passed, `flowproof-adapters` 62 passed with
 - D2 was hiding underneath D1 — fixing capture alone leaves goose unrecordable.
 - **D3, new and open:** `reply` picks whichever concurrent call lands last, so
   `record` succeeds 2 times in 3. Masked until D1 was fixed.
-- **D4:** the `agent` cargo feature is **off by default**, so
+- The `agent` cargo feature is **off by default**, so a bare
   `cargo test -p flowproof-adapters` compiles none of the agent-boundary code and
-  runs **1** test. Worth checking what CI passes for this crate.
+  runs **1** test. CORRECTION: CI is fine — `.github/workflows/ci.yml` runs
+  `cargo test --workspace --all-features`. This is a local-developer footgun, not
+  a CI gap; an earlier iteration reported it as one.
 
 **Two process errors worth keeping, both mine:**
 1. A verification run using `FLOWPROOF_BIN` silently measured the OLD binary
