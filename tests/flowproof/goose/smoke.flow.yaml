@@ -1,0 +1,27 @@
+name: goose answers a trivial question with no extensions
+app: agent
+agent:
+  # goose's own single-turn entry point. No wrapper, no bespoke harness.
+  # OPENAI_BASE_URL is injected by flowproof and read by goose unmodified;
+  # --no-profile suppresses goose's default extensions so the tool set is
+  # deterministic and this flow exercises the model boundary only.
+  # IFS= disables word splitting, so the prompt reaches -t as ONE argument
+  # without needing quotes inside the command (flowproof's tokenizer consumes
+  # double quotes and does not treat single quotes as grouping).
+  command: sh -c "IFS=; exec goose run --no-session --no-profile -t $FLOWPROOF_PROMPT"
+  env:
+    GOOSE_PROVIDER: openai
+    GOOSE_MODEL: claude-opus-5
+    # goose stamps a <turn-context> block with the CURRENT TIME into every user
+    # message, so the request body differs on every run and flowproof's strict
+    # cassette matching can never match on replay. Freezing the clock is the
+    # only way to make goose deterministic at the model boundary. Costs a
+    # system package (libfaketime) and these two lines. See LOOP.md.
+    LD_PRELOAD: /usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
+    FAKETIME: "2026-01-01 00:00:00"
+    # Freezing CLOCK_MONOTONIC as well makes goose's async timers never fire
+    # and the run hangs forever. Only the wall clock may be frozen.
+    FAKETIME_DONT_FAKE_MONOTONIC: "1"
+steps:
+  - prompt: What is the capital of France? Reply with just the city name.
+  - assert: reply contains Paris
