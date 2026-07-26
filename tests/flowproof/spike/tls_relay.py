@@ -40,17 +40,19 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(str(e).encode())
             return
+        # Buffer the whole body and send it with an exact content-length.
+        # Hand-rolled chunked encoding here was silently dropping the second
+        # of two near-simultaneous responses, which looked exactly like a
+        # flowproof capture bug. flowproof always forwards upstream
+        # non-streaming, so there is nothing to stream and nothing to gain.
+        body = r.content
         self.send_response(r.status_code)
         for k, v in r.headers.items():
             if k.lower() not in HOP:
                 self.send_header(k, v)
-        self.send_header("transfer-encoding", "chunked")
+        self.send_header("content-length", str(len(body)))
         self.end_headers()
-        for chunk in r.iter_content(chunk_size=None):
-            if chunk:
-                self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
-                self.wfile.flush()
-        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.write(body)
         self.wfile.flush()
 
     def do_POST(self):

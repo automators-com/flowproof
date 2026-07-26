@@ -45,6 +45,9 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(n) if n else b""
         self._log(body)
+        # Simulate a real model's latency, to expose races that an instant
+        # upstream hides.
+        time.sleep(float(os.environ.get("PROBE_DELAY", "0")))
         if "messages" in self.path and "chat" not in self.path:
             self._send(ANTHROPIC_REPLY)
         else:
