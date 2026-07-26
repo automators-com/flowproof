@@ -239,6 +239,56 @@ fn message_divergence(recorded: &[Message], incoming: &[Message]) -> Option<Stri
     None
 }
 
+/// How `incoming` differs from a recorded `turn`, or `None` if they are the
+/// same call. Factored out of positional lookup so the same byte-exact
+/// comparison can both SELECT a turn and EXPLAIN a mismatch.
+fn turn_divergence(turn: &Turn, incoming: &TurnRequest, protocol: &str) -> Option<String> {
+let recorded = &turn.request;
+
+    // Protocol is the FIRST thing compared: a turn recorded in one API
+    // dialect and replayed in another is not the same conversation at
+    // all, and saying so plainly beats a body diff between two shapes.
+    if turn.protocol != protocol {
+        return Some(format!(
+                "protocol changed: recorded {}, replayed {}",
+                turn.protocol, protocol
+        ));
+    }
+
+    // Envelope first: these are the differences a human can act on
+    // immediately, and reporting them alongside a body diff would bury
+    // them.
+    let (want, got) = (Envelope::of(recorded), Envelope::of(incoming));
+    if want.model != got.model {
+        return Some(format!(
+                "model changed: recorded {}, replayed {}",
+                want.model, got.model
+        ));
+    }
+    if want.tools != got.tools {
+        return Some(format!(
+                "tools offered changed\n  recorded: [{}]\n  replayed: [{}]",
+                want.tools.join(", "),
+                got.tools.join(", ")
+        ));
+    }
+    if want.roles != got.roles {
+        return Some(format!(
+                "conversation shape changed: recorded {} messages [{}], replayed {} [{}]",
+                want.roles.len(),
+                want.roles.join(", "),
+                got.roles.len(),
+                got.roles.join(", ")
+        ));
+    }
+
+if let Some(detail) = message_divergence(&recorded.messages, &incoming.messages) {
+    return Some(detail);
+}
+None
+}
+
+
 impl Cassette {
     pub fn is_empty(&self) -> bool {
         self.turns.is_empty()
@@ -271,64 +321,72 @@ impl Cassette {
                 ),
             });
         };
-        let recorded = &turn.request;
-
-        // Protocol is the FIRST thing compared: a turn recorded in one API
-        // dialect and replayed in another is not the same conversation at
-        // all, and saying so plainly beats a body diff between two shapes.
-        if turn.protocol != protocol {
-            return Err(Divergence {
-                turn: index,
-                detail: format!(
-                    "protocol changed: recorded {}, replayed {}",
-                    turn.protocol, protocol
-                ),
-            });
-        }
-
-        // Envelope first: these are the differences a human can act on
-        // immediately, and reporting them alongside a body diff would bury
-        // them.
-        let (want, got) = (Envelope::of(recorded), Envelope::of(incoming));
-        if want.model != got.model {
-            return Err(Divergence {
-                turn: index,
-                detail: format!(
-                    "model changed: recorded {}, replayed {}",
-                    want.model, got.model
-                ),
-            });
-        }
-        if want.tools != got.tools {
-            return Err(Divergence {
-                turn: index,
-                detail: format!(
-                    "tools offered changed\n  recorded: [{}]\n  replayed: [{}]",
-                    want.tools.join(", "),
-                    got.tools.join(", ")
-                ),
-            });
-        }
-        if want.roles != got.roles {
-            return Err(Divergence {
-                turn: index,
-                detail: format!(
-                    "conversation shape changed: recorded {} messages [{}], replayed {} [{}]",
-                    want.roles.len(),
-                    want.roles.join(", "),
-                    got.roles.len(),
-                    got.roles.join(", ")
-                ),
-            });
-        }
-
-        if let Some(detail) = message_divergence(&recorded.messages, &incoming.messages) {
-            return Err(Divergence {
+        turn_divergence(turn, incoming, protocol)
+            .map(|detail| Divergence {
                 turn: index,
                 detail,
-            });
+            })
+            .map_or(Ok(&turn.response), Err)
+    }
+
+    /// Serve the recorded turn that matches `incoming`, consuming it.
+    ///
+    /// Position was the whole contract in v1, and that assumed a strictly
+    /// sequential trajectory. Real agents break it: goose issues its task
+    /// call and a session-title call CONCURRENTLY, so which arrives first
+    /// is a race. Record sees one order (the slow upstream call lands
+    /// second), replay sees the other (the cassette answers instantly), and
+    /// a positional matcher calls that a divergence when nothing about the
+    /// agent changed.
+    ///
+    /// What stays strict is the part that catches regressions: bodies are
+    /// still compared byte-for-byte, every recorded turn must still be
+    /// consumed exactly once, and an extra call is still a failure. Only
+    /// the ORDER between concurrent calls is no longer asserted, because
+    /// the agent does not guarantee it and neither can a recording.
+    ///
+    /// `consumed` is the caller's per-run state, one flag per recorded
+    /// turn; it is resized on first use.
+    pub fn match_turn(
+        &self,
+        consumed: &mut Vec<bool>,
+        incoming: &TurnRequest,
+        protocol: &str,
+    ) -> Result<(usize, &TurnResponse), Divergence> {
+        if consumed.len() < self.turns.len() {
+            consumed.resize(self.turns.len(), false);
         }
-        Ok(&turn.response)
+        let served = consumed.iter().filter(|c| **c).count();
+        let Some(first_open) = consumed.iter().position(|c| !*c) else {
+            return Err(Divergence {
+                turn: served,
+                detail: format!(
+                    "the system under test made {} model calls, the recording has {}",
+                    served + 1,
+                    self.turns.len()
+                ),
+            });
+        };
+        // Earliest unconsumed exact match wins, so a strictly sequential
+        // trajectory still matches turn-for-turn exactly as it did in v1.
+        for (i, turn) in self.turns.iter().enumerate().skip(first_open) {
+            if consumed[i] {
+                continue;
+            }
+            if turn_divergence(turn, incoming, protocol).is_none() {
+                consumed[i] = true;
+                return Ok((i, &turn.response));
+            }
+        }
+        // Nothing matched. Report against the first unconsumed turn: for a
+        // sequential trajectory that IS the turn the agent diverged at, so
+        // the message is unchanged from v1.
+        let detail = turn_divergence(&self.turns[first_open], incoming, protocol)
+            .unwrap_or_else(|| "the call did not match any unconsumed recorded turn".to_string());
+        Err(Divergence {
+            turn: first_open,
+            detail,
+        })
     }
 
     /// Every tool call in the trajectory, in order, paired with the turn

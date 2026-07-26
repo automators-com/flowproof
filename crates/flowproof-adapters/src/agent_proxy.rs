@@ -140,6 +140,10 @@ impl AgentProxy {
             let (activity, in_flight) = (Arc::clone(&activity), Arc::clone(&in_flight));
             std::thread::spawn(move || {
                 let mut turn = 0usize;
+                // One flag per recorded turn, marking the ones already
+                // served. Matching consumes rather than indexes, so an
+                // agent that issues calls concurrently still replays.
+                let mut consumed: Vec<bool> = Vec::new();
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
@@ -152,7 +156,15 @@ impl AgentProxy {
                             // missed from the trace.
                             in_flight.fetch_add(1, Ordering::SeqCst);
                             activity.fetch_add(1, Ordering::SeqCst);
-                            serve_one(stream, &mode, &mocks, &mut turn, &log, &captured);
+                            serve_one(
+                                stream,
+                                &mode,
+                                &mocks,
+                                &mut turn,
+                                &mut consumed,
+                                &log,
+                                &captured,
+                            );
                             in_flight.fetch_sub(1, Ordering::SeqCst);
                             activity.fetch_add(1, Ordering::SeqCst);
                         }
@@ -256,6 +268,7 @@ fn serve_one(
     mode: &Mode,
     mocks: &Mocks,
     turn: &mut usize,
+    consumed: &mut Vec<bool>,
     log: &Mutex<ProxyLog>,
     captured: &Mutex<Vec<Turn>>,
 ) {
@@ -353,12 +366,11 @@ fn serve_one(
         }
     };
 
-    let index = *turn;
     *turn += 1;
 
     match mode {
-        Mode::Replay(cassette) => match cassette.turn(index, &incoming, protocol) {
-            Ok(recorded) => {
+        Mode::Replay(cassette) => match cassette.match_turn(consumed, &incoming, protocol) {
+            Ok((_index, recorded)) => {
                 log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
                 // Render the recorded assistant message in the dialect the
                 // agent asked in. OpenAI honors `stream: true` with a
