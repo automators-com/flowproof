@@ -130,6 +130,21 @@ from one base all route to the same stand-in. You do not need one listener
 per path; you need the base to point at the stand-in, which is what
 `${flowproof.mcp_url.<name>}` is for.
 
+**A record run that captures nothing FAILS.** If zero model requests reach
+the proxy, `record` errors and writes NO trace. That is the one failure a
+determinism tool must never let through: an agent that reached the real
+provider instead of the proxy would otherwise leave a cassette that replays
+green while proving nothing. The error names the likely cause, because it is
+usually invisible - a client whose base URL comes from a config object or a
+custom variable never sees the standard ones flowproof injects. There is no
+opt-out: a flow that legitimately makes no model calls is not an `app: agent`
+flow.
+
+Related, and worth knowing before you go hunting: the proxy routes on a
+SUBSTRING of the path, so a base URL with a doubled `/v1` still reaches it.
+Picking `${flowproof.proxy_url}` where you wanted `${flowproof.proxy_url_no_v1}`
+is therefore not a silent failure mode.
+
 **Recording needs a real model.** Replay needs nothing, but `record` has to
 call something. The upstream is read from, in order:
 

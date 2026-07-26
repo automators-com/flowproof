@@ -936,8 +936,42 @@ fn require_progress(run: &AgentRun, cassette: &Cassette, plan: &Plan) -> Result<
         ));
     }
     if cassette.is_empty() {
+        // This is the failure a determinism tool must never let pass, so it
+        // is worth spending words on. An agent that reached the real
+        // provider instead of the proxy produces a green-looking run that
+        // proves nothing - except that recording refuses to mint a trace,
+        // which is what keeps it honest. Naming the likely cause matters
+        // because the usual one is invisible: a client whose base URL comes
+        // from a config object or a custom variable never sees the standard
+        // ones flowproof injects.
+        let custom_env = plan
+            .env
+            .keys()
+            .filter(|k| {
+                !k.starts_with("FLOWPROOF_") && !k.contains("OPENAI") && !k.contains("ANTHROPIC")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mapped = if custom_env.is_empty() {
+            "This flow maps no custom variables. If your client reads one \
+             (an AI gateway URL, a config object it builds itself), map it in \
+             `agent.env` with `${flowproof.proxy_url}` or \
+             `${flowproof.proxy_url_no_v1}`."
+                .to_string()
+        } else {
+            format!(
+                "This flow maps {}. Check the value actually reaches the process \
+                 that makes the model call - a client that spawns a child may not \
+                 pass it down.",
+                custom_env.join(", ")
+            )
+        };
         let message = format!(
-            "the agent made no model calls; it exited {} without talking to the proxy.\n\
+            "0 model requests reached the proxy, so there is nothing to record and \
+             no trace was written.\n\
+             The agent exited {} without talking to the proxy, which usually means \
+             it called the real provider instead.\n\
+             {mapped}\n\
              stderr:\n{}",
             run.exit_code
                 .map(|c| c.to_string())
@@ -1510,6 +1544,65 @@ mod tests {
         assert_eq!(
             unprotected_tool_warning(&spec, &egress_plan(false, vec![]), "record"),
             None
+        );
+    }
+
+    fn empty_run() -> AgentRun {
+        AgentRun {
+            served: 0,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: "agent finished".into(),
+            upstream_error: None,
+            egress: Default::default(),
+            divergence: None,
+            timed_out: false,
+        }
+    }
+
+    /// The failure a determinism tool must never let pass: the agent talked
+    /// to the real provider, so nothing was captured. It must be an ERROR
+    /// (no trace is written), and it must say WHY, because the usual cause
+    /// is invisible - a client whose base URL comes from somewhere other
+    /// than the variables flowproof injects.
+    #[test]
+    fn zero_captured_requests_fails_and_names_the_likely_cause() {
+        let plan = egress_plan(false, vec![]);
+        let err = require_progress(&empty_run(), &Cassette::default(), &plan)
+            .expect_err("an empty cassette must fail the record");
+        assert!(err.contains("0 model requests"), "{err}");
+        assert!(err.contains("no trace was written"), "{err}");
+        // The actionable half: what to do about it.
+        assert!(err.contains("agent.env"), "{err}");
+        assert!(err.contains("flowproof.proxy_url"), "{err}");
+    }
+
+    /// When the flow DOES map a custom variable, the advice changes: the
+    /// mapping exists, so the suspect is whether it reaches the process
+    /// that actually calls the model. That is the multi-process case.
+    #[test]
+    fn a_custom_mapping_is_named_and_the_advice_shifts_to_child_processes() {
+        let mut plan = egress_plan(false, vec![]);
+        plan.env
+            .insert("AI_GATEWAY_URL".into(), "http://127.0.0.1:1".into());
+        let err =
+            require_progress(&empty_run(), &Cassette::default(), &plan).expect_err("still fails");
+        assert!(err.contains("AI_GATEWAY_URL"), "names the mapping: {err}");
+        assert!(err.contains("child"), "points at the child process: {err}");
+    }
+
+    /// A record run whose upstream failed is a different diagnosis and must
+    /// not be reported as "you wired the proxy wrong".
+    #[test]
+    fn an_upstream_failure_is_reported_as_itself() {
+        let mut run = empty_run();
+        run.upstream_error = Some("connection refused".into());
+        let err = require_progress(&run, &Cassette::default(), &egress_plan(false, vec![]))
+            .expect_err("upstream failure fails");
+        assert!(err.contains("touched the real model"), "{err}");
+        assert!(
+            !err.contains("0 model requests"),
+            "not the wiring message: {err}"
         );
     }
 
