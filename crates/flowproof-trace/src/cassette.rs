@@ -253,15 +253,15 @@ fn message_divergence(recorded: &[Message], incoming: &[Message]) -> Option<Stri
 /// same call. Factored out of positional lookup so the same byte-exact
 /// comparison can both SELECT a turn and EXPLAIN a mismatch.
 fn turn_divergence(turn: &Turn, incoming: &TurnRequest, protocol: &str) -> Option<String> {
-let recorded = &turn.request;
+    let recorded = &turn.request;
 
     // Protocol is the FIRST thing compared: a turn recorded in one API
     // dialect and replayed in another is not the same conversation at
     // all, and saying so plainly beats a body diff between two shapes.
     if turn.protocol != protocol {
         return Some(format!(
-                "protocol changed: recorded {}, replayed {}",
-                turn.protocol, protocol
+            "protocol changed: recorded {}, replayed {}",
+            turn.protocol, protocol
         ));
     }
 
@@ -271,33 +271,32 @@ let recorded = &turn.request;
     let (want, got) = (Envelope::of(recorded), Envelope::of(incoming));
     if want.model != got.model {
         return Some(format!(
-                "model changed: recorded {}, replayed {}",
-                want.model, got.model
+            "model changed: recorded {}, replayed {}",
+            want.model, got.model
         ));
     }
     if want.tools != got.tools {
         return Some(format!(
-                "tools offered changed\n  recorded: [{}]\n  replayed: [{}]",
-                want.tools.join(", "),
-                got.tools.join(", ")
+            "tools offered changed\n  recorded: [{}]\n  replayed: [{}]",
+            want.tools.join(", "),
+            got.tools.join(", ")
         ));
     }
     if want.roles != got.roles {
         return Some(format!(
-                "conversation shape changed: recorded {} messages [{}], replayed {} [{}]",
-                want.roles.len(),
-                want.roles.join(", "),
-                got.roles.len(),
-                got.roles.join(", ")
+            "conversation shape changed: recorded {} messages [{}], replayed {} [{}]",
+            want.roles.len(),
+            want.roles.join(", "),
+            got.roles.len(),
+            got.roles.join(", ")
         ));
     }
 
-if let Some(detail) = message_divergence(&recorded.messages, &incoming.messages) {
-    return Some(detail);
+    if let Some(detail) = message_divergence(&recorded.messages, &incoming.messages) {
+        return Some(detail);
+    }
+    None
 }
-None
-}
-
 
 impl Cassette {
     pub fn is_empty(&self) -> bool {
@@ -558,7 +557,10 @@ mod tests {
             with tools and a long standing system prompt that carries the work.";
         let task = openai_turn(
             request(
-                vec![msg("system", agent_system), msg("user", "capital of France?")],
+                vec![
+                    msg("system", agent_system),
+                    msg("user", "capital of France?"),
+                ],
                 &[],
             ),
             said("Paris"),
@@ -601,7 +603,11 @@ mod tests {
                 ),
                 openai_turn(
                     request(
-                        vec![msg("system", sys), msg("user", "hi"), msg("user", "and now?")],
+                        vec![
+                            msg("system", sys),
+                            msg("user", "hi"),
+                            msg("user", "and now?"),
+                        ],
                         &[],
                     ),
                     said("goodbye"),
