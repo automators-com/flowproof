@@ -1,0 +1,69 @@
+{
+  "app": "agent",
+  "mocks": {},
+  "cassette": {
+    "turns": [
+      {
+        "request": {
+          "model": "claude-sonnet-4-5",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Where is my order A-4471?"
+            }
+          ],
+          "tools": [
+            "lookup_order"
+          ]
+        },
+        "response": {
+          "message": {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "id": "call_1",
+                "name": "lookup_order",
+                "arguments": "{\"order_id\": \"A-4471\"}"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "request": {
+          "model": "claude-sonnet-4-5",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Where is my order A-4471?"
+            },
+            {
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "id": "call_1",
+                  "name": "lookup_order",
+                  "arguments": "{\"order_id\": \"A-4471\"}"
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"id\": \"A-4471\", \"status\": \"shipped\", \"carrier\": \"DPD\", \"total_eur\": 240}",
+              "tool_call_id": "call_1"
+            }
+          ],
+          "tools": [
+            "lookup_order"
+          ]
+        },
+        "response": {
+          "message": {
+            "role": "assistant",
+            "content": "Order A-4471 has shipped and is on its way."
+          }
+        }
+      }
+    ]
+  }
+}

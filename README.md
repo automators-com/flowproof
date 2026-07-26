@@ -31,7 +31,13 @@ Product page: [automators.ai/flowproof](https://automators.ai/flowproof)
   <img alt="Selenium (2004), Robot Framework (2008), Playwright (2020), Flowproof (2026): agents author, a deterministic engine executes — across web, desktop, and Citrix" src="docs/assets/lineage-light.svg" width="880">
 </picture>
 
-![flowproof demo: record and replay a Calculator flow](docs/assets/flowproof-demo.gif)
+<img alt="An agent flow: a short YAML spec, one flowproof record against a model, then flowproof run replaying it to PASS with zero model calls" src="docs/assets/flowproof-demo.gif" width="880">
+
+One spec, one `record` against a real model, then `run` forever with none. The
+frames are a capture of [`scripts/demo/`](scripts/demo/) actually running, not a
+mock-up. The same three commands carry the guard path — add
+`assert_no_tool_call` and the call an agent must *never* make is proven on every
+commit ([docs/agent-testing.md](docs/agent-testing.md)).
 
 ## How it works
 

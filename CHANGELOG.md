@@ -4,6 +4,27 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## Unreleased
+
+### Changed
+
+- **The README's demo GIF shows an agent test, not a Windows Calculator
+  flow.** The README opens on testing an AI agent at the model boundary and
+  then illustrated it with `app: calc` — an example that needs a Windows
+  desktop, so the one moving picture on the front page was of the one thing
+  most readers cannot run. It now shows an `app: agent` flow: the spec, one
+  `record` against a model, and a `run` that replays it with zero model calls.
+  The same change of direction as 0.6.1's quickstart, applied to the hero
+  image.
+- **The GIF is reproducible.** `scripts/demo/` holds the flow, the agent under
+  test, a local OpenAI-compatible upstream so `record` needs no API key, and
+  `make_readme_gif.py`, which captures the three commands and renders the
+  frames from their real output — so the asset cannot drift from what the CLI
+  actually prints. The previous GIF had no source in the repository. The demo
+  cassette is committed and deterministic, so
+  `flowproof run scripts/demo/order-status.flow.yaml` passes on a fresh clone
+  with no key, and a `readme_demo_spec_resolves` test keeps the spec parsing.
+
 ## 0.6.1
 
 ### Fixed
