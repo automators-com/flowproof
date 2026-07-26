@@ -24,9 +24,10 @@ class H(BaseHTTPRequestHandler):
             j = __import__("json").loads(body or b"{}")
             msgs = j.get("messages", [])
             with open(os.environ.get("RELAY_LOG", "/tmp/relay_calls.log"), "a") as f:
-                f.write("CALL %s nmsgs=%d roles=%s last=%r\n" % (
-                    self.path, len(msgs), [m.get("role") for m in msgs],
-                    str(msgs[-1].get("content"))[:120] if msgs else ""))
+                f.write("CALL %s model=%s stream=%s nmsgs=%d keys=%s last=%r\n" % (
+                    self.path, j.get("model"), j.get("stream"), len(msgs),
+                    sorted(j.keys()),
+                    str(msgs[-1].get("content"))[:80] if msgs else ""))
         except Exception:
             pass
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
