@@ -53,6 +53,46 @@ together).
   `flowproof run scripts/demo/order-status.flow.yaml` passes on a fresh clone
   with no key, and a `readme_demo_spec_resolves` test keeps the spec parsing.
 
+## 0.7.0
+
+### Added
+
+- **The proxy and the MCP stand-ins are addressable from a spec.** The proxy
+  binds an ephemeral port, so its URL could not be written into a spec ahead
+  of time: an agent whose client reads a non-standard variable could not be
+  pointed at it at all, and every such adopter wrote the same wrapper script.
+  `agent.env` values now substitute runtime handles at spawn:
+
+  ```yaml
+  agent:
+    command: ./start-agent
+    env:
+      AI_GATEWAY_URL: "${flowproof.proxy_url}"        # includes /v1
+      OTHER_GATEWAY:  "${flowproof.proxy_url_no_v1}"  # client appends its own
+      EXEC_MCP_BASE:  "${flowproof.mcp_url.my_server}"
+  ```
+
+  `agent.env` is applied last, so a mapping here overrides the standard
+  variables flowproof injects. An unknown `${flowproof.*}` handle passes
+  through untouched rather than failing the run.
+
+### Changed
+
+- **The agent runtime contract is documented in one place**: every variable
+  flowproof injects, that `agent.env` overrides them, the record-time
+  upstream (`FLOWPROOF_AGENT_UPSTREAM` then `OPENAI_BASE_URL`, keys from
+  `FLOWPROOF_AGENT_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), and that
+  the HTTP MCP stand-in matches ANY path containing `/mcp` - so a client
+  deriving `<base>/mcp-exec/sap` from one base needs no per-path plumbing.
+  All were true before and undocumented, which cost an adopter real time.
+- **`assert: reply contains` is documented as reading the model boundary**,
+  not the agent's stdout: it is the last assistant message in the
+  trajectory. An agent that returns its answer over SSE, polling or a queue
+  is unaffected.
+- **The unprotected-tool warning points at a URL** rather than
+  `docs/agent-testing.md`, which an npm installer does not have on disk.
+  The npm README links the docs directly.
+
 ## 0.6.1
 
 ### Fixed
