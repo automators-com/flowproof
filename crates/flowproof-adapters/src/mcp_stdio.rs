@@ -23,8 +23,13 @@
 //! - `<DIR>/<server>.plan.json` - written by the orchestrator BEFORE the
 //!   agent is spawned: `{mode, command, mocks, calls}` (`calls` is the lane
 //!   to serve, present for replay).
-//! - `<DIR>/<server>.out.json` - written by the stand-in ATOMICALLY at stdin
-//!   EOF: record -> `{calls: [...]}`; replay -> `{served, divergence}`.
+//! - `<DIR>/<server>.out.json` - written by the stand-in ATOMICALLY (temp
+//!   file + rename): record -> `{calls: [...]}`; replay ->
+//!   `{served, divergence}`. In RECORD it is rewritten after every captured
+//!   call, not only at stdin EOF, because reaching EOF needs the agent to
+//!   close the stand-in's stdin and an agent that kills its MCP subprocess
+//!   never gets there - which used to lose the whole recording. The EOF write
+//!   remains the authoritative last one.
 //!
 //! No async runtime, matching the model proxy's posture: std threads, plain
 //! pipes, one blocking read loop per direction.
@@ -220,6 +225,40 @@ fn run_replay(plan: &McpPlan, out_path: &Path) -> Result<(), String> {
     )
 }
 
+/// Persist the captured lane NOW, so an abrupt shutdown cannot lose it.
+///
+/// The authoritative write is still the one at stdin EOF, but reaching it
+/// requires the agent to close the stand-in's stdin and let it reap the real
+/// server. An agent that terminates its MCP subprocess abruptly never gets
+/// there - goose does exactly this - and the whole recording was lost, which
+/// then read as "the agent never spawned flowproof's MCP stand-in": a false
+/// negative pointing the adopter at wiring that was already correct.
+///
+/// `write_out_atomic` is a temp-file rename, so a partial flush is never
+/// observable and the last one wins. Errors are swallowed: a failed
+/// incremental flush must not break a run that the EOF write may still save.
+fn flush_lane(
+    out_path: &std::path::Path,
+    calls: &Mutex<BTreeMap<usize, McpCall>>,
+    events: &Mutex<Vec<McpServerEvent>>,
+) {
+    let captured: Vec<McpCall> = calls
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .cloned()
+        .collect();
+    let events: Vec<McpServerEvent> = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let _ = write_out_atomic(
+        out_path,
+        &McpOut {
+            calls: captured,
+            events,
+            ..Default::default()
+        },
+    );
+}
+
 /// RECORD: two threads bridge the agent and the REAL server.
 ///
 /// Thread A (this thread) reads the agent's stdin: a mocked `tools/call` is
@@ -307,6 +346,7 @@ fn run_record(plan: &McpPlan, out_path: &Path) -> Result<(), String> {
         let seq = Arc::clone(&seq);
         let events = Arc::clone(&events);
         let record_error = Arc::clone(&record_error);
+        let out_path_b = out_path.to_path_buf();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(server_stdout);
             let mut line = String::new();
@@ -373,6 +413,7 @@ fn run_record(plan: &McpPlan, out_path: &Path) -> Result<(), String> {
                                         result,
                                     },
                                 );
+                                flush_lane(&out_path_b, &calls, &events);
                             }
                         }
                         (None, None) => {}
@@ -434,6 +475,7 @@ fn run_record(plan: &McpPlan, out_path: &Path) -> Result<(), String> {
                     result: result.clone(),
                 },
             );
+            flush_lane(out_path, &calls, &events);
             let mut out = write_lock.lock().unwrap_or_else(|e| e.into_inner());
             write_result(&mut *out, &id, &result)?;
         } else {

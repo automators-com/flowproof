@@ -6,6 +6,70 @@ together).
 
 ## Unreleased
 
+## 0.8.0
+
+Everything here was found by pointing flowproof at **goose** — a third-party
+agent nobody here wrote. None of it was reachable from flowproof's own
+examples: `weather-node` records and replays cleanly through all of it. Each
+defect needed an agent doing something the harness did not anticipate, and every
+one of them first presented as the ADOPTER's bug.
+
+### Fixed
+
+- **`record` dropped a model call the agent fired but did not wait for.** The
+  cassette was read the moment the agent process exited, while the proxy pushes
+  a turn only after the upstream answers, so a call still in flight was
+  forwarded, answered, and silently missing from the trace — and `record` exited
+  0 while doing it. Latency-driven, so a fast fake upstream hid it entirely:
+  measured 3 drops in 8 runs against a 2.5s upstream, 0 in 8 after the fix.
+
+- **Cassette matching no longer asserts the ORDER of concurrent calls.** An agent
+  that issues two model calls concurrently sends them in one order at record and
+  the other at replay, and a positional matcher called that a divergence when
+  nothing about the agent had changed. Matching is now by BODY, byte-for-byte,
+  with every recorded turn consumed exactly once — an extra call still fails, an
+  edited prompt template still fails, and a sequential trajectory still matches
+  turn-for-turn. This retires the "reordering tolerance… nothing has [demanded
+  it]" note in the design: the first third-party agent demanded it.
+
+- **`reply` no longer picks up an agent's side conversation.** An agent may talk
+  to the model about something other than the task — goose asks it to name the
+  session, concurrently and without waiting — and its answer is an assistant
+  message, so "the last one" was a coin flip. Turns are now grouped by system
+  prompt and the reply comes from the thread doing the work. Record went from 2
+  successes in 3 to 6 in 6. A heuristic, with its limit stated in the code: an
+  agent whose side conversation is larger than its real one would defeat it.
+
+- **Egress containment denied every MULTI-THREADED agent.** `dup_child_fd` called
+  `pidfd_open` on the seccomp notification's pid, which is a TID, and
+  `pidfd_open` only accepts a thread-group leader — so any socket opened from a
+  worker thread was refused, against an ALLOWED destination. It presented as a
+  network error, not a containment bug. Python and Node agents do their
+  networking on the main thread, which is why nothing caught it. Now resolves the
+  leader from `/proc/<tid>/status` and retries.
+
+- **The MCP stand-in no longer loses its recording when the agent kills it.** The
+  lane was written only at stdin EOF, which needs the agent to close the
+  stand-in's stdin; an agent that terminates its MCP subprocess abruptly never
+  got there, and the whole recording was lost. The lane is now persisted after
+  every captured call, atomically.
+
+- **The unprotected-tool warning understands MCP tool namespacing.** A client
+  normally namespaces a server's tools, so a tool intercepted under `mcp:` as
+  `delete_all` reaches the model as `files__delete_all`, and comparing the names
+  literally warned that a CORRECTLY intercepted tool was unprotected. Matching is
+  now on a namespace separator only, never a bare substring, so a genuinely
+  unprotected tool is still named.
+
+### Documentation
+
+- `docs/adopting.md` gains two limits the goose campaign measured: an agent that
+  stamps wall-clock time into its prompt cannot replay under byte-exact matching
+  (with the libfaketime workaround and its mandatory monotonic exemption), and
+  the tool name an assertion matches is the model-boundary name, not the MCP
+  name.
+
+
 ### Changed
 
 - **The README's demo GIF shows an agent test, not a Windows Calculator

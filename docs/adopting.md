@@ -158,6 +158,25 @@ every commit, for free.
 - **`assert_no_egress` is Linux-only.** Elsewhere it fails as a capability
   error rather than passing vacuously, so keep it out of flows that must
   pass on a developer Mac.
+- **An agent that stamps WALL-CLOCK TIME into its prompt cannot replay.**
+  Matching is byte-exact, so an agent that prefixes each turn with the current
+  time (or a session id, or the working directory) sends a different request
+  every run and diverges at turn 1. Check for this in Step 1 by recording twice
+  and diffing the two traces - it is much cheaper to find there than after you
+  have written flows. The workaround is to freeze the agent's clock, e.g.
+  `LD_PRELOAD` with libfaketime and a fixed `FAKETIME`; if you do, set
+  `FAKETIME_DONT_FAKE_MONOTONIC=1` as well, or the agent's async timers never
+  fire and the run hangs for ever. That trick is Linux-only, so an agent like
+  this is not testable on a developer Mac.
+
+- **The tool name you assert is the name the MODEL saw, not the MCP name.**
+  An MCP client normally namespaces a server's tools before offering them, so a
+  server tool `delete_all` can reach the model boundary as `files__delete_all`,
+  and the prefix comes from how the client names the server. `assert_tool_call`
+  and `assert_no_tool_call` match the model-boundary name. Read it off a
+  recorded trajectory rather than guessing it - a guard asserting a name that
+  never appears passes for the wrong reason.
+
 - **No structured `args_exact:`.** Prose `where` clauses only. Unasserted
   arguments are still pinned byte-exactly by the cassette, and a drift
   names the path that moved.
