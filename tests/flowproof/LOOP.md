@@ -16,23 +16,22 @@ test pass.
 |---|---|
 | goose tag (PINNED) | **v1.44.0** |
 | flowproof version | **0.7.0** + three fixes (D1 `26a5922`, D2 `854a9f1`, D3 `a7338b7`) |
-| specs committed | **1** (`goose/smoke.flow.yaml`) |
-| traces recorded | **1**, real, against `claude-opus-5` |
-| **does it replay green?** | **YES — record 6/6, replay 3/3 offline, provider env unset, relay down** |
+| specs committed | **2** (`goose/smoke.flow.yaml`, `goose/no-egress.flow.yaml`) |
+| traces recorded | **2**, real, against `claude-opus-5` |
+| **flows GREEN** | **2 of 4** — smoke (record 6/6, replay 3/3) and flow 1 `assert_no_egress` (replay 3/3, containment enforced) |
 | CI state | **no job committed** — blocked on a RELEASE, not on the suite (see B4) |
 | iterations with no green trace | **4, then green on the 5th** |
 
 ## Current verdict
 
-**flowproof works on an agent we do not own.** goose v1.44.0 records against a
-real model 6 times out of 6 and replays green offline 3 for 3, for 4 lines of
-glue in the spec and zero reads of goose's internals — the adoption story holds
-and was never the obstacle. What stood in the way was **three defects in
-flowproof**, all fixed and each verified by measurement: `record` dropped
-in-flight calls, positional matching could not survive concurrent calls, and
-`reply` took whichever call landed last. None could surface from flowproof's own
-examples, because all three need an agent that makes a model call the harness
-does not expect.
+**flowproof works on an agent we do not own, and the highest-value guarantee is
+live:** goose reaches nothing off this host, certified deterministically at zero
+model cost, replaying green offline 3/3 with seccomp containment enforced.
+Adoption cost is still 4 lines of glue and zero reads of goose's internals — it
+was never the obstacle. What was: **six defects in flowproof**, five now fixed,
+none of them reachable from flowproof's own examples, because each needs an agent
+that does something the harness did not expect (a concurrent side call, or a
+worker thread).
 
 ---
 
@@ -131,7 +130,33 @@ it always did. Rejected alternatives: stdout (already rejected in the design,
 for good reasons) and history-prefix threading (both goose calls are
 single-turn, so it does not discriminate).
 
-### D5 — egress containment refuses goose a LOOPBACK connection. **OPEN, blocks flow 1.**
+### D5 — egress containment denied every MULTI-THREADED agent. FIXED, verified.
+
+**The widest-reaching of the six.** Not a goose quirk: containment was broken for
+any agent that opens sockets off a worker thread, and the symptom was a refused
+connection to an **allowed** destination — which reads as a network fault, not a
+containment bug. An adopter would most likely have blamed their own networking.
+
+`dup_child_fd` called `pidfd_open(req.pid)`, but a seccomp notification carries
+the **TID** of the calling thread and `pidfd_open` only accepts a thread-group
+**leader**. Python and Node do their networking on the main thread, where
+TID == TGID; goose is Rust/tokio and does not.
+
+Fix: on `pidfd_open` failure, resolve the leader from `/proc/<tid>/status`
+`Tgid:` and retry. Threads share one fd table, so the dup is identical. The
+single-threaded fast path is untouched and a real failure on a leader still
+reports the original error.
+
+**Measured, not guessed.** Four decision points instrumented behind
+`FLOWPROOF_EGRESS_DEBUG`; the policy ALLOWED loopback 8/8 and every one died at
+`dup_child_fd`. The standing suspicion was sockaddr parsing — **wrong, the third
+wrong inference this loop**, and the reason the instrument went in first. The
+helper stays, behind the env var, because it is what made this findable.
+
+Verified: flow 1 records and replays green 3/3; flowproof's own `egress_e2e`
+still 3/3 with the real filter; full suite 642 passed, 0 failed.
+
+### D5 (original report) — refused loopback, kept for the isolation record
 
 `docs/agent-testing.md`: *"Loopback (`127/8`, `::1`) is exempt WHOLESALE, so the
 model proxy and any local MCP server need not be listed."* It is not exempt for
@@ -244,6 +269,23 @@ Flow 1 CAN run here — this container is Linux.
 ---
 
 ## Iteration log
+
+### Iteration 7 — fix D5, flow 1 GREEN
+
+**Shipped:** the `dup_child_fd` thread-group-leader fix, the
+`FLOWPROOF_EGRESS_DEBUG` diagnostic, and **flow 1 recorded and replaying green
+offline 3/3** with containment enforced. Two of four flows now green.
+
+**Found:** D5 was never goose-specific — egress containment denied *every*
+multi-threaded agent, presenting as a network error against an allowed
+destination.
+
+**Deliberately not built:** flow 2, and any CI job (still D4: no release carries
+the fixes).
+
+**Next iteration should:** flow 2, `assert_no_secret_leak` — plant a fake key in
+the env and prove it never reaches the trajectory. It needs no containment and no
+new flowproof work, so it is the cheapest next green flow.
 
 ### Iteration 5 — fix D1 and D2, pass the gate
 
