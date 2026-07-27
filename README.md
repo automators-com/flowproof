@@ -24,6 +24,9 @@ for a human to review in a diff. The same engine also drives web, desktop
 and Citrix, so the interface a workflow ends in is covered by the same
 trace.
 
+Adding it to an existing agent? [docs/adopting.md](docs/adopting.md) is
+written to be handed to a coding agent.
+
 Product page: [automators.ai/flowproof](https://automators.ai/flowproof)
 
 <picture>
