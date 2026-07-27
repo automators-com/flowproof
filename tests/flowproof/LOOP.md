@@ -351,6 +351,45 @@ Flow 1 CAN run here — this container is Linux.
 
 ## Iteration log
 
+### Iteration 11 — D9 fixed; flow 3's real blocker measured
+
+**Shipped:** `names_same_tool` in `agent_flow.rs` — the unprotected-tool check now
+understands MCP client-side namespacing. 644 passed, 0 failed.
+
+**D9 — FIXED.** An MCP client routinely namespaces a server's tools, so a tool
+intercepted under `mcp:` as `delete_all` reaches the model boundary as
+`files__delete_all`. Comparing literally warned that a CORRECTLY intercepted tool
+was unprotected — a false positive on exactly the flows that did the right thing,
+and the worst kind for this particular warning: an adopter who learns to ignore it
+stops reading the true ones.
+
+The fix matches only on a namespace SEPARATOR (`__`, `.`, `/`, `:`), never a bare
+substring, with two tests pinning both halves: `files__delete_all` IS the same
+tool; `soft_delete_all`, `predelete_all` and `delete_all_now` are NOT. Silencing a
+real warning would have been worse than the false positive.
+
+**Flow 3's remaining blocker, now MEASURED not guessed:**
+
+```
+turn 2: tools offered changed
+  recorded: [flowproof__delete_all, flowproof__list_files]
+  replayed: []
+```
+
+At replay goose is offered **no tools at all**. The recording has both. So the MCP
+stand-in is not serving the tool list in replay mode, or goose never completes the
+handshake with it. The alternating first failure ("turn 1: message 0 (system)
+content changed") is almost certainly the same cause one turn earlier — goose's
+system prompt differs when it has no tools — but that is INFERRED; confirm it.
+
+**Next iteration should:** diagnose why the replay lane serves an empty tool list.
+Start by dumping the stand-in's replay-mode behaviour (does it answer `tools/list`
+from the recorded lane?) and the run dir's `files.out.json` at replay. Log what the
+process DID; that method has now solved D5, D7 and pointed at this one.
+
+**Deliberately not built:** any fix for the divergence (one thing per iteration);
+flow 4; the fake-model baseline.
+
 ### Iteration 10 — D7 fixed; flow 3 records but does not replay
 
 **Shipped:** incremental lane persistence in `mcp_stdio.rs`. The `mcp:` record

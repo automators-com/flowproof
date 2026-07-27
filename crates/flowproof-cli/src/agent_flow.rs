@@ -1148,6 +1148,32 @@ pub fn cmd_doctor(command: &str, timeout_secs: u64, prompt: &str) -> Result<u8, 
 /// answers it and the real server never sees it - so those are silent. The
 /// remedy named here is that boundary, not a mute switch: a warning you can
 /// turn off without changing what runs is worth nothing.
+/// Does `asserted` name the same tool as `intercepted`, allowing for the
+/// namespace an MCP client may prefix?
+///
+/// An MCP client routinely namespaces a server's tools before offering them to
+/// the model, so a tool intercepted under `mcp:` as `delete_all` can reach the
+/// model boundary as `files__delete_all`. Comparing the two names literally then
+/// warns that a CORRECTLY intercepted tool is unprotected - a false positive
+/// landing on exactly the flows that did the right thing, and one that this
+/// warning cannot afford, because an adopter who learns to ignore it stops
+/// reading the true ones.
+///
+/// Only a namespace SEPARATOR counts, never a bare substring: `soft_delete_all`
+/// does not match `delete_all`, so a genuinely unprotected tool is still named.
+fn names_same_tool(asserted: &str, intercepted: &str) -> bool {
+    if asserted == intercepted {
+        return true;
+    }
+    ["__", ".", "/", ":"].iter().any(|sep| {
+        asserted
+            .strip_suffix(intercepted)
+            .and_then(|head| head.strip_suffix(*sep))
+            // A separator with nothing before it is not a namespace.
+            .is_some_and(|prefix| !prefix.is_empty())
+    })
+}
+
 fn unprotected_tool_warning(spec: &FlowSpec, plan: &Plan, phase: &str) -> Option<String> {
     // Everything the MCP boundary answers on the flow's behalf.
     let intercepted: std::collections::BTreeSet<&str> = spec
@@ -1167,7 +1193,7 @@ fn unprotected_tool_warning(spec: &FlowSpec, plan: &Plan, phase: &str) -> Option
         .filter(|t| !t.result.is_null())
         .map(|t| t.name.as_str())
         .chain(plan.forbidden.iter().map(|f| f.tool.as_str()))
-        .filter(|name| !intercepted.contains(name))
+        .filter(|name| !intercepted.iter().any(|t| names_same_tool(name, t)))
         .collect();
     exposed.sort_unstable();
     exposed.dedup();
@@ -1358,6 +1384,44 @@ fn upstream_auth() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// An MCP client namespaces a server's tools, so an intercepted
+    /// `delete_all` reaches the model boundary as `files__delete_all`. The
+    /// unprotected-tool warning must recognise it as the SAME tool, or it fires
+    /// on precisely the flows that did the right thing.
+    #[test]
+    fn a_namespaced_tool_is_the_same_tool() {
+        for asserted in [
+            "delete_all",
+            "files__delete_all",
+            "files.delete_all",
+            "files/delete_all",
+            "files:delete_all",
+        ] {
+            assert!(
+                super::names_same_tool(asserted, "delete_all"),
+                "{asserted} names the intercepted delete_all"
+            );
+        }
+    }
+
+    /// ...but a bare substring is NOT a namespace. A genuinely unprotected tool
+    /// must still be named, or the fix would silence the warning it exists for.
+    #[test]
+    fn a_substring_is_not_a_namespace() {
+        for asserted in [
+            "soft_delete_all",
+            "predelete_all",
+            "__delete_all",
+            ".delete_all",
+            "delete_all_now",
+        ] {
+            assert!(
+                !super::names_same_tool(asserted, "delete_all"),
+                "{asserted} must NOT be taken for the intercepted delete_all"
+            );
+        }
+    }
+
     use super::*;
     use flowproof_trace::cassette::{Message, Turn, TurnRequest, TurnResponse};
     use std::io::{BufRead, Read, Write};
