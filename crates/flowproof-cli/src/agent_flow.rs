@@ -1011,6 +1011,124 @@ fn require_progress(run: &AgentRun, cassette: &Cassette, plan: &Plan) -> Result<
     Ok(())
 }
 
+/// `flowproof doctor`: does this agent's model traffic reach the proxy?
+///
+/// The dominant adoption failure is a client that never honours the injected
+/// base URL - it talks to the real provider, flowproof captures nothing, and
+/// today that is discovered only after a spec has been written and a key
+/// spent on `record`. This answers the same question in ten seconds, with no
+/// spec, no assertions and NO KEY: a synthetic one-turn cassette answers
+/// whatever arrives.
+///
+/// It deliberately does NOT print a verdict like "your wiring is correct".
+/// An agent with two clients can reach the proxy with one and the real
+/// provider with the other, so a request arriving proves that A client found
+/// the proxy - not that all of them did. Reporting the observation and
+/// letting the reader judge is the honest shape, and the same reason the
+/// zero-capture guard names causes as possibilities rather than facts.
+pub fn cmd_doctor(command: &str, timeout_secs: u64, prompt: &str) -> Result<u8, String> {
+    use flowproof_trace::cassette::{Cassette, Message, Turn, TurnRequest, TurnResponse};
+
+    // One canned turn. Anything the agent sends is answered from this, so no
+    // upstream and no key are involved. A request that DIVERGES from it still
+    // arrived, which is the fact being measured.
+    let probe = Cassette {
+        turns: vec![Turn {
+            protocol: "openai".to_string(),
+            request: TurnRequest {
+                model: "flowproof-doctor".to_string(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+            },
+            response: TurnResponse {
+                message: Message {
+                    role: "assistant".to_string(),
+                    content: Some(
+                        "flowproof doctor: this reply came from the proxy, not a model."
+                            .to_string(),
+                    ),
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                },
+                stop_reason: None,
+            },
+        }],
+    };
+
+    let proxy = AgentProxy::start(probe, Mocks::new(), 0)
+        .map_err(|e| format!("starting the probe proxy: {e}"))?;
+    let base = proxy.base_url();
+    println!("proxy listening on {base}");
+    println!("running: {command}");
+
+    let mut env = BTreeMap::new();
+    env.insert(PROMPT_VAR.to_string(), prompt.to_string());
+    let run = run_against(&proxy, command, &env, Duration::from_secs(timeout_secs))
+        .map_err(|e| e.to_string())?;
+    let log = proxy.log();
+    // A divergence means the request did not match the canned turn, which is
+    // expected and irrelevant: it still reached the proxy.
+    let arrived = log.served + usize::from(log.divergence.is_some());
+    drop(log);
+
+    println!();
+    println!("model requests that reached the proxy: {arrived}");
+    if run.timed_out {
+        println!(
+            "the agent was still running after {timeout_secs}s and was stopped. That is an \
+             observation, not a wiring failure: an agent waiting for a useful reply will hang \
+             against a canned one."
+        );
+        // Found while testing this command: the deadline kills the process
+        // flowproof started, but a GRANDCHILD holding the inherited stdout
+        // pipe keeps the read blocking, so the wall-clock wait can exceed
+        // the timeout by a lot. Say so rather than let it look like a hang
+        // with no explanation.
+        println!(
+            "  (if this took much longer than {timeout_secs}s, the agent spawned a child that \
+             outlived it and kept the output pipe open. flowproof stops the process it started, \
+             not the tree.)"
+        );
+    } else {
+        println!(
+            "the agent exited {}",
+            run.exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "with no code".into())
+        );
+    }
+
+    if arrived == 0 {
+        println!();
+        println!("NOTHING reached the proxy. The client is not honouring the base URL flowproof");
+        println!("injected (OPENAI_BASE_URL, OPENAI_API_BASE, OPENAI_BASE, ANTHROPIC_BASE_URL,");
+        println!("FLOWPROOF_LLM_PROXY). If it reads a different variable, or builds its base URL");
+        println!("from a config object, map it in `agent.env`:");
+        println!();
+        println!("    env:");
+        println!("      YOUR_VARIABLE: \"${{flowproof.proxy_url}}\"        # includes /v1");
+        println!(
+            "      OR:            \"${{flowproof.proxy_url_no_v1}}\"  # client appends its own"
+        );
+        println!();
+        println!("If the model call happens in a CHILD process, check that it inherits the");
+        println!("environment - that is the usual cause when the command itself looks right.");
+        if !run.stderr.trim().is_empty() {
+            println!();
+            println!("stderr:\n{}", run.stderr.trim());
+        }
+        return Ok(crate::EXIT_FAIL);
+    }
+
+    println!();
+    println!("At least one client reached the proxy, so recording can capture that traffic.");
+    println!("This does NOT prove every model call goes through flowproof: an agent with more");
+    println!("than one client can reach the proxy with one and the real provider with another.");
+    println!("`record` is the check that settles it - it fails and writes no trace if nothing");
+    println!("is captured.");
+    Ok(crate::EXIT_PASS)
+}
+
 /// Record an `app: agent` flow: run it against a real model, capture the
 /// trajectory, check the assertions, and write the cassette to `out`.
 /// Warn when a flow reasons about a tool that nothing actually intercepts.
