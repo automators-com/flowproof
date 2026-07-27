@@ -130,6 +130,28 @@ from one base all route to the same stand-in. You do not need one listener
 per path; you need the base to point at the stand-in, which is what
 `${flowproof.mcp_url.<name>}` is for.
 
+**Check the wiring before writing a spec.** The failure above is the
+commonest one in adoption, and it used to be found only after a spec was
+written and a key spent. `flowproof doctor` answers the same question in
+seconds, with no spec, no assertions and no key:
+
+```bash
+flowproof doctor --agent "./start-agent"
+```
+
+It starts the proxy, runs the command once against a canned reply, and
+reports how many model requests ARRIVED. Zero means the client is not
+honouring the injected base URL, and the output names the handles to map.
+
+It reports what it saw rather than declaring the wiring correct, because an
+agent with more than one client can reach the proxy with one and the real
+provider with another. `record` is what settles that.
+
+Two limits worth knowing. It cannot tell a hang from a slow agent, so a
+process waiting for a useful answer sits until `--timeout`. And if the agent
+spawns a child that outlives it, the wall clock can exceed that timeout,
+because flowproof stops the process it started rather than the tree.
+
 **A record run that captures nothing FAILS.** If zero model requests reach
 the proxy, `record` errors and writes NO trace. That is the one failure a
 determinism tool must never let through: an agent that reached the real

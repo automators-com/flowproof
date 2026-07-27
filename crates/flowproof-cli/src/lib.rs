@@ -146,6 +146,25 @@ enum Command {
         #[arg(long, conflicts_with = "run")]
         since: Option<String>,
     },
+    /// Check that an agent's model traffic actually reaches flowproof, before
+    /// you write a spec or spend a key on a recording.
+    ///
+    /// Starts the proxy, runs the command once, and reports what ARRIVED.
+    /// It deliberately does not tell you the wiring is correct: it tells you
+    /// what it saw, because an agent with two clients can reach the proxy
+    /// with one and the real provider with the other.
+    Doctor {
+        /// The command that starts the agent, exactly as `agent.command:`
+        /// would spell it.
+        #[arg(long)]
+        agent: String,
+        /// Seconds to let the agent run before giving up on it.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+        /// The task handed to the agent through FLOWPROOF_PROMPT.
+        #[arg(long, default_value = "Say hello.")]
+        prompt: String,
+    },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
     Heal {
@@ -1668,6 +1687,11 @@ where
             since,
         } => cmd_audit(&dir, json, run, since),
         Command::Capture { port, out, json } => capture::cmd_capture(port, Some(out), json),
+        Command::Doctor {
+            agent,
+            timeout,
+            prompt,
+        } => agent_flow::cmd_doctor(&agent, timeout, &prompt),
         Command::Heal {
             spec,
             trace,
