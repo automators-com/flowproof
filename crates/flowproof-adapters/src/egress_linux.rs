@@ -599,6 +599,14 @@ fn decide(
     }
 }
 
+/// Temporary diagnostic for D5: why a connect was refused. Off unless
+/// FLOWPROOF_EGRESS_DEBUG is set, so it costs nothing in a normal run.
+fn dbg_egress(what: &str) {
+    if std::env::var_os("FLOWPROOF_EGRESS_DEBUG").is_some() {
+        eprintln!("[egress] {what}");
+    }
+}
+
 /// `connect(fd, addr, addrlen)`: the core TOCTOU-safe path.
 fn handle_connect(
     fd: RawFd,
@@ -619,6 +627,7 @@ fn handle_connect(
         return errno_resp(libc::EPERM);
     }
     let Ok(n) = read else {
+        dbg_egress("connect: read_child FAILED -> EPERM");
         return errno_resp(libc::EPERM);
     };
 
@@ -628,14 +637,26 @@ fn handle_connect(
         Some(Dest::Inet(ip, port)) => {
             let ip = normalize(ip);
             if allow.allows(ip, port) {
+                dbg_egress(&format!("connect: ALLOWED {ip}:{port}, performing"));
                 perform_connect(req.pid, sockfd, &buf[..n])
             } else {
+                dbg_egress(&format!("connect: DENIED by policy {ip}:{port}"));
                 record(log, spawn, &format!("{ip}:{port}"), "tcp");
                 errno_resp(libc::ECONNREFUSED)
             }
         }
         // An address family we do not model: deny rather than guess.
-        None => errno_resp(libc::EPERM),
+        None => {
+            dbg_egress(&format!(
+                "connect: UNPARSEABLE sockaddr, {n} bytes, family={:?} -> EPERM",
+                if n >= 2 {
+                    u16::from_ne_bytes([buf[0], buf[1]]) as i32
+                } else {
+                    -1
+                }
+            ));
+            errno_resp(libc::EPERM)
+        }
     }
 }
 
@@ -778,11 +799,20 @@ fn handle_listen(req: &SeccompNotif) -> SeccompNotifResp {
     if rc == 0 {
         ok_resp(0)
     } else {
-        errno_resp(
-            io::Error::last_os_error()
-                .raw_os_error()
-                .unwrap_or(libc::EPERM),
-        )
+        let e = io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EPERM);
+        // EINPROGRESS is the NORMAL result for a nonblocking socket, not a
+        // failure: it is handed back to the child, which epolls its own fd.
+        let how = if e == libc::EINPROGRESS {
+            "in progress"
+        } else {
+            "FAILED"
+        };
+        dbg_egress(&format!(
+            "perform_connect: supervisor connect {how} errno={e}"
+        ));
+        errno_resp(e)
     }
 }
 
@@ -792,6 +822,7 @@ fn handle_listen(req: &SeccompNotif) -> SeccompNotifResp {
 /// correct, and the kernel never re-reads child memory.
 fn perform_connect(pid: u32, sockfd: RawFd, addr: &[u8]) -> SeccompNotifResp {
     let Ok(dup) = dup_child_fd(pid, sockfd) else {
+        dbg_egress("perform_connect: dup_child_fd FAILED -> EPERM");
         return errno_resp(libc::EPERM);
     };
     let rc = unsafe {
@@ -804,11 +835,20 @@ fn perform_connect(pid: u32, sockfd: RawFd, addr: &[u8]) -> SeccompNotifResp {
     if rc == 0 {
         ok_resp(0)
     } else {
-        errno_resp(
-            io::Error::last_os_error()
-                .raw_os_error()
-                .unwrap_or(libc::EPERM),
-        )
+        let e = io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EPERM);
+        // EINPROGRESS is the NORMAL result for a nonblocking socket, not a
+        // failure: it is handed back to the child, which epolls its own fd.
+        let how = if e == libc::EINPROGRESS {
+            "in progress"
+        } else {
+            "FAILED"
+        };
+        dbg_egress(&format!(
+            "perform_connect: supervisor connect {how} errno={e}"
+        ));
+        errno_resp(e)
     }
 }
 
@@ -997,12 +1037,50 @@ fn read_child(pid: u32, remote: u64, buf: &mut [u8], want: usize) -> io::Result<
     }
 }
 
+/// The thread-group leader of `tid`, read from `/proc/<tid>/status`.
+///
+/// `pidfd_open` only accepts a thread-group LEADER, but a seccomp
+/// notification carries the TID of whichever thread made the syscall. For a
+/// single-threaded agent those are the same number and nobody notices; for a
+/// multi-threaded one they are not, and every syscall off a worker thread
+/// would otherwise fail to open a pidfd.
+fn tgid_of(tid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{tid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Tgid:"))
+        .and_then(|v| v.trim().parse().ok())
+}
+
 /// Dup a fd out of the child into the supervisor (same file description), via
 /// `pidfd_open` + `pidfd_getfd`.
+///
+/// `pid` is the seccomp notification's pid field, which is a TID. When the
+/// calling thread is not the thread-group leader `pidfd_open` refuses it, so
+/// fall back to the leader: threads share one file-descriptor table, so the
+/// fd number means the same thing there and the dup is identical.
+///
+/// This is why a multi-threaded agent used to be denied its own loopback
+/// connections: goose (Rust/tokio) connects from a worker thread, so every
+/// `pidfd_open` failed and the supervisor answered EPERM even though the
+/// destination was allowed. A single-threaded Python or Node agent never hit
+/// it, which is why flowproof's own examples all passed.
 fn dup_child_fd(pid: u32, fd: RawFd) -> io::Result<OwnedFd> {
-    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    let open = |p: u32| unsafe { libc::syscall(libc::SYS_pidfd_open, p as libc::pid_t, 0) };
+    let mut pidfd = open(pid);
     if pidfd < 0 {
-        return Err(io::Error::last_os_error());
+        let first = io::Error::last_os_error();
+        match tgid_of(pid) {
+            // Already the leader: the failure is real, report the original.
+            Some(tgid) if tgid == pid => return Err(first),
+            Some(tgid) => {
+                pidfd = open(tgid);
+                if pidfd < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            None => return Err(first),
+        }
     }
     let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as RawFd) };
     let newfd = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd.as_raw_fd(), fd, 0) };
