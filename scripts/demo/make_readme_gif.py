@@ -159,12 +159,38 @@ def capture(binary: Path) -> list[dict]:
 # ---------------------------------------------------------------- colouring
 
 
+def split_comment(line: str) -> tuple[str, str]:
+    """Split a YAML line into (code, trailing comment), either part possibly "".
+
+    YAML opens a comment at a `#` that starts the line or follows whitespace,
+    and never inside a quoted scalar. The comment keeps the run of spaces that
+    precedes it, so the code half still ends at its original column.
+    """
+    quote = ""
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            return line[:i], line[i:]
+    return line, ""
+
+
 def yaml_spans(line: str) -> list[tuple[str, tuple]]:
-    """Colour a YAML line: comments dim, keys blue, values light, asserts orange."""
-    stripped = line.lstrip()
-    if stripped.startswith("#"):
-        return [(line, DIM)]
-    indent = line[: len(line) - len(stripped)]
+    """Colour a YAML line: comments dim, keys blue, values light, asserts orange.
+
+    A trailing comment is dimmed like a whole-line one. Without splitting it off
+    first it lands in the value span and renders as part of the value - and one
+    containing a colon (`# declared: ...`) would even partition as the key.
+    """
+    code, comment = split_comment(line)
+    tail = [(comment, DIM)] if comment else []
+    stripped = code.lstrip()
+    if not stripped:
+        return [(code, DIM)] + tail
+    indent = code[: len(code) - len(stripped)]
     body = stripped
     prefix = ""
     if body.startswith("- "):
@@ -175,8 +201,8 @@ def yaml_spans(line: str) -> list[tuple[str, tuple]]:
         spans = [(indent + prefix, DIM), (key + ":", key_colour)]
         if value:
             spans.append((value, STRING))
-        return spans
-    return [(indent + prefix, DIM), (body, FG)]
+        return spans + tail
+    return [(indent + prefix, DIM), (body, FG)] + tail
 
 
 def cli_spans(line: str) -> list[tuple[str, tuple]]:
