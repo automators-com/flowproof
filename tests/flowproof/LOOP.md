@@ -131,6 +131,54 @@ it always did. Rejected alternatives: stdout (already rejected in the design,
 for good reasons) and history-prefix threading (both goose calls are
 single-turn, so it does not discriminate).
 
+### D5 — egress containment refuses goose a LOOPBACK connection. **OPEN, blocks flow 1.**
+
+`docs/agent-testing.md`: *"Loopback (`127/8`, `::1`) is exempt WHOLESALE, so the
+model proxy and any local MCP server need not be listed."* It is not exempt for
+goose. Containment engages correctly and then goose cannot reach flowproof's OWN
+proxy:
+
+```
+egress containment: enforced (linux seccomp)
+Network error: Could not connect to 127.0.0.1:35035
+```
+
+Isolated rather than inferred — same container, same flowproof binary, same
+containment:
+
+| agent | reaches the loopback proxy under containment? |
+|---|---|
+| flowproof's own `egress_e2e` (3 tests, `RUN_EGRESS_E2E=1`, real filter) | **yes** |
+| Node agent (`spike/streaming_agent.mjs`) | **yes** |
+| **goose (Rust / tokio)** | **NO** |
+
+`libfaketime` is exonerated: removing `LD_PRELOAD` entirely reproduces it
+identically. So the loopback exemption covers the syscall path a Python or Node
+agent takes to open a socket and not the one goose takes. The mechanism needs
+flowproof-side investigation; do NOT chase it in goose's source.
+
+`tests/flowproof/goose/no-egress.flow.yaml` is committed as the reproduction,
+**not** as a passing test. Do not make it pass by adding `allow_egress` entries:
+loopback is supposed to need none, and declaring what the contract exempts would
+hide the finding.
+
+**A correction worth keeping:** CI *does* set `RUN_EGRESS_E2E: "1"` (an `env:`
+block under the step). An earlier reading of this file with `grep -B6` cut that
+block off and nearly produced a false "CI proves nothing" report. Read CI steps
+verbatim.
+
+### D3 addendum — the heuristic does nothing for an agent with no system prompt
+
+Found while isolating D5. `spike/streaming_agent.mjs` sends **no** system message
+on either call, so both land in one group, the thread split never happens, and
+`reply` falls back to v1 behaviour — it returned the title, `**Capital of
+France**`, not `Paris`.
+
+The fix's reach is therefore narrower than "an agent whose side conversation is
+bigger would defeat it": it needs the side conversation to carry a DIFFERENT
+system prompt. An agent that sends none gets no protection at all. goose does
+send distinct system prompts, which is why it works there.
+
 ### D4 — the released package cannot run this suite. **OPEN until a release ships.**
 
 Both fixes are local. npm `flowproof@0.7.0` has neither, and it also predates
