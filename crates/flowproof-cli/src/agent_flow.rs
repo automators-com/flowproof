@@ -282,15 +282,16 @@ impl McpContext {
         // stdio servers: read the out file the stand-in wrote.
         for (name, _var) in &self.stdio {
             let out_path = self.dir.join(format!("{name}.out.json"));
-            let parsed = read_out(&out_path).ok_or_else(|| stdio_wiring_guard(name))?;
+            let parsed =
+                read_out(&out_path).ok_or_else(|| stdio_missing_out_guard(name, &out_path))?;
             if let Some(err) = &parsed.error {
                 return Err(format!("recording the MCP server `{name}` failed: {err}"));
             }
-            // The progress guard: a real MCP client handshakes with
-            // `initialize`, so a lane with no captured call means the agent
-            // never spawned the stand-in.
+            // A real MCP client handshakes with `initialize`, so an empty
+            // lane means something went wrong AFTER the stand-in ran - a
+            // different fact from the stand-in never running at all.
             if parsed.calls.is_empty() {
-                return Err(stdio_wiring_guard(name));
+                return Err(stdio_empty_lane_guard(name, &out_path));
             }
             out.insert(
                 name.clone(),
@@ -337,7 +338,8 @@ impl McpContext {
         // stdio servers: read the out file the stand-in wrote.
         for (name, _var) in &self.stdio {
             let out_path = self.dir.join(format!("{name}.out.json"));
-            let parsed = read_out(&out_path).ok_or_else(|| stdio_wiring_guard(name))?;
+            let parsed =
+                read_out(&out_path).ok_or_else(|| stdio_missing_out_guard(name, &out_path))?;
             if let Some(div) = &parsed.divergence {
                 return Err(format!(
                     "the MCP server `{name}` diverged at call {}: {}",
@@ -382,14 +384,40 @@ impl Drop for McpContext {
     }
 }
 
-/// The stdio record-time wiring guard, shared by "no out file" and "no
-/// captured handshake": both mean the agent's config still points at the
-/// real server instead of flowproof's stand-in.
-fn stdio_wiring_guard(server: &str) -> String {
+/// The stdio record-time guard when NO out file appeared: the stand-in
+/// either never ran or died before writing.
+///
+/// This used to be shared with the empty-lane case below and asserted a
+/// single cause - "its config still points at the real server" - as fact.
+/// An adopter proved that wrong the expensive way: their agent HAD spawned
+/// the stand-in (verified by the real server logging its parent process as
+/// `flowproof mcp-stdio --server files`), calls went through it, and the
+/// message still sent them to debug wiring that was already correct. So
+/// these now say what was OBSERVED and offer causes as possibilities.
+fn stdio_missing_out_guard(server: &str, out_path: &Path) -> String {
     format!(
-        "the agent never spawned flowproof's MCP stand-in for `{server}`; its config still \
-         points at the real server (point it at ${{FLOWPROOF_MCP_SERVER_{}}})",
+        "no recording appeared for the MCP server `{server}`: flowproof's stand-in wrote \
+         nothing to {}.\n\
+         Most likely its config still points at the real server, so the stand-in never ran \
+         (point it at ${{FLOWPROOF_MCP_SERVER_{}}}). If the stand-in DID run, it was killed \
+         before it could write - check whether the agent terminates its MCP servers abruptly.",
+        out_path.display(),
         env_suffix(server)
+    )
+}
+
+/// The stdio record-time guard when the out file EXISTS but is empty: the
+/// stand-in ran, so the wiring is right, and something else is wrong.
+/// Saying "you never spawned it" here is simply false.
+fn stdio_empty_lane_guard(server: &str, out_path: &Path) -> String {
+    format!(
+        "flowproof's MCP stand-in for `{server}` ran and wrote {}, but captured no calls - \
+         not even the `initialize` handshake every MCP client sends.\n\
+         The wiring is therefore NOT the obvious suspect: the stand-in was reached. Either \
+         the agent connected and disconnected without handshaking, or it spawned a SECOND \
+         copy for the calls it actually made. Recording stops here because an empty lane \
+         would replay as a boundary that proves nothing.",
+        out_path.display()
     )
 }
 
@@ -1612,6 +1640,53 @@ mod tests {
             !err.contains("0 model requests"),
             "not the wiring message: {err}"
         );
+    }
+
+    /// The two stdio guards describe DIFFERENT facts and must not be
+    /// conflated again. An adopter lost real time to the merged version: it
+    /// told them the stand-in was never spawned when it demonstrably had
+    /// been, sending them to debug wiring that was already correct.
+    #[test]
+    fn the_missing_out_and_empty_lane_guards_say_different_things() {
+        let path = std::path::Path::new("/tmp/run/files.out.json");
+        let missing = stdio_missing_out_guard("files", path);
+        let empty = stdio_empty_lane_guard("files", path);
+
+        // Both name the server and the file they looked at, so the reader
+        // can check the same thing flowproof checked.
+        for m in [&missing, &empty] {
+            assert!(m.contains("files"), "{m}");
+            assert!(m.contains("/tmp/run/files.out.json"), "{m}");
+        }
+
+        // Missing out file: wiring IS the likely cause, and the env var to
+        // point at is named.
+        assert!(missing.contains("wrote nothing"), "{missing}");
+        assert!(missing.contains("FLOWPROOF_MCP_SERVER_FILES"), "{missing}");
+
+        // Empty lane: the stand-in RAN, so claiming otherwise is false. This
+        // is the assertion that would have saved the adopter the detour.
+        assert!(empty.contains("ran and wrote"), "{empty}");
+        assert!(
+            !empty.contains("never spawned") && !empty.contains("never ran"),
+            "the empty-lane guard must not claim the stand-in never ran: {empty}"
+        );
+        assert!(
+            empty.contains("NOT the obvious suspect"),
+            "it must say wiring is not the suspect: {empty}"
+        );
+    }
+
+    /// The missing-out guard offers its cause as a possibility rather than
+    /// stating it as fact, because the previous version stated a cause it
+    /// could not know.
+    #[test]
+    fn the_missing_out_guard_hedges_its_cause() {
+        let missing = stdio_missing_out_guard("files", std::path::Path::new("/x/files.out.json"));
+        assert!(missing.contains("Most likely"), "{missing}");
+        // And it names the other possibility rather than pretending there
+        // is only one.
+        assert!(missing.contains("killed before"), "{missing}");
     }
 
     /// Under enforcement, an undeclared attempt fails the assertion, naming
