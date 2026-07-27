@@ -204,7 +204,28 @@ bigger would defeat it": it needs the side conversation to carry a DIFFERENT
 system prompt. An agent that sends none gets no protection at all. goose does
 send distinct system prompts, which is why it works there.
 
-### D7 — MCP stand-in detection is a FALSE NEGATIVE. **OPEN, blocks flow 3.**
+### D7 — the MCP stand-in lost its whole lane on an abrupt shutdown. FIXED, verified.
+
+**Root cause, measured.** The stand-in writes `<server>.out.json` ATOMICALLY AT
+STDIN EOF — after joining its pump threads and reaping the real server. goose
+terminates its MCP subprocess before that, so the stand-in never reached the
+write and the entire recording was lost. flowproof then read the missing file and
+reported "the agent never spawned flowproof's MCP stand-in", sending the adopter
+to debug wiring that was already correct.
+
+Measured, not inferred, in two commands: listing the run dir immediately after
+goose exits showed only `files.plan.json`, no `files.out.json`; four seconds later
+still nothing, and no stand-in process alive. The earlier suspicion (flowproof's
+double-quoted path breaking goose's `--with-extension`) was WRONG — goose dequotes
+it fine, proved by the real server's parent being
+`flowproof mcp-stdio --server files`.
+
+**Fix:** persist the lane INCREMENTALLY after each captured call, at both capture
+sites. `write_out_atomic` is a temp-file rename, so a partial flush is never
+observable, the last write wins, and an abrupt kill can no longer lose the
+recording. The EOF write stays authoritative. Full suite: 642 passed, 0 failed.
+
+### D7 (original report) — kept for the isolation record
 
 `record` fails an `mcp:` flow with:
 
@@ -329,6 +350,39 @@ Flow 1 CAN run here — this container is Linux.
 ---
 
 ## Iteration log
+
+### Iteration 10 — D7 fixed; flow 3 records but does not replay
+
+**Shipped:** incremental lane persistence in `mcp_stdio.rs`. The `mcp:` record
+that failed every time now succeeds. 642 passed, 0 failed.
+
+**Found:**
+- **D9 (new, OPEN):** goose namespaces MCP tools, so `delete_all` reaches the
+  model as `flowproof__delete_all`. flowproof's unprotected-tool check does not
+  connect the asserted name to the `mcp:` lane, and warns that a CORRECTLY
+  intercepted tool is unprotected — a false positive on exactly the flows that did
+  it right. Client-side namespacing is standard MCP behaviour, not a goose quirk.
+  The loop treats this warning as an error, so flow 3 is not shippable.
+- **Flow 3 replay divergence (OPEN):** fails differently each run — "turn 1:
+  message 0 (system) content changed", then "turn 2: tools offered changed".
+  Smells like a non-deterministic tool list or ordering, but that is INFERRED and
+  the last four inferences were wrong. Measure it.
+
+**What held:** the `mcp:` boundary itself. `/tmp/DESTRUCTIVE_RAN` never appeared,
+at record or replay — flowproof answered `delete_all` and the real server never
+ran it.
+
+**The method that worked, twice now:** log what a process actually DID rather than
+reasoning about what it should do. It cracked D5 (parent-process log) and D7 (run
+dir listing), each in about two commands, after theorising had produced a
+confident wrong answer in both cases.
+
+**Deliberately not built:** any fix for D9 or the divergence (one thing per
+iteration); flow 4; the fake-model baseline.
+
+**Next iteration should:** fix D9, or — if it stalls — build the fake-model
+baseline instead, which is now the only remaining item that tests the premise
+rather than the tool.
 
 ### Iteration 9 — flow 3 blocked, two findings
 
