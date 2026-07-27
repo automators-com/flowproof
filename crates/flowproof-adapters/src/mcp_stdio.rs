@@ -23,8 +23,13 @@
 //! - `<DIR>/<server>.plan.json` - written by the orchestrator BEFORE the
 //!   agent is spawned: `{mode, command, mocks, calls}` (`calls` is the lane
 //!   to serve, present for replay).
-//! - `<DIR>/<server>.out.json` - written by the stand-in ATOMICALLY at stdin
-//!   EOF: record -> `{calls: [...]}`; replay -> `{served, divergence}`.
+//! - `<DIR>/<server>.out.json` - written by the stand-in ATOMICALLY (temp
+//!   file + rename): record -> `{calls: [...]}`; replay ->
+//!   `{served, divergence}`. In RECORD it is rewritten after every captured
+//!   call, not only at stdin EOF, because reaching EOF needs the agent to
+//!   close the stand-in's stdin and an agent that kills its MCP subprocess
+//!   never gets there - which used to lose the whole recording. The EOF write
+//!   remains the authoritative last one.
 //!
 //! No async runtime, matching the model proxy's posture: std threads, plain
 //! pipes, one blocking read loop per direction.
