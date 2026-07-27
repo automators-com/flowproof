@@ -1,10 +1,4 @@
-# STATUS: BLOCKED, does not record yet. Under egress containment goose cannot
-# reach flowproof's OWN model proxy on loopback:
-#     Network error: Could not connect to 127.0.0.1:35035
-# The documented contract says loopback is exempt wholesale, so this flow is
-# committed as the reproduction, NOT as a passing test. See D5 in ../LOOP.md.
-# Do not "fix" it by adding allow_egress entries: loopback is supposed to need
-# none, and declaring what the contract exempts would hide the finding.
+# Flow 1. RECORDED and replays green offline (3/3), containment enforced.
 #
 # LINUX ONLY. `assert_no_egress` is a capability claim: on macOS and Windows
 # it fails outright rather than passing vacuously, so this flow is CI-only and
