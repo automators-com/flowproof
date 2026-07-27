@@ -104,6 +104,10 @@ Python instead of Node? Same flow, same assertions:
 [`weather.flow.yaml`](../examples/agent-demo/weather.flow.yaml) runs
 `python3 examples/agent-demo/weather_agent.py` (`pip install openai`).
 
+**Adding flowproof to an existing agent?** [adopting.md](adopting.md) is
+written to be handed to a coding agent: the audit to run first, the three
+questions that decide everything, and the order to do it in.
+
 Next: [agent-testing.md](agent-testing.md) for the full assertion grammar,
 the MCP tool boundary, and egress containment.
 
