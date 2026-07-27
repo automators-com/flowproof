@@ -54,7 +54,6 @@
   </g>
 
   <g class="t1">
-    <text x="20" y="160" class="tag">$ <tspan class="tagx">agents author, a deterministic engine executes</tspan> — across web, desktop, and Citrix</text>
+    <text x="20" y="160" class="tag">$ <tspan class="tagx">agents author, a deterministic engine executes</tspan> — across web, desktop, and Citrix<tspan class="cursor blink" aria-hidden="true">█</tspan></text>
   </g>
-  <rect class="cursor blink" x="768" y="147" width="9" height="17"/>
 </svg>
