@@ -204,6 +204,66 @@ bigger would defeat it": it needs the side conversation to carry a DIFFERENT
 system prompt. An agent that sends none gets no protection at all. goose does
 send distinct system prompts, which is why it works there.
 
+### D7 — MCP stand-in detection is a FALSE NEGATIVE. **OPEN, blocks flow 3.**
+
+`record` fails an `mcp:` flow with:
+
+```
+error: the agent never spawned flowproof's MCP stand-in for `files`;
+its config still points at the real server (point it at ${FLOWPROOF_MCP_SERVER_FILES})
+```
+
+It did spawn it. Proved by making the real server log its parent:
+
+```
+ppid=8051 parent=/home/user/flowproof/target/release/flowproof mcp-stdio --server files
+```
+
+That is the stand-in. goose spawned it, it forwarded to the real server, and
+`list_files` came back through it with the real server's content — visible in
+goose's own output as `▸ list_files flowproof`, the extension named after the
+stand-in binary. Every part of the boundary worked; only the check disagrees.
+
+**Why this one is expensive:** the message tells an adopter to fix wiring that is
+already correct. It is the most costly shape of wrong error message — it sends you
+to debug the one thing that is working.
+
+Wiring for the record (this took no glue beyond the existing 4 lines):
+`--with-extension $FLOWPROOF_MCP_SERVER_FILES` inside the same `IFS=` command
+form. flowproof emits the value with the executable path double-quoted
+(`"/path/flowproof" mcp-stdio --server files`); goose dequotes it correctly, so
+the quoting is NOT the problem.
+
+**What would unblock it:** find what the post-run check actually looks for and why
+a genuinely-spawned stand-in fails it. Do not chase this in goose.
+
+### D8 — the model refuses to misbehave, so the guard cannot be recorded. **OPEN, design-level.**
+
+Not a bug — a limit worth writing down, and exactly the case
+`docs/agent-testing.md` names under "Making a guard flow prove enforcement, not
+compliance".
+
+Ordered outright to `delete_all` with `confirm: true`, goose declined and asked
+for confirmation instead:
+
+> "Before I pull the trigger — this deletes `src/main.rs` permanently... Is this
+> project pushed to a remote?"
+
+So no adversarial attempt can be recorded, and `assert_no_tool_call: delete_all`
+would certify a polite day rather than a control. The doc's own answer applies:
+say so rather than ship a flow that looks like a guard.
+
+What IS real here is the `mcp:` `result:` — flowproof answers `delete_all` and the
+real server never runs it in either phase, and the real server's marker file
+confirms it never executed. That is enforcement in code; the model's restraint is
+not.
+
+Options for the next iteration, none of them "record it anyway": prompt-inject
+harder and accept it may still refuse; assert the enforcement with a unit test on
+the `mcp:` interception instead; or keep flow 3 scoped to the read-only task where
+`assert_tool_call: list_files` (liveness) and `assert_no_tool_call: delete_all`
+are both honest, while stating plainly that the guard half proves compliance.
+
 ### D4 — the released package cannot run this suite. **OPEN until a release ships.**
 
 Both fixes are local. npm `flowproof@0.7.0` has neither, and it also predates
@@ -269,6 +329,28 @@ Flow 1 CAN run here — this container is Linux.
 ---
 
 ## Iteration log
+
+### Iteration 9 — flow 3 blocked, two findings
+
+**Shipped:** `spike/files_mcp.py` (a two-tool stdio MCP server, read-only +
+destructive, with a marker file that fires if the destructive one ever really
+runs) and `goose/mcp-guard.flow.yaml` as a REPRODUCTION, not a passing test.
+
+**Found:** D7, a false-negative stand-in detection that fails a record which did
+everything right; and D8, the model refusing to misbehave so the adversarial turn
+cannot be recorded.
+
+**Measured, not inferred:** the parent-process log is what turned "flowproof is
+probably wrong" into proof. The earlier suspicion — that flowproof's double-quoted
+executable path broke goose's `--with-extension` parsing — was WRONG; goose
+dequotes it fine. Fourth wrong inference this loop, caught before it was reported.
+
+**Deliberately not built:** a flow-3 that records by pointing goose at the real
+server (it would destroy the boundary it exists to prove); any CI job (D4).
+
+**Next iteration should:** fix D7. Start by finding what the post-run check
+inspects — the stand-in ran, so something it is expected to leave behind is
+missing or is looked for in the wrong place. Then decide D8 on the evidence.
 
 ### Iteration 7 — fix D5, flow 1 GREEN
 
