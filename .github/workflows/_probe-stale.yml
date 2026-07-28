@@ -1,0 +1,42 @@
+# THROWAWAY PROBE - DO NOT MERGE TO main.
+#
+# Measures whether the repo ruleset's `dismiss_stale_reviews_on_push: true`
+# actually beats the ORG ruleset's `false`.
+#
+# Both rulesets apply to main and GitHub lists them as two separate pull_request
+# rules rather than one resolved value. GitHub documents that the most
+# restrictive setting wins, so `true` SHOULD hold - but dismiss-on-push is a
+# behaviour performed on push, not a condition a push must satisfy, and
+# documented is not observed. This observes it.
+#
+# It matters because without dismissal an Adversary approves a benign diff, the
+# Builder pushes anything afterwards, and the approval still stands.
+#
+# CRITICAL: triggers on `opened` ONLY. If it also ran on `synchronize` it would
+# re-approve the moment the second commit landed and mask the exact thing being
+# measured.
+#
+# SAFETY: hard-scoped to this one branch, so it can approve nothing else.
+name: _probe stale
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  approve:
+    if: github.head_ref == 'test/stale-approval-probe'
+    runs-on: ubuntu-latest
+    steps:
+      - name: approve once, on open only
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh pr review "$PR" --approve \
+            --body "Probe: approving on \`opened\` only. A second commit follows; if dismiss_stale_reviews_on_push is in force this approval must be dismissed." \
+            --repo "${{ github.repository }}"
