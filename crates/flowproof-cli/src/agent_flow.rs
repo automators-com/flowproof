@@ -45,10 +45,23 @@ const AGENT_TIMEOUT: Duration = Duration::from_secs(300);
 /// the standard `OPENAI_BASE_URL` the developer already has set.
 const UPSTREAM_VARS: [&str; 2] = ["FLOWPROOF_AGENT_UPSTREAM", "OPENAI_BASE_URL"];
 
-/// The env vars a real-model KEY is read from at record time. flowproof
-/// passes it straight into the outbound `Authorization` header and never
-/// anywhere else: the trace stores request bodies only, so no key is ever
-/// written to disk. Bearer-prefixed if it is a bare key.
+/// The env vars a real-model KEY is read from at record time.
+///
+/// The key never reaches disk: the trace stores request bodies only.
+///
+/// WHICH HEADER it goes out in is DIALECT-DEPENDENT, and getting this wrong
+/// costs real debugging time, so it is spelled out here rather than left to
+/// the reader to discover from `agent_proxy`:
+///
+///   - OpenAI-compatible upstream: `Authorization: <key>`, Bearer-prefixed if
+///     the key is bare.
+///   - Anthropic upstream: `x-api-key: <key>`, with any `Bearer ` prefix
+///     stripped, because that is what the Messages API reads.
+///
+/// The practical consequence: an upstream that speaks the Anthropic dialect
+/// but authenticates with `Authorization: Bearer` (an in-house gateway, say)
+/// will reject every call, because the credential arrives in `x-api-key`
+/// instead. Reported as a real case in #187.
 const UPSTREAM_KEY_VARS: [&str; 3] = ["FLOWPROOF_AGENT_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
 
 /// The env var the prompt is delivered through. A documented handle, so an
