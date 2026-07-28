@@ -15,9 +15,10 @@ need a human's product judgement and were deliberately not invented. Until each
 is resolved the loops treat that area as out of scope rather than guess.
 
 Decided so far: **Tier 3 declined** (§3), **diagnostics before coverage** (§4),
-**the ledger lives at `docs/loop/ledger.yaml`** (§6), and **two machine users**
-as the loop identities (§9). Numbering is left as-is so earlier references still
-resolve.
+**the ledger lives at `docs/loop/ledger.yaml`** (§6), and the loop identities are
+**`AutomatorsAgent` plus a workflow** (§9) — no new account, established by
+measurement rather than assumption. Numbering is left as-is so earlier references
+still resolve.
 
 ---
 
@@ -299,30 +300,67 @@ The design assumes independence that GitHub must enforce, not the prompts:
   `write` identities. Enforced by `scripts/gate/token-scope-check.sh` check 5.
 - **Ledger ∉ {Migrator, Builder}.** The one-way gate of §6.
 
-**Mechanism: two machine users**, added as repository collaborators with `write`
-and no more. flowproof is public, so collaborators cost nothing.
+**Mechanism: one existing machine account, and a workflow.** No new account is
+needed — measured, not assumed (see below).
 
-| Account | Role | Permission |
+| Identity | Role | Form |
 |---|---|---|
-| `flowproof-builder` | Builder, Migrator, Prospector, Ledger keeper | `write` |
-| `flowproof-adversary` | Adversary — the approving reviewer | `write` |
+| `AutomatorsAgent` | Builder, Migrator, Prospector, Ledger keeper | collaborator, `write` |
+| `github-actions[bot]` | Adversary — the approving reviewer | a workflow |
 
-`write` is the whole point: it is **not** in the ruleset's bypass list
-(`OrganizationAdmin`, `RepositoryRole: 5`), so neither account can merge without
-the other's review. Neither may be granted `maintain` or `admin` —
-`scripts/gate/token-scope-check.sh` check 5 refuses to start if either is.
+`write` is the whole point for the Builder: it is **not** in the ruleset's bypass
+list (`OrganizationAdmin`, `RepositoryRole: 5`), so it cannot merge without a
+review. It must never be granted `maintain` or `admin` —
+`scripts/gate/token-scope-check.sh` check 5 refuses to start if it is.
 
-Each holds a fine-grained PAT scoped to this repository only: Contents,
-Pull requests, and Issues write, Metadata read, and nothing else. Never `Actions`,
-`Administration`, or `Workflows`. Tokens live in a `0600` env file outside any
-container mount, and expire on a 90-day rotation.
+Its token is a fine-grained PAT scoped to this repository only: Contents,
+Pull requests and Issues write, Metadata read, nothing else. Never `Actions`,
+`Administration` or `Workflows`. It lives in a `0600` env file outside any
+container mount, on a 90-day rotation.
 
-A GitHub App would be cleaner to audit and rotate, and is the better long-term
-answer; two accounts are the faster path to a working loop and can be replaced
-without changing anything else in this charter.
+**The Adversary needs no account at all**, and that is better than a second
+machine user rather than merely cheaper. Its logic lives in `.github/workflows/`,
+which is constitution-protected *and* unreachable by a loop token lacking
+`workflow` scope — so the Builder cannot influence what reviews it. A bot
+account's prompt would sit in a mutable file; this does not.
 
-Until these exist, **every gate installed is satisfiable by a single loop
-identity acting alone**, and the loops must not run unattended.
+### Measured, not assumed
+
+Two probes settled questions the documentation left open. Both ran against this
+repo and both branches were deleted afterwards; an auto-approving workflow must
+never reach `main`.
+
+| Question | Result |
+|---|---|
+| Does a `github-actions[bot]` approval satisfy `required_approving_review_count: 1`? | **Yes** — `reviewDecision: APPROVED`, `mergeStateStatus: CLEAN` (#191) |
+| Does the repo ruleset's `dismiss_stale_reviews_on_push: true` beat the org ruleset's `false`? | **Yes** — the approval went to `DISMISSED` and `reviewDecision` fell back to `REVIEW_REQUIRED` (#192) |
+
+The second matters most: without dismissal the Adversary approves a benign diff,
+the Builder pushes anything afterwards, and the approval still stands. GitHub's
+most-restrictive-wins aggregation across stacked rulesets holds for this
+behaviour, so the hole is **provably** closed rather than probably closed.
+
+The stale probe approved on `opened` only. Had it also fired on `synchronize` it
+would have re-approved the instant the second commit landed and masked the very
+thing being measured — exactly one workflow run confirms it did not.
+
+Note also that `copilot-pull-request-reviewer` posts `COMMENTED`, never
+`APPROVED`, so the org-wide Copilot review does **not** satisfy the gate. Only a
+deliberate approver does.
+
+The independence the design assumes is now **enforced by GitHub rather than by
+prompts**: the Builder cannot merge without a review it cannot give itself, and
+an approval does not survive a later push.
+
+Two things remain before a loop may run unattended, and neither is a design
+question:
+
+1. **The Adversary workflow does not exist yet.** Only that the mechanism works
+   has been proven. Until it is written, nothing supplies the required approval
+   and the Builder simply cannot merge — which is the safe failure direction.
+2. **The Builder's fine-grained PAT has not been minted**, so
+   `scripts/gate/token-scope-check.sh` checks 2–5 have never run against a real
+   token. Run it once before trusting it.
 
 > **DECIDE 9 — the human allowlist.** `scripts/gate/constitution-check.sh`
 > currently allows exactly `AminChirazi`. If anyone else should be able to change
