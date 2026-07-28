@@ -23,8 +23,12 @@ STATE="$REPO_ROOT/.loop"
 ROLES="$REPO_ROOT/scripts/loop/roles"
 BUILDER_LOGIN="AutomatorsAgent"
 
-# Bounds. A loop that never stops is a loop that cannot be reasoned about.
-MAX_TURNS="${LOOP_MAX_TURNS:-60}"
+# Bounds. A loop that never stops is a loop that cannot be reasoned about - but
+# a bound set too low is not a safety property, it is a way of failing after
+# paying full price. 60 was arbitrary and wrong: the first real turn spent them
+# on build-and-test cycles, produced 309 lines of sound work, and was killed
+# before it could commit any of it. A Rust fix needs room to compile.
+MAX_TURNS="${LOOP_MAX_TURNS:-300}"
 MAX_ATTEMPTS="${LOOP_MAX_ATTEMPTS:-3}"
 
 mkdir -p "$STATE"/{locks,logs,attempts}
@@ -125,7 +129,7 @@ run_role() { # run_role <workdir> <context>
          --append-system-prompt "$(cat "$ROLES/$ROLE.md")" \
          --max-turns "$MAX_TURNS" \
          --permission-mode acceptEdits \
-         --output-format text ) > "$log" 2>&1
+         --output-format text < /dev/null ) > "$log" 2>&1
   rc=$?
   set -e
 
@@ -162,6 +166,18 @@ case "$ROLE" in
       git -C "$REPO_ROOT" worktree add "$wt" -b "$branch" origin/main >/dev/null
     fi
 
+    # A previous attempt may have died mid-edit. The next attempt is a fresh
+    # session with no memory of that work, so it would open on a tree carrying
+    # changes it did not make and cannot explain. Preserve the diff where a
+    # human can read it, then start clean - a retry that is not deterministic is
+    # not a retry.
+    if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+      keep="$STATE/logs/$(date -u +%Y%m%dT%H%M%SZ)-issue-$issue-abandoned.diff"
+      git -C "$wt" diff > "$keep"
+      say "previous attempt left $(git -C "$wt" diff --shortstat | tr -d '\n'); saved to ${keep#"$REPO_ROOT"/} and reset"
+      git -C "$wt" reset -q --hard origin/main && git -C "$wt" clean -qfd
+    fi
+
     body="$(GH_TOKEN="$FLOWPROOF_LOOP_TOKEN" gh issue view "$issue" \
              --json title,body -q '"# " + .title + "\n\n" + .body' 2>/dev/null \
              || echo "issue #$issue")"
@@ -173,6 +189,8 @@ ${body}"; then
       rm -f "$STATE/attempts/issue-$issue"
     else
       say "turn failed for #$issue (attempt $(attempts_of "issue-$issue") of $MAX_ATTEMPTS)"
+      changed="$(git -C "$wt" diff --shortstat | tr -d '\n')"
+      [ -n "$changed" ] && say "it left:${changed} - see the log above for why it stopped"
       exit 1
     fi
     ;;
