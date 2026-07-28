@@ -9,9 +9,15 @@ This file is part of the constitution — see `scripts/gate/constitution-check.s
 No loop may modify it. Changing direction is a human act, and this is where it
 happens.
 
-Nine places are marked **DECIDE** — they need a human's product judgement, and
-the drafting agent deliberately did not invent them. Until each is resolved the
-loops must treat that area as out of scope rather than guess.
+Five places are still marked **DECIDE** — 1 (commercial boundary), 5 (scope
+budget), 6 (token budget), 7 (escalation channel) and 9 (human allowlist). They
+need a human's product judgement and were deliberately not invented. Until each
+is resolved the loops treat that area as out of scope rather than guess.
+
+Decided so far: **Tier 3 declined** (§3), **diagnostics before coverage** (§4),
+**the ledger lives at `docs/loop/ledger.yaml`** (§6), and **two machine users**
+as the loop identities (§9). Numbering is left as-is so earlier references still
+resolve.
 
 ---
 
@@ -97,39 +103,50 @@ they are needed — without a written boundary, that is unbounded.
 > not build in this repo? Nothing in the repo states one, so the loops currently
 > assume everything in scope is open. If that is wrong it needs saying here.
 
-> **DECIDE 2 — Tier 3 (web-suite migration).** The work engine can migrate
-> Playwright/Cypress/Selenium suites, but their originals are endemically flaky,
-> so verdict disagreement is ambiguous and the token cost per useful signal is
-> the worst of any tier. In scope, or declined for now?
+- **Tier 3 (web-suite migration) is declined for now.** Migrating
+  Playwright/Cypress/Selenium suites has the worst signal-to-token ratio of any
+  tier: the originals are endemically flaky, so a verdict disagreement is
+  ambiguous rather than informative. Revisit once Tier 1 and Tier 2 have a
+  measured revert rate to compare against. Until then a web-suite candidate is a
+  decline, not a backlog item.
 
 ---
 
 ## 4. Current milestone
 
-> **DECIDE 3 — the milestone and its exit criteria.** What follows is *derived
-> from the repo*, not chosen by you: the README's own "thinner coverage" list
-> plus the open issues. Confirm, replace, or reorder it.
+**Milestone 1 — make a failure say what actually failed.** Two issues, both on
+the agent boundary, both the same defect class: a real upstream failure
+presenting as a flowproof problem.
 
-**Proposed: close the agent-boundary coverage gap.** The README states the
-agent-boundary paths that are built but thinly covered, and that list is the
-honest edge of the product's central claim.
+1. **#187** — a 401 upstream during `record` fails fast instead of retrying with
+   backoff and looking like a hang.
+2. **#188** — an agent that fails to start says so, and surfaces its stderr,
+   instead of reporting "0 model calls" and blaming the replay.
 
-Exit criteria, all testable:
+**This comes before adding coverage, and the ordering is deliberate.** Tier 2's
+entire oracle rests on telling a flowproof defect apart from a problem in the
+corpus repo. Today a dead agent process is indistinguishable from a failed
+replay — so a Migrator loop pointed at third-party agents would file confident,
+worthless reports, and the frequency gate would happily promote a gap that was
+never real. Diagnostics are not polish here; they are the precondition for the
+loops' output being worth reading.
+
+Exit criteria: both issues closed, each with a committed flow that proves the
+message stays correct.
+
+**Milestone 2 — close the agent-boundary coverage gap.** The README names the
+paths that are built but thinly covered, and that list is the honest edge of the
+product's central claim. Exit criteria, all testable:
 
 1. The Anthropic Messages dialect has a recorded cassette and a green replay.
 2. Streaming replay has a green offline replay.
 3. `agent.url` services have a green offline replay.
 4. The MCP boundary over streamable HTTP has a green offline replay.
-5. No `record` leg on an agent path remains untested (README currently admits
+5. No `record` leg on an agent path remains untested (the README currently admits
    these exist).
-6. `#187` fixed: a 401 upstream during `record` fails fast instead of retrying
-   with backoff and looking like a hang.
-7. `#188` fixed: an agent that fails to start says so, with its stderr, instead
-   of reporting "0 model calls" and blaming the replay.
 
-That is issue **#61** plus **#187** and **#188**, and it is the prerequisite for
-the work engine's Tier 2 — which is where the loops are strongest and where
-flowproof is differentiated.
+That is issue **#61**, and it is the prerequisite for the work engine's Tier 2 —
+where the loops are strongest and flowproof is differentiated.
 
 #187 and #188 are the same defect class and both sit on the agent boundary: a
 real upstream failure surfacing as something that looks like a flowproof problem.
@@ -164,13 +181,14 @@ When the Scout must choose, lower number wins.
 Full design in `docs/` (see the autonomous-development concept). The rules the
 loops must follow:
 
-**Tier order: 2, then 1. Tier 3 pending DECIDE 2. Tier 4 never autonomous.**
+**Tier order: 2, then 1. Tier 3 declined. Tier 4 never autonomous.**
 
 - **Tier 1 — API/HTTP suites** → `app: api`. External oracle, exact verdicts.
 - **Tier 2 — agents and MCP servers** → `app: agent`. Usually no existing tests,
   so the oracle is internal (below). flowproof's differentiator; run it first.
-- **Tier 3 — web UI suites** → `app: web`. Requires an original that passes 3×
-  consecutively before it counts as an oracle. Pending DECIDE 2.
+- **Tier 3 — web UI suites** → `app: web`. **Declined** (§3): flaky originals make
+  disagreement ambiguous. If revisited, an original must pass 3× consecutively
+  before it counts as an oracle.
 - **Tier 4 — desktop/SAP/Citrix.** No public corpus, needs Windows and licensed
   software. Human-driven, always.
 
@@ -204,9 +222,14 @@ M≥3 distinct repositories**. First occurrence is recorded, not built. The loop
 that felt the pain must not authorise the fix: Migrator → Ledger → Builder is
 one-way.
 
-> **DECIDE 4 — ledger location.** `.loop/` is gitignored ("local bookkeeping, not
-> product"), so the gap ledger cannot live there and still be reviewable. It
-> needs a tracked home — `docs/loop/ledger.yaml` is the obvious candidate.
+**The ledger lives at `docs/loop/ledger.yaml`.** Tracked, so it is reviewable in
+a diff — the whole point of a ledger you can read. It cannot live under `.loop/`,
+which `.gitignore` marks as local scratch and "not product". `docs/` is also
+already in the CI scope filter's docs-only allowlist, so a ledger write skips the
+engine jobs: correct for a bookkeeping file, and it keeps loop overhead cheap.
+
+Only the Ledger keeper writes it. The Migrator emits gap *observations*; the
+Builder reads `status: eligible` and nothing else.
 
 > **DECIDE 5 — scope budget.** A cap on net new public API per period, so the
 > loops prefer one generalisation over five special cases. No number can be
@@ -276,9 +299,27 @@ The design assumes independence that GitHub must enforce, not the prompts:
   `write` identities. Enforced by `scripts/gate/token-scope-check.sh` check 5.
 - **Ledger ∉ {Migrator, Builder}.** The one-way gate of §6.
 
-> **DECIDE 8 — identity mechanism.** Machine users added as collaborators, or a
-> GitHub App? An App is cleaner to audit and rotate; machine users are faster to
-> create. Either way, two identities minimum.
+**Mechanism: two machine users**, added as repository collaborators with `write`
+and no more. flowproof is public, so collaborators cost nothing.
+
+| Account | Role | Permission |
+|---|---|---|
+| `flowproof-builder` | Builder, Migrator, Prospector, Ledger keeper | `write` |
+| `flowproof-adversary` | Adversary — the approving reviewer | `write` |
+
+`write` is the whole point: it is **not** in the ruleset's bypass list
+(`OrganizationAdmin`, `RepositoryRole: 5`), so neither account can merge without
+the other's review. Neither may be granted `maintain` or `admin` —
+`scripts/gate/token-scope-check.sh` check 5 refuses to start if either is.
+
+Each holds a fine-grained PAT scoped to this repository only: Contents,
+Pull requests, and Issues write, Metadata read, and nothing else. Never `Actions`,
+`Administration`, or `Workflows`. Tokens live in a `0600` env file outside any
+container mount, and expire on a 90-day rotation.
+
+A GitHub App would be cleaner to audit and rotate, and is the better long-term
+answer; two accounts are the faster path to a working loop and can be replaced
+without changing anything else in this charter.
 
 Until these exist, **every gate installed is satisfiable by a single loop
 identity acting alone**, and the loops must not run unattended.
