@@ -88,10 +88,10 @@ Two deliberate choices worth understanding before you run it:
   are constrained by their *token scope*, not by admin enforcement, so this
   costs no safety and preserves your ability to hotfix and to clear the circuit
   breaker.
-- **`required_pull_request_reviews: null`** (zero approvals) — required for
-  autonomous merge. If you ever want the Adversary's sign-off to be
-  *mechanically* required rather than advisory, it needs its own GitHub identity
-  and this becomes `1`. Worth knowing that today the Adversary is advisory only.
+- **`required_pull_request_reviews: null`** (zero approvals) — this field never
+  mattered. The review requirement comes from the **org ruleset**, not from
+  branch protection, and GitHub enforces the union of both. The Adversary's
+  approval is mechanically required today; see the ruleset sections below.
 
 **`strict: true`** is load-bearing: it forces a branch to be up to date before
 merging, which mechanically enforces the rebase-and-recheck that catches the
@@ -109,7 +109,8 @@ design (~50 min), and the Integrator covers them post-merge on `main`.
 | `protection.json` — branch protection on `main` | **applied**, verified server-side |
 | `ruleset-repo-guard.json` — repo ruleset id `19879637` | **applied**, both flags `true` |
 | `ruleset-hardened.json` | **superseded, do not use** — wrong endpoint (see below) |
-| Loop credential + Adversary identity | **not done**, needs the GitHub web UI |
+| Loop credential (`AutomatorsAgent`) | **minted and verified**, all 5 checks green |
+| Adversary identity | **not needed** — it is a workflow, see `CHARTER.md` §9 |
 
 ### Why `ruleset-hardened.json` is dead
 
@@ -125,32 +126,27 @@ Instead, `ruleset-repo-guard.json` **creates a repo-level ruleset** that stacks
 on top of the org one, adding only the `pull_request` rule with the two flags
 set. No `admin:org`, no blast radius.
 
-### The stacking is applied but its resolution is unverified
+### The stacking resolves as documented — measured
 
 `GET /repos/automators-com/flowproof/rules/branches/main` reports **two separate
-`pull_request` rules**, not one merged rule:
+`pull_request` rules** rather than one merged value:
 
 ```
 pull_request  from=Organization  dismiss_stale=false last_push_approval=false reviews=1
 pull_request  from=Repository    dismiss_stale=true  last_push_approval=true  reviews=1
 ```
 
-GitHub documents that the most restrictive value wins across overlapping
-rulesets, so `true` should apply. But `dismiss_stale_reviews_on_push` is a
-*behavior* performed on push rather than a condition a push must satisfy, and the
-API exposes both rules side by side rather than a resolved value. **This is
-documented behavior, not observed behavior.**
+GitHub documents that the most restrictive value wins, but
+`dismiss_stale_reviews_on_push` is a *behaviour* performed on push rather than a
+condition a push must satisfy — so it was worth measuring rather than assuming.
 
-Settle it empirically as soon as the Adversary identity exists:
+Measured in #192: an approval was posted on `opened`, a second commit pushed, and
+the approval went to **`DISMISSED`** with `reviewDecision` falling back to
+`REVIEW_REQUIRED`. The repo ruleset's `true` beats the org ruleset's `false`. The
+stale-approval hole is **provably** closed, not probably closed.
 
-1. Adversary approves a test PR.
-2. Push one more commit to that PR.
-3. Check whether the approval was dismissed (`gh pr view N --json reviewDecision`).
-
-If it was not dismissed, the org ruleset is winning and the two flags must move
-to the org level after all — which means `admin:org` and an org-wide change.
-Until this is checked, treat the stale-approval hole as **probably closed, not
-provably closed**.
+(The probe approved on `opened` only. Had it also fired on `synchronize` it would
+have re-approved the instant the second commit landed and masked the result.)
 
 ### External dependency worth knowing
 
@@ -211,11 +207,51 @@ hatch, the same role `enforce_admins: false` plays in `protection.json`.
 
 ### Test status of the checks
 
-Honest accounting: check 1 (token ≠ interactive login) is verified, and it
-short-circuits — so **checks 2–5 are syntax-valid but unexercised**. They cannot
-be tested until a real loop credential exists. Run the script once against the
-new token before trusting it, and expect to debug the `sed`-based JSON parsing;
-`jq` is not installed on this box, which is why the parsing is done with `sed`.
+All five checks now run green against the real loop credential
+(`AutomatorsAgent`, minted 2026-07-28):
+
+```
+ok  distinct from the interactive gh login
+ok  fine-grained token (no OAuth scopes granted)
+ok  cannot reach branch protection (HTTP 403)
+ok  can read pull requests
+ok  identity is 'AutomatorsAgent'
+ok  cannot read its own repo role (HTTP 403) -- no Administration access
+```
+
+### Why check 5 is inverted
+
+The first version asked GitHub for the identity's repo role and for
+`current_user_can_bypass`. Neither can work: both require Administration access,
+which is exactly what a correctly-scoped loop token must not have. **A token
+restricted enough to be safe is too restricted to describe itself.**
+
+So the test is inverted — the 403 *is* the evidence. A token that can read its
+own repo role holds Administration access and is over-privileged by definition.
+Refusal to answer is the passing answer.
+
+The consequence is worth stating plainly: this check proves the token is **too
+weak to bypass review**. It does not prove **which account it belongs to**. That
+has to be established out of band by a human with an admin token:
+
+```bash
+gh api repos/automators-com/flowproof/collaborators/AutomatorsAgent/permission --jq .role_name
+# => write        verified 2026-07-28
+```
+
+`write` is not in the ruleset's bypass list (`OrganizationAdmin`,
+`RepositoryRole: 5`), so the identity cannot merge without the Adversary.
+Re-verify this after any change to the account's repository role.
+
+### A note on `jq`
+
+`jq` is not installed on this box, so the parsing uses `sed` and `grep`. That is
+also how the original check 5 failed: `grep -o` exits 1 when it matches nothing,
+`pipefail` propagated it, and `set -e` killed the script *after* every individual
+check had already printed `ok`. It looked like a failing credential; it was a
+passing credential and a failing script. The fifth instance of exit-code masking
+in this repository, and the reason the Builder prompt forbids piping a
+verification command.
 
 ## Ratchet baseline note
 
