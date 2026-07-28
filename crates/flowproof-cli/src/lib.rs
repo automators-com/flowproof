@@ -857,10 +857,9 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
                     );
                     if !json {
                         match &outcome {
-                            Ok(()) => println!(
-                                "[PASS] {} ({} ms)",
-                                report.name, report.duration_ms
-                            ),
+                            Ok(()) => {
+                                println!("[PASS] {} ({} ms)", report.name, report.duration_ms)
+                            }
                             Err(why) => println!("[FAIL] {} — {why}", report.name),
                         }
                     }

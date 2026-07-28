@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use flowproof_trace::cassette::{Cassette, Divergence};
@@ -551,8 +551,6 @@ pub fn run_against_contained(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// The 26-minute hang, reduced to its cause.
     ///
     /// A backgrounded `sleep` inherits the shell's stdout and holds the write
