@@ -138,6 +138,40 @@ impl RunReport {
         }
     }
 
+    /// The report for an `app: agent` flow, whose verdict comes from the
+    /// cassette replay rather than from steps.
+    ///
+    /// `trace_id` is neither "skipped" nor "errored" because the suite counts
+    /// those two by that field: an agent flow RAN, so it belongs in the
+    /// ran/passed tally like any other flow. A failure here is a verdict about
+    /// the agent, not a broken harness - harness faults keep going through
+    /// [`RunReport::errored`].
+    pub fn agent(name: &str, failure: Option<&str>, duration_ms: u64) -> Self {
+        let passed = failure.is_none();
+        Self {
+            name: name.to_string(),
+            trace_id: "agent".into(),
+            passed,
+            degraded: false,
+            steps: vec![StepResult {
+                id: "s0001".into(),
+                intent: "agent cassette replayed".into(),
+                status: if passed {
+                    StepStatus::Passed
+                } else {
+                    StepStatus::Failed
+                },
+                detail: failure.map(str::to_string),
+                started_ms: 0,
+                duration_ms,
+                selector_tier: None,
+                degraded: false,
+            }],
+            duration_ms,
+            recording: None,
+        }
+    }
+
     /// A synthetic report for a flow that never ran (no trace recorded,
     /// skip condition). `passed: true` — a skip is not a failure, matching
     /// JUnit semantics — with one skipped step carrying the reason, so the
