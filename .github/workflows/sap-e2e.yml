@@ -45,6 +45,18 @@ jobs:
           # trace file or a log line.
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
 
+      # Broader coverage than the one hardcoded correctness check above:
+      # replays every committed example flow as a suite (zero AI, each
+      # trace already recorded against this same reference SAP system).
+      # view-order.flow.yaml and stock-overview.flow.yaml assume order 314
+      # and material MZ-FG-C900 exist on whichever system this runner
+      # points at — real data on the reference system this was recorded
+      # against, not guaranteed elsewhere.
+      - name: replay SAP example flows (live SAP GUI)
+        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/
+        env:
+          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
       # Leave the session clean for whichever run is next, whether that's
       # tonight's schedule or a manual dispatch during the working day.
       - name: session reset
