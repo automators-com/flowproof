@@ -253,6 +253,55 @@ passing credential and a failing script. The fifth instance of exit-code masking
 in this repository, and the reason the Builder prompt forbids piping a
 verification command.
 
+## What the loop runner can execute, and what was actually measured
+
+`--permission-mode acceptEdits` auto-accepts file *edits* but still prompts for a
+mutating Bash command, and in a non-interactive turn a prompt is a denial. The
+first complete Builder turn wrote 333 lines and 8 tests, could not run
+`cargo fmt`, `cargo test`, `git add` or `gh`, and correctly refused to open a
+pull request it could not certify.
+
+Measured against **claude 2.1.220**, by running each case:
+
+| Flag | Result |
+|---|---|
+| `--allowed-tools "Bash"` | grants Bash — **works** |
+| `--allowed-tools "Bash(cargo *)"` / `Bash(cargo:*)` | grants nothing — **does not work** |
+| `--disallowed-tools "Bash(touch *)"` / `Bash(touch:*)` | blocks `touch` — **works** |
+
+Per-command *granting* is therefore unavailable through CLI flags, so the runner
+uses a **deny-list**. The honest description is "everything except these", which
+is weaker than "only these", and that was forced by the runtime rather than
+chosen.
+
+### The sudo claim is two layers, one of them unverified
+
+`flow` has passwordless sudo, so an unrestricted Builder would hold root on the
+box that stores the SSH keys. `Bash(sudo *)` is in the deny-list.
+
+**But the direct test is confounded.** Asked to run `sudo -n touch /tmp/probe`
+*without* any deny-list, the model refused anyway, on its own judgement. So the
+observation "no file was created" is consistent with the deny-list working and
+equally consistent with it doing nothing.
+
+What is proven is the *mechanism*: `Bash(touch *)` in `--disallowed-tools`
+demonstrably blocked `touch` while an identical run without it succeeded. Since
+`Bash(sudo *)` uses that same syntax, sudo is covered — by one verified mechanism
+and one independent model-level refusal. It has not been observed directly, and
+this note exists so nobody later mistakes inference for observation.
+
+### What this does not do
+
+It is not a containment boundary. `python3`, `rm` and `sed` remain available and
+any of them can do damage. What the deny-list removes is the short path from a
+mistake to a breach: no `sudo`, no `curl`/`wget` (download-and-run,
+exfiltration), no `ssh`/`scp` (lateral movement), no `npm`/`npx` (arbitrary
+install).
+
+Real isolation for the Builder means a container, as the Migrator already has.
+This is the cheaper 90%, and the remaining 10% is the reason the Builder should
+eventually move into one.
+
 ## Ratchet baseline note
 
 The concept quotes 651 Rust tests from a static count of `#[test]` attributes.

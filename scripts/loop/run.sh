@@ -23,6 +23,40 @@ STATE="$REPO_ROOT/.loop"
 ROLES="$REPO_ROOT/scripts/loop/roles"
 BUILDER_LOGIN="AutomatorsAgent"
 
+# What a role may execute.
+#
+# `--permission-mode acceptEdits` auto-accepts file edits but still PROMPTS for
+# a mutating Bash command - and in a non-interactive turn a prompt is a denial.
+# The first complete Builder turn wrote 333 lines and 8 tests, could not run
+# `cargo fmt`, `cargo test`, `git add` or `gh`, and correctly refused to open a
+# pull request it could not certify.
+#
+# This is a DENY-list, not an allow-list, and that was forced by the runtime
+# rather than chosen. Measured against claude 2.1.220:
+#
+#   --allowed-tools "Bash"           grants Bash            (works)
+#   --allowed-tools "Bash(cargo *)"  grants nothing         (does NOT work)
+#   --disallowed-tools "Bash(x *)"   blocks x               (works)
+#
+# So per-command granting is unavailable and the honest description of what
+# follows is "everything except these", which is weaker than "only these". What
+# it removes is the path from a mistake to a breach - `flow` has passwordless
+# sudo, so an unrestricted Builder would have root on the box holding the SSH
+# keys. It does not make the Builder safe: `python3`, `rm` and `sed` remain, and
+# any of them can do damage. Real isolation means a container, as the Migrator
+# already has; this is the cheaper 90%.
+#
+# Verified blocked, not assumed: see the entry in scripts/gate/README.md.
+DENIED_TOOLS='Bash(sudo *) Bash(sudo:*) Bash(curl *) Bash(curl:*) Bash(wget *) Bash(wget:*) Bash(ssh *) Bash(ssh:*) Bash(scp *) Bash(scp:*) Bash(npm *) Bash(npm:*) Bash(npx *) Bash(npx:*)'
+
+# The read-only roles write no code. The Warden must not fix what it finds, the
+# Prospector never executes what it discovers, and the Ledger keeper implements
+# nothing - so none of them are given a shell at all.
+case "$ROLE" in
+  builder|migrator) ROLE_TOOLS="Bash Read Write Edit Glob Grep" ;;
+  *)                ROLE_TOOLS="Read Glob Grep Bash(git *) Bash(gh *)" ;;
+esac
+
 # Bounds. A loop that never stops is a loop that cannot be reasoned about - but
 # a bound set too low is not a safety property, it is a way of failing after
 # paying full price. 60 was arbitrary and wrong: the first real turn spent them
@@ -123,12 +157,15 @@ run_role() { # run_role <workdir> <context>
   # directly: piping would let the pipe's status mask the real one, which has
   # already produced three false results in this repository.
   set +e
+  # shellcheck disable=SC2086  # both lists must word-split into separate args
   ( cd "$workdir" \
     && GH_TOKEN="$FLOWPROOF_LOOP_TOKEN" \
        claude -p "$context" \
          --append-system-prompt "$(cat "$ROLES/$ROLE.md")" \
          --max-turns "$MAX_TURNS" \
          --permission-mode acceptEdits \
+         --allowed-tools $ROLE_TOOLS \
+         --disallowed-tools $DENIED_TOOLS \
          --output-format text < /dev/null ) > "$log" 2>&1
   rc=$?
   set -e
