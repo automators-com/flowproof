@@ -590,15 +590,19 @@ pub mod com {
         }
 
         fn find_disp(&self, id: &str) -> Result<Option<Disp>, DriverError> {
-            // FindById raises for unknown ids; that's the "not on screen"
-            // signal, same as a failed UIA match.
-            match self
-                .session()?
+            Ok(Self::find_in(self.session()?, id))
+        }
+
+        /// `FindById` scoped to an arbitrary session, not just `self.session`
+        /// - needed by `connect()` to probe a *candidate* session before
+        /// committing to it. Raises for unknown ids; that's the "not on
+        /// screen" signal, same as a failed UIA match.
+        fn find_in(session: &Disp, id: &str) -> Option<Disp> {
+            session
                 .call("FindById", vec![VARIANT::from(BSTR::from(id))])
-            {
-                Ok(value) => Ok(IDispatch::try_from(&value).ok().map(Disp)),
-                Err(_) => Ok(None),
-            }
+                .ok()
+                .and_then(|value| IDispatch::try_from(&value).ok())
+                .map(Disp)
         }
 
         fn walk_into(element: &Disp, depth: u32, out: &mut Vec<SapElement>) {
@@ -713,9 +717,24 @@ pub mod com {
                     if sessions.get_i32("Count").unwrap_or(0) == 0 {
                         return Ok(None);
                     }
-                    Ok(Some(
-                        sessions.call_disp("ElementAt", vec![VARIANT::from(0)])?,
-                    ))
+                    let session = sessions.call_disp("ElementAt", vec![VARIANT::from(0)])?;
+                    // A session object exists as soon as its window opens -
+                    // including the SAP login screen itself, and logging off
+                    // leaves that same window (and session object) open too.
+                    // Existence alone can't tell "logged in" from "sitting at
+                    // the login screen" - the login screen has the standard
+                    // toolbar and command field just like any other screen.
+                    // `Info.User` is empty until a user actually authenticates
+                    // (the login screen itself reports transaction `S000`,
+                    // SAP's own code for "not logged on yet").
+                    let logged_in = session
+                        .get_disp("Info")
+                        .map(|info| !info.get_string("User").is_empty())
+                        .unwrap_or(false);
+                    if !logged_in {
+                        return Ok(None); // keep waiting - not logged in yet
+                    }
+                    Ok(Some(session))
                 })();
 
                 match attempt {
