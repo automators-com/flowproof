@@ -1,0 +1,43 @@
+# THROWAWAY PROBE - DO NOT MERGE TO main.
+#
+# Answers one question that decides whether the autonomous loops need a second
+# GitHub account: does an approval from `github-actions[bot]` satisfy the
+# ruleset's `required_approving_review_count: 1`?
+#
+# The repo has `can_approve_pull_request_reviews: true`, so Actions is PERMITTED
+# to approve. Whether that approval then counts toward the required review is a
+# separate question, and the docs do not settle it. This measures it.
+#
+# If it counts, the Adversary can be a workflow: no second machine account, no
+# credential to rotate, and its logic lives in .github/workflows/ which is
+# constitution-protected and unreachable by a loop token without `workflow`
+# scope - stronger independence than a bot account.
+#
+# SAFETY: hard-scoped to this one branch. If this file ever reached main it
+# would still approve nothing, because no other branch matches. Belt and braces,
+# because a workflow that auto-approves every PR would silently destroy the
+# review gate this whole system rests on.
+name: _probe approval
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  approve:
+    if: github.head_ref == 'test/actions-approval-probe'
+    runs-on: ubuntu-latest
+    steps:
+      - name: approve as github-actions[bot]
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh pr review "$PR" --approve \
+            --body "Probe: approval submitted by github-actions[bot] to measure whether it satisfies required_approving_review_count." \
+            --repo "${{ github.repository }}"
+          echo "review submitted; the reviewDecision is the actual result"
