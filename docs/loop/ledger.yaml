@@ -1,0 +1,49 @@
+# The gap ledger.
+#
+# What flowproof could not express when a real test suite needed it. This file
+# exists because the loops both request features and judge whether they are
+# needed, and without a written record that is unbounded: a loop hits a
+# limitation, decides flowproof should have the feature, builds it, and its own
+# test passes. Every step defensible, the sum unbounded scope creep.
+#
+# So a gap must be OBSERVED before it can be BUILT. The frequency gate is
+# N>=3 observations across M>=3 distinct repositories (CHARTER.md 6). A first
+# occurrence is recorded here, not implemented.
+#
+# The side effect is the real prize: a ranked, evidence-backed table of what
+# actual test suites need. That is worth more than any single feature in it.
+#
+# WHO WRITES WHAT
+#   Migrator      emits observations; never edits status
+#   Ledger keeper appends observations, maintains `count`, promotes to
+#                 `eligible`, checks scope against CHARTER.md 3
+#   Builder       reads `status: eligible` and nothing else
+#
+# The Migrator must not authorise the fix for a gap it reported. That one-way
+# path is the point of separating these roles.
+#
+# STATUS
+#   recording  seen, below the frequency gate
+#   eligible   gate met, in scope, a Builder may take it
+#   building   a Builder holds it (with the issue number)
+#   shipped    merged, with the flow that proves it stays fixed
+#   declined   out of scope per CHARTER.md 3 - with the reason, so it is not
+#              re-proposed every time it is seen again
+#
+# Entry schema:
+#   id             gap-NNNN, monotonic, never reused
+#   capability     one line, in terms of what a test needed - not a proposed API
+#   tier           1 | 2  (3 is declined, 4 is never autonomous)
+#   observed[]     {repo, sha, test, note}  - sha pins it; a claim with no sha
+#                  is not evidence
+#   count          distinct repositories in observed[], not total observations
+#   status         see above
+#   charter_scope  in-scope | out-of-scope | unclear  (unclear escalates)
+#   issue          set when status is building or shipped
+#   declined_why   required when status is declined
+
+version: 1
+gaps: []
+# No gaps recorded yet. The first entries will arrive from the first Migrator
+# run, once Milestone 1 has made a failure say what actually failed - until then
+# a gap report cannot be distinguished from a corpus-repo problem (CHARTER.md 4).
