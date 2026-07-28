@@ -5,6 +5,7 @@ mod agent_flow;
 mod capture;
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use flowproof_agent::FlowSpec;
@@ -687,6 +688,34 @@ fn errored_flow(
     reports.push(report);
 }
 
+/// Replay one agent flow inside a suite run, with the suite's hooks.
+///
+/// `Err` is a HARNESS fault (a failing seed or cleanup hook); the agent's own
+/// verdict comes back as the inner `Result`, so a failing flow is a failing
+/// flow rather than a broken suite. Cleanup runs whichever way replay went,
+/// matching the ordering the step-replay path uses below.
+fn run_agent_flow_in_suite(
+    spec_path: &Path,
+    spec: &FlowSpec,
+    trace_path: &Path,
+    manifest: &flowproof_agent::SuiteManifest,
+    json: bool,
+) -> Result<Result<(), String>, String> {
+    if let Some(cmd) = &manifest.before_each {
+        run_hook(cmd, spec_path, "before_each")?;
+    }
+    // The containment tier prints on every agent run, pass or fail - the
+    // single-spec path does the same, and a suite must not hide it.
+    if !json {
+        println!("{}", agent_flow::containment(spec).report_line());
+    }
+    let outcome = agent_flow::replay(spec, trace_path);
+    if let Some(cmd) = &manifest.after_each {
+        run_hook(cmd, spec_path, "after_each")?;
+    }
+    Ok(outcome)
+}
+
 pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> Result<u8, String> {
     let mut specs = Vec::new();
     discover_specs(dir, &mut specs)?;
@@ -806,6 +835,58 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
                     continue;
                 }
             }
+        }
+        // Agent flows replay their CASSETTE, not the step trace, exactly as
+        // the single-spec path at `run_one` does.
+        //
+        // Without this branch the suite fell through to `load_trace` below,
+        // which parses a UI trace one JSON object per line. An agent cassette
+        // is a single `{app, mocks, cassette}` document, so every agent flow
+        // in a directory run errored with "invalid trace line" - traces that
+        // `flowproof record` had just written, and that `flowproof run <spec>`
+        // replayed fine one at a time. Directory mode is what a suite and CI
+        // invoke, so agent flows were effectively unrunnable there.
+        if gated_spec.app.id() == "agent" {
+            let started = Instant::now();
+            match run_agent_flow_in_suite(spec_path, &gated_spec, &trace_path, &manifest, json) {
+                Ok(outcome) => {
+                    let report = flowproof_replay::RunReport::agent(
+                        &gated_spec.name,
+                        outcome.as_ref().err().map(String::as_str),
+                        started.elapsed().as_millis() as u64,
+                    );
+                    if !json {
+                        match &outcome {
+                            Ok(()) => {
+                                println!("[PASS] {} ({} ms)", report.name, report.duration_ms)
+                            }
+                            Err(why) => println!("[FAIL] {} — {why}", report.name),
+                        }
+                    }
+                    // Agent flows produce no run bundle, so there is no
+                    // per-flow result path - the suite record below still
+                    // carries the verdict.
+                    flows.push(serde_json::json!({
+                        "spec": spec_path,
+                        "report": report,
+                        "report_path": null,
+                    }));
+                    reports.push(report);
+                }
+                // A hook fault is a harness fault, not a verdict about the
+                // agent: same treatment every other flow's hook failure gets.
+                Err(e) => {
+                    errored_flow(
+                        spec_path,
+                        &gated_spec.name,
+                        e,
+                        json,
+                        &mut flows,
+                        &mut reports,
+                    );
+                }
+            }
+            continue;
         }
         // Seed before the flow; a failing hook fails the flow, not the run.
         if let Some(cmd) = &manifest.before_each {

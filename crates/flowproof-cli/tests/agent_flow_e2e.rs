@@ -506,3 +506,46 @@ fn audit_renders_the_control_map_in_yaml_and_json() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A recorded agent flow must replay when the suite is run by DIRECTORY,
+/// not only when the spec is named directly.
+///
+/// This is the gap that made agent flows unusable in CI. `run_suite` had no
+/// `app: agent` branch, so it fell through to the step-replay loader, which
+/// reads a trace one JSON object per line. An agent cassette is a single
+/// `{app, mocks, cassette}` document, so the loader failed on line 1 and
+/// every agent flow in the directory errored with "invalid trace line" -
+/// traces `flowproof record` had just written, and that `flowproof run
+/// <spec>` replayed green one at a time.
+///
+/// Directory mode is what a suite, a `pnpm test` script and a CI job all
+/// invoke, so this asserts the two modes agree.
+#[test]
+fn a_recorded_agent_flow_replays_in_directory_mode() {
+    let _env = lock_env();
+    let dir = work_dir("suite-dispatch");
+    let agent_py = dir.join("agent.py");
+    std::fs::write(&agent_py, FAKE_AGENT).expect("agent");
+    let spec = write_spec(&dir, &agent_py);
+
+    std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
+    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    assert_eq!(code, 0, "recording an agent flow should succeed");
+
+    // No model at all for the replay: a stray real call fails loudly.
+    std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+    std::env::remove_var("OPENAI_BASE_URL");
+
+    // The single-spec path, which already worked.
+    let single = flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]);
+    assert_eq!(single, 0, "replaying the spec directly must pass");
+
+    // The DIRECTORY path, which errored before this branch existed.
+    let suite = flowproof_cli::run_cli(["run", dir.to_str().expect("utf8")]);
+    assert_eq!(
+        suite, 0,
+        "the same flow must replay when the suite is run by directory"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

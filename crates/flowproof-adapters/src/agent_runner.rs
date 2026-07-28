@@ -17,6 +17,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use flowproof_trace::cassette::{Cassette, Divergence};
@@ -353,18 +354,82 @@ fn wait_to_deadline(
     (status, timed_out)
 }
 
-/// Drain a child's stdout and stderr pipes to strings.
-fn read_pipes(child: &mut std::process::Child) -> (String, String) {
-    let read = |pipe: Option<&mut dyn Read>| {
-        let mut buffer = String::new();
-        if let Some(pipe) = pipe {
-            let _ = pipe.read_to_string(&mut buffer);
-        }
-        buffer
-    };
-    let stdout = read(child.stdout.as_mut().map(|p| p as &mut dyn Read));
-    let stderr = read(child.stderr.as_mut().map(|p| p as &mut dyn Read));
-    (stdout, stderr)
+/// How long to keep draining a pipe after the child is gone.
+///
+/// Only reached when the write end outlived the child (see [`PipeDrain`]);
+/// a normal exit closes the pipe and the drain finishes at once.
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(5);
+
+/// A child pipe being drained on its own thread.
+///
+/// TWO BUGS LIVE WHERE THIS USED TO BE A BLOCKING `read_to_string` AFTER
+/// THE WAIT, and neither is guessable from the old four-line body:
+///
+/// 1. **The wait deadlocked against the pipe buffer.** Draining only after
+///    the child exits means a child that writes more than the OS pipe
+///    buffer (~64 KB) blocks in `write` forever, never exits, and is then
+///    killed at the timeout - reported as a hung agent when it was really
+///    a full pipe. Draining starts at spawn now, so the child always has
+///    somewhere to write.
+///
+/// 2. **`read_to_string` waited for EOF, which a GRANDCHILD can withhold.**
+///    EOF arrives when the last write end closes, not when the child dies.
+///    An agent that spawns its own server (`opencode serve` under the
+///    OpenCode SDK) hands that grandchild the same stdout, so killing the
+///    child at the timeout closed nothing and the read blocked forever. A
+///    flowproof run against DataMaker's agent suite sat for 26 minutes on a
+///    300-second timeout, produced no output, and had to be killed by hand.
+///    That is the failure the deadline above says it prevents: "an agent
+///    that hangs ... would otherwise take the whole suite down with it".
+///
+/// So the drain is bounded and the partial output is kept: whatever arrived
+/// before the grace expired is returned rather than discarded, because for
+/// a run that already went wrong that text is the only diagnostic there is.
+struct PipeDrain {
+    buffer: Arc<Mutex<String>>,
+    finished: mpsc::Receiver<()>,
+}
+
+impl PipeDrain {
+    /// Start draining `pipe` immediately, before the caller waits on the child.
+    fn start<R: Read + Send + 'static>(pipe: Option<R>) -> Self {
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let (done, finished) = mpsc::channel();
+        let sink = Arc::clone(&buffer);
+        std::thread::spawn(move || {
+            if let Some(mut pipe) = pipe {
+                // Chunked rather than `read_to_string` so a partial read is
+                // still visible in `buffer` when the grace expires.
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match pipe.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if let Ok(mut sink) = sink.lock() {
+                                sink.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = done.send(());
+        });
+        Self { buffer, finished }
+    }
+
+    /// Take what was drained, waiting at most `grace` for the pipe to close.
+    ///
+    /// The reader thread is deliberately left running when the grace expires:
+    /// it is blocked on a pipe held open by a process flowproof does not own,
+    /// it holds nothing but its own buffer, and the process exits shortly
+    /// after. Killing it is not possible in safe Rust and not worth it.
+    fn collect(self, grace: Duration) -> String {
+        let _ = self.finished.recv_timeout(grace);
+        self.buffer
+            .lock()
+            .map(|buffer| buffer.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// Spawn the agent against an ALREADY-STARTED proxy and wait for it to
@@ -387,8 +452,13 @@ pub fn run_against(
         source,
     })?;
 
+    // Drain BEFORE waiting, not after: a child that fills the pipe buffer
+    // blocks in `write` and never reaches the exit the wait is waiting for.
+    let out_drain = PipeDrain::start(child.stdout.take());
+    let err_drain = PipeDrain::start(child.stderr.take());
     let (status, timed_out) = wait_to_deadline(&mut child, timeout);
-    let (stdout, stderr) = read_pipes(&mut child);
+    let stdout = out_drain.collect(PIPE_DRAIN_GRACE);
+    let stderr = err_drain.collect(PIPE_DRAIN_GRACE);
 
     let log = proxy.log();
     let run = AgentRun {
@@ -442,8 +512,13 @@ pub fn run_against_contained(
             source,
         })?;
 
+    // Same ordering as the uncontained path: drain from spawn, so the pipe
+    // buffer can never be what stops the child from exiting.
+    let out_drain = PipeDrain::start(child.stdout.take());
+    let err_drain = PipeDrain::start(child.stderr.take());
     let (status, timed_out) = wait_to_deadline(&mut child, timeout);
-    let (stdout, stderr) = read_pipes(&mut child);
+    let stdout = out_drain.collect(PIPE_DRAIN_GRACE);
+    let stderr = err_drain.collect(PIPE_DRAIN_GRACE);
     let egress = supervisor.stop_and_collect();
 
     let log = proxy.log();
@@ -476,6 +551,58 @@ pub fn run_against_contained(
 
 #[cfg(test)]
 mod tests {
+    /// The 26-minute hang, reduced to its cause.
+    ///
+    /// A backgrounded `sleep` inherits the shell's stdout and holds the write
+    /// end open long after the shell itself exits - structurally the same
+    /// thing `opencode serve` does when an agent SDK spawns it. EOF therefore
+    /// never arrives, and the `read_to_string` this replaced waited for EOF,
+    /// so the drain outlived the process by however long the grandchild ran.
+    #[cfg(unix)]
+    #[test]
+    fn a_grandchild_holding_the_pipe_cannot_outlast_the_grace() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30 & echo hi")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let drain = PipeDrain::start(child.stdout.take());
+        let _ = child.wait();
+
+        let started = Instant::now();
+        let out = drain.collect(Duration::from_millis(500));
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the drain must be bounded by the grace, not by the grandchild; took {:?}",
+            started.elapsed()
+        );
+        // Bounded must not mean lossy: what did arrive is the only diagnostic
+        // a hung run leaves behind.
+        assert!(out.contains("hi"), "partial output must survive: {out:?}");
+    }
+
+    /// The second bug in the same place: draining only AFTER the wait means a
+    /// child that outwrites the OS pipe buffer (~64 KB) blocks in `write`,
+    /// never exits, and is killed at the timeout - reported as a hung agent
+    /// when nothing was wrong with it. Draining from spawn keeps it moving.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_outwrites_the_pipe_buffer_still_exits() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("yes flowproof | head -c 200000")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let drain = PipeDrain::start(child.stdout.take());
+        let (_status, timed_out) = wait_to_deadline(&mut child, Duration::from_secs(20));
+        let out = drain.collect(PIPE_DRAIN_GRACE);
+
+        assert!(!timed_out, "a chatty child must not look like a hung one");
+        assert_eq!(out.len(), 200_000, "every byte the child wrote is captured");
+    }
 
     /// The gap a real adopter hit: their client reads AI_GATEWAY_URL, and
     /// the proxy's port is not known when the spec is written, so a static
