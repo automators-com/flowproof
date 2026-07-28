@@ -17,8 +17,19 @@
 # Exit 0 = clean, 1 = refused, 2 = misconfigured.
 set -euo pipefail
 
-BASE="${BASE:?BASE is unset}"
+BASE_INPUT="${BASE:?BASE is unset}"
 HEAD_REF="${HEAD:-HEAD}"
+
+# Compare against the MERGE-BASE, not the tip of the base branch.
+#
+# Using the tip means a branch is measured against commits it does not contain:
+# when main moves ahead, every count the newer commits raised looks like a fall.
+# The first use of this in anger reported "rust tests fell from 662 to 659" for a
+# branch that touched no Rust at all - the three tests belonged to a pull request
+# merged after the branch was cut. A gate that accuses honest work of the exact
+# thing it exists to prevent is worse than no gate: it teaches people to override
+# it. constitution-check.sh already does this correctly.
+BASE="$(git merge-base "$BASE_INPUT" "$HEAD_REF" 2>/dev/null || echo "$BASE_INPUT")"
 
 # A PR larger than this escalates to a human. Large diffs are exactly where
 # review - model or human - stops working, and the cap also forces the
