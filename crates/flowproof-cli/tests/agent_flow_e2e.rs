@@ -191,6 +191,59 @@ fn records_and_replays_an_agent_flow() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Issue #188, end to end: an agent that cannot even start must be reported
+/// as a dead process with its own stderr attached, not as "0 model calls".
+///
+/// This is the README's frictionless first green run on a machine that is
+/// missing the agent's OWN dependency - many adopters' first contact with
+/// flowproof. The symptom used to read as *flowproof could not replay* while
+/// the traceback that explained everything was captured and thrown away, so
+/// the first conclusion an adopter reached was that the tool is broken.
+///
+/// A good cassette is recorded first, then the agent is broken underneath
+/// it: the recording is fine, the agent is not, and the message must say so.
+#[test]
+fn an_agent_that_cannot_start_blames_the_agent_and_prints_its_stderr() {
+    let _env = lock_env();
+    let dir = work_dir("dead-agent");
+    let agent_py = dir.join("agent.py");
+    std::fs::write(&agent_py, FAKE_AGENT).expect("agent");
+    let spec = write_spec(&dir, &agent_py);
+
+    std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
+    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    assert_eq!(code, 0, "the cassette must record cleanly first");
+    std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+
+    // Now break the agent the way a clean machine does: its import fails, it
+    // exits 1, and it never reaches the proxy.
+    std::fs::write(&agent_py, "import definitely_not_installed_pkg\n").expect("agent");
+    let output = std::process::Command::new(FLOWPROOF_BIN)
+        .args(["run", spec.to_str().expect("utf8")])
+        .env_remove("FLOWPROOF_AGENT_UPSTREAM")
+        .env_remove("OPENAI_BASE_URL")
+        .output()
+        .expect("run flowproof run");
+
+    assert!(!output.status.success(), "a dead agent is not a pass");
+    // The verdict line goes to stdout.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("exited 1 without making any model call"),
+        "the failure names the dead process: {stdout}"
+    );
+    assert!(
+        stdout.contains("definitely_not_installed_pkg"),
+        "the agent's own stderr is what explains it: {stdout}"
+    );
+    assert!(
+        stdout.contains("agent stderr:"),
+        "the stderr is labelled as the agent's, not flowproof's: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A failing assertion at record time refuses the trace, the same rule
 /// every other app kind has. Here the flow demands a tool the agent never
 /// calls.

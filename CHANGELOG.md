@@ -6,6 +6,22 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **An agent that never started was reported as a replay that made no model
+  calls, and its stderr was thrown away.** The README offers
+  `flowproof run scripts/demo/order-status.flow.yaml` as the frictionless first
+  green run — no key needed — so on a machine missing the demo agent's own
+  `openai` package it was many adopters' first contact with the tool, and it
+  said "the agent made 0 model calls, the recording has 2". That reads as
+  *flowproof could not replay*; the truth was *your agent died before it spoke
+  to anything*, and the traceback saying exactly why had been captured and then
+  discarded. A zero-call run is now its own failure mode: it names the process
+  and its exit code, prints the agent's stderr under the run, and points at the
+  command flowproof actually ran. An agent that exits cleanly without calling a
+  model is still the wiring failure it always was, and an `agent.url` service is
+  never told it "exited 200" — its exit code is an HTTP status, not a process's.
+
 ## 0.8.0
 
 Everything here was found by pointing flowproof at **goose** — a third-party
