@@ -32,6 +32,9 @@ t BLOCK "loop edits this very check"           loop-bot scripts/gate/constitutio
 t BLOCK "loop edits the gate's tests"          loop-bot scripts/gate/constitution-check.test.sh
 t BLOCK "loop edits the branch-protection json" loop-bot scripts/gate/protection.json
 t BLOCK "loop edits CODEOWNERS"                loop-bot CODEOWNERS
+t BLOCK "loop edits its own role prompt"       loop-bot scripts/loop/roles/builder.md
+t BLOCK "loop edits the loop runner"           loop-bot scripts/loop/run.sh
+t BLOCK "the Builder edits its own prompt"     AutomatorsAgent scripts/loop/roles/builder.md
 t BLOCK "loop buries it among normal files"    loop-bot crates/a/src/lib.rs docs/b.md .github/workflows/ci.yml
 
 echo "-- but must stay free to do its actual work --"

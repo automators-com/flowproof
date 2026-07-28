@@ -20,9 +20,14 @@
 # Exit 0 = allowed, 1 = refused, 2 = misconfigured.
 set -euo pipefail
 
-# Anything that constrains the loops. `scripts/gate/` only: the loops own the
-# rest of scripts/ and must stay free to work there.
-PROTECTED='^(CHARTER\.md|CODEOWNERS|scripts/gate/|\.github/workflows/)'
+# Anything that constrains the loops: the charter they steer by, the gate that
+# judges them, the prompts that define them, and CI. `scripts/gate/` and
+# `scripts/loop/` only - the loops own the rest of scripts/ and must stay free to
+# work there.
+#
+# scripts/loop/ is protected because a Builder that can edit its own role prompt
+# is not bounded by it. An instruction its subject can rewrite is a suggestion.
+PROTECTED='^(CHARTER\.md|CODEOWNERS|scripts/gate/|scripts/loop/|\.github/workflows/)'
 
 # Fail-closed: anyone NOT on this list is treated as a loop, so a new loop
 # identity is constrained the moment it exists with no edit here required. This
