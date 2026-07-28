@@ -450,15 +450,27 @@ fn serve_one(
                 }
                 Err(why) => {
                     let mut log = log.lock().unwrap_or_else(|e| e.into_inner());
-                    if log.upstream_error.is_none() {
-                        log.upstream_error = Some(why.clone());
+                    let first = log.upstream_error.is_none();
+                    if first {
+                        log.upstream_error = Some(why.to_string());
                     }
                     drop(log);
+                    // Say it out loud, once. A record run whose every model
+                    // call is rejected otherwise prints nothing at all until
+                    // it times out, and "silent for ten minutes" reads as a
+                    // hang rather than as a credential the upstream refused.
+                    if first {
+                        eprintln!("flowproof: upstream model call failed: {why}");
+                    }
+                    // Answer with the upstream's own status when it was a
+                    // client error. 401/403 are verdicts about the credential:
+                    // retrying cannot change them, and a 502 would invite the
+                    // agent to retry with backoff until the run times out.
                     respond(
                         &mut writer,
                         &mut reader,
                         &response(
-                            502,
+                            why.agent_facing_status(),
                             &error_body(&format!("upstream model call failed: {why}")),
                         ),
                     );
@@ -471,29 +483,124 @@ fn serve_one(
 /// Forward a request to the upstream model and read its reply. Returns the
 /// parsed assistant message (for the cassette) and the raw response body
 /// (handed back to the agent unchanged).
+/// Why an upstream model call did not produce a message.
+///
+/// Carries the upstream HTTP status when there was one, because the caller
+/// needs it to answer the agent HONESTLY. Blanket-502ing an upstream 401 tells
+/// the agent "bad gateway, try again", and a well-behaved agent then retries
+/// with backoff, turning an auth misconfiguration into what looks like a hang.
+/// `None` means the request never got a status at all (transport failure).
+#[derive(Debug, Clone)]
+pub(crate) struct UpstreamFailure {
+    pub(crate) status: Option<u16>,
+    pub(crate) detail: String,
+}
+
+impl std::fmt::Display for UpstreamFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.status {
+            Some(code) => write!(f, "upstream returned {code}: {}", self.detail),
+            None => write!(f, "{}", self.detail),
+        }
+    }
+}
+
+impl UpstreamFailure {
+    /// A transport failure: no HTTP status was ever seen.
+    fn transport(detail: impl Into<String>) -> Self {
+        Self {
+            status: None,
+            detail: detail.into(),
+        }
+    }
+
+    /// The status to answer the agent with.
+    ///
+    /// A CLIENT error is passed through unchanged: 401 and 403 are verdicts
+    /// about the credential, and no amount of retrying makes an unauthorized
+    /// key authorized, so the agent must be allowed to give up. Everything
+    /// else stays 502, which is what it is: the gateway could not complete the
+    /// call, and retrying may well help.
+    fn agent_facing_status(&self) -> u16 {
+        match self.status {
+            Some(code) if (400..500).contains(&code) => code,
+            _ => 502,
+        }
+    }
+}
+
+/// Read a response body without letting a non-2xx status swallow it.
+///
+/// `http_status_as_error(false)`: a 4xx/5xx is a real answer whose status AND
+/// body are the diagnosis. ureq's default turns it into an opaque
+/// "http status: 401" and discards what the server said, which is precisely
+/// the sentence a caller needs ("unauthorized", "model not allowed", ...).
+fn send_json(
+    request: ureq::RequestBuilder<ureq::typestate::WithBody>,
+    bytes: &[u8],
+) -> Result<(u16, String), UpstreamFailure> {
+    let mut response = request
+        .send(bytes)
+        .map_err(|e| UpstreamFailure::transport(e.to_string()))?;
+    let status = response.status().as_u16();
+    let raw = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| UpstreamFailure::transport(e.to_string()))?;
+    Ok((status, raw))
+}
+
+/// The upstream's own words, trimmed to something a log line can carry.
+///
+/// The body is what actually explains the failure ("unauthorized",
+/// "model not allowed"); a bare status forces the reader to go guessing.
+fn body_detail(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "(empty body)".to_string();
+    }
+    const LIMIT: usize = 400;
+    if trimmed.chars().count() <= LIMIT {
+        return trimmed.to_string();
+    }
+    format!("{}...", trimmed.chars().take(LIMIT).collect::<String>())
+}
+
+/// An agent that reports statuses instead of erroring on them.
+fn upstream_agent() -> ureq::Agent {
+    ureq::config::Config::builder()
+        .http_status_as_error(false)
+        .build()
+        .new_agent()
+}
+
 fn forward(
     upstream: &str,
     auth: Option<&str>,
     body: &serde_json::Value,
-) -> Result<(Message, String), String> {
+) -> Result<(Message, String), UpstreamFailure> {
     let url = format!("{upstream}/chat/completions");
-    let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
-    let mut request = ureq::post(&url).header("content-type", "application/json");
+    let bytes = serde_json::to_vec(body).map_err(|e| UpstreamFailure::transport(e.to_string()))?;
+    let mut request = upstream_agent()
+        .post(&url)
+        .header("content-type", "application/json");
     if let Some(auth) = auth {
         request = request.header("authorization", auth);
     }
-    let mut response = request.send(&bytes[..]).map_err(|e| e.to_string())?;
-    let raw = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| e.to_string())?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("upstream returned non-JSON: {e}"))?;
+    let (status, raw) = send_json(request, &bytes[..])?;
+    if !(200..300).contains(&status) {
+        return Err(UpstreamFailure {
+            status: Some(status),
+            detail: body_detail(&raw),
+        });
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| UpstreamFailure::transport(format!("upstream returned non-JSON: {e}")))?;
     let message = parsed
         .get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("message"))
-        .ok_or("upstream response has no choices[0].message")?;
+        .ok_or_else(|| UpstreamFailure::transport("upstream response has no choices[0].message"))?;
     Ok((parse_message(message), raw))
 }
 
@@ -512,24 +619,27 @@ fn forward_anthropic(
     auth: Option<&str>,
     body: &serde_json::Value,
     version: Option<&str>,
-) -> Result<(Message, Option<String>, String), String> {
+) -> Result<(Message, Option<String>, String), UpstreamFailure> {
     let url = format!("{upstream}/v1/messages");
-    let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
-    let mut request = ureq::post(&url)
+    let bytes = serde_json::to_vec(body).map_err(|e| UpstreamFailure::transport(e.to_string()))?;
+    let mut request = upstream_agent()
+        .post(&url)
         .header("content-type", "application/json")
         .header("anthropic-version", version.unwrap_or("2023-06-01"));
     if let Some(auth) = auth {
         let key = auth.strip_prefix("Bearer ").unwrap_or(auth);
         request = request.header("x-api-key", key);
     }
-    let mut response = request.send(&bytes[..]).map_err(|e| e.to_string())?;
-    let raw = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| e.to_string())?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("upstream returned non-JSON: {e}"))?;
-    let message = message_from_anthropic_response(&parsed)?;
+    let (status, raw) = send_json(request, &bytes[..])?;
+    if !(200..300).contains(&status) {
+        return Err(UpstreamFailure {
+            status: Some(status),
+            detail: body_detail(&raw),
+        });
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| UpstreamFailure::transport(format!("upstream returned non-JSON: {e}")))?;
+    let message = message_from_anthropic_response(&parsed).map_err(UpstreamFailure::transport)?;
     let stop_reason = parsed
         .get("stop_reason")
         .and_then(|s| s.as_str())
@@ -1162,10 +1272,20 @@ fn error_body(message: &str) -> String {
 }
 
 fn response(status: u16, body: &str) -> Vec<u8> {
+    // Upstream client errors are now passed through (see
+    // `UpstreamFailure::agent_facing_status`), so the reason phrase has to
+    // cover them: a 401 emitted as "401 Conflict" is a lie that costs the next
+    // reader time.
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
+        409 => "Conflict",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
         _ => "Conflict",
     };
     format!(
@@ -2036,6 +2156,97 @@ mod tests {
             }
         });
         format!("http://127.0.0.1:{port}/v1")
+    }
+
+    /// A fake upstream that answers every request with a fixed status and
+    /// body, so the proxy's handling of a REJECTION can be exercised.
+    fn fake_model_status(status: u16, reason: &'static str, body: &'static str) -> String {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let _ = read_http_request(&mut stream);
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
+    /// An upstream 401 must reach the agent AS a 401.
+    ///
+    /// The regression this pins: it used to be flattened to 502, which says
+    /// "bad gateway, try again". A well-behaved agent then retries with
+    /// backoff, and a record run whose credential is simply wrong looks like a
+    /// hang for as long as the agent is willing to keep trying.
+    #[test]
+    fn an_upstream_401_is_not_disguised_as_a_bad_gateway() {
+        let upstream = fake_model_status(401, "Unauthorized", r#"{"error":"unauthorized"}"#);
+        let rec = AgentProxy::record(&upstream, Some("wrong-key".to_string()), Mocks::new(), 0)
+            .expect("record starts");
+
+        let (status, body) = post(
+            &rec.base_url(),
+            chat(serde_json::json!([{"role": "user", "content": "hi"}])),
+        );
+
+        assert_eq!(status, 401, "an unauthorized credential is not retryable");
+        let text = body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(text.contains("401"), "status is named: {text}");
+        assert!(
+            text.contains("unauthorized"),
+            "the upstream's OWN words survive, which is what names the cause: {text}"
+        );
+    }
+
+    /// The same for the Anthropic dialect, which takes a different code path
+    /// (`forward_anthropic`, `x-api-key` rather than `authorization`).
+    #[test]
+    fn an_upstream_401_on_the_anthropic_path_is_also_passed_through() {
+        let upstream = fake_model_status(401, "Unauthorized", r#"{"error":"no key"}"#);
+        let rec = AgentProxy::record(&upstream, Some("Bearer wrong".to_string()), Mocks::new(), 0)
+            .expect("record starts");
+
+        let (status, body) = post_messages(
+            &rec.base_url(),
+            serde_json::json!({
+                "model": "claude-test",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+            }),
+        );
+
+        assert_eq!(status, 401);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no key"));
+    }
+
+    /// A 5xx stays a 502: the gateway genuinely could not complete the call,
+    /// and retrying may well help, so the agent must not be told to give up.
+    #[test]
+    fn an_upstream_500_still_reads_as_a_gateway_failure() {
+        let upstream = fake_model_status(500, "Internal Server Error", r#"{"error":"boom"}"#);
+        let rec = AgentProxy::record(&upstream, None, Mocks::new(), 0).expect("record starts");
+
+        let (status, _) = post(
+            &rec.base_url(),
+            chat(serde_json::json!([{"role": "user", "content": "hi"}])),
+        );
+
+        assert_eq!(status, 502, "a server-side failure is retryable");
     }
 
     /// The real round trip: RECORD against a fake model captures a
