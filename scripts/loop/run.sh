@@ -23,8 +23,12 @@ STATE="$REPO_ROOT/.loop"
 ROLES="$REPO_ROOT/scripts/loop/roles"
 BUILDER_LOGIN="AutomatorsAgent"
 
-# Bounds. A loop that never stops is a loop that cannot be reasoned about.
-MAX_TURNS="${LOOP_MAX_TURNS:-60}"
+# Bounds. A loop that never stops is a loop that cannot be reasoned about - but
+# a bound set too low is not a safety property, it is a way of failing after
+# paying full price. 60 was arbitrary and wrong: the first real turn spent them
+# on build-and-test cycles, produced 309 lines of sound work, and was killed
+# before it could commit any of it. A Rust fix needs room to compile.
+MAX_TURNS="${LOOP_MAX_TURNS:-300}"
 MAX_ATTEMPTS="${LOOP_MAX_ATTEMPTS:-3}"
 
 mkdir -p "$STATE"/{locks,logs,attempts}
@@ -52,12 +56,19 @@ fi
 "$REPO_ROOT/scripts/gate/token-scope-check.sh" >/dev/null \
   || die "the loop credential failed its scope check; run it directly to see why"
 
-# 3. The model runtime. Without it the role prompt cannot be executed at all.
+# 3. The token must belong to the Builder, not merely be well-scoped. A
+#    correctly-scoped token for the WRONG account would pass every check in
+#    token-scope-check.sh and then open pull requests as a stranger.
+actor="$(GH_TOKEN="$FLOWPROOF_LOOP_TOKEN" gh api user --jq .login 2>/dev/null || true)"
+[ "$actor" = "$BUILDER_LOGIN" ] \
+  || die "the loop token belongs to '${actor:-<unresolved>}', not '$BUILDER_LOGIN'"
+
+# 4. The model runtime. Without it the role prompt cannot be executed at all.
 command -v claude >/dev/null || die "the claude CLI is not installed"
 claude -p "ok" --output-format text >/dev/null 2>&1 \
   || die "the claude CLI is not authenticated (ANTHROPIC_API_KEY, or 'claude /login')"
 
-# 4. Role tooling, checked here rather than discovered halfway through a turn
+# 5. Role tooling, checked here rather than discovered halfway through a turn
 #    where the failure would look like a code problem.
 case "$ROLE" in
   builder)  command -v cargo  >/dev/null || die "cargo is required to verify a build" ;;
@@ -72,7 +83,13 @@ say "preflight clear; role=$ROLE"
 # they won. The GitHub assignee is the visible claim; this is the one that
 # actually prevents a local collision.
 claim() { # claim <key>
-  local key="$1" lock="$STATE/locks/$key" age
+  # Three separate `local`s, not one. `local` is a command, so bash expands ALL
+  # its arguments before any assignment takes effect - `local key="$1"
+  # lock=".../$key"` leaves $key unset in the second expansion, which under
+  # `set -u` aborts the run. shellcheck SC2318; it broke the first real turn.
+  local key="$1"
+  local lock="$STATE/locks/$key"
+  local age
   if ! mkdir "$lock" 2>/dev/null; then
     age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || date +%s) ))
     if [ "$age" -gt 7200 ]; then
@@ -112,7 +129,7 @@ run_role() { # run_role <workdir> <context>
          --append-system-prompt "$(cat "$ROLES/$ROLE.md")" \
          --max-turns "$MAX_TURNS" \
          --permission-mode acceptEdits \
-         --output-format text ) > "$log" 2>&1
+         --output-format text < /dev/null ) > "$log" 2>&1
   rc=$?
   set -e
 
@@ -149,6 +166,18 @@ case "$ROLE" in
       git -C "$REPO_ROOT" worktree add "$wt" -b "$branch" origin/main >/dev/null
     fi
 
+    # A previous attempt may have died mid-edit. The next attempt is a fresh
+    # session with no memory of that work, so it would open on a tree carrying
+    # changes it did not make and cannot explain. Preserve the diff where a
+    # human can read it, then start clean - a retry that is not deterministic is
+    # not a retry.
+    if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+      keep="$STATE/logs/$(date -u +%Y%m%dT%H%M%SZ)-issue-$issue-abandoned.diff"
+      git -C "$wt" diff > "$keep"
+      say "previous attempt left $(git -C "$wt" diff --shortstat | tr -d '\n'); saved to ${keep#"$REPO_ROOT"/} and reset"
+      git -C "$wt" reset -q --hard origin/main && git -C "$wt" clean -qfd
+    fi
+
     body="$(GH_TOKEN="$FLOWPROOF_LOOP_TOKEN" gh issue view "$issue" \
              --json title,body -q '"# " + .title + "\n\n" + .body' 2>/dev/null \
              || echo "issue #$issue")"
@@ -160,6 +189,8 @@ ${body}"; then
       rm -f "$STATE/attempts/issue-$issue"
     else
       say "turn failed for #$issue (attempt $(attempts_of "issue-$issue") of $MAX_ATTEMPTS)"
+      changed="$(git -C "$wt" diff --shortstat | tr -d '\n')"
+      [ -n "$changed" ] && say "it left:${changed} - see the log above for why it stopped"
       exit 1
     fi
     ;;

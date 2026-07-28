@@ -41,6 +41,9 @@ AUTHOR="${AUTHOR:-}"
 [ -n "$AUTHOR" ] || { echo "AUTHOR is unset" >&2; exit 2; }
 
 if [ -n "${CHANGED_FILES:-}" ]; then
+  # Unquoted on purpose: the test harness passes a space-separated list and the
+  # word splitting is what turns it into one path per line.
+  # shellcheck disable=SC2086
   changed="$(printf '%s\n' $CHANGED_FILES)"
 else
   base="$(git merge-base "origin/${BASE_REF:?BASE_REF is unset}" HEAD)"

@@ -8,7 +8,7 @@
 #
 # Work happens in a throwaway worktree so the repo under test is never touched.
 set -uo pipefail
-cd "$(git rev-parse --show-toplevel)"
+cd "$(git rev-parse --show-toplevel)" || exit 2
 
 RATCHETS="$(pwd)/scripts/gate/ratchets.sh"
 BASE_REF="$(git rev-parse HEAD)"
@@ -25,6 +25,10 @@ trap cleanup EXIT
 git worktree add --detach "$WT" "$BASE_REF" >/dev/null 2>&1 || {
   echo "could not create the test worktree"; exit 2; }
 
+# The mutation strings below are single-quoted deliberately: they are shell
+# fragments eval'd inside the throwaway worktree, so expansion must happen there
+# and not here. (shellcheck SC2016 flags this at info level; CI gates on
+# warnings and above, so it is reported but not fatal.)
 # scenario <REFUSE|ALLOW> <description> <shell that mutates the worktree>
 scenario() {
   local want="$1" desc="$2" mutate="$3" got rev
@@ -78,6 +82,27 @@ scenario ALLOW  "a diff under the cap" \
   'seq 1 20 | sed "s/^/\/\/ line /" >> crates/flowproof-trace/src/lib.rs'
 scenario ALLOW  "a large generated Cargo.lock bump is exempt" \
   'seq 1 500 | sed "s/^/# generated /" >> Cargo.lock'
+
+echo "-- the base moving must not read as a regression --"
+# The gate's first use in anger refused a branch that touched no Rust, reporting
+# "rust tests fell from 662 to 659": the three tests belonged to a pull request
+# merged AFTER the branch was cut, and the comparison used the tip of main rather
+# than the merge-base. A gate that accuses honest work of the exact thing it
+# exists to prevent teaches people to override it.
+( cd "$WT" && git reset -q --hard "$BASE_REF" && git clean -qfd ) || true
+( cd "$WT" \
+  && printf '\n#[test]\nfn ratchet_probe_moved_base() { assert!(true); }\n' \
+       >> crates/flowproof-trace/src/lib.rs \
+  && git add -A \
+  && git -c user.name=t -c user.email=t@t commit -q -m "test: a commit only the base has" ) || true
+moved_base="$( cd "$WT" && git rev-parse HEAD )"
+
+if BASE="$moved_base" HEAD="$BASE_REF" "$RATCHETS" >/dev/null 2>&1; then
+  printf 'ok    %-46s %s\n' "a branch behind its base is not a regression" "ALLOW"
+else
+  printf 'FAIL  %-46s %s\n' "a branch behind its base is not a regression" "REFUSE"
+  FAILED=1
+fi
 
 echo
 if [ "$FAILED" -ne 0 ]; then echo "ratchet tests FAILED"; exit 1; fi
