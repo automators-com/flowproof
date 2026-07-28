@@ -1,0 +1,40 @@
+# Refuse a loop-authored change to the files that constrain the loops.
+#
+# One of three independent locks. The other two are the loop credential's scope
+# (it cannot push workflow changes) and branch protection listing `constitution`
+# as a required check. They fail independently, which is the point.
+#
+# Deliberately NOT gated on ci.yml's `what changed` scope filter: a docs-only PR
+# can still touch CHARTER.md, so this must run on every pull request.
+#
+# On self-protection: a `pull_request` run uses the workflow file from the PR's
+# own merge commit, so a PR that DELETES this job runs without it. That is
+# survivable only because a required status check which never reports blocks the
+# merge - which is why adding `constitution` to the required checks list is not
+# optional. See scripts/gate/README.md.
+name: constitution
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  constitution:
+    name: constitution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: the gate's own tests
+        run: ./scripts/gate/constitution-check.test.sh
+
+      - name: protected paths are human-authored only
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_REF: ${{ github.base_ref }}
+        run: ./scripts/gate/constitution-check.sh
