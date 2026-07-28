@@ -27,6 +27,7 @@ echo "-- a loop must not reach the things that constrain it --"
 t BLOCK "loop edits CI"                        loop-bot .github/workflows/ci.yml
 t BLOCK "loop edits the constitution job"      loop-bot .github/workflows/constitution.yml
 t BLOCK "loop edits the charter"               loop-bot CHARTER.md
+t BLOCK "loop edits CLAUDE.md"                 loop-bot CLAUDE.md
 t BLOCK "loop edits a gate script"             loop-bot scripts/gate/token-scope-check.sh
 t BLOCK "loop edits this very check"           loop-bot scripts/gate/constitution-check.sh
 t BLOCK "loop edits the gate's tests"          loop-bot scripts/gate/constitution-check.test.sh
@@ -52,6 +53,7 @@ t ALLOW "human edits a gate script"            AminChirazi scripts/gate/constitu
 echo "-- near-misses that must NOT be protected --"
 t ALLOW "a doc merely named like the gate"      loop-bot docs/gate-notes.md
 t ALLOW "a charter copy in a subdirectory"      loop-bot docs/CHARTER.md
+t ALLOW "a CLAUDE.md in a subdirectory"         loop-bot sdk/python/CLAUDE.md
 t ALLOW "a workflow-like path outside .github"  loop-bot crates/x/workflows/mod.rs
 t ALLOW "a gate-like path outside scripts/"     loop-bot crates/gate/src/lib.rs
 
