@@ -90,45 +90,41 @@ pass "can read pull requests"
 # ---------------------------------------------------------------------------
 # 5. The loop must not be able to BYPASS the review ruleset.
 #
-#    This is the check the earlier design missed. The `default` ruleset requires
-#    1 approving review, and its bypass list contains OrganizationAdmin and
-#    RepositoryRole 5 (admin). Bypass is evaluated on the ACTOR'S ROLE, not on
-#    the token's scopes -- so a fine-grained PAT owned by an admin sails past
-#    the review requirement no matter how narrow its permissions are. The gate
-#    would look enforced and be theoretical.
+#    Bypass is evaluated on the ACTOR'S ROLE, not on the token's scopes -- so a
+#    fine-grained PAT owned by an admin sails past the review requirement no
+#    matter how narrow its permissions are. The gate would look enforced and be
+#    theoretical.
 #
-#    The loop therefore needs its own identity with `write`, not a weaker token
-#    on an admin account.
+#    The obvious check -- ask GitHub for this identity's repo role, or read
+#    `current_user_can_bypass` -- CANNOT WORK. Both need Administration access,
+#    which is precisely what a correctly-scoped loop token must not have. A
+#    token restricted enough to be safe is too restricted to describe itself.
+#
+#    So the test is inverted: the 403 IS the evidence. If this token can read
+#    its own repo role, it holds Administration access and is over-privileged by
+#    definition. Refusal to answer is the passing answer.
+#
+#    What the role actually IS therefore has to be established out of band, by a
+#    human with an admin token, and recorded in scripts/gate/README.md. This
+#    check proves the token is too weak to bypass; it does not prove which
+#    account it belongs to.
 # ---------------------------------------------------------------------------
 actor="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
          https://api.github.com/user 2>/dev/null \
          | tr -d '\r\n ' | sed -n 's/.*"login":"\([^"]*\)".*/\1/p')"
 [ -n "$actor" ] || fail "could not resolve the token's login."
+pass "identity is '${actor}'"
 
-role="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
-        "https://api.github.com/repos/${REPO}/collaborators/${actor}/permission" 2>/dev/null \
-        | tr -d '\r\n ' | sed -n 's/.*"role_name":"\([^"]*\)".*/\1/p')"
-
-case "$role" in
-  admin|maintain) fail "loop identity '${actor}' has repo role '${role}', which is
-      in the ruleset's bypass list. It can merge without the Adversary's review.
-      Use a separate machine account or GitHub App with 'write'." ;;
-  write|push)     pass "actor '${actor}' has role '${role}' (cannot bypass review)" ;;
-  "")             warn "could not read the actor's repo role; verify manually that
-      '${actor}' is not an admin and not an org owner" ;;
-  *)              fail "unexpected repo role '${role}' for '${actor}'." ;;
-esac
-
-# Direct confirmation when the token can read the ruleset: GitHub reports
-# whether the *calling* identity may bypass. "always" is disqualifying.
-bypass="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
-          "https://api.github.com/repos/${REPO}/rulesets?includes_parents=true" 2>/dev/null \
-          | grep -o '"current_user_can_bypass":"[a-z_]*"' | head -1 | sed 's/.*:"\(.*\)"/\1/')"
-case "$bypass" in
-  always|pull_requests_only) fail "GitHub reports this identity can bypass rulesets
-      ('${bypass}'). The review gate would not apply to it." ;;
-  never) pass "GitHub confirms this identity cannot bypass rulesets" ;;
-  *)     warn "ruleset bypass status not readable with this token (role check above stands)" ;;
+code="$(curl -sS -o /dev/null -w '%{http_code}' \
+        -H "Authorization: Bearer ${TOKEN}" \
+        "https://api.github.com/repos/${REPO}/collaborators/${actor}/permission" 2>/dev/null || echo 000)"
+case "$code" in
+  200) fail "'${actor}' can read its own repository role, so this token holds
+      Administration access. An Administration-capable identity is in the
+      ruleset's bypass list and could merge without the Adversary's review.
+      Re-mint with Contents + Pull requests + Issues only." ;;
+  403|404) pass "cannot read its own repo role (HTTP ${code}) -- no Administration access" ;;
+  *)   fail "unexpected status ${code} probing the repo role for '${actor}'." ;;
 esac
 
 printf '\n\033[32mloop credential is correctly scoped and cannot bypass review\033[0m\n'
