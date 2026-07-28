@@ -3,7 +3,7 @@
 # these cases cannot drift from the logic they check.
 #
 # Run directly, or via the `constitution` workflow which runs it on every PR.
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 2
 SUT=./constitution-check.sh
 FAILED=0
 

@@ -30,6 +30,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      # A bash bug in the gate is a bug in what constrains the loops. SC2318 -
+      # `local a="$1" b="$a"`, where the second expansion sees the old value -
+      # broke the first real Builder turn, and shellcheck names it exactly.
+      # Gated at `warning` so style-level noise stays reportable but not fatal.
+      - name: shellcheck the gate and the runner
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning -s bash scripts/loop/run.sh scripts/gate/*.sh
+
       - name: the gate's own tests
         run: ./scripts/gate/constitution-check.test.sh
 

@@ -8,7 +8,7 @@
 #
 # Work happens in a throwaway worktree so the repo under test is never touched.
 set -uo pipefail
-cd "$(git rev-parse --show-toplevel)"
+cd "$(git rev-parse --show-toplevel)" || exit 2
 
 RATCHETS="$(pwd)/scripts/gate/ratchets.sh"
 BASE_REF="$(git rev-parse HEAD)"
@@ -25,6 +25,10 @@ trap cleanup EXIT
 git worktree add --detach "$WT" "$BASE_REF" >/dev/null 2>&1 || {
   echo "could not create the test worktree"; exit 2; }
 
+# The mutation strings below are single-quoted deliberately: they are shell
+# fragments eval'd inside the throwaway worktree, so expansion must happen there
+# and not here. (shellcheck SC2016 flags this at info level; CI gates on
+# warnings and above, so it is reported but not fatal.)
 # scenario <REFUSE|ALLOW> <description> <shell that mutates the worktree>
 scenario() {
   local want="$1" desc="$2" mutate="$3" got rev

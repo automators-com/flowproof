@@ -52,12 +52,19 @@ fi
 "$REPO_ROOT/scripts/gate/token-scope-check.sh" >/dev/null \
   || die "the loop credential failed its scope check; run it directly to see why"
 
-# 3. The model runtime. Without it the role prompt cannot be executed at all.
+# 3. The token must belong to the Builder, not merely be well-scoped. A
+#    correctly-scoped token for the WRONG account would pass every check in
+#    token-scope-check.sh and then open pull requests as a stranger.
+actor="$(GH_TOKEN="$FLOWPROOF_LOOP_TOKEN" gh api user --jq .login 2>/dev/null || true)"
+[ "$actor" = "$BUILDER_LOGIN" ] \
+  || die "the loop token belongs to '${actor:-<unresolved>}', not '$BUILDER_LOGIN'"
+
+# 4. The model runtime. Without it the role prompt cannot be executed at all.
 command -v claude >/dev/null || die "the claude CLI is not installed"
 claude -p "ok" --output-format text >/dev/null 2>&1 \
   || die "the claude CLI is not authenticated (ANTHROPIC_API_KEY, or 'claude /login')"
 
-# 4. Role tooling, checked here rather than discovered halfway through a turn
+# 5. Role tooling, checked here rather than discovered halfway through a turn
 #    where the failure would look like a code problem.
 case "$ROLE" in
   builder)  command -v cargo  >/dev/null || die "cargo is required to verify a build" ;;
@@ -72,7 +79,13 @@ say "preflight clear; role=$ROLE"
 # they won. The GitHub assignee is the visible claim; this is the one that
 # actually prevents a local collision.
 claim() { # claim <key>
-  local key="$1" lock="$STATE/locks/$key" age
+  # Three separate `local`s, not one. `local` is a command, so bash expands ALL
+  # its arguments before any assignment takes effect - `local key="$1"
+  # lock=".../$key"` leaves $key unset in the second expansion, which under
+  # `set -u` aborts the run. shellcheck SC2318; it broke the first real turn.
+  local key="$1"
+  local lock="$STATE/locks/$key"
+  local age
   if ! mkdir "$lock" 2>/dev/null; then
     age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || date +%s) ))
     if [ "$age" -gt 7200 ]; then
