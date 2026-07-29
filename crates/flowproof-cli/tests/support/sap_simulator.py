@@ -118,12 +118,45 @@ class Collection:
     Item = ElementAt
 
 
+class SessionInfo:
+    """`GuiSession.Info`, and specifically its `User`.
+
+    The engine uses a non-empty `User` to tell a logged-in session from one
+    sitting at the SAP login screen: a session object exists as soon as its
+    window opens, login screen included, so existence alone proves nothing.
+    Real SAP reports transaction `S000` and an empty user until someone
+    authenticates.
+
+    The simulator therefore has to present a session that is actually logged
+    in, because that is what the test claims to exercise - "record through the
+    production COM engine against a running, logged-in session". A simulator
+    that reported an empty user would be asking the engine to relax the check
+    rather than asking the test to be honest.
+    """
+
+    _public_methods_ = []
+    _public_attrs_ = ["User", "Client", "Transaction", "SystemName"]
+
+    def __init__(self, user="FLOWPROOF", client="001", transaction="VA01",
+                 system="SIM"):
+        self.User = user
+        self.Client = client
+        self.Transaction = transaction
+        self.SystemName = system
+
+
 class Session(Component):
     _public_methods_ = Component._public_methods_ + ["FindById"]
+    _public_attrs_ = Component._public_attrs_ + ["Info"]
 
     def __init__(self, screen):
         Component.__init__(self, screen, "ses", "GuiSession", "ses[0]")
         self.Id = "/app/con[0]/ses[0]"
+        # Wrapped, like every other nested object here (`Children`, `child`,
+        # `connection`). An unwrapped Python instance is not dispatchable, so
+        # the engine's `get_disp("Info")` would fail and the session would look
+        # exactly as "not logged in" as before.
+        self.Info = wrap(SessionInfo())
 
     def FindById(self, element_id):
         element = self._screen.by_id.get(str(element_id))
