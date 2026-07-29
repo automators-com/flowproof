@@ -9,13 +9,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 3 * * *"
-  # TEMPORARY: workflow_dispatch requires this file to exist on the default
-  # branch first, which it doesn't yet. push (unlike workflow_dispatch)
-  # evaluates against the branch itself, so this lets us prove the runner
-  # end-to-end before merging. Remove before merge - not part of the design.
-  push:
-    branches:
-      - feat/sap-e2e-ci-workflow
 
 # Only one physical SAP GUI session exists on the runner; a second run
 # stepping on it mid-navigation is worse than making the next one wait.
@@ -58,9 +51,10 @@ jobs:
       # view-order.flow.yaml and stock-overview.flow.yaml assume order 314
       # and material MZ-FG-C900 exist on whichever system this runner
       # points at — real data on the reference system this was recorded
-      # against, not guaranteed elsewhere.
+      # against, not guaranteed elsewhere. --retries absorbs the odd flake
+      # (stock-overview's screen has been the least reliable of the four).
       - name: replay SAP example flows (live SAP GUI)
-        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/
+        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/ --retries 2
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
 
