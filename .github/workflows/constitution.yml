@@ -44,6 +44,7 @@ jobs:
           ./scripts/gate/constitution-check.test.sh
           ./scripts/loop/integrate.test.sh
           ./scripts/loop/prospect.test.sh
+          ./scripts/loop/migrate.test.sh
 
       - name: protected paths are human-authored only
         env:

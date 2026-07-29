@@ -67,5 +67,10 @@ exec timeout --signal=KILL "$TIMEOUT" \
     --read-only \
     --tmpfs /tmp:rw,size=512m,exec \
     --tmpfs /run:rw,size=64m \
+    `# A writable HOME. --read-only leaves npm and pip nowhere to put their` \
+    `# caches, so every install failed with ENOENT on /root/.npm and the` \
+    `# corpus looked uninstallable when the container was the problem.` \
+    --tmpfs /root:rw,size=1g,exec \
+    --env HOME=/root \
     "$IMAGE" \
     "$@"
