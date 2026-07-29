@@ -207,17 +207,34 @@ hatch, the same role `enforce_admins: false` plays in `protection.json`.
 
 ### Test status of the checks
 
-All five checks now run green against the real loop credential
-(`AutomatorsAgent`, minted 2026-07-28):
+All checks run against the real loop credential. The suite currently **fails**,
+correctly: the `flowproof-loop-builder` token is still `Pending` org approval and
+therefore has no write access at all.
 
-```
-ok  distinct from the interactive gh login
-ok  fine-grained token (no OAuth scopes granted)
-ok  cannot reach branch protection (HTTP 403)
-ok  can read pull requests
-ok  identity is 'AutomatorsAgent'
-ok  cannot read its own repo role (HTTP 403) -- no Administration access
-```
+### The check that a powerless token passed
+
+The original check 4 asked whether the token could *read* pull requests. On a
+**public** repository that returns 200 with no credential whatsoever — `curl`
+with no `Authorization` header at all gets the same 200. So it proved nothing,
+and it green-lit a token that turned out to have zero write permission.
+
+The cost was a full Builder turn: 296 verified lines, every gate run and read,
+then no pull request, because `createPullRequest` was forbidden.
+
+Check 4 now probes write capability **without writing**, by sending a
+deliberately invalid body and reading which way it is rejected:
+
+| Response | Meaning |
+|---|---|
+| `403` | the token may not create pull requests |
+| `422` | the token may; the body was invalid, and **nothing was created** |
+
+`422` is the passing answer. The same probe covers issues, which escalation and
+the gap ledger both need.
+
+The general lesson is worth keeping: **a check that only tests for too much
+permission will happily pass a credential with none.** Both directions need
+asserting.
 
 ### Why check 5 is inverted
 

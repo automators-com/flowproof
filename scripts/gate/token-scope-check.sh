@@ -79,13 +79,47 @@ esac
 
 # ---------------------------------------------------------------------------
 # 4. It must still be able to do its actual job.
+#
+#    Reading proves nothing here: flowproof is PUBLIC, so `GET /pulls` returns
+#    200 with no credential at all. The first version of this check asked
+#    exactly that and passed a token which turned out to be sitting unapproved
+#    with no write access whatsoever - the Builder wrote 296 verified lines and
+#    then could not open the pull request. A check that a powerless token passes
+#    is not a check.
+#
+#    Write capability is probed WITHOUT writing, by sending a deliberately
+#    invalid body and reading which way it is rejected:
+#
+#      403  the token may not create pull requests
+#      422  the token may; the body was invalid, and nothing was created
+#
+#    422 is the passing answer. Nothing is ever created by this probe.
 # ---------------------------------------------------------------------------
 code="$(curl -sS -o /dev/null -w '%{http_code}' \
-        -H "Authorization: Bearer ${TOKEN}" \
-        "https://api.github.com/repos/${REPO}/pulls?per_page=1" 2>/dev/null || echo 000)"
-[ "$code" = "200" ] || fail "token cannot list pull requests (HTTP ${code}); it
-      is too restricted to open PRs."
-pass "can read pull requests"
+        -X POST -H "Authorization: Bearer ${TOKEN}" \
+        -H "Content-Type: application/json" -d '{}' \
+        "https://api.github.com/repos/${REPO}/pulls" 2>/dev/null || echo 000)"
+case "$code" in
+  422) pass "can create pull requests (probe rejected as invalid, not forbidden)" ;;
+  403) fail "cannot create pull requests. If the token shows 'Pending' in the
+      GitHub UI, an org owner has not approved it yet - a pending token still
+      reads a public repository, which is why this used to look fine. Approve at
+      github.com/organizations/<org>/settings/personal-access-token-requests, and
+      check Pull requests: Read and write is granted." ;;
+  401) fail "token rejected creating a pull request (HTTP 401)." ;;
+  *)   fail "unexpected status ${code} probing pull-request creation." ;;
+esac
+
+# Same probe for issues: escalation and the ledger both need to comment.
+code="$(curl -sS -o /dev/null -w '%{http_code}' \
+        -X POST -H "Authorization: Bearer ${TOKEN}" \
+        -H "Content-Type: application/json" -d '{}' \
+        "https://api.github.com/repos/${REPO}/issues" 2>/dev/null || echo 000)"
+case "$code" in
+  422) pass "can write issues (probe rejected as invalid, not forbidden)" ;;
+  403) fail "cannot write issues; escalation and the gap ledger both need it." ;;
+  *)   warn "unexpected status ${code} probing issue creation" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 5. The loop must not be able to BYPASS the review ruleset.
