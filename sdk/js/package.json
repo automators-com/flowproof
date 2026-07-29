@@ -1,6 +1,6 @@
 {
   "name": "flowproof",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Deterministic tests for AI agents: record a run once, replay it with zero LLM calls. Assert which tools an agent called, with which arguments, in which order.",
   "bin": {
     "flowproof": "bin/flowproof.js"
@@ -14,10 +14,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@automators/flowproof-cli-linux-x64": "0.8.0",
-    "@automators/flowproof-cli-darwin-x64": "0.8.0",
-    "@automators/flowproof-cli-darwin-arm64": "0.8.0",
-    "@automators/flowproof-cli-win32-x64": "0.8.0"
+    "@automators/flowproof-cli-linux-x64": "0.9.0",
+    "@automators/flowproof-cli-darwin-x64": "0.9.0",
+    "@automators/flowproof-cli-darwin-arm64": "0.9.0",
+    "@automators/flowproof-cli-win32-x64": "0.9.0"
   },
   "repository": {
     "type": "git",

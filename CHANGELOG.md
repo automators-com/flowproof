@@ -6,6 +6,10 @@ together).
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.9.0
+
 ### Changed
 
 - **Streaming replay had no test that could fail for its own bug.** A client
@@ -39,6 +43,53 @@ together).
   which is now a shorter and truer list.
 
 ### Fixed
+
+- **`flowproof run` could not replay an agent cassette at all.** Pointed at a
+  directory, the suite runner fed every `app: agent` trace to the UI-trace line
+  parser and reported `invalid trace line`; pointed at a single file it loaded
+  the cassette, spawned the agent correctly, and then never terminated. So the
+  half of the product that records an agent's model traffic could record and
+  never replay, which is the one thing a record/replay tool exists to do. Both
+  halves are fixed: directory mode dispatches on the trace's own `app`, and the
+  pipe drain is bounded so a subprocess that outlives its output cannot hang the
+  run. Adopters holding agent cassettes written by 0.7.0 or 0.8.0 will find they
+  now replay; a cassette whose recording embedded a per-run value (a timestamped
+  working directory, an absolute path) will diverge on message content, which is
+  the matcher working rather than a regression.
+
+- **An upstream that rejected the credential looked like a hang.** Any failure
+  from the real model became a `502` to the agent, and `502` means "bad gateway,
+  try again", so a well-behaved agent retried with backoff and a record run whose
+  key was simply wrong printed nothing for over ten minutes. Two things made it
+  worse: ureq's default turned a non-2xx into an opaque `http status: 401` and
+  discarded the body, so the one sentence naming the cause never reached anyone,
+  and the failure was recorded in the proxy log but never announced. Now a client
+  error is passed through unchanged - `401` and `403` are verdicts about the
+  credential, and no amount of retrying makes an unauthorized key authorized, so
+  the agent is allowed to give up - while `5xx` and transport failures stay `502`
+  because those may genuinely succeed on a retry. The upstream's own words
+  survive into the error, and the first failure prints. A record run with a bad
+  credential now fails in about six seconds saying
+  `upstream returned 401: {"error":"unauthorized"}`.
+
+  **Behaviour change worth noting before you upgrade:** anything that treated a
+  proxy `502` as "retry" will now see the upstream's `4xx` and stop. That is the
+  point, but it is observable.
+
+- **The key's outbound header is dialect-dependent, and the docs said otherwise.**
+  `UPSTREAM_KEY_VARS` claimed the key "passes straight into the outbound
+  `Authorization` header and never anywhere else". The behaviour was always
+  correct - OpenAI-compatible upstreams get `Authorization`, Anthropic gets
+  `x-api-key`, because that is what the Messages API reads - but the doc sent
+  readers looking in the wrong place. Stated plainly now, including the
+  consequence: an upstream that speaks the Anthropic dialect while authenticating
+  with Bearer (an in-house gateway, say) rejects every call, and nothing about
+  the error told you why.
+
+- **A SAP session was attached without checking it was logged in.** `sap-connect`
+  now verifies before attaching, so a dead session fails at connect time with a
+  reason rather than at the first operation with something unrelated.
+
 
 - **An agent that never started was reported as a replay that made no model
   calls, and its stderr was thrown away.** The README offers
