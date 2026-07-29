@@ -44,6 +44,13 @@ jobs:
           # and resolves it at launch time, so the value never reaches a
           # trace file or a log line.
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+          # If the session has expired with nobody there to log back in,
+          # connect() logs in itself using these - never traced, never
+          # logged, read fresh from the environment for one property-put
+          # each. A no-op if unset.
+          SAP_USER: ${{ secrets.SAP_USER }}
+          SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
+          SAP_CLIENT: ${{ secrets.SAP_CLIENT }}
 
       # Broader coverage than the one hardcoded correctness check above:
       # replays every committed example flow as a suite (zero AI, each
@@ -57,6 +64,9 @@ jobs:
         run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/ --retries 2
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+          SAP_USER: ${{ secrets.SAP_USER }}
+          SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
+          SAP_CLIENT: ${{ secrets.SAP_CLIENT }}
 
       # Leave the session clean for whichever run is next, whether that's
       # tonight's schedule or a manual dispatch during the working day.
