@@ -39,12 +39,19 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck --severity=warning -s bash scripts/loop/run.sh scripts/gate/*.sh
 
+      # The ledger edits structured YAML, so it needs a YAML library. Installing
+      # it explicitly rather than trusting the runner image: "usually
+      # preinstalled" is how a test that never runs gets shipped.
+      - name: the ledger's one dependency
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+
       - name: the gate's own tests
         run: |
           ./scripts/gate/constitution-check.test.sh
           ./scripts/loop/integrate.test.sh
           ./scripts/loop/prospect.test.sh
           ./scripts/loop/migrate.test.sh
+          ./scripts/loop/ledger.test.sh
 
       - name: protected paths are human-authored only
         env:
