@@ -619,6 +619,7 @@ pub mod com {
             else {
                 return;
             };
+            eprintln!("sap-com: not logged in - attempting auto-login");
             if let Some(client) = std::env::var("SAP_CLIENT").ok().filter(|c| !c.is_empty()) {
                 if let Some(field) = Self::find_in(session, "wnd[0]/usr/txtRSYST-MANDT") {
                     let _ = field.put("Text", VARIANT::from(BSTR::from(client.as_str())));
