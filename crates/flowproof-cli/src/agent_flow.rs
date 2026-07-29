@@ -1661,6 +1661,7 @@ mod tests {
         AgentRun {
             served: 1,
             divergence: None,
+            trigger: flowproof_adapters::Trigger::Process,
             exit_code: Some(0),
             timed_out: false,
             stdout: String::new(),
@@ -1781,6 +1782,7 @@ mod tests {
     fn empty_run() -> AgentRun {
         AgentRun {
             served: 0,
+            trigger: flowproof_adapters::Trigger::Process,
             exit_code: Some(0),
             stdout: String::new(),
             stderr: "agent finished".into(),
