@@ -236,29 +236,28 @@ The general lesson is worth keeping: **a check that only tests for too much
 permission will happily pass a credential with none.** Both directions need
 asserting.
 
-### Why check 5 is inverted
+### Check 5 has been wrong twice, in opposite directions
 
-The first version asked GitHub for the identity's repo role and for
-`current_user_can_bypass`. Neither can work: both require Administration access,
-which is exactly what a correctly-scoped loop token must not have. **A token
-restricted enough to be safe is too restricted to describe itself.**
+Worth recording, because the second mistake is the more instructive one.
 
-So the test is inverted — the 403 *is* the evidence. A token that can read its
-own repo role holds Administration access and is over-privileged by definition.
-Refusal to answer is the passing answer.
+It first read the identity's repository role and asserted the value — correct.
+That returned **403**, and it was rewritten to treat the 403 as *proof* of
+correct scoping, reasoning that reading a role requires Administration access.
 
-The consequence is worth stating plainly: this check proves the token is **too
-weak to bypass review**. It does not prove **which account it belongs to**. That
-has to be established out of band by a human with an admin token:
+**It does not. It requires push.** The 403 was a symptom of the token still
+being `Pending` org approval, an unrelated fault — and a correct check was
+replaced on the strength of a misread symptom. Once approved, the same endpoint
+returns `200` with `"permission": "write"`, and the rewritten check failed the
+very token it was meant to accept.
 
-```bash
-gh api repos/automators-com/flowproof/collaborators/AutomatorsAgent/permission --jq .role_name
-# => write        verified 2026-07-28
-```
+Reading the role is back, asserting the value directly. Whether the token holds
+Administration is a separate question, and check 3 answers it properly by
+probing branch protection (`403`) — confirmed alongside a `PATCH /repos/...`
+that also returns `403`.
 
-`write` is not in the ruleset's bypass list (`OrganizationAdmin`,
-`RepositoryRole: 5`), so the identity cannot merge without the Adversary.
-Re-verify this after any change to the account's repository role.
+Key on `permission`, not `role_name`: the latter appears only for more
+privileged callers, so keying on it would fail for exactly the token worth
+accepting.
 
 ### A note on `jq`
 
