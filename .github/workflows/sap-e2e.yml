@@ -16,6 +16,7 @@ on:
   push:
     branches:
       - feat/sap-e2e-ci-workflow
+      - fix/sap-navigate-wait-for-busy
 
 # Only one physical SAP GUI session exists on the runner; a second run
 # stepping on it mid-navigation is worse than making the next one wait.
