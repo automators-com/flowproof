@@ -1,8 +1,9 @@
 //! End to end for `app: agent`, with no real model and no agent framework:
 //! a fake model (a local HTTP server returning a scripted trajectory) and a
-//! fake agent (a small Python process that speaks chat-completions). The
-//! full spec -> record -> cassette -> replay path runs, exactly as CI
-//! proves it on every push.
+//! fake agent (a small Python process speaking the model dialect under
+//! test - chat-completions, or the Anthropic Messages API). The full spec ->
+//! record -> cassette -> replay path runs, exactly as CI proves it on every
+//! push.
 //!
 //! Unix-only for the same reason as the other suite tests: the fake agent
 //! is a `python3` process and the assertions are platform-neutral.
@@ -185,6 +186,188 @@ fn records_and_replays_an_agent_flow() {
     // call would fail loudly rather than sneak through.
     std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
     std::env::remove_var("OPENAI_BASE_URL");
+    let code = flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]);
+    assert_eq!(code, 0, "replay must reproduce the recorded trajectory");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- the Anthropic Messages dialect ----
+
+/// A fake Anthropic Messages upstream: the same two scripted turns as
+/// [`fake_model`], spoken in the other dialect. It asks for `get_weather`
+/// until a `tool_result` block comes back, then answers with text.
+///
+/// The base URL it hands out carries NO `/v1`, because the record path
+/// appends `/v1/messages` itself - the same shape `https://api.anthropic.com`
+/// has. So the URL this test drives is the URL a real recording builds,
+/// rather than one bent to suit the test.
+fn fake_anthropic_model() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(8) {
+            let Ok(mut stream) = stream else { continue };
+            let req = read_http_request(&mut stream);
+            // The model asks for the tool until it sees a tool result.
+            let (content, stop_reason) = if req.contains("tool_result") {
+                (
+                    serde_json::json!([{"type": "text", "text": "It is sunny in Nairobi."}]),
+                    "end_turn",
+                )
+            } else {
+                (
+                    serde_json::json!([{"type": "tool_use", "id": "toolu_1",
+                        "name": "get_weather", "input": {"city": "Nairobi"}}]),
+                    "tool_use",
+                )
+            };
+            let body = serde_json::json!({
+                "id": "msg_fake",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-5",
+                "content": content,
+                "stop_reason": stop_reason,
+                "stop_sequence": serde_json::Value::Null,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            })
+            .to_string();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// The Anthropic-dialect sibling of [`FAKE_AGENT`]: it reads
+/// `ANTHROPIC_BASE_URL` (the `/v1`-less form the SDK expects, which is why it
+/// appends `/v1/messages` itself), speaks content blocks rather than
+/// `tool_calls`, and returns its tool result in a user turn - the shape the
+/// Messages API actually uses. Its "real" tool is volatile in the same way,
+/// so replay only works because the mock is substituted.
+const ANTHROPIC_AGENT: &str = r#"
+import json, os, time, urllib.request
+
+base = os.environ["ANTHROPIC_BASE_URL"]
+prompt = os.environ["FLOWPROOF_PROMPT"]
+messages = [{"role": "user", "content": prompt}]
+
+for _ in range(5):
+    payload = json.dumps({
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 1024,
+        "messages": messages,
+        "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
+    }).encode()
+    req = urllib.request.Request(base + "/v1/messages", data=payload,
+                                headers={"content-type": "application/json",
+                                         "anthropic-version": "2023-06-01"})
+    with urllib.request.urlopen(req) as resp:
+        blocks = json.load(resp)["content"]
+    uses = [b for b in blocks if b.get("type") == "tool_use"]
+    if uses:
+        messages.append({"role": "assistant", "content": blocks})
+        results = []
+        for use in uses:
+            # The REAL tool: a live timestamp the recording must not pin.
+            real = json.dumps({"observed_at": time.time_ns(), "sky": "clear"})
+            results.append({"type": "tool_result", "tool_use_id": use["id"],
+                            "content": real})
+        messages.append({"role": "user", "content": results})
+        continue
+    print("".join(b.get("text", "") for b in blocks if b.get("type") == "text"))
+    break
+"#;
+
+fn write_anthropic_spec(dir: &Path, agent_py: &Path) -> PathBuf {
+    let spec = dir.join("weather-anthropic.flow.yaml");
+    std::fs::write(
+        &spec,
+        format!(
+            "name: Weather assistant (Anthropic)\n\
+             app: agent\n\
+             agent:\n  command: python3 {agent}\n\
+             tools:\n  - name: get_weather\n    result: {{ sky: clear, temp: 25 }}\n\
+             steps:\n\
+             \x20 - prompt: What is the weather in Nairobi?\n\
+             \x20 - assert_tool_call: get_weather where city equals Nairobi\n\
+             \x20 - assert_no_tool_call: send_alert\n\
+             \x20 - assert: reply contains sunny\n",
+            agent = agent_py.display()
+        ),
+    )
+    .expect("spec");
+    spec
+}
+
+/// Issue #209: the Anthropic Messages dialect had never been recorded end to
+/// end, only replayed from cassettes written by hand. That left the record
+/// leg - the upstream URL, the `x-api-key` conversion, the block-shaped
+/// request parser, the `stop_reason` capture - resting on an untested claim
+/// in `docs/agent-testing.md`.
+///
+/// This is `records_and_replays_an_agent_flow` in the other dialect, and it
+/// asserts the same thing the OpenAI path does: the mock is what the
+/// trajectory pins, the volatile real result never reaches disk, and the
+/// recording replays with no upstream at all.
+#[test]
+fn records_and_replays_an_anthropic_agent_flow() {
+    let _env = lock_env();
+    let dir = work_dir("weather-anthropic");
+    let agent_py = dir.join("agent.py");
+    std::fs::write(&agent_py, ANTHROPIC_AGENT).expect("agent");
+    let spec = write_anthropic_spec(&dir, &agent_py);
+
+    // RECORD against the fake Messages upstream.
+    std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_anthropic_model());
+    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    assert_eq!(code, 0, "recording an Anthropic agent flow should succeed");
+
+    let trace = dir.join("weather-anthropic.trace.jsonl");
+    assert!(trace.exists(), "a cassette trace must be written");
+    let contents = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(contents.contains("\"app\": \"agent\""), "{contents}");
+    // The turn is stamped with the dialect it was spoken in, which is what
+    // makes replay serve it back as Messages rather than chat-completions.
+    assert!(
+        contents.contains("\"protocol\": \"anthropic\""),
+        "the recorded turn names its dialect: {contents}"
+    );
+    // The Messages API's own stop reason is captured, not inferred.
+    assert!(
+        contents.contains("\"stop_reason\": \"tool_use\""),
+        "the upstream stop_reason is recorded: {contents}"
+    );
+    // The tool call the flow asserts on is in the recording, with the
+    // argument the assertion matches - so a green replay is not vacuous.
+    assert!(
+        contents.contains("\"name\": \"get_weather\"") && contents.contains("Nairobi"),
+        "the recorded trajectory carries the tool call: {contents}"
+    );
+    // The mock, not the volatile real result, is what the trajectory pins.
+    assert!(
+        contents.contains("clear"),
+        "the mock is snapshotted: {contents}"
+    );
+    assert!(
+        !contents.contains("observed_at"),
+        "the volatile real tool result must not be in the trace: {contents}"
+    );
+
+    // REPLAY with no model at all - unset every upstream handle so a stray
+    // real call would fail loudly rather than sneak through.
+    std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+    std::env::remove_var("OPENAI_BASE_URL");
+    std::env::remove_var("ANTHROPIC_BASE_URL");
     let code = flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "replay must reproduce the recorded trajectory");
 

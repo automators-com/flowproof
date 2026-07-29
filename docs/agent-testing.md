@@ -981,7 +981,8 @@ Built and tested, each independently:
 | `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
 | egress containment | `allow_egress` / `assert_no_egress`, enforced by a Linux seccomp supervisor (proven by the Linux CI E2E); "not contained" and honestly reported on macOS/Windows and for `url:` flows |
 | MCP tool boundary | stdio (v3.1) and streamable-HTTP (v3.2): flowproof stands in as the server, records the JSON-RPC traffic once and replays it with no server running. A tool with a `result:` here is answered by the stand-in and never forwarded, in either phase - the one boundary that stops a tool executing |
-| Anthropic / http-target | the Messages API dialect, streaming replay, and `agent.url` services are built. Their REPLAY paths are covered by tests; their RECORD paths are not yet - see the test-coverage note below |
+| Anthropic Messages | built and covered end to end, record leg included: a flow records against a Messages-dialect upstream and replays it with no model at all |
+| Streaming / http-target | streaming replay and `agent.url` services are built. Their REPLAY paths are covered by tests; their RECORD paths are not yet - see the test-coverage note below |
 
 Not built yet: per-call result sequences (one static result per tool),
 the structured `args:` / `args_exact:` assertion forms, and multi-turn
@@ -1002,7 +1003,7 @@ and "covered by a test that would fail if it broke" are different claims:
 | MCP stdio (v3.1) | full: real stand-in binary, real server, real agent subprocess, including "a mocked tool is never forwarded" |
 | MCP streamable-HTTP (v3.2) | the boundary is exercised over real HTTP, but driven directly rather than through `flowproof record`/`run` with a real agent |
 | Streaming replay | covered; the record-mode stream synthesis is not |
-| Anthropic Messages | replay covered; the RECORD path (auth conversion, upstream URL) has no test |
+| Anthropic Messages | full: CLI record -> trace -> replay against a Messages-dialect upstream, agent as a real subprocess, on every PR |
 | http-target (`agent.url`) | replay covered; the RECORD path has no test |
 | `assert_no_tool_call` | the failing direction is unit-tested; the end-to-end case only exercises the passing direction |
 
