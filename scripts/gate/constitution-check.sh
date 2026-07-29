@@ -35,7 +35,12 @@ PROTECTED='^(CHARTER\.md|CLAUDE\.md|CODEOWNERS|scripts/gate/|scripts/loop/|\.git
 # Fail-closed: anyone NOT on this list is treated as a loop, so a new loop
 # identity is constrained the moment it exists with no edit here required. This
 # list living inside a protected path is deliberate - a loop cannot add itself.
-HUMANS="${HUMANS:-AminChirazi}"
+# Humans who actually work on this repository - not everyone with admin. Three
+# further org admins (RatulMaharaj, romanrehm, JonsBori00) can already bypass the
+# ruleset and merge past a failing check, but none of them contribute here, and
+# adding them would widen who can change the loops' direction to people who do
+# not need it. See CHARTER.md section 9.
+HUMANS="${HUMANS:-AminChirazi HappyDevs1}"
 
 AUTHOR="${AUTHOR:-}"
 [ -n "$AUTHOR" ] || { echo "AUTHOR is unset" >&2; exit 2; }

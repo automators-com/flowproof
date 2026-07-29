@@ -9,10 +9,10 @@ This file is part of the constitution — see `scripts/gate/constitution-check.s
 No loop may modify it. Changing direction is a human act, and this is where it
 happens.
 
-Five places are still marked **DECIDE** — 1 (commercial boundary), 5 (scope
-budget), 6 (token budget), 7 (escalation channel) and 9 (human allowlist). They
-need a human's product judgement and were deliberately not invented. Until each
-is resolved the loops treat that area as out of scope rather than guess.
+Four places are still marked **DECIDE** — 1 (commercial boundary), 5 (scope
+budget), 6 (token budget) and 7 (escalation channel). They need a human's product
+judgement and were deliberately not invented. Until each is resolved the loops
+treat that area as out of scope rather than guess.
 
 Decided so far: **Tier 3 declined** (§3), **diagnostics before coverage** (§4),
 **the ledger lives at `docs/loop/ledger.yaml`** (§6), and the loop identities are
@@ -362,7 +362,28 @@ question:
    `scripts/gate/token-scope-check.sh` checks 2–5 have never run against a real
    token. Run it once before trusting it.
 
-> **DECIDE 9 — the human allowlist.** `scripts/gate/constitution-check.sh`
-> currently allows exactly `AminChirazi`. If anyone else should be able to change
-> direction or the gate, add them there — it is a constitution edit, so only a
-> human can make it.
+**The allowlist names humans who work on this repository, not everyone with
+admin.** `scripts/gate/constitution-check.sh` allows `AminChirazi` and
+`HappyDevs1`, the two people who have authored pull requests here.
+
+Three further org admins — `RatulMaharaj`, `romanrehm`, `JonsBori00` — are
+deliberately **not** on it. They can already bypass the review ruleset and, with
+`enforce_admins: false`, merge past a failing required check. Adding them to the
+allowlist would widen who can change the loops' *direction* to people who do not
+work on the loops, which is a different and larger permission than the one they
+already hold.
+
+So the residual is named rather than closed: **an org admin can merge a change to
+the constitution past a failing `constitution` check.** That is the human escape
+hatch working as designed — the same property that lets a human clear the circuit
+breaker and revert a bad merge. It is not a hole, because the check still fails
+loudly and visibly in the pull request; what it is not is a wall.
+
+The property that actually matters is unaffected: **no loop identity can bypass
+anything.** `AutomatorsAgent` holds `write`, which is not in the ruleset's bypass
+list, and `scripts/gate/token-scope-check.sh` refuses to start if that ever
+changes.
+
+Keep this in step with reality. If someone starts contributing, add them; if
+someone stops, remove them. An allowlist nobody maintains drifts into either
+noise or an obstacle, and both teach people to route around the gate.
