@@ -6,6 +6,20 @@ together).
 
 ## Unreleased
 
+### Changed
+
+- **The Anthropic Messages dialect is now proven end to end, record leg
+  included.** It shipped in v2 and `docs/agent-testing.md` said so, but every
+  test behind that claim handed the proxy a cassette written by hand — nothing
+  ever recorded one. So the record path (the upstream URL the Messages API
+  actually wants, the block-shaped request parser, the captured `stop_reason`)
+  was asserted about rather than tested, on the one boundary the product's
+  headline claim rests on. A flow now records against a Messages-dialect
+  upstream with a real agent subprocess, replays it with no model reachable at
+  all, and `assert_tool_call` holds across both. The README and the
+  per-capability coverage tables move the dialect out of "thinner coverage",
+  which is now a shorter and truer list.
+
 ### Fixed
 
 - **An agent that never started was reported as a replay that made no model
