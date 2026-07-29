@@ -255,10 +255,11 @@ Windows desktop, `sap`, `vision`, `api`, `agent`), model-grounded authoring,
 healing with reviewable diffs, suites, the security-control surface
 (`flowproof audit`), the MCP server, and — at the agent boundary — the
 OpenAI-compatible proxy with `assert_tool_call`, the Anthropic Messages
-dialect, plus the MCP tool boundary over stdio.
+dialect, streaming replay in both dialects, plus the MCP tool boundary over
+stdio.
 
-Built, but with thinner coverage: streaming replay, `agent.url` services, and
-the MCP boundary over streamable HTTP.
+Built, but with thinner coverage: `agent.url` services and the MCP boundary
+over streamable HTTP.
 [docs/agent-testing.md](docs/agent-testing.md) names each gap in a
 per-capability table rather than leaving "built" to imply "tested".
 

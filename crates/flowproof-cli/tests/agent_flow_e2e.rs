@@ -374,6 +374,350 @@ fn records_and_replays_an_anthropic_agent_flow() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// ---- streaming replay ----
+
+/// A streaming sibling of [`FAKE_AGENT`]: it asks for `stream: true` and
+/// reads the answer as Server-Sent Events, recording the FRAME BOUNDARIES it
+/// saw rather than only the text it assembled. Each run appends one JSON line
+/// to `__LOG__` - a list with one entry per model call, each entry the ordered
+/// frames of that call - so the record leg and the replay leg can be compared
+/// chunk for chunk.
+///
+/// The first frame recorded is the response's content type, so a stream that
+/// was collapsed into one buffered JSON body is visible in the log instead of
+/// silently assembling into the same final text.
+const STREAMING_AGENT: &str = r#"
+import json, os, time, urllib.request
+
+base = os.environ["OPENAI_BASE_URL"]
+prompt = os.environ["FLOWPROOF_PROMPT"]
+messages = [{"role": "user", "content": prompt}]
+log = []
+
+for _ in range(5):
+    payload = json.dumps({
+        "model": "gpt-4o",
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "messages": messages,
+        "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+    }).encode()
+    req = urllib.request.Request(base + "/chat/completions", data=payload,
+                                headers={"content-type": "application/json"})
+    frames = []
+    content = ""
+    calls = []
+    with urllib.request.urlopen(req) as resp:
+        kind = resp.headers.get("content-type", "")
+        frames.append("content-type:" + kind)
+        if "text/event-stream" not in kind:
+            # Tolerate a buffered answer rather than failing on it: the same
+            # trajectory still assembles, so the ONLY evidence that the stream
+            # was collapsed is the frame log.
+            msg = json.load(resp)["choices"][0]["message"]
+            content = msg.get("content") or ""
+            calls = msg.get("tool_calls") or []
+        else:
+            for raw in resp:
+                line = raw.decode("utf-8").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    frames.append("DONE")
+                    break
+                choice = json.loads(data)["choices"][0]
+                delta = choice.get("delta", {})
+                if "role" in delta:
+                    frames.append("role:" + delta["role"])
+                if delta.get("content"):
+                    frames.append("content:" + delta["content"])
+                    content += delta["content"]
+                for call in delta.get("tool_calls", []):
+                    fn = call["function"]
+                    frames.append("tool:" + fn["name"] + ":" + fn["arguments"])
+                    calls.append(call)
+                if choice.get("finish_reason"):
+                    frames.append("finish:" + choice["finish_reason"])
+    log.append(frames)
+    if calls:
+        messages.append({"role": "assistant", "content": None, "tool_calls": calls})
+        for call in calls:
+            # The REAL tool: a live timestamp the recording must not pin.
+            real = json.dumps({"observed_at": time.time_ns(), "sky": "clear"})
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": real})
+        continue
+    print(content)
+    break
+
+with open("__LOG__", "a") as fh:
+    fh.write(json.dumps(log) + "\n")
+"#;
+
+/// The frames a well-formed synthetic stream delivers for this trajectory:
+/// an event-stream content type, the role on its own, the tool call carrying
+/// its WHOLE arguments in one delta, the finish reason, then the terminator -
+/// and then the same shape for the text turn that closes the trajectory.
+fn expected_stream_frames() -> serde_json::Value {
+    serde_json::json!([
+        [
+            "content-type:text/event-stream",
+            "role:assistant",
+            r#"tool:get_weather:{"city":"Nairobi"}"#,
+            "finish:tool_calls",
+            "DONE",
+        ],
+        [
+            "content-type:text/event-stream",
+            "role:assistant",
+            "content:It is sunny in Nairobi.",
+            "finish:stop",
+            "DONE",
+        ],
+    ])
+}
+
+/// Read the frame log one run appended, by line: line 0 is the record leg,
+/// line 1 the replay leg.
+fn stream_frames(log: &Path, line: usize) -> serde_json::Value {
+    let contents = std::fs::read_to_string(log).expect("the agent wrote its frame log");
+    let line = contents
+        .lines()
+        .nth(line)
+        .unwrap_or_else(|| panic!("the frame log has no line {line}: {contents}"));
+    serde_json::from_str(line).expect("each line is a JSON list of frames")
+}
+
+/// Issue #210: streaming replay had no end-to-end cover at all. The unit
+/// tests drive the proxy directly, so nothing proved that a `stream: true`
+/// agent driven by `flowproof record` and then `flowproof run` is served a
+/// stream in both phases - and the record-mode synthesis had no test of any
+/// kind.
+///
+/// What makes this test worth having is WHERE it asserts. A streaming client
+/// that was handed one buffered response would still assemble the same final
+/// text and still satisfy `assert: reply contains sunny`, so asserting on the
+/// text would be a test that cannot fail for its own bug. The assertion is on
+/// the frame boundaries the agent observed: the content type, the role frame
+/// on its own, the arguments in one delta, the finish frame, the terminator.
+///
+/// Chunk boundaries are synthesized, not recorded (see `docs/agent-testing.md`
+/// on v2) - so the second thing asserted is that the record leg and the
+/// replay leg produce the SAME boundaries from a cassette that contains no
+/// stream at all.
+#[test]
+fn a_streaming_agent_is_served_a_stream_at_record_and_at_replay() {
+    let _env = lock_env();
+    let dir = work_dir("streaming");
+    let agent_py = dir.join("agent.py");
+    let log = dir.join("frames.jsonl");
+    std::fs::write(
+        &agent_py,
+        STREAMING_AGENT.replace("__LOG__", log.to_str().expect("utf8")),
+    )
+    .expect("agent");
+    let spec = write_spec(&dir, &agent_py);
+
+    // RECORD. The upstream is answered non-streaming on purpose: `stream` is
+    // transport, so the proxy strips it before forwarding and synthesizes the
+    // stream back to the agent itself. That synthesis is what this leg covers.
+    std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
+    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    assert_eq!(code, 0, "recording a streaming agent flow should succeed");
+
+    let recorded = stream_frames(&log, 0);
+    assert_eq!(
+        recorded,
+        expected_stream_frames(),
+        "the record leg must serve the agent a stream, frame for frame"
+    );
+
+    // The cassette holds the assembled turn and nothing of the transport:
+    // no frames, no event-stream, no `stream` flag left in the request.
+    let trace = dir.join("weather.trace.jsonl");
+    let contents = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(
+        !contents.contains("event-stream") && !contents.contains("chat.completion.chunk"),
+        "chunk boundaries are synthesized, never recorded: {contents}"
+    );
+    assert!(
+        !contents.contains("\"stream\""),
+        "`stream` is transport and must not enter the comparison: {contents}"
+    );
+
+    // REPLAY with no model at all - a stray real call would fail loudly.
+    std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+    std::env::remove_var("OPENAI_BASE_URL");
+    let code = flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]);
+    assert_eq!(code, 0, "replay must reproduce the recorded trajectory");
+
+    // The whole point: replay serves a STREAM, with the same boundaries the
+    // record leg had. A replay that collapsed the turn into one buffered
+    // response would still pass `assert: reply contains sunny` and fails
+    // here - on the content type and on every frame after it.
+    let replayed = stream_frames(&log, 1);
+    assert_eq!(
+        replayed,
+        expected_stream_frames(),
+        "replay must serve a stream, not a buffered response"
+    );
+    assert_eq!(
+        replayed, recorded,
+        "record and replay must agree chunk for chunk"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The Anthropic-dialect sibling of [`STREAMING_AGENT`]. Its frames are the
+/// Messages event names rather than chat-completion chunks, so it pins the
+/// OTHER synthesis path: `message_start`, one `content_block_start` /
+/// delta / `content_block_stop` per block, `message_delta` carrying the stop
+/// reason, `message_stop`. Same buffered-body tolerance, for the same reason.
+const ANTHROPIC_STREAMING_AGENT: &str = r#"
+import json, os, time, urllib.request
+
+base = os.environ["ANTHROPIC_BASE_URL"]
+prompt = os.environ["FLOWPROOF_PROMPT"]
+messages = [{"role": "user", "content": prompt}]
+log = []
+
+for _ in range(5):
+    payload = json.dumps({
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 1024,
+        "stream": True,
+        "messages": messages,
+        "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
+    }).encode()
+    req = urllib.request.Request(base + "/v1/messages", data=payload,
+                                headers={"content-type": "application/json",
+                                         "anthropic-version": "2023-06-01"})
+    frames = []
+    blocks = []
+    with urllib.request.urlopen(req) as resp:
+        kind = resp.headers.get("content-type", "")
+        frames.append("content-type:" + kind)
+        if "text/event-stream" not in kind:
+            blocks = json.load(resp)["content"]
+        else:
+            for raw in resp:
+                line = raw.decode("utf-8").strip()
+                if not line.startswith("data:"):
+                    continue
+                event = json.loads(line[len("data:"):].strip())
+                name = event["type"]
+                if name == "content_block_start":
+                    block = event["content_block"]
+                    blocks.append(block)
+                    frames.append("block_start:" + block["type"] + ":"
+                                  + block.get("name", "-"))
+                elif name == "content_block_delta":
+                    delta = event["delta"]
+                    block = blocks[event["index"]]
+                    if delta["type"] == "text_delta":
+                        frames.append("text_delta:" + delta["text"])
+                        block["text"] = block.get("text", "") + delta["text"]
+                    else:
+                        frames.append("input_json_delta:" + delta["partial_json"])
+                        block["input"] = json.loads(delta["partial_json"])
+                elif name == "content_block_stop":
+                    frames.append("block_stop:%d" % event["index"])
+                elif name == "message_delta":
+                    frames.append("message_delta:" + event["delta"]["stop_reason"])
+                else:
+                    frames.append(name)
+    log.append(frames)
+    uses = [b for b in blocks if b.get("type") == "tool_use"]
+    if uses:
+        messages.append({"role": "assistant", "content": blocks})
+        results = []
+        for use in uses:
+            # The REAL tool: a live timestamp the recording must not pin.
+            real = json.dumps({"observed_at": time.time_ns(), "sky": "clear"})
+            results.append({"type": "tool_result", "tool_use_id": use["id"],
+                            "content": real})
+        messages.append({"role": "user", "content": results})
+        continue
+    print("".join(b.get("text", "") for b in blocks if b.get("type") == "text"))
+    break
+
+with open("__LOG__", "a") as fh:
+    fh.write(json.dumps(log) + "\n")
+"#;
+
+/// The Messages-dialect frames for the same trajectory: the tool call's whole
+/// arguments arrive as one `input_json_delta`, the reply as one `text_delta`,
+/// each inside its own start/stop pair.
+fn expected_anthropic_stream_frames() -> serde_json::Value {
+    serde_json::json!([
+        [
+            "content-type:text/event-stream",
+            "message_start",
+            "block_start:tool_use:get_weather",
+            r#"input_json_delta:{"city":"Nairobi"}"#,
+            "block_stop:0",
+            "message_delta:tool_use",
+            "message_stop",
+        ],
+        [
+            "content-type:text/event-stream",
+            "message_start",
+            "block_start:text:-",
+            "text_delta:It is sunny in Nairobi.",
+            "block_stop:0",
+            "message_delta:end_turn",
+            "message_stop",
+        ],
+    ])
+}
+
+/// The other half of #210: the Messages dialect synthesizes its stream in a
+/// different function, with different frames, and had the same hole - unit
+/// tests drove the proxy directly, and the record-mode synthesis had nothing
+/// at all. Same shape as the OpenAI case, same reason the assertion is on
+/// boundaries rather than on the assembled text.
+#[test]
+fn a_streaming_anthropic_agent_is_served_a_stream_at_record_and_at_replay() {
+    let _env = lock_env();
+    let dir = work_dir("streaming-anthropic");
+    let agent_py = dir.join("agent.py");
+    let log = dir.join("frames.jsonl");
+    std::fs::write(
+        &agent_py,
+        ANTHROPIC_STREAMING_AGENT.replace("__LOG__", log.to_str().expect("utf8")),
+    )
+    .expect("agent");
+    let spec = write_anthropic_spec(&dir, &agent_py);
+
+    // RECORD against the fake Messages upstream, which answers non-streaming.
+    std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_anthropic_model());
+    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    assert_eq!(
+        code, 0,
+        "recording a streaming Messages flow should succeed"
+    );
+    assert_eq!(
+        stream_frames(&log, 0),
+        expected_anthropic_stream_frames(),
+        "the record leg must serve the agent Messages events, frame for frame"
+    );
+
+    // REPLAY with no model at all - a stray real call would fail loudly.
+    std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+    std::env::remove_var("OPENAI_BASE_URL");
+    std::env::remove_var("ANTHROPIC_BASE_URL");
+    let code = flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]);
+    assert_eq!(code, 0, "replay must reproduce the recorded trajectory");
+    assert_eq!(
+        stream_frames(&log, 1),
+        expected_anthropic_stream_frames(),
+        "replay must serve a stream, not a buffered response"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Issue #188, end to end: an agent that cannot even start must be reported
 /// as a dead process with its own stderr attached, not as "0 model calls".
 ///
