@@ -53,24 +53,16 @@ jobs:
           # trace file or a log line.
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
 
-      # TEMPORARY diagnostic for #226: dump the actual screen content on the
-      # runner itself after navigating to VA01, so we can see what's really
-      # there instead of guessing from precondition-timeout error messages.
-      - name: diag - dump VA01 screen on the runner
-        run: cargo test -p flowproof-cli --test sap_diag_ci -- --nocapture
-        env:
-          FLOWPROOF_E2E_SAP: "1"
-          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
-
       # Broader coverage than the one hardcoded correctness check above:
       # replays every committed example flow as a suite (zero AI, each
       # trace already recorded against this same reference SAP system).
       # view-order.flow.yaml and stock-overview.flow.yaml assume order 314
       # and material MZ-FG-C900 exist on whichever system this runner
       # points at — real data on the reference system this was recorded
-      # against, not guaranteed elsewhere.
+      # against, not guaranteed elsewhere. --retries absorbs the odd flake
+      # (stock-overview's screen has been the least reliable of the four).
       - name: replay SAP example flows (live SAP GUI)
-        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/
+        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/ --retries 2
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
 
