@@ -49,13 +49,20 @@ BUILDER_LOGIN="AutomatorsAgent"
 # Verified blocked, not assumed: see the entry in scripts/gate/README.md.
 DENIED_TOOLS='Bash(sudo *) Bash(sudo:*) Bash(curl *) Bash(curl:*) Bash(wget *) Bash(wget:*) Bash(ssh *) Bash(ssh:*) Bash(scp *) Bash(scp:*) Bash(npm *) Bash(npm:*) Bash(npx *) Bash(npx:*)'
 
-# The read-only roles write no code. The Warden must not fix what it finds, the
-# Prospector never executes what it discovers, and the Ledger keeper implements
-# nothing - so none of them are given a shell at all.
-case "$ROLE" in
-  builder|migrator) ROLE_TOOLS="Bash Read Write Edit Glob Grep" ;;
-  *)                ROLE_TOOLS="Read Glob Grep Bash(git *) Bash(gh *)" ;;
-esac
+# Every role that acts gets the same shell, and the deny-list is what narrows it.
+#
+# The earlier split gave the read-only roles `Bash(git *) Bash(gh *)`, which
+# grants NOTHING - per-command allow-patterns do not work through these flags,
+# as measured above. The Warden therefore had no shell, could not run `gh`, and
+# could compute none of its halt conditions. On its first real turn it noticed,
+# and halted the fleet rather than report all-clear.
+#
+# The distinction those roles need is not expressible as a permission here, so it
+# lives where it can be stated: their prompts. The Warden must not fix what it
+# finds, the Prospector never executes what it discovers, and the Ledger keeper
+# implements nothing. That is weaker than a capability boundary and is worth
+# knowing - the deny-list still removes the paths from a mistake to a breach.
+ROLE_TOOLS="Bash Read Write Edit Glob Grep"
 
 # Bounds. A loop that never stops is a loop that cannot be reasoned about - but
 # a bound set too low is not a safety property, it is a way of failing after

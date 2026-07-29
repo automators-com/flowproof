@@ -1,0 +1,15 @@
+[Unit]
+Description=flowproof autonomous loop - one tick
+Documentation=https://github.com/automators-com/flowproof/blob/main/CHARTER.md
+# Nothing useful happens without the network, and a tick that starts before it
+# is up burns a turn discovering that.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/flow/worktrees/flowproof/loopmain/scripts/loop/tick.sh
+# A Builder turn is twenty to thirty minutes; the ceiling is generous enough not
+# to kill honest work and firm enough that a wedged turn cannot run all night.
+TimeoutStartSec=3600
+# The tick is already single-instance by flock. This makes systemd agree.
