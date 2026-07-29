@@ -72,7 +72,12 @@ say()  { printf '\033[36mloop\033[0m  %s\n' "$1"; }
 halt() { printf '\033[33mhalt\033[0m  %s\n' "$1"; exit 0; }
 
 [ -n "$ROLE" ] || die "usage: run.sh <role> [issue-number]"
-[ -f "$ROLES/$ROLE.md" ] || die "no such role: $ROLE (see scripts/loop/roles/)"
+# The Integrator is a script, not a prompt: finding an approved pull request
+# whose checks are green needs no judgement, and a deterministic merge cannot
+# talk itself into one. It is the only role with no file in roles/.
+if [ "$ROLE" != "integrator" ]; then
+  [ -f "$ROLES/$ROLE.md" ] || die "no such role: $ROLE (see scripts/loop/roles/)"
+fi
 
 # --- preflight ---------------------------------------------------------------
 # 1. The circuit breaker, checked before anything else so the Warden can stop
@@ -97,10 +102,12 @@ actor="$(GH_TOKEN="$FLOWPROOF_LOOP_TOKEN" gh api user --jq .login 2>/dev/null ||
 [ "$actor" = "$BUILDER_LOGIN" ] \
   || die "the loop token belongs to '${actor:-<unresolved>}', not '$BUILDER_LOGIN'"
 
-# 4. The model runtime. Without it the role prompt cannot be executed at all.
-command -v claude >/dev/null || die "the claude CLI is not installed"
-claude -p "ok" --output-format text >/dev/null 2>&1 \
-  || die "the claude CLI is not authenticated (ANTHROPIC_API_KEY, or 'claude /login')"
+# 4. The model runtime, for the roles that use one. The Integrator does not.
+if [ "$ROLE" != "integrator" ]; then
+  command -v claude >/dev/null || die "the claude CLI is not installed"
+  claude -p "ok" --output-format text >/dev/null 2>&1 \
+    || die "the claude CLI is not authenticated (ANTHROPIC_API_KEY, or 'claude /login')"
+fi
 
 # 5. Role tooling, checked here rather than discovered halfway through a turn
 #    where the failure would look like a code problem.
@@ -230,6 +237,14 @@ ${body}"; then
       [ -n "$changed" ] && say "it left:${changed} - see the log above for why it stopped"
       exit 1
     fi
+    ;;
+
+  integrator)
+    # Exactly one at a time. Two integrators merging concurrently is precisely
+    # the semantic-conflict case `strict` exists to catch.
+    claim integrator || halt "an integrator is already running"
+    GH_TOKEN="$FLOWPROOF_LOOP_TOKEN" LOOP_STATE="$STATE" \
+      "$REPO_ROOT/scripts/loop/integrate.sh" --max "${LOOP_MERGE_MAX:-1}"
     ;;
 
   prospector|ledger|warden)
