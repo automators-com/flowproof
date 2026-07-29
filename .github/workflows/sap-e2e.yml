@@ -1,0 +1,74 @@
+name: SAP E2E (real GUI)
+
+# Tier 3 of the SAP testing ladder (see #32): the fake engine (sap_pipeline)
+# and the COM simulator (sap_sim_e2e) run on every push via ci.yml. This
+# workflow is the one that talks to an actual SAP GUI session, so it needs
+# the self-hosted `sap` runner and stays out of the pull_request path —
+# fork PRs must never reach a real SAP system.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+  # TEMPORARY: workflow_dispatch requires this file to exist on the default
+  # branch first, which it doesn't yet. push (unlike workflow_dispatch)
+  # evaluates against the branch itself, so this lets us prove the runner
+  # end-to-end before merging. Remove before merge - not part of the design.
+  push:
+    branches:
+      - feat/sap-e2e-ci-workflow
+
+# Only one physical SAP GUI session exists on the runner; a second run
+# stepping on it mid-navigation is worse than making the next one wait.
+concurrency:
+  group: sap-e2e
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sap-e2e:
+    name: sap_e2e (real SAP GUI)
+    runs-on: [self-hosted, sap]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nightly runs have nobody at the keyboard: make sure SAP Logon is up
+      # and clear the handful of modal dialogs known to block scripting
+      # (multiple-logon prompts, license info) before they can stall the job.
+      - name: session bootstrap
+        shell: powershell
+        run: ./scripts/sap-session-bootstrap.ps1
+        env:
+          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      - name: cargo test sap_e2e (real COM engine, live SAP GUI)
+        run: cargo test -p flowproof-cli --test sap_e2e -- --nocapture
+        env:
+          FLOWPROOF_E2E_SAP: "1"
+          # ${VAR} indirection: FlowSpec.connection carries this literally
+          # and resolves it at launch time, so the value never reaches a
+          # trace file or a log line.
+          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      # Broader coverage than the one hardcoded correctness check above:
+      # replays every committed example flow as a suite (zero AI, each
+      # trace already recorded against this same reference SAP system).
+      # view-order.flow.yaml and stock-overview.flow.yaml assume order 314
+      # and material MZ-FG-C900 exist on whichever system this runner
+      # points at — real data on the reference system this was recorded
+      # against, not guaranteed elsewhere.
+      - name: replay SAP example flows (live SAP GUI)
+        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/
+        env:
+          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      # Leave the session clean for whichever run is next, whether that's
+      # tonight's schedule or a manual dispatch during the working day.
+      - name: session reset
+        if: always()
+        shell: powershell
+        run: ./scripts/sap-session-bootstrap.ps1
+        env:
+          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
