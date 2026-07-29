@@ -13,12 +13,16 @@
 # an explicit pass leaves the pull request unapproved, and unapproved means
 # unmergeable for any identity that cannot bypass the ruleset.
 #
-# SCOPE TODAY: mechanical only. The concept's four model-driven lenses
-# (correctness, gate-integrity, API-compat, docs-truth) need an ANTHROPIC_API_KEY
-# that this repository does not have, and shipping an untested model call as a
-# merge gate would be worse than shipping none. The extension point is marked
-# below, and the review body states plainly what was and was not checked - an
-# approval must never imply more scrutiny than actually happened.
+# TWO LAYERS, and the order of trust matters. The ratchets are mechanical and
+# load-bearing: they cannot be talked out of a finding. The four model lenses
+# (correctness, gate-integrity, API-compat, docs-truth) catch what mechanism
+# cannot express - an assertion relaxed rather than removed, a test that no
+# longer exercises the path it names - and each runs as its own invocation, so a
+# blind spot in one is not automatically a blind spot in the others.
+#
+# The lenses run only when ANTHROPIC_API_KEY is present. When it is absent the
+# review is mechanical-only and SAYS SO: an approval must never imply more
+# scrutiny than actually happened.
 name: adversary
 
 on:
@@ -47,8 +51,14 @@ jobs:
 
       # The gate's own tests run before the gate does. A ratchet that has never
       # refused anything is indistinguishable from one that cannot.
-      - name: the ratchets' own tests
-        run: ./scripts/gate/ratchets.test.sh
+      # Both decision scripts, before either decides anything. The reducer in
+      # adversary-review.sh is what turns a reply into an approval, so it is the
+      # security boundary of the whole review - it shipped once without a test
+      # and with a prompt-injection hole, and the gate-integrity lens found both.
+      - name: the gate's own tests
+        run: |
+          ./scripts/gate/ratchets.test.sh
+          ./scripts/gate/adversary-review.test.sh
 
       - name: ratchets
         id: ratchets
@@ -58,6 +68,43 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: ./scripts/gate/ratchets.sh | tee /tmp/ratchets.out
 
+      # Only for the Builder's own pull requests. A human's change is never
+      # auto-approved, so four model calls on it would buy nothing.
+      - name: model lenses
+        id: lenses
+        continue-on-error: true
+        if: github.event.pull_request.user.login == 'AutomatorsAgent'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE: origin/${{ github.base_ref }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          # The key is tested here rather than in an `if:` expression, so this
+          # does not depend on whether the `secrets` context reaches a step-level
+          # condition. `ran` is an explicit output because a step that skipped
+          # and a step that passed both report outcome=success, and "did not run"
+          # must never be read as "reviewed and approved".
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "no ANTHROPIC_API_KEY: the model lenses did not run"
+            exit 0
+          fi
+          echo "ran=true" >> "$GITHUB_OUTPUT"
+
+          npm install -g @anthropic-ai/claude-code >/dev/null 2>&1
+          failed=0
+          for lens in correctness gate-integrity api-compat docs-truth; do
+            echo "::group::lens: $lens"
+            ./scripts/gate/adversary-review.sh "$lens" > "/tmp/lens-$lens.out" 2>&1
+            rc=$?
+            cat "/tmp/lens-$lens.out"
+            echo "::endgroup::"
+            [ "$rc" -ne 0 ] && failed=1
+          done
+          exit "$failed"
+
       - name: verdict
         if: always()
         env:
@@ -65,6 +112,8 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           RATCHETS: ${{ steps.ratchets.outcome }}
+          LENSES: ${{ steps.lenses.outcome }}
+          LENSES_RAN: ${{ steps.lenses.outputs.ran }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -74,31 +123,65 @@ jobs:
             exit 0
           fi
 
-          body_head="**Adversary — mechanical review**
-
-          Checked: the gate is no weaker after this change (test counts, \`#[ignore]\`,
-          \`skip\`/\`xfail\`, cassette immutability, schema/doc coupling, diff size).
-
-          _Not_ checked: whether the change is **correct**, whether the docs are
-          **true**, or whether the public API stayed compatible. Those are the
-          model-driven lenses and they are not wired up yet, so treat this approval
-          as \"the gate still measures what it did before\" and nothing more."
-
-          if [ "$RATCHETS" = "success" ]; then
-            gh pr review "$PR" --repo "$REPO" --approve --body "$body_head"
-            echo "approved"
+          # Fail-closed on both layers. The lenses count as passed ONLY when they
+          # did not run - in which case the review body says so. A lens step that
+          # ran and did not succeed is a refusal, including when it errored
+          # rather than refused: a reviewer that could not answer has not
+          # approved.
+          if [ "${LENSES_RAN:-false}" = "true" ]; then
+            scope="**mechanical + four model lenses** (correctness, gate integrity, API compatibility, documentation truth)"
+            lenses_ok=$([ "$LENSES" = "success" ] && echo yes || echo no)
           else
-            gh pr review "$PR" --repo "$REPO" --request-changes --body "$body_head
+            scope="**mechanical only** - the four model lenses did not run (no \`ANTHROPIC_API_KEY\`). Read this approval as \"the gate still measures what it did before\", and nothing more."
+            lenses_ok=yes
+          fi
 
-          ---
+          header="**Adversary review** - ${scope}
 
-          **Refused.** This change would leave the gate weaker than it found it:
+          Ratchets: the gate is no weaker after this change (test counts, \`#[ignore]\`,
+          \`skip\`/\`xfail\`, cassette immutability, schema/doc coupling, diff size)."
+
+          if [ "$RATCHETS" = "success" ] && [ "$lenses_ok" = "yes" ]; then
+            gh pr review "$PR" --repo "$REPO" --approve --body "$header"
+            echo "approved"
+            exit 0
+          fi
+
+          detail=""
+          if [ "$RATCHETS" != "success" ]; then
+            detail="${detail}
+
+          **The gate would be weaker after this change:**
 
           \`\`\`
-          $(cat /tmp/ratchets.out 2>/dev/null || echo 'ratchets produced no output - treat as a refusal')
+          $(cat /tmp/ratchets.out 2>/dev/null || echo 'ratchets produced no output - treated as a refusal')
           \`\`\`
 
           Getting to green by weakening what measures green is never the fix."
-            echo "changes requested"
-            exit 1
           fi
+
+          if [ "$lenses_ok" != "yes" ]; then
+            detail="${detail}
+
+          **A model lens refused** (step outcome: \`${LENSES}\`). Each lens is
+          fail-closed, so an error, a timeout or a missing verdict counts as a
+          refusal - a reviewer that could not answer has not approved."
+            for l in correctness gate-integrity api-compat docs-truth; do
+              if [ -s "/tmp/lens-$l.out" ]; then
+                detail="${detail}
+
+          <details><summary>lens: ${l}</summary>
+
+          \`\`\`
+          $(tail -40 "/tmp/lens-$l.out")
+          \`\`\`
+
+          </details>"
+              fi
+            done
+          fi
+
+          gh pr review "$PR" --repo "$REPO" --request-changes --body "${header}
+          ---${detail}"
+          echo "changes requested"
+          exit 1
