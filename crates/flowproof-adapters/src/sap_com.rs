@@ -81,11 +81,22 @@ pub trait SapEngine {
     fn set_focus(&mut self, id: &str) -> Result<(), DriverError>;
     /// Send a virtual key to the active window (Enter = 0, F1–F12 = 1–12…).
     fn send_vkey(&mut self, vkey: u16) -> Result<(), DriverError>;
+    /// Wait for the backend to finish processing the last action (e.g. a
+    /// navigation) before the caller moves on to the next step. A no-op for
+    /// engines with no real "busy" concept (the fake engine completes
+    /// synchronously; there's nothing to wait for).
+    fn wait_ready(&mut self, timeout: Duration) -> Result<(), DriverError>;
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError>;
 }
 
 /// The command field every SAP session has — `Go to /nVA01` types here.
 const OKCODE_FIELD: &str = "wnd[0]/tbar[0]/okcd";
+
+/// How long `navigate()` will wait for the backend to finish rendering the
+/// next screen. Generous on purpose: it returns as soon as the screen
+/// settles, so this only matters (and only costs time) when something is
+/// actually slow.
+const NAVIGATE_SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// SAP virtual key for a canonical key chord, per the scripting API's VKey
 /// table: Enter=0, F1–F12=1–12, Shift+Fn=+12, Ctrl+Fn=+24, Ctrl+Shift+Fn=+36.
@@ -256,7 +267,20 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
         // `Go to /nVA01` — type the transaction code into the command
         // field and hit Enter, exactly how a user navigates SAP.
         self.engine.set_text(OKCODE_FIELD, path)?;
-        self.engine.send_vkey(0)
+        self.engine.send_vkey(0)?;
+        // #226: the backend can still be rendering the next screen when
+        // this returns - over a slower network path (a real hop, not just
+        // localhost), the very next step's own precondition check can lose
+        // that race against a fixed timeout. Wait for the screen to
+        // actually settle instead of guessing a number is enough.
+        let t0 = std::time::Instant::now();
+        let result = self.engine.wait_ready(NAVIGATE_SETTLE_TIMEOUT);
+        eprintln!(
+            "DIAG wait_ready for {path:?} took {:?}, result={:?}",
+            t0.elapsed(),
+            result.is_ok()
+        );
+        result
     }
 
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
@@ -407,6 +431,10 @@ pub mod fake {
 
         fn send_vkey(&mut self, vkey: u16) -> Result<(), DriverError> {
             self.vkeys.push(vkey);
+            Ok(())
+        }
+
+        fn wait_ready(&mut self, _timeout: Duration) -> Result<(), DriverError> {
             Ok(())
         }
 
@@ -812,6 +840,22 @@ pub mod com {
             window
                 .call("SendVKey", vec![VARIANT::from(i32::from(vkey))])
                 .map(|_| ())
+        }
+
+        fn wait_ready(&mut self, timeout: Duration) -> Result<(), DriverError> {
+            let deadline = Instant::now() + timeout;
+            loop {
+                if !self.session()?.get_bool("Busy").unwrap_or(false) {
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(DriverError::Uia(
+                        "sap-com: timed out waiting for the SAP backend to finish processing"
+                            .into(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
         }
 
         fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
