@@ -43,6 +43,7 @@ jobs:
         run: |
           ./scripts/gate/constitution-check.test.sh
           ./scripts/loop/integrate.test.sh
+          ./scripts/loop/prospect.test.sh
 
       - name: protected paths are human-authored only
         env:
