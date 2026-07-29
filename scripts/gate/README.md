@@ -207,41 +207,57 @@ hatch, the same role `enforce_admins: false` plays in `protection.json`.
 
 ### Test status of the checks
 
-All five checks now run green against the real loop credential
-(`AutomatorsAgent`, minted 2026-07-28):
+All checks run against the real loop credential. The suite currently **fails**,
+correctly: the `flowproof-loop-builder` token is still `Pending` org approval and
+therefore has no write access at all.
 
-```
-ok  distinct from the interactive gh login
-ok  fine-grained token (no OAuth scopes granted)
-ok  cannot reach branch protection (HTTP 403)
-ok  can read pull requests
-ok  identity is 'AutomatorsAgent'
-ok  cannot read its own repo role (HTTP 403) -- no Administration access
-```
+### The check that a powerless token passed
 
-### Why check 5 is inverted
+The original check 4 asked whether the token could *read* pull requests. On a
+**public** repository that returns 200 with no credential whatsoever — `curl`
+with no `Authorization` header at all gets the same 200. So it proved nothing,
+and it green-lit a token that turned out to have zero write permission.
 
-The first version asked GitHub for the identity's repo role and for
-`current_user_can_bypass`. Neither can work: both require Administration access,
-which is exactly what a correctly-scoped loop token must not have. **A token
-restricted enough to be safe is too restricted to describe itself.**
+The cost was a full Builder turn: 296 verified lines, every gate run and read,
+then no pull request, because `createPullRequest` was forbidden.
 
-So the test is inverted — the 403 *is* the evidence. A token that can read its
-own repo role holds Administration access and is over-privileged by definition.
-Refusal to answer is the passing answer.
+Check 4 now probes write capability **without writing**, by sending a
+deliberately invalid body and reading which way it is rejected:
 
-The consequence is worth stating plainly: this check proves the token is **too
-weak to bypass review**. It does not prove **which account it belongs to**. That
-has to be established out of band by a human with an admin token:
+| Response | Meaning |
+|---|---|
+| `403` | the token may not create pull requests |
+| `422` | the token may; the body was invalid, and **nothing was created** |
 
-```bash
-gh api repos/automators-com/flowproof/collaborators/AutomatorsAgent/permission --jq .role_name
-# => write        verified 2026-07-28
-```
+`422` is the passing answer. The same probe covers issues, which escalation and
+the gap ledger both need.
 
-`write` is not in the ruleset's bypass list (`OrganizationAdmin`,
-`RepositoryRole: 5`), so the identity cannot merge without the Adversary.
-Re-verify this after any change to the account's repository role.
+The general lesson is worth keeping: **a check that only tests for too much
+permission will happily pass a credential with none.** Both directions need
+asserting.
+
+### Check 5 has been wrong twice, in opposite directions
+
+Worth recording, because the second mistake is the more instructive one.
+
+It first read the identity's repository role and asserted the value — correct.
+That returned **403**, and it was rewritten to treat the 403 as *proof* of
+correct scoping, reasoning that reading a role requires Administration access.
+
+**It does not. It requires push.** The 403 was a symptom of the token still
+being `Pending` org approval, an unrelated fault — and a correct check was
+replaced on the strength of a misread symptom. Once approved, the same endpoint
+returns `200` with `"permission": "write"`, and the rewritten check failed the
+very token it was meant to accept.
+
+Reading the role is back, asserting the value directly. Whether the token holds
+Administration is a separate question, and check 3 answers it properly by
+probing branch protection (`403`) — confirmed alongside a `PATCH /repos/...`
+that also returns `403`.
+
+Key on `permission`, not `role_name`: the latter appears only for more
+privileged callers, so keying on it would fail for exactly the token worth
+accepting.
 
 ### A note on `jq`
 
