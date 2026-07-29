@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "flowproof"
-version = "0.8.0"
+version = "0.9.0"
 description = "Deterministic tests for AI agents: record a run once, replay it with zero LLM calls. Assert which tools an agent called, with which arguments, in which order."
 readme = "README.md"
 license = "Apache-2.0"
