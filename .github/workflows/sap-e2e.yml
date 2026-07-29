@@ -16,6 +16,7 @@ on:
   push:
     branches:
       - feat/sap-e2e-ci-workflow
+      - fix/sap-navigate-timeout
 
 # Only one physical SAP GUI session exists on the runner; a second run
 # stepping on it mid-navigation is worse than making the next one wait.
@@ -60,7 +61,7 @@ jobs:
       # points at — real data on the reference system this was recorded
       # against, not guaranteed elsewhere.
       - name: replay SAP example flows (live SAP GUI)
-        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/
+        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/ --retries 2
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
 
