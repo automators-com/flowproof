@@ -59,8 +59,10 @@ flowproof run scripts/demo/order-status.flow.yaml
 ```
 
 That demo's agent needs its own SDK (`pip install openai`); see
-`scripts/demo/README.md`. If it fails with *"0 model calls"* the agent process
-died — that misleading message is issue #188.
+`scripts/demo/README.md`. If the agent process dies before its first model call,
+flowproof now names that as its own failure and quotes the tail of the agent's
+stderr — so a missing dependency reads as a missing dependency rather than as a
+replay that could not reproduce.
 
 **Never pipe a verification command.** `cargo build | tail` returns *tail's*
 exit code, so a failed build reports success. This has produced several false

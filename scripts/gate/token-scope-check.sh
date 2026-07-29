@@ -79,35 +79,66 @@ esac
 
 # ---------------------------------------------------------------------------
 # 4. It must still be able to do its actual job.
+#
+#    Reading proves nothing here: flowproof is PUBLIC, so `GET /pulls` returns
+#    200 with no credential at all. The first version of this check asked
+#    exactly that and passed a token which turned out to be sitting unapproved
+#    with no write access whatsoever - the Builder wrote 296 verified lines and
+#    then could not open the pull request. A check that a powerless token passes
+#    is not a check.
+#
+#    Write capability is probed WITHOUT writing, by sending a deliberately
+#    invalid body and reading which way it is rejected:
+#
+#      403  the token may not create pull requests
+#      422  the token may; the body was invalid, and nothing was created
+#
+#    422 is the passing answer. Nothing is ever created by this probe.
 # ---------------------------------------------------------------------------
 code="$(curl -sS -o /dev/null -w '%{http_code}' \
-        -H "Authorization: Bearer ${TOKEN}" \
-        "https://api.github.com/repos/${REPO}/pulls?per_page=1" 2>/dev/null || echo 000)"
-[ "$code" = "200" ] || fail "token cannot list pull requests (HTTP ${code}); it
-      is too restricted to open PRs."
-pass "can read pull requests"
+        -X POST -H "Authorization: Bearer ${TOKEN}" \
+        -H "Content-Type: application/json" -d '{}' \
+        "https://api.github.com/repos/${REPO}/pulls" 2>/dev/null || echo 000)"
+case "$code" in
+  422) pass "can create pull requests (probe rejected as invalid, not forbidden)" ;;
+  403) fail "cannot create pull requests. If the token shows 'Pending' in the
+      GitHub UI, an org owner has not approved it yet - a pending token still
+      reads a public repository, which is why this used to look fine. Approve at
+      github.com/organizations/<org>/settings/personal-access-token-requests, and
+      check Pull requests: Read and write is granted." ;;
+  401) fail "token rejected creating a pull request (HTTP 401)." ;;
+  *)   fail "unexpected status ${code} probing pull-request creation." ;;
+esac
+
+# Same probe for issues: escalation and the ledger both need to comment.
+code="$(curl -sS -o /dev/null -w '%{http_code}' \
+        -X POST -H "Authorization: Bearer ${TOKEN}" \
+        -H "Content-Type: application/json" -d '{}' \
+        "https://api.github.com/repos/${REPO}/issues" 2>/dev/null || echo 000)"
+case "$code" in
+  422) pass "can write issues (probe rejected as invalid, not forbidden)" ;;
+  403) fail "cannot write issues; escalation and the gap ledger both need it." ;;
+  *)   warn "unexpected status ${code} probing issue creation" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 5. The loop must not be able to BYPASS the review ruleset.
 #
-#    Bypass is evaluated on the ACTOR'S ROLE, not on the token's scopes -- so a
-#    fine-grained PAT owned by an admin sails past the review requirement no
-#    matter how narrow its permissions are. The gate would look enforced and be
-#    theoretical.
+#    Bypass is evaluated on the ACTOR'S ROLE, not on the token's scopes, so a
+#    fine-grained token owned by an admin sails past the review requirement no
+#    matter how narrow its permissions are.
 #
-#    The obvious check -- ask GitHub for this identity's repo role, or read
-#    `current_user_can_bypass` -- CANNOT WORK. Both need Administration access,
-#    which is precisely what a correctly-scoped loop token must not have. A
-#    token restricted enough to be safe is too restricted to describe itself.
+#    This check has been wrong twice, in opposite directions, and the history is
+#    the point. It first read the role directly - correct. That returned 403 and
+#    was rewritten to treat the 403 as PROOF of correct scoping, on the reasoning
+#    that reading a role needs Administration access. It does not: it needs push.
+#    The 403 was a symptom of the token still being Pending org approval, which
+#    is an unrelated fault, and a correct check was replaced on the strength of a
+#    misread symptom.
 #
-#    So the test is inverted: the 403 IS the evidence. If this token can read
-#    its own repo role, it holds Administration access and is over-privileged by
-#    definition. Refusal to answer is the passing answer.
-#
-#    What the role actually IS therefore has to be established out of band, by a
-#    human with an admin token, and recorded in scripts/gate/README.md. This
-#    check proves the token is too weak to bypass; it does not prove which
-#    account it belongs to.
+#    Reading the role is therefore back, asserting the value directly. Whether
+#    the token holds Administration is a separate question, and check 3 already
+#    answers it properly by probing branch protection.
 # ---------------------------------------------------------------------------
 actor="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
          https://api.github.com/user 2>/dev/null \
@@ -115,16 +146,23 @@ actor="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
 [ -n "$actor" ] || fail "could not resolve the token's login."
 pass "identity is '${actor}'"
 
-code="$(curl -sS -o /dev/null -w '%{http_code}' \
-        -H "Authorization: Bearer ${TOKEN}" \
-        "https://api.github.com/repos/${REPO}/collaborators/${actor}/permission" 2>/dev/null || echo 000)"
-case "$code" in
-  200) fail "'${actor}' can read its own repository role, so this token holds
-      Administration access. An Administration-capable identity is in the
-      ruleset's bypass list and could merge without the Adversary's review.
-      Re-mint with Contents + Pull requests + Issues only." ;;
-  403|404) pass "cannot read its own repo role (HTTP ${code}) -- no Administration access" ;;
-  *)   fail "unexpected status ${code} probing the repo role for '${actor}'." ;;
+# `permission` is present for any caller with push; `role_name` only appears for
+# more privileged callers, so keying on it would fail for exactly the token we
+# want to accept.
+role="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
+        "https://api.github.com/repos/${REPO}/collaborators/${actor}/permission" 2>/dev/null \
+        | tr -d '\r\n ' | sed -n 's/.*"permission":"\([^"]*\)".*/\1/p')"
+
+case "$role" in
+  admin|maintain)
+       fail "'${actor}' has repo role '${role}', which is in the ruleset's bypass
+      list. It could merge without the Adversary's review. A loop needs its own
+      identity with 'write' - not a narrower token on a privileged account." ;;
+  write|push)
+       pass "role is '${role}' - not in the ruleset's bypass list" ;;
+  read|triage|none|"")
+       fail "'${actor}' has role '${role:-<none>}'; it cannot push a branch." ;;
+  *)   fail "unexpected repo role '${role}' for '${actor}'." ;;
 esac
 
 printf '\n\033[32mloop credential is correctly scoped and cannot bypass review\033[0m\n'

@@ -40,7 +40,9 @@ jobs:
           shellcheck --severity=warning -s bash scripts/loop/run.sh scripts/gate/*.sh
 
       - name: the gate's own tests
-        run: ./scripts/gate/constitution-check.test.sh
+        run: |
+          ./scripts/gate/constitution-check.test.sh
+          ./scripts/loop/integrate.test.sh
 
       - name: protected paths are human-authored only
         env:

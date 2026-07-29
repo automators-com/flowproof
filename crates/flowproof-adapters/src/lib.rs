@@ -38,7 +38,7 @@ pub mod web;
 pub use agent_proxy::AgentProxy;
 
 #[cfg(feature = "agent")]
-pub use agent_runner::{AgentRun, RunError};
+pub use agent_runner::{AgentRun, RunError, Trigger};
 
 #[cfg(feature = "agent")]
 pub use egress::{AllowSet, Containment, EgressLog};

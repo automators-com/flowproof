@@ -80,6 +80,22 @@ fn anthropic_base(base: &str) -> String {
     base.strip_suffix("/v1").unwrap_or(base).to_string()
 }
 
+/// How the system under test was driven, which is what makes `exit_code`
+/// readable: flowproof either started a process (and `exit_code` is its exit
+/// status) or POSTed to a service it did not start (and `exit_code` is the
+/// trigger's HTTP status). Without the distinction a failure that wants to
+/// say "the process exited 1" would also say "the process exited 200" for an
+/// http trigger that answered perfectly well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// flowproof spawned the agent; `exit_code` is the process exit status
+    /// and `stderr` is what it printed.
+    Process,
+    /// flowproof POSTed to an already-running service; `exit_code` is the
+    /// trigger's HTTP status and there is no stderr to capture.
+    Http,
+}
+
 /// What a run produced.
 #[derive(Debug)]
 pub struct AgentRun {
@@ -87,6 +103,9 @@ pub struct AgentRun {
     pub served: usize,
     /// The first divergence, if the trajectory left its recording.
     pub divergence: Option<Divergence>,
+    /// How the system under test was driven, and therefore how `exit_code`
+    /// reads.
+    pub trigger: Trigger,
     /// Exit status, `None` if the process had to be killed at the
     /// deadline. Context, never the verdict.
     pub exit_code: Option<i32>,
@@ -114,10 +133,25 @@ impl AgentRun {
             return Err(divergence.to_string());
         }
         if self.timed_out {
-            return Err(format!(
+            return Err(self.with_stderr(format!(
                 "the agent did not finish in time; it made {} of {expected_turns} model calls",
                 self.served
-            ));
+            )));
+        }
+        // Zero served is its own failure, not a small case of "fewer than
+        // recorded". "the agent made 0 model calls" is a symptom that reads
+        // as *flowproof could not replay*, when the truth is usually *the
+        // agent never started* - and the process said exactly why on a
+        // stderr that used to be captured and then thrown away.
+        if self.served == 0 && expected_turns > 0 {
+            // Diagnosis, then the evidence, then what to do about it - the
+            // hint goes LAST because the stderr is usually the whole answer.
+            let mut out = self.with_stderr(self.never_called(expected_turns));
+            if let Some(hint) = self.start_hint() {
+                out.push_str("\n  hint: ");
+                out.push_str(hint);
+            }
+            return Err(out);
         }
         if self.served != expected_turns {
             return Err(format!(
@@ -127,7 +161,73 @@ impl AgentRun {
         }
         Ok(())
     }
+
+    /// The message for a run where nothing reached the proxy at all.
+    ///
+    /// A process that exited non-zero is a DIFFERENT diagnosis from one that
+    /// ran to completion without calling a model: the first died (a missing
+    /// dependency, a bad argument, an unset variable of its own), the second
+    /// is the wiring failure the http hint and `flowproof doctor` address.
+    /// Only the process driver may talk about an exit code, because an http
+    /// trigger's `exit_code` is an HTTP status.
+    fn never_called(&self, expected_turns: usize) -> String {
+        let recorded = format!("the recording has {expected_turns}");
+        match (self.trigger, self.exit_code) {
+            (Trigger::Process, Some(code)) if code != 0 => {
+                format!("the agent process exited {code} without making any model call; {recorded}")
+            }
+            (Trigger::Process, None) => {
+                format!("the agent process ended without making any model call; {recorded}")
+            }
+            _ => format!("the agent made 0 model calls, {recorded}"),
+        }
+    }
+
+    /// What to do about a dead agent: flowproof started the command the spec
+    /// gave it and nothing else, so the reproduction is one shell line away -
+    /// and an agent's own dependencies remain its own.
+    fn start_hint(&self) -> Option<&'static str> {
+        match (self.trigger, self.exit_code) {
+            (Trigger::Process, Some(code)) if code != 0 => Some(
+                "flowproof runs `agent.command` exactly as written - run that command \
+                 yourself to see the same failure, and check the agent's own dependencies \
+                 are installed.",
+            ),
+            _ => None,
+        }
+    }
+
+    /// Append what the agent printed on its way out.
+    ///
+    /// The last lines are the ones that explain the failure - a traceback
+    /// names its cause on the final line - so a chatty agent is tailed rather
+    /// than dropped or dumped whole.
+    fn with_stderr(&self, message: String) -> String {
+        let lines: Vec<&str> = self
+            .stderr
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+            .collect();
+        if lines.is_empty() {
+            return message;
+        }
+        let skipped = lines.len().saturating_sub(STDERR_TAIL_LINES);
+        let mut out = format!("{message}\n  agent stderr:");
+        if skipped > 0 {
+            out.push_str(&format!("\n    ... {skipped} earlier line(s) omitted"));
+        }
+        for line in &lines[skipped..] {
+            out.push_str(&format!("\n    {line}"));
+        }
+        out
+    }
 }
+
+/// How many trailing stderr lines a failure message carries. Enough for a
+/// Python traceback to arrive with its cause attached, short enough that an
+/// agent logging every token cannot bury the verdict.
+const STDERR_TAIL_LINES: usize = 20;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -232,6 +332,7 @@ pub fn run_http(
     let run = AgentRun {
         served: log.served,
         divergence: log.divergence.clone(),
+        trigger: Trigger::Http,
         exit_code,
         timed_out,
         stdout,
@@ -464,6 +565,7 @@ pub fn run_against(
     let run = AgentRun {
         served: log.served,
         divergence: log.divergence.clone(),
+        trigger: Trigger::Process,
         exit_code: status.and_then(|s| s.code()),
         timed_out,
         stdout,
@@ -525,6 +627,7 @@ pub fn run_against_contained(
     let run = AgentRun {
         served: log.served,
         divergence: log.divergence.clone(),
+        trigger: Trigger::Process,
         exit_code: status.and_then(|s| s.code()),
         timed_out,
         stdout,
@@ -832,6 +935,113 @@ for _ in range(turns):
         assert!(why.contains("has 2"), "{why}");
     }
 
+    /// An agent that dies before it can talk to anything is the adoption
+    /// failure of issue #188: on a machine missing the agent's OWN dependency
+    /// the run used to report "0 model calls", which reads as a flowproof
+    /// replay failure, while the traceback that explained everything was
+    /// captured and then discarded. The message must name the dead process
+    /// and carry its stderr.
+    #[test]
+    fn an_agent_that_never_starts_says_so_and_shows_its_stderr() {
+        let dir = std::env::temp_dir().join("flowproof-agent-runner");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("agent_missing_dep.py");
+        std::fs::write(&path, "import definitely_not_installed_pkg\n").expect("write");
+
+        let run = run(
+            &format!("python3 \"{}\"", path.display()),
+            &BTreeMap::new(),
+            cassette(2),
+            Mocks::new(),
+            Duration::from_secs(30),
+        )
+        .expect("runs");
+
+        assert_eq!(run.served, 0);
+        assert_eq!(run.exit_code, Some(1), "python exits 1 on an import error");
+        let why = run
+            .reproduced(2)
+            .expect_err("a dead agent reproduced nothing");
+        assert!(
+            why.contains("exited 1 without making any model call"),
+            "names the failure mode, not the symptom: {why}"
+        );
+        assert!(why.contains("the recording has 2"), "{why}");
+        assert!(
+            why.contains("definitely_not_installed_pkg"),
+            "the stderr that explains it must survive: {why}"
+        );
+        assert!(why.contains("agent stderr:"), "{why}");
+        assert!(
+            why.find("agent stderr:") < why.find("hint:"),
+            "the evidence comes before the advice: {why}"
+        );
+    }
+
+    /// The other half of the same fork: an agent that ran to completion and
+    /// simply never called a model is a WIRING failure, not a dead process,
+    /// so it must not be told it "exited 0 without making any model call".
+    #[test]
+    fn an_agent_that_exits_clean_without_calling_is_not_reported_as_dead() {
+        let dir = std::env::temp_dir().join("flowproof-agent-runner");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("agent_quiet.py");
+        std::fs::write(&path, "print('did nothing')\n").expect("write");
+
+        let run = run(
+            &format!("python3 \"{}\"", path.display()),
+            &BTreeMap::new(),
+            cassette(1),
+            Mocks::new(),
+            Duration::from_secs(30),
+        )
+        .expect("runs");
+
+        assert_eq!(run.exit_code, Some(0));
+        let why = run.reproduced(1).expect_err("zero calls is not one");
+        assert!(why.contains("made 0 model calls"), "{why}");
+        assert!(!why.contains("exited"), "nothing died here: {why}");
+    }
+
+    /// A chatty agent must not bury the verdict: the stderr is TAILED, and
+    /// the message says how much it dropped rather than pretending it had
+    /// everything.
+    #[test]
+    fn a_flood_of_stderr_is_tailed_not_dumped() {
+        let dir = std::env::temp_dir().join("flowproof-agent-runner");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("agent_chatty.py");
+        std::fs::write(
+            &path,
+            "import sys\n\
+             for i in range(200):\n\
+             \x20   print(f'noise {i}', file=sys.stderr)\n\
+             sys.exit(3)\n",
+        )
+        .expect("write");
+
+        let run = run(
+            &format!("python3 \"{}\"", path.display()),
+            &BTreeMap::new(),
+            cassette(1),
+            Mocks::new(),
+            Duration::from_secs(30),
+        )
+        .expect("runs");
+
+        let why = run
+            .reproduced(1)
+            .expect_err("a dead agent reproduced nothing");
+        assert!(why.contains("exited 3"), "{why}");
+        assert!(why.contains("noise 199"), "the last line survives: {why}");
+        assert!(!why.contains("noise 0\n"), "the flood does not: {why}");
+        assert!(why.contains("earlier line(s) omitted"), "{why}");
+        assert!(
+            why.lines().count() < 30,
+            "the message stays readable: {why}"
+        );
+    }
+
     /// A hung agent must not take the suite down with it.
     #[test]
     fn a_hanging_agent_is_killed_at_the_deadline() {
@@ -1094,6 +1304,10 @@ for _ in range(turns):
         assert_eq!(run.exit_code, Some(200), "the trigger itself succeeded");
         let why = run.reproduced(2).expect_err("zero calls is not two");
         assert!(why.contains("made 0 model calls"), "{why}");
+        // An http trigger's `exit_code` is a STATUS. The zero-call message
+        // may never spend it as if it were a process exit code, or a service
+        // that answered perfectly would be reported as having "exited 200".
+        assert!(!why.contains("exited"), "{why}");
     }
 
     /// A service that cannot be reached is a SETUP error (the http analogue

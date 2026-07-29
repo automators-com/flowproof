@@ -532,6 +532,16 @@ Five facts about the runtime contract, all exercised by
 - **A flow is bounded to 300 seconds.** The agent's own logic decides when it
   is done; if it never finishes, the run fails on the timeout.
 
+And one the demo cannot show you, because the demo works:
+
+- **An agent that never starts is reported as such, with its stderr.** A
+  process that exits non-zero without reaching the proxy fails with its exit
+  code and the tail of what it printed, not with a bare "made 0 model calls" —
+  the failure is the agent's, and the reason is usually in its own output. An
+  agent that exits CLEANLY without calling a model is the different failure:
+  its client never honoured the injected base URL, which is what
+  `flowproof doctor` diagnoses.
+
 ### Driving a running service (`url:`)
 
 Instead of a `command` flowproof starts, an agent flow can drive a service
@@ -971,7 +981,9 @@ Built and tested, each independently:
 | `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
 | egress containment | `allow_egress` / `assert_no_egress`, enforced by a Linux seccomp supervisor (proven by the Linux CI E2E); "not contained" and honestly reported on macOS/Windows and for `url:` flows |
 | MCP tool boundary | stdio (v3.1) and streamable-HTTP (v3.2): flowproof stands in as the server, records the JSON-RPC traffic once and replays it with no server running. A tool with a `result:` here is answered by the stand-in and never forwarded, in either phase - the one boundary that stops a tool executing |
-| Anthropic / http-target | the Messages API dialect, streaming replay, and `agent.url` services are built. Their REPLAY paths are covered by tests; their RECORD paths are not yet - see the test-coverage note below |
+| Anthropic Messages | built and covered end to end, record leg included: a flow records against a Messages-dialect upstream and replays it with no model at all |
+| Streaming | built and covered end to end in both dialects, record leg included: a `stream: true` agent is served SSE at record and at replay, and the test asserts the FRAME BOUNDARIES, not the assembled text - a replay that collapsed the stream into one buffered body would still produce the same reply |
+| http-target | `agent.url` services are built. The REPLAY path is covered by tests; the RECORD path is not yet - see the test-coverage note below |
 
 Not built yet: per-call result sequences (one static result per tool),
 the structured `args:` / `args_exact:` assertion forms, and multi-turn
@@ -991,8 +1003,8 @@ and "covered by a test that would fail if it broke" are different claims:
 | OpenAI proxy + `assert_tool_call` | full: CLI record -> trace -> replay, agent as a real subprocess, on every PR |
 | MCP stdio (v3.1) | full: real stand-in binary, real server, real agent subprocess, including "a mocked tool is never forwarded" |
 | MCP streamable-HTTP (v3.2) | the boundary is exercised over real HTTP, but driven directly rather than through `flowproof record`/`run` with a real agent |
-| Streaming replay | covered; the record-mode stream synthesis is not |
-| Anthropic Messages | replay covered; the RECORD path (auth conversion, upstream URL) has no test |
+| Streaming replay | full, both dialects: CLI record -> trace -> replay with a `stream: true` agent subprocess, asserting the frames it received, so the record-mode synthesis is covered too |
+| Anthropic Messages | full: CLI record -> trace -> replay against a Messages-dialect upstream, agent as a real subprocess, on every PR |
 | http-target (`agent.url`) | replay covered; the RECORD path has no test |
 | `assert_no_tool_call` | the failing direction is unit-tested; the end-to-end case only exercises the passing direction |
 

@@ -49,6 +49,8 @@ echo "-- a human bypasses --"
 t ALLOW "human edits CI"                       AminChirazi .github/workflows/ci.yml
 t ALLOW "human edits the charter"              AminChirazi CHARTER.md
 t ALLOW "human edits a gate script"            AminChirazi scripts/gate/constitution-check.sh
+t ALLOW "the other contributor edits CI"       HappyDevs1 .github/workflows/ci.yml
+t BLOCK "a non-contributing org admin"         RatulMaharaj .github/workflows/ci.yml
 
 echo "-- near-misses that must NOT be protected --"
 t ALLOW "a doc merely named like the gate"      loop-bot docs/gate-notes.md

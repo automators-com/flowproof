@@ -6,6 +6,54 @@ together).
 
 ## Unreleased
 
+### Changed
+
+- **Streaming replay had no test that could fail for its own bug.** A client
+  that asks for `stream: true` is meant to be served the recorded turn as SSE,
+  frame by frame, in both phases — but nothing exercised that through
+  `flowproof record` and `flowproof run`, and the record-mode synthesis had no
+  test at all. The trap is that a streaming client handed one buffered JSON
+  body assembles the identical final text, so `assert: reply contains ...`
+  still passes and the run still reports PASS: any test asserting on the reply
+  would have been green for exactly the defect it existed to catch. Two flows
+  now record a `stream: true` agent subprocess and replay it with no model
+  reachable, asserting the CHUNK BOUNDARIES the agent observed — the content
+  type, the role or `message_start` frame, the whole arguments in one delta,
+  the finish frame, the terminator — in both the chat-completions and the
+  Messages dialect. Proven non-vacuous by mutation: collapsing either dialect's
+  stream, at either record or replay, leaves the flow passing and fails these
+  tests on the frames. The cassette is unchanged and holds no transport at all;
+  chunk boundaries stay synthesized rather than recorded, which is what lets one
+  recording serve a streaming and a non-streaming client alike.
+
+- **The Anthropic Messages dialect is now proven end to end, record leg
+  included.** It shipped in v2 and `docs/agent-testing.md` said so, but every
+  test behind that claim handed the proxy a cassette written by hand — nothing
+  ever recorded one. So the record path (the upstream URL the Messages API
+  actually wants, the block-shaped request parser, the captured `stop_reason`)
+  was asserted about rather than tested, on the one boundary the product's
+  headline claim rests on. A flow now records against a Messages-dialect
+  upstream with a real agent subprocess, replays it with no model reachable at
+  all, and `assert_tool_call` holds across both. The README and the
+  per-capability coverage tables move the dialect out of "thinner coverage",
+  which is now a shorter and truer list.
+
+### Fixed
+
+- **An agent that never started was reported as a replay that made no model
+  calls, and its stderr was thrown away.** The README offers
+  `flowproof run scripts/demo/order-status.flow.yaml` as the frictionless first
+  green run — no key needed — so on a machine missing the demo agent's own
+  `openai` package it was many adopters' first contact with the tool, and it
+  said "the agent made 0 model calls, the recording has 2". That reads as
+  *flowproof could not replay*; the truth was *your agent died before it spoke
+  to anything*, and the traceback saying exactly why had been captured and then
+  discarded. A zero-call run is now its own failure mode: it names the process
+  and its exit code, prints the agent's stderr under the run, and points at the
+  command flowproof actually ran. An agent that exits cleanly without calling a
+  model is still the wiring failure it always was, and an `agent.url` service is
+  never told it "exited 200" — its exit code is an HTTP status, not a process's.
+
 ## 0.8.0
 
 Everything here was found by pointing flowproof at **goose** — a third-party
