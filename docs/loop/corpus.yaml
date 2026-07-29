@@ -1,0 +1,33 @@
+# The corpus: public repositories flowproof tries to reproduce.
+#
+# POINTERS, NEVER VENDORED CODE. Each entry is {repo, sha, licence, tier} and is
+# fetched at run time. Copying test code from a copyleft repository into this
+# Apache-2.0 one is a defect no test catches and no reviewer notices, so the
+# corpus records where to look and nothing more.
+#
+# The SHA is mandatory. A candidate without one is not evidence: the repository
+# moves and the observation stops being reproducible.
+#
+# WHO WRITES WHAT
+#   Prospector  appends candidates; never executes what it finds
+#   Migrator    reads a candidate, runs it inside scripts/gate/sandbox-run.sh,
+#               and sets status; never edits another entry
+#   humans      widen the licence allowlist, and decline anything out of scope
+#
+# STATUS
+#   candidate  recorded, not yet attempted
+#   migrating  a Migrator holds it
+#   agreed     migrated, verdicts matched, and proven non-vacuous by mutation
+#   gap        flowproof could not express it - see docs/loop/ledger.yaml
+#   false-green  flowproof PASSED where the original FAILED (priority 1, always)
+#   declined   with declined_why, so it is not re-proposed every time it is seen
+#
+# Tier 2 (agents, MCP servers) is prospected first: no third-party application
+# has to be stood up, because the agent is the system under test. Tier 1 (API
+# suites) follows. Tier 3 is declined (CHARTER.md section 3) and Tier 4 is never
+# autonomous.
+
+version: 1
+candidates: []
+# Empty until the first Prospector turn. The Migrator cannot run before this has
+# entries, and the Ledger keeper cannot count gaps before the Migrator reports.
