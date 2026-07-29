@@ -1,0 +1,14 @@
+[Unit]
+Description=flowproof autonomous loop - tick every 10 minutes
+
+[Timer]
+# The first tick waits for the boot to settle rather than racing it.
+OnBootSec=5min
+OnUnitActiveSec=10min
+# Ticks are cheap and idempotent, so a missed window is caught up rather than
+# skipped - but only once, not once per window missed.
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
