@@ -1,0 +1,24 @@
+# Check every text file out with LF, on every platform.
+#
+# Without this, a Windows checkout gets CRLF, and a test that compares an
+# `include_str!` of one file against another compares "\r\n" with "\n" and fails
+# for a reason that has nothing to do with what it is asserting. That is exactly
+# how `the_quickstart_quotes_the_shipped_agent_example_verbatim` broke `main` on
+# Windows for over a day: the marker it searches for contains "\n", the README it
+# searched had "\r\n", and the find simply never matched.
+#
+# There are no Windows-native files here that need CRLF - no .bat, .cmd, .ps1 or
+# .sln - so normalising everything costs nothing and closes the class rather than
+# the instance. The driver being Windows-native is about the code it drives, not
+# about the line endings it is written with.
+* text=auto eol=lf
+
+# Recorded cassettes and traces are the test contract. Byte-for-byte is the whole
+# point of them, so no end-of-line translation may be applied.
+*.trace.jsonl -text
+*.cassette.json -text
+
+# Binary, and mangling them would be silent corruption rather than a failing test.
+*.png binary
+*.gif binary
+*.svg text eol=lf

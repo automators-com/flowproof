@@ -138,7 +138,19 @@ fn the_quickstart_quotes_the_shipped_agent_example_verbatim() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    for (name, prose) in [("README.md", README), ("docs/getting-started.md", DOC)] {
+    // Normalise before comparing. `.gitattributes` now checks everything out
+    // with LF, but a test asserting that prose quotes a file should not also be
+    // asserting how the checkout was configured - and this one failed on Windows
+    // for a day with the message "README.md quotes the node example", because
+    // the marker holds "\n" and a CRLF README holds "\r\n", so the find never
+    // matched. Belt and braces, and the cheaper half.
+    let readme = README.replace("\r\n", "\n");
+    let doc = DOC.replace("\r\n", "\n");
+
+    for (name, prose) in [
+        ("README.md", readme.as_str()),
+        ("docs/getting-started.md", doc.as_str()),
+    ] {
         // Pull the fenced block that names the example file.
         let marker = "```yaml\n# examples/agent-demo/weather-node.flow.yaml\n";
         let start = prose
