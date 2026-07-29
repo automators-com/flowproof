@@ -843,15 +843,25 @@ pub mod com {
         }
 
         fn wait_ready(&mut self, timeout: Duration) -> Result<(), DriverError> {
+            // #226: session.Busy clears in well under a millisecond on the
+            // reference system - verified live, not assumed - so it reflects
+            // "is the backend dispatcher busy right now", not "has the
+            // client actually finished laying out the next screen". Poll for
+            // real content in the user area instead: children only appear
+            // once the client has actually constructed the screen.
             let deadline = Instant::now() + timeout;
             loop {
-                if !self.session()?.get_bool("Busy").unwrap_or(false) {
+                let has_content = Self::find_in(self.session()?, "wnd[0]/usr")
+                    .and_then(|usr| usr.get_disp("Children").ok())
+                    .and_then(|children| children.get_i32("Count"))
+                    .unwrap_or(0)
+                    > 0;
+                if has_content {
                     return Ok(());
                 }
                 if Instant::now() >= deadline {
                     return Err(DriverError::Uia(
-                        "sap-com: timed out waiting for the SAP backend to finish processing"
-                            .into(),
+                        "sap-com: timed out waiting for the next screen to render".into(),
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(200));
