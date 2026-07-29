@@ -38,4 +38,19 @@ if (-not (Get-Process -Name saplogon -ErrorAction SilentlyContinue)) {
     Start-Sleep -Seconds 5
 }
 
+# #226: COM automation doesn't need window focus to fire actions, but
+# Windows can defer actual client-side rendering for a background window -
+# complex screens (many fields) may never finish laying out if SAP GUI
+# isn't the foreground window, which the precondition polling then waits
+# on indefinitely. Bring it forward once, here; nothing else should steal
+# focus back during an unattended run.
+$sapProcess = Get-Process -Name saplogon -ErrorAction SilentlyContinue
+if ($sapProcess -and $sapProcess.MainWindowHandle -ne 0) {
+    if ($shell.AppActivate($sapProcess.Id)) {
+        Write-Host 'Brought SAP GUI to the foreground.'
+    } else {
+        Write-Host 'Could not bring SAP GUI to the foreground (AppActivate returned false).'
+    }
+}
+
 Write-Host 'SAP session bootstrap complete.'
