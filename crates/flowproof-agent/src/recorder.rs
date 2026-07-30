@@ -37,6 +37,19 @@ const STEP_TIMEOUT_MS: u64 = 5000;
 /// Poll cadence while an auto-waiting assertion is pending.
 const ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// The precondition wait baked into every targeted step at record time.
+/// `STEP_TIMEOUT_MS` stays the default for everyone - override only when
+/// recording somewhere with real reason to expect more latency (e.g. a
+/// self-hosted CI runner reaching its app over a slower network hop than a
+/// developer's own machine). The replayed value lives in the trace, not
+/// this constant, so this only matters at record time.
+fn step_timeout_ms() -> u64 {
+    std::env::var("FLOWPROOF_STEP_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(STEP_TIMEOUT_MS)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
     #[error(transparent)]
@@ -812,7 +825,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
         vec![]
     } else {
         vec![Condition::ElementExists {
-            timeout_ms: STEP_TIMEOUT_MS,
+            timeout_ms: step_timeout_ms(),
             selector_ref: None,
         }]
     };
