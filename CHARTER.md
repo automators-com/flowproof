@@ -419,3 +419,62 @@ changes.
 Keep this in step with reality. If someone starts contributing, add them; if
 someone stops, remove them. An allowlist nobody maintains drifts into either
 noise or an obstacle, and both teach people to route around the gate.
+
+---
+
+## Amendment 2026-07-30 (human act — applied by founder)
+
+### Milestone 2 extended — every assertion can fail
+
+Milestone 2's existing criteria establish that each agent path has a GREEN
+replay. This extension establishes that each green could have been RED.
+The two halves close together; #61 is not done without both.
+
+Rationale: §5 ranks a false green as the only defect class that destroys
+the product's value. "Has a green replay" is not evidence of that unless
+the same path is proven capable of failing — the streaming defect in the
+0.9.0 record is exactly a green that proved nothing.
+
+Additional exit criteria, all testable:
+
+6. A falsifiability suite under `tests/falsifiability/` with one red-path
+   proof per assertion type: `assert_tool_call`, `assert_no_tool_call`,
+   `assert_no_secret_leak`, egress containment (`assert_no_egress` /
+   `allow_egress`, Linux runner), `assert: reply contains` — buffered and
+   streaming as SEPARATE proofs — `control:` verdict mapping, and
+   `audit --since` regression exit codes. A red-path proof is a fixture
+   input violating the asserted property, a test running the real
+   assertion path against it, and a check that the verdict is FAIL and the
+   exit code non-zero.
+7. One permanent red-path regression fixture per false-green defect in the
+   CHANGELOG record: streaming replay buffered-body equivalence; agent
+   cassette replay inoperative; MCP stand-in recording lost on kill;
+   concurrent-call order wrongly asserted.
+8. A docs page `docs/how-flowproof-tests-flowproof.md` describing 6–7,
+   held true by the docs-truth lens.
+
+Constraint (this extension relaxes nothing in §2/§3): the falsifiability
+suite only ADDS tests and fixtures. Modifying an existing test, an
+assertion implementation's accepted set, or anything under `scripts/gate/`
+is not part of this milestone under any reading. A PR that makes a
+red-path test behave by changing what an assertion accepts is a gate
+violation, not a fix.
+
+### Milestone 3 — multi-turn agent flows (authorised now; built later)
+
+The ledger's N≥3/M≥3 observation rule cannot surface this gap: no corpus
+repository can exhibit a flow shape flowproof does not yet support, so the
+loop process would silently veto it forever. It is therefore authorised
+here as a human act, outside the observation process, scheduled strictly
+after Milestone 2. Ledger keeper: record it with status
+`authorised-human`, not `eligible`. Builder: do not take it while
+Milestone 2 is open.
+
+### DECIDE 1 — commercial boundary (resolved)
+
+Everything in this repository is and remains Apache-2.0, including all
+assurance features: containment, audit, and the falsifiability suite. The
+commercial boundary lies outside the repo — design-partner services,
+hosted evidence archives, certification support. No loop may introduce a
+licence gate, paid-feature flag, or code split keyed to commercial
+status; a task requiring one is a founder task by definition.
