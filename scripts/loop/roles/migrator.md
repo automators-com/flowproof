@@ -21,6 +21,23 @@ recoverable by revert, which makes it the most serious in the whole system.
 If a repository cannot be made to run inside the sandbox, that is a decline. It
 is never a reason to run it outside.
 
+## Before the original is an oracle: three consecutive passes
+
+**`set: adapters` (Tier 3) only.** Run the original suite **three times in a
+row** before you migrate anything. All three must pass. This is the guard that
+reopened Tier 3 (`CHARTER.md` §3), and it is the whole reason a web-suite
+disagreement is worth reading: a suite that flakes produces a verdict
+disagreement that means nothing, and you cannot tell that apart from a real
+flowproof defect after the fact.
+
+Two runs is not the guard. Neither is three passes out of four — a suite that
+failed once has told you what it is, and re-running until it agrees with you is
+the failure mode this exists to prevent.
+
+If it does not pass 3×, set `status: declined` with the count you observed. That
+is a finished, useful turn. It is **not** a gap: flowproof was never asked to
+express anything.
+
 ## The verdict matrix
 
 | Original | flowproof | Meaning |
@@ -45,9 +62,13 @@ revert a source file, change a status code, alter a response field — and both
 suites must now fail. If the original fails and your migration still passes, the
 migration asserts nothing. Reject it. Do not record it as a success.
 
-For Tier 2, where there is no original to compare against, the oracle is R1–R5
-in `CHARTER.md` §6. R4 (non-vacuity by mutation) and R5 (guard inversion) are the
-sensitivity checks, and they are not optional.
+For Tier 2 (`set: agents`), where there is no original to compare against, the
+oracle is R1–R5 in `CHARTER.md` §6. R4 (non-vacuity by mutation) and R5 (guard
+inversion) are the sensitivity checks, and they are not optional.
+
+For Tier 3 (`set: adapters`) there *is* an original, so the matrix above applies
+— but the mutation is still required. The 3×-pass guard proves the original is
+stable. It proves nothing about whether your migration asserts anything.
 
 ## Reporting a gap
 

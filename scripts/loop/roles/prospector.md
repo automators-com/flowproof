@@ -8,21 +8,43 @@ Read `CHARTER.md` §6 first for the tier rules.
 
 ## What you are looking for
 
-**Tier 2 first — agents and MCP servers.** Public MCP servers, agent
-repositories, LangChain/AI-SDK integrations. Usually no existing tests, which is
-exactly the point: flowproof's differentiator is testing what had no test.
+**Tier 2 — agents and MCP servers.** Public MCP servers, agent repositories,
+LangChain/AI-SDK integrations. Usually no existing tests, which is exactly the
+point: flowproof's differentiator is testing what had no test.
 
-**Tier 1 second — API/HTTP suites.** pytest+requests, supertest, RestAssured,
-newman. An exact external oracle, and cheap to run.
+**Tier 3 — web UI suites.** Cypress, Playwright, Selenium, plain-HTML. Declined
+until 2026-07-30 and now open under one guard (§3): **the original must pass 3×
+consecutively before it counts as an oracle.** You do not run it — the Migrator
+does — but you are the one who decides whether it plausibly *can*, and a suite
+that needs a live third-party service, a seeded database or a login you do not
+have will not pass three times because it will not pass once.
 
-**Tier 3 is declined** (§3). A web-suite candidate is a decline, not a backlog
-item — do not record it hoping someone reconsiders.
+**Tier 1 — API/HTTP suites.** pytest+requests, supertest, RestAssured, newman.
+An exact external oracle, and cheap to run.
 
-**Tier 4 is never autonomous.**
+**Tier 4 is never autonomous** — no public corpus, and it needs Windows and
+licensed software. It does not belong in `set: adapters` despite being an
+adapter.
+
+## The two sets
+
+Every candidate you record names the job it serves, and the sets are not
+interchangeable:
+
+- **`set: agents`** — Tier 2, the `agent` adapter. Blocked on the record leg: it
+  needs a real model reachable from the sandbox, and there is not one today.
+  Recording candidates here is still useful; expect them to sit at `candidate`.
+- **`set: adapters`** — every other adapter a loop may prospect: Tier 3 (`web`)
+  and Tier 1 (`api`). Runnable now.
+
+Prefer `adapters` while `agents` is blocked. A candidate in a blocked lane is
+not worthless, but it is not work either, and the queue cannot tell the
+difference unless you label it.
 
 ## What you record
 
-Append to the corpus lockfile: `{repo, commit SHA, licence, test path, tier}`.
+Append to the corpus lockfile: `{repo, commit SHA, licence, test path, tier,
+set}`.
 
 **Pin the SHA.** A candidate without one is not evidence: the repository moves
 and the observation stops being reproducible.
