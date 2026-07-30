@@ -605,6 +605,39 @@ pub mod com {
                 .map(Disp)
         }
 
+        /// Log in on SAP's own logon screen, using the standard fields every
+        /// SAP system ships (client/user/password - the same ones a VBScript
+        /// recording of a manual login would drive). A no-op unless both
+        /// SAP_USER and SAP_PASSWORD are set: attach-only and an explicit
+        /// OpenConnection-without-login stay exactly as they were before this
+        /// existed. Values are read fresh from the environment and used only
+        /// as this one property-put each - never logged, never traced, never
+        /// stored anywhere by this function.
+        fn try_auto_login(session: &Disp) {
+            let (Ok(user), Ok(password)) =
+                (std::env::var("SAP_USER"), std::env::var("SAP_PASSWORD"))
+            else {
+                return;
+            };
+            eprintln!("sap-com: not logged in - attempting auto-login");
+            if let Some(client) = std::env::var("SAP_CLIENT").ok().filter(|c| !c.is_empty()) {
+                if let Some(field) = Self::find_in(session, "wnd[0]/usr/txtRSYST-MANDT") {
+                    let _ = field.put("Text", VARIANT::from(BSTR::from(client.as_str())));
+                }
+            }
+            if let Some(field) = Self::find_in(session, "wnd[0]/usr/txtRSYST-BNAME") {
+                let _ = field.put("Text", VARIANT::from(BSTR::from(user.as_str())));
+            }
+            if let Some(field) = Self::find_in(session, "wnd[0]/usr/pwdRSYST-BCODE") {
+                let _ = field.put("Text", VARIANT::from(BSTR::from(password.as_str())));
+            }
+            // Submit - Enter on the window, exactly how navigate() confirms
+            // any other screen.
+            if let Some(window) = Self::find_in(session, "wnd[0]") {
+                let _ = window.call("SendVKey", vec![VARIANT::from(0i32)]);
+            }
+        }
+
         fn walk_into(element: &Disp, depth: u32, out: &mut Vec<SapElement>) {
             if depth > 14 || out.len() >= 400 {
                 return;
@@ -698,8 +731,9 @@ pub mod com {
             }
             let deadline = Instant::now() + timeout;
             let mut opened = false;
+            let mut login_attempted = false;
             loop {
-                let attempt = (|| -> Result<Option<Disp>, DriverError> {
+                let attempt = (|| -> Result<(Option<Disp>, bool), DriverError> {
                     let sapgui = Disp(attach_to_sapgui()?);
                     let engine = sapgui.call_disp("GetScriptingEngine", vec![])?;
                     let connections = engine.get_disp("Children")?;
@@ -710,12 +744,12 @@ pub mod com {
                                 vec![VARIANT::from(BSTR::from(connection)), VARIANT::from(true)],
                             )?;
                         }
-                        return Ok(None); // keep waiting for a session
+                        return Ok((None, false)); // keep waiting for a session
                     }
                     let conn = connections.call_disp("ElementAt", vec![VARIANT::from(0)])?;
                     let sessions = conn.get_disp("Children")?;
                     if sessions.get_i32("Count").unwrap_or(0) == 0 {
-                        return Ok(None);
+                        return Ok((None, false));
                     }
                     let session = sessions.call_disp("ElementAt", vec![VARIANT::from(0)])?;
                     // A session object exists as soon as its window opens -
@@ -732,17 +766,28 @@ pub mod com {
                         .map(|info| !info.get_string("User").is_empty())
                         .unwrap_or(false);
                     if !logged_in {
-                        return Ok(None); // keep waiting - not logged in yet
+                        // #226 follow-up: an unattended nightly run has
+                        // nobody to log back in when a session expires.
+                        // SAP_USER/SAP_PASSWORD let us do that ourselves,
+                        // once per attach - a no-op when they're unset, so
+                        // attach-only and interactive use are unchanged.
+                        if !login_attempted {
+                            Self::try_auto_login(&session);
+                        }
+                        return Ok((None, true)); // keep waiting - not logged in yet
                     }
-                    Ok(Some(session))
+                    Ok((Some(session), false))
                 })();
 
                 match attempt {
-                    Ok(Some(session)) => {
+                    Ok((Some(session), _)) => {
                         self.session = Some(session);
                         return Ok(());
                     }
-                    Ok(None) => opened = !connection.is_empty(),
+                    Ok((None, at_login_screen)) => {
+                        opened = !connection.is_empty();
+                        login_attempted = login_attempted || at_login_screen;
+                    }
                     Err(e) if Instant::now() >= deadline => {
                         return Err(DriverError::Uia(format!(
                             "{e} — start SAP Logon, log in, and enable scripting \
