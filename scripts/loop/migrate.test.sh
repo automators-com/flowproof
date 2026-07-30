@@ -27,7 +27,7 @@ printf '%s\n' "${*//$'\n'/ }" >> "${SANDBOX_CALLS:?}"
 # break exactly one phase. A uniform SANDBOX_RC cannot express "the runner would
 # not start but the install was fine", which is the case that matters most.
 if [ -n "${SANDBOX_FAIL_ON:-}" ]; then
-  case "$*" in *"$SANDBOX_FAIL_ON"*) exit 1 ;; esac
+  case "$*" in *"$SANDBOX_FAIL_ON"*) exit "${SANDBOX_FAIL_RC:-1}" ;; esac
   exit 0
 fi
 exit "${SANDBOX_RC:-0}"
@@ -53,8 +53,17 @@ run() {
   : > "$TMP/calls"
   rm -rf "$CORPUS_DIR"
   SANDBOX="$TMP/sandbox.sh" SANDBOX_CALLS="$TMP/calls" SANDBOX_RC="${RC:-0}" \
-    SANDBOX_FAIL_ON="${FAIL_ON:-}" \
+    SANDBOX_FAIL_ON="${FAIL_ON:-}" SANDBOX_FAIL_RC="${FAIL_RC:-1}" \
     "$SUT" baseline "$1" "$2" 2>/dev/null | tail -1
+}
+
+# Same, but keeping the human-readable progress output instead of the verdict.
+why() {
+  : > "$TMP/calls"
+  rm -rf "$CORPUS_DIR"
+  SANDBOX="$TMP/sandbox.sh" SANDBOX_CALLS="$TMP/calls" SANDBOX_RC="${RC:-0}" \
+    SANDBOX_FAIL_ON="${FAIL_ON:-}" SANDBOX_FAIL_RC="${FAIL_RC:-1}" \
+    "$SUT" baseline "$1" "$2" 2>&1 >/dev/null
 }
 
 ok()  { printf 'ok    %-52s %s\n' "$1" "$2"; }
@@ -184,6 +193,56 @@ if [ -z "$missing" ]; then
   ok "install, probe and suite share a /work cypress cache" "pinned"
 else
   bad "install, probe and suite share a /work cypress cache" "missing on call(s):$missing"
+fi
+
+echo "-- a Cypress suite needs an image that can actually run a browser --"
+# node:*-slim has no Xvfb, so `cypress verify` fails there and no verdict is
+# trustworthy. Measured 2026-07-30: with cypress/base the same probe passes.
+seed_cypress() {
+  local src="$TMP/src"
+  rm -rf "$src"; mkdir -p "$src"
+  git init -q "$src"
+  git -C "$src" config uploadpack.allowAnySHA1InWant true
+  git -C "$src" config uploadpack.allowReachableSHA1InWant true
+  printf '{"devDependencies":{"cypress":"15.19.0"}}\n' > "$src/package.json"
+  git -C "$src" add -A >/dev/null 2>&1
+  git -C "$src" -c user.name=t -c user.email=t@t commit -q -m seed
+  git -C "$src" rev-parse HEAD
+}
+sha="$(seed_cypress)"; run "$TMP/src" "$sha" >/dev/null
+if grep -q 'cypress/base' "$TMP/calls"; then
+  ok "a repo depending on cypress gets a browser-capable image" "cypress/base"
+else
+  bad "a repo depending on cypress gets a browser-capable image" "$(head -1 "$TMP/calls" | cut -c1-46)"
+fi
+# The other direction. The Cypress image is 738 MB against 233 MB, so a project
+# that does not need it must not pay for it on every baseline.
+sha="$(seed package.json)"; run "$TMP/src" "$sha" >/dev/null
+if grep -q 'node:22-bookworm-slim' "$TMP/calls" && ! grep -q 'cypress/base' "$TMP/calls"; then
+  ok "and a plain node repo does not" "node slim"
+else
+  bad "and a plain node repo does not" "$(head -1 "$TMP/calls" | cut -c1-46)"
+fi
+
+echo "-- running out of memory is not 'timed out' --"
+# Both are UNRUNNABLE. Saying the wrong one sends someone hunting a slow test
+# when the truth is a heap limit, which is a different fix on a different box.
+# 134 is 128+6: V8 aborting. Measured on cypress-example-kitchensink.
+sha="$(seed package.json)"; v="$(FAIL_ON='npm test' FAIL_RC=134 run "$TMP/src" "$sha")"
+if [ "$v" = UNRUNNABLE ]; then ok "an OOM-killed suite is a decline" "$v"
+else bad "an OOM-killed suite is a decline" "got $v"; fi
+
+out="$(FAIL_ON='npm test' FAIL_RC=134 why "$TMP/src" "$sha")"
+if printf '%s' "$out" | grep -qi "out of memory\|signal 6"; then
+  ok "and says so, rather than blaming the clock" "named"
+else
+  bad "and says so, rather than blaming the clock" "$(printf '%s' "$out" | tail -1 | cut -c1-46)"
+fi
+out="$(FAIL_ON='npm test' FAIL_RC=124 why "$TMP/src" "$sha")"
+if printf '%s' "$out" | grep -qi "timed out"; then
+  ok "a real timeout still reads as a timeout" "named"
+else
+  bad "a real timeout still reads as a timeout" "$(printf '%s' "$out" | tail -1 | cut -c1-46)"
 fi
 
 echo
