@@ -120,7 +120,20 @@ sandbox() { # sandbox <phase> <image> -- cmd...
 CACHE_ENV='export CYPRESS_CACHE_FOLDER=/work/.cypress-cache PLAYWRIGHT_BROWSERS_PATH=/work/.playwright;'
 
 case "$KIND" in
-  node)   IMAGE=docker.io/library/node:22-bookworm-slim
+  # Cypress needs Xvfb and the GTK/NSS stack, which node:*-slim does not carry:
+  # measured 2026-07-30, `cypress verify` there fails with "Your system is
+  # missing the dependency: Xvfb". cypress/base is the image Cypress publishes
+  # for exactly this - the OS dependencies and no Cypress binary, so the version
+  # still comes from the repository's own lockfile rather than from us.
+  #
+  # Keyed on the dependency rather than applied to every node project: the
+  # Cypress image is 738 MB against 233 MB, and a repository that does not use
+  # Cypress should not pay that on every baseline.
+  node)   if grep -q '"cypress"' "$WORK/package.json" 2>/dev/null; then
+            IMAGE=docker.io/cypress/base:22.20.0
+          else
+            IMAGE=docker.io/library/node:22-bookworm-slim
+          fi
           # node_modules lands in /work already; the browser caches do not.
           INSTALL=(sh -lc "$CACHE_ENV"' npm ci --no-audit --fund=false 2>/dev/null || npm install --no-audit --fund=false')
           # Does the runner actually start? node_modules alone does not prove
@@ -197,8 +210,17 @@ else
   # A suite that fails is still an oracle - FAIL/FAIL is agreement, and a
   # migration that turns it green is a false green, which is priority 1. Only a
   # suite that could not run at all is useless.
-  if [ "$rc" -ge 124 ]; then
-    say "the original suite timed out; not a usable oracle"
+  # Both are UNRUNNABLE, and they are still worth telling apart: "timed out"
+  # sends someone looking for a slow test when the truth was an out-of-memory
+  # abort, which is a different fix on a different machine. Measured on
+  # cypress-example-kitchensink: exit 134, which is 128+6, V8 aborting on a
+  # heap limit.
+  if [ "$rc" -eq 124 ]; then
+    say "the original suite timed out after ${TEST_TIMEOUT}s; not a usable oracle"
+    echo UNRUNNABLE
+  elif [ "$rc" -ge 128 ]; then
+    say "the original suite was killed by signal $(( rc - 128 )): out of memory, or"
+    say "  otherwise out of resources. Not a usable oracle - try a larger runner."
     echo UNRUNNABLE
   else
     say "the original suite fails (that is still an oracle)"
