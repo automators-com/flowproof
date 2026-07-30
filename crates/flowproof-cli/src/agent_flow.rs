@@ -1462,10 +1462,17 @@ mod tests {
 
     /// Write a trace file the way `record` would, but hand-built so the test
     /// needs no real model - a driver-blind cassette on disk.
+    ///
+    /// The name carries a nonce as well as the pid. Cargo runs tests as threads
+    /// in ONE process, so a pid-only name is shared by every caller: two of them
+    /// wrote the same file while a third read it, and the reader got
+    /// `EOF while parsing`. That flake failed CI on two unrelated pull requests
+    /// before anyone traced it. Same reason `setup` pairs the pid with
+    /// `mcp_nonce()` a few hundred lines up.
     fn write_trace(cassette: Cassette) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("flowproof-agent-flow");
         std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join(format!("trace-{}.json", std::process::id()));
+        let path = dir.join(format!("trace-{}-{}.json", std::process::id(), mcp_nonce()));
         let trace = AgentTrace {
             app: "agent".into(),
             mocks: BTreeMap::new(),
@@ -1479,6 +1486,56 @@ mod tests {
         )
         .expect("write trace");
         path
+    }
+
+    /// Concurrent `write_trace` calls must not collide.
+    ///
+    /// This asserts the property directly rather than hoping a race shows up:
+    /// with a pid-only name every thread returns the SAME path, so the
+    /// distinctness assertion fails every time instead of one run in twenty.
+    /// Running the suite repeatedly proved nothing - eight consecutive green
+    /// full-suite runs on a four-core box failed to reproduce the flake that had
+    /// already broken CI twice.
+    #[test]
+    fn concurrent_write_trace_calls_get_their_own_files() {
+        use std::sync::{Arc, Barrier};
+
+        const THREADS: usize = 8;
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|i| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    // Start together, to overlap the write as much as possible.
+                    barrier.wait();
+                    write_trace(neutral_cassette(
+                        &format!("prompt {i}"),
+                        &format!("reply {i}"),
+                    ))
+                })
+            })
+            .collect();
+
+        let paths: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().expect("thread"))
+            .collect();
+
+        let unique: std::collections::BTreeSet<_> = paths.iter().collect();
+        assert_eq!(
+            unique.len(),
+            THREADS,
+            "every concurrent write_trace needs its own path; got {} distinct of {THREADS}",
+            unique.len()
+        );
+
+        // And each file must be complete: a shared path leaves a reader parsing
+        // a half-written file, which is the `EOF while parsing` the flake showed.
+        for path in &paths {
+            let text = std::fs::read_to_string(path).expect("trace readable");
+            serde_json::from_str::<AgentTrace>(&text)
+                .unwrap_or_else(|e| panic!("{} is not a complete trace: {e}", path.display()));
+        }
     }
 
     /// A free localhost port: bind ephemeral, read the number, release it.
