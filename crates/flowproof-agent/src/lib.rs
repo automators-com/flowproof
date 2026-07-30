@@ -12,6 +12,7 @@ pub mod llm;
 pub mod recorder;
 pub mod rules;
 pub mod spec;
+pub mod video_author;
 
 pub use clarify::{Clarification, ClarifyStage};
 pub use heal::{heal, heal_with_author, HealError, HealReport};

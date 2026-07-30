@@ -46,6 +46,7 @@ flowproof-adapters = { path = "crates/flowproof-adapters" }
 flowproof-cli = { path = "crates/flowproof-cli" }
 
 anyhow = "1"
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

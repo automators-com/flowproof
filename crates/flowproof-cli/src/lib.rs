@@ -169,6 +169,23 @@ enum Command {
         #[arg(long, default_value = "Say hello.")]
         prompt: String,
     },
+    /// EXPERIMENTAL (spike, #227): draft a `.flow.yaml` from a screen
+    /// recording. DRAFT only — no asserts, still needs a live `record` pass.
+    AuthorFromVideo {
+        /// Path to the screen-recording video.
+        video: PathBuf,
+        /// Target app id (e.g. sap, web, calc).
+        #[arg(long)]
+        app: String,
+        /// Flow name, written into the draft's `name:` field.
+        #[arg(long)]
+        name: String,
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Milliseconds between sampled frames.
+        #[arg(long, default_value_t = 2000)]
+        interval_ms: u64,
+    },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
     Heal {
@@ -1748,6 +1765,33 @@ fn cmd_audit(
     Ok(if any_failed { EXIT_FAIL } else { EXIT_PASS })
 }
 
+fn cmd_author_from_video(
+    video: PathBuf,
+    app: String,
+    name: String,
+    out: PathBuf,
+    interval_ms: u64,
+) -> Result<u8, String> {
+    let opts = flowproof_agent::video_author::VideoAuthorOptions {
+        video,
+        app,
+        name,
+        interval_ms,
+        out,
+    };
+    match flowproof_agent::video_author::author_from_video(&opts) {
+        Ok(path) => {
+            println!(
+                "draft spec written to {} — DRAFT, no asserts; add at least one, \
+                 then `flowproof record` before it produces a replayable trace",
+                path.display()
+            );
+            Ok(EXIT_PASS)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn cmd_heal(
     spec_path: &Path,
     trace: Option<PathBuf>,
@@ -1910,6 +1954,13 @@ where
             timeout,
             prompt,
         } => agent_flow::cmd_doctor(&agent, timeout, &prompt),
+        Command::AuthorFromVideo {
+            video,
+            app,
+            name,
+            out,
+            interval_ms,
+        } => cmd_author_from_video(video, app, name, out, interval_ms),
         Command::Heal {
             spec,
             trace,
