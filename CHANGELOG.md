@@ -6,7 +6,29 @@ together).
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- **Nothing proved that a failing control is recorded as failing.**
+  `audit_record_e2e.rs` covers a great deal — that audit reads a run record
+  rather than re-replaying it, and that `--since` exits non-zero on a
+  regression — but every verdict it asserts is either `capability-error` from a
+  flow an env gate skipped, or hand-written into a record fixture. No test ran a
+  control-bearing flow that genuinely failed and checked what verdict the record
+  received. That is the highest-consequence gap the control map can have: the
+  map is the artifact a reader trusts precisely when they cannot read the trace
+  themselves, so a control reporting `pass` over a failed flow would misreport
+  the one thing it exists to say.
+
+  The first entry in a new falsifiability suite closes it. A committed fixture
+  is recorded honestly against a live loopback endpoint, then run with the port
+  dead so the assertion fails for real at replay, and both layers are checked:
+  the verdict in `report.json` (re-rendered unchanged by `audit`), and the exit
+  code a CI run would see. Two layers deliberately — 0.9.0's streaming false
+  green survived because equivalence was checked at the wrong one.
+
+  See [docs/how-flowproof-tests-flowproof.md](docs/how-flowproof-tests-flowproof.md)
+  for what a red-path proof is and the rules for adding one. The verdict path
+  behaved correctly; the proof is what keeps it that way.
 
 ## 0.9.0
 

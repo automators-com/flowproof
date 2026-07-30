@@ -1,0 +1,27 @@
+# Falsifiability fixture for `control:` verdict mapping (issue #253).
+#
+# This flow is guilty BY CONSTRUCTION, not by accident. It is recorded against
+# a live loopback endpoint that answers 200, so a trace is legitimately minted.
+# It is then RUN with `${API_BASE}` pointed at a dead port, so the assertion
+# fails for real, at replay, through the production path.
+#
+# The host travels as a `${VAR}` reference and never enters the trace, which is
+# what lets one committed flow be both the honest recording and the violation.
+#
+# The property under proof: a control whose flow FAILED must be recorded with
+# verdict `fail`. A control reporting `pass` here would be the worst false green
+# flowproof can emit, because the audit map is the artifact a reader trusts
+# precisely when they cannot read the trace themselves.
+#
+# Do not "fix" this flow, and do not point it at something reachable. It is
+# evidence, and it is supposed to fail when the harness runs it.
+name: A control whose assertion cannot pass
+app: api
+control:
+  id: falsifiability.control.verdict
+  title: A control-bearing flow that genuinely fails
+steps:
+  - assert_api:
+      request: GET ${API_BASE}/health
+      status: 200
+      timeout_seconds: 1
