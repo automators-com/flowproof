@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "Falsifiability fixture for assert_tool_call ... where <path> <matcher> (issue #247).",
+    "",
+    "The model calls the RIGHT tool with the WRONG argument. That distinction is the whole point:",
+    "a_failing_assertion_refuses_the_trace in agent_flow_e2e.rs already proves the TOOL-NAME layer",
+    "can fail, by demanding a tool the agent never calls. Nothing proved the ARGUMENT layer can fail.",
+    "",
+    "docs/agent-testing.md says argument assertions are usually where the bugs are -- chained",
+    "arguments threaded from one tool result into the next call is named as the behaviour multi-step",
+    "agents get wrong. So the matcher vocabulary carries the most weight and, until now, the least evidence.",
+    "",
+    "Two assertions are violated by this one response:",
+    "  - where city equals Nairobi  -- the value is Mombasa;",
+    "  - where city is absent       -- the key is present.",
+    "One value matcher and one presence matcher, from a single guilty call.",
+    "",
+    "Do not fix the city. It is evidence, and it is supposed to be wrong."
+  ],
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Mombasa\"}"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
