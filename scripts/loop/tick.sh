@@ -26,6 +26,20 @@ ENV_FILE="${FLOWPROOF_ENV:-$HOME/.config/flowproof-loop.env}"
 MIN_FREE_MB="${LOOP_MIN_FREE_MB:-3000}"
 WARDEN_EVERY="${LOOP_WARDEN_EVERY_SECONDS:-3600}"
 
+# The daily ceiling, in USD, across every role. This is a MECHANISM with a
+# placeholder number: CHARTER.md DECIDE 6 is still open, and no sensible figure
+# can be derived from the repository. Twenty dollars is small enough that being
+# wrong is cheap and large enough for several Builder turns.
+#
+# Reaching it HALTS rather than skips. A fleet that quietly stops working when it
+# runs out of money looks exactly like a fleet with nothing to do, and the
+# difference matters when someone checks why nothing merged overnight.
+#
+# With subscription authentication the figure the CLI reports is an equivalent
+# rather than a bill. It is still the right signal for a budget: it tracks the
+# work done.
+DAILY_USD="${LOOP_DAILY_USD:-20}"
+
 mkdir -p "$STATE"/{logs,locks}
 log() { printf '%s  %s\n' "$(date -u +%H:%M:%SZ)" "$1" | tee -a "$STATE/logs/tick.log"; }
 
@@ -65,6 +79,30 @@ turn() { # turn <role> [arg]
     log "<- $role failed (see the role's own log)"
   fi
 }
+
+# --- the budget. Checked before anything spends. ---------------------------
+spent_today="$(python3 - "$STATE/spend.jsonl" <<'SUM'
+import json, sys, datetime, pathlib
+p = pathlib.Path(sys.argv[1])
+today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+total = 0.0
+if p.exists():
+    for line in p.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if (r.get("at") or "").startswith(today):
+            total += float(r.get("usd") or 0)
+print(f"{total:.4f}")
+SUM
+)"
+if python3 -c "import sys; sys.exit(0 if float('$spent_today') >= float('$DAILY_USD') else 1)"; then
+  printf '%s\n' "the daily budget is spent: \$${spent_today} of \$${DAILY_USD}" > "$STATE/HALTED"
+  log "HALTED: budget spent (\$${spent_today} of \$${DAILY_USD})"
+  exit 0
+fi
+log "spent today: \$${spent_today} of \$${DAILY_USD}"
 
 # --- the Warden, hourly. It can halt, so it goes first. --------------------
 now="$(date +%s)"

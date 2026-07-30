@@ -170,6 +170,11 @@ run_role() { # run_role <workdir> <context>
   # the operating rules. Output goes to a file and the exit code is read
   # directly: piping would let the pipe's status mask the real one, which has
   # already produced three false results in this repository.
+  #
+  # `--output-format json` rather than text, because the text form reports no
+  # usage at all - and one of the Warden's four halt conditions is "the token
+  # budget for the period is spent", which was wired to nothing measurable. The
+  # readable reply is extracted back out afterwards so the log stays a log.
   set +e
   # shellcheck disable=SC2086  # both lists must word-split into separate args
   ( cd "$workdir" \
@@ -180,9 +185,37 @@ run_role() { # run_role <workdir> <context>
          --permission-mode acceptEdits \
          --allowed-tools $ROLE_TOOLS \
          --disallowed-tools $DENIED_TOOLS \
-         --output-format text < /dev/null ) > "$log" 2>&1
+         --output-format json < /dev/null ) > "$log.json" 2>&1
   rc=$?
   set -e
+
+  # Split the machine part from the human part: metrics to spend.jsonl, the
+  # reply to the log a person reads. A malformed reply must not lose the log.
+  python3 - "$log.json" "$log" "$STATE/spend.jsonl" "$ROLE" <<'SPLIT' || cp "$log.json" "$log"
+import json, sys, datetime, pathlib
+raw, logp, spendp, role = sys.argv[1:5]
+try:
+    d = json.loads(pathlib.Path(raw).read_text())
+except Exception:
+    raise SystemExit(1)
+pathlib.Path(logp).write_text(d.get("result") or "")
+u = d.get("usage") or {}
+rec = {
+    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    "role": role,
+    "usd": d.get("total_cost_usd"),
+    "turns": d.get("num_turns"),
+    "ms": d.get("duration_ms"),
+    "in": u.get("input_tokens"),
+    "out": u.get("output_tokens"),
+    "cache_read": u.get("cache_read_input_tokens"),
+    "cache_write": u.get("cache_creation_input_tokens"),
+    "error": bool(d.get("is_error")),
+}
+with open(spendp, "a") as f:
+    f.write(json.dumps(rec) + "\n")
+SPLIT
+  rm -f "$log.json"
 
   tail -20 "$log"
   return $rc

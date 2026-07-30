@@ -30,17 +30,24 @@
 #   declined   out of scope per CHARTER.md 3 - with the reason, so it is not
 #              re-proposed every time it is seen again
 #
-# Entry schema:
-#   id             gap-NNNN, monotonic, never reused
+# Entry schema. `scripts/loop/ledger.py` writes the first five; the Ledger keeper
+# adds the rest by hand.
+#
+#   key            stable slug, never reused - the handle `ledger.py record` takes
 #   capability     one line, in terms of what a test needed - not a proposed API
 #   tier           1 | 2  (3 is declined, 4 is never autonomous)
-#   observed[]     {repo, sha, test, note}  - sha pins it; a claim with no sha
-#                  is not evidence
-#   count          distinct repositories in observed[], not total observations
 #   status         see above
+#   observed[]     {repo, sha, test} - the sha pins it; a claim with no sha is
+#                  not evidence, and `record` refuses one
 #   charter_scope  in-scope | out-of-scope | unclear  (unclear escalates)
-#   issue          set when status is building or shipped
+#   issue          set by `promote --open-issues`, and kept when status is shipped
 #   declined_why   required when status is declined
+#
+# There is deliberately no `count` field. The gate counts DISTINCT REPOSITORIES
+# in observed[], derived at read time - three sightings inside one repository is
+# one project's idiom, not a gap in flowproof. A stored count would be a second
+# source of truth that drifts from the evidence it claims to summarise, and the
+# evidence is the thing worth having.
 
 version: 1
 gaps: []
