@@ -14,11 +14,11 @@ budget), 6 (token budget) and 7 (escalation channel). They need a human's produc
 judgement and were deliberately not invented. Until each is resolved the loops
 treat that area as out of scope rather than guess.
 
-Decided so far: **Tier 3 declined** (§3), **diagnostics before coverage** (§4),
-**the ledger lives at `docs/loop/ledger.yaml`** (§6), and the loop identities are
-**`AutomatorsAgent` plus a workflow** (§9) — no new account, established by
-measurement rather than assumption. Numbering is left as-is so earlier references
-still resolve.
+Decided so far: **Tier 3 open under a 3×-pass guard** (§3 — it was declined, and
+that reversed), **diagnostics before coverage** (§4), **the ledger lives at
+`docs/loop/ledger.yaml`** (§6), and the loop identities are **`AutomatorsAgent`
+plus a workflow** (§9) — no new account, established by measurement rather than
+assumption. Numbering is left as-is so earlier references still resolve.
 
 ---
 
@@ -104,12 +104,24 @@ they are needed — without a written boundary, that is unbounded.
 > not build in this repo? Nothing in the repo states one, so the loops currently
 > assume everything in scope is open. If that is wrong it needs saying here.
 
-- **Tier 3 (web-suite migration) is declined for now.** Migrating
-  Playwright/Cypress/Selenium suites has the worst signal-to-token ratio of any
-  tier: the originals are endemically flaky, so a verdict disagreement is
-  ambiguous rather than informative. Revisit once Tier 1 and Tier 2 have a
-  measured revert rate to compare against. Until then a web-suite candidate is a
-  decline, not a backlog item.
+- **Tier 3 (web-suite migration) is open, under one guard.** It was declined,
+  and the objection was real: Playwright/Cypress/Selenium originals are
+  endemically flaky, so a verdict disagreement is ambiguous rather than
+  informative. What has changed is that the decline was costing more than it
+  saved — Tier 2's record leg needs a model credential the loops do not have, so
+  declining Tier 3 as well left the fleet with no runnable migration work at all.
+
+  The guard is the one §6 already named for a revisit: **an original suite must
+  pass 3× consecutively before it counts as an oracle.** A candidate that cannot
+  is a decline, not a flake to retry. This is what answers the objection —
+  disagreement against a suite that has proven itself stable three times running
+  is informative, and the ambiguity the decline was protecting against is what
+  the guard filters out at candidate time rather than at verdict time.
+
+  The condition originally set for revisiting — a measured revert rate from
+  Tiers 1 and 2 to compare against — has **not** been met, and this reopens
+  Tier 3 without it. That is a deliberate trade, recorded here so nobody later
+  reads the reopening as evidence the comparison was made.
 
 ---
 
@@ -182,16 +194,36 @@ When the Scout must choose, lower number wins.
 Full design in `docs/` (see the autonomous-development concept). The rules the
 loops must follow:
 
-**Tier order: 2, then 1. Tier 3 declined. Tier 4 never autonomous.**
+**Tier order: 2, then 3, then 1. Tier 4 never autonomous.**
 
 - **Tier 1 — API/HTTP suites** → `app: api`. External oracle, exact verdicts.
 - **Tier 2 — agents and MCP servers** → `app: agent`. Usually no existing tests,
   so the oracle is internal (below). flowproof's differentiator; run it first.
-- **Tier 3 — web UI suites** → `app: web`. **Declined** (§3): flaky originals make
-  disagreement ambiguous. If revisited, an original must pass 3× consecutively
-  before it counts as an oracle.
+- **Tier 3 — web UI suites** → `app: web`. **Open under the 3×-pass guard**
+  (§3). An external oracle, once that guard has established the original is
+  stable.
 - **Tier 4 — desktop/SAP/Citrix.** No public corpus, needs Windows and licensed
   software. Human-driven, always.
+
+**Two sets, and every corpus entry names which it is in.** The tiers say what
+kind of thing a candidate is; the sets say which job it serves. The cleavage is
+**the `agent` adapter against all the others**, because that is where the
+preconditions differ:
+
+| `set:` | Tiers | `app:` | Precondition |
+|---|---|---|---|
+| `agents` | 2 | `agent` | a model credential reachable from the sandbox, for the record leg |
+| `adapters` | 1, 3 | `api`, `web` | tier 3 also needs a browser, and an original that passes 3× |
+
+`adapters` is runnable today and `agents` is not, which is the whole reason for
+the distinction: with one undifferentiated pool, a blocked record leg reads as a
+dry queue rather than as one lane blocked and one open.
+
+**Tier 4 is an adapter and still stays out of `adapters`.** The set is a
+*prospecting* lane, and there is no public corpus of SAP or Windows suites to
+prospect. It is named after the adapters rather than after a tier because that
+is where Tier 4 work would go if it ever became autonomous — but today a loop
+may not put a Tier 4 candidate in it.
 
 **Acceptance is never "the migrated test passes."** Agreement plus demonstrated
 sensitivity:
