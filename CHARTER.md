@@ -9,10 +9,11 @@ This file is part of the constitution — see `scripts/gate/constitution-check.s
 No loop may modify it. Changing direction is a human act, and this is where it
 happens.
 
-Four places are still marked **DECIDE** — 1 (commercial boundary), 5 (scope
-budget), 6 (token budget) and 7 (escalation channel). They need a human's product
-judgement and were deliberately not invented. Until each is resolved the loops
-treat that area as out of scope rather than guess.
+Three places are still marked **DECIDE** — 5 (scope budget), 6 (token budget)
+and 7 (escalation channel). They need a human's product judgement and were
+deliberately not invented. Until each is resolved the loops treat that area as
+out of scope rather than guess. **DECIDE 1 (commercial boundary) is resolved**
+— see the 2026-07-30 amendment at the end of this file.
 
 Decided so far: **Tier 3 open under a 3×-pass guard** (§3 — it was declined, and
 that reversed), **diagnostics before coverage** (§4), **the ledger lives at
@@ -99,10 +100,10 @@ they are needed — without a written boundary, that is unbounded.
 - **No weakening of the gate.** Deleting a test, adding `#[ignore]`, adding a
   `skip`/`xfail`, or relaxing an assertion to get green is never the fix.
 
-> **DECIDE 1 — commercial boundary.** Is there work that is deliberately *not*
-> open-source — a paid tier, hosted service, or enterprise adapter the loops must
-> not build in this repo? Nothing in the repo states one, so the loops currently
-> assume everything in scope is open. If that is wrong it needs saying here.
+> **DECIDE 1 — commercial boundary. RESOLVED** in the 2026-07-30 amendment at
+> the end of this file: everything in this repository is and remains Apache-2.0,
+> and the commercial boundary lies outside it. No loop may introduce a licence
+> gate or a paid-feature flag. The marker stays so the numbering still resolves.
 
 - **Tier 3 (web-suite migration) is open, under one guard.** It was declined,
   and the objection was real: Playwright/Cypress/Selenium originals are
