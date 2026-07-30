@@ -68,7 +68,39 @@ if git symbolic-ref -q HEAD >/dev/null; then
   log "$REPO_ROOT is on a branch, not detached; refusing to move it"
   exit 1
 fi
-git fetch -q origin main 2>/dev/null && git checkout -q --detach origin/main 2>/dev/null
+# Both halves report. This used to be one `&&` chain with 2>/dev/null on each
+# side and no exit code read, which is the same class of mistake as piping a
+# verification command: the failure is invisible and the tick carries on.
+#
+# Measured on 2026-07-30, and it had already happened. The runner tree was
+# holding an uncommitted docs/loop/corpus.yaml, so `git checkout` refused -
+# "Your local changes would be overwritten" - and the tick would have run every
+# role from the STALE commit: the old charter, the old prospect.sh, and a
+# migrate.sh that reported FAIL for suites which had never executed a test. A
+# whole day of merged fixes would have been invisible to the fleet with nothing
+# in the log saying so.
+#
+# Running on a tree that is not what it claims to be is worse than not running,
+# so this refuses rather than continues. The diff is preserved first: the tree
+# is only ever advanced by this script, so anything uncommitted in it is
+# unexplained, and deleting it to get moving is how the explanation is lost.
+if ! git fetch -q origin main; then
+  log "cannot fetch origin/main; refusing to run roles against a tree that may be stale"
+  exit 1
+fi
+if ! git checkout -q --detach origin/main; then
+  dirty="$(git status --porcelain)"
+  if [ -n "$dirty" ]; then
+    keep="$STATE/logs/$(date -u +%Y%m%dT%H%M%SZ)-runner-tree-blocked.diff"
+    git diff > "$keep" 2>/dev/null || true
+    log "the runner tree has uncommitted changes, so it cannot track main:"
+    printf '%s\n' "$dirty" | sed 's/^/      /' | tee -a "$STATE/logs/tick.log"
+    log "saved the diff to ${keep#"$REPO_ROOT"/}; resolve it by hand, then the fleet resumes"
+  else
+    log "could not check out origin/main and the tree is clean; this needs a human"
+  fi
+  exit 1
+fi
 
 turn() { # turn <role> [arg]
   local role="$1" arg="${2:-}"
