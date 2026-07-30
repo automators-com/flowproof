@@ -5,24 +5,21 @@
 [![npm](https://img.shields.io/npm/v/flowproof)](https://www.npmjs.com/package/flowproof)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Test an AI agent the way you test everything else: run it once, keep the
-recording, and assert against it from then on.
+flowproof produces evidence that a control still holds.
 
-flowproof sits at the model boundary. It captures your agent's real run -
-every model request and every tool-call decision it made - into a trace,
-then serves that recording back on later runs. Replay makes **zero LLM
-calls**, so a suite that used to cost money on every commit and flake on
-sampling becomes free and repeatable.
+Record your agent's real run once - every model request and every tool-call
+decision it made. From then on, replay it with **zero LLM calls** and assert
+what matters: which tools were called, with which arguments, and which were
+**never** called. `flowproof audit --since` exits non-zero the moment a control
+disappears or turns failing, so a guarantee you made last month is re-proved on
+every commit instead of being remembered.
 
-What you assert is behaviour rather than prose: which tools were called,
-with which arguments, in which order, and which were not. Record one
-adversarial model response and you can prove from then on, at no per-run
-cost, that your agent refused to act on it.
+The same spec format drives web, Windows, SAP GUI, Citrix and HTTP. So the
+coverage map spans the agent *and* the enterprise system it drives - an agent
+that files an SAP order is one risk surface, not two.
 
 Flows are plain YAML - short enough for an agent to write, readable enough
-for a human to review in a diff. The same engine also drives web, desktop
-and Citrix, so the interface a workflow ends in is covered by the same
-trace.
+for a human to review in a diff.
 
 Adding it to an existing agent? [docs/adopting.md](docs/adopting.md) is
 written to be handed to a coding agent.
@@ -64,6 +61,34 @@ acceptance testing and RPA, Playwright made web automation reliable.
 flowproof is built for the next step — the era in which AI agents write
 and maintain the automation, and what matters is that their output is
 **deterministic to execute and cheap to review**.
+
+## Two kinds of claim, and the difference matters
+
+flowproof makes two sorts of guarantee, and it is worth being blunt about
+which is which.
+
+**Containment claims — "it cannot."** Declare an agent's allowed network
+with `allow_egress` and certify it with `assert_no_egress`, and on Linux
+the agent runs under an unprivileged default-deny seccomp filter:
+undeclared destinations are refused by the kernel. Declare a tool under
+`mcp:` with a `result:` and flowproof answers it as the server — the real
+tool never executes, in either phase. These hold regardless of what the
+model decides, because a mechanism enforces them rather than an
+instruction. On macOS and Windows containment is not enforced, and the run
+reports "not contained" rather than passing vacuously.
+
+**Behaviour claims — "it did not, and it is re-checked on every change."**
+`assert_no_tool_call` proves the agent did not request a forbidden tool
+given the recorded model response, and the cassette pins every argument
+byte-exactly, so drift you never thought to assert still fails. This is
+regression evidence, not proof of impossibility: a model that behaved on
+the day you recorded is not a model that always will.
+
+A guard flow is strongest when it is paired with enforcement, and when the
+recording contains a model that genuinely tried. If the only thing between
+a user and a destructive call is a sentence in a system prompt, that is not
+a control — and flowproof's job is to make that visible, not to paper over
+it ([docs/agent-testing.md](docs/agent-testing.md#making-a-guard-flow-prove-enforcement-not-compliance)).
 
 ## Quick start
 
