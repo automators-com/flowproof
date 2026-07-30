@@ -48,6 +48,65 @@ printf 'FLOWPROOF_LOOP_TOKEN=github_pat_...\n' > ~/.config/flowproof-loop.env
 Loops source that file. `sandbox-run.sh` passes no `-e` flags at all, so it
 cannot reach the corpus containers.
 
+### What else lives in that file
+
+`tick.sh` sources it with `set -a`, so anything in it is exported to every turn.
+It is host configuration, not a credential store — the token happens to be the
+first thing that needed it.
+
+```bash
+printf 'CHROME=/usr/bin/google-chrome\n' >> ~/.config/flowproof-loop.env
+```
+
+**`CHROME` — which browser the `adapters` lane drives.** Applied on this box on
+2026-07-30.
+
+The reason to pin it is not the one it looks like, so it is worth stating
+exactly. `apt install chromium` on this box installs a **snap**, which cannot
+read `/tmp` and therefore fails a local fixture with `ERR_FILE_NOT_FOUND`; a
+real Chrome `.deb` was installed alongside it and both are still present. It
+would be reasonable to assume the pin exists to stop `headless_chrome` picking
+the snap.
+
+**It does not, and that assumption was wrong when checked.**
+`headless_chrome::default_executable` searches `google-chrome-stable` *before*
+`chromium`, and `/usr/bin/google-chrome-stable` on this box resolves to
+`/opt/google/chrome/google-chrome`. Auto-detection already picks the real
+browser, and the snap could not shadow it while Chrome is installed.
+
+What the pin actually buys is the **failure mode if Chrome is ever removed**.
+Without it, detection falls through to the snap and the loop fails deep inside a
+flow with a file-not-found on a *fixture that exists*. With it, the run fails
+immediately at launch. `flowproof-adapters` passes `CHROME` straight to
+`LaunchOptions::path` with **no existence check**, so it is a hard pin rather
+than a preference — measured, by pointing it at a path that does not exist:
+
+```
+CHROME=/usr/bin/no-such-browser  ->  exit 101 in 0.01s
+    launching browser: No such file or directory (os error 2)
+```
+
+It does not fall back. A confusing failure becomes an obvious one, which is the
+whole benefit; it fixes nothing that is broken today.
+
+**That message does not name the path or say what it was looking for**, which is
+the same defect class as #187 and #188 — a real upstream problem presenting as
+something you have to guess at. Filed rather than fixed here.
+
+CI sets the same value for the `web E2E` jobs, so the loop and CI now drive the
+same binary. Reproduce a browser flow on this box with:
+
+```bash
+FLOWPROOF_E2E=1 CHROME=/usr/bin/google-chrome cargo test -p flowproof-cli --test web_e2e records_and_replays_a_browser_flow -- --nocapture --test-threads=1
+```
+
+That flow needs **no model credential** — `crates/flowproof-agent/src/rules.rs`
+resolves the standard steps deterministically and the LLM author only handles
+arbitrary ones. Re-measured 2026-07-30 with `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY` and `FLOWPROOF_AI_API_KEY` all explicitly unset via `env -u`:
+three steps recorded and replayed, `ok`, 67.89s. That is what makes the
+`adapters` lane runnable while `agents` is blocked on a credential.
+
 ## `sandbox-run.sh`
 
 Blocker #2: a corpus repo's `npm install` runs arbitrary postinstall scripts,
