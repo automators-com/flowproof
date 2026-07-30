@@ -73,18 +73,69 @@ else
 fi
 rm -f "$LOOP_STATE/HALTED"
 
-echo "-- a red main after merging halts the fleet --"
+echo "-- verification spans ticks, and blocks the next merge --"
+# The synchronous case this replaced could not work: `web E2E` takes 39-52
+# minutes and the poll waited 600s, so the halt-on-red branch was unreachable
+# for exactly the job it existed to catch. Verification now records a SHA and a
+# LATER run resolves it, so these cases are the merge and the resolution
+# separately - and the merge must no longer halt by itself.
 printf '%s\n' "$(pr 10 APPROVED CLEAN)" > "$TMP/prs"; : > "$TMP/merged"
-printf 'failure\n' > "$TMP/checks"
+echo success > "$TMP/checks"; rm -f "$LOOP_STATE/pending-verify" "$LOOP_STATE/HALTED"
+GH_PRS="$TMP/prs" GH_MERGED="$TMP/merged" GH_CHECKS="$TMP/checks" "$SUT" --max 1 >/dev/null 2>&1
+if [ -s "$TMP/merged" ] && [ -f "$LOOP_STATE/pending-verify" ] && [ ! -f "$LOOP_STATE/HALTED" ]; then
+  printf 'ok    %-50s %s\n' "a merge records a SHA and does not halt" "recorded"
+else
+  printf 'FAIL  %-50s merged=%s pending=%s halted=%s\n' "a merge records a SHA and does not halt" \
+    "$([ -s "$TMP/merged" ] && echo y || echo n)" \
+    "$([ -f "$LOOP_STATE/pending-verify" ] && echo y || echo n)" \
+    "$([ -f "$LOOP_STATE/HALTED" ] && echo y || echo n)"; FAILED=1
+fi
+
+# Still running: nothing new may merge onto an unknown state.
+: > "$TMP/merged"; printf 'pending\n' > "$TMP/checks"
+printf '%s\n' "$(pr 11 APPROVED CLEAN)" > "$TMP/prs"
+GH_PRS="$TMP/prs" GH_MERGED="$TMP/merged" GH_CHECKS="$TMP/checks" "$SUT" --max 1 >/dev/null 2>&1
+if [ ! -s "$TMP/merged" ]; then
+  printf 'ok    %-50s %s\n' "an outstanding verification blocks new merges" "SKIP"
+else
+  printf 'FAIL  %-50s merged while unverified\n' "an outstanding verification blocks new merges"; FAILED=1
+fi
+
+# Resolves red on a later run: halt and escalate.
+: > "$TMP/merged"; printf 'failure\n' > "$TMP/checks"
 GH_PRS="$TMP/prs" GH_MERGED="$TMP/merged" GH_CHECKS="$TMP/checks" GH_ISSUES="$TMP/issues" \
   "$SUT" --max 1 >/dev/null 2>&1
-if [ -f "$LOOP_STATE/HALTED" ] && [ -s "$TMP/issues" ]; then
-  printf 'ok    %-50s %s\n' "red main halts and escalates" "HALTED"
+if [ -f "$LOOP_STATE/HALTED" ] && [ -s "$TMP/issues" ] && [ ! -s "$TMP/merged" ]; then
+  printf 'ok    %-50s %s\n' "a red main on a later run halts and escalates" "HALTED"
 else
-  printf 'FAIL  %-50s no halt (%s) or no issue (%s)\n' "red main halts and escalates" \
-    "$([ -f "$LOOP_STATE/HALTED" ] && echo yes || echo no)" "$([ -s "$TMP/issues" ] && echo yes || echo no)"
-  FAILED=1
+  printf 'FAIL  %-50s halted=%s issue=%s\n' "a red main on a later run halts and escalates" \
+    "$([ -f "$LOOP_STATE/HALTED" ] && echo y || echo n)" \
+    "$([ -s "$TMP/issues" ] && echo y || echo n)"; FAILED=1
 fi
+
+# Resolves green: clears the record and lets work continue.
+rm -f "$LOOP_STATE/HALTED"
+printf 'aaaaaaa\n%s\n' "$(date +%s)" > "$LOOP_STATE/pending-verify"
+: > "$TMP/merged"; printf 'success\n' > "$TMP/checks"
+printf '%s\n' "$(pr 12 APPROVED CLEAN)" > "$TMP/prs"
+GH_PRS="$TMP/prs" GH_MERGED="$TMP/merged" GH_CHECKS="$TMP/checks" "$SUT" --max 1 >/dev/null 2>&1
+if [ -s "$TMP/merged" ]; then
+  printf 'ok    %-50s %s\n' "a green verification lets the next merge run" "MERGE"
+else
+  printf 'FAIL  %-50s did not merge after a green verification\n' "a green verification lets the next merge run"; FAILED=1
+fi
+
+# An unresolvable verification is itself a reason to stop.
+rm -f "$LOOP_STATE/HALTED"
+printf 'bbbbbbb\n%s\n' "$(( $(date +%s) - 99999 ))" > "$LOOP_STATE/pending-verify"
+: > "$TMP/merged"; printf 'pending\n' > "$TMP/checks"
+GH_PRS="$TMP/prs" GH_MERGED="$TMP/merged" GH_CHECKS="$TMP/checks" "$SUT" --max 1 >/dev/null 2>&1
+if [ -f "$LOOP_STATE/HALTED" ]; then
+  printf 'ok    %-50s %s\n' "a verification that never resolves halts" "HALTED"
+else
+  printf 'FAIL  %-50s did not halt on a stale verification\n' "a verification that never resolves halts"; FAILED=1
+fi
+rm -f "$LOOP_STATE/HALTED" "$LOOP_STATE/pending-verify"
 
 echo
 [ "$FAILED" -ne 0 ] && { echo "integrator tests FAILED"; exit 1; }
