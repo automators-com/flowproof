@@ -30,6 +30,21 @@ together).
   for what a red-path proof is and the rules for adding one. The verdict path
   behaved correctly; the proof is what keeps it that way.
 
+- **Nothing proved `audit --since` can decline to fire.** The existing tests
+  prove the gate goes red on a regression — a removed control, or one that
+  turned failing. A gate wired to exit non-zero unconditionally would have
+  satisfied every one of them, and CI would have gone red on every clean run
+  until somebody stopped believing it. That is the shape a false signal takes in
+  a gate: not a missed regression, but a verdict so frequent it stops meaning
+  anything.
+
+  Two proofs now cover the discriminating half: an unchanged control set exits
+  zero with an empty diff, and an ADDED control is reported but does not fail
+  the gate — a suite that could not grow without going red would teach its
+  owners to stop adding controls. Both check the diff content and the exit code,
+  because a gate reporting an empty diff while still exiting non-zero is the
+  same defect wearing the other face.
+
 ## 0.9.0
 
 ### Changed
