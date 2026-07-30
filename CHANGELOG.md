@@ -6,7 +6,25 @@ together).
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- **The guard assertion had no end-to-end test that could fail.**
+  `assert_no_tool_call` is the one the security story leans on — the model
+  asked, and the code refused — and `docs/agent-testing.md` calls it arguably
+  the highest-value assertion in the feature. Every end-to-end use of it in the
+  suite sat in a flow where the forbidden tool was never going to be called, and
+  such a flow passes whether the assertion works or not. Replace the assertion
+  with an unconditional PASS and nothing end-to-end would have noticed, while
+  every guard flow an adopter wrote stayed green and proved nothing.
+
+  The violating input has two halves, both deliberate: a model that ASKS for the
+  forbidden tool, and an obedient agent with no guard of its own that calls it.
+  A guard flow over that trajectory must refuse the trace, name the tool, and
+  mint nothing — the last of those because a record that failed loudly while
+  still writing a trace would enshrine a guard that never held as a cassette
+  replaying green forever.
+
+  The assertion behaved. The proof is what stops it silently ceasing to.
 
 ## 0.9.1
 
