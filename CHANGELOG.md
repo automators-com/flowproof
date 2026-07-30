@@ -6,7 +6,32 @@ together).
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.9.1
+
+### Security
+
+- **The recommended way to supply the record credential also handed it to the
+  agent.** flowproof holds the upstream model key and attaches it only on the
+  outbound hop, so the agent under test gets a placeholder — that was the
+  design, and for `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` it was what happened.
+  Overwriting two names is not the same as masking a credential. `Command`
+  inherits the parent environment, the spawn path only ever *set* variables, and
+  the first name `flowproof record` looks in is `FLOWPROOF_AGENT_KEY` — which
+  nothing overwrote. So the documented, first-precedence way to supply the key
+  was also the one way it reached third-party code verbatim, and
+  `FLOWPROOF_AI_API_KEY` passed through the same way. Nothing asserted any of
+  it: grepping for the placeholder returned two production lines and no test, so
+  the masking that did work was working by inspection rather than by
+  measurement. Every variable that can carry a real key is now named in one
+  place and removed before the placeholders are handed out, with the spec's own
+  `agent.env` still able to pass one through deliberately. **If you record with
+  `FLOWPROOF_AGENT_KEY` or `FLOWPROOF_AI_API_KEY` set, assume the agent could
+  read it on 0.9.0 and earlier.**
+
 ### Added
+
 
 - **Nothing proved that a failing control is recorded as failing.**
   `audit_record_e2e.rs` covers a great deal — that audit reads a run record
@@ -44,6 +69,37 @@ together).
   owners to stop adding controls. Both check the diff content and the exit code,
   because a gate reporting an empty diff while still exiting non-zero is the
   same defect wearing the other face.
+
+- **An unattended SAP run had nobody to log back in.** If the session expired
+  mid-job there was no way to recover it, which is exactly what a nightly run
+  hits. With `SAP_USER` and `SAP_PASSWORD` set, `connect()` now recognises SAP's
+  own logon screen — an empty `Info.User` sitting on transaction `S000`, rather
+  than an authenticated session — types the standard client/user/password
+  fields, and keeps polling until `Info.User` is actually populated before
+  calling the session ready. A no-op when the variables are unset: attach-only
+  and an explicit `OpenConnection`-without-login behave exactly as before.
+  Values are read fresh for a single property-put each and are never logged,
+  traced, or stored.
+
+### Changed
+
+- **PyPI and npm described the product flowproof used to be.** Both carried the
+  old model-boundary framing while the repository had moved on, so the package
+  pages and the repository disagreed about what flowproof is. Both now read
+  "Deterministic evidence and control-regression gating for AI agents and the
+  SAP, web and Citrix systems they drive." Metadata only; no behaviour changes.
+
+### Fixed
+
+- **A recorded precondition could not wait long enough for a real network.**
+  The step timeout was fixed at 5000 ms, which is not enough for SAP flows
+  reaching a live system over a SAProuter hop rather than localhost — and
+  `navigate()` was never the bottleneck, since it returns in single-digit
+  milliseconds whatever it checks. The delay is in the precondition polling
+  afterwards. `FLOWPROOF_STEP_TIMEOUT_MS` now overrides the value written at
+  record time. Unset, nothing changes: the default stays 5000 ms, and replay is
+  unaffected either way because it reads `timeout_ms` from the trace rather than
+  from a live constant.
 
 ## 0.9.0
 
