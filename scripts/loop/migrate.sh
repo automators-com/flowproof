@@ -89,16 +89,41 @@ sandbox() { # sandbox <phase> <image> -- cmd...
   "$SANDBOX" --phase "$phase" --image "$image" --work "$WORK" -- "$@"
 }
 
+# Install and test are two separate containers, and ONLY /work survives between
+# them. Anything a package manager puts in the image - site-packages, CARGO_HOME
+# - is discarded, so every install has to target /work or the test phase runs
+# without its dependencies.
+#
+# This was wrong for Python and Rust. A Migrator measured one phase printing
+# `pytest 9.1.1` and the next `No module named pytest`, and a `|| true` on the
+# pip line hid it - so `baseline` reported FAIL for a repository whose 950 tests
+# pass. That is worse than a crash: this script's own contract treats FAIL as a
+# usable oracle, so a green flowproof run against it would be filed as a false
+# green, which is the priority-1 finding the whole corpus exists to produce.
+# Every candidate in the corpus at the time was Python.
+#
+# Node was correct only by accident - `npm ci` writes node_modules into /work.
 case "$KIND" in
   node)   IMAGE=docker.io/library/node:22-bookworm-slim
+          # node_modules lands in /work already.
           INSTALL=(sh -lc 'npm ci --no-audit --fund=false 2>/dev/null || npm install --no-audit --fund=false')
           TEST=(sh -lc 'npm test --silent') ;;
   python) IMAGE=docker.io/library/python:3.12-slim
-          INSTALL=(sh -lc 'pip install --quiet -e . 2>/dev/null || pip install --quiet -r requirements.txt 2>/dev/null || true')
-          TEST=(sh -lc 'python -m pytest -q') ;;
+          # A venv inside /work, so the interpreter that runs the suite is the
+          # one the dependencies were installed into. No `|| true`: an install
+          # that fails must report UNRUNNABLE, not a fabricated verdict.
+          INSTALL=(sh -lc 'python -m venv /work/.venv \
+                           && /work/.venv/bin/pip install --quiet --upgrade pip \
+                           && { /work/.venv/bin/pip install --quiet -e ".[test]" \
+                                || /work/.venv/bin/pip install --quiet -e . \
+                                || /work/.venv/bin/pip install --quiet -r requirements.txt; } \
+                           && /work/.venv/bin/pip install --quiet pytest \
+                           && /work/.venv/bin/python -c "import pytest"')
+          TEST=(sh -lc '/work/.venv/bin/python -m pytest -q') ;;
   rust)   IMAGE=docker.io/library/rust:1-slim
-          INSTALL=(sh -lc 'cargo fetch --quiet')
-          TEST=(sh -lc 'cargo test --quiet') ;;
+          # CARGO_HOME and the target dir both default into the image.
+          INSTALL=(sh -lc 'CARGO_HOME=/work/.cargo cargo fetch --quiet')
+          TEST=(sh -lc 'CARGO_HOME=/work/.cargo CARGO_TARGET_DIR=/work/.target cargo test --quiet --offline') ;;
 esac
 
 # Install needs egress; the suite does not get it back. A test that needs the
