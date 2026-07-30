@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Falsifiability fixture for `assert: reply contains` (issue #250).",
+    "",
+    "This is the model's final answer, and it is guilty by construction: the",
+    "flow asserts the reply contains 'sunny', and this reply says the opposite.",
+    "A flow asserting on it must FAIL.",
+    "",
+    "Why this needs proving at all: every end-to-end use of `assert: reply",
+    "contains` in the suite asserts text the model was always going to produce,",
+    "so those flows pass whether the assertion works or not. Replace the",
+    "assertion with an unconditional PASS and nothing would notice.",
+    "",
+    "The 0.9.0 record makes the stakes concrete. A streaming client handed one",
+    "buffered body assembles identical text, so this exact assertion stayed",
+    "green for precisely the defect it existed to catch. An assertion whose",
+    "failing direction is never exercised is where that class of bug hides.",
+    "",
+    "Do not 'fix' this reply to contain the asserted word. It is evidence, and",
+    "it is supposed to disappoint the assertion."
+  ],
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "It is overcast and raining heavily in Nairobi."
+      }
+    }
+  ]
+}

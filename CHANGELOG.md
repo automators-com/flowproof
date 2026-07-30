@@ -26,6 +26,20 @@ together).
 
   The assertion behaved. The proof is what stops it silently ceasing to.
 
+- **`assert: reply contains` had no failing direction anywhere.** Every
+  end-to-end use of it asserts text the model was always going to produce, so
+  those flows pass whether the assertion works or not — and this is not a
+  hypothetical shape of hole. It is the assertion that already hosted a false
+  green: in 0.9.0 a streaming client handed one buffered body assembled the
+  identical final text, so `assert: reply contains` stayed green for exactly the
+  defect it existed to catch.
+
+  The violating input is the model's own final answer, committed as a fixture so
+  a reviewer can see what makes it guilty without reading the harness: the flow
+  asserts "sunny", the reply says it is raining. The record must refuse, and mint
+  no trace — a refused record that still wrote one would leave a cassette whose
+  reply assertion never held, replaying green from then on.
+
 ## 0.9.1
 
 ### Security
