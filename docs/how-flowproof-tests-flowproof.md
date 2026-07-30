@@ -38,6 +38,16 @@ check and is exactly the defect worth catching.
 | Property | Fixture | Guards against |
 |---|---|---|
 | `control:` verdict mapping | [`control-verdict-fail.flow.yaml`](../tests/falsifiability/fixtures/control-verdict-fail.flow.yaml) | a control whose flow FAILED being recorded as `pass`, or vanishing from the audit map instead of reporting `fail` — the map is what a reader trusts precisely when they cannot read the trace |
+| `audit --since` regression gate | [`audit-since/`](../tests/falsifiability/fixtures/audit-since/) | a gate that cannot decline to fire. Existing tests prove it goes red on a regression; these prove it goes GREEN on a clean pair and on an added control, which is what makes its red worth acting on |
+
+### A note on gates specifically
+
+For an assertion, the failure worth proving against is a false green. For a
+**gate** — anything whose output is an exit code others branch on — there are
+two, and the second is easy to forget: a gate that always fires is as useless as
+one that never does, and it satisfies every test written only for the firing
+direction. So a gate needs its discriminating case proved as well: not just
+"red when it should be", but "green when it should be".
 
 ## Rules for adding one
 
