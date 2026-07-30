@@ -83,6 +83,39 @@ else
   bad "phases are install then replay" "$(tr '\n' '|' < "$TMP/calls" | cut -c1-52)"
 fi
 
+echo "-- dependencies must survive into the test container --"
+# Install and test are separate containers and only /work persists. A Migrator
+# measured one phase printing `pytest 9.1.1` and the next `No module named
+# pytest`, so baseline reported FAIL for a repository whose suite passes - and
+# FAIL is treated as a usable oracle, so that would have been filed as a false
+# green. The stub records the commands, so this asserts the shape that makes
+# persistence possible rather than re-running containers.
+for m in pyproject.toml Cargo.toml; do
+  sha="$(seed "$m")"; run "$TMP/src" "$sha" >/dev/null
+  inst="$(head -1 "$TMP/calls")"; tst="$(tail -1 "$TMP/calls")"
+  case "$m" in
+    pyproject.toml)
+      if printf '%s' "$inst" | grep -q '/work/.venv' \
+         && printf '%s' "$tst" | grep -q '/work/.venv/bin/python'; then
+        ok "python installs into /work and tests with it" "venv"
+      else
+        bad "python installs into /work and tests with it" "install=${inst:0:40}"
+      fi
+      if printf '%s' "$inst" | grep -q '|| true'; then
+        bad "a failed python install is not swallowed" "'|| true' is back"
+      else
+        ok "a failed python install is not swallowed" "no '|| true'"
+      fi ;;
+    Cargo.toml)
+      if printf '%s' "$inst" | grep -q 'CARGO_HOME=/work' \
+         && printf '%s' "$tst" | grep -q 'CARGO_HOME=/work'; then
+        ok "rust uses a CARGO_HOME under /work" "persisted"
+      else
+        bad "rust uses a CARGO_HOME under /work" "install=${inst:0:40}"
+      fi ;;
+  esac
+done
+
 echo
 if [ "$FAILED" -ne 0 ]; then echo "migrator tests FAILED"; exit 1; fi
 echo "the Migrator establishes an oracle, and never on the host"
