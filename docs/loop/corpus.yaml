@@ -1,9 +1,9 @@
 # The corpus: public repositories flowproof tries to reproduce.
 #
-# POINTERS, NEVER VENDORED CODE. Each entry is {repo, sha, licence, tier} and is
-# fetched at run time. Copying test code from a copyleft repository into this
-# Apache-2.0 one is a defect no test catches and no reviewer notices, so the
-# corpus records where to look and nothing more.
+# POINTERS, NEVER VENDORED CODE. Each entry is {repo, sha, licence, tier, set}
+# and is fetched at run time. Copying test code from a copyleft repository into
+# this Apache-2.0 one is a defect no test catches and no reviewer notices, so
+# the corpus records where to look and nothing more.
 #
 # The SHA is mandatory. A candidate without one is not evidence: the repository
 # moves and the observation stops being reproducible.
@@ -22,12 +22,321 @@
 #   false-green  flowproof PASSED where the original FAILED (priority 1, always)
 #   declined   with declined_why, so it is not re-proposed every time it is seen
 #
-# Tier 2 (agents, MCP servers) is prospected first: no third-party application
-# has to be stood up, because the agent is the system under test. Tier 1 (API
-# suites) follows. Tier 3 is declined (CHARTER.md section 3) and Tier 4 is never
-# autonomous.
+# SET - which job the candidate serves. Mandatory. The tier says what KIND of
+# thing a candidate is; the set says which lane it is in, and the two lanes have
+# different preconditions, so a single undifferentiated pool cannot express the
+# state the engine is actually in. The cleavage is the `agent` adapter against
+# all the others.
+#
+#   agents     tier 2 - agents and MCP servers. app: agent.
+#              BLOCKED on the record leg: it needs a real model reachable from
+#              inside sandbox-run.sh, and the sandbox passes no environment in
+#              by design. Entries here are worth recording and will sit at
+#              `candidate` until that is solved.
+#   adapters   tier 3 - web UI suites (Cypress, Playwright, Selenium, plain
+#              HTML), app: web; and tier 1 - API/HTTP suites, app: api.
+#              RUNNABLE TODAY. Tier 3 carries one extra guard: the original
+#              must pass 3x consecutively before it counts as an oracle
+#              (CHARTER.md section 3). A suite that cannot is declined, and
+#              that is a finished turn rather than a gap.
+#
+# Tier 4 (desktop/SAP/Citrix) is an adapter and still does not go in `adapters`:
+# the set is a PROSPECTING lane, and there is no public corpus of SAP or Windows
+# suites to prospect. It is never autonomous.
+#
+# Prospect `adapters` while `agents` is blocked. A candidate in a blocked lane
+# is not worthless, but it is not work either, and until 2026-07-30 the queue
+# could not tell those apart - a blocked record leg presented as a dry queue.
 
 version: 1
-candidates: []
-# Empty until the first Prospector turn. The Migrator cannot run before this has
-# entries, and the Ledger keeper cannot count gaps before the Migrator reports.
+candidates:
+  # ------------------------------------------------------- adapters (tier 3)
+  # From a SUPERVISED turn on 2026-07-30, run by a human rather than by the
+  # fleet: prospect.sh surfaced the candidates and migrate.sh established the
+  # baseline, but no Prospector or Migrator model turn was spent. Recorded here
+  # because the measurement is what the next turn should start from, and
+  # because what it found is worse than "it did not work".
+
+  - repo: cypress-io/cypress-example-kitchensink
+    sha: 9642cc1d45480073f5197fe9e43b0cbb0471fc8b
+    licence: mit
+    tier: 3
+    set: adapters
+    test_path: cypress/e2e/
+    pushed: 2026-07-28
+    status: candidate
+    note: >-
+      The canonical self-contained Cypress example: the application and its
+      suite in one repository, so nothing third-party has to be stood up. The
+      right shape for the first adapters migration.
+    # BLOCKED, and the first blocker was a defect in migrate.sh rather than in
+    # this repository. Left as `candidate`, not `declined`: nothing here is
+    # wrong.
+    migrator_note: >-
+      Attempted 2026-07-30. The first run printed FAIL for a suite that had
+      executed nothing: Cypress caches its browser under $HOME, which is the
+      image and does not survive into the replay container. FAIL is a usable
+      oracle by migrate.sh's contract, so that was a false oracle - the same
+      defect #235 fixed for Python, in the Node path. Fixed in #243, which
+      pins the cache into /work and adds a replay-phase probe that asks whether
+      the runner starts before any verdict is trusted.
+      With that fix the honest verdict is UNRUNNABLE, and .probe.log says why:
+      node:22-bookworm-slim has no Xvfb, so it cannot run Cypress at all.
+      Confirmed not an over-decline - `npm test` in the same container also
+      fails, exit 134, JavaScript heap out of memory against SANDBOX_MEM=2g on
+      a host with ~1.3 GB free. So TWO things stand between this entry and an
+      oracle, and they are separate decisions: an image carrying Xvfb and the
+      GUI libraries (Cypress ships cypress/included), and enough memory to run
+      a browser. Neither is a defect in this repository. Left as `candidate`.
+
+  # Surfaced by the same prospect.sh run and not attempted. Recorded so the
+  # next turn starts from a shortlist rather than a search, and so the SHAs are
+  # pinned at the moment they were seen.
+  - repo: pactflow/example-consumer-cypress
+    sha: 90937475e94a9a4957e203527564fc56ac17a04c
+    licence: mit
+    tier: 3
+    set: adapters
+    pushed: 2026-07-27
+    status: candidate
+    note: >-
+      Small Cypress consumer suite. Untried. The Cypress cache defect that
+      broke kitchensink is fixed (#243), so this one should reach a real
+      verdict once the image carries Xvfb.
+
+  - repo: pactflow/example-bi-directional-consumer-playwright-js
+    sha: d00397fad8c835cd75888a47f6fdf20ccf45d41d
+    licence: mit
+    tier: 3
+    set: adapters
+    pushed: 2026-07-27
+    status: candidate
+    note: >-
+      The Playwright half of the lane, so the first migration is not measured
+      against one framework alone. Playwright caches browsers under
+      $HOME/.cache/ms-playwright, the same phase-boundary problem Cypress had.
+      #243 sets PLAYWRIGHT_BROWSERS_PATH into /work BY ANALOGY and did not
+      measure it - this entry is how that gets measured. If the analogy is
+      wrong the probe reports UNRUNNABLE, which is the safe direction.
+
+  # ------------------------------------------------------- agents (tier 2)
+  # Three entries, and the shortlist was 12. The filter that did the work was
+  # not the licence check - it was asking, per repository, what a Migrator
+  # would actually have to install. See the declined block below for what that
+  # removed and why.
+
+  # The agent half of Tier 2: a process that calls a model, which is what
+  # `app: agent` records. `api_base` in extra-openai-models.yaml points the
+  # OpenAI dialect at an arbitrary URL, which is exactly flowproof's
+  # interception point - no patching of the system under test required.
+  # test_tools.py and test_tools_streaming.py mean there are real
+  # function-calling trajectories to assert on, not prose to regex, and the
+  # streaming pair speaks directly to milestone 2 criterion 2.
+  - repo: simonw/llm
+    sha: 5aa61fc6335d365306a68183435c71819b7e2de8
+    licence: apache-2.0
+    tier: 2
+    set: agents
+    test_path: tests/
+    pushed: 2026-07-30
+    status: candidate
+    note: >-
+      Model-calling CLI with tool support. Records via api_base override;
+      tests/cassettes shows the project already thinks in recordings.
+    # Attempted 2026-07-30. Everything up to the record leg is measured and
+    # good; the record leg itself did not run, and the reason is not in this
+    # repository. Left as `candidate` because the status vocabulary has no term
+    # for "attempted, blocked on something outside the corpus" - it is not
+    # declined (in scope, and cheap once unblocked) and not agreed (nothing was
+    # recorded). Kept here so the next turn starts from the measurement.
+    migrator_note: >-
+      Oracle is PASS: 950 tests, 0 failed, egress denied, at this SHA. The
+      Prospector's api_base claim holds and is cheaper than claimed - llm
+      passes no base_url for a built-in model, so the openai SDK falls back to
+      OPENAI_BASE_URL and flowproof's injected value is honoured with no
+      config file at all. `flowproof doctor` under --network=none: 1 model
+      request reached the proxy, so nothing can have gone to a real provider.
+      On the wire llm sends `"stream": true` by default (`--no-stream` gives
+      `"stream": false`) and NO system message. BLOCKED at record: the record
+      leg needs a real model, and no model credential exists on this box.
+      Recording against a scripted responder is refused in-tree
+      (tests/flowproof/spike/README.md).
+
+  # The `mcp:` lane over BOTH transports: `python -m fetchaller.main` for
+  # stdio, `--http` for streamable-HTTP. That second one is milestone 2
+  # criterion 4, and it is the only candidate here that offers it without
+  # credentials - the required MCP_API_KEY and JWT_SECRET are self-generated
+  # (`openssl rand -hex 32`), and the third-party API keys are all optional.
+  - repo: Averyy/fetchaller-mcp
+    sha: 00a79e3c54ff952e32be5ce5e2549ba459c2be92
+    licence: mit
+    tier: 2
+    set: agents
+    test_path: tests/
+    pushed: 2026-07-30
+    status: candidate
+    note: >-
+      MCP server, stdio and streamable-HTTP. uv.lock pinned, ~75 test modules.
+      Its tools fetch live URLs, so the record leg needs egress; replay does
+      not, because flowproof answers from the mcp: lane.
+
+  # Chosen for one property the others lack: it states it has no credentials
+  # at all - "No cloud, no API keys, no Ollama, no vector DB to run" - and
+  # backs it with a declared Linux CPU path (docs/ubuntu.md, the [cpu] extra)
+  # rather than assuming Apple Silicon. Clean stdio entrypoint, memo-mcp.
+  # Caveat for whoever picks this up: the Linux backend is the subset
+  # (search/recall/save), and the CPU embedder downloads a model on first run.
+  - repo: jagoff/memo
+    sha: 990561fafe1551d0139f36e3840e914b2292d7f0
+    licence: mit
+    tier: 2
+    set: agents
+    test_path: tests/
+    pushed: 2026-07-30
+    status: candidate
+    note: >-
+      Credential-free stdio MCP server, uv.lock pinned. Python >=3.13.
+
+  # ---------------------------------------------------------------- declined
+  # Recorded rather than dropped so prospect.sh's dedupe stops re-surfacing
+  # them, and so the reasoning is arguable in a diff instead of repeated from
+  # scratch every turn.
+
+  # ESCALATE - CHARTER.md section 8, "a licence not on the allowlist". This one
+  # is a judgement a human should make, not a loop: the reference MCP servers
+  # (everything, fetch, filesystem, git, memory, sequentialthinking, time) are
+  # the single best-shaped corpus entry available for the mcp: lane -
+  # credential-free, stdio, maintained. They are blocked on a technicality
+  # worth examining. The repo is mid-transition from MIT to Apache-2.0: every
+  # file is under one or the other, and BOTH are already on the allowlist, but
+  # there is no single SPDX identifier so GitHub classifies it "other" and the
+  # allowlist check declines it. Widening the allowlist to "other" would be
+  # wrong. Admitting this specific mixed MIT/Apache-2.0 state might not be.
+  - repo: modelcontextprotocol/servers
+    sha: 76d64c822f5125032f89eb71dbdb94e42b434821
+    licence: other
+    tier: 2
+    set: agents
+    pushed: 2026-07-29
+    status: declined
+    declined_why: >-
+      Licence not on the allowlist. Not copyleft - a mixed MIT/Apache-2.0
+      transitional state with no single SPDX id, both constituents already
+      allowlisted. Flagged for a human, not to be re-proposed by a loop.
+
+  # Same licence text, same escalation.
+  - repo: modelcontextprotocol/typescript-sdk
+    sha: cc4b41617ce3601b1290d67216ea0b194a3cd9ac
+    licence: other
+    tier: 2
+    set: agents
+    pushed: 2026-07-30
+    status: declined
+    declined_why: >-
+      Same MIT/Apache-2.0 transitional licence as modelcontextprotocol/servers.
+      See that entry.
+
+  # Each of these fails the same test: the tools that make it interesting need
+  # software, a service or a credential the Migrator does not have. A Migrator
+  # turn is the expensive one, and discovering this by running it is the
+  # expensive way to learn it.
+  - repo: morluto/rea
+    sha: 7f46bb18241bf3815e5e01816277d0cafe8f923b
+    licence: mit
+    tier: 2
+    set: agents
+    pushed: 2026-07-30
+    status: declined
+    declined_why: >-
+      Deep-analysis tools need Hopper, a separately licensed desktop
+      application, or an operator-supplied Ghidra install that its own setup
+      explicitly never downloads. Also carries no model SDK, so it is a tool
+      provider for the mcp: lane rather than an agent.
+
+  - repo: apache/doris-mcp-server
+    sha: 917964e5e06188c515cc991779f2bdbc8743aa6c
+    licence: apache-2.0
+    tier: 2
+    set: agents
+    pushed: 2026-07-30
+    status: declined
+    declined_why: >-
+      Every tool call needs a running Apache Doris cluster. Standing up a
+      third-party application is what tier 2 exists to avoid.
+
+  - repo: JustLikeFrank3/jobContextMCP
+    sha: 219d34bb0b1691dab02cfc7bdadacbf68524b703
+    licence: mit
+    tier: 2
+    set: agents
+    pushed: 2026-07-30
+    status: declined
+    declined_why: >-
+      Needs an OpenAI key and azure-identity, weasyprint's system libraries,
+      and a config.json pointing at resume data that does not exist. Offers
+      streamable-HTTP, but fetchaller-mcp offers it without any of this.
+
+  - repo: MercurieVV/ScalaSemantic
+    sha: 72d27ac86aa8df9e1d1000d1ca19f54da7323058
+    licence: mit
+    tier: 2
+    set: agents
+    pushed: 2026-07-30
+    status: declined
+    declined_why: >-
+      Hermetic and credential-free, but needs a Mill/Scala toolchain, an
+      install.sh-placed launcher, and a SEPARATE target project compiled with
+      semanticdbEnabled to have anything to analyse. Too much scaffolding.
+
+  - repo: niavasha/plex-mcp-server
+    sha: a4e9f9876c46af56971f66d0c785746317a49d40
+    licence: mit
+    tier: 2
+    set: agents
+    pushed: 2026-07-30
+    status: declined
+    declined_why: Needs a running Plex Media Server and an account token.
+
+  - repo: Lokesh-2025/quantum-hardware-mcp
+    sha: ef3fb371d3bb5260f25d5d609a7b83b76148e348
+    licence: mit
+    tier: 2
+    set: agents
+    pushed: 2026-07-30
+    status: declined
+    declined_why: Needs IBM Quantum credentials and real hardware queue access.
+
+  - repo: jlsookiki/secondhand-mcp
+    sha: b3acf7ddff9554b727d74d5e2a13ea55120dc0d7
+    licence: mit
+    tier: 2
+    set: agents
+    pushed: 2026-07-30
+    status: declined
+    declined_why: >-
+      Tools scrape Facebook Marketplace and eBay. Rate-limited, anti-bot
+      defended, and non-deterministic even when it works.
+
+# The Migrator can start: tier 2 has three candidates, one agent and two MCP
+# servers. The Ledger keeper still has nothing to count - gaps come from
+# Migrator reports, not from this file.
+#
+# ^ Written by the Prospector, and the Migrator turn that followed proved the
+# first sentence wrong. It got as far as a measured PASS oracle on simonw/llm
+# and stopped at the record leg, which no tier 2 candidate can get past on this
+# box. Left as written rather than rewritten, because a corpus that quietly
+# corrects its own history is not the reviewable index this file exists to be.
+#
+# Where both lanes actually stand, 2026-07-30:
+#
+#   agents    three candidates, none advanceable. The record leg needs a model
+#             reachable from inside the sandbox and there is not one.
+#   adapters  three candidates, none advanceable YET. migrate.sh reported FAIL
+#             for a Cypress suite that never executed a test - a false-oracle
+#             generator rather than merely a blocked lane, since FAIL is
+#             treated as usable. Fixed in #243; the honest verdict is now
+#             UNRUNNABLE. What remains is not a defect: an image carrying Xvfb,
+#             and enough memory to run a browser. See the kitchensink entry.
+#
+# So the queue is not dry, and it is also not ready. Those are different states
+# and until 2026-07-30 this file could express neither.
