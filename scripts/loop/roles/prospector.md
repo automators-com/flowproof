@@ -45,6 +45,25 @@ have.
 Recording a candidate that cannot run wastes a Migrator turn, and Migrator turns
 are the expensive ones.
 
+## The search is a starting point, not the boundary
+
+```bash
+scripts/loop/prospect.sh --set adapters --limit 10
+scripts/loop/prospect.sh --set agents --limit 10
+```
+
+It searches, filters by licence, pins the SHA and deduplicates. What it cannot
+do is know what it is missing — and that has already cost a turn. Its one Tier 2
+query matched `mcp-server` in a name or description, so an agent CLI that never
+calls itself an MCP server was **unreachable**, not merely ranked low. The turn
+that wanted `simonw/llm` had to go outside the script to find it.
+
+Each set now sends more than one query for that reason. It still narrows the
+world. If the results are thin or all the wrong shape, say so and search
+yourself — an empty run is evidence about the query at least as often as it is
+evidence about the world, and reporting "nothing found" when the truth is
+"nothing this query can see" is the failure worth avoiding.
+
 ## What you must never do
 
 - Open an issue, pull request, or comment on a third-party repository. The corpus
