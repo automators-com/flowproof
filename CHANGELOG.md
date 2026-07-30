@@ -60,6 +60,18 @@ together).
 
   Needs no model credential: the upstream is a loopback fake and replay makes
   zero model calls.
+- **Neither half of the call-order rule was tested.** 0.8.0 dropped positional
+  cassette matching, because goose issues its task call and a session-title call
+  concurrently without waiting: whichever landed first at record decided the
+  order, and a positional matcher reported a divergence when nothing about the
+  agent had changed. Nothing exercised the new behaviour.
+
+  Two proofs, and the second is what keeps the first honest. Two independent
+  calls recorded in one order replay in the other and still pass — the
+  tolerance. An agent that changes what it SENDS still diverges — the
+  discrimination. Without the second, "order-tolerant matching" would be
+  indistinguishable from "the request is not checked at all", and a matcher that
+  accepted anything would satisfy the first proof perfectly.
 
 - **The guard assertion had no end-to-end test that could fail.**
   `assert_no_tool_call` is the one the security story leans on — the model
