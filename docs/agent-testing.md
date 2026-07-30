@@ -983,7 +983,7 @@ Built and tested, each independently:
 | MCP tool boundary | stdio (v3.1) and streamable-HTTP (v3.2): flowproof stands in as the server, records the JSON-RPC traffic once and replays it with no server running. A tool with a `result:` here is answered by the stand-in and never forwarded, in either phase - the one boundary that stops a tool executing |
 | Anthropic Messages | built and covered end to end, record leg included: a flow records against a Messages-dialect upstream and replays it with no model at all |
 | Streaming | built and covered end to end in both dialects, record leg included: a `stream: true` agent is served SSE at record and at replay, and the test asserts the FRAME BOUNDARIES, not the assembled text - a replay that collapsed the stream into one buffered body would still produce the same reply |
-| http-target | `agent.url` services are built. The REPLAY path is covered by tests; the RECORD path is not yet - see the test-coverage note below |
+| http-target | `agent.url` services are built, and covered end to end including the record leg: a service started independently and pointed at the proxy is triggered, recorded, and replayed offline |
 
 Not built yet: per-call result sequences (one static result per tool),
 the structured `args:` / `args_exact:` assertion forms, and multi-turn
@@ -1005,12 +1005,20 @@ and "covered by a test that would fail if it broke" are different claims:
 | MCP streamable-HTTP (v3.2) | the boundary is exercised over real HTTP, but driven directly rather than through `flowproof record`/`run` with a real agent |
 | Streaming replay | full, both dialects: CLI record -> trace -> replay with a `stream: true` agent subprocess, asserting the frames it received, so the record-mode synthesis is covered too |
 | Anthropic Messages | full: CLI record -> trace -> replay against a Messages-dialect upstream, agent as a real subprocess, on every PR |
-| http-target (`agent.url`) | replay covered; the RECORD path has no test |
-| `assert_no_tool_call` | the failing direction is unit-tested; the end-to-end case only exercises the passing direction |
+| http-target (`agent.url`) | full: a service flowproof did not start, pointed at the fixed `proxy_port`, driven through CLI record -> trace -> replay with no model reachable |
+| `assert_no_tool_call` | full, both directions: the passing case, plus a red-path proof in which a model asks for the forbidden tool and an obedient agent calls it, so the record is refused and no trace is minted |
 
-The unmarked gaps are all RECORD paths. Nothing there is known broken - the
-mode-blind code is shared with the tested replay paths - but "we test that"
-should not be said of them until they have one.
+One gap remains, and it is a RECORD path: MCP streamable-HTTP is exercised
+over real HTTP but driven directly rather than through `record`/`run` with a
+real agent. Nothing there is known broken - the mode-blind code is shared with
+the tested replay paths - but "we test that" should not be said of it until it
+has one.
+
+The falsifiability suite is the other half of this table's honesty: a row
+saying "covered" means a test exists, and
+[how-flowproof-tests-flowproof.md](how-flowproof-tests-flowproof.md) is where
+each assertion is proven able to FAIL. Coverage that cannot fail is not
+coverage.
 
 ## Single-turn, and what multi-turn would cost
 

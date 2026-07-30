@@ -8,6 +8,23 @@ together).
 
 ### Added
 
+- **The `agent.url` driver had never been recorded.** The coverage table said
+  so plainly — "replay covered; the RECORD path has no test" — and `proxy_port`
+  appeared nowhere in the test tree, only in `src/`. That is the half where the
+  driver's distinctive risk lives: flowproof cannot inject environment into a
+  service it did not start, so the service must already be pointed at the proxy
+  by whoever launched it, and getting that wrong is a RECORD-time failure a
+  replay test can never reach, because by then the cassette exists.
+
+  A service flowproof does not start is now launched independently, pointed at
+  the fixed `proxy_port`, triggered, recorded, and replayed with no model
+  reachable. The trace is checked for the prompt and the reply rather than for
+  its own existence — on a driver whose verdict must never come from the
+  trigger's HTTP status, a file proves nothing.
+
+  Needs no model credential: the upstream is a loopback fake and replay makes
+  zero model calls.
+
 - **The guard assertion had no end-to-end test that could fail.**
   `assert_no_tool_call` is the one the security story leans on — the model
   asked, and the code refused — and `docs/agent-testing.md` calls it arguably
