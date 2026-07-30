@@ -17,7 +17,19 @@ FAILED=0
 
 cat > "$TMP/sandbox.sh" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "${SANDBOX_CALLS:?}"
+# ONE LINE PER CALL. Several of the commands under test are multi-line, so
+# recording them verbatim spread a single call over six physical lines and the
+# `sed -n 2p` addressing below silently read the middle of the previous call.
+# The existing head -1 / tail -1 assertions had the same latent hole and passed
+# by luck - the substring they grep for happened to sit on the first line.
+printf '%s\n' "${*//$'\n'/ }" >> "${SANDBOX_CALLS:?}"
+# SANDBOX_FAIL_ON fails only the call whose arguments contain it, so a test can
+# break exactly one phase. A uniform SANDBOX_RC cannot express "the runner would
+# not start but the install was fine", which is the case that matters most.
+if [ -n "${SANDBOX_FAIL_ON:-}" ]; then
+  case "$*" in *"$SANDBOX_FAIL_ON"*) exit 1 ;; esac
+  exit 0
+fi
 exit "${SANDBOX_RC:-0}"
 STUB
 chmod +x "$TMP/sandbox.sh"
@@ -41,6 +53,7 @@ run() {
   : > "$TMP/calls"
   rm -rf "$CORPUS_DIR"
   SANDBOX="$TMP/sandbox.sh" SANDBOX_CALLS="$TMP/calls" SANDBOX_RC="${RC:-0}" \
+    SANDBOX_FAIL_ON="${FAIL_ON:-}" \
     "$SUT" baseline "$1" "$2" 2>/dev/null | tail -1
 }
 
@@ -115,6 +128,63 @@ for m in pyproject.toml Cargo.toml; do
       fi ;;
   esac
 done
+
+echo "-- a suite that never started is a DECLINE, not a verdict --"
+# The one that started all of this. Measured 2026-07-30 against
+# cypress-io/cypress-example-kitchensink: `npm ci` succeeded, Cypress could not
+# find its browser (cached under $HOME, which is the image and does not survive
+# into the replay container), and `baseline` printed FAIL.
+#
+# FAIL is a USABLE ORACLE by this script's contract. So a suite that executed
+# zero tests became the thing flowproof was measured against: a migration that
+# passed would be filed as a FALSE GREEN - priority 1, the finding nobody
+# double-checks - and one that failed would be filed as agreement. Both records
+# fabricated. UNRUNNABLE is the only honest answer.
+sha="$(seed package.json)"; v="$(FAIL_ON='cypress verify' run "$TMP/src" "$sha")"
+if [ "$v" = UNRUNNABLE ]; then ok "a runner that will not start declines" "$v"
+else bad "a runner that will not start declines" "got $v, wanted UNRUNNABLE"; fi
+
+sha="$(seed pyproject.toml)"; v="$(FAIL_ON='import pytest' run "$TMP/src" "$sha")"
+if [ "$v" = UNRUNNABLE ]; then ok "and the same holds for python" "$v"
+else bad "and the same holds for python" "got $v, wanted UNRUNNABLE"; fi
+
+# The opposite direction, which matters just as much: a suite that genuinely
+# runs and genuinely fails is still an oracle. A probe that over-declines would
+# silently empty the corpus of every FAIL/FAIL agreement, and nothing would
+# report that either.
+sha="$(seed package.json)"; v="$(FAIL_ON='npm test' run "$TMP/src" "$sha")"
+if [ "$v" = FAIL ]; then ok "a suite that runs and fails is still an oracle" "$v"
+else bad "a suite that runs and fails is still an oracle" "got $v, wanted FAIL"; fi
+
+echo "-- the probe is asked under the conditions the suite will meet --"
+sha="$(seed package.json)"; run "$TMP/src" "$sha" >/dev/null
+probe="$(sed -n 2p "$TMP/calls")"; suite="$(sed -n 3p "$TMP/calls")"
+if printf '%s' "$probe" | grep -q -- '--phase replay'; then
+  ok "the probe runs with egress denied" "replay"
+else
+  bad "the probe runs with egress denied" "${probe:0:44}"
+fi
+if printf '%s' "$probe" | grep -q 'cypress verify' \
+   && printf '%s' "$suite" | grep -q 'npm test'; then
+  ok "and BEFORE the suite, not after it" "ordered"
+else
+  bad "and BEFORE the suite, not after it" "probe=${probe:0:40}"
+fi
+
+echo "-- a browser cache must survive the phase boundary too --"
+# node_modules lands in /work by accident of npm's layout. Cypress's browser
+# does not - it goes to $HOME, which is the image. Same class as the venv and
+# CARGO_HOME, and it had no equivalent pin until it produced a false oracle.
+sha="$(seed package.json)"; run "$TMP/src" "$sha" >/dev/null
+missing=""
+for line in 1 2 3; do
+  printf '%s' "$(sed -n "${line}p" "$TMP/calls")" | grep -q 'CYPRESS_CACHE_FOLDER=/work' || missing="$missing $line"
+done
+if [ -z "$missing" ]; then
+  ok "install, probe and suite share a /work cypress cache" "pinned"
+else
+  bad "install, probe and suite share a /work cypress cache" "missing on call(s):$missing"
+fi
 
 echo
 if [ "$FAILED" -ne 0 ]; then echo "migrator tests FAILED"; exit 1; fi

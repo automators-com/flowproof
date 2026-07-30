@@ -102,12 +102,34 @@ sandbox() { # sandbox <phase> <image> -- cmd...
 # green, which is the priority-1 finding the whole corpus exists to produce.
 # Every candidate in the corpus at the time was Python.
 #
-# Node was correct only by accident - `npm ci` writes node_modules into /work.
+# Node was correct only by accident - `npm ci` writes node_modules into /work -
+# and the accident did not extend as far as it looked. Measured 2026-07-30
+# against cypress-io/cypress-example-kitchensink: `npm ci` succeeded, and then
+# the suite could not start, because Cypress caches its BROWSER under $HOME
+# rather than in node_modules. $HOME is the image. So `baseline` printed FAIL
+# for a suite that had executed nothing - and FAIL is a usable oracle by this
+# script's own contract, so a flowproof migration passing against it would have
+# been filed as a false green. Exactly the defect the paragraph above records
+# for Python, in the path that paragraph called correct.
+#
+# Browser-cache locations are therefore pinned into /work the same way the venv
+# and CARGO_HOME are. CYPRESS_CACHE_FOLDER is measured: with it set, the binary
+# lands in /work/.cypress-cache/<version>/ and the replay phase starts the
+# suite. PLAYWRIGHT_BROWSERS_PATH is by analogy and has NOT been measured - if
+# it is wrong, the probe below reports UNRUNNABLE, which is the safe direction.
+CACHE_ENV='export CYPRESS_CACHE_FOLDER=/work/.cypress-cache PLAYWRIGHT_BROWSERS_PATH=/work/.playwright;'
+
 case "$KIND" in
   node)   IMAGE=docker.io/library/node:22-bookworm-slim
-          # node_modules lands in /work already.
-          INSTALL=(sh -lc 'npm ci --no-audit --fund=false 2>/dev/null || npm install --no-audit --fund=false')
-          TEST=(sh -lc 'npm test --silent') ;;
+          # node_modules lands in /work already; the browser caches do not.
+          INSTALL=(sh -lc "$CACHE_ENV"' npm ci --no-audit --fund=false 2>/dev/null || npm install --no-audit --fund=false')
+          # Does the runner actually start? node_modules alone does not prove
+          # it, which is the whole lesson of the Cypress case.
+          PROBE=(sh -lc "$CACHE_ENV"' test -d /work/node_modules || exit 1
+                         if [ -x /work/node_modules/.bin/cypress ]; then
+                           /work/node_modules/.bin/cypress verify
+                         fi')
+          TEST=(sh -lc "$CACHE_ENV"' npm test --silent') ;;
   python) IMAGE=docker.io/library/python:3.12-slim
           # A venv inside /work, so the interpreter that runs the suite is the
           # one the dependencies were installed into. No `|| true`: an install
@@ -117,12 +139,17 @@ case "$KIND" in
                            && { /work/.venv/bin/pip install --quiet -e ".[test]" \
                                 || /work/.venv/bin/pip install --quiet -e . \
                                 || /work/.venv/bin/pip install --quiet -r requirements.txt; } \
-                           && /work/.venv/bin/pip install --quiet pytest \
-                           && /work/.venv/bin/python -c "import pytest"')
+                           && /work/.venv/bin/pip install --quiet pytest')
+          # This used to be the tail of INSTALL. It is worth more here: in the
+          # install container /work is populated and $HOME is warm, so it can
+          # only prove pytest imports THERE. Run as its own replay-phase
+          # container it proves it imports where the suite will actually run.
+          PROBE=(sh -lc '/work/.venv/bin/python -c "import pytest"')
           TEST=(sh -lc '/work/.venv/bin/python -m pytest -q') ;;
   rust)   IMAGE=docker.io/library/rust:1-slim
           # CARGO_HOME and the target dir both default into the image.
           INSTALL=(sh -lc 'CARGO_HOME=/work/.cargo cargo fetch --quiet')
+          PROBE=(sh -lc 'test -d /work/.cargo')
           TEST=(sh -lc 'CARGO_HOME=/work/.cargo CARGO_TARGET_DIR=/work/.target cargo test --quiet --offline') ;;
 esac
 
@@ -132,6 +159,32 @@ esac
 say "installing dependencies (sandboxed, egress allowed)"
 if ! SANDBOX_TIMEOUT="$INSTALL_TIMEOUT" sandbox install "$IMAGE" "${INSTALL[@]}" >/dev/null 2>&1; then
   say "dependencies would not install"
+  echo UNRUNNABLE; exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Can the runner start? A SEPARATE replay-phase container, so it is asked under
+# the conditions the suite will meet: fresh image, only /work carried over, no
+# egress.
+#
+# "The install succeeded" and "the suite can run" are different claims, and
+# until now only the first was checked. That gap is not cosmetic, because of
+# what this script does with the answer: UNRUNNABLE is a decline, but FAIL is a
+# USABLE ORACLE. So every way of failing to start - a cache left in the image, a
+# missing system library, a runner that needs the network it no longer has -
+# arrived as FAIL, and a flowproof migration measured against it produced either
+# a fabricated agreement or a fabricated false green. A false green is priority
+# 1 in CHARTER.md section 5 precisely because it is the finding nobody
+# double-checks.
+#
+# The probe must run BEFORE the suite. Inferring it afterwards from exit codes
+# and log text cannot work: a suite that fails and a suite that never started
+# both exit non-zero, and telling them apart by grepping output is a guess that
+# gets less reliable as the corpus grows.
+say "probing whether the runner starts (sandboxed, egress denied)"
+if ! SANDBOX_TIMEOUT="$TEST_TIMEOUT" sandbox replay "$IMAGE" "${PROBE[@]}" > "$WORK/.probe.log" 2>&1; then
+  say "the test runner cannot start; this is a decline, not a verdict"
+  say "  see ${WORK#"$HOME"/}/.probe.log"
   echo UNRUNNABLE; exit 0
 fi
 
