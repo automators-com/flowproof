@@ -36,6 +36,31 @@ use crate::egress::{AllowSet, EgressLog};
 /// upstream.
 const BASE_URL_VARS: [&str; 3] = ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_BASE"];
 
+/// Every variable that can carry a REAL model credential, and which the agent
+/// must therefore never see.
+///
+/// The agent is third-party code. flowproof holds the upstream key and attaches
+/// it only on the outbound hop, so the agent is handed a placeholder — that was
+/// always the design for `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`, which are
+/// overwritten below.
+///
+/// What was missing is that overwriting two names is not the same as masking
+/// the credential. `Command` inherits the parent environment, and the *first*
+/// name `flowproof record` looks in is `FLOWPROOF_AGENT_KEY` — so the
+/// recommended way to supply the key was also the one way it reached the agent
+/// verbatim. `FLOWPROOF_AI_API_KEY`, which the LLM-authoring backend reads, did
+/// the same.
+///
+/// Removed rather than placeheld: a variable flowproof does not hand out has no
+/// business having a value, and an agent reading one is asking a question it
+/// should not get an answer to.
+pub const CREDENTIAL_VARS: [&str; 4] = [
+    "FLOWPROOF_AGENT_KEY",
+    "FLOWPROOF_AI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+];
+
 /// Split a command line into argv, honouring double quotes so a path
 /// with spaces survives.
 ///
@@ -365,6 +390,13 @@ fn configure(
         .stderr(Stdio::piped());
     for var in BASE_URL_VARS {
         child.env(var, base);
+    }
+    // Drop every credential name BEFORE handing out placeholders. `Command`
+    // inherits this process's environment, so a name flowproof does not
+    // explicitly set is passed through — and the record path runs with a real
+    // key in exactly these variables.
+    for var in CREDENTIAL_VARS {
+        child.env_remove(var);
     }
     child.env("OPENAI_API_KEY", "flowproof-replay-no-key-needed");
     // The Anthropic SDK reads its own base URL and appends `/v1/messages`
@@ -705,6 +737,91 @@ mod tests {
 
         assert!(!timed_out, "a chatty child must not look like a hung one");
         assert_eq!(out.len(), 200_000, "every byte the child wrote is captured");
+    }
+
+    /// What `configure` decided for one variable: `Some` to set it, `None`
+    /// if it is explicitly removed, and `None` from the outer option if it
+    /// was never mentioned — which, since `Command` inherits, means the
+    /// child gets whatever this process has.
+    fn decided(cmd: &Command, key: &str) -> Option<Option<String>> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(key))
+            .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    /// The agent is third-party code and flowproof holds the real key, so the
+    /// key must not be in the agent's environment. Two names were: the record
+    /// path reads `FLOWPROOF_AGENT_KEY` FIRST, so the recommended way to
+    /// supply the credential was also the one way it reached the agent intact.
+    ///
+    /// Asserted on the `Command` rather than by spawning. Proving it by
+    /// spawning means putting a real value in this process's environment, and
+    /// `set_var` is process-global — with tests running in parallel that is a
+    /// race, which is exactly what #236 was. `env_remove` guarantees the child
+    /// sees nothing regardless of the parent, so reading the decision is both
+    /// deterministic and a stronger claim than one spawn happening to be clean.
+    #[test]
+    fn a_real_credential_is_never_handed_to_the_agent() {
+        let cmd =
+            configure("echo hi", "http://127.0.0.1:9/v1", &BTreeMap::new()).expect("configure");
+        for var in ["FLOWPROOF_AGENT_KEY", "FLOWPROOF_AI_API_KEY"] {
+            assert_eq!(
+                decided(&cmd, var),
+                Some(None),
+                "{var} must be REMOVED from the agent's environment; \
+                 inheriting it hands third-party code the real upstream key"
+            );
+        }
+    }
+
+    /// The other direction, and it is not implied by the one above: a client
+    /// that refuses to start without a key must still get one, or masking the
+    /// credential would break every agent it protects. Placeholders, not
+    /// removal, for exactly these two.
+    #[test]
+    fn the_agent_still_gets_a_key_shaped_placeholder() {
+        let cmd =
+            configure("echo hi", "http://127.0.0.1:9/v1", &BTreeMap::new()).expect("configure");
+        for var in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"] {
+            assert_eq!(
+                decided(&cmd, var),
+                Some(Some("flowproof-replay-no-key-needed".to_string())),
+                "{var} must be a placeholder: present, and worthless"
+            );
+        }
+    }
+
+    /// Every name that can hold a real credential has to be covered, not just
+    /// the two that were noticed. This fails when someone adds a fifth.
+    #[test]
+    fn every_credential_variable_is_accounted_for() {
+        let cmd =
+            configure("echo hi", "http://127.0.0.1:9/v1", &BTreeMap::new()).expect("configure");
+        for var in CREDENTIAL_VARS {
+            let d = decided(&cmd, var);
+            assert!(
+                d == Some(None) || d == Some(Some("flowproof-replay-no-key-needed".to_string())),
+                "{var} is in CREDENTIAL_VARS but configure() neither removes it \
+                 nor replaces it with the placeholder; it would be inherited"
+            );
+        }
+    }
+
+    /// A spec that deliberately passes a credential through — `agent.env` with
+    /// `ANTHROPIC_API_KEY: ${SECRET}` — is a documented escape hatch, and spec
+    /// env is applied last precisely so it wins. Masking must not quietly take
+    /// that away; an adopter relying on it would see their agent lose its key
+    /// with no error.
+    #[test]
+    fn a_spec_can_still_pass_a_key_through_on_purpose() {
+        let mut env = BTreeMap::new();
+        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-deliberate".to_string());
+        let cmd = configure("echo hi", "http://127.0.0.1:9/v1", &env).expect("configure");
+        assert_eq!(
+            decided(&cmd, "ANTHROPIC_API_KEY"),
+            Some(Some("sk-deliberate".to_string())),
+            "the spec's own env is applied last and must still override"
+        );
     }
 
     /// The gap a real adopter hit: their client reads AI_GATEWAY_URL, and
