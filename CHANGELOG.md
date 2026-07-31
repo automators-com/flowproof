@@ -72,6 +72,22 @@ together).
   discrimination. Without the second, "order-tolerant matching" would be
   indistinguishable from "the request is not checked at all", and a matcher that
   accepted anything would satisfy the first proof perfectly.
+- **The argument matchers had no red path.** `assert_tool_call` could be proven
+  to fail on the tool NAME — a flow demanding a tool the agent never calls
+  refuses the trace — but nothing proved the `where <path> <matcher>` clauses
+  can fail at all. Every `where` clause in the suite asserts an argument the
+  model was always going to produce, so each passes whether the matcher works or
+  not.
+
+  That is the layer carrying the most weight and the least evidence.
+  `docs/agent-testing.md` calls argument assertions "usually where the bugs
+  are", and names chained arguments — threading one tool's result into the next
+  call — as the behaviour multi-step agents actually get wrong.
+
+  One committed guilty call covers both halves of the vocabulary: the right tool
+  with the wrong city violates a value matcher (`where city equals Nairobi`) and
+  a presence matcher (`where city is absent`) at once. Both refuse the record,
+  and neither mints a trace.
 
 - **The guard assertion had no end-to-end test that could fail.**
   `assert_no_tool_call` is the one the security story leans on — the model
