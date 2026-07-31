@@ -5,6 +5,28 @@
 [![npm](https://img.shields.io/npm/v/flowproof)](https://www.npmjs.com/package/flowproof)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
+## Your agent behaved today. Prove it'll behave tomorrow.
+
+AI agents don't just call APIs anymore — they click through real systems,
+including the old ones nobody gave an API. That's power, and it's risk.
+flowproof captures what your agent does in one recording, then replays it on
+every commit with zero model calls. Define the lines it must never cross —
+the wrong tool, a system it shouldn't reach — and the build breaks the
+instant one is crossed. Not a suite you hope still passes. Evidence, every
+push.
+
+Everywhere your agents work: web, desktop, SAP, Citrix.
+
+<img alt="An agent flow: a short YAML spec, one flowproof record against a model, then flowproof run replaying it to PASS with zero model calls" src="docs/assets/flowproof-demo.gif" width="880">
+
+One spec, one `record` against a real model, then `run` forever with none. The
+frames are a capture of [`scripts/demo/`](scripts/demo/) actually running, not a
+mock-up. The same three commands carry the guard path — add
+`assert_no_tool_call` and the call an agent must *never* make is proven on every
+commit ([docs/agent-testing.md](docs/agent-testing.md)).
+
+## The same promise, precisely
+
 flowproof produces evidence that a control still holds.
 
 Record your agent's real run once - every model request and every tool-call
@@ -25,19 +47,6 @@ Adding it to an existing agent? [docs/adopting.md](docs/adopting.md) is
 written to be handed to a coding agent.
 
 Product page: [automators.ai/flowproof](https://automators.ai/flowproof)
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lineage-dark.svg">
-  <img alt="Selenium (2004), Robot Framework (2008), Playwright (2020), Flowproof (2026): agents author, a deterministic engine executes — across web, desktop, and Citrix" src="docs/assets/lineage-light.svg" width="880">
-</picture>
-
-<img alt="An agent flow: a short YAML spec, one flowproof record against a model, then flowproof run replaying it to PASS with zero model calls" src="docs/assets/flowproof-demo.gif" width="880">
-
-One spec, one `record` against a real model, then `run` forever with none. The
-frames are a capture of [`scripts/demo/`](scripts/demo/) actually running, not a
-mock-up. The same three commands carry the guard path — add
-`assert_no_tool_call` and the call an agent must *never* make is proven on every
-commit ([docs/agent-testing.md](docs/agent-testing.md)).
 
 ## How it works
 
@@ -61,6 +70,11 @@ acceptance testing and RPA, Playwright made web automation reliable.
 flowproof is built for the next step — the era in which AI agents write
 and maintain the automation, and what matters is that their output is
 **deterministic to execute and cheap to review**.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lineage-dark.svg">
+  <img alt="Selenium (2004), Robot Framework (2008), Playwright (2020), Flowproof (2026): agents author, a deterministic engine executes — across web, desktop, and Citrix" src="docs/assets/lineage-light.svg" width="880">
+</picture>
 
 ## Two kinds of claim, and the difference matters
 
