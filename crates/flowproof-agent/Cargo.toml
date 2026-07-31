@@ -21,3 +21,9 @@ uuid = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# A real HTTP server for the model-client tests: the request flowproof
+# actually puts on the wire is the thing under test, so a mock client would
+# prove nothing about it.
+tiny_http = "0.12"
