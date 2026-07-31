@@ -881,3 +881,86 @@ steps:
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+const FLOWPROOF_BIN: &str = env!("CARGO_BIN_EXE_flowproof");
+
+/// `run` names the HUMAN artifact, not the machine one.
+///
+/// Every run writes `report.html` beside `result.json` — the step table,
+/// the per-step frames and the recording — and for a long time said nothing
+/// about it. On macOS and Linux the only UI-driving adapter is `web`, which
+/// is headless, so a first run shows no window and points at a JSON file:
+/// the reasonable conclusion is that nothing visual was captured. It was,
+/// in a dot-directory Finder hides by default.
+///
+/// Driven through the real binary, because the defect was in what the CLI
+/// printed — a library-level assertion could not have caught it.
+#[test]
+fn run_output_names_the_html_report_and_it_exists() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    // record probes once, replay probes once.
+    let server_thread = serve(server, 2);
+
+    let dir = std::env::temp_dir().join("flowproof-run-names-report");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec_path = dir.join("health.flow.yaml");
+    std::fs::write(
+        &spec_path,
+        "\
+name: Health checks
+app: api
+steps:
+  - assert_api:
+      request: GET ${API_BASE}/health
+      status: 200
+",
+    )
+    .expect("spec written");
+
+    let record = std::process::Command::new(FLOWPROOF_BIN)
+        .args(["record", spec_path.to_str().expect("utf-8 path")])
+        .env("API_BASE", &base)
+        .output()
+        .expect("record runs");
+    assert!(
+        record.status.success(),
+        "record failed: {}",
+        String::from_utf8_lossy(&record.stderr)
+    );
+
+    let run = std::process::Command::new(FLOWPROOF_BIN)
+        .args(["run", spec_path.to_str().expect("utf-8 path")])
+        .env("API_BASE", &base)
+        .output()
+        .expect("run runs");
+    assert!(
+        run.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let verdict = stdout
+        .lines()
+        .find(|l| l.starts_with("PASS: "))
+        .unwrap_or_else(|| panic!("no verdict line in:\n{stdout}"));
+    assert!(
+        verdict.ends_with("report.html"),
+        "the verdict line must point a human at the HTML report, got: {verdict}"
+    );
+
+    // A path in the output that does not exist would be worse than none.
+    let named = verdict
+        .rsplit(" -> ")
+        .next()
+        .expect("verdict line has a path");
+    assert!(
+        std::path::Path::new(named).is_file(),
+        "the named report must exist on disk: {named}"
+    );
+
+    server_thread.join().ok();
+    std::fs::remove_dir_all(&dir).ok();
+}

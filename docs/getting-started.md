@@ -163,10 +163,12 @@ same buttons, and evaluates the assertion by reading the display.
   [PASS] s0003 Type 3
   [PASS] s0004 Press equals
   [PASS] s0005 display shows 8
-PASS: Add two numbers (2154 ms) -> .flowproof\runs\20260718T120000.000Z\result.json
+PASS: Add two numbers (2154 ms) -> .flowproof\runs\20260718T120000.000Z\report.html
 ```
 
-Exit codes: `0` pass, `1` test failure, `2` error. Each run writes a
+The path is the one worth opening: `report.html` is the human rendering, and
+on a headless adapter it is the only way to *see* what the run did. Exit
+codes: `0` pass, `1` test failure, `2` error. Each run writes a
 self-contained bundle under `.flowproof/runs/<timestamp>/`: `result.json`
 (the machine surface, including the step→time mapping), `report.html`
 (with a step-synchronized frame viewer — click any step to see exactly
@@ -828,7 +830,7 @@ to heal the trace *before* the remaining rungs die too:
 
 ```text
   [PASS] s0002 Press plus (matched via structural fallback)
-PASS: Add two numbers (2154 ms) -> .flowproof\runs\...\result.json
+PASS: Add two numbers (2154 ms) -> .flowproof\runs\...\report.html
 DEGRADED: fallback selectors were needed — the app drifted; run `flowproof heal calc.flow.yaml`
 ```
 
