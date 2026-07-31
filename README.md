@@ -315,4 +315,5 @@ flowproof fits and when to keep what you have.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), and
 [docs/design.md](docs/design.md) for the design notes behind the engine.
+Cutting a release is [docs/releasing.md](docs/releasing.md).
 Licensed under [Apache-2.0](LICENSE).
