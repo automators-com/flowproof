@@ -1,6 +1,6 @@
 {
   "name": "flowproof",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Deterministic evidence and control-regression gating for AI agents and the SAP, web and Citrix systems they drive. Record once, replay with zero LLM calls.",
   "bin": {
     "flowproof": "bin/flowproof.js"
@@ -14,10 +14,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@automators/flowproof-cli-linux-x64": "0.10.0",
-    "@automators/flowproof-cli-darwin-x64": "0.10.0",
-    "@automators/flowproof-cli-darwin-arm64": "0.10.0",
-    "@automators/flowproof-cli-win32-x64": "0.10.0"
+    "@automators/flowproof-cli-linux-x64": "0.10.1",
+    "@automators/flowproof-cli-darwin-x64": "0.10.1",
+    "@automators/flowproof-cli-darwin-arm64": "0.10.1",
+    "@automators/flowproof-cli-win32-x64": "0.10.1"
   },
   "repository": {
     "type": "git",
