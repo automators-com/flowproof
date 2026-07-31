@@ -6,6 +6,22 @@ together).
 
 ## Unreleased
 
+## 0.11.0
+
+Three things the driver could already do, and the surface would not let you
+ask for: press a function key, type a value the application invented, and
+watch the browser while you record. Each obstacle was one layer thick —
+`virtual_key` has always mapped `F<n>` to `0x6F + n`, the field-entry path
+never cared where its text came from, and Chromium takes a headed flag. The
+grammar was the whole of what was missing, which is why the shipped SAP
+adapter could not express F8.
+
+The fix is that story inside out. A capture in a `Type` step was neither
+refused nor resolved — it was entered as the eleven literal characters of its
+own reference. A surface that does neither is worse than one that refuses,
+because the refusal is loud and the flow that types the wrong value goes
+green.
+
 ### Fixed
 
 - **A capture in a `Type` step entered the reference as literal text.** The
