@@ -42,6 +42,7 @@ check and is exactly the defect worth catching.
 | `capability-error` as a regression | [`audit-since/head-capability-error.report.json`](../tests/falsifiability/fixtures/audit-since/head-capability-error.report.json) | a control that silently stops being certifiable slipping the gate. `capability-error` exists so "we could not check this" never reads as "this is fine"; until #263 that distinction was lost at the diff layer |
 | `assert_no_tool_call` (the guard path) | [`guard-agent.py`](../tests/falsifiability/fixtures/guard-agent.py) | a guard assertion that cannot fail. Every other end-to-end use sits in a flow where the forbidden tool was never going to be called, so it would pass even if the assertion were an unconditional PASS |
 | `assert: reply contains` | [`reply-missing-text.json`](../tests/falsifiability/fixtures/reply-missing-text.json) | the same shape of hole in the assertion that has already hosted one false green: every existing use asserts text the model was always going to produce, so none of them would notice the assertion ceasing to work |
+| cassette call-order tolerance | [`two-call-agent.py`](../tests/falsifiability/fixtures/two-call-agent.py) | a tolerance that quietly became "the request is never checked". Reordering two INDEPENDENT calls must not diverge; changing what one of them SENDS still must |
 
 ### A note on gates specifically
 
