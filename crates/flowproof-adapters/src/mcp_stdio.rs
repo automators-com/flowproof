@@ -227,21 +227,26 @@ fn run_replay(plan: &McpPlan, out_path: &Path) -> Result<(), String> {
 
 /// Persist the captured lane NOW, so an abrupt shutdown cannot lose it.
 ///
-/// The authoritative write is still the one at stdin EOF, but reaching it
-/// requires the agent to close the stand-in's stdin and let it reap the real
-/// server. An agent that terminates its MCP subprocess abruptly never gets
-/// there - goose does exactly this - and the whole recording was lost, which
-/// then read as "the agent never spawned flowproof's MCP stand-in": a false
-/// negative pointing the adopter at wiring that was already correct.
+/// This is THE durability guarantee, not a best-effort supplement to the write
+/// at stdin EOF. Reaching EOF requires the agent to close the stand-in's stdin
+/// and let it reap the real server; an agent that terminates its MCP
+/// subprocess abruptly never gets there - goose does exactly this.
+///
+/// It runs BEFORE the response is forwarded to the agent. That ordering is the
+/// whole point: once the agent has the response it may kill the stand-in at
+/// any moment, so anything not yet persisted is lost. Forwarding first left a
+/// window in which the final call of a session vanished from the lane while
+/// `record` still exited 0 (#273).
 ///
 /// `write_out_atomic` is a temp-file rename, so a partial flush is never
-/// observable and the last one wins. Errors are swallowed: a failed
-/// incremental flush must not break a run that the EOF write may still save.
+/// observable and the last one wins. Errors are RETURNED rather than swallowed:
+/// with the EOF write no longer load-bearing, a failed flush means evidence was
+/// lost, and evidence lost silently is the one outcome this tool cannot ship.
 fn flush_lane(
     out_path: &std::path::Path,
     calls: &Mutex<BTreeMap<usize, McpCall>>,
     events: &Mutex<Vec<McpServerEvent>>,
-) {
+) -> Result<(), String> {
     let captured: Vec<McpCall> = calls
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -249,14 +254,14 @@ fn flush_lane(
         .cloned()
         .collect();
     let events: Vec<McpServerEvent> = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let _ = write_out_atomic(
+    write_out_atomic(
         out_path,
         &McpOut {
             calls: captured,
             events,
             ..Default::default()
         },
-    );
+    )
 }
 
 /// RECORD: two threads bridge the agent and the REAL server.
@@ -359,16 +364,12 @@ fn run_record(plan: &McpPlan, out_path: &Path) -> Result<(), String> {
                 if line.trim().is_empty() {
                     continue;
                 }
-                // Forward the server's line to the agent verbatim, so record
-                // is transparent.
-                {
-                    let mut out = write_lock.lock().unwrap_or_else(|e| e.into_inner());
-                    let _ = out.write_all(line.as_bytes());
-                    let _ = out.flush();
-                }
-                // Classify the server line by the JSON-RPC shape. It was
-                // already forwarded verbatim above; here we decide what, if
-                // anything, to CAPTURE from it.
+                // Classify and CAPTURE first, then forward. The order is
+                // load-bearing: the moment the agent has the response it may
+                // kill the stand-in, so anything not yet persisted is lost.
+                // Forwarding first left a window in which the final call of a
+                // session vanished from the lane while `record` still exited 0
+                // (#273).
                 if let Ok(msg) = serde_json::from_str::<Value>(line.trim()) {
                     let has_method = msg.get("method").and_then(Value::as_str);
                     let has_id = msg.get("id");
@@ -413,11 +414,28 @@ fn run_record(plan: &McpPlan, out_path: &Path) -> Result<(), String> {
                                         result,
                                     },
                                 );
-                                flush_lane(&out_path_b, &calls, &events);
+                                if let Err(detail) = flush_lane(&out_path_b, &calls, &events) {
+                                    let mut slot =
+                                        record_error.lock().unwrap_or_else(|e| e.into_inner());
+                                    if slot.is_none() {
+                                        *slot = Some(format!(
+                                            "the MCP lane for this server could not be \
+                                             persisted, so the recording is incomplete: \
+                                             {detail}"
+                                        ));
+                                    }
+                                }
                             }
                         }
                         (None, None) => {}
                     }
+                }
+                // Forwarded verbatim, and only now: record stays transparent
+                // to the agent, but never at the cost of the evidence.
+                {
+                    let mut out = write_lock.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = out.write_all(line.as_bytes());
+                    let _ = out.flush();
                 }
             }
         })
@@ -475,7 +493,10 @@ fn run_record(plan: &McpPlan, out_path: &Path) -> Result<(), String> {
                     result: result.clone(),
                 },
             );
-            flush_lane(out_path, &calls, &events);
+            // Already in the right order: the mocked answer is persisted
+            // before the agent is told, so this path never raced. It only
+            // needed the failure to stop being invisible.
+            flush_lane(out_path, &calls, &events)?;
             let mut out = write_lock.lock().unwrap_or_else(|e| e.into_inner());
             write_result(&mut *out, &id, &result)?;
         } else {
