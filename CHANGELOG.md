@@ -33,6 +33,25 @@ together).
 
 ### Changed
 
+- **The run wrote a visual report and never said so.** Every replay produces
+  `report.html` — the step table, the per-step frames, the recording as one
+  animation — and the verdict line pointed at `result.json` instead. On macOS
+  and Linux the only adapter that drives a UI is `web`, and it is headless, so
+  a first run shows no window and ends by naming a JSON file. The reasonable
+  conclusion is that nothing visual was captured.
+
+  It was, in a directory Finder hides by default. Found by watching someone
+  reach a green first run on a Mac and ask how they were supposed to know it
+  had done anything — the failure mode the charter ranks above the current
+  milestone, arriving one step later than expected: not "cannot get to a first
+  green run", but cannot tell that they did.
+
+  The verdict line now names `report.html`. `result.json` is unchanged, still
+  written to the same bundle, and still what `--json` reports as `report_path`
+  — the machine surface stays the machine surface. **This changes stdout**: a
+  script scraping the path off the human line now gets the HTML rendering.
+  Read `--json` instead, which is what it is for.
+
 - **A control that stopped being certifiable passed the gate.**
   `audit --since` fired on a removed control or one that turned `fail`. A
   control going `pass` -> `capability-error` exited zero — so a runner without

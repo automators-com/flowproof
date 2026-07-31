@@ -1425,12 +1425,17 @@ fn cmd_run(
             }
             println!("  [{mark}] {} {}{suffix}", step.id, step.intent);
         }
+        // Point a HUMAN at the human artifact. `result.json` is the machine
+        // surface and stays the `--json` payload's `report_path`; the person
+        // reading a terminal wants the rendering with the step table, the
+        // frames and the recording — and will not find it by guessing, since
+        // the bundle sits under a dot-directory Finder hides by default.
         println!(
             "{}: {} ({} ms) -> {}",
             if report.passed { "PASS" } else { "FAIL" },
             report.name,
             report.duration_ms,
-            result_path.display()
+            run_dir.join("report.html").display()
         );
         if report.degraded {
             println!(
