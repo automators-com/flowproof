@@ -1,7 +1,9 @@
 //! Model clients for the authoring agent: Anthropic Messages API and any
 //! OpenAI-compatible `/chat/completions` endpoint (e.g. vLLM). Synchronous,
-//! temperature 0, small budgets — authoring calls are rare (record/heal
-//! only; replay never calls a model).
+//! small budgets — authoring calls are rare (record/heal only; replay
+//! never calls a model). No `temperature` on the Anthropic path: current
+//! Sonnet rejects it outright. The OpenAI-compatible path keeps its own
+//! `temperature: 0`, a different backend with no such deprecation.
 
 use serde_json::json;
 
@@ -77,7 +79,9 @@ impl HttpModelClient {
             .send_json(json!({
                 "model": self.model(),
                 "max_tokens": MAX_TOKENS,
-                "temperature": 0,
+                // No `temperature`: current Sonnet rejects it outright (400
+                // "temperature is deprecated for this model"), confirmed by
+                // direct API reproduction against the real endpoint.
                 "system": system,
                 "messages": [{"role": "user", "content": user}],
             }))
