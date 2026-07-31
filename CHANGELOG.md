@@ -27,6 +27,68 @@ together).
 
 ### Added
 
+- **The HTTP MCP boundary had never been driven through the CLI.** The coverage
+  table said it: exercised over real HTTP, but driven directly rather than
+  through `record`/`run` with a real agent. Only the round trip can prove the
+  things that matter about this transport — that the `FLOWPROOF_MCP_URL_<NAME>`
+  flowproof injects is what a real agent actually reaches, that the lane is
+  captured through `record`, and that `run` serves it back.
+
+  A real agent subprocess now speaks JSON-RPC over HTTP to flowproof's listener,
+  against a real HTTP MCP server, and the flow then replays with that server
+  stopped and deleted from disk. The real server logs every request it receives,
+  so the test has an independent oracle: "the lane is complete" and "the real
+  server was never contacted at replay" are checked against the server's own
+  account rather than flowproof's.
+
+  With this the coverage table has no remaining gaps — every row is a CLI round
+  trip with a real agent rather than an assertion about one.
+
+- **The `agent.url` driver had never been recorded.** The coverage table said
+  so plainly — "replay covered; the RECORD path has no test" — and `proxy_port`
+  appeared nowhere in the test tree, only in `src/`. That is the half where the
+  driver's distinctive risk lives: flowproof cannot inject environment into a
+  service it did not start, so the service must already be pointed at the proxy
+  by whoever launched it, and getting that wrong is a RECORD-time failure a
+  replay test can never reach, because by then the cassette exists.
+
+  A service flowproof does not start is now launched independently, pointed at
+  the fixed `proxy_port`, triggered, recorded, and replayed with no model
+  reachable. The trace is checked for the prompt and the reply rather than for
+  its own existence — on a driver whose verdict must never come from the
+  trigger's HTTP status, a file proves nothing.
+
+  Needs no model credential: the upstream is a loopback fake and replay makes
+  zero model calls.
+- **Neither half of the call-order rule was tested.** 0.8.0 dropped positional
+  cassette matching, because goose issues its task call and a session-title call
+  concurrently without waiting: whichever landed first at record decided the
+  order, and a positional matcher reported a divergence when nothing about the
+  agent had changed. Nothing exercised the new behaviour.
+
+  Two proofs, and the second is what keeps the first honest. Two independent
+  calls recorded in one order replay in the other and still pass — the
+  tolerance. An agent that changes what it SENDS still diverges — the
+  discrimination. Without the second, "order-tolerant matching" would be
+  indistinguishable from "the request is not checked at all", and a matcher that
+  accepted anything would satisfy the first proof perfectly.
+- **The argument matchers had no red path.** `assert_tool_call` could be proven
+  to fail on the tool NAME — a flow demanding a tool the agent never calls
+  refuses the trace — but nothing proved the `where <path> <matcher>` clauses
+  can fail at all. Every `where` clause in the suite asserts an argument the
+  model was always going to produce, so each passes whether the matcher works or
+  not.
+
+  That is the layer carrying the most weight and the least evidence.
+  `docs/agent-testing.md` calls argument assertions "usually where the bugs
+  are", and names chained arguments — threading one tool's result into the next
+  call — as the behaviour multi-step agents actually get wrong.
+
+  One committed guilty call covers both halves of the vocabulary: the right tool
+  with the wrong city violates a value matcher (`where city equals Nairobi`) and
+  a presence matcher (`where city is absent`) at once. Both refuse the record,
+  and neither mints a trace.
+
 - **The guard assertion had no end-to-end test that could fail.**
   `assert_no_tool_call` is the one the security story leans on — the model
   asked, and the code refused — and `docs/agent-testing.md` calls it arguably
