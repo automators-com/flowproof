@@ -4,6 +4,40 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## Unreleased
+
+### Added
+
+- **Function keys could not be expressed at all, on any app.** `Press F8`,
+  `Press Alt+F4`, `Press Ctrl+F2` — none of them parsed. The key list held
+  `Enter`, `Escape`, `Tab`, the arrows and a handful more, and a key outside
+  it was accepted only as a single character with a modifier, which is why
+  `Control+V` worked and `Alt+F4` could not.
+
+  That list gates every app, and SAP is largely *driven* by function keys —
+  F3 back, F4 value help, F8 execute — frequently the only way to reach an
+  action with no clickable equivalent. A shipped adapter could not express
+  its most common interaction.
+
+  The keystroke half was never missing: `virtual_key` has always mapped
+  `F<n>` to `0x6F + n`, in the table every SendInput-based driver shares.
+  Only the grammar refused to author it, so this reaches through to the
+  driver that could already do the work.
+
+  Found the hard way. A flow ending in "close the app" recorded fine — the
+  authored step grounded onto Calculator's real title-bar control — and then
+  failed every replay with `element did not appear within 5000ms`, because
+  Windows renders that title bar through XAML and its caption buttons are not
+  dependably in the UIA tree. All three rungs of that step's selector ladder
+  described the same control, so the ladder that normally absorbs drift had
+  nothing to fall back to. `Alt+F4` never touches the tree at all, and was
+  the one thing that would have worked.
+
+  **Web refuses them at authoring time rather than at replay.** The browser
+  has no key definition for `F1`–`F12`, so a step that recorded happily would
+  die a run later, far from the spec line that caused it. The error names the
+  platform and points at `Press the "<label>" button`.
+
 ## 0.10.1
 
 Two defects that 0.10.0 shipped with, both found in the field on a

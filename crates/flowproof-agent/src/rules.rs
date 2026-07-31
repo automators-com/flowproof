@@ -891,6 +891,17 @@ enum Scope {
     },
 }
 
+/// `F1`–`F12` in canonical spelling, or `None` for anything else.
+///
+/// Deliberately a parse rather than twelve more entries in `NAMED_KEYS`, so
+/// it mirrors `flowproof_driver::virtual_key`, which already maps `F<n>` to
+/// `0x6F + n`. The keystroke half has always worked; only the grammar
+/// refused to author it.
+fn function_key(key: &str) -> Option<String> {
+    let n: u8 = key.strip_prefix(['F', 'f'])?.parse().ok()?;
+    (1..=12).contains(&n).then(|| format!("F{n}"))
+}
+
 /// A container must name itself: the bare word `item` (the closed list of
 /// list-ish roles) or an explicit selector. A plain quoted noun cannot -
 /// "the Transaction" is not a thing the DOM knows.
@@ -2071,11 +2082,43 @@ mod web {
 
     pub(super) fn resolve(step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
         match step {
-            SpecStep::Plain(text) => resolve_plain(text),
+            SpecStep::Plain(text) => {
+                let actions = resolve_plain(text)?;
+                reject_function_keys(text, &actions)?;
+                Ok(actions)
+            }
             SpecStep::Assert { assert } => assertions::resolve(assert),
             // Out-of-band steps are dispatched before app resolution.
             other => Err(unresolvable(&other.intent(), "handled before app dispatch")),
         }
+    }
+
+    /// Function keys author on every UIA-driven app but NOT on web, because
+    /// the browser cannot dispatch them: the CDP key-definition table has no
+    /// `F1`–`F12` entries, so the keystroke has nothing to resolve to.
+    ///
+    /// Refusing here, at authoring time, is the whole point. A step that
+    /// records happily and then dies at replay is worse than one that never
+    /// records — the cassette would encode an action the executor cannot
+    /// perform, and the failure would surface a run later, far from the
+    /// spec line that caused it.
+    fn reject_function_keys(intent: &str, actions: &[ResolvedAction]) -> Result<(), RulesError> {
+        for action in actions {
+            if let ResolvedAction::PressKey { key, .. } = action {
+                if function_key(key).is_some() {
+                    return Err(unresolvable(
+                        intent,
+                        format!(
+                            "`{key}` cannot be dispatched by the browser adapter (no CDP key \
+                             definition); function keys are desktop-only — on web, drive the \
+                             control itself with `Press the \"<label>\" button` or `Click \
+                             \"<text>\"`"
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Keys addressable by `Press <Key>`, in canonical (CDP) spelling.
@@ -2125,6 +2168,14 @@ mod web {
         }
         if let Some(named) = NAMED_KEYS.iter().find(|k| k.eq_ignore_ascii_case(key)) {
             return Some(((*named).to_string(), modifiers));
+        }
+        // Function keys, alone or in a chord. SAP is driven by them — F3
+        // back, F4 value help, F8 execute — and they are often the only way
+        // to trigger an action with no clickable equivalent. `Alt+F4` is the
+        // reliable way to close a desktop window, which matters because a
+        // title-bar caption button is not dependably in the UIA tree.
+        if let Some(f) = function_key(key) {
+            return Some((f, modifiers));
         }
         // Single characters only make sense as part of a chord (Ctrl+V).
         if !modifiers.is_empty() && key.chars().count() == 1 {
@@ -3128,6 +3179,80 @@ mod tests {
             ResolvedAction::TypeText { target: Target::Css(css), text }
                 if css == "[name='params.0.name']" && text == "name"
         ));
+    }
+
+    /// SAP is driven by function keys — F3 back, F4 value help, F8 execute —
+    /// and they are frequently the only way to trigger an action with no
+    /// clickable equivalent. `Alt+F4` is the reliable way to close a desktop
+    /// window, which matters because a title-bar caption button is not
+    /// dependably in the UIA tree: a field flow closing Calculator recorded
+    /// fine and then failed every replay on exactly that. The driver has
+    /// always mapped `F<n>` to a virtual-key code; only the grammar refused
+    /// to author it (#289).
+    #[test]
+    fn function_keys_resolve_on_every_uia_driven_app() {
+        for app in ["windows", "sap", "vision", "calc", "notepad"] {
+            let actions = resolve_step(app, &SpecStep::Plain("Press F8".into()))
+                .unwrap_or_else(|e| panic!("`Press F8` must resolve on {app}: {e}"));
+            assert_eq!(
+                actions,
+                vec![ResolvedAction::PressKey {
+                    key: "F8".into(),
+                    modifiers: vec![],
+                }],
+                "on {app}"
+            );
+        }
+
+        // The chord that closes a window.
+        assert_eq!(
+            resolve_step("windows", &SpecStep::Plain("Press Alt+F4".into()))
+                .expect("chord resolves"),
+            vec![ResolvedAction::PressKey {
+                key: "F4".into(),
+                modifiers: vec![KeyModifier::Alt],
+            }]
+        );
+        // Spelling is case-insensitive; the stored key is canonical, so a
+        // trace recorded from `f12` replays through the same lookup as `F12`.
+        assert_eq!(
+            resolve_step("windows", &SpecStep::Plain("Press f12".into()))
+                .expect("lowercase resolves"),
+            vec![ResolvedAction::PressKey {
+                key: "F12".into(),
+                modifiers: vec![],
+            }]
+        );
+
+        // The range is closed at both ends, matching the driver's table.
+        resolve_step("windows", &SpecStep::Plain("Press F13".into()))
+            .expect_err("F13 is not a key");
+        resolve_step("windows", &SpecStep::Plain("Press F0".into())).expect_err("F0 is not a key");
+    }
+
+    /// Web must author nothing it cannot execute. The CDP key-definition
+    /// table has no `F1`–`F12`, so a step that recorded happily would die at
+    /// replay — a run later, far from the spec line that caused it. Refusing
+    /// at authoring time is the whole point.
+    #[test]
+    fn function_keys_are_refused_on_web_at_authoring_time() {
+        let err = resolve_step("web", &SpecStep::Plain("Press F5".into()))
+            .expect_err("web must refuse a function key");
+        let text = err.to_string();
+        assert!(text.contains("F5"), "the key is named: {text}");
+        assert!(text.contains("desktop-only"), "the reason is named: {text}");
+        assert!(
+            text.contains("Click"),
+            "and a form that DOES work on web is offered: {text}"
+        );
+
+        resolve_step("web", &SpecStep::Plain("Press Alt+F4".into()))
+            .expect_err("a chord is refused too, not just a bare key");
+
+        // The ordinary keys are untouched by the refusal.
+        resolve_step("web", &SpecStep::Plain("Press Enter".into())).expect("Enter still resolves");
+        resolve_step("web", &SpecStep::Plain("Press Control+V".into()))
+            .expect("chords still resolve");
     }
 
     #[test]
