@@ -182,6 +182,23 @@ mod tests {
         }
     }
 
+    /// The grammar authors `F1`–`F12` (#289); this is the other half of that
+    /// round trip. `VK_F1` is 0x70 and the codes run contiguously to `VK_F12`
+    /// at 0x7B — a mapping that is one off-by-one away from silently pressing
+    /// the wrong key, which no assertion downstream would catch.
+    #[test]
+    fn function_keys_map_to_their_virtual_key_codes() {
+        assert_eq!(virtual_key("F1"), Some(0x70));
+        assert_eq!(virtual_key("F4"), Some(0x73));
+        assert_eq!(virtual_key("F12"), Some(0x7B));
+        // Canonical spelling is what the trace stores, but the table is
+        // tolerant of the other one rather than silently pressing nothing.
+        assert_eq!(virtual_key("f5"), virtual_key("F5"));
+        // Closed range: no F0, no F13.
+        assert_eq!(virtual_key("F13"), None);
+        assert_eq!(virtual_key("F0"), None);
+    }
+
     #[test]
     fn input_event_roundtrips_clone() {
         let ev = InputEvent::Text {
