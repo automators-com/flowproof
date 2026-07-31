@@ -6,7 +6,40 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **A capture in a `Type` step entered the reference as literal text.** The
+  check that was supposed to refuse captures in actions sat below the branches
+  that parse first, so `Type ${captured.oid} into the "Order id" field`
+  recorded happily — and typed the eleven characters `${captured.oid}` into
+  the field. `${VAR}` resolution leaves it alone because a secret name may not
+  contain a dot, and nothing else looked. The docs said it was a parse error;
+  it was neither an error nor correct.
+
+  `Go to ${captured.oid}` slipped past the same way, for the same reason.
+
+  Entering the wrong value silently is the worst outcome available to a
+  testing tool: the flow goes green having done something nobody asked for.
+
 ### Added
+
+- **A remembered value can now be typed.** `Remember the "id:oid" as oid`
+  then `Type ${captured.oid} into the "Order id" field`. The capture resolves
+  at execution time on record and on every replay, so — exactly like a
+  `${VAR}` secret — only the reference ever enters the trace.
+
+  This is the only way a value the application generates per run can be
+  entered at all. There is no literal for a trace to record, so a recording
+  of one would be wrong the moment it replayed. Proven with a fixture that
+  mints a random id per run: three replays, three different ids, green each
+  time, and the trace holds `"text":"${captured.oid}"` and no number.
+
+  **Typing is where it stops.** A capture still may not choose an element or a
+  destination — `Click "${captured.x}"`, `Go to ${captured.x}`, or one inside
+  a target label are parse errors naming the reason. Supplying text the app
+  just displayed is data entry, which is what a user does with a generated id;
+  picking the next element is control flow decided by the system under test.
+  A name that was never remembered fails closed, listing what was in scope.
 
 - **Function keys could not be expressed at all, on any app.** `Press F8`,
   `Press Alt+F4`, `Press Ctrl+F2` — none of them parsed. The key list held
