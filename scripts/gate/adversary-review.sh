@@ -41,10 +41,20 @@ diff="$(git diff "$base" "$HEAD_REF")"
 [ -n "$diff" ] || { echo "empty diff; nothing to review"; exit 0; }
 
 out="$(mktemp)"
-trap 'rm -f "$out"' EXIT
+prompt="$(mktemp)"
+trap 'rm -f "$out" "$prompt"' EXIT
 
-set +e
-claude -p "$(cat <<PROMPT
+# The prompt goes to a FILE and reaches the reviewer on stdin. It used to be a
+# single command-line argument, which capped the reviewable diff at Linux's
+# MAX_ARG_STRLEN - 128 KiB for one argv entry, independent of the much larger
+# ARG_MAX. A larger diff failed to exec with "Argument list too long", the
+# script saw rc 126, and reported it as `the reviewer exited 126; refusing`.
+#
+# That is the worst possible way for this to fail: the bigger the change, the
+# more a refusal looks earned, so a gate that never ran read as a gate that
+# said no. Found by the Windows containment spike, whose 217 KB diff could not
+# be reviewed at all - see spike/windows-containment/LOG.md finding 2.2.
+cat > "$prompt" <<PROMPT
 Review this change through one lens only. Other reviewers hold the others; do not
 try to cover for them, and do not soften a finding because it might be someone
 else's lens.
@@ -68,11 +78,13 @@ The diff under review, ${base}..${HEAD_REF}:
 ${diff}
 \`\`\`
 PROMPT
-)" \
+
+set +e
+claude -p \
   --allowed-tools Read Grep Glob \
   --disallowed-tools "Bash(sudo *)" "Bash(curl *)" "Bash(wget *)" \
   --max-turns 40 \
-  --output-format text < /dev/null > "$out" 2>&1
+  --output-format text < "$prompt" > "$out" 2>&1
 rc=$?
 set -e
 
@@ -80,7 +92,19 @@ cat "$out"
 echo
 
 if [ "$rc" -ne 0 ]; then
-  echo "::error::${LENS}: the reviewer exited ${rc}; refusing"
+  # Still a refusal - fail-closed does not bend for the reason. But 126 and 127
+  # mean the reviewer could not be STARTED, which is a broken gate rather than a
+  # judgement about the code, and the message must not let a maintainer read one
+  # as the other.
+  case "$rc" in
+    126|127)
+      echo "::error::${LENS}: TOOLING FAILURE - the reviewer could not be executed" \
+           "(exit ${rc}); this is not a review of your change. Refusing, fail-closed."
+      ;;
+    *)
+      echo "::error::${LENS}: the reviewer exited ${rc}; refusing"
+      ;;
+  esac
   exit 1
 fi
 

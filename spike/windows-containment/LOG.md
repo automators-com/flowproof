@@ -1077,3 +1077,79 @@ Local gate at this commit, exit codes captured separately, never piped:
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `0` |
 | `cargo fmt --all --check` | `0` |
 | `cargo test -p wfp-spike --all-features` (Linux) | `0` |
+
+---
+
+## Iteration 6 — finding 2.2 closed, with human authorisation
+
+The escalation in finding 2.2 was put to a human, who authorised the
+protected-path change. Recorded here because the authorisation is the part that
+matters: `scripts/gate/` is constitution-protected precisely so that a loop
+cannot fix the gate that is refusing its own work, and this change was made only
+after being asked for and granted.
+
+### The defect, restated
+
+`scripts/gate/adversary-review.sh` passed the whole prompt — including the diff —
+as a **single command-line argument**. Linux caps one argv entry at
+`MAX_ARG_STRLEN` = 128 KiB, independently of the far larger `ARG_MAX` (2 MiB
+here). Past that, `claude` cannot be exec'd at all, the script observes rc 126,
+and reports:
+
+```
+::error::correctness: the reviewer exited 126; refusing
+```
+
+**A gate that never ran, reading as a gate that said no** — and self-concealing,
+because the bigger the change the more an unexplained refusal looks earned.
+
+### The fix
+
+The prompt is written to a temp file and reaches the reviewer on **stdin**
+(replacing the previous `< /dev/null`). Verified that `claude -p` reads a prompt
+from stdin before relying on it, rather than assuming:
+
+```
+printf 'Reply with exactly the word PONG and nothing else.' > p.txt
+claude -p --output-format text < p.txt      # EXIT=0, output: PONG
+```
+
+Exit codes 126 and 127 are now reported as a **tooling failure**, explicitly
+"not a review of your change". The verdict is unchanged — still `exit 1`,
+still fail-closed — because fail-closed must not bend for the reason. Only the
+message distinguishes, so a maintainer cannot read a broken gate as a judgement.
+
+### The test, and its non-vacuity
+
+`CLAUDE.md`: a fix ships with the test that proves it stays fixed.
+`adversary-review.test.sh` gains a case that builds a **625,017-byte** diff with
+git plumbing (`hash-object` / `mktree` / `commit-tree`) — no working-tree change,
+no branch, two unreferenced objects left behind — and drives the real script over
+it. The fixture's size is asserted before the behaviour, so the case cannot pass
+vacuously by being too small.
+
+Demonstrated sensitivity, per `CHARTER.md` §6 — same fixture, same stub, same
+approving reply, only the script differs:
+
+| script | exit | output |
+|---|---|---|
+| `HEAD` (before the fix) | `1` | `::error::correctness: the reviewer exited 126; refusing` |
+| after the fix | `0` | `correctness: approve` |
+
+The first attempt at this comparison ran the old script from a scratch directory
+and got `exit 2, no such lens: correctness` — `dirname "$0"` had resolved
+elsewhere, so the thing under test never ran while the non-zero exit satisfied
+"it failed". Honesty rule 1, caught and redone rather than reported.
+
+### Locally verified (exit codes captured separately, never piped)
+
+| Command | Exit |
+|---|---|
+| `bash scripts/gate/adversary-review.test.sh` | `0` (12 cases, incl. the 625 KB diff) |
+| `bash scripts/gate/ratchets.test.sh` | `0` |
+| `bash scripts/gate/constitution-check.test.sh` | `0` |
+| `AUTHOR=AminChirazi CHANGED_FILES="…" constitution-check.sh` | `0` — flags the protected paths, allows the human author |
+
+No CHANGELOG entry: that file records product-facing change, and no previous
+gate-infrastructure change appears in it. Following the existing convention
+rather than inventing one.
