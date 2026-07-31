@@ -4,7 +4,7 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
-## Unreleased
+## 0.10.0
 
 ### Fixed
 
