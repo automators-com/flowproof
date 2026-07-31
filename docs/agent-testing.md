@@ -1065,3 +1065,12 @@ blurred by a step type that can fail on an unchanged system. Same
 philosophy as the `page.evaluate` rejection in
 [design.md](design.md): protect the invariant that makes the tool
 trustworthy.
+
+A *third* problem is neither of these two, and is proposed separately in
+[explore-mode.md](explore-mode.md): not "is the answer good?" but "can a
+control this suite already declares be violated by an input the recording
+never saw?" Its verdict is existential rather than statistical — one
+violation is a finding, and the finding converts into an ordinary
+deterministic replay — but it can still fail on an unchanged system, so it
+inherits the constraint above in full: a separate runner, a separate report
+path, and no contribution to `flowproof audit`.
