@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "flowproof"
-version = "0.9.1"
+version = "0.10.0"
 description = "Deterministic evidence and control-regression gating for AI agents and the SAP, web and Citrix systems they drive. Record once, replay with zero LLM calls."
 readme = "README.md"
 license = "Apache-2.0"
