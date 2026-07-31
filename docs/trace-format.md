@@ -123,6 +123,14 @@ these fields existed) is byte-identical:
   execution time — recording and every replay — and the trace only ever
   stores the reference, never the value. An unset variable fails closed
   with an error naming it.
+  A `type_text` text may also contain a `${captured.<name>}` **capture
+  reference**, resolved the same way but from the flow's own captures
+  (`action.type == "capture"`) rather than the environment. This is what
+  makes a value the app generates per run enterable at all: there is no
+  literal to record, so the trace stores the reference and each replay reads
+  the value fresh. A name that was never captured fails closed, naming what
+  was in scope. Captures resolve before secrets, because a `${VAR}` name may
+  not contain a dot.
 
   `type_text` variants: an **empty `selectors` array** means "type into the
   element that currently has keyboard focus"; `params.replace: true` marks

@@ -281,9 +281,24 @@ literal cannot express because the starting value is only known at run time:
 
 The expression grammar is deliberately tiny and does not compose: one
 capture reference, optionally one `+` or `-`, and one plain number. There is
-no second capture, no nesting, no `*` or `/`. A capture may only be
-referenced in an ASSERTION - using one in an action is a parse error,
-because that would let the app under test steer execution.
+no second capture, no nesting, no `*` or `/`.
+
+A capture may also be **typed**, which is how a value the app generates per
+run gets entered — there is no literal a trace could record, so the trace
+stores the reference and every replay reads the value fresh:
+
+```yaml
+- Click "GENERATE ORDER ID"
+- Remember the "id:oid" as oid
+- Type ${captured.oid} into the "Order id" field
+```
+
+Typing is where it stops. A capture may not choose an element or a
+destination - `Click "${captured.x}"`, `Go to ${captured.x}`, or a capture
+in a target label are all parse errors, because that would let the app under
+test decide what the flow does next. Supplying text it just displayed is
+data entry; picking the next element is control flow. A name that was never
+remembered fails closed, naming what was in scope.
 
 ### iframes (same-origin, assertions)
 

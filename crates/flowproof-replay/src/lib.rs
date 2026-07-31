@@ -1803,9 +1803,17 @@ fn execute_step<D: AppDriver>(
                 if let Err(reason) = wait_actionable(driver, &target, actionable_timeout(step))? {
                     return Ok((Err(reason), matched));
                 }
-                // The trace stores `${VAR}` secret references, never values;
-                // they resolve from the environment at the moment of typing.
-                match flowproof_trace::secret::resolve_refs(&params.text) {
+                // The trace stores references, never values. A
+                // `${captured.x}` resolves from this run's captures and a
+                // `${VAR}` from the environment, both at the moment of
+                // typing. Captures first: a `${VAR}` name may not contain a
+                // dot, so the secret resolver passes a capture reference
+                // through as literal text.
+                let typed = match flowproof_trace::captures::substitute(&params.text, captures) {
+                    Ok(text) => text,
+                    Err(reason) => return Ok((Err(reason), matched)),
+                };
+                match flowproof_trace::secret::resolve_refs(&typed) {
                     Ok(value) => {
                         // `replace: true` marks fill semantics: clear the
                         // current value first (`Clear the … field` records

@@ -891,6 +891,28 @@ enum Scope {
     },
 }
 
+/// The opening of a capture reference, from the crate that resolves them.
+pub use flowproof_trace::captures::OPEN as CAPTURE_OPEN;
+
+/// Is every capture reference in this step confined to the VALUE of a
+/// `Type … into the …` step?
+///
+/// A capture may steer what gets *typed* and nothing else. Letting one pick
+/// an element, a URL or a key would hand the app under test control over
+/// what the flow does next; letting it supply text is data entry — what a
+/// user does with a generated id they were just shown, and the only way a
+/// per-run value can be entered at all, since there is no literal to record.
+fn capture_ref_is_typed(trimmed: &str) -> bool {
+    let Some(rest) = strip_prefix_ci(trimmed, "type ") else {
+        return false;
+    };
+    let Some(pos) = rfind_ci(rest, " into the ") else {
+        return false;
+    };
+    let (value, target) = rest.split_at(pos);
+    value.contains(CAPTURE_OPEN) && !target.contains(CAPTURE_OPEN)
+}
+
 /// `F1`–`F12` in canonical spelling, or `None` for anything else.
 ///
 /// Deliberately a parse rather than twelve more entries in `NAMED_KEYS`, so
@@ -2189,6 +2211,22 @@ mod web {
     pub(super) fn resolve_plain(text: &str) -> Result<Vec<ResolvedAction>, RulesError> {
         let trimmed = text.trim();
 
+        // Where a capture may be READ, checked before any branch can return.
+        // It used to sit further down, which made it unreachable for the
+        // forms that parse early: `Type ${captured.x} into …` recorded
+        // happily and typed the LITERAL `${captured.x}` into the field,
+        // because `${VAR}` resolution rejects the dot in the name and leaves
+        // the text alone. Silently entering the wrong value is worse than
+        // refusing the step.
+        if trimmed.contains(CAPTURE_OPEN) && !capture_ref_is_typed(trimmed) {
+            return Err(unresolvable(
+                trimmed,
+                "a capture may be typed (`Type ${captured.<name>} into the \"<field>\"`) or \
+                 compared in an assertion, but not used to choose an element or a destination — \
+                 that would let the app under test decide what the flow does next",
+            ));
+        }
+
         // `Scroll …` (web). Three forms:
         //   Scroll to the top|bottom                  (the page itself)
         //   Scroll the [2nd ]"<target>" to the top|bottom  (a container)
@@ -2424,17 +2462,6 @@ mod web {
                 trimmed,
                 "expected 'Replace the [2nd ]\"<label>\" field with <text>' or \
                  'Replace the <id> field with <text>'",
-            ));
-        }
-
-        // Captures may be READ only by assertions. Allowing one in an action
-        // would make the app's own output steer execution, which is control
-        // flow in a test - the same thing the page.evaluate rejection is
-        // about.
-        if trimmed.contains("${captured.") {
-            return Err(unresolvable(
-                trimmed,
-                "captures may only be referenced in assertions, not in actions",
             ));
         }
 
@@ -3179,6 +3206,66 @@ mod tests {
             ResolvedAction::TypeText { target: Target::Css(css), text }
                 if css == "[name='params.0.name']" && text == "name"
         ));
+    }
+
+    /// A capture may supply TYPED TEXT, which is the whole point: a value the
+    /// app generates per run has no literal a trace could record, so entering
+    /// one was impossible. The reference is what the trace stores; it
+    /// resolves at execution on record and on every replay.
+    #[test]
+    fn a_capture_may_be_typed_into_a_field() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain(r#"Type ${captured.oid} into the "Order id" field"#.into()),
+        )
+        .expect("a capture may be typed");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::TypeText {
+                target: Target::text("Order id"),
+                // The REFERENCE, not a value — nothing to record, nothing
+                // to leak, and a fresh read on every replay.
+                text: "${captured.oid}".into(),
+            }]
+        );
+
+        // The bare-id form too, and mixed with surrounding literal text.
+        resolve_step(
+            "web",
+            &SpecStep::Plain("Type ${captured.oid} into the entry field".into()),
+        )
+        .expect("bare id target");
+        resolve_step(
+            "web",
+            &SpecStep::Plain(r#"Type order-${captured.oid} into the "Ref" field"#.into()),
+        )
+        .expect("a capture may be embedded in literal text");
+    }
+
+    /// Typing is where it stops. A capture choosing an ELEMENT or a
+    /// DESTINATION would hand the app under test control of what the flow
+    /// does next, which is control flow decided by the system being tested.
+    ///
+    /// `Go to` is the regression that motivated moving this check to the top
+    /// of `resolve_plain`: it parses early, so it returned before the old
+    /// check could ever run.
+    #[test]
+    fn a_capture_may_not_choose_an_element_or_a_destination() {
+        for step in [
+            r#"Click "${captured.oid}""#,
+            "Go to ${captured.oid}",
+            "Navigate to /orders/${captured.oid}",
+            r#"Press the "${captured.oid}" button"#,
+            r#"Type 5 into the "${captured.oid}" field"#,
+            r#"Clear the "${captured.oid}" field"#,
+        ] {
+            let err = resolve_step("web", &SpecStep::Plain(step.into()))
+                .expect_err("a capture must not steer execution");
+            assert!(
+                err.to_string().contains("app under test"),
+                "the reason must be stated for '{step}': {err}"
+            );
+        }
     }
 
     /// SAP is driven by function keys — F3 back, F4 value help, F8 execute —

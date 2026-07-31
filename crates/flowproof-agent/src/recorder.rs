@@ -1914,9 +1914,19 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
             match &action {
                 ResolvedAction::Press { .. } => driver.invoke(targeted())?,
                 ResolvedAction::TypeText { text, .. } => {
-                    // `${VAR}` secrets resolve at the moment of typing; the
-                    // trace only ever stores the reference (see step_for).
-                    let value = flowproof_trace::secret::resolve_refs(text)?;
+                    // `${captured.x}` and `${VAR}` both resolve at the moment
+                    // of typing; the trace only ever stores the reference
+                    // (see step_for). Captures first: a `${VAR}` name cannot
+                    // contain a dot, so the secret resolver would pass a
+                    // capture reference through as literal text.
+                    let text = flowproof_trace::captures::substitute(text, &captures).map_err(
+                        |reason| RecordError::AssertMismatch {
+                            intent: spec_step.intent().to_string(),
+                            expected: "a remembered capture to type".to_string(),
+                            actual: reason,
+                        },
+                    )?;
+                    let value = flowproof_trace::secret::resolve_refs(&text)?;
                     driver.type_text(targeted(), &value)?
                 }
                 ResolvedAction::TypeFocused { text } => {
