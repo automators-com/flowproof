@@ -182,7 +182,13 @@ fn an_agent_that_kills_the_stand_in_still_leaves_a_recorded_lane() {
     // lane beside it is exactly what the pre-0.8.0 defect produced.
     let trace = dir.join("weather.trace.jsonl");
     let contents = std::fs::read_to_string(&trace).expect("trace readable");
-    for needle in ["\"mcp\"", "\"weather\"", "initialize", "tools/call", "get_weather"] {
+    for needle in [
+        "\"mcp\"",
+        "\"weather\"",
+        "initialize",
+        "tools/call",
+        "get_weather",
+    ] {
         assert!(
             contents.contains(needle),
             "the MCP lane must survive an abrupt kill, missing {needle}: {contents}"
