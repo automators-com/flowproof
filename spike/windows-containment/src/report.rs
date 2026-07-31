@@ -52,7 +52,7 @@ impl Report {
     /// A free-form fact worth having in the log but not itself an assertion —
     /// an error code, a SID, a filter id. These are what make the *next*
     /// iteration cheap, since a missing log line costs a full CI cycle.
-    pub fn note(&self, key: &str, value: impl Display) {
+    pub fn note(&self, key: impl Display, value: impl Display) {
         emit(&format!("SPIKE|NOTE|{key}|{value}"));
     }
 

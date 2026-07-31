@@ -275,7 +275,7 @@ containment.**
 
 ---
 
-## Iteration 2 — the first real Windows run, and what it did not say
+## Iteration 3 — the first real Windows run, and what it did not say
 
 Run **30608374686**, job `windows build + E2E` (id 91085555047), commit
 `8c0ad32`. Step 5 `build + test (windows)`: **success**.
@@ -287,7 +287,7 @@ test windows_egress_containment_spike ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.10s
 ```
 
-### Finding 2.1 — the harness reached a Windows kernel and told us nothing (NEGATIVE)
+### Finding 3.1 — the harness reached a Windows kernel and told us nothing (NEGATIVE)
 
 The spike crate compiled on `windows-latest`, the test ran, and it produced
 **zero** `SPIKE|` lines. Grepping the downloaded job log:
@@ -331,7 +331,7 @@ and `RUST_TEST_NOCAPTURE` both live in the protected workflow; putting the
 variable in `.cargo/config.toml` would make every other crate's tests noisy to
 fix one crate's problem.
 
-### Finding 2.2 — a real defect in the adversary gate (ESCALATION: protected path)
+### Finding 3.2 — a real defect in the adversary gate (ESCALATION: protected path)
 
 `adversary` failed on run **30608374678** with:
 
@@ -387,7 +387,7 @@ looks earned.
 > Nothing in this spike depends on the fix: `adversary` is not what gates the
 > Windows job, and this pull request is not for merging.
 
-### Finding 2.3 — this worktree is not exclusively ours
+### Finding 3.3 — this worktree is not exclusively ours
 
 Commit `8c0ad32` was authored and pushed by something other than this session,
 from this session's uncommitted working tree, mid-edit. That cancelled the
@@ -407,14 +407,14 @@ about containment; everything before it is scaffolding.
 
 ---
 
-## Iteration 3 — the first Windows run measured nothing, and why
+## Iteration 4 — the first Windows run measured nothing, and why
 
 `windows build + E2E` on run 30608374686: **success**. The spike test ran on a
 real `windows-latest` kernel and reported `ok`.
 
 **It produced zero `SPIKE|` lines.** `grep -c 'SPIKE|' winci.log` → `0`.
 
-### Finding 3.1 — `cargo test` swallowed the entire evidence base (NEGATIVE, cost one full run)
+### Finding 4.1 — `cargo test` swallowed the entire evidence base (NEGATIVE, cost one full run)
 
 Line 2877 of the job log:
 
@@ -451,7 +451,7 @@ CHILD|this-came-from-a-subprocess     <- present, on a PASSING test
 `Stdio::inherit()` and asserts only that the binary started and exited zero.
 The whole spike moved into `harness::run_all()`.
 
-### Finding 3.2 — the elevation preflight was a veto disguised as a check
+### Finding 4.2 — the elevation preflight was a veto disguised as a check
 
 The 5-second runtime is consistent with the preflight abort, which was:
 
@@ -491,18 +491,18 @@ indistinguishable in the log from the work having been done.
 
 ### Still not known
 
-Unchanged from iteration 2, and now known to be unchanged *because the run
+Unchanged from iteration 3, and now known to be unchanged *because the run
 measured nothing*: `FwpmFilterAdd0` has never been called on a real kernel.
 Two Windows runs have now completed without producing a single byte of
 containment evidence.
 
 ---
 
-## Iteration 3 — the harness reached the kernel, and the kernel said no
+## Iteration 5 — the harness reached the kernel, and the kernel said no
 
 Run **30610129516**, job id `91090900780`, commit `ad654ca`. Step 5
 `build + test (windows)`: **success**. 35 `SPIKE|` lines — the capture fix from
-finding 2.1 works on Windows exactly as it did locally.
+finding 4.1 works on Windows exactly as it did locally.
 
 ### The summary line, unedited
 
@@ -516,7 +516,7 @@ as four assertions that could not be evaluated, not as four passes and not as
 four failures. Honesty rule 1 in practice — the thing under test never ran, and
 the log says exactly that.
 
-### Finding 3.1 — `NetUserAdd` refuses the password, and the error name lies (BLOCKER, fixed)
+### Finding 5.1 — `NetUserAdd` refuses the password, and the error name lies (BLOCKER, fixed)
 
 ```
 SPIKE|ASSERT|core|NOT-RUN|expected=boundary established|observed=NOT RUN:
@@ -544,7 +544,7 @@ The constant password is recorded as a **spike shortcut**: acceptable only
 because the account is local-only, unprivileged and deleted in the same run.
 Anything shipping must generate it from a CSPRNG.
 
-### Finding 3.2 — the runner's Administrator does NOT hold SeAssignPrimaryTokenPrivilege
+### Finding 5.2 — the runner's Administrator does NOT hold SeAssignPrimaryTokenPrivilege
 
 ```
 SPIKE|NOTE|preflight.elevated|true
@@ -590,3 +590,237 @@ arranged deliberately. Named here rather than discovered later.
 Every containment question. `FwpmFilterAdd0` has still not been called: the run
 failed one step earlier, at identity creation. Three Windows runs in, the
 mechanism remains **unmeasured**.
+
+---
+
+## Iteration 4 — every day ran. The mechanism holds; the prize question is open but favourable
+
+Run **30611742558**, job id `91095884891`, commit `4a1cba2`-era tree. Step 5
+**success**, 223 `SPIKE|` lines.
+
+```
+SPIKE|SUMMARY|met=31|not_met=1|not_run=0
+```
+
+All nine days were exercised in one job. What follows is what the log actually
+shows, negative findings first.
+
+### NEGATIVE 4.1 — raw sockets and promiscuous mode are NOT blocked
+
+```
+SPIKE|NOTE|wfp.block.promiscuous.error|FwpmFilterAdd0 failed: code=2150760487 (0x80320027) block promiscuous
+```
+
+`0x80320027` is `FWP_E_TYPE_MISMATCH`: `FWPM_CONDITION_ALE_PROMISCUOUS_MODE`
+was given an `FWP_UINT8` value and wants `FWP_UINT32`. The filter was **never
+added**, in every stage of the run.
+
+This matters more than a typo. Everything else in this log is evidence about
+`ALE_AUTH_CONNECT` — the *connect* path. A process that can open a raw socket
+composes its own packets and never touches that layer, so **for this run the
+claim is "it cannot connect anywhere undeclared", not "it cannot put a packet
+on the wire"**. The difference is exactly the difference between honest
+containment and a filter with a hole in it.
+
+Fixed for the next run (both value types attempted, both reported) and a
+separate `IPPROTO_RAW` block added at the same layer. **Until a run shows those
+filters added and a raw-socket probe refused, this remains open.**
+
+### NEGATIVE 4.2 — net-event collection cannot be enabled from a dynamic session
+
+```
+SPIKE|NOTE|wfp.net_events.enable.error|FwpmEngineSetOption0(COLLECT_NET_EVENTS) failed: code=2150760459 (0x8032000b)
+```
+
+`0x8032000B` is `FWP_E_DYNAMIC_SESSION_IN_PROGRESS`. Engine options are not
+settable over a dynamic session — and the dynamic session is exactly what makes
+teardown survive a killed supervisor (4.6). The audit lane worked anyway
+*because collection was already on* on this runner.
+
+**A shipping implementation cannot rely on that.** It needs a second,
+non-dynamic engine handle purely to set the option, and must restore it
+afterwards. Named now rather than discovered on a customer's host where
+collection is off and the audit lane silently returns nothing.
+
+### NEGATIVE 4.3 — UDP containment has no client-visible signal
+
+```
+SPIKE|ASSERT|core.udp.client|NOT-MET|expected=send_to fails|observed=sent=true os_error=0
+SPIKE|ASSERT|core.udp.oracle|MET|expected=destination received 0 datagrams|observed=sightings=0 []
+SPIKE|NETEVENT-LIVE| kind=classify-drop remote=10.1.0.101 port=51517 proto=17 sid=…-1003 filter_id=72041 layer=48
+```
+
+The single `not_met` in the run. Read together, the three lines say something
+sharper than "a test failed": **the datagram was dropped by the kernel and the
+sender was told it succeeded.** `send_to` returned success with `os_error=0`;
+the destination received nothing; the drop is in the audit lane with the right
+address, port, protocol 17 and the run SID.
+
+So containment held for UDP. What does not exist is any way for the *contained
+process* to observe it. Had this spike followed honesty rule 2 less strictly and
+checked only the client's error, it would have concluded UDP was uncontained —
+the exact inverse of the truth. This is the clearest vindication in the run of
+insisting on a destination-side oracle.
+
+Consequence for the product: **`assert_no_egress` on Windows must never be
+implemented against client-visible errors.** The oracle is the audit lane.
+
+### NEGATIVE 4.4 — the window enumeration was broken, so question 2's evidence is weaker than it looks
+
+```
+SPIKE|CHILD| GUI|WINDOW-LIST-FAILED|before-launch find element time out
+SPIKE|CHILD| GUI|WINDOW-LIST-FAILED|after-own-launch find element time out
+SPIKE|CHILD| GUI|Q2-WINDOW-NOT-FOUND|find element time out
+```
+
+The line meant to be the most informative in the whole stage produced nothing.
+`create_matcher()` is a poll-until-match loop, so with no filter it never
+matches and times out; that is a defect in the probe, not a fact about the
+boundary. It failed even *after* question 1 had found and driven a window, which
+is proof the enumeration — not the tree — was at fault.
+
+That leaves question 2 resting on one negative, whose error string (`find
+element time out`) is **the same string the broken enumeration produced**. The
+result is therefore recorded as *consistent with* cross-identity refusal and
+**not** as established.
+
+Fixed two ways for the next run: enumeration now uses
+`find_all(TreeScope::Children, true-condition)`; and the supervisor runs the
+**same query from the original user at the same moment** as a control. If the
+original user sees the window and the contained identity does not, question 2 is
+answered. Without that control it is not.
+
+### POSITIVE — days 1–3: the mechanism works, and the app-id escape is closed
+
+```
+SPIKE|ASSERT|core.declared.client|MET|observed=connected=true os_error=0
+SPIKE|ASSERT|core.declared.oracle|MET|observed=sightings=2 [...payload="fp-spike"...]
+SPIKE|ASSERT|core.undeclared.client|MET|observed=connected=false os_error=10013
+SPIKE|ASSERT|core.undeclared.oracle|MET|observed=sightings=0 []
+SPIKE|ASSERT|core.grandchild.client|MET|observed=connected=false os_error=10013
+SPIKE|ASSERT|core.external.client-side-only|MET|observed=connected=false os_error=10013
+SPIKE|ASSERT|canary.runs-as-run-identity|MET|observed=CANARY|WHOAMI|child|fp-spk-2076-core
+```
+
+Both oracles agree with both clients. The declared destination was reached and
+**saw the payload**; the undeclared destination saw **zero** connections while
+its client got a refusal.
+
+**The grandchild result is the one that matters most.** `canary.exe` → `cmd.exe`
+→ `canary.exe` is refused identically to its parent. That is the concrete
+demonstration that a per-run identity closes the escape an app-id filter leaves
+open, which was the entire architectural premise.
+
+**The blocked-connect error code is confirmed: `10013` = `WSAEACCES`**, on the
+undeclared on-host destination, on the external destination, and for the
+grandchild. It was flagged unverified in the brief; it is now measured. A
+blocked connect is distinguishable from an ordinary network failure, so audit
+quality does not collapse.
+
+Note also `loopback=true` on the drop records for `10.1.0.101` — the runner's
+own NIC address takes the loopback path and **was still classified and
+dropped**. The loopback question the log promised to answer is answered:
+`ALE_AUTH_CONNECT` sees it.
+
+### POSITIVE — day 4: the audit lane carries what an audit needs
+
+```
+SPIKE|ASSERT|core.audit.drop-carries-address-and-port|MET|observed=kind=classify-drop
+  remote=10.1.0.101 port=56209 proto=6 sid=S-1-5-21-…-1003 filter_id=72041 layer=48
+  loopback=true flags=0x57f
+```
+
+Remote address, remote port, protocol, the **run identity's SID**, and the id of
+the filter that did it. Both paths agreed: the live `FwpmNetEventSubscribe4`
+subscription and the independent `FwpmNetEventEnum5` readback returned the same
+four drops.
+
+### POSITIVE — day 5: the negative control inverts cleanly
+
+With the block filter deliberately omitted and nothing else changed:
+
+```
+SPIKE|ASSERT|negative.undeclared.client|MET|observed=connected=true os_error=0
+SPIKE|ASSERT|negative.undeclared.oracle|MET|observed=sightings=2 [...]
+SPIKE|ASSERT|negative.grandchild.client|MET|observed=connected=true os_error=0
+SPIKE|ASSERT|negative.udp.oracle|MET|observed=sightings=1 [...]
+SPIKE|NOTE|netevent.attributed-to-run-identity|0
+```
+
+Every probe that was refused under enforcement now connects, both oracles see
+the traffic, and **zero** drops are attributed to the run identity. The failure
+path is exercised, not assumed: this run can tell contained from uncontained.
+
+### POSITIVE — day 6: teardown survives an outright kill
+
+```
+SPIKE|HOLDER| HOLD|READY|149171802790184517201392271000588005076|3|fp-spk-9208-hold
+SPIKE|ASSERT|teardown.abrupt.filters-existed-first|MET|observed=3 filters
+SPIKE|ASSERT|teardown.abrupt.filters-gone|MET|observed=0 remain
+```
+
+Three filters confirmed present *before* the kill — so "0 remain" cannot be read
+as "never added" — then `TerminateProcess`, then zero remaining as counted
+through a **fresh** engine handle. The dynamic session does what it claims.
+
+`core.teardown.clean-close` and `negative.teardown.clean-close` also both MET.
+
+### THE SPIKE — days 7–9: question 1 passes
+
+```
+SPIKE|CHILD| GUI|USERNAME|fp-spk-2076-gui
+SPIKE|CHILD| GUI|UIA-INIT|ok
+SPIKE|CHILD| GUI|Q1-LAUNCH|notepad.exe pid=6836
+SPIKE|CHILD| GUI|Q1-WINDOW-FOUND|name="Untitled - Notepad" class="Notepad"
+SPIKE|CHILD| GUI|Q1-EDIT-FOUND|15
+SPIKE|CHILD| GUI|Q1-SEND-TEXT|ok
+SPIKE|CHILD| GUI|Q1-READBACK|contains_marker=true value="fp-spike-inside-boundary"
+SPIKE|ASSERT|gui.q1.KILL-CRITERION.drives-own-gui-app|MET
+SPIKE|ASSERT|gui.q3.launched-app-carries-run-identity-sid|MET|…SID …-1006
+```
+
+**A process running as a freshly created, unprivileged, per-run local user
+initialised a UI Automation client, launched a GUI application, found its
+window, typed into its editor control, and read the text back.** The readback is
+what makes this a result rather than an API call that returned `Ok`.
+
+**The kill criterion did not fire.** Question 1 was the one that could have
+ended this: had it failed, the fused claim would be dead and no amount of WFP
+work would revive it. It passed.
+
+Question 3's supporting evidence is exact rather than argued: the GUI app's
+token user SID is the run identity's SID, and that SID is precisely what the
+WFP filters are scoped to. A GUI app launched inside the boundary is inside the
+containment scope **by construction**, not by hope.
+
+### What this does NOT say
+
+**Notepad is a fair proxy for the identity boundary and a poor one for SAP GUI.**
+Question 1's pass is evidence that the identity boundary does not, in itself,
+prevent a contained process from driving a GUI app. It is **not** evidence about
+SAP GUI, and reporting it as such would be precisely the overclaim this codebase
+exists to prevent.
+
+Untouched, and untouchable on a hosted runner: SAP GUI's licensing under a
+freshly created local user; its COM registration (`SAPGUI` / `SapROTWr`) being
+per-user or per-machine; and whether it needs a populated user profile that a
+`NetUserAdd` account created seconds earlier does not have. Also untested:
+Citrix Receiver/Workspace, which adds its own session broker to the same
+question.
+
+The prior pass put ~40% on the fused claim surviving contact with SAP GUI. This
+run removes the *identity-generic* half of that risk and leaves the
+*SAP-specific* half exactly where it was.
+
+### Confirmed operational facts, for whoever builds this
+
+| Fact | Value |
+|---|---|
+| blocked-connect error | `WSAEACCES` (10013), TCP connect |
+| UDP blocked | drop recorded; `send_to` still returns success |
+| runner identity | `runneradmin`, RID 500, elevated |
+| `SeAssignPrimaryTokenPrivilege` | **not held** → `CreateProcessAsUserW` unusable |
+| spawn path actually used | `CreateProcessWithLogonW` |
+| logon type accepted | `INTERACTIVE` |
+| filters per boundary | 3 (1 permit, 2 block) |
+| drop record fields | remote addr, port, protocol, user SID, filter id, layer, loopback flag |

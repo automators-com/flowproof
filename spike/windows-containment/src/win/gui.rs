@@ -202,6 +202,13 @@ fn question_one(automation: &UIAutomation) {
 /// user started. Expected to fail; the point is the exact failure.
 fn question_two(automation: &UIAutomation, title: &str) {
     emit("Q2-TARGET-TITLE", title);
+    // Enumeration first, matcher second. "The window is not in the list of
+    // windows this identity can see" is a far stronger statement than "a
+    // matcher timed out", and the two failure modes are indistinguishable in a
+    // timeout.
+    let (visible, detail) = window_visible(automation, title);
+    emit("Q2-ENUM-VISIBLE", format!("{visible} | {detail}"));
+
     let matcher = automation
         .create_matcher()
         .depth(6)
@@ -260,33 +267,67 @@ fn read_value(e: &uiautomation::UIElement) -> Option<String> {
     e.get_name().ok()
 }
 
-fn dump_top_level(automation: &UIAutomation, when: &str) {
-    match automation.get_root_element() {
-        Ok(root) => {
-            let matcher = automation
-                .create_matcher()
-                .from_ref(&root)
-                .depth(1)
-                .timeout(2000);
-            match matcher.find_all() {
-                Ok(all) => {
-                    emit("WINDOW-LIST-COUNT", format!("{when} n={}", all.len()));
-                    for e in all.iter().take(40) {
-                        emit(
-                            "WINDOW",
-                            format!(
-                                "{when} name={:?} class={:?} pid={:?}",
-                                e.get_name().unwrap_or_default(),
-                                e.get_classname().unwrap_or_default(),
-                                e.get_process_id().unwrap_or(0)
-                            ),
-                        );
-                    }
-                }
-                Err(e) => emit("WINDOW-LIST-FAILED", format!("{when} {e}")),
+/// The desktop's top-level windows as this identity sees them.
+///
+/// Uses `find_all(TreeScope::Children, true-condition)` and **not** the
+/// matcher. The matcher is a poll-until-match loop, so with no filter it never
+/// matches and simply times out — which is what the first run's
+/// `WINDOW-LIST-FAILED|find element time out` was. That is a defect in the
+/// probe, not evidence about the boundary, and it cost the one line that was
+/// meant to be the most informative in the stage.
+pub fn top_level_windows(automation: &UIAutomation) -> Result<Vec<String>, String> {
+    let root = automation
+        .get_root_element()
+        .map_err(|e| format!("get_root_element: {e}"))?;
+    let cond = automation
+        .create_true_condition()
+        .map_err(|e| format!("create_true_condition: {e}"))?;
+    let all = root
+        .find_all(uiautomation::types::TreeScope::Children, &cond)
+        .map_err(|e| format!("find_all: {e}"))?;
+    Ok(all
+        .iter()
+        .map(|e| {
+            format!(
+                "name={:?} class={:?} pid={}",
+                e.get_name().unwrap_or_default(),
+                e.get_classname().unwrap_or_default(),
+                e.get_process_id().unwrap_or(0)
+            )
+        })
+        .collect())
+}
+
+/// Is a window whose name contains `needle` visible to this identity?
+///
+/// Shared between the contained probe and the supervisor so that question 2's
+/// answer rests on **the same query run from two identities at the same moment**
+/// rather than on one negative result in isolation.
+pub fn window_visible(automation: &UIAutomation, needle: &str) -> (bool, String) {
+    match top_level_windows(automation) {
+        Ok(list) => {
+            let hit = list.iter().find(|l| l.contains(needle));
+            match hit {
+                Some(h) => (true, h.clone()),
+                None => (
+                    false,
+                    format!("absent from {} top-level windows: {:?}", list.len(), list),
+                ),
             }
         }
-        Err(e) => emit("ROOT-ELEMENT-FAILED", format!("{when} {e}")),
+        Err(e) => (false, format!("enumeration failed: {e}")),
+    }
+}
+
+fn dump_top_level(automation: &UIAutomation, when: &str) {
+    match top_level_windows(automation) {
+        Ok(all) => {
+            emit("WINDOW-LIST-COUNT", format!("{when} n={}", all.len()));
+            for e in all.iter().take(40) {
+                emit("WINDOW", format!("{when} {e}"));
+            }
+        }
+        Err(e) => emit("WINDOW-LIST-FAILED", format!("{when} {e}")),
     }
 }
 

@@ -566,15 +566,17 @@ pub fn stage_core(report: &mut Report, enforce: bool, tag: &str) {
 
     // --- UDP to an undeclared host ---
     if let Some((connected, code)) = probe_result(&outcome.child_stdout, "child.udp.undeclared") {
-        report.assert_obs(
-            format!("{prefix}.udp.client"),
-            if enforce {
-                "send_to fails"
-            } else {
-                "send_to succeeds"
-            },
-            format!("sent={connected} os_error={code}"),
-            if enforce { !connected } else { connected },
+        // NOT an assertion. The first Windows run showed `send_to` returning
+        // success while the kernel dropped the datagram and recorded the drop —
+        // so for UDP there is no client-visible signal of containment at all,
+        // and asserting on one would assert on a thing that does not exist.
+        // What is asserted is the destination and the audit lane.
+        report.note(
+            format!("{prefix}.udp.client-signal"),
+            format!(
+                "sent={connected} os_error={code} (UDP send_to reports success even when the \
+                 datagram is dropped; containment is asserted on the oracle below)"
+            ),
         );
         let seen = dst_udp.sightings.count();
         report.assert_obs(
@@ -897,6 +899,29 @@ pub fn stage_gui(report: &mut Report) {
         }
     };
 
+    // The control for question 2. The supervisor runs the *same* enumeration,
+    // from the original user, at the same moment — so a negative from inside
+    // the boundary means "refused across the identity boundary" rather than
+    // "the window was not there" or "the probe is broken". Without this the
+    // day 7-9 result rests on a single negative in isolation, which is exactly
+    // the overclaim this codebase exists to prevent.
+    match uiautomation::UIAutomation::new() {
+        Ok(a) => {
+            let (visible, detail) = super::gui::window_visible(&a, &marker);
+            report.assert_obs(
+                "gui.q2.CONTROL.foreign-window-visible-to-its-own-identity",
+                "the original user CAN see the window it started",
+                format!("visible={visible} | {detail}"),
+                visible,
+            );
+        }
+        Err(e) => report.not_run(
+            "gui.q2.CONTROL.foreign-window-visible-to-its-own-identity",
+            "supervisor-side enumeration",
+            format!("UIAutomation::new() failed in the supervisor: {e}"),
+        ),
+    }
+
     let out = &outcome.child_stdout;
     let ran = out.contains("GUI|DONE|gui-inside");
     report.assert_obs(
@@ -952,6 +977,10 @@ pub fn stage_gui(report: &mut Report) {
     let q2_drove = line_for(out, "GUI|Q2-SEND-TEXT")
         .map(|l| l.contains("contains_marker=true"))
         .unwrap_or(false);
+    report.note(
+        "gui.q2.enum-from-inside",
+        line_for(out, "GUI|Q2-ENUM-VISIBLE").unwrap_or_else(|| "<no line>".into()),
+    );
     report.assert_obs(
         "gui.q2.cross-identity-refused",
         "the foreign-owned window cannot be driven (expected NO)",
@@ -1061,7 +1090,7 @@ pub fn run_all() -> i32 {
     // and `CreateProcessAsUserW` then fails with ERROR_PRIVILEGE_NOT_HELD — an
     // error that reads like "not an administrator".
     for (name, state) in launch::enable_process_privileges() {
-        report.note(&format!("preflight.privilege.{name}"), state);
+        report.note(format!("preflight.privilege.{name}"), state);
     }
 
     crate::report::emit("SPIKE|STAGE|core (days 1-3) + audit (day 4) - enforcement ON");

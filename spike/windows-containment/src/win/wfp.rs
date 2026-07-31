@@ -26,6 +26,24 @@ use windows::Win32::System::Rpc::RPC_C_AUTHN_DEFAULT;
 
 use super::{wide, WinErr};
 
+/// Decode the `FWP_E_*` codes this spike has actually hit.
+///
+/// Written down because two of them cost a CI cycle each:
+/// `0x8032000B` is returned for a perfectly correct call made from the wrong
+/// kind of session, and `0x80320027` for a condition whose *value type* is
+/// wrong rather than whose field is.
+pub fn explain_fwp(code: u32) -> &'static str {
+    match code {
+        0x8032_0009 => "FWP_E_ALREADY_EXISTS",
+        0x8032_000B => "FWP_E_DYNAMIC_SESSION_IN_PROGRESS - not settable from a dynamic session",
+        0x8032_0014 => "FWP_E_INCOMPATIBLE_LAYER - this condition is not valid at this layer",
+        0x8032_0026 => "FWP_E_MATCH_TYPE_MISMATCH",
+        0x8032_0027 => "FWP_E_TYPE_MISMATCH - the condition value's data type is wrong",
+        0x8032_0028 => "FWP_E_OUT_OF_BOUNDS",
+        _ => "see the FWP_E_* table",
+    }
+}
+
 /// A declared destination — the Windows analogue of `allow_egress`.
 #[derive(Clone, Copy, Debug)]
 pub struct Declared {
@@ -250,21 +268,71 @@ impl Engine {
     /// Refuse raw sockets and promiscuous mode at ALE_RESOURCE_ASSIGNMENT.
     ///
     /// Without this a contained process could build its own packets and skip
-    /// the connect path entirely, which would make the whole claim false.
+    /// the connect path entirely, which would make "it cannot" false.
+    ///
+    /// The first Windows run added this with an `FWP_UINT8` condition value and
+    /// got `FWP_E_TYPE_MISMATCH` (0x80320027) — `FWPM_CONDITION_ALE_PROMISCUOUS_MODE`
+    /// wants `FWP_UINT32`. Both are attempted and both outcomes reported, so a
+    /// second wrong guess costs a log line rather than a CI cycle.
     pub fn add_promiscuous_block(&mut self, user: &UserCondition) -> Result<u64, WinErr> {
+        let mut first_err = None;
+        for (label, ty) in [("uint32", FWP_UINT32), ("uint8", FWP_UINT8)] {
+            let conds = vec![
+                user.condition(),
+                FWPM_FILTER_CONDITION0 {
+                    fieldKey: FWPM_CONDITION_ALE_PROMISCUOUS_MODE,
+                    matchType: FWP_MATCH_EQUAL,
+                    conditionValue: FWP_CONDITION_VALUE0 {
+                        r#type: ty,
+                        Anonymous: if ty == FWP_UINT32 {
+                            FWP_CONDITION_VALUE0_0 { uint32: 1 }
+                        } else {
+                            FWP_CONDITION_VALUE0_0 { uint8: 1 }
+                        },
+                    },
+                },
+            ];
+            match self.add_filter_at_layer(
+                &format!("block promiscuous ({label})"),
+                &conds,
+                FWP_ACTION_BLOCK,
+                15,
+                FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4,
+            ) {
+                Ok(id) => return Ok(id),
+                Err(e) => {
+                    crate::report::emit(&format!(
+                        "SPIKE|NOTE|wfp.block.promiscuous.attempt.{label}|{e}"
+                    ));
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+        Err(first_err.unwrap_or_else(|| {
+            WinErr::new("FwpmFilterAdd0", 0, "no promiscuous attempt made".into())
+        }))
+    }
+
+    /// Refuse raw sockets outright, by protocol, at the same layer.
+    ///
+    /// Separate from the promiscuous block because they fail independently and
+    /// a single combined result would hide which one holds.
+    pub fn add_raw_socket_block(&mut self, user: &UserCondition) -> Result<u64, WinErr> {
+        // 255 is IPPROTO_RAW. A process that can open one can compose its own
+        // headers, and everything proven at ALE_AUTH_CONNECT stops applying.
         let conds = vec![
             user.condition(),
             FWPM_FILTER_CONDITION0 {
-                fieldKey: FWPM_CONDITION_ALE_PROMISCUOUS_MODE,
+                fieldKey: FWPM_CONDITION_IP_PROTOCOL,
                 matchType: FWP_MATCH_EQUAL,
                 conditionValue: FWP_CONDITION_VALUE0 {
                     r#type: FWP_UINT8,
-                    Anonymous: FWP_CONDITION_VALUE0_0 { uint8: 1 },
+                    Anonymous: FWP_CONDITION_VALUE0_0 { uint8: 255 },
                 },
             },
         ];
         self.add_filter_at_layer(
-            "block promiscuous",
+            "block raw sockets",
             &conds,
             FWP_ACTION_BLOCK,
             15,
