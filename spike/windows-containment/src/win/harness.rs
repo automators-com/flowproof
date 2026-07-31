@@ -601,6 +601,19 @@ pub fn stage_core(report: &mut Report, enforce: bool, tag: &str) {
         );
     }
 
+    // --- raw sockets: the path that bypasses ALE_AUTH_CONNECT entirely ---
+    if let Some((opened, code)) = probe_result(&outcome.child_stdout, "child.rawsocket") {
+        report.assert_obs(
+            format!("{prefix}.rawsocket.refused"),
+            "the contained identity cannot open a raw socket",
+            format!(
+                "opened={opened} os_error={code} (NOTE: raw sockets need Administrator on \
+                 Windows regardless of WFP, so a refusal here is over-determined - see LOG 4.1)"
+            ),
+            !opened,
+        );
+    }
+
     // --- day 4: the audit lane ---
     let live = netevents::snapshot();
     report.note("netevent.live.count", live.len());

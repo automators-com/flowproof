@@ -93,6 +93,55 @@ pub fn udp_probe(label: &str, target: SocketAddr) -> ProbeResult {
     }
 }
 
+/// Try to open a raw socket, and report the exact error.
+///
+/// This is the probe for the hole finding 4.1 named: everything else in the
+/// spike observes the *connect* path, and a process that can open a raw socket
+/// composes its own packets and never reaches it.
+///
+/// The result needs care to read. On Windows raw-socket creation **already
+/// requires Administrator**, so a refusal here does not by itself demonstrate
+/// that the WFP filter did anything — the per-run identity is unprivileged and
+/// would be refused anyway. That is a stronger position than it sounds
+/// (containment does not depend on getting a WFP condition right), but it is a
+/// different claim, and the log must not merge the two. The raw error number is
+/// printed so a reader can tell `WSAEACCES` from anything else.
+#[cfg(windows)]
+pub fn raw_socket_probe(label: &str) -> ProbeResult {
+    use windows::Win32::Networking::WinSock::{
+        socket, WSACleanup, WSAGetLastError, WSAStartup, INVALID_SOCKET, IPPROTO_RAW, SOCK_RAW,
+        WSADATA,
+    };
+    unsafe {
+        let mut wsa = WSADATA::default();
+        let _ = WSAStartup(0x0202, &mut wsa);
+        let err = match socket(2 /* AF_INET */, SOCK_RAW, IPPROTO_RAW.0) {
+            Ok(s) if s != INVALID_SOCKET => {
+                let _ = windows::Win32::Networking::WinSock::closesocket(s);
+                0
+            }
+            _ => WSAGetLastError().0,
+        };
+        let _ = WSACleanup();
+        ProbeResult {
+            label: label.to_string(),
+            target: "AF_INET/SOCK_RAW/IPPROTO_RAW".to_string(),
+            ok: err == 0,
+            os_error: err,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn raw_socket_probe(label: &str) -> ProbeResult {
+    ProbeResult {
+        label: label.to_string(),
+        target: "AF_INET/SOCK_RAW (not windows)".to_string(),
+        ok: false,
+        os_error: -1,
+    }
+}
+
 /// Everything the canary does, driven by a config handed to it on the command
 /// line. Run in the child; also run by the grandchild with `--prefix
 /// grandchild`.
@@ -142,6 +191,7 @@ pub fn run(args: &[String]) -> i32 {
     if let Some(t) = external {
         tcp_probe(&format!("{prefix}.tcp.external"), t).print();
     }
+    raw_socket_probe(&format!("{prefix}.rawsocket")).print();
 
     if spawn_grandchild {
         // Through `cmd.exe`, deliberately. The whole reason a per-run identity
