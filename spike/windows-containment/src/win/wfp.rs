@@ -428,6 +428,82 @@ impl Engine {
     /// Turn on net-event collection and ask for the classify-drop keyword.
     ///
     /// Engine-wide, not session-scoped — so it is restored on the way out.
+    /// Turn on net-event collection.
+    ///
+    /// **UNVERIFIED — no CI run has exercised this path.** It is the fix named
+    /// by LOG.md NEGATIVE 4.2, written out so the next person does not have to
+    /// rediscover it; the runs that produced this spike's verdict got their
+    /// audit records because collection happened to already be on. Treat it as
+    /// a reference implementation, not as evidence.
+    ///
+    /// **Not on the dynamic handle.** `FwpmEngineSetOption0` refuses a dynamic
+    /// session with `FWP_E_DYNAMIC_SESSION_IN_PROGRESS` (0x8032000B), which is
+    /// what silently cost the whole audit lane on run 30613043532: the option
+    /// never took, so the kernel recorded nothing and `FwpmNetEventEnum5`
+    /// returned zero rows for a run in which four filters demonstrably dropped
+    /// traffic.
+    ///
+    /// Engine options are machine-wide state, so this opens its own ordinary
+    /// (non-dynamic) handle purely to set them, and hands it back so the caller
+    /// can restore the previous value. A dynamic session buys automatic filter
+    /// teardown; it costs the ability to configure the engine, and those are
+    /// separate handles for a reason.
+    pub fn enable_net_events_globally() -> Result<HANDLE, WinErr> {
+        let mut engine = HANDLE::default();
+        let rc = unsafe {
+            FwpmEngineOpen0(
+                PCWSTR::null(),
+                RPC_C_AUTHN_DEFAULT as u32,
+                None,
+                None,
+                &mut engine,
+            )
+        };
+        if rc != 0 {
+            return Err(WinErr::new(
+                "FwpmEngineOpen0(net-event options)",
+                rc,
+                String::new(),
+            ));
+        }
+        let on = FWP_VALUE0 {
+            r#type: FWP_UINT32,
+            Anonymous: FWP_VALUE0_0 { uint32: 1 },
+        };
+        let rc = unsafe { FwpmEngineSetOption0(engine, FWPM_ENGINE_COLLECT_NET_EVENTS, &on) };
+        if rc != 0 {
+            unsafe { FwpmEngineClose0(engine) };
+            return Err(WinErr::new(
+                "FwpmEngineSetOption0(COLLECT_NET_EVENTS, non-dynamic)",
+                rc,
+                String::new(),
+            ));
+        }
+        let keywords = FWP_VALUE0 {
+            r#type: FWP_UINT32,
+            Anonymous: FWP_VALUE0_0 {
+                uint32: FWPM_NET_EVENT_KEYWORD_CLASSIFY_ALLOW,
+            },
+        };
+        let rc = unsafe {
+            FwpmEngineSetOption0(engine, FWPM_ENGINE_NET_EVENT_MATCH_ANY_KEYWORDS, &keywords)
+        };
+        if rc != 0 {
+            // Not fatal: drops are collected without any keyword. Only the
+            // positive "the permit matched" evidence is lost.
+            unsafe { FwpmEngineClose0(engine) };
+            return Err(WinErr::new(
+                "FwpmEngineSetOption0(MATCH_ANY_KEYWORDS, non-dynamic)",
+                rc,
+                String::new(),
+            ));
+        }
+        Ok(engine)
+    }
+
+    /// Kept so the old call site still compiles; it is the dynamic-handle path
+    /// and is expected to fail. Retained deliberately as a live demonstration
+    /// of finding 6.1 rather than deleted.
     pub fn enable_net_events(&self) -> Result<(), WinErr> {
         let on = FWP_VALUE0 {
             r#type: FWP_UINT32,

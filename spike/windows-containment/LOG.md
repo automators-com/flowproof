@@ -407,14 +407,14 @@ about containment; everything before it is scaffolding.
 
 ---
 
-## Iteration 4 — the first Windows run measured nothing, and why
+## Iteration 3b — the first Windows run measured nothing, and why
 
 `windows build + E2E` on run 30608374686: **success**. The spike test ran on a
 real `windows-latest` kernel and reported `ok`.
 
 **It produced zero `SPIKE|` lines.** `grep -c 'SPIKE|' winci.log` → `0`.
 
-### Finding 4.1 — `cargo test` swallowed the entire evidence base (NEGATIVE, cost one full run)
+### Finding 3b.1 — `cargo test` swallowed the entire evidence base (NEGATIVE, cost one full run)
 
 Line 2877 of the job log:
 
@@ -451,7 +451,7 @@ CHILD|this-came-from-a-subprocess     <- present, on a PASSING test
 `Stdio::inherit()` and asserts only that the binary started and exited zero.
 The whole spike moved into `harness::run_all()`.
 
-### Finding 4.2 — the elevation preflight was a veto disguised as a check
+### Finding 3b.2 — the elevation preflight was a veto disguised as a check
 
 The 5-second runtime is consistent with the preflight abort, which was:
 
@@ -498,7 +498,7 @@ containment evidence.
 
 ---
 
-## Iteration 5 — the harness reached the kernel, and the kernel said no
+## Iteration 3c — the harness reached the kernel, and the kernel said no
 
 Run **30610129516**, job id `91090900780`, commit `ad654ca`. Step 5
 `build + test (windows)`: **success**. 35 `SPIKE|` lines — the capture fix from
@@ -516,7 +516,7 @@ as four assertions that could not be evaluated, not as four passes and not as
 four failures. Honesty rule 1 in practice — the thing under test never ran, and
 the log says exactly that.
 
-### Finding 5.1 — `NetUserAdd` refuses the password, and the error name lies (BLOCKER, fixed)
+### Finding 3c.1 — `NetUserAdd` refuses the password, and the error name lies (BLOCKER, fixed)
 
 ```
 SPIKE|ASSERT|core|NOT-RUN|expected=boundary established|observed=NOT RUN:
@@ -544,7 +544,7 @@ The constant password is recorded as a **spike shortcut**: acceptable only
 because the account is local-only, unprivileged and deleted in the same run.
 Anything shipping must generate it from a CSPRNG.
 
-### Finding 5.2 — the runner's Administrator does NOT hold SeAssignPrimaryTokenPrivilege
+### Finding 3c.2 — the runner's Administrator does NOT hold SeAssignPrimaryTokenPrivilege
 
 ```
 SPIKE|NOTE|preflight.elevated|true
@@ -953,7 +953,7 @@ Second consecutive run. Not a fluke.
    to be on already.
 4. **`CreateProcessAsUserW` is unavailable on a host that does not grant
    `SeAssignPrimaryTokenPrivilege`** — including GitHub's elevated RID-500
-   Administrator (3.2). The `CreateProcessWithLogonW` path works but needs the
+   Administrator (3c.2). The `CreateProcessWithLogonW` path works but needs the
    Secondary Logon service and cannot be used from a process running as
    LocalSystem, so a flowproof runner installed *as a Windows service* needs
    this arranged deliberately.
@@ -965,7 +965,7 @@ Second consecutive run. Not a fluke.
    breath as the claim, always.
 7. **An escalation, unrelated to the mechanism:** the adversary gate refuses any
    pull request over ~128 KiB and reports a tooling failure as a review refusal
-   (2.2). Protected path; a human must fix it.
+   (3.2). Protected path; a human must fix it.
 
 ## The answer
 
@@ -1045,3 +1045,35 @@ sayable at all. If SAP GUI runs under a per-run identity, the rest is
 engineering with the risk already retired. If it does not, what remains is
 contained headless agents on Windows — worth having, but not differentiated, and
 not worth a quarter of the only engineer's time.
+
+---
+
+## Housekeeping — numbering, and one unverified addition
+
+**Finding numbers were colliding.** Two earlier sections had been renumbered
+into the `4.x`/`5.x` namespace that the verdict's cross-references point at, so
+"(3.2)" and "(2.2)" in the verdict resolved to the wrong findings. The two
+earlier sections are now `3b` and `3c`, every finding number is unique, and the
+verdict's references were corrected to match. No finding text changed.
+
+**`Engine::enable_net_events_globally` is added and is UNVERIFIED.** It is the
+fix named by NEGATIVE 4.2 — a second, non-dynamic engine handle for setting
+`FWPM_ENGINE_COLLECT_NET_EVENTS`, because a dynamic session refuses engine
+options with `FWP_E_DYNAMIC_SESSION_IN_PROGRESS` (0x8032000B). It is written out
+so whoever builds this does not have to rediscover it.
+
+**No CI run has exercised it.** `establish()` still calls the dynamic-handle
+path, and the runs behind this spike's verdict got their audit records because
+collection happened to already be on that runner. Marked unverified in the
+doc comment as well as here, because a reference implementation that reads as a
+measured result is exactly the overclaim this codebase exists to prevent.
+
+Local gate at this commit, exit codes captured separately, never piped:
+
+| Command | Exit |
+|---|---|
+| `cargo check -p wfp-spike --all-targets --target x86_64-pc-windows-msvc` | `0` |
+| `cargo clippy -p wfp-spike --all-targets --all-features --target x86_64-pc-windows-msvc` | `0`, 0 warnings |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `0` |
+| `cargo fmt --all --check` | `0` |
+| `cargo test -p wfp-spike --all-features` (Linux) | `0` |
