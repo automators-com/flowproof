@@ -38,6 +38,30 @@ together).
   die a run later, far from the spec line that caused it. The error names the
   platform and points at `Press the "<label>" button`.
 
+- **You can watch a web recording now.** `app: web` ran headless with no way
+  to turn it off — the flag was a literal `true` in `launch_browser`, and the
+  one thing that looked like an escape hatch, `browser: { args: [...] }` in the
+  spec, could not help: Chrome has no flag that undoes `--headless`, and by the
+  time a spec's args are appended it is already in the argv.
+
+  That is the wrong default for exactly one step. Replay should be headless —
+  it runs in CI, unattended, often with no display. But **recording is the
+  human-in-the-loop step**, the one where you are watching to see whether the
+  thing you described is the thing that happens, and doing it blind means a
+  misread selector looks identical to a page that never loaded.
+
+  `FLOWPROOF_HEADED=1` shows the window. An environment variable rather than a
+  spec field, because watching is a property of the run you are supervising and
+  not of the flow: a committed `headed: true` would follow the flow into CI,
+  where nobody is watching. Presence-based like `FLOWPROOF_NO_SHARED_BROWSER`,
+  so `FLOWPROOF_HEADED=0` still shows the window — a variable you bothered to
+  set is one you meant.
+
+  One caveat, documented beside the feature: headed Chromium sizes its window
+  from the desktop and headless uses a fixed default, so a flow with visual
+  assertions should pin `browser.viewport` or its baselines get recorded at one
+  size and replayed at another.
+
 ## 0.10.1
 
 Two defects that 0.10.0 shipped with, both found in the field on a

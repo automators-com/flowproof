@@ -401,8 +401,9 @@ maintainer-run, `FLOWPROOF_E2E_SAP=1`).
 ## Web flows (any OS)
 
 The same spine drives browsers through the `web` adapter — this works on
-Linux and macOS too, since it runs on headless Chromium rather than Windows
-UIA. Specs add a `url:` and use the web vocabulary
+Linux and macOS too, since it runs on Chromium (headless by default; see
+[`FLOWPROOF_HEADED`](#watching-the-browser-flowproof_headed)) rather than
+Windows UIA. Specs add a `url:` and use the web vocabulary
 ([`examples/web.flow.yaml`](../examples/web.flow.yaml)):
 
 ```yaml
@@ -422,6 +423,65 @@ flowproof record web.flow.yaml && flowproof run web.flow.yaml
 Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web
 live-app suite (`cargo test -p flowproof-cli --test web_e2e`,
 `FLOWPROOF_E2E=1`) runs in CI on ubuntu.
+
+### Watching the browser: `FLOWPROOF_HEADED`
+
+Web flows run headless by default, which is right for CI and unhelpful the
+first time a recording does not do what you expected. Set `FLOWPROOF_HEADED`
+to see the window:
+
+```bash
+FLOWPROOF_HEADED=1 flowproof record web.flow.yaml
+```
+
+```powershell
+$env:FLOWPROOF_HEADED = "1"; flowproof record web.flow.yaml
+```
+
+It is presence-based, like `FLOWPROOF_NO_SHARED_BROWSER` — `FLOWPROOF_HEADED=0`
+still shows the window, because a variable you bothered to set is one you meant.
+Unset it to go back to headless.
+
+Deliberately an environment variable and not a spec field: watching is a
+property of the run you are supervising, not of the flow. A committed
+`headed: true` would follow the flow into CI, where nobody is watching and
+there may be no display at all.
+
+**One caveat if the flow has visual assertions.** Headed Chromium sizes its
+window from the desktop; headless uses a fixed default. Record a screenshot
+baseline headed and replay it headless and the sizes differ, which replay
+reports as:
+
+```
+screenshot is 1280x720 but baseline 'checkout' is 800x600 — viewport changed? re-record to refresh the baseline
+```
+
+Pin the size in the spec and both modes produce the same frames:
+
+```yaml
+app: web
+url: https://example.test
+browser:
+  viewport:
+    width: 1280
+    height: 720
+```
+
+Flows without visual assertions are unaffected — the DOM does not change shape
+because a window is visible.
+
+**It needs a real desktop session.** Over SSH, in a container, or on a CI
+runner there is no window to show, so Chromium exits during startup and the
+launcher reports a port error several minutes later:
+
+```
+launching browser: There are no available ports between 8000 and 9000 for debugging
+note: FLOWPROOF_HEADED is set, so Chromium was asked for a VISIBLE window. ...
+```
+
+The first line is the launcher's own; the note is flowproof naming the cause,
+because nothing in "no available ports" suggests a missing display. Unset
+`FLOWPROOF_HEADED` and it goes back to working.
 
 ### The web action vocabulary
 
