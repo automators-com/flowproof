@@ -176,7 +176,9 @@ impl VisionModelClient for HttpVisionClient {
             .send_json(json!({
                 "model": self.config.model.clone().unwrap_or_else(|| "claude-sonnet-5".into()),
                 "max_tokens": 256,
-                "temperature": 0,
+                // No `temperature` here: current Sonnet rejects it outright
+                // (400 "temperature is deprecated for this model"), unlike
+                // the text-only path in llm.rs which still sends 0.
                 "system": TRANSITION_SYSTEM_PROMPT,
                 "messages": [{"role": "user", "content": content}],
             }))
