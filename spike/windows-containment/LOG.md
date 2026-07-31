@@ -1183,3 +1183,50 @@ env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
     bash scripts/gate/adversary-review.test.sh      # EXIT=0, 625017-byte case ok
 ```
+
+---
+
+## Iteration 7 — unwired from the workspace
+
+The spike was a workspace member for exactly one reason: the Windows CI job runs
+`cargo test --workspace`, and `.github/workflows/` is constitution-protected, so
+membership was the only route onto a `windows-latest` runner (finding 0.1). That
+job is done. Leaving it a member would create a local user, install WFP filters
+and drive Notepad on **every push to main and every nightly, forever**, to
+re-answer a question this log already answers.
+
+`spike/windows-containment` is now in the root `Cargo.toml`'s `exclude` list
+rather than `members`.
+
+**The directory stays, and that is deliberate.** The verdict's one open question
+is whether SAP GUI runs under a per-run identity, and closing it means running
+*this same harness* on a licensed Windows host. Deleting the harness would
+delete the next step. `spike/windows-containment/Cargo.lock` is committed so that
+re-run resolves the same dependency versions this evidence was produced with.
+
+### To re-run it on a licensed SAP GUI host
+
+1. Add `"spike/windows-containment"` back to `members` (or run `cargo` from
+   inside the directory — it is a standalone package and builds either way).
+2. In `src/win/gui.rs`, change the launch target and window match from
+   `notepad.exe` / `"Notepad"` to SAP GUI's, and the editor's `AutomationId`
+   `"15"` to the SAP control being driven.
+3. Run as Administrator. The three questions to answer are unchanged, and only
+   question 1 is a kill criterion.
+
+Read `gui.q1.KILL-CRITERION.drives-own-gui-app` in the output. If it is `MET`
+against real SAP GUI, the fused claim is reachable and the remaining work is
+engineering. If it is `NOT-MET`, the fused claim is dead and what remains —
+contained headless agents on Windows — is a much smaller feature.
+
+### Verified before unwiring (exit codes captured separately, never piped)
+
+| Command | Exit |
+|---|---|
+| `cargo metadata --no-deps` | `0` — 7 members, `wfp-spike` absent |
+| `cargo fmt --all --check` | `0` |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `0` |
+| `cargo check --all-targets --target x86_64-pc-windows-msvc` (inside the spike) | `0` — still builds standalone |
+
+`Cargo.lock` loses 8 lines; `uiautomation` stays because `flowproof-driver`
+uses it independently.
