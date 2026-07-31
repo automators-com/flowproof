@@ -363,9 +363,29 @@ impl RunDiff {
     }
 
     /// Whether the diff shows a regression CI should fail on: a control was
-    /// removed (coverage shrank) or a control's verdict changed to `fail`.
+    /// removed (coverage shrank), or a control's verdict changed to `fail` or
+    /// to `capability-error`.
+    ///
+    /// `capability-error` counts, and the reason is worth stating because it is
+    /// the non-obvious half. It means the control could not be enforced or
+    /// observed here at all — a runner without seccomp, a driver that lost a
+    /// capability, a flow that never ran. The control was being certified
+    /// yesterday and is not being certified today, and a gate that stayed
+    /// silent about that would let coverage evaporate without anyone failing a
+    /// build. The rest of the codebase already refuses to let a capability
+    /// error read as a pass; this is the same rule applied one layer up.
+    ///
+    /// The cost is accepted deliberately: running an unchanged suite on a host
+    /// that cannot enforce a control now fails. That is intended. The remedy is
+    /// to fix the host or narrow the control, never to soften this.
     pub fn is_regression(&self) -> bool {
-        !self.removed.is_empty() || self.changed.iter().any(|c| c.new == ControlVerdict::Fail)
+        !self.removed.is_empty()
+            || self.changed.iter().any(|c| {
+                matches!(
+                    c.new,
+                    ControlVerdict::Fail | ControlVerdict::CapabilityError
+                )
+            })
     }
 
     /// Whether there is any difference at all.

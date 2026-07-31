@@ -6,6 +6,25 @@ together).
 
 ## Unreleased
 
+### Changed
+
+- **A control that stopped being certifiable passed the gate.**
+  `audit --since` fired on a removed control or one that turned `fail`. A
+  control going `pass` -> `capability-error` exited zero — so a runner without
+  seccomp, a driver that lost a capability, or a flow that quietly stopped
+  running took coverage with it and failed nothing.
+
+  `capability-error` exists precisely so that "we could not check this" never
+  reads as "this is fine". `assert_no_egress` on a host that cannot enforce it
+  fails as a capability error rather than passing vacuously, and the docs are
+  emphatic about why. At the diff layer that distinction had been lost, in the
+  one artifact the evidence claim rests on.
+
+  It now counts as a regression, with a red-path proof pinning it. **This will
+  fail builds that used to pass**: an unchanged suite run on a host that cannot
+  enforce a control now goes red. That is intended — the remedy is to fix the
+  host or narrow the control, never to soften the rule.
+
 ### Added
 
 - **The guard assertion had no end-to-end test that could fail.**
