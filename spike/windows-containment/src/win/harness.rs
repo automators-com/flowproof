@@ -192,10 +192,27 @@ pub fn establish(
         let v6 = engine.add_block_all(&user_cond, true)?;
         report.note("wfp.block.v4", v4);
         report.note("wfp.block.v6", v6);
-        match engine.add_promiscuous_block(&user_cond) {
-            Ok(id) => report.note("wfp.block.promiscuous", id),
-            Err(e) => report.note("wfp.block.promiscuous.error", e.to_string()),
-        }
+        // DELIBERATELY NOT ADDED. See LOG.md finding 5.1.
+        //
+        // An `ALE_RESOURCE_ASSIGNMENT` block scoped to the run identity with an
+        // `FWPM_CONDITION_ALE_PROMISCUOUS_MODE` condition was added
+        // successfully — `FwpmFilterAdd0` returned filter id 72728 — and broke
+        // *all* networking for the contained identity, including the declared
+        // destination. The condition is not evaluable as written, so the filter
+        // reduces to "block every socket bind by this user".
+        //
+        // It is left in `wfp.rs`, unused, because the failure is the finding: a
+        // filter that adds cleanly and silently denies everything is exactly
+        // what honesty rule 8 exists for, and deleting it would delete the
+        // evidence. Raw sockets are refused anyway — creating one requires
+        // Administrator and the run identity is unprivileged — which is a
+        // sturdier guarantee than a WFP condition, because it does not depend
+        // on getting the condition right.
+        report.note(
+            "wfp.block.resource_assignment",
+            "NOT ADDED - blocks all sockets as written; raw sockets are denied by the \
+             identity being unprivileged instead (LOG 5.1)",
+        );
     } else {
         report.note(
             "wfp.block",

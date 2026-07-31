@@ -824,3 +824,224 @@ run removes the *identity-generic* half of that risk and leaves the
 | logon type accepted | `INTERACTIVE` |
 | filters per boundary | 3 (1 permit, 2 block) |
 | drop record fields | remote addr, port, protocol, user SID, filter id, layer, loopback flag |
+
+---
+
+## Iteration 5 — question 2 established, and a self-inflicted wound worth keeping
+
+Run **30613043532**, job id `91100043088`. Step 5 **success**, 217 `SPIKE|` lines.
+
+```
+SPIKE|SUMMARY|met=29|not_met=3|not_run=0
+```
+
+### NEGATIVE 5.1 — the raw-socket block adds cleanly and denies everything (SELF-INFLICTED)
+
+The three `not_met` are all the same cause:
+
+```
+SPIKE|NOTE|wfp.block.promiscuous|72728
+SPIKE|ASSERT|core.declared.client|NOT-MET|expected=CONNECTED|observed=connected=false os_error=10013
+SPIKE|ASSERT|core.declared.oracle|NOT-MET|expected=destination saw >=1|observed=sightings=0 []
+SPIKE|ASSERT|core.audit.drop-carries-address-and-port|NOT-MET|observed=no such record (0 attributed records, 0 total)
+SPIKE|CHILD| CANARY|child.udp.undeclared(bind-failed)|10.1.0.148:55571|REFUSED|os_error=10013
+```
+
+Iteration 4 fixed the `FWP_E_TYPE_MISMATCH` by switching the
+`FWPM_CONDITION_ALE_PROMISCUOUS_MODE` value from `FWP_UINT8` to `FWP_UINT32`.
+The filter then **added successfully — id 72728 — and blocked every socket the
+contained identity tried to open.** The declared destination became
+unreachable, UDP `bind` itself failed with 10013, and the audit lane recorded
+**zero** events because no connection ever reached `ALE_AUTH_CONNECT`.
+
+The condition is not evaluable as written, so the filter collapses to its
+remaining condition — the user id — and means "block every socket bind by this
+user".
+
+**This is honesty rule 8 in its purest form.** The previous iteration's version
+*failed* to add and said so honestly. This iteration's version *succeeded* and
+was catastrophic. `FwpmFilterAdd0` returning success carried no information
+whatever about whether containment was correct; only the canary — a probe to a
+declared destination that must succeed — caught it. Had this spike concluded
+"contained" from a filter id, it would have shipped a configuration that denies
+the agent all network access and calls it containment.
+
+**Resolution.** The `ALE_RESOURCE_ASSIGNMENT` block is **not added**. The code is
+left in `wfp.rs`, unused and annotated, because deleting it would delete the
+evidence. Raw sockets are closed by a better mechanism anyway — see 5.2.
+
+### POSITIVE 5.2 — raw sockets are refused, for a sturdier reason than a filter
+
+```
+SPIKE|CHILD| CANARY|child.rawsocket|AF_INET/SOCK_RAW/IPPROTO_RAW|REFUSED|os_error=10013
+SPIKE|CHILD| CANARY|grandchild.rawsocket|AF_INET/SOCK_RAW/IPPROTO_RAW|REFUSED|os_error=10013
+SPIKE|ASSERT|core.rawsocket.refused|MET
+SPIKE|ASSERT|negative.rawsocket.refused|MET
+```
+
+Child and grandchild both refused, `WSAEACCES`. Note it is `MET` in the
+**negative control too**, where no block filter exists at all — which is the
+proof that the refusal does not come from WFP.
+
+It comes from the identity: **creating a raw socket on Windows requires
+Administrator, and the per-run identity is an unprivileged member of `Users`.**
+That is a stronger guarantee than the filter would have been, because it does
+not depend on getting a WFP condition right — as 5.1 demonstrates is easy to get
+wrong. The over-determination is stated in the assertion text itself so no
+reader can mistake which mechanism is doing the work.
+
+### POSITIVE 5.3 — question 2 is now ESTABLISHED, not merely consistent
+
+The control iteration 4 lacked:
+
+```
+SPIKE|ASSERT|gui.q2.CONTROL.foreign-window-visible-to-its-own-identity|MET
+  observed=visible=true | name="fpforeign7196.txt - Notepad" class="Notepad" pid=7344
+
+SPIKE|CHILD| GUI|Q2-ENUM-VISIBLE|false | absent from 1 top-level windows:
+  ["name=\"C:\\fp-spike-7196\\canary.exe\" class=\"ConsoleWindowClass\" pid=4396"]
+```
+
+**The same query, at the same moment, from two identities.** The original user
+sees `fpforeign7196.txt - Notepad`. The contained identity enumerates the
+desktop and sees exactly **one** top-level window — its own console. The foreign
+window is not refused on interaction; it is **not in the tree at all**.
+
+And the enumeration is now known to work, which is what iteration 4 could not
+say:
+
+```
+SPIKE|CHILD| GUI|WINDOW-LIST-COUNT|before-launch n=1
+SPIKE|CHILD| GUI|WINDOW-LIST-COUNT|after-own-launch n=2
+```
+
+One window before it launched Notepad, two after. A working probe returning
+"absent" is evidence; a timeout was not.
+
+**Question 2 is answered NO, as expected.** The constraint every later design
+must live with: *a fused flow must launch its GUI application inside the
+boundary.* Attaching to an already-running SAP GUI session started by the
+logged-in user is not possible under this design.
+
+### POSITIVE 5.4 — question 1 reproduces
+
+```
+SPIKE|CHILD| GUI|Q1-READBACK|contains_marker=true value="fp-spike-inside-boundary"
+SPIKE|ASSERT|gui.q1.KILL-CRITERION.drives-own-gui-app|MET
+```
+
+Second consecutive run. Not a fluke.
+
+---
+
+# VERDICT
+
+**Nine days complete.** The kill criterion did not fire.
+
+## Negative findings first
+
+1. **The raw-socket/promiscuous filter must not be used as written.** It adds
+   successfully and denies the contained identity every socket, declared
+   included (5.1). Raw sockets are instead closed by the run identity being
+   unprivileged (5.2) — sturdier, because it cannot be got wrong.
+2. **UDP containment is invisible to the contained process.** `send_to` returns
+   success on a datagram the kernel drops (4.3). `assert_no_egress` on Windows
+   must be implemented against the audit lane, never against client errors.
+3. **Net-event collection cannot be enabled from a dynamic session** (4.2). A
+   shipping implementation needs a second, non-dynamic handle to turn it on and
+   restore it. This spike's audit lane worked only because collection happened
+   to be on already.
+4. **`CreateProcessAsUserW` is unavailable on a host that does not grant
+   `SeAssignPrimaryTokenPrivilege`** — including GitHub's elevated RID-500
+   Administrator (3.2). The `CreateProcessWithLogonW` path works but needs the
+   Secondary Logon service and cannot be used from a process running as
+   LocalSystem, so a flowproof runner installed *as a Windows service* needs
+   this arranged deliberately.
+5. **Cross-identity GUI control is impossible** (5.3). Every fused flow must
+   launch its GUI application inside the boundary. This changes what an adopter
+   has to do, not merely what flowproof does.
+6. **Administrator is required**, on every run, to add the filters. Linux gets
+   its containment unprivileged; Windows does not. This must be said in the same
+   breath as the claim, always.
+7. **An escalation, unrelated to the mechanism:** the adversary gate refuses any
+   pull request over ~128 KiB and reports a tooling failure as a review refusal
+   (2.2). Protected path; a human must fix it.
+
+## The answer
+
+**Build it.** The mechanism works and the obstacle that could have killed it did
+not.
+
+Measured, not assumed, across two consecutive Windows runs:
+
+* a declared destination is reachable and **the destination sees the payload**;
+* an undeclared destination is refused with `WSAEACCES` (10013) and **the
+  destination sees nothing**;
+* **a grandchild through `cmd.exe` is refused identically** — the escape that
+  makes app-id filtering useless is closed by the per-run identity;
+* UDP to an undeclared host is dropped, with the drop recorded;
+* the drop record carries **remote address, port, protocol, the run identity's
+  SID, and the filter id**;
+* filters are gone after the supervisor is **killed outright**, verified through
+  a fresh engine handle, with their prior existence confirmed first;
+* with the block filter deliberately removed, **every one of those inverts** —
+  the failure path is exercised, not assumed;
+* a process under a freshly created, unprivileged, per-run local user
+  **launched a GUI app, drove it through UI Automation, and read its own text
+  back**.
+
+## The sentence the product could then say
+
+> On Windows, an agent under test runs as a dedicated per-run identity under a
+> kernel-enforced default-deny egress filter. It reached only the destinations
+> the flow declared; every other attempt was refused by the kernel and recorded
+> with its address, port and protocol. It drove the desktop application under
+> test, which ran inside the same boundary. Establishing that boundary requires
+> Administrator on the host.
+
+## The sentence it still could not say
+
+> This agent drove **SAP GUI** and provably touched nothing else.
+
+Not because containment failed — it held — but because **Notepad is a fair proxy
+for the identity boundary and a poor one for SAP**. Question 1's pass removes
+the *identity-generic* half of the risk. It says nothing about the half that is
+specifically SAP's.
+
+## The one unknown left, and what it costs to close
+
+**Does SAP GUI run usably under a freshly created, unprivileged local user?**
+Three named sub-questions, none testable on a hosted runner:
+
+1. **Licensing** — whether SAP GUI's licensing is per-user and whether a
+   throwaway account satisfies it.
+2. **COM registration** — whether `SAPGUI` / `SapROTWr` are registered per-user
+   (`HKCU`) or per-machine (`HKLM`). Per-user registration would mean each
+   per-run identity needs its own, which changes provisioning from "create a
+   user" to "create and prepare a user".
+3. **Profile state** — whether SAP GUI needs a populated user profile, connection
+   entries and saved settings that an account created seconds earlier lacks.
+
+**Cost to close: one Windows VM with a licensed SAP GUI install, and roughly two
+to three days.** The harness already exists and is parameterised; it needs the
+app name and window title changed and a real host to run on. That is the only
+remaining gate before the fused claim can be made, and it cannot be closed on
+GitHub Actions at any price.
+
+Citrix is untested and adds its own session broker to the same question. Treat
+it as a separate, later investigation, not as covered by this one.
+
+## Recommendation on spend
+
+The prior estimate was 6–10 engineer-weeks to full parity, with ~90% confidence
+on the mechanism and ~40% on the fused claim. The mechanism is now measured
+rather than estimated, and the identity-generic half of the fused-claim risk is
+retired.
+
+**Do not spend the 6–10 weeks yet.** Spend the two to three days on a licensed
+SAP GUI host first. It is the cheapest possible test of the only remaining
+unknown, and it is the one that decides whether the differentiating sentence is
+sayable at all. If SAP GUI runs under a per-run identity, the rest is
+engineering with the risk already retired. If it does not, what remains is
+contained headless agents on Windows — worth having, but not differentiated, and
+not worth a quarter of the only engineer's time.

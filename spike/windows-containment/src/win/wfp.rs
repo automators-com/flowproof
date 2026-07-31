@@ -265,6 +265,9 @@ impl Engine {
         )
     }
 
+    /// UNUSED, and kept as evidence. See LOG.md finding 5.1: this adds cleanly
+    /// and denies every socket the identity tries to open, declared or not.
+    ///
     /// Refuse raw sockets and promiscuous mode at ALE_RESOURCE_ASSIGNMENT.
     ///
     /// Without this a contained process could build its own packets and skip
@@ -274,6 +277,7 @@ impl Engine {
     /// got `FWP_E_TYPE_MISMATCH` (0x80320027) — `FWPM_CONDITION_ALE_PROMISCUOUS_MODE`
     /// wants `FWP_UINT32`. Both are attempted and both outcomes reported, so a
     /// second wrong guess costs a log line rather than a CI cycle.
+    #[allow(dead_code)]
     pub fn add_promiscuous_block(&mut self, user: &UserCondition) -> Result<u64, WinErr> {
         let mut first_err = None;
         for (label, ty) in [("uint32", FWP_UINT32), ("uint8", FWP_UINT8)] {
@@ -317,6 +321,7 @@ impl Engine {
     ///
     /// Separate from the promiscuous block because they fail independently and
     /// a single combined result would hide which one holds.
+    #[allow(dead_code)]
     pub fn add_raw_socket_block(&mut self, user: &UserCondition) -> Result<u64, WinErr> {
         // 255 is IPPROTO_RAW. A process that can open one can compose its own
         // headers, and everything proven at ALE_AUTH_CONNECT stops applying.
