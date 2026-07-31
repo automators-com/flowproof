@@ -67,7 +67,10 @@ mod tests {
     #[test]
     fn a_reference_resolves_to_the_remembered_value() {
         let c = scope(&[("oid", "1060049")]);
-        assert_eq!(substitute("${captured.oid}", &c).expect("resolves"), "1060049");
+        assert_eq!(
+            substitute("${captured.oid}", &c).expect("resolves"),
+            "1060049"
+        );
         // Surrounding text and repeats survive.
         assert_eq!(
             substitute("id ${captured.oid}/${captured.oid}!", &c).expect("resolves"),
@@ -81,7 +84,10 @@ mod tests {
         assert_eq!(substitute("plain text", &c).expect("no refs"), "plain text");
         // A `${VAR}` secret is NOT ours to resolve: it passes through for the
         // secret resolver, which runs next.
-        assert_eq!(substitute("${TOKEN}", &c).expect("secret refs pass through"), "${TOKEN}");
+        assert_eq!(
+            substitute("${TOKEN}", &c).expect("secret refs pass through"),
+            "${TOKEN}"
+        );
     }
 
     /// The failure that matters: before this existed, `${captured.oid}` was
