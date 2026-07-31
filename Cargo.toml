@@ -8,15 +8,26 @@ members = [
     "crates/flowproof-adapters",
     "crates/flowproof-cli",
     "crates/flowproof-python",
-    # Feasibility spike, not a shipping crate (publish = false). It is a
-    # workspace member for one reason: the Windows CI job runs
-    # `cargo test --workspace --all-features`, and `.github/workflows/` is a
-    # constitution-protected path this spike may not modify. Membership is the
-    # only way to get spike code onto a `windows-latest` runner without
-    # touching the workflow. Delete this line and the directory when the spike
-    # is decided.
-    "spike/windows-containment",
 ]
+
+# The Windows containment spike is deliberately NOT a member.
+#
+# It was one only to reach a `windows-latest` runner: the Windows CI job runs
+# `cargo test --workspace`, and `.github/workflows/` is constitution-protected,
+# so membership was the only route onto a Windows host. That job is done — the
+# spike ran, the verdict is in `spike/windows-containment/LOG.md` — and leaving
+# it a member would create a local user, install WFP filters and drive Notepad
+# on every push to main and every nightly, forever, to re-answer a question
+# already answered.
+#
+# `exclude` rather than deletion, because the harness is the next step, not
+# leftovers: the verdict's one open question is whether SAP GUI runs under a
+# per-run identity, and closing it means running this same harness on a
+# licensed Windows host. Re-add the path to `members` there.
+#
+# Being excluded means it is no longer compiled or linted by CI, so treat it as
+# a record of what was run rather than as maintained code.
+exclude = ["spike/windows-containment"]
 
 [workspace.package]
 version = "0.10.0"
