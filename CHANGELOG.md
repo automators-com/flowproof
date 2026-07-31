@@ -8,6 +8,33 @@ together).
 
 ### Fixed
 
+- **LLM authoring could not work at all on the default model, and said
+  nothing useful about why.** flowproof sent `temperature: 0` on every
+  Anthropic request. The API has deprecated `temperature` on its current
+  models, so the default — `claude-sonnet-5` — rejected every call with a
+  400, as did Opus 5. Following `docs/getting-started.md` exactly, with a
+  valid key and a funded account, produced `model call failed (anthropic):
+  http status: 400` and nowhere to go.
+
+  Nowhere to go is the real defect. The response body said `` `temperature`
+  is deprecated for this model `` — one sentence, naming the field, and it
+  was thrown away because only the status reached the error. Found in the
+  field, on a colleague's machine, after the setup path had been assumed
+  working; the diagnosis needed a hand-built `curl` reproducing flowproof's
+  own request, which is not something a user should have to construct.
+
+  Three things now hold. `temperature` is gone from the Anthropic request —
+  authoring never needed it, since the model must copy a target token from
+  the live scene verbatim and the result is recorded for review. A non-2xx
+  quotes the provider's own explanation, with the API key redacted from it,
+  because that text is what people paste into bug reports. And the answer is
+  read from the first **text** block rather than the first block: a reasoning
+  model emits `thinking` ahead of its answer, which would have been the next
+  wall, reported as an unexpected response shape.
+
+  `temperature: 0` stays on the OpenAI-compatible path, where it is accepted
+  and free.
+
 - **A tool call the agent really made could be missing from the evidence.**
   0.8.0 fixed the MCP stand-in losing its whole recording when an agent killed
   it, by persisting the lane after every captured call. It was not enough. The
