@@ -214,7 +214,8 @@ against the live app and proposes a reviewable trace diff with
 before/after frames — applied only with explicit `--apply`.
 
 **Reach** — adapters behind one spec format:
-- `app: web` — headless Chromium via DevTools protocol, cross-platform
+- `app: web` — Chromium via DevTools protocol, cross-platform; headless by
+  default, `FLOWPROOF_HEADED=1` to watch it
 - Windows desktop via UI Automation (`calc`, `notepad`)
 - `app: sap` — SAP GUI Scripting over COM: native scripting ids,
   transaction-code navigation (`Go to /nVA01`), SAP virtual keys; an

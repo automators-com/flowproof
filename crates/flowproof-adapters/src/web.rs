@@ -345,21 +345,77 @@ fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
 /// touching the browser is the case to revisit if it ever shows up.
 const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Launch a fresh headless Chromium (`CHROME` env var overrides the
-/// binary), optionally with extra command-line flags.
-fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
-    let os_args: Vec<std::ffi::OsString> = extra_args.iter().map(Into::into).collect();
+/// Show the browser window instead of running headless.
+///
+/// An environment variable rather than a spec field, deliberately. Watching a
+/// browser drive is a property of the *run you are supervising*, not of the
+/// flow: recording is the one human-in-the-loop step, and a committed
+/// `headed: true` would follow the flow into CI, where there is no one to
+/// watch and no display to watch on.
+///
+/// Presence-based, matching `FLOWPROOF_NO_SHARED_BROWSER` — `FLOWPROOF_HEADED=0`
+/// still means headed, because a variable someone bothered to set is a
+/// variable they meant.
+///
+/// **A headed recording is not pixel-identical to a headless one.** Headed
+/// Chromium sizes its window from the desktop; headless uses a fixed default.
+/// A flow with visual assertions should pin `browser.viewport` in its spec, or
+/// its baselines will be recorded at one size and replayed at another.
+fn headed_requested() -> bool {
+    std::env::var_os("FLOWPROOF_HEADED").is_some()
+}
+
+/// Build the launch options, split out from [`launch_browser`] so the headless
+/// decision is testable without starting a browser.
+fn launch_options_for(
+    os_args: &[std::ffi::OsString],
+    headed: bool,
+) -> Result<LaunchOptions<'_>, AdapterError> {
     let mut options = LaunchOptions::default_builder();
-    options.headless(true).sandbox(false);
+    options.headless(!headed).sandbox(false);
     options.idle_browser_timeout(BROWSER_IDLE_TIMEOUT);
     options.args(os_args.iter().map(AsRef::as_ref).collect());
     if let Ok(path) = std::env::var("CHROME") {
         options.path(Some(path.into()));
     }
-    let options = options
+    options
         .build()
-        .map_err(|e| AdapterError::Web(format!("building launch options: {e}")))?;
-    Browser::new(options).map_err(|e| AdapterError::Web(format!("launching browser: {e}")))
+        .map_err(|e| AdapterError::Web(format!("building launch options: {e}")))
+}
+
+/// Explain a launch failure that only happens because the window was asked for.
+///
+/// Measured, not guessed: with `FLOWPROOF_HEADED=1` and no `DISPLAY`, Chromium
+/// exits during startup, and the launcher — which is meanwhile scanning for the
+/// DevTools port Chromium never opens — reports
+/// `There are no available ports between 8000 and 9000 for debugging` after
+/// several minutes. Nothing in that sentence mentions a display, so the obvious
+/// reading is a port conflict, and the obvious fix is to go hunting for one.
+///
+/// This is the defect class `CHARTER.md` Milestone 1 names: a real upstream
+/// failure presenting as a flowproof problem. The underlying error is kept —
+/// it is still the truth — with the cause that actually explains it appended.
+fn launch_failure_message(err: &str, headed: bool) -> String {
+    if !headed {
+        return format!("launching browser: {err}");
+    }
+    format!(
+        "launching browser: {err}\n\
+         note: FLOWPROOF_HEADED is set, so Chromium was asked for a VISIBLE window. \
+         A host with no desktop session (SSH, a container, a CI runner) cannot give it \
+         one, and Chromium exits during startup — which surfaces as a port or timeout \
+         error rather than as a missing display. Unset FLOWPROOF_HEADED to run headless."
+    )
+}
+
+/// Launch a fresh Chromium (`CHROME` env var overrides the binary), optionally
+/// with extra command-line flags. Headless unless `FLOWPROOF_HEADED` is set.
+fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
+    let headed = headed_requested();
+    let os_args: Vec<std::ffi::OsString> = extra_args.iter().map(Into::into).collect();
+    let options = launch_options_for(&os_args, headed)?;
+    Browser::new(options)
+        .map_err(|e| AdapterError::Web(launch_failure_message(&e.to_string(), headed)))
 }
 
 /// One Chromium process for the whole run, reused across flows. Each flow
@@ -2336,6 +2392,78 @@ impl AppDriver for WebAppDriver {
 
 #[cfg(test)]
 mod tests {
+    /// The wiring, without starting a browser: `headed` must reach
+    /// `LaunchOptions.headless` inverted. Asserting on the built options rather
+    /// than on the boolean that produced them is the point — the previous code
+    /// passed a literal `true`, and a test of the literal would have proven
+    /// nothing.
+    #[test]
+    fn headed_flips_the_headless_launch_option() {
+        let no_args: Vec<std::ffi::OsString> = Vec::new();
+
+        let headless = super::launch_options_for(&no_args, false).expect("options build");
+        assert!(headless.headless, "default must stay headless");
+
+        let headed = super::launch_options_for(&no_args, true).expect("options build");
+        assert!(!headed.headless, "FLOWPROOF_HEADED must show the window");
+    }
+
+    /// The headed launch failure must name the display, and must not invent one
+    /// when headless fails for an unrelated reason.
+    ///
+    /// The message quoted here is the one actually observed on a display-less
+    /// host, not a plausible-looking stand-in.
+    #[test]
+    fn a_headed_launch_failure_explains_the_missing_display() {
+        let real = "There are no available ports between 8000 and 9000 for debugging";
+
+        let headed = super::launch_failure_message(real, true);
+        assert!(
+            headed.contains(real),
+            "the underlying error is still the truth"
+        );
+        assert!(
+            headed.contains("FLOWPROOF_HEADED"),
+            "must name the variable that caused it: {headed}"
+        );
+        assert!(
+            headed.contains("desktop session"),
+            "must name the actual cause, not just the symptom: {headed}"
+        );
+
+        // Headless failures are a different problem and must not be explained
+        // away as a display that was never asked for.
+        let headless = super::launch_failure_message(real, false);
+        assert!(headless.contains(real));
+        assert!(
+            !headless.contains("FLOWPROOF_HEADED"),
+            "headless failures must not blame a variable nobody set: {headless}"
+        );
+    }
+
+    /// The variable's NAME, which the option test above cannot cover: a typo in
+    /// `headed_requested` would leave the feature silently unreachable while
+    /// every other test still passed.
+    ///
+    /// Safe to mutate the environment here because no other test in this
+    /// workspace reads `FLOWPROOF_HEADED`; the value is restored either way.
+    #[test]
+    fn the_env_var_is_spelled_flowproof_headed() {
+        let restore = std::env::var_os("FLOWPROOF_HEADED");
+        std::env::remove_var("FLOWPROOF_HEADED");
+        assert!(!super::headed_requested(), "unset must mean headless");
+
+        // Deliberately "0": a variable someone bothered to set is one they
+        // meant, and presence-based matches FLOWPROOF_NO_SHARED_BROWSER.
+        std::env::set_var("FLOWPROOF_HEADED", "0");
+        assert!(super::headed_requested(), "any value must mean headed");
+
+        match restore {
+            Some(v) => std::env::set_var("FLOWPROOF_HEADED", v),
+            None => std::env::remove_var("FLOWPROOF_HEADED"),
+        }
+    }
+
     #[test]
     fn text_xpath_ladder_orders_exact_label_prefix_then_case_insensitive() {
         let rungs = super::text_xpaths("Close Account");
