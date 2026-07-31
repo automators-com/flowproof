@@ -1,0 +1,30 @@
+[package]
+name = "wfp-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+# Same major as the shipping driver uses, so this pulls no new resolution.
+uiautomation = "0.24"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_NetworkManagement_NetManagement",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_System_Rpc",
+    "Win32_System_Com",
+    "Win32_System_Memory",
+    "Win32_System_Environment",
+    "Win32_System_StationsAndDesktops",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+] }

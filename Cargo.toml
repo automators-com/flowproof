@@ -8,6 +8,14 @@ members = [
     "crates/flowproof-adapters",
     "crates/flowproof-cli",
     "crates/flowproof-python",
+    # Feasibility spike, not a shipping crate (publish = false). It is a
+    # workspace member for one reason: the Windows CI job runs
+    # `cargo test --workspace --all-features`, and `.github/workflows/` is a
+    # constitution-protected path this spike may not modify. Membership is the
+    # only way to get spike code onto a `windows-latest` runner without
+    # touching the workflow. Delete this line and the directory when the spike
+    # is decided.
+    "spike/windows-containment",
 ]
 
 [workspace.package]
