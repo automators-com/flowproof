@@ -1002,17 +1002,15 @@ and "covered by a test that would fail if it broke" are different claims:
 |---|---|
 | OpenAI proxy + `assert_tool_call` | full: CLI record -> trace -> replay, agent as a real subprocess, on every PR |
 | MCP stdio (v3.1) | full: real stand-in binary, real server, real agent subprocess, including "a mocked tool is never forwarded" |
-| MCP streamable-HTTP (v3.2) | the boundary is exercised over real HTTP, but driven directly rather than through `flowproof record`/`run` with a real agent |
+| MCP streamable-HTTP (v3.2) | full: CLI record -> trace -> replay with a real agent subprocess against a real HTTP server, then replayed with that server stopped and deleted |
 | Streaming replay | full, both dialects: CLI record -> trace -> replay with a `stream: true` agent subprocess, asserting the frames it received, so the record-mode synthesis is covered too |
 | Anthropic Messages | full: CLI record -> trace -> replay against a Messages-dialect upstream, agent as a real subprocess, on every PR |
 | http-target (`agent.url`) | full: a service flowproof did not start, pointed at the fixed `proxy_port`, driven through CLI record -> trace -> replay with no model reachable |
 | `assert_no_tool_call` | full, both directions: the passing case, plus a red-path proof in which a model asks for the forbidden tool and an obedient agent calls it, so the record is refused and no trace is minted |
 
-One gap remains, and it is a RECORD path: MCP streamable-HTTP is exercised
-over real HTTP but driven directly rather than through `record`/`run` with a
-real agent. Nothing there is known broken - the mode-blind code is shared with
-the tested replay paths - but "we test that" should not be said of it until it
-has one.
+Every row above is now a CLI round trip with a real agent, not an assertion
+about one. That list was for a long time a list of things believed to work; it
+is now a list of things measured to.
 
 The falsifiability suite is the other half of this table's honesty: a row
 saying "covered" means a test exists, and

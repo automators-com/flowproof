@@ -8,6 +8,23 @@ together).
 
 ### Added
 
+- **The HTTP MCP boundary had never been driven through the CLI.** The coverage
+  table said it: exercised over real HTTP, but driven directly rather than
+  through `record`/`run` with a real agent. Only the round trip can prove the
+  things that matter about this transport — that the `FLOWPROOF_MCP_URL_<NAME>`
+  flowproof injects is what a real agent actually reaches, that the lane is
+  captured through `record`, and that `run` serves it back.
+
+  A real agent subprocess now speaks JSON-RPC over HTTP to flowproof's listener,
+  against a real HTTP MCP server, and the flow then replays with that server
+  stopped and deleted from disk. The real server logs every request it receives,
+  so the test has an independent oracle: "the lane is complete" and "the real
+  server was never contacted at replay" are checked against the server's own
+  account rather than flowproof's.
+
+  With this the coverage table has no remaining gaps — every row is a CLI round
+  trip with a real agent rather than an assertion about one.
+
 - **The `agent.url` driver had never been recorded.** The coverage table said
   so plainly — "replay covered; the RECORD path has no test" — and `proxy_port`
   appeared nowhere in the test tree, only in `src/`. That is the half where the
