@@ -1153,3 +1153,33 @@ elsewhere, so the thing under test never ran while the non-zero exit satisfied
 No CHANGELOG entry: that file records product-facing change, and no previous
 gate-infrastructure change appears in it. Following the existing convention
 rather than inventing one.
+
+### Follow-up: the new test's fixture built nothing on CI
+
+First CI run of the fix: `a clean approval` **passed** — the argv defect is gone
+— and the new large-diff case failed on its own fixture.
+
+```
+fatal: empty ident name (for <runner@...cloudapp.net>) not allowed
+FAIL  the large-diff fixture is large enough    got 0 bytes, need > 131072
+```
+
+`git commit-tree` needs a committer identity and a CI runner has no
+`user.email`, so it refused, the ref came back empty, and `git diff "" ""`
+produced nothing.
+
+**The guard did its job.** Without the "is the fixture actually over the limit"
+assertion this would have built a 0-byte diff, sailed past the 128 KiB
+threshold it was meant to exercise, and reported `ok` — a check that passes
+because it tests nothing. That is the same defect class as the rest of this log,
+caught by a precaution rather than by luck.
+
+Identity is now supplied by environment variables on the plumbing commands,
+which changes nothing about the repository. Verified under the CI condition
+rather than guessed at:
+
+```bash
+env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    bash scripts/gate/adversary-review.test.sh      # EXIT=0, 625017-byte case ok
+```

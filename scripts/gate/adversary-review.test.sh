@@ -99,6 +99,12 @@ blob="$(git hash-object -w "$big_file")"
 rm -f "$big_file"
 empty_tree="$(git mktree </dev/null)"
 big_tree="$(printf '100644 blob %s\tbig.txt\n' "$blob" | git mktree)"
+# An identity, supplied by environment rather than config: a CI runner has no
+# `user.email`, and `git commit-tree` refuses with "empty ident name" — which
+# produced an empty ref, an empty diff, and a fixture of 0 bytes. Passing it
+# here keeps the check self-contained and changes nothing about the repository.
+export GIT_AUTHOR_NAME=adversary-test GIT_AUTHOR_EMAIL=adversary-test@invalid
+export GIT_COMMITTER_NAME=adversary-test GIT_COMMITTER_EMAIL=adversary-test@invalid
 base_commit="$(git commit-tree "$empty_tree" -m 'adversary test: empty base')"
 big_commit="$(git commit-tree "$big_tree" -p "$base_commit" -m 'adversary test: large diff')"
 big_bytes="$(git diff "$base_commit" "$big_commit" | wc -c)"
