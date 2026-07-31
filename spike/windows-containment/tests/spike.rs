@@ -20,7 +20,7 @@
 #[test]
 fn windows_egress_containment_spike() {
     use wfp_spike::report::Report;
-    use wfp_spike::win::{harness, identity};
+    use wfp_spike::win::{harness, identity, launch};
 
     let mut report = Report::new();
     println!("SPIKE|BEGIN|windows egress containment feasibility spike");
@@ -43,6 +43,15 @@ fn windows_egress_containment_spike() {
         );
         report.summary();
         return;
+    }
+
+    // A privilege the token holds is still disabled until it is switched on,
+    // and `CreateProcessAsUserW` then fails with ERROR_PRIVILEGE_NOT_HELD —
+    // an error that reads like "not an administrator". Enable them first and
+    // report exactly which ones the runner's token actually has, so the next
+    // reader does not have to guess.
+    for (name, state) in launch::enable_process_privileges() {
+        report.note(&format!("preflight.privilege.{name}"), state);
     }
 
     println!("SPIKE|STAGE|core (days 1-3) + audit (day 4) - enforcement ON");

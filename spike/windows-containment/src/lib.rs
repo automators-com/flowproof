@@ -20,6 +20,7 @@
 pub mod canary;
 pub mod oracle;
 pub mod report;
+pub mod tee;
 
 #[cfg(windows)]
 pub mod win;

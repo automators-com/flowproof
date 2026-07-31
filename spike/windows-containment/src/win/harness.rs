@@ -67,10 +67,14 @@ impl WorkDir {
         // `icacls` rather than hand-rolled ACL code: it is one call, its output
         // is diagnosable from a CI log, and getting inheritance flags wrong in
         // raw `SetEntriesInAclW` is a silent no-op rather than an error.
+        //
+        // `M` (modify), not `RX`: the canary writes its own side-channel log
+        // here, which is what keeps the evidence alive when the spawn falls
+        // back to `CreateProcessWithLogonW` and handle inheritance is lost.
         let out = std::process::Command::new("icacls")
             .arg(&path)
             .arg("/grant")
-            .arg(format!("{user}:(OI)(CI)RX"))
+            .arg(format!("{user}:(OI)(CI)M"))
             .output();
         match out {
             Ok(o) => {
@@ -215,9 +219,19 @@ pub fn run_canary(
     args: &[String],
     report: &mut Report,
 ) -> Result<StageOutcome, WinErr> {
-    let token = launch::logon(&boundary.identity.name, &boundary.identity.password)?;
+    let (token, logon_kind) = launch::logon(&boundary.identity.name, &boundary.identity.password)?;
+    report.note("canary.logon_type", logon_kind);
     let log_path = workdir.path.join("canary.out");
+    let side_path = workdir.path.join("canary.side");
     let log = inheritable_log(&log_path)?;
+
+    // `--out` makes the child write its own copy. On the
+    // `CreateProcessWithLogonW` fallback path handle inheritance is lost and
+    // this file is the only evidence that survives.
+    let mut args: Vec<String> = args.to_vec();
+    args.push("--out".into());
+    args.push(side_path.display().to_string());
+    let args = &args;
 
     let quoted: Vec<String> = args
         .iter()
@@ -232,12 +246,18 @@ pub fn run_canary(
     let cmdline = format!("\"{}\" {}", workdir.exe.display(), quoted.join(" "));
     report.note("canary.cmdline", &cmdline);
 
-    let spawned = launch::spawn_contained_with_output(token, &cmdline, log);
+    let spawned = launch::spawn_contained_with_output(
+        token,
+        &boundary.identity.name,
+        &boundary.identity.password,
+        &cmdline,
+        log,
+    );
     unsafe {
         let _ = CloseHandle(log);
     }
 
-    let mut child = match spawned {
+    let (mut child, spawn_path) = match spawned {
         Ok(c) => c,
         Err(e) => {
             unsafe {
@@ -246,6 +266,7 @@ pub fn run_canary(
             return Err(e);
         }
     };
+    report.note("canary.spawn_path", spawn_path);
     report.note("canary.pid", child.pid);
 
     // A generous but finite wait. A hang here is itself a result worth seeing,
@@ -276,13 +297,19 @@ pub fn run_canary(
     // returned to the caller.
     std::thread::sleep(Duration::from_millis(1500));
 
-    let mut out = String::new();
-    match std::fs::File::open(&log_path) {
-        Ok(mut f) => {
-            let _ = f.read_to_string(&mut out);
-        }
-        Err(e) => report.note("canary.stdout.read_error", e.to_string()),
+    // Prefer the side channel, fall back to the inherited handle, and say
+    // which one carried the evidence. Silently picking one would hide a
+    // fallback spawn path that produced nothing.
+    let mut out = read_or_empty(&side_path);
+    let mut source = "side-channel";
+    if out.trim().is_empty() {
+        out = read_or_empty(&log_path);
+        source = "inherited-stdout";
     }
+    report.note(
+        "canary.output_source",
+        format!("{source} ({} bytes)", out.len()),
+    );
     child.close();
 
     for line in out.lines() {
@@ -292,6 +319,14 @@ pub fn run_canary(
         child_stdout: out,
         child_exit: exit,
     })
+}
+
+fn read_or_empty(p: &Path) -> String {
+    let mut s = String::new();
+    if let Ok(mut f) = std::fs::File::open(p) {
+        let _ = f.read_to_string(&mut s);
+    }
+    s
 }
 
 /// Parse one `CANARY|<label>|<target>|<CONNECTED|REFUSED>|os_error=<n>` line.

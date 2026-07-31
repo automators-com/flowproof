@@ -39,9 +39,7 @@ use windows::Win32::System::Threading::{
 /// Everything the GUI probe prints is prefixed `GUI|` so it survives the trip
 /// out through the child's redirected stdout and into the CI log.
 fn emit(key: &str, value: impl std::fmt::Display) {
-    println!("GUI|{key}|{value}");
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
+    crate::tee::line(&format!("GUI|{key}|{value}"));
 }
 
 /// Runs **inside** the boundary, as the per-run identity.
@@ -53,6 +51,11 @@ pub fn inside(args: &[String]) -> i32 {
         match a.as_str() {
             "--launch-and-drive" => launch_own = true,
             "--foreign-title" => foreign_title = it.next().cloned(),
+            "--out" => {
+                if let Some(p) = it.next() {
+                    crate::tee::open(p);
+                }
+            }
             _ => {}
         }
     }

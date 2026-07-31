@@ -15,12 +15,17 @@
 use std::ffi::c_void;
 
 use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::Foundation::LUID;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Security::Authorization::{
     GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, EXPLICIT_ACCESS_W, SET_ACCESS,
     SE_WINDOW_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
 };
-use windows::Win32::Security::{LogonUserW, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT};
+use windows::Win32::Security::{
+    AdjustTokenPrivileges, LogonUserW, LookupPrivilegeValueW, LOGON32_LOGON, LOGON32_LOGON_BATCH,
+    LOGON32_LOGON_INTERACTIVE, LOGON32_LOGON_NETWORK_CLEARTEXT, LOGON32_PROVIDER_DEFAULT,
+    LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
+};
 use windows::Win32::Security::{
     ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY,
 };
@@ -34,8 +39,9 @@ use windows::Win32::System::StationsAndDesktops::{
     OpenWindowStationW, DESKTOP_CONTROL_FLAGS,
 };
 use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, GetCurrentThreadId, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED,
-    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
+    CreateProcessAsUserW, CreateProcessWithLogonW, GetCurrentProcess, GetCurrentThreadId,
+    OpenProcessToken, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    LOGON_WITH_PROFILE, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 
 use super::{wide, WinErr};
@@ -62,23 +68,109 @@ impl Contained {
 }
 
 /// Log the identity on and hand back its primary token.
-pub fn logon(user: &str, password: &str) -> Result<HANDLE, WinErr> {
+///
+/// Three logon types are tried in order and the one that worked is reported.
+/// `INTERACTIVE` needs `SeInteractiveLogonRight`, which a fresh local user has
+/// by default on a member server but not on every policy; `BATCH` is the usual
+/// fallback for a non-login service identity. Trying all three in one run costs
+/// nothing and saves a CI cycle spent discovering which the runner allows.
+pub fn logon(user: &str, password: &str) -> Result<(HANDLE, &'static str), WinErr> {
     let wuser = wide(user);
     let wdom = wide(".");
     let wpass = wide(password);
-    let mut token = HANDLE::default();
+
+    let attempts: [(LOGON32_LOGON, &'static str); 3] = [
+        (LOGON32_LOGON_INTERACTIVE, "INTERACTIVE"),
+        (LOGON32_LOGON_BATCH, "BATCH"),
+        (LOGON32_LOGON_NETWORK_CLEARTEXT, "NETWORK_CLEARTEXT"),
+    ];
+    let mut last = WinErr::new("LogonUserW", 0, "no attempt made".into());
+    for (kind, label) in attempts {
+        let mut token = HANDLE::default();
+        let r = unsafe {
+            LogonUserW(
+                PCWSTR(wuser.as_ptr()),
+                PCWSTR(wdom.as_ptr()),
+                PCWSTR(wpass.as_ptr()),
+                kind,
+                LOGON32_PROVIDER_DEFAULT,
+                &mut token,
+            )
+        };
+        match r {
+            Ok(()) => return Ok((token, label)),
+            Err(e) => {
+                last = WinErr::new(
+                    "LogonUserW",
+                    e.code().0 as u32,
+                    format!("{user} via {label}"),
+                );
+            }
+        }
+    }
+    Err(last)
+}
+
+/// Enable the privileges `CreateProcessAsUserW` needs, and report what actually
+/// got enabled.
+///
+/// This is the failure most likely to be misread. A privilege the token *holds*
+/// is still disabled until it is explicitly enabled, so an administrator can
+/// call `CreateProcessAsUserW` and get `ERROR_PRIVILEGE_NOT_HELD` (1314) — an
+/// error that reads like "you are not admin" when the real cause is "you did not
+/// switch it on". Worse, `AdjustTokenPrivileges` returns success even when it
+/// enabled nothing, so the result is checked against `GetLastError` rather than
+/// against the return value.
+pub fn enable_process_privileges() -> Vec<(String, String)> {
+    const WANTED: [&str; 3] = [
+        "SeAssignPrimaryTokenPrivilege",
+        "SeIncreaseQuotaPrivilege",
+        "SeTcbPrivilege",
+    ];
+    let mut out = Vec::new();
     unsafe {
-        LogonUserW(
-            PCWSTR(wuser.as_ptr()),
-            PCWSTR(wdom.as_ptr()),
-            PCWSTR(wpass.as_ptr()),
-            LOGON32_LOGON_INTERACTIVE,
-            LOGON32_PROVIDER_DEFAULT,
+        let mut token = HANDLE::default();
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
             &mut token,
         )
+        .is_err()
+        {
+            out.push(("<all>".into(), "OpenProcessToken failed".into()));
+            return out;
+        }
+        for name in WANTED {
+            let wname = wide(name);
+            let mut luid = LUID::default();
+            if LookupPrivilegeValueW(PCWSTR::null(), PCWSTR(wname.as_ptr()), &mut luid).is_err() {
+                out.push((name.into(), "LookupPrivilegeValueW failed".into()));
+                continue;
+            }
+            let tp = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+            let r = AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None);
+            // Success plus ERROR_NOT_ALL_ASSIGNED means the token does not hold
+            // it; success plus ERROR_SUCCESS means it is now on.
+            let le = super::identity::last_error();
+            out.push((
+                name.into(),
+                match (r.is_ok(), le) {
+                    (true, 0) => "ENABLED".to_string(),
+                    (true, 1300) => "NOT HELD by this token (ERROR_NOT_ALL_ASSIGNED)".to_string(),
+                    (true, other) => format!("adjust ok, last_error={other}"),
+                    (false, other) => format!("AdjustTokenPrivileges failed, last_error={other}"),
+                },
+            ));
+        }
+        let _ = CloseHandle(token);
     }
-    .map_err(|e| WinErr::new("LogonUserW", e.code().0 as u32, user.to_string()))?;
-    Ok(token)
+    out
 }
 
 /// Grant the run identity access to this process's window station and the
@@ -184,9 +276,11 @@ unsafe fn add_ace(obj: HANDLE, sid: PSID, access: u32) -> Result<(), WinErr> {
 /// output away, and the canary's output is the entire evidence base.
 pub fn spawn_contained_with_output(
     token: HANDLE,
+    user: &str,
+    password: &str,
     command_line: &str,
     log: HANDLE,
-) -> Result<Contained, WinErr> {
+) -> Result<(Contained, &'static str), WinErr> {
     unsafe {
         let job = CreateJobObjectW(None, PCWSTR::null())
             .map_err(|e| WinErr::new("CreateJobObjectW", e.code().0 as u32, String::new()))?;
@@ -213,7 +307,7 @@ pub fn spawn_contained_with_output(
         let mut pi = PROCESS_INFORMATION::default();
         let mut cmd = wide(command_line);
 
-        CreateProcessAsUserW(
+        let primary = CreateProcessAsUserW(
             Some(token),
             PCWSTR::null(),
             Some(PWSTR(cmd.as_mut_ptr())),
@@ -227,14 +321,58 @@ pub fn spawn_contained_with_output(
             PCWSTR::null(),
             &si,
             &mut pi,
-        )
-        .map_err(|e| {
-            WinErr::new(
-                "CreateProcessAsUserW",
-                e.code().0 as u32,
-                command_line.to_string(),
-            )
-        })?;
+        );
+
+        let path = match primary {
+            Ok(()) => "CreateProcessAsUserW",
+            Err(e) => {
+                // `CreateProcessAsUserW` needs SeAssignPrimaryTokenPrivilege,
+                // which Administrators do *not* hold by default —
+                // ERROR_PRIVILEGE_NOT_HELD (1314) here means exactly that, not
+                // "you are not an administrator". `CreateProcessWithLogonW`
+                // goes through the secondary-logon service and needs no
+                // privilege, so it is the honest fallback rather than a
+                // weakening: the child still runs under the per-run identity,
+                // which is the only property containment depends on.
+                //
+                // It cannot inherit handles, so the child's output is lost on
+                // this path and the caller is told which path ran.
+                let mut wuser = wide(user);
+                let mut wdom = wide(".");
+                let mut wpass = wide(password);
+                let mut cmd2 = wide(command_line);
+                let si2 = STARTUPINFOW {
+                    cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+                    lpDesktop: PWSTR(desktop.as_mut_ptr()),
+                    ..Default::default()
+                };
+                CreateProcessWithLogonW(
+                    PCWSTR(wuser.as_mut_ptr()),
+                    PCWSTR(wdom.as_mut_ptr()),
+                    PCWSTR(wpass.as_mut_ptr()),
+                    LOGON_WITH_PROFILE,
+                    PCWSTR::null(),
+                    Some(PWSTR(cmd2.as_mut_ptr())),
+                    CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                    None,
+                    PCWSTR::null(),
+                    &si2,
+                    &mut pi,
+                )
+                .map_err(|e2| {
+                    WinErr::new(
+                        "CreateProcessAsUserW then CreateProcessWithLogonW",
+                        e.code().0 as u32,
+                        format!(
+                            "primary={} fallback={} cmd={command_line}",
+                            e.code().0,
+                            e2.code().0
+                        ),
+                    )
+                })?;
+                "CreateProcessWithLogonW(no output capture)"
+            }
+        };
 
         // Assign before resuming: a process that ran even briefly outside the
         // job could have spawned something the job never sees.
@@ -243,13 +381,16 @@ pub fn spawn_contained_with_output(
         })?;
         ResumeThread(pi.hThread);
 
-        Ok(Contained {
-            process: pi.hProcess,
-            thread: pi.hThread,
-            pid: pi.dwProcessId,
-            job,
-            token,
-        })
+        Ok((
+            Contained {
+                process: pi.hProcess,
+                thread: pi.hThread,
+                pid: pi.dwProcessId,
+                job,
+                token,
+            },
+            path,
+        ))
     }
 }
 

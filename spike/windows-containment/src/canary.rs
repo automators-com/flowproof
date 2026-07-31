@@ -27,14 +27,13 @@ pub struct ProbeResult {
 
 impl ProbeResult {
     pub fn print(&self) {
-        println!(
+        crate::tee::line(&format!(
             "CANARY|{}|{}|{}|os_error={}",
             self.label,
             self.target,
             if self.ok { "CONNECTED" } else { "REFUSED" },
             self.os_error
-        );
-        let _ = std::io::stdout().flush();
+        ));
     }
 }
 
@@ -104,6 +103,7 @@ pub fn run(args: &[String]) -> i32 {
     let mut external: Option<SocketAddr> = None;
     let mut spawn_grandchild = false;
     let mut prefix = "child".to_string();
+    let mut out_path: Option<String> = None;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -114,12 +114,21 @@ pub fn run(args: &[String]) -> i32 {
             "--external" => external = it.next().and_then(|v| v.parse().ok()),
             "--spawn-grandchild" => spawn_grandchild = true,
             "--prefix" => prefix = it.next().cloned().unwrap_or_default(),
+            "--out" => {
+                if let Some(p) = it.next() {
+                    crate::tee::open(p);
+                    out_path = Some(p.clone());
+                }
+            }
             _ => {}
         }
     }
 
-    println!("CANARY|START|prefix={prefix}|pid={}", std::process::id());
-    println!("CANARY|WHOAMI|{}|{}", prefix, whoami());
+    crate::tee::line(&format!(
+        "CANARY|START|prefix={prefix}|pid={}",
+        std::process::id()
+    ));
+    crate::tee::line(&format!("CANARY|WHOAMI|{}|{}", prefix, whoami()));
 
     if let Some(t) = declared {
         tcp_probe(&format!("{prefix}.tcp.declared"), t).print();
@@ -144,6 +153,13 @@ pub fn run(args: &[String]) -> i32 {
             .unwrap_or_default();
         let mut cmd = grandchild_command(&exe);
         cmd.arg("canary").arg("--prefix").arg("grandchild");
+        // The grandchild writes into the same side-channel file. Without this
+        // its probe result would exist only on a stdout nobody captures, and
+        // "no grandchild line" would be indistinguishable from "grandchild was
+        // blocked".
+        if let Some(p) = &out_path {
+            cmd.arg("--out").arg(p);
+        }
         if let Some(t) = undeclared {
             cmd.arg("--undeclared").arg(t.to_string());
         }
@@ -151,13 +167,12 @@ pub fn run(args: &[String]) -> i32 {
             cmd.arg("--declared").arg(t.to_string());
         }
         match cmd.status() {
-            Ok(st) => println!("CANARY|GRANDCHILD-EXIT|{:?}", st.code()),
-            Err(e) => println!("CANARY|GRANDCHILD-SPAWN-FAILED|{e}"),
+            Ok(st) => crate::tee::line(&format!("CANARY|GRANDCHILD-EXIT|{:?}", st.code())),
+            Err(e) => crate::tee::line(&format!("CANARY|GRANDCHILD-SPAWN-FAILED|{e}")),
         }
     }
 
-    println!("CANARY|DONE|prefix={prefix}");
-    let _ = std::io::stdout().flush();
+    crate::tee::line(&format!("CANARY|DONE|prefix={prefix}"));
     0
 }
 
