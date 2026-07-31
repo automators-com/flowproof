@@ -179,3 +179,228 @@ best answer and its reasoning, not a stall.
    everything look blocked, the negative control would still report blocked and
    the disagreement would show. That is precisely why it is run in the same job
    rather than trusted from a separate run.
+
+---
+
+## Iteration 2 — the harness reaches a Windows runner
+
+Branch `spike/windows-containment`, pull request
+[#280](https://github.com/automators-com/flowproof/pull/280), `full-ci` label
+applied. Commit `8c0ad32`.
+
+### What changed, and why it was worth a commit rather than a one-line push
+
+Three plumbing failures would each have cost a full CI round trip *and* produced
+a log that read like a containment result rather than a setup problem. The brief
+says to batch changes and to make the harness print everything that might be
+wanted next time; these are that, applied to the three places the child process
+can fail to exist at all.
+
+* **`CreateProcessAsUserW` needs `SeAssignPrimaryTokenPrivilege` and
+  `SeIncreaseQuotaPrivilege`.** A hosted runner is an administrator with UAC
+  off, so it should hold both — but "should" is the kind of claim this spike
+  exists to check. The privileges are now enabled explicitly, and if the call
+  still fails the harness falls back to `CreateProcessWithLogonW` and **records
+  which path worked** (`canary.spawn_path`).
+* **`LogonUserW` logon type is policy, not a given.** A freshly created local
+  user's right to log on interactively/as a batch job can be denied. Tried as
+  `INTERACTIVE`, then `BATCH`, then `NETWORK_CLEARTEXT`; the type that succeeded
+  is recorded (`canary.logon_type`).
+* **`CreateProcessWithLogonW` cannot inherit handles.** On that fallback path
+  the child's redirected stdout goes nowhere and the run would produce *no
+  evidence at all* — a silent, total loss of the thing the spike is for. The
+  canary now tees every line to a file it opens itself (`src/tee.rs`), so the
+  evidence survives whichever spawn path was taken.
+
+### Finding 2.1 — a compile error the local Windows typecheck caught for free
+
+`CreateProcessWithLogonW` takes `PROCESS_CREATION_FLAGS`, not `u32`; the
+fallback passed `.0`. Caught by
+`cargo check --target x86_64-pc-windows-msvc` on the Linux box in seconds.
+On a CI-only loop this would have cost a full cycle for a one-token fix, and it
+is the second concrete return on finding 0.3.
+
+### Finding 2.2 — `adversary` is red on this branch, and it is not the spike's doing
+
+`adversary` failed on `8c0ad32` (run 30608374678) while passing on `5b731ef`.
+The failure is inside the gate's **own** self-tests:
+
+```
+FAIL  a clean approval    got REFUSE, wanted APPROVE
+reducer tests FAILED
+```
+
+`scripts/gate/adversary-review.test.sh` stubs the reviewer, feeds
+`adversary-review.sh` a synthetic reply that should approve, and asserts it
+does. It builds its diff from `HEAD~1..HEAD`, so the commit under test is an
+input to a test that is supposed to be about reply parsing.
+
+Ruled out: **diff size**. The commit that *passed* is 3341 insertions; the one
+that *failed* is 302. The larger diff passed and the smaller failed, so a size
+ratchet is not the cause. No `400`/`cap` string appears in
+`adversary-review.sh`.
+
+**Not escalated as a spike blocker, deliberately.** `scripts/gate/` is a
+constitution-protected path this spike may not touch, and `adversary` is a
+*merge* gate. This spike never merges — its output is a verdict and a log, and
+nothing here is proposed for `main`. The Windows evidence comes from the `CI`
+workflow's `windows build + E2E` job, which is unaffected. Recorded here because
+it is a real observation about the repository that a human should see, not
+because it stops anything.
+
+`main` is green (run 30604400709, `0a463ab`), so the circuit-breaker stop
+condition has not fired.
+
+### Finding 2.3 — `constitution` passes, confirming the CI route is legitimate
+
+Run 30608374738: **success**. The spike adds a workspace member and touches no
+protected path, which is the whole basis of finding 0.1. The route onto a
+Windows runner is sound rather than merely undetected.
+
+### Local gate before the push (exit codes captured separately, never piped)
+
+| Command | Exit |
+|---|---|
+| `cargo check -p wfp-spike --all-targets --target x86_64-pc-windows-msvc` | `0` |
+| `cargo clippy -p wfp-spike --all-targets --all-features --target x86_64-pc-windows-msvc` | `0`, 0 warnings |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `0` |
+| `cargo fmt --all --check` | `0` |
+| `cargo test -p wfp-spike --all-features` (Linux) | `0` |
+
+### Still not known
+
+Everything the spike is for. As of this entry `FwpmFilterAdd0` has still never
+been called on a real kernel. **A clean cross-compile is not evidence of
+containment.**
+
+---
+
+## Iteration 2 — the first real Windows run, and what it did not say
+
+Run **30608374686**, job `windows build + E2E` (id 91085555047), commit
+`8c0ad32`. Step 5 `build + test (windows)`: **success**.
+
+```
+     Running tests\spike.rs (target\debug\deps\spike-bb7e9b4ad9afb1cd.exe)
+running 1 test
+test windows_egress_containment_spike ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.10s
+```
+
+### Finding 2.1 — the harness reached a Windows kernel and told us nothing (NEGATIVE)
+
+The spike crate compiled on `windows-latest`, the test ran, and it produced
+**zero** `SPIKE|` lines. Grepping the downloaded job log:
+
+```bash
+gh api "repos/automators-com/flowproof/actions/jobs/91085555047/logs" > wj.log   # exit 0
+grep -c 'SPIKE|' wj.log                                                          # 0
+```
+
+Cause: **`cargo test` captures `println!` output for a test that passes**, and
+this test always passes on purpose. The evidence block existed and was thrown
+away. The CI step is `cargo test --workspace --all-features` with no
+`--nocapture`, and that step lives in `.github/workflows/`, which the spike may
+not modify.
+
+This is the spike's own version of the mistake the honesty rules are about: the
+run *looked* successful — green step, green job, green test — and carried no
+information whatsoever. `test ... ok` was, precisely, a false green.
+
+**What the 5.10s runtime does and does not tell us.** It is not instant, so the
+test did more than return at the elevation check. It is also far too short for
+the GUI stages. Both readings are consistent with the log, so **neither is
+recorded as a result.** No conclusion is drawn from a duration.
+
+**Fix, and its verification.** Evidence now goes to the stderr *file descriptor*
+via `report::emit`, not through `println!`. libtest captures by swapping the
+sink that the `print!`/`eprint!` macros consult; a handle from `io::stderr()`
+writes to the descriptor directly and is not intercepted.
+
+Verified on the Linux box rather than assumed — the same mechanism, one CI cycle
+saved:
+
+```bash
+cargo test -p wfp-spike --all-features > capture.log 2>&1   # exit 0
+grep -n 'SPIKE|' capture.log
+# 18:SPIKE|SKIP|not Windows; nothing to measure
+```
+
+Before the fix that line did not appear. Rejected alternatives: `--nocapture`
+and `RUST_TEST_NOCAPTURE` both live in the protected workflow; putting the
+variable in `.cargo/config.toml` would make every other crate's tests noisy to
+fix one crate's problem.
+
+### Finding 2.2 — a real defect in the adversary gate (ESCALATION: protected path)
+
+`adversary` failed on run **30608374678** with:
+
+```
+FAIL  a clean approval    got REFUSE, wanted APPROVE
+reducer tests FAILED
+```
+
+It passed on the same branch one commit earlier, and the failing case is a
+reducer unit test on synthetic fixtures — which cannot depend on the diff. It
+does. `scripts/gate/adversary-review.test.sh` drives the **real**
+`adversary-review.sh` against the real `HEAD~1..HEAD` diff, and
+`adversary-review.sh` passes that diff to the model **as a single command-line
+argument**:
+
+```sh
+claude -p "$(cat <<PROMPT ... ${diff} ... PROMPT)"
+```
+
+Linux caps a *single* argv entry at `MAX_ARG_STRLEN` = 128 KiB, independently of
+`ARG_MAX` (2 MiB here). This pull request's diff is **137,731 bytes**. Exec
+fails, the script sees rc 126, and reports it as a review refusal.
+
+Reproduced directly, with a stub `claude` on `PATH` and an unambiguous approving
+reply:
+
+```
+PR diff bytes: 137731
+ARG_MAX: 2097152
+SUT_EXIT=1
+scripts/gate/adversary-review.sh: line 47: /tmp/.../claude: Argument list too long
+::error::correctness: the reviewer exited 126; refusing
+```
+
+The same test passes locally at `HEAD~1..HEAD` (a small diff), which is exactly
+why it looked branch-specific.
+
+**Why it matters beyond this spike.** Any pull request whose diff exceeds ~128
+KiB gets a refusal that reads as *the reviewer refused the change*, when the
+truth is *the reviewer never ran*. That is the defect class `CHARTER.md` §5.1
+puts first — a verdict that does not mean what it says — sitting in the gate
+itself. It is also self-concealing: the bigger the change, the more a refusal
+looks earned.
+
+**This spike cannot fix it.** `scripts/gate/` is constitution-protected
+(`CLAUDE.md`); a loop that could edit the gate could weaken the gate.
+
+> **ESCALATION — needs a human.** `scripts/gate/adversary-review.sh` line ~47
+> must stop passing the diff through argv. Writing the prompt to a temporary
+> file and piping it (`claude -p - < "$prompt"`, or `--prompt-file`) removes the
+> limit. Separately, an exec failure should be reported as a *tooling* failure
+> distinct from a review refusal, so a 126 never again reads as a judgement.
+> Nothing in this spike depends on the fix: `adversary` is not what gates the
+> Windows job, and this pull request is not for merging.
+
+### Finding 2.3 — this worktree is not exclusively ours
+
+Commit `8c0ad32` was authored and pushed by something other than this session,
+from this session's uncommitted working tree, mid-edit. That cancelled the
+in-flight CI run (`cancel-in-progress` on the branch's concurrency group) and is
+why run 30608104377 shows `cancelled` with the Windows job half-built.
+
+No harm done — the pushed tree matched the intended batch and `cargo fmt --all
+--check` was clean at that commit (exit `0`). Recorded because it changes how
+this spike must be run: **edits to the worktree can become pushes at any
+moment**, so a run must not be assumed to survive an edit. Later iterations
+wait for the Windows job to reach `completed` before touching a file.
+
+### Next
+
+Re-run with the capture fix. That run is the first one that can produce evidence
+about containment; everything before it is scaffolding.

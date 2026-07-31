@@ -8,6 +8,27 @@
 //! the inference being banned.
 
 use std::fmt::Display;
+use std::io::Write;
+
+/// Write one evidence line straight to the stderr file descriptor.
+///
+/// **Not `println!`.** `cargo test` captures the `print!`/`eprint!` macro path
+/// for a test that passes, and this spike's test always passes on purpose — so
+/// the first Windows CI run produced `test windows_egress_containment_spike ...
+/// ok` and not one line of the evidence it exists to produce. libtest's capture
+/// works by swapping the sink those macros consult; a handle obtained from
+/// `io::stderr()` writes to the descriptor directly and is not intercepted.
+///
+/// The alternatives were worse: `--nocapture` and `RUST_TEST_NOCAPTURE` both
+/// live in `.github/workflows/`, which this spike may not modify, and setting
+/// the variable in `.cargo/config.toml` would make every other crate's tests
+/// noisy to fix one crate's problem.
+pub fn emit(line: &str) {
+    let mut e = std::io::stderr();
+    let _ = e.write_all(line.as_bytes());
+    let _ = e.write_all(b"\n");
+    let _ = e.flush();
+}
 
 /// One recorded observation.
 pub struct Obs {
@@ -32,7 +53,7 @@ impl Report {
     /// an error code, a SID, a filter id. These are what make the *next*
     /// iteration cheap, since a missing log line costs a full CI cycle.
     pub fn note(&self, key: &str, value: impl Display) {
-        println!("SPIKE|NOTE|{key}|{value}");
+        emit(&format!("SPIKE|NOTE|{key}|{value}"));
     }
 
     /// Record an assertion. `met` is computed by the caller from a value only a
@@ -50,13 +71,13 @@ impl Report {
             observed: observed.to_string(),
             met: Some(met),
         };
-        println!(
+        emit(&format!(
             "SPIKE|ASSERT|{}|{}|expected={}|observed={}",
             o.id,
             if met { "MET" } else { "NOT-MET" },
             o.expected,
             o.observed
-        );
+        ));
         self.obs.push(o);
     }
 
@@ -69,10 +90,10 @@ impl Report {
             observed: format!("NOT RUN: {why}"),
             met: None,
         };
-        println!(
+        emit(&format!(
             "SPIKE|ASSERT|{}|NOT-RUN|expected={}|observed={}",
             o.id, o.expected, o.observed
-        );
+        ));
         self.obs.push(o);
     }
 
@@ -80,14 +101,19 @@ impl Report {
         let met = self.obs.iter().filter(|o| o.met == Some(true)).count();
         let unmet = self.obs.iter().filter(|o| o.met == Some(false)).count();
         let skipped = self.obs.iter().filter(|o| o.met.is_none()).count();
-        println!("SPIKE|SUMMARY|met={met}|not_met={unmet}|not_run={skipped}");
+        emit(&format!(
+            "SPIKE|SUMMARY|met={met}|not_met={unmet}|not_run={skipped}"
+        ));
         for o in &self.obs {
             let tag = match o.met {
                 Some(true) => "MET",
                 Some(false) => "NOT-MET",
                 None => "NOT-RUN",
             };
-            println!("SPIKE|SUMMARY-ROW|{}|{}|{}", o.id, tag, o.observed);
+            emit(&format!(
+                "SPIKE|SUMMARY-ROW|{}|{}|{}",
+                o.id, tag, o.observed
+            ));
         }
     }
 }

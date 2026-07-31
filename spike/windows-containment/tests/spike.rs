@@ -23,7 +23,7 @@ fn windows_egress_containment_spike() {
     use wfp_spike::win::{harness, identity, launch};
 
     let mut report = Report::new();
-    println!("SPIKE|BEGIN|windows egress containment feasibility spike");
+    wfp_spike::report::emit("SPIKE|BEGIN|windows egress containment feasibility spike");
 
     // Reported, never inferred. WFP filter add needs Administrator (or Network
     // Configuration Operators), and that limitation has to be stated in the
@@ -54,23 +54,25 @@ fn windows_egress_containment_spike() {
         report.note(&format!("preflight.privilege.{name}"), state);
     }
 
-    println!("SPIKE|STAGE|core (days 1-3) + audit (day 4) - enforcement ON");
+    wfp_spike::report::emit("SPIKE|STAGE|core (days 1-3) + audit (day 4) - enforcement ON");
     harness::stage_core(&mut report, true, "core");
 
-    println!("SPIKE|STAGE|negative control (day 5) - block filter DELIBERATELY omitted");
+    wfp_spike::report::emit(
+        "SPIKE|STAGE|negative control (day 5) - block filter DELIBERATELY omitted",
+    );
     harness::stage_core(&mut report, false, "neg");
 
-    println!("SPIKE|STAGE|teardown after an abruptly killed supervisor (day 6)");
+    wfp_spike::report::emit("SPIKE|STAGE|teardown after an abruptly killed supervisor (day 6)");
     harness::stage_abrupt_kill(
         &mut report,
         std::path::Path::new(env!("CARGO_BIN_EXE_wfp-spike")),
     );
 
-    println!("SPIKE|STAGE|identity boundary (days 7-9) - THIS is the spike");
+    wfp_spike::report::emit("SPIKE|STAGE|identity boundary (days 7-9) - THIS is the spike");
     harness::stage_gui(&mut report);
 
     report.summary();
-    println!("SPIKE|END");
+    wfp_spike::report::emit("SPIKE|END");
 }
 
 #[cfg(not(windows))]
@@ -79,5 +81,5 @@ fn windows_egress_containment_spike_is_windows_only() {
     // The workspace must always build and test cleanly on Linux and macOS
     // (`CHARTER.md` §2 invariant 3). Nothing this spike measures exists here,
     // and saying so out loud beats a silently absent test.
-    println!("SPIKE|SKIP|not Windows; nothing to measure");
+    wfp_spike::report::emit("SPIKE|SKIP|not Windows; nothing to measure");
 }

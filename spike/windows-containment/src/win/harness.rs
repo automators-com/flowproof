@@ -313,7 +313,7 @@ pub fn run_canary(
     child.close();
 
     for line in out.lines() {
-        println!("SPIKE|CHILD| {line}");
+        crate::report::emit(&format!("SPIKE|CHILD| {line}"));
     }
     Ok(StageOutcome {
         child_stdout: out,
@@ -603,13 +603,13 @@ pub fn stage_core(report: &mut Report, enforce: bool, tag: &str) {
     let live = netevents::snapshot();
     report.note("netevent.live.count", live.len());
     for r in live.iter().take(40) {
-        println!("SPIKE|NETEVENT-LIVE| {}", r.line());
+        crate::report::emit(&format!("SPIKE|NETEVENT-LIVE| {}", r.line()));
     }
     match netevents::enumerate() {
         Ok(all) => {
             report.note("netevent.enum.count", all.len());
             for r in all.iter().rev().take(40) {
-                println!("SPIKE|NETEVENT-ENUM| {}", r.line());
+                crate::report::emit(&format!("SPIKE|NETEVENT-ENUM| {}", r.line()));
             }
             let mine: Vec<_> = all
                 .iter()
@@ -700,7 +700,7 @@ pub fn stage_abrupt_kill(report: &mut Report, exe: &Path) {
                     buf.push(byte[0]);
                     if byte[0] == b'\n' {
                         let line = String::from_utf8_lossy(&buf).trim().to_string();
-                        println!("SPIKE|HOLDER| {line}");
+                        crate::report::emit(&format!("SPIKE|HOLDER| {line}"));
                         if let Some(rest) = line.strip_prefix("HOLD|READY|") {
                             let mut it = rest.split('|');
                             sublayer = it.next().unwrap_or_default().to_string();
@@ -802,6 +802,10 @@ pub fn hold() -> i32 {
     match establish("hold", &declared, true, &mut report) {
         Ok(b) => {
             let n = Engine::count_filters_in_sublayer(b.sublayer).unwrap_or(0);
+            // Deliberately `println!` and not `report::emit`: this is a
+            // separate process and the parent reads this exact line off its
+            // stdout pipe. The evidence lines go to stderr, which the parent
+            // inherits, so both arrive without colliding.
             println!(
                 "HOLD|READY|{}|{}|{}",
                 b.sublayer.to_u128(),

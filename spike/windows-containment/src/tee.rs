@@ -28,14 +28,14 @@ pub fn open(path: &str) {
                 *g = Some(f);
             }
         }
-        Err(e) => println!("TEE|OPEN-FAILED|{path}|{e}"),
+        Err(e) => crate::report::emit(&format!("TEE|OPEN-FAILED|{path}|{e}")),
     }
 }
 
-/// Print to stdout and to the side-channel file.
+/// Emit to stderr (past any test harness's capture) and to the side-channel
+/// file.
 pub fn line(s: &str) {
-    println!("{s}");
-    let _ = std::io::stdout().flush();
+    crate::report::emit(s);
     if let Ok(mut g) = sink().lock() {
         if let Some(f) = g.as_mut() {
             let _ = writeln!(f, "{s}");
