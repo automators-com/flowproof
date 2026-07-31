@@ -495,3 +495,98 @@ Unchanged from iteration 2, and now known to be unchanged *because the run
 measured nothing*: `FwpmFilterAdd0` has never been called on a real kernel.
 Two Windows runs have now completed without producing a single byte of
 containment evidence.
+
+---
+
+## Iteration 3 — the harness reached the kernel, and the kernel said no
+
+Run **30610129516**, job id `91090900780`, commit `ad654ca`. Step 5
+`build + test (windows)`: **success**. 35 `SPIKE|` lines — the capture fix from
+finding 2.1 works on Windows exactly as it did locally.
+
+### The summary line, unedited
+
+```
+SPIKE|SUMMARY|met=0|not_met=0|not_run=4
+```
+
+**Nothing was measured, and nothing was claimed.** The `not_run` bookkeeping
+earned its place here: four assertions that could not be evaluated are recorded
+as four assertions that could not be evaluated, not as four passes and not as
+four failures. Honesty rule 1 in practice — the thing under test never ran, and
+the log says exactly that.
+
+### Finding 3.1 — `NetUserAdd` refuses the password, and the error name lies (BLOCKER, fixed)
+
+```
+SPIKE|ASSERT|core|NOT-RUN|expected=boundary established|observed=NOT RUN:
+  NetUserAdd failed: code=2245 (0x000008c5) parm_err=4294967295 name=fp-spk-9024-core
+```
+
+2245 is `NERR_PasswordTooShort`. The password was `Fp!Spk-9024-core` — sixteen
+characters, upper, lower, digit and symbol. It is not short and it is not
+simple.
+
+The real rule: Windows password complexity **rejects a password containing any
+token of the account name three characters or longer**, splitting the name on
+delimiters. Account `fp-spk-9024-core` yields the tokens `spk`, `9024`, `core`,
+and the password contained all three. The error is returned for every
+password-policy rejection regardless of which rule fired, so a complexity
+failure surfaces under a name that says "too short".
+
+Fixed: the password now shares nothing with the account name, and the harness
+prints the name length, the password length and a decoded explanation alongside
+the raw code, so this class of failure reads correctly on first sight next time.
+A stale account from a crashed run (`NERR_UserExists`, 2224) is now deleted and
+recreated rather than aborting the run.
+
+The constant password is recorded as a **spike shortcut**: acceptable only
+because the account is local-only, unprivileged and deleted in the same run.
+Anything shipping must generate it from a CSPRNG.
+
+### Finding 3.2 — the runner's Administrator does NOT hold SeAssignPrimaryTokenPrivilege
+
+```
+SPIKE|NOTE|preflight.elevated|true
+SPIKE|NOTE|preflight.privilege.SeAssignPrimaryTokenPrivilege|NOT HELD by this token (ERROR_NOT_ALL_ASSIGNED)
+SPIKE|NOTE|preflight.privilege.SeIncreaseQuotaPrivilege|ENABLED
+SPIKE|NOTE|preflight.privilege.SeTcbPrivilege|NOT HELD by this token (ERROR_NOT_ALL_ASSIGNED)
+SPIKE|NOTE|gui.foreign.token_sid|S-1-5-21-1742564184-1656218818-310408600-500
+```
+
+The job runs as RID **500**, the built-in Administrator, elevated — and still
+does not hold `SeAssignPrimaryTokenPrivilege`. So **`CreateProcessAsUserW`
+cannot be used on this runner**, and would have failed with
+`ERROR_PRIVILEGE_NOT_HELD` (1314) — an error that reads as "you are not an
+administrator" when the process demonstrably is one.
+
+This was anticipated and the fallback was already in place from iteration 2:
+`CreateProcessWithLogonW`, which goes through the Secondary Logon service and
+needs no privilege. It is **not a weakening** — the child still runs under the
+per-run identity, which is the only property containment depends on. It does
+cost handle inheritance, which is why the canary writes its own side-channel log
+(`--out`); without that, this run would have produced a contained child and no
+evidence from it.
+
+**This is a real constraint on the product claim, not a CI artefact.** Any
+adopter whose agent host cannot grant `SeAssignPrimaryTokenPrivilege` is on the
+`CreateProcessWithLogonW` path, which requires the Secondary Logon service to be
+running and cannot be used from a process running as LocalSystem — so a
+flowproof runner installed *as a Windows service* would need one or the other
+arranged deliberately. Named here rather than discovered later.
+
+### What worked, and is worth not re-proving
+
+* The per-run identity's **SID lookup, desktop/window-station DACL grant path
+  and net-event enablement** were all reached without error before the failure.
+* The destination oracle bound correctly on a **non-loopback** address:
+  `oracle.primary_ipv4|10.1.0.102`, `oracle.primary_is_loopback|false`. The
+  loopback-versus-NIC comparison the log promised is therefore available.
+* The GUI stage launched a foreign-owned Notepad (`gui.foreign.pid|6632`) and
+  read its token SID. The day 7–9 scaffolding runs.
+
+### Still not known
+
+Every containment question. `FwpmFilterAdd0` has still not been called: the run
+failed one step earlier, at identity creation. Three Windows runs in, the
+mechanism remains **unmeasured**.
