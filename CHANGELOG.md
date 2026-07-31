@@ -6,6 +6,31 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **A tool call the agent really made could be missing from the evidence.**
+  0.8.0 fixed the MCP stand-in losing its whole recording when an agent killed
+  it, by persisting the lane after every captured call. It was not enough. The
+  stand-in forwarded the server's response to the agent BEFORE persisting it,
+  and the moment the agent has a response it may kill the stand-in — so the
+  final call of a session was lost while `record` still exited 0.
+
+  Found by the falsifiability suite, with the real server's own request log as
+  the oracle: the server was asked for `tools/call get_weather`, the lane held
+  only `initialize` and `tools/list`, and nothing said so. A lane that silently
+  runs short understates what the agent did, and every assertion evaluated over
+  it inherits the omission — including a guard claim that a tool was never
+  called.
+
+  Capture and persistence now happen BEFORE the response is forwarded. That
+  ordering is the fix: by the time the agent can act on a response, the evidence
+  for it is already on disk.
+
+  And a failed flush is no longer swallowed. With the write at stdin EOF no
+  longer load-bearing, an incremental flush that fails means evidence was lost,
+  so it now fails the record by name instead of minting a partial lane. Evidence
+  lost silently is the one outcome this tool cannot ship.
+
 ### Changed
 
 - **A control that stopped being certifiable passed the gate.**
