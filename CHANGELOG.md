@@ -4,7 +4,10 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
-## 0.10.0
+## 0.10.1
+
+Two defects that 0.10.0 shipped with, both found in the field on a
+colleague's machine within an hour of each other.
 
 ### Fixed
 
@@ -35,6 +38,31 @@ together).
   `temperature: 0` stays on the OpenAI-compatible path, where it is accepted
   and free.
 
+### Changed
+
+- **The run wrote a visual report and never said so.** Every replay produces
+  `report.html` — the step table, the per-step frames, the recording as one
+  animation — and the verdict line pointed at `result.json` instead. On macOS
+  and Linux the only adapter that drives a UI is `web`, and it is headless, so
+  a first run shows no window and ends by naming a JSON file. The reasonable
+  conclusion is that nothing visual was captured.
+
+  It was, in a directory Finder hides by default. Found by watching someone
+  reach a green first run on a Mac and ask how they were supposed to know it
+  had done anything — the failure mode the charter ranks above the current
+  milestone, arriving one step later than expected: not "cannot get to a first
+  green run", but cannot tell that they did.
+
+  The verdict line now names `report.html`. `result.json` is unchanged, still
+  written to the same bundle, and still what `--json` reports as `report_path`
+  — the machine surface stays the machine surface. **This changes stdout**: a
+  script scraping the path off the human line now gets the HTML rendering.
+  Read `--json` instead, which is what it is for.
+
+## 0.10.0
+
+### Fixed
+
 - **A tool call the agent really made could be missing from the evidence.**
   0.8.0 fixed the MCP stand-in losing its whole recording when an agent killed
   it, by persisting the lane after every captured call. It was not enough. The
@@ -59,25 +87,6 @@ together).
   lost silently is the one outcome this tool cannot ship.
 
 ### Changed
-
-- **The run wrote a visual report and never said so.** Every replay produces
-  `report.html` — the step table, the per-step frames, the recording as one
-  animation — and the verdict line pointed at `result.json` instead. On macOS
-  and Linux the only adapter that drives a UI is `web`, and it is headless, so
-  a first run shows no window and ends by naming a JSON file. The reasonable
-  conclusion is that nothing visual was captured.
-
-  It was, in a directory Finder hides by default. Found by watching someone
-  reach a green first run on a Mac and ask how they were supposed to know it
-  had done anything — the failure mode the charter ranks above the current
-  milestone, arriving one step later than expected: not "cannot get to a first
-  green run", but cannot tell that they did.
-
-  The verdict line now names `report.html`. `result.json` is unchanged, still
-  written to the same bundle, and still what `--json` reports as `report_path`
-  — the machine surface stays the machine surface. **This changes stdout**: a
-  script scraping the path off the human line now gets the HTML rendering.
-  Read `--json` instead, which is what it is for.
 
 - **A control that stopped being certifiable passed the gate.**
   `audit --since` fired on a removed control or one that turned `fail`. A
