@@ -404,3 +404,94 @@ wait for the Windows job to reach `completed` before touching a file.
 
 Re-run with the capture fix. That run is the first one that can produce evidence
 about containment; everything before it is scaffolding.
+
+---
+
+## Iteration 3 — the first Windows run measured nothing, and why
+
+`windows build + E2E` on run 30608374686: **success**. The spike test ran on a
+real `windows-latest` kernel and reported `ok`.
+
+**It produced zero `SPIKE|` lines.** `grep -c 'SPIKE|' winci.log` → `0`.
+
+### Finding 3.1 — `cargo test` swallowed the entire evidence base (NEGATIVE, cost one full run)
+
+Line 2877 of the job log:
+
+```
+test windows_egress_containment_spike ... ok
+```
+
+It ran in **~5 seconds** (06:08:14 → 06:08:19), against stages that sleep for
+longer than that on purpose. So the job was green, the test passed, and nothing
+was learned.
+
+The cause is the test harness, not the spike: **`cargo test` captures the stdout
+of a *passing* test and prints it only for a failing one.** The Windows CI step
+is `cargo test --workspace --all-features` with no `--nocapture`, and
+`.github/workflows/` may not be modified. Every `SPIKE|` line was written,
+captured, and discarded.
+
+This is the same class of mistake as honesty rule 3's piped exit code: a green
+signal that says nothing about the thing under test. **A green Windows job is
+not evidence of containment.**
+
+**The fix, verified before it was relied on.** libtest's capture is a
+thread-local redirect of Rust's `print!` macros (`io::set_output_capture`); it
+does not touch file descriptor 1. A child process inherits the real descriptor,
+so its output reaches the job log even when the test passes. Confirmed on Linux
+with a throwaway crate rather than assumed:
+
+```
+DIRECT|printed-by-the-test-thread     <- absent from the log
+CHILD|this-came-from-a-subprocess     <- present, on a PASSING test
+```
+
+`tests/spike.rs` is now a launcher: it spawns `wfp-spike run-all` with
+`Stdio::inherit()` and asserts only that the binary started and exited zero.
+The whole spike moved into `harness::run_all()`.
+
+### Finding 3.2 — the elevation preflight was a veto disguised as a check
+
+The 5-second runtime is consistent with the preflight abort, which was:
+
+```rust
+if !identity::is_elevated() { report.not_run("all", ...); return; }
+```
+
+**This is inference, not evidence** — the output that would have confirmed it
+was captured and lost, so the cause is not established. It is corrected anyway,
+because the check is wrong on its own terms:
+
+`TokenIsElevated` reports whether a token *has been elevated*, which is only
+meaningful when UAC produces a split token. GitHub's `windows-latest` runners
+run with **UAC disabled**, where there is no split — so the flag can read false
+on a token holding every administrative right. Gating the spike on it turns a
+proxy into a veto, on precisely the machine the spike was built for.
+
+Replaced with: report `TokenIsElevated`, report `CheckTokenMembership` against
+the local Administrators group, report every privilege enable, **and run the
+stages regardless**. `FwpmEngineOpen0` returning `ERROR_ACCESS_DENIED` is a
+better answer to "elevated enough?" than any preflight flag, and it is an answer
+the log can carry.
+
+The general lesson, which applies past this spike: *a precondition check that
+can be wrong should report, not veto.* A veto that fires wrongly is
+indistinguishable in the log from the work having been done.
+
+### Local gate before the push
+
+| Command | Exit |
+|---|---|
+| `cargo check -p wfp-spike --all-targets --target x86_64-pc-windows-msvc` | `0` |
+| `cargo clippy -p wfp-spike --all-targets --all-features --target x86_64-pc-windows-msvc` | `0`, 0 warnings |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `0` |
+| `cargo fmt --all --check` | `0` |
+| `cargo test -p wfp-spike --all-features` (Linux) | `0` |
+
+### Still not known
+
+Unchanged from iteration 2, and now known to be unchanged *because the run
+measured nothing*: `FwpmFilterAdd0` has never been called on a real kernel.
+Two Windows runs have now completed without producing a single byte of
+containment evidence.

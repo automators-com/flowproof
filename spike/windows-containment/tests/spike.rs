@@ -4,11 +4,21 @@
 //! step, which is the only route onto a `windows-latest` runner that does not
 //! touch `.github/workflows/` — a constitution-protected path.
 //!
-//! **This test does not assert.** That is deliberate, not laziness. The output
-//! of a feasibility spike is a verdict with evidence, and the evidence is the
-//! `SPIKE|` block in the CI log; a red job would stop the run at the first
-//! interesting finding and hide everything after it. Negative results carry
-//! equal weight here, so they must not abort the run that produces them.
+//! **The spike runs as a subprocess, and that is load-bearing.** `cargo test`
+//! captures the stdout of a passing test and prints it only for a failing one.
+//! The CI step has no `--nocapture` and the workflow may not be edited, so an
+//! earlier revision that printed from the test thread produced a green Windows
+//! job with zero `SPIKE|` lines — a whole run spent measuring nothing.
+//!
+//! libtest's capture is a thread-local redirect of Rust's `print!` macros; it
+//! does not touch file descriptor 1. A child process inherits the real
+//! descriptor, so its output reaches the job log even when the test passes.
+//!
+//! **This test does not assert on containment.** The output of a feasibility
+//! spike is a verdict with evidence, and the evidence is the `SPIKE|` block in
+//! the CI log; a red job would stop the run at the first interesting finding
+//! and hide everything after it. Negative results carry equal weight here, so
+//! they must not abort the run that produces them.
 //!
 //! Read the result with:
 //!
@@ -19,60 +29,31 @@
 #[cfg(windows)]
 #[test]
 fn windows_egress_containment_spike() {
-    use wfp_spike::report::Report;
-    use wfp_spike::win::{harness, identity, launch};
+    use std::process::{Command, Stdio};
 
-    let mut report = Report::new();
-    wfp_spike::report::emit("SPIKE|BEGIN|windows egress containment feasibility spike");
+    let exe = env!("CARGO_BIN_EXE_wfp-spike");
+    println!("(this line is captured by libtest; the subprocess output below is not)");
 
-    // Reported, never inferred. WFP filter add needs Administrator (or Network
-    // Configuration Operators), and that limitation has to be stated in the
-    // same breath as the claim — Linux gets its containment unprivileged and
-    // Windows does not.
-    let elevated = identity::is_elevated();
-    report.note("preflight.elevated", elevated);
-    report.note(
-        "preflight.os",
-        std::env::var("OS").unwrap_or_else(|_| "<unset>".into()),
-    );
-    if !elevated {
-        report.not_run(
-            "all",
-            "the whole spike",
-            "not elevated; WFP filter add requires Administrator",
-        );
-        report.summary();
-        return;
+    let status = Command::new(exe)
+        .arg("run-all")
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+
+    // The only failure this test reports is "the spike binary did not run at
+    // all". That is honesty rule 1: a harness that never started would
+    // otherwise be indistinguishable from a harness that found nothing.
+    match status {
+        Ok(st) => {
+            println!("SPIKE-DRIVER|exit={:?}", st.code());
+            assert!(
+                st.success(),
+                "the spike binary exited non-zero ({:?}); see the SPIKE| lines above",
+                st.code()
+            );
+        }
+        Err(e) => panic!("could not start the spike binary at {exe}: {e}"),
     }
-
-    // A privilege the token holds is still disabled until it is switched on,
-    // and `CreateProcessAsUserW` then fails with ERROR_PRIVILEGE_NOT_HELD —
-    // an error that reads like "not an administrator". Enable them first and
-    // report exactly which ones the runner's token actually has, so the next
-    // reader does not have to guess.
-    for (name, state) in launch::enable_process_privileges() {
-        report.note(&format!("preflight.privilege.{name}"), state);
-    }
-
-    wfp_spike::report::emit("SPIKE|STAGE|core (days 1-3) + audit (day 4) - enforcement ON");
-    harness::stage_core(&mut report, true, "core");
-
-    wfp_spike::report::emit(
-        "SPIKE|STAGE|negative control (day 5) - block filter DELIBERATELY omitted",
-    );
-    harness::stage_core(&mut report, false, "neg");
-
-    wfp_spike::report::emit("SPIKE|STAGE|teardown after an abruptly killed supervisor (day 6)");
-    harness::stage_abrupt_kill(
-        &mut report,
-        std::path::Path::new(env!("CARGO_BIN_EXE_wfp-spike")),
-    );
-
-    wfp_spike::report::emit("SPIKE|STAGE|identity boundary (days 7-9) - THIS is the spike");
-    harness::stage_gui(&mut report);
-
-    report.summary();
-    wfp_spike::report::emit("SPIKE|END");
 }
 
 #[cfg(not(windows))]

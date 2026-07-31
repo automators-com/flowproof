@@ -31,15 +31,21 @@ impl RunIdentity {
     /// Create a fresh unprivileged local user. `NetUserAdd` with
     /// `USER_PRIV_USER` lands it in `Users` and nothing else — no
     /// Administrators, no Network Configuration Operators.
+    ///
+    /// The password deliberately **shares nothing with the account name**.
+    /// Windows password complexity rejects a password containing any token of
+    /// the username three characters or longer, splitting the name on
+    /// delimiters — so `fp-spk-9024-core` with password `Fp!Spk-9024-core`
+    /// fails with `NERR_PasswordTooShort` (2245), an error whose name says
+    /// "too short" about a sixteen-character password. That cost this spike a
+    /// full CI cycle; see LOG.md finding 3.1.
+    ///
+    /// The constant is a spike shortcut. Anything shipping must generate this
+    /// from a CSPRNG — a fixed credential is acceptable only because this
+    /// account is local-only, unprivileged, and deleted in the same run.
     pub fn create(tag: &str) -> Result<Self, WinErr> {
-        // Uniqueness without a random source: the run's own pid plus the tick
-        // count. A collision would only matter if two spikes ran in the same
-        // millisecond in the same process, which cannot happen.
         let name = format!("fp-spk-{}-{}", std::process::id() % 100000, tag);
-        // Local password policy on a hosted runner is default (no complexity
-        // requirement), but satisfy complexity anyway so this behaves the same
-        // on a domain-joined box.
-        let password = format!("Fp!Spk-{}-{}", std::process::id(), tag);
+        let password = "Zx9#Qw4$Lm7&Rt2!Vb6@".to_string();
 
         let mut wname = wide(&name);
         let mut wpass = wide(&password);
@@ -57,7 +63,7 @@ impl RunIdentity {
         };
 
         let mut parm_err: u32 = 0;
-        let rc = unsafe {
+        let mut rc = unsafe {
             NetUserAdd(
                 PCWSTR::null(),
                 1,
@@ -65,11 +71,37 @@ impl RunIdentity {
                 Some(&mut parm_err),
             )
         };
+
+        // 2224 is NERR_UserExists: an earlier run died before its cleanup. The
+        // account is ours by name, unprivileged, and about to be recreated
+        // identically, so removing it is safe — and a spike that cannot start
+        // because a previous spike crashed would waste a CI cycle on nothing.
+        if rc == 2224 {
+            let wname = wide(&name);
+            let del = unsafe { NetUserDel(PCWSTR::null(), PCWSTR(wname.as_ptr())) };
+            crate::report::emit(&format!(
+                "SPIKE|NOTE|identity.stale-account-removed|{name} NetUserDel={del}"
+            ));
+            rc = unsafe {
+                NetUserAdd(
+                    PCWSTR::null(),
+                    1,
+                    &info as *const USER_INFO_1 as *const u8,
+                    Some(&mut parm_err),
+                )
+            };
+        }
+
         if rc != 0 {
             return Err(WinErr::new(
                 "NetUserAdd",
                 rc,
-                format!("parm_err={parm_err} name={name}"),
+                format!(
+                    "parm_err={parm_err} name={name} name_len={} pw_len={} -> {}",
+                    name.chars().count(),
+                    password.chars().count(),
+                    explain_neterr(rc)
+                ),
             ));
         }
 
@@ -205,5 +237,68 @@ pub fn last_error() -> u32 {
         0
     } else {
         e.0
+    }
+}
+
+/// Is this token a member of the local Administrators group?
+///
+/// Reported alongside `is_elevated`, because the two disagree in exactly the
+/// case that matters here. With UAC disabled there is no split token, so
+/// `TokenIsElevated` can read false on a token that nonetheless holds every
+/// administrative right — and a spike that gated on the flag would refuse to
+/// run on precisely the machine it was built for.
+pub fn is_in_administrators() -> bool {
+    use windows::Win32::Security::{
+        AllocateAndInitializeSid, CheckTokenMembership, FreeSid, PSID, SECURITY_NT_AUTHORITY,
+        SID_IDENTIFIER_AUTHORITY,
+    };
+
+    const SECURITY_BUILTIN_DOMAIN_RID: u32 = 0x20;
+    const DOMAIN_ALIAS_RID_ADMINS: u32 = 0x220;
+
+    unsafe {
+        let auth: SID_IDENTIFIER_AUTHORITY = SECURITY_NT_AUTHORITY;
+        let mut admins = PSID::default();
+        if AllocateAndInitializeSid(
+            &auth,
+            2,
+            SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_ADMINS,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &mut admins,
+        )
+        .is_err()
+        {
+            return false;
+        }
+        let mut member = windows::core::BOOL(0);
+        let ok = CheckTokenMembership(None, admins, &mut member).is_ok();
+        FreeSid(admins);
+        ok && member.as_bool()
+    }
+}
+
+/// Turn the `NetUserAdd` error codes this spike can actually hit into words.
+///
+/// Recorded rather than looked up each time: `2245` is named
+/// `NERR_PasswordTooShort` but is returned for *any* password-policy rejection,
+/// including complexity, which is how a twenty-character password gets an error
+/// saying it is too short.
+fn explain_neterr(rc: u32) -> &'static str {
+    match rc {
+        5 => "ERROR_ACCESS_DENIED - not running as an administrator",
+        2224 => "NERR_UserExists - the account is left over from an earlier run",
+        2245 => {
+            "NERR_PasswordTooShort - password policy rejected it (length, \
+                 complexity, or history). Complexity also refuses a password \
+                 containing any 3+ character token of the account name."
+        }
+        2202 => "NERR_BadUsername - the account name is not acceptable",
+        _ => "see the NERR_* / system error tables",
     }
 }

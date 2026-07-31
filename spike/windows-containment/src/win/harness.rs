@@ -28,7 +28,7 @@ use windows::Win32::System::Threading::{
     GetExitCodeProcess, TerminateProcess, WaitForSingleObject, INFINITE,
 };
 
-use super::identity::{is_elevated, RunIdentity};
+use super::identity::{self, is_elevated, RunIdentity};
 use super::launch;
 use super::netevents;
 use super::wfp::{self, Declared, Engine, UserCondition, IPPROTO_TCP_U8};
@@ -1016,4 +1016,68 @@ fn _keep() {
     let _ = is_elevated;
     let _: Option<PWSTR> = None;
     let _ = INFINITE;
+}
+
+/// The whole spike, run as a **subprocess** rather than inside the test thread.
+///
+/// `cargo test` captures the stdout of a *passing* test and prints it only for
+/// a failing one, and the Windows CI step is `cargo test --workspace
+/// --all-features` with no `--nocapture` — a workflow file this spike may not
+/// modify. Iteration 3 lost an entire Windows run to exactly that: the job went
+/// green and produced zero `SPIKE|` lines.
+///
+/// libtest's capture is a thread-local redirect of Rust's `print!` macros, so
+/// it does not touch file descriptor 1. A child process inherits the real
+/// descriptor and its output reaches the job log even when the test passes.
+/// Verified on Linux before being relied on here.
+pub fn run_all() -> i32 {
+    let mut report = Report::new();
+    crate::report::emit("SPIKE|BEGIN|windows egress containment feasibility spike");
+
+    // Reported, never used as a gate. An earlier revision refused to run
+    // anything unless `TokenIsElevated` was true; on a runner with UAC
+    // disabled there is no elevation *split*, so that flag can read false on a
+    // token that holds every administrative privilege. Gating on it turned a
+    // proxy into a veto and produced a 5-second "pass" that measured nothing.
+    //
+    // The mechanism is its own test: attempt the work and record the real
+    // Win32 error. `FwpmEngineOpen0` returning ERROR_ACCESS_DENIED is a far
+    // better answer to "is this elevated enough?" than any preflight flag.
+    report.note("preflight.token_is_elevated", identity::is_elevated());
+    report.note(
+        "preflight.in_administrators_group",
+        identity::is_in_administrators(),
+    );
+    report.note(
+        "preflight.username",
+        std::env::var("USERNAME").unwrap_or_else(|_| "<unset>".into()),
+    );
+    report.note(
+        "preflight.os",
+        std::env::var("OS").unwrap_or_else(|_| "<unset>".into()),
+    );
+
+    // A privilege the token holds is still disabled until it is switched on,
+    // and `CreateProcessAsUserW` then fails with ERROR_PRIVILEGE_NOT_HELD — an
+    // error that reads like "not an administrator".
+    for (name, state) in launch::enable_process_privileges() {
+        report.note(&format!("preflight.privilege.{name}"), state);
+    }
+
+    crate::report::emit("SPIKE|STAGE|core (days 1-3) + audit (day 4) - enforcement ON");
+    stage_core(&mut report, true, "core");
+
+    crate::report::emit("SPIKE|STAGE|negative control (day 5) - block filter DELIBERATELY omitted");
+    stage_core(&mut report, false, "neg");
+
+    crate::report::emit("SPIKE|STAGE|teardown after an abruptly killed supervisor (day 6)");
+    let exe = std::env::current_exe().unwrap_or_default();
+    stage_abrupt_kill(&mut report, &exe);
+
+    crate::report::emit("SPIKE|STAGE|identity boundary (days 7-9) - THIS is the spike");
+    stage_gui(&mut report);
+
+    report.summary();
+    crate::report::emit("SPIKE|END");
+    0
 }
