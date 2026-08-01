@@ -13,6 +13,19 @@ use crate::spec::SpecStep;
 pub enum RulesError {
     #[error("cannot resolve step '{step}': {reason}")]
     Unresolvable { step: String, reason: String },
+    /// A shape the grammar RECOGNISES and deliberately declines — distinct
+    /// from one it merely failed to parse, because the two must be handled
+    /// differently.
+    ///
+    /// `Unresolvable` means "the rules did not understand this", and the
+    /// honest response is to ask the model author. But a declined shape IS
+    /// understood: someone decided it should not exist. Sending it to the
+    /// model does not get it built, it gets it silently reinterpreted —
+    /// `Click "Next" until the label changes` grounds as ONE click, records
+    /// green, and then fails one replay in five. The decline has to outrank
+    /// the fallback or it is not a decline at all.
+    #[error("cannot resolve step '{step}': {reason}")]
+    Refused { step: String, reason: String },
     #[error("no rules for app '{0}' (supported: calc, notepad, web, sap, vision, windows)")]
     UnsupportedApp(String),
 }
@@ -494,6 +507,103 @@ fn unresolvable(step: &str, reason: impl Into<String>) -> RulesError {
     }
 }
 
+fn refused(step: &str, reason: impl Into<String>) -> RulesError {
+    RulesError::Refused {
+        step: step.to_string(),
+        reason: reason.into(),
+    }
+}
+
+/// The shapes the grammar recognises in order to REFUSE them, each with the
+/// reason and the thing to write instead.
+///
+/// Every one of these is a decision that already exists — in `CHARTER.md`,
+/// in `docs/design.md`, or in this file's own comments. What did not exist
+/// was anything that made the decision hold: an unparseable step falls
+/// through to the model author, which grounds it into *some* recording, and
+/// a recording is exactly what a decline is supposed to prevent. Silence is
+/// the one response a refusal cannot afford.
+///
+/// Matched on the step's own text before any parsing, so a declined shape
+/// cannot be reached by a spelling the parser happens to accept.
+const DECLINED_SHAPES: &[(&str, &str)] = &[
+    (
+        "loop",
+        "repetition is not in the grammar: a step that repeats until the app changes \
+         makes the trace a program that decides what to do, rather than a recording of \
+         what happened - drive the app to the state you want with the steps that reach \
+         it, and assert the result with 'Wait until page shows <text>'",
+    ),
+    (
+        "conditional",
+        "there are no conditionals: a flow that branches asserts something different on \
+         each run, so what it proves cannot be read from the trace - write the branch \
+         you mean to test as its own flow",
+    ),
+    (
+        "regex",
+        "a capture reads an element's whole text; there is no pattern extraction, \
+         because a regex in the grammar is a second language inside the first - give \
+         the value its own element, or assert against the text you can see",
+    ),
+    (
+        "between",
+        "extracting the text between two markers is pattern matching by another name \
+         (see the regex refusal) - 'Remember the \"<target>\" as <name>' reads a whole \
+         element, which is the unit a page actually renders",
+    ),
+    (
+        "date",
+        "there is no date expression: computed against the wall clock a flow means \
+         something different every day, and computed against a pinned 'browser.clock' \
+         it is a constant you can write by hand - pin the clock and type the literal",
+    ),
+    (
+        "nohover",
+        "an action that skips the pointer dispatches an event no user could produce, so \
+         a flow that passes with it does not describe anything a person can do - \
+         'Click' already moves the pointer and is what a user does",
+    ),
+];
+
+/// Recognise a declined shape from the step text alone.
+///
+/// Deliberately narrow: each pattern needs a keyword that only appears in
+/// the declined form, because a false positive here refuses a step someone
+/// legitimately wrote. `until` is the exception worth naming - it is real
+/// grammar in `Wait until page shows`, so that form is excluded first
+/// rather than matched loosely.
+fn declined_shape(step: &str) -> Option<&'static str> {
+    let lower = step.trim().to_ascii_lowercase();
+    let key = if lower.starts_with("wait until") || lower.starts_with("wait  until") {
+        // Real grammar, and the nearest neighbour of the refused form.
+        return None;
+    } else if lower.contains(" until ") || lower.starts_with("while ") || lower.contains(" while ")
+    {
+        "loop"
+    } else if lower.starts_with("if ") || lower.contains(" otherwise ") || lower.contains(" else ")
+    {
+        "conditional"
+    } else if lower.contains("matching /")
+        || lower.contains(" matching regex")
+        || lower.contains("regex")
+    {
+        "regex"
+    } else if lower.contains("the text between ") || lower.contains(" between \"") {
+        "between"
+    } else if lower.contains("${date:") || lower.contains("{date[") {
+        "date"
+    } else if lower.contains("without hovering") || lower.contains("without the pointer") {
+        "nohover"
+    } else {
+        return None;
+    };
+    DECLINED_SHAPES
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, reason)| *reason)
+}
+
 /// Case-insensitively strip an ASCII `prefix`, returning the rest of the
 /// ORIGINAL string (case preserved). Boundary-safe: `get` returns None
 /// when the cut would split a multibyte char, and an ASCII prefix cannot
@@ -569,8 +679,16 @@ fn ci_positions<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usiz
 /// this is the backstop for the variant nobody has written yet.
 pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Declines are checked FIRST, on the raw text. A declined shape does
+        // not parse, so without this it would reach the model author and be
+        // improvised into a recording - the refusal has to outrank both the
+        // parser and the fallback to mean anything.
+        let intent = step.intent();
+        if let Some(reason) = declined_shape(&intent) {
+            return Err(refused(&intent, reason));
+        }
         resolve_step_inner(app, step).and_then(|actions| {
-            reject_framed_actions(&step.intent(), &actions)?;
+            reject_framed_actions(&intent, &actions)?;
             Ok(actions)
         })
     }))
@@ -3865,6 +3983,39 @@ mod tests {
             )
             .unwrap_or_else(|e| panic!("documented assert '{assert}' ({app}) must parse: {e}"));
         }
+
+        // The NEGATIVE half. authoring.md documents these as refused, and a
+        // doc that says "refused" against a grammar that quietly accepts is
+        // the drift this test exists to catch - in the direction that
+        // matters more, because the accepting side fails loudly and the
+        // refusing side fails green.
+        let refused: &[(&str, &str)] = &[
+            ("web", r#"Click "Next" until the "Status" shows Done"#),
+            (
+                "web",
+                r#"While the "Spinner" is visible, press the "Retry" button"#,
+            ),
+            ("web", r#"If the "Banner" is visible, click "Dismiss""#),
+            (
+                "web",
+                r#"Remember the "Total" matching /[0-9.]+/ as amount"#,
+            ),
+            (
+                "web",
+                r#"Remember the text between "total of" and "to your" as amount"#,
+            ),
+            ("web", r#"Type ${date:tomorrow} into the "Due" field"#),
+            ("web", r#"Click the "Move" without hovering"#),
+        ];
+        for (app, step) in refused {
+            let err = resolve_step(app, &SpecStep::Plain((*step).to_string()))
+                .expect_err("a documented refusal must be refused");
+            assert!(
+                matches!(err, RulesError::Refused { .. }),
+                "documented refusal '{step}' ({app}) must be Refused, not Unresolvable \
+                 - an Unresolvable falls through to the model author: {err}"
+            );
+        }
     }
 
     fn assert_action(app: &str, step: &str) -> ResolvedAction {
@@ -4791,6 +4942,80 @@ mod framed_target_tests {
         let err = assert_step(r#"the 2nd "Total" in the iframe "checkout" shows 42.00"#)
             .expect_err("position does not identify a frame");
         assert!(err.to_string().contains("ordinal cannot address"), "{err}");
+    }
+
+    /// The declined shapes must be REFUSED, not merely unparsed. The
+    /// distinction is the whole point: an unparsed step falls through to
+    /// the model author, which grounds it into some recording; a refused
+    /// one stops. Each message must also say what to write instead, or the
+    /// refusal is a dead end rather than a redirection.
+    #[test]
+    fn declined_shapes_are_refused_and_name_the_alternative() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                r#"Click "Next" until the "Status" shows Done"#,
+                "repetition",
+                "Wait until page shows",
+            ),
+            (
+                r#"While the "Spinner" is visible, press the "Retry" button"#,
+                "repetition",
+                "Wait until page shows",
+            ),
+            (
+                r#"If the "Banner" is visible, click "Dismiss""#,
+                "conditionals",
+                "its own flow",
+            ),
+            (
+                r#"Remember the "Total" matching /[0-9.]+/ as amount"#,
+                "pattern extraction",
+                "whole text",
+            ),
+            (
+                r#"Remember the text between "total of" and "to your" as amount"#,
+                "pattern matching",
+                "whole element",
+            ),
+            (
+                r#"Type ${date:tomorrow} into the "Due" field"#,
+                "date expression",
+                "pin the clock",
+            ),
+            (
+                r#"Click the "Move" without hovering"#,
+                "no user could produce",
+                "Click",
+            ),
+        ];
+        for (text, why, alternative) in cases {
+            let err = plain(text).expect_err("a declined shape must be refused");
+            assert!(
+                matches!(err, RulesError::Refused { .. }),
+                "{text} must be Refused, not Unresolvable - an Unresolvable \
+                 falls through to the model author: {err}"
+            );
+            let message = err.to_string();
+            assert!(message.contains(why), "{text}: missing reason: {message}");
+            assert!(
+                message.contains(alternative),
+                "{text}: missing alternative: {message}"
+            );
+        }
+    }
+
+    /// The refusal must not eat the grammar next to it. `Wait until page
+    /// shows` is the nearest neighbour of the refused `until` form and is
+    /// real, documented grammar - a decline that swallowed it would break
+    /// every flow that waits for anything.
+    #[test]
+    fn the_refusal_does_not_swallow_its_nearest_neighbour() {
+        plain("Wait until page shows Saved").expect("wait-until is real grammar");
+        plain("Wait until page shows Saved within 30s").expect("with a bound too");
+        // Nor the ordinary steps whose text happens to contain a keyword.
+        plain(r#"Type Ada into the "Elsewhere" field"#).expect("'else' inside a word");
+        plain(r#"Press the "Verify" button"#).expect("plain press");
+        plain(r#"Click "Update between runs""#).expect("'between' inside a label");
     }
 
     #[test]

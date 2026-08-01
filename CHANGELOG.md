@@ -8,6 +8,36 @@ together).
 
 ### Fixed
 
+- **A step the grammar had decided not to have was built by the model
+  instead.** `record` resolves with rules first and hands anything they
+  cannot parse to the LLM author. That is right for a step nobody has taught
+  it yet. It is exactly wrong for a shape somebody deliberately decided
+  should not exist: a loop, a conditional, a regex capture, a date
+  expression. Those do not parse either, so they went to the model, and the
+  model does what it is asked — it grounds the step onto something.
+
+  `Click "Next" until the "Status" shows Done` became a single click. It
+  recorded green. Then it failed roughly one replay in five, because the
+  page needed between three and nine clicks, and nothing anywhere said the
+  word "until" had been ignored.
+
+  Every one of these declines already existed — in the charter, in
+  `docs/design.md`, in this repository's own comments. What did not exist
+  was anything that made one hold. A decline written only in prose is a
+  decline the engine does not implement.
+
+  So refusal is now a state the parser can be in, distinct from failure.
+  `RulesError::Refused` means *recognised and declined*, it names what to
+  write instead, and — the half that matters — it never reaches the model
+  author. `Unresolvable` still falls back, because a step the rules do not
+  understand is a question and the model is a reasonable answer to a
+  question. A refused step is not a question.
+
+  The test that pins it asserts `calls == 0` against a counting model
+  client, in `Auto` mode: the mode that *would* fall back. A refusal proven
+  only by its error message would be a refusal the fallback could still walk
+  around.
+
 - **Our own suite had a flaky test, and it was red-lighting `main`.**
   `seeded_fixture_mutation_survives_navigation` wrote two pages to disk and
   navigated between `file://` urls, asserting that a cart mutation survived

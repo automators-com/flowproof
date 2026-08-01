@@ -74,6 +74,26 @@ already works, and it additionally tests what the user really experiences -
 that focus lands somewhere sensible. Blur-triggered form validation is
 exercised with `Press Tab`.
 
+### Refused on purpose
+
+`Blur` is one of a set. These shapes are **recognised in order to be
+refused**: each fails at authoring time with the reason and what to write
+instead, and — unlike a step the rules merely cannot parse — a refused one
+is **never handed to the LLM author**. That difference is the point. An
+unparsed step is a question, and asking a model is a reasonable answer to a
+question. A refused step is a decision, and asking a model does not build
+it — it gets the step quietly reinterpreted as something adjacent that
+records green and means something nobody asked for.
+
+| Refused | Why, and what to write |
+|---|---|
+| `Click "Next" until …`, `While … , …` | Repetition would make the trace a program that decides what to do rather than a recording of what happened. Drive the app with the steps that reach the state, and assert with `Wait until page shows <text>` — which is real grammar, and is not this |
+| `If … , …` / `… otherwise …` | A flow that branches asserts something different on each run, so what it proves cannot be read from the trace. Write the branch you mean to test as its own flow |
+| `Remember the "<t>" matching /…/ as <n>` | A regex in the grammar is a second language inside the first. A capture reads an element's whole text; give the value its own element |
+| `Remember the text between "X" and "Y" as <n>` | Pattern matching by another name. `Remember the "<target>" as <name>` reads a whole element, which is the unit a page actually renders |
+| `${date:…}` / `{Date[…]}` | Against the wall clock a flow means something different every day; against a pinned `browser.clock` it is a constant you can write by hand. Pin the clock and type the literal |
+| `Click … without hovering` | Dispatching an event no user could produce breaks the claim that a passing flow describes something a person can do. `Click` already moves the pointer, which is what a user does |
+
 ### Native dialogs
 
 A native `window.alert` / `confirm` / `prompt` (and the navigation
