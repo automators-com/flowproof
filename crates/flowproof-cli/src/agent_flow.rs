@@ -870,6 +870,37 @@ fn check_egress(
     }))
 }
 
+/// The warning a run earns by declaring an allow-list nothing will enforce.
+///
+/// `allow_egress` without `assert_no_egress` is the quiet case: the flow says
+/// which destinations the agent may reach, the platform cannot enforce that,
+/// and the run passes anyway having reached whatever it liked. Nothing here is
+/// a bug - `assert_no_egress` is the certification claim and this flow makes
+/// none - but declaring an allow-list IS a statement of intent, and silently
+/// not enforcing it is the gap most likely to be discovered late.
+///
+/// So it warns rather than failing: turning it into an error would break every
+/// existing macOS and Windows flow that passes today, and the flow never
+/// claimed certification. The tier line is already printed on every agent run,
+/// but a tier line on a green build is not something anyone reads.
+///
+/// Returns `None` when there is nothing to say: containment is enforced, the
+/// flow declares no allow-list, or it carries `assert_no_egress` and has
+/// therefore already been failed outright by [`check_egress`].
+fn egress_warning(plan: &Plan, containment: &Containment) -> Option<String> {
+    if containment.is_enforced() || plan.assert_no_egress || plan.allow_unresolved.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "warning: this flow declares allow_egress ({}) but egress containment is \
+         not enforced here ({}), so the allow-list was NOT applied and the agent \
+         could reach any destination. Add assert_no_egress to make this a hard \
+         failure instead of a warning.",
+        plan.allow_unresolved.join(", "),
+        containment.reason().unwrap_or("not contained"),
+    ))
+}
+
 /// The short containment tag stored in the trace lane (the parenthetical of
 /// the report line): `enforced (linux seccomp)` or `not contained (<reason>)`.
 /// The run record stores the SAME string, so the trace and the artifact an
@@ -1277,7 +1308,11 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
     // undeclared attempt when the step is present) mints NO trace, beside the
     // trajectory assertions. The returned lane is the audit record written
     // into the trace.
-    let egress = check_egress(&plan, &run, &containment(spec))?;
+    let tier = containment(spec);
+    if let Some(warning) = egress_warning(&plan, &tier) {
+        eprintln!("{warning}");
+    }
+    let egress = check_egress(&plan, &run, &tier)?;
     // The secret-leak scan runs BEFORE the trace is minted: a leak fails the
     // run so NO trace is written. That doubles as a store-guard - a secret
     // leaked into a cassette body never reaches disk.
@@ -1340,7 +1375,11 @@ pub fn replay(spec: &FlowSpec, trace_path: &Path) -> Result<(), String> {
     // Egress is checked against THIS phase's LIVE log, not the recorded lane:
     // enforcement uses the current spec's set both phases, and the trace's
     // lane is an audit record only.
-    check_egress(&plan, &run, &containment(spec))?;
+    let tier = containment(spec);
+    if let Some(warning) = egress_warning(&plan, &tier) {
+        eprintln!("{warning}");
+    }
+    check_egress(&plan, &run, &tier)?;
     // Re-scan the recorded corpus for declared secrets by the SAME mechanism
     // as record, so an unchanged system replays the same verdict. The corpus
     // is the recorded cassette + MCP lanes (the proxy consumed the live one).
@@ -1744,6 +1783,49 @@ mod tests {
         let not = Containment::NotContained("kernel lacks seccomp user-notification".into());
         let err = check_egress(&plan, &run, &not).expect_err("cannot certify");
         assert!(err.contains("cannot certify"), "{err}");
+    }
+
+    /// A declared allow-list that nothing enforces is the quiet gap: the run
+    /// passes, having reached whatever it liked, and only a tier line on a
+    /// green build says otherwise. It now says so in words.
+    #[test]
+    fn a_declared_allow_list_nobody_enforces_warns() {
+        let plan = egress_plan(false, vec!["api.acme.internal:443".into()]);
+        let not = Containment::NotContained("egress containment is Linux-only".into());
+
+        let warning = egress_warning(&plan, &not).expect("an unenforced allow-list warns");
+        // It names what was declared, why it did not apply, and the fix.
+        assert!(warning.contains("api.acme.internal:443"), "{warning}");
+        assert!(warning.contains("NOT applied"), "{warning}");
+        assert!(warning.contains("Linux-only"), "{warning}");
+        assert!(warning.contains("assert_no_egress"), "{warning}");
+
+        // And it is only a warning: the run still passes, because this flow
+        // never claimed certification.
+        let run = egress_run(vec![]);
+        check_egress(&plan, &run, &not).expect("a warning is not a failure");
+    }
+
+    /// The three cases with nothing to say. A warning that fires when it
+    /// should not is the same defect as one that never fires: people stop
+    /// reading it.
+    #[test]
+    fn nothing_to_warn_about_stays_quiet() {
+        let not = Containment::NotContained("egress containment is Linux-only".into());
+
+        // Enforced: the allow-list was applied, so there is no gap.
+        let declared = egress_plan(false, vec!["api.acme.internal:443".into()]);
+        assert!(egress_warning(&declared, &Containment::Enforced).is_none());
+
+        // No allow-list declared: nothing was promised.
+        let bare = egress_plan(false, vec![]);
+        assert!(egress_warning(&bare, &not).is_none());
+
+        // assert_no_egress present: check_egress already fails this outright,
+        // so a warning beside a hard error would only add noise.
+        let asserting = egress_plan(true, vec!["api.acme.internal:443".into()]);
+        assert!(egress_warning(&asserting, &not).is_none());
+        check_egress(&asserting, &egress_run(vec![]), &not).expect_err("still a capability error");
     }
 
     /// A spec whose only shape that matters here is its tools/mcp blocks.
