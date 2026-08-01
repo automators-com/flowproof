@@ -24,6 +24,7 @@
 
 pub mod identity;
 pub mod logon;
+pub mod spawn;
 
 use std::ffi::c_void;
 

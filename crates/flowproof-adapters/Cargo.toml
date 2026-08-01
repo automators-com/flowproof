@@ -64,6 +64,11 @@ windows = { version = "0.62", features = [
     "Win32_NetworkManagement_NetManagement",
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
+    # Starting the agent as that identity: a kill-on-close job so a grandchild
+    # cannot outlive the run, and the window-station/desktop grant without
+    # which CreateProcessAsUserW cannot start a process at all.
+    "Win32_System_JobObjects",
+    "Win32_System_StationsAndDesktops",
 ], optional = true }
 
 [lints]
