@@ -78,6 +78,23 @@ together).
   The test now asserts the substance, that the reason names where
   containment IS enforced, rather than one wording of it.
 
+- **The published schema rejected traces flowproof itself writes.** The
+  action `type` enum in `trace-v1.schema.json` listed thirteen of the fifteen
+  actions the engine emits. `capture` and `set_checked` were missing, so any
+  trace containing a `Remember …` or a `Check …` step failed validation
+  against the schema this repository publishes as the contract.
+
+  Nothing caught it, and the reason is the interesting part: the conformance
+  test validates one fixture, and that fixture contained neither action. The
+  schema was wrong for exactly as long as nothing exercised it — a gap that
+  fails *green*, and on the artifact external consumers validate against
+  rather than on anything our own code reads.
+
+  Both are in the enum now, with their param shapes, and the fixture carries
+  one of each — including the counted `capture` reading — so the enum cannot
+  drift from the emitted actions again without a red test. Verified the
+  other way too: with the old enum restored, the extended fixture fails.
+
 - **Our own suite had a flaky test, and it was red-lighting `main`.**
   `seeded_fixture_mutation_survives_navigation` wrote two pages to disk and
   navigated between `file://` urls, asserting that a cart mutation survived
