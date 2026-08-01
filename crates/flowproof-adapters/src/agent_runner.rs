@@ -146,12 +146,10 @@ pub struct AgentRun {
     ///
     /// [`ProxyLog`]: crate::agent_proxy::ProxyLog
     pub egress: EgressLog,
-    /// What the run DID to the filesystem: observed, never prevented.
-    ///
-    /// Nothing fills this yet. The log type and the report path land ahead of
-    /// the seccomp trap guards so that the guards themselves arrive as a
-    /// change to one file, which is the only part of this that needs a kernel
-    /// to review.
+    /// What the run DID to the filesystem, observed by the same seccomp
+    /// filter and never prevented by it. Empty wherever there is no
+    /// mechanism, which is everywhere the egress log is empty for the same
+    /// reason: the traps are installed together or not at all.
     pub fs: FsLog,
     /// The containment tier this RUN achieved, when the run itself is what
     /// decides it.
@@ -699,7 +697,7 @@ pub fn run_against_contained(
     let (status, timed_out) = wait_to_deadline(&mut child, timeout);
     let stdout = out_drain.collect(PIPE_DRAIN_GRACE);
     let stderr = err_drain.collect(PIPE_DRAIN_GRACE);
-    let egress = supervisor.stop_and_collect();
+    let (egress, fs) = supervisor.stop_and_collect();
 
     let log = proxy.log();
     let run = AgentRun {
@@ -712,8 +710,7 @@ pub fn run_against_contained(
         stderr,
         upstream_error: log.upstream_error.clone(),
         egress,
-        // Nothing observes the filesystem yet; the trap guards land next.
-        fs: FsLog::default(),
+        fs,
         // Reaching here means the filter installed: it goes in via `pre_exec`
         // and a failure aborts the spawn, so there is no path to a finished
         // run with no filter behind it.

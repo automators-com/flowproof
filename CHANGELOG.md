@@ -8,6 +8,29 @@ together).
 
 ### Added
 
+- **A contained run could delete your files and the report would not mention
+  it.** `assert_no_egress` can say an agent did not *send* the thing it must
+  not; nothing said anything about *delete*. A run that unlinked the customer
+  and renamed an export over the top of it finished green and silent —
+  flowproof was watching one boundary and there were two.
+
+  The seccomp supervisor that enforces egress now also traps the destructive
+  filesystem syscalls — `unlink`, `unlinkat` (including `AT_REMOVEDIR`),
+  `rmdir`, `rename`/`renameat`/`renameat2`, `truncate` and `ftruncate` — and
+  any flow already engaging containment prints what it destroyed:
+
+  ```
+  filesystem observation: observed (linux seccomp); 1 destructive syscall(s)
+    unlinkat /home/u/exports/2025.csv at 412ms
+  ```
+
+  It **observes**. No new step, no new spec key, nothing new to assert on —
+  the honest edge of the mechanism, not a first instalment. Every trap replies
+  `SECCOMP_USER_NOTIF_FLAG_CONTINUE`, so the kernel runs the syscall and
+  re-reads child memory *after* the supervisor decided, which a sibling thread
+  can race. Fatal for a verdict, acceptable for a report: the trap fires on
+  syscall NUMBER, so a path can be stale but a destructive syscall cannot hide.
+
 - **A control that acts on WHERE it was hit could only be hit in the
   middle.** `Click` goes to the element's midpoint, which is the right
   default and the only thing there was. A split button, a slider track, a
