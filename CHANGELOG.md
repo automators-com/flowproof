@@ -144,6 +144,31 @@ together).
 
 ### Fixed
 
+- **The containment tier was reported by a guess taken before the run.**
+  A flow that engages egress prints a tier line, stores one in the trace,
+  and keeps one in the run record. Only the trace was reading the tier the
+  run *achieved*; the printed line, the `--json` payload and the run record
+  all called the pre-run probe and reported that instead.
+
+  On Linux the two cannot disagree — the seccomp filter installs in the
+  child's `pre_exec`, so reaching a finished run means it installed. The
+  probe was therefore not wrong, it was *load-bearing for a reason that
+  had quietly stopped being true*: containment on other platforms has
+  steps that fail after a probe says yes.
+
+  Two artifacts describing one run differently is worse than either being
+  wrong on its own, because an auditor has no way to tell which is lying.
+  And in the run record it cost evidence rather than a label: the same
+  field decides whether the blocked lane is evidence at all, so a
+  mismatched tier either presents destinations this run never blocked or
+  discards the ones it did.
+
+  There is now one definition, `achieved_tier`, used by the certifying
+  path and the reporting path alike — those computing it separately is how
+  they came to disagree. The corrected line prints only when the run's
+  answer differs from the prediction, so nothing about Linux output
+  changes.
+
 - **`Select` typed the option name when the option did not exist.** A JS
   exception inside the driver does not reach Rust as an `Err`, so the throw
   on a missing option looked exactly like "this element is not a
