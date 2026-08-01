@@ -2241,7 +2241,12 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     ..
                 } => {
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
-                    while driver.element_exists(targeted())? != *present {
+                    loop {
+                        let (resolved, visible) =
+                            flowproof_driver::visible_now(driver, targeted())?;
+                        if visible == *present {
+                            break;
+                        }
                         if std::time::Instant::now() >= deadline {
                             return Err(RecordError::AssertMismatch {
                                 intent: spec_step.intent().to_string(),
@@ -2250,7 +2255,13 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                 } else {
                                     "element not visible".to_string()
                                 },
-                                actual: if *present {
+                                // Resolved-but-hidden is its own answer:
+                                // "never appeared" would send the reader
+                                // hunting for a selector bug that is not
+                                // there.
+                                actual: if *present && resolved {
+                                    "element is present but not rendered".to_string()
+                                } else if *present {
                                     "element never appeared".to_string()
                                 } else {
                                     "element still on screen".to_string()

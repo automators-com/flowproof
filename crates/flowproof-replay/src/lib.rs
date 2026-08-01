@@ -1049,24 +1049,49 @@ fn check_assertion<D: AppDriver>(
             // the assertion — no text involved.
             if let Some(wanted_present) = expect.get("element_present").and_then(|v| v.as_bool()) {
                 let mut read_ok = false;
+                // Whether the last completed poll found the element in the
+                // DOM but not rendered - the difference between "your
+                // selector is wrong" and "your app never showed it".
+                let mut hidden = false;
                 loop {
                     // Scoped per iteration: only THIS poll's fault decides
                     // whether "gone" was actually observed.
                     let mut fault: Option<flowproof_driver::DriverError> = None;
                     let resolved = resolve(driver, &mut fault)?;
+                    // Resolving is only half of `is visible`: a hidden
+                    // element answers every selector, so a presence-only
+                    // check makes the assertion unfailable. A surface with
+                    // no notion of rendered-ness keeps the presence answer.
+                    let visible = match &resolved {
+                        Some((uia, _)) => tolerate(driver.element_visible(uia), &mut fault)?
+                            .map(|v| v.unwrap_or(true)),
+                        None => Some(false),
+                    };
                     read_ok |= fault.is_none();
-                    match (&resolved, wanted_present) {
-                        (Some((_, rung)), true) => return Ok((Ok(()), Some(*rung))),
+                    if fault.is_none() {
+                        hidden = resolved.is_some() && visible == Some(false);
+                    }
+                    match (&resolved, visible, wanted_present) {
+                        (Some((_, rung)), Some(true), true) => {
+                            return Ok((Ok(()), Some(*rung)));
+                        }
                         // "gone" must be proven by a reading that happened,
-                        // not by a fault that prevented one.
-                        (None, false) if fault.is_none() => return Ok((Ok(()), None)),
+                        // not by a fault that prevented one. Rendered-ness
+                        // counts: a `display:none` element IS gone to the
+                        // user, which is what the assertion is about.
+                        (_, Some(false), false) if fault.is_none() => {
+                            return Ok((Ok(()), resolved.map(|(_, rung)| rung)));
+                        }
                         _ => {}
                     }
                     if Instant::now() >= deadline {
                         if !read_ok {
                             return Err(exhausted(fault));
                         }
-                        let reason = if wanted_present {
+                        let reason = if wanted_present && hidden {
+                            "expected element to be visible, but it is present and not rendered"
+                                .to_string()
+                        } else if wanted_present {
                             "expected element to be visible, but it never appeared".to_string()
                         } else {
                             "expected element to be gone, but it is still on screen".to_string()
