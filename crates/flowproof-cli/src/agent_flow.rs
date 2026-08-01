@@ -832,6 +832,18 @@ pub fn containment(spec: &FlowSpec) -> Containment {
 /// egress lane to store (record) or discard (replay). Fails - so record mints
 /// no trace and replay fails the flow - when `assert_no_egress` cannot be
 /// certified or was violated.
+/// The tier to REPORT: what the run ACHIEVED where it decided one, and the
+/// pre-run prediction only where it did not.
+///
+/// One definition, used by the certification path and the reporting path
+/// alike. Them disagreeing is the failure mode worth designing out: a report
+/// that says "not contained" over a run `assert_no_egress` certified would
+/// leave an auditor with two artifacts describing the same run differently,
+/// and no way to tell which one is lying.
+pub fn achieved_tier(run: &AgentRun, spec_tier: &Containment) -> Containment {
+    run.containment.clone().unwrap_or_else(|| spec_tier.clone())
+}
+
 fn check_egress(
     plan: &Plan,
     run: &AgentRun,
@@ -843,7 +855,7 @@ fn check_egress(
     // fail to become contained after the probe said yes, and certifying on
     // the probe's optimism would be the false green of #300 and #301 arriving
     // by prediction rather than by silence.
-    let containment = run.containment.as_ref().unwrap_or(spec_tier);
+    let containment = &achieved_tier(run, spec_tier);
     // `assert_no_egress` is a CAPABILITY claim: it can only certify where
     // containment is actually enforced. There is no bypass flag.
     if plan.assert_no_egress && !containment.is_enforced() {
@@ -1297,7 +1309,22 @@ fn warn_unprotected_tools(spec: &FlowSpec, plan: &Plan, phase: &str) {
     }
 }
 
-pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
+pub fn record(spec: &FlowSpec, out: &Path) -> (Containment, Result<(), String>) {
+    let mut achieved = None;
+    let outcome = record_inner(spec, out, &mut achieved);
+    (achieved.unwrap_or_else(|| containment(spec)), outcome)
+}
+
+/// The body. Takes `achieved` as an out-parameter rather than returning the
+/// tier, because the tier becomes known PART WAY THROUGH and every `?` before
+/// that point would otherwise have to name a tier it does not have yet. A run
+/// that failed before it started reports the prediction, which is the honest
+/// answer for a run that achieved nothing.
+fn record_inner(
+    spec: &FlowSpec,
+    out: &Path,
+    achieved: &mut Option<Containment>,
+) -> Result<(), String> {
     let mut plan = plan(spec)?;
     warn_unprotected_tools(spec, &plan, "record");
     // Set up the MCP boundary BEFORE the agent starts: write the plans and
@@ -1339,6 +1366,7 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
     if let Some(warning) = egress_warning(&plan, &tier) {
         eprintln!("{warning}");
     }
+    *achieved = Some(achieved_tier(&run, &tier));
     let egress = check_egress(&plan, &run, &tier)?;
     // The secret-leak scan runs BEFORE the trace is minted: a leak fails the
     // run so NO trace is written. That doubles as a store-guard - a secret
@@ -1360,7 +1388,18 @@ pub fn record(spec: &FlowSpec, out: &Path) -> Result<(), String> {
 /// Replay an `app: agent` flow: serve the recorded cassette, run the
 /// agent, and check that the trajectory reproduced and the assertions
 /// still hold.
-pub fn replay(spec: &FlowSpec, trace_path: &Path) -> Result<(), String> {
+pub fn replay(spec: &FlowSpec, trace_path: &Path) -> (Containment, Result<(), String>) {
+    let mut achieved = None;
+    let outcome = replay_inner(spec, trace_path, &mut achieved);
+    (achieved.unwrap_or_else(|| containment(spec)), outcome)
+}
+
+/// The body; see [`record_inner`] for why the tier leaves by out-parameter.
+fn replay_inner(
+    spec: &FlowSpec,
+    trace_path: &Path,
+    achieved: &mut Option<Containment>,
+) -> Result<(), String> {
     let mut plan = plan(spec)?;
     warn_unprotected_tools(spec, &plan, "replay");
     let raw = std::fs::read_to_string(trace_path)
@@ -1406,6 +1445,7 @@ pub fn replay(spec: &FlowSpec, trace_path: &Path) -> Result<(), String> {
     if let Some(warning) = egress_warning(&plan, &tier) {
         eprintln!("{warning}");
     }
+    *achieved = Some(achieved_tier(&run, &tier));
     check_egress(&plan, &run, &tier)?;
     // Re-scan the recorded corpus for declared secrets by the SAME mechanism
     // as record, so an unchanged system replays the same verdict. The corpus
@@ -1798,6 +1838,33 @@ mod tests {
             egress: flowproof_adapters::egress::EgressLog { blocked, faults },
             containment: None,
         }
+    }
+
+    /// The REPORT follows the run, not the probe.
+    ///
+    /// `check_egress` already certified on this rule. The report line did not,
+    /// so a Windows run that WAS contained printed "not contained" on stdout
+    /// and in `--json`, beside a trace lane that said the opposite. Two
+    /// artifacts describing one run differently is worse than either being
+    /// wrong alone: an auditor has no way to tell which one is lying.
+    #[test]
+    fn the_reported_tier_is_the_one_the_run_achieved() {
+        let mut run = egress_run(vec![]);
+        run.containment = Some(Containment::Enforced);
+        let predicted = Containment::NotContained("this host cannot enforce".into());
+        assert_eq!(achieved_tier(&run, &predicted), Containment::Enforced);
+    }
+
+    /// And the other direction, which is NOT implied by the one above: where
+    /// the run decided no tier - a `url:` service, a flow engaging no egress,
+    /// a platform with no mechanism - the prediction stands. A run that
+    /// determined nothing must not be read as one that achieved nothing
+    /// either; those are different sentences.
+    #[test]
+    fn a_run_that_decided_no_tier_reports_the_prediction() {
+        let run = egress_run(vec![]);
+        let predicted = Containment::NotContained("a service flowproof did not start".into());
+        assert_eq!(achieved_tier(&run, &predicted), predicted);
     }
 
     /// `assert_no_egress` is a CAPABILITY claim: on any tier that is not
@@ -2275,7 +2342,9 @@ mod tests {
         ))
         .expect("spec parses");
 
-        replay(&spec, &trace).expect("driver-blind replay via url passes");
+        replay(&spec, &trace)
+            .1
+            .expect("driver-blind replay via url passes");
         handle.join().ok();
     }
 
@@ -2291,7 +2360,9 @@ mod tests {
         ))
         .expect("spec parses");
 
-        let why = replay(&spec, &trace).expect_err("mispointed service must fail");
+        let why = replay(&spec, &trace)
+            .1
+            .expect_err("mispointed service must fail");
         handle.join().ok();
         assert!(why.contains("made 0 model calls"), "{why}");
         assert!(
