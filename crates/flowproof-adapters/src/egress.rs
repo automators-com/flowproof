@@ -87,12 +87,28 @@ impl Containment {
 pub struct EgressLog {
     /// Every denied attempt, in order - retries included.
     pub blocked: Vec<EgressEvent>,
+    /// Every supervisor FAULT, in order. A fault is not a policy denial: it
+    /// is a trapped syscall the supervisor could not adjudicate at all,
+    /// because the mechanism it needs was refused (`process_vm_readv` or
+    /// `pidfd_getfd` denied by a hardened host).
+    ///
+    /// The distinction is the whole point. A denial is evidence: we saw an
+    /// undeclared destination and refused it. A fault is the ABSENCE of
+    /// evidence: the syscall was refused too, so nothing reached the network -
+    /// but we never learned where it was going, so `blocked` stays empty and
+    /// an emptiness test over it means nothing. Kept in its own field so the
+    /// two can never be confused for one another.
+    pub faults: Vec<String>,
 }
 
 impl EgressLog {
     /// The set of undeclared destinations attempted, deduped by destination
-    /// so retry-count variance is irrelevant. This IS the `assert_no_egress`
-    /// predicate: the run is clean when this is empty.
+    /// so retry-count variance is irrelevant.
+    ///
+    /// This is HALF the `assert_no_egress` predicate. Emptiness here means
+    /// "nothing undeclared was seen", which is only the same as "nothing
+    /// undeclared happened" when the supervisor was working - see
+    /// [`EgressLog::faults`] for the other half.
     pub fn undeclared_destinations(&self) -> Vec<EgressEvent> {
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
@@ -104,9 +120,26 @@ impl EgressLog {
         out
     }
 
-    /// No undeclared destination was attempted.
+    /// The distinct supervisor faults, deduped and in first-seen order. One
+    /// broken mechanism produces a fault per trapped syscall, and a hundred
+    /// copies of "process_vm_readv: Operation not permitted" is one finding.
+    pub fn distinct_faults(&self) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for fault in &self.faults {
+            if seen.insert(fault.clone()) {
+                out.push(fault.clone());
+            }
+        }
+        out
+    }
+
+    /// Nothing undeclared was attempted AND the supervisor adjudicated every
+    /// trapped syscall it was handed. Both halves are required: a run whose
+    /// supervisor could not read child memory blocked everything and observed
+    /// nothing, which is not the same as clean.
     pub fn is_clean(&self) -> bool {
-        self.blocked.is_empty()
+        self.blocked.is_empty() && self.faults.is_empty()
     }
 }
 
@@ -220,6 +253,7 @@ mod tests {
     #[test]
     fn undeclared_destinations_dedupe_by_destination() {
         let log = EgressLog {
+            faults: Vec::new(),
             blocked: vec![
                 EgressEvent {
                     destination: "198.51.100.9:443".into(),
@@ -243,6 +277,43 @@ mod tests {
         assert_eq!(undeclared.len(), 2, "retries collapse to one destination");
         assert_eq!(undeclared[0].destination, "198.51.100.9:443");
         assert_eq!(undeclared[1].destination, "203.0.113.9:53");
+    }
+
+    /// A fault is not a denial, and an empty `blocked` list is not by itself
+    /// a clean run. This is the log-level half of #300.
+    #[test]
+    fn a_faulted_log_is_not_clean_even_with_nothing_blocked() {
+        let log = EgressLog {
+            blocked: Vec::new(),
+            faults: vec!["connect: process_vm_readv: Operation not permitted".into()],
+        };
+        // The old predicate - "nothing was blocked" - still reads as empty.
+        assert!(log.undeclared_destinations().is_empty());
+        // The real one does not.
+        assert!(!log.is_clean(), "a blind supervisor observed nothing");
+    }
+
+    #[test]
+    fn repeated_faults_dedupe_but_keep_first_seen_order() {
+        let log = EgressLog {
+            blocked: Vec::new(),
+            faults: vec![
+                "connect: process_vm_readv: EPERM".into(),
+                "sendto: pidfd_getfd: EPERM".into(),
+                "connect: process_vm_readv: EPERM".into(),
+            ],
+        };
+        let distinct = log.distinct_faults();
+        assert_eq!(distinct.len(), 2, "one broken mechanism is one finding");
+        assert_eq!(distinct[0], "connect: process_vm_readv: EPERM");
+        assert_eq!(distinct[1], "sendto: pidfd_getfd: EPERM");
+        // The raw list keeps every occurrence, so a count is still available.
+        assert_eq!(log.faults.len(), 3);
+    }
+
+    #[test]
+    fn a_run_with_neither_blocked_nor_faults_is_clean() {
+        assert!(EgressLog::default().is_clean());
     }
 
     #[test]

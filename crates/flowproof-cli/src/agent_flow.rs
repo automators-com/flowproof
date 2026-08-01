@@ -846,6 +846,26 @@ fn check_egress(
             containment.reason().unwrap_or("not contained")
         ));
     }
+    // A supervisor FAULT means the filter was installed and then could not do
+    // its job: `process_vm_readv` or `pidfd_getfd` was refused, so trapped
+    // syscalls were denied without ever being adjudicated. Nothing reached the
+    // network, but nothing was observed either - so the emptiness of
+    // `blocked` below proves nothing, and certifying on it would be a false
+    // green of exactly the kind CHARTER §5 ranks first.
+    //
+    // Checked BEFORE the set predicate, because the set predicate is the
+    // thing a fault invalidates.
+    let faults = run.egress.distinct_faults();
+    if plan.assert_no_egress && !faults.is_empty() {
+        return Err(format!(
+            "egress containment was installed but could not adjudicate {} trapped \
+             syscall(s) ({}); the run is not contained and assert_no_egress cannot \
+             certify",
+            run.egress.faults.len(),
+            faults.join("; ")
+        ));
+    }
+
     // The verdict is the SET predicate: the set of undeclared destinations
     // attempted is empty (deduped by destination, so retry-count variance is
     // irrelevant).
@@ -1715,6 +1735,11 @@ mod tests {
 
     /// An `AgentRun` carrying `blocked` egress events and nothing else.
     fn egress_run(blocked: Vec<EgressEvent>) -> AgentRun {
+        egress_run_with(blocked, Vec::new())
+    }
+
+    /// An `AgentRun` carrying both halves of the egress log.
+    fn egress_run_with(blocked: Vec<EgressEvent>, faults: Vec<String>) -> AgentRun {
         AgentRun {
             served: 1,
             divergence: None,
@@ -1724,7 +1749,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             upstream_error: None,
-            egress: flowproof_adapters::egress::EgressLog { blocked },
+            egress: flowproof_adapters::egress::EgressLog { blocked, faults },
         }
     }
 
@@ -1744,6 +1769,72 @@ mod tests {
         let not = Containment::NotContained("kernel lacks seccomp user-notification".into());
         let err = check_egress(&plan, &run, &not).expect_err("cannot certify");
         assert!(err.contains("cannot certify"), "{err}");
+    }
+
+    /// The false green from #300, pinned.
+    ///
+    /// A supervisor that cannot read child memory denies every trapped
+    /// syscall and records NOTHING, so `blocked` is empty and the old
+    /// emptiness test passed while the run was never actually adjudicated.
+    /// The tier still says `Enforced`, because the filter really was
+    /// installed - that is what made it silent.
+    ///
+    /// The predicate is no longer "we saw nothing bad"; it is "we saw
+    /// nothing bad AND we were able to look".
+    #[test]
+    fn a_faulted_supervisor_cannot_certify_even_with_an_empty_blocked_list() {
+        let plan = egress_plan(true, vec![]);
+        let run = egress_run_with(
+            vec![],
+            vec!["connect: process_vm_readv: Operation not permitted".into()],
+        );
+
+        // The tier is Enforced: the filter installed fine, then went blind.
+        let err = check_egress(&plan, &run, &Containment::Enforced)
+            .expect_err("a blind supervisor must not certify");
+
+        assert!(err.contains("cannot certify"), "{err}");
+        assert!(err.contains("could not adjudicate"), "{err}");
+        // The operator learns WHICH mechanism was refused, not just that
+        // something went wrong.
+        assert!(err.contains("process_vm_readv"), "{err}");
+        // And it classifies as capability-error, never as a control that
+        // failed: we could not check, which is not the same as "it broke".
+        assert!(
+            flowproof_replay::runrecord::is_capability_error(&err),
+            "must be capability-error, got: {err}"
+        );
+    }
+
+    /// The same run with no faults still passes. The guard has to be
+    /// falsifiable in both directions: a fault-check wired to fire
+    /// unconditionally would satisfy the test above and quietly make every
+    /// contained run a capability error.
+    #[test]
+    fn a_healthy_supervisor_with_nothing_blocked_still_passes() {
+        let plan = egress_plan(true, vec![]);
+        let run = egress_run_with(vec![], vec![]);
+        let lane = check_egress(&plan, &run, &Containment::Enforced)
+            .expect("a clean contained run certifies");
+        let lane = lane.expect("engaged, so the lane is written");
+        assert!(lane.blocked.is_empty());
+        assert!(lane.containment.contains("enforced"));
+    }
+
+    /// Retries of one broken mechanism are one finding, not a hundred. The
+    /// message counts every fault but names each distinct one once.
+    #[test]
+    fn repeated_faults_collapse_in_the_message() {
+        let plan = egress_plan(true, vec![]);
+        let fault = "connect: process_vm_readv: Operation not permitted".to_string();
+        let run = egress_run_with(vec![], vec![fault.clone(), fault.clone(), fault]);
+        let err = check_egress(&plan, &run, &Containment::Enforced).expect_err("faulted");
+        assert!(err.contains("3 trapped syscall(s)"), "{err}");
+        assert_eq!(
+            err.matches("process_vm_readv").count(),
+            1,
+            "the distinct fault is named once: {err}"
+        );
     }
 
     /// A spec whose only shape that matters here is its tools/mcp blocks.
