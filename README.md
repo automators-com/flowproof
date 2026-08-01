@@ -5,17 +5,20 @@
 [![npm](https://img.shields.io/npm/v/flowproof)](https://www.npmjs.com/package/flowproof)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-## Your agent behaved today. Prove it'll behave tomorrow.
+## Your bot behaved today. Prove it'll behave tomorrow.
 
-AI agents don't just call APIs anymore — they click through real systems,
-including the old ones nobody gave an API. That's power, and it's risk.
-flowproof captures what your agent does in one recording, then replays it on
-every commit with zero model calls. Define the lines it must never cross —
-the wrong tool, a system it shouldn't reach — and the build breaks the
-instant one is crossed. Not a suite you hope still passes. Evidence, every
-push.
+Software robots already do real work in production. They raise orders in SAP,
+update records, close tickets — jobs a person used to do by hand, and jobs
+agents are taking over more of every month. flowproof is how you test that one
+of them only ever does the job it was given, and never deletes, sends or
+approves the thing it must not.
 
-Everywhere your agents work: web, desktop, SAP, Citrix.
+Record the bot doing its job once. After that, every commit runs that
+recording again and checks it — no model, no API key, nothing billed. Name the
+lines it must never cross, and the build breaks the instant one is crossed.
+Not a suite you hope still passes. Evidence, every push.
+
+Everywhere your bots work: web, desktop, SAP, Citrix.
 
 <img alt="An agent flow: a short YAML spec, one flowproof record against a model, then flowproof run replaying it to PASS with zero model calls" src="docs/assets/flowproof-demo.gif" width="880">
 
@@ -27,18 +30,21 @@ commit ([docs/agent-testing.md](docs/agent-testing.md)).
 
 ## The same promise, precisely
 
-flowproof produces evidence that a control still holds.
+A rule the bot has to obey — never refund without approval, never delete a
+customer — is what flowproof calls a **control**, and its job is to keep
+proving that control still holds.
 
-Record your agent's real run once - every model request and every tool-call
+Record your agent's real run once: every model request and every tool-call
 decision it made. From then on, replay it with **zero LLM calls** and assert
-what matters: which tools were called, with which arguments, and which were
+what matters — which tools were called, with which arguments, and which were
 **never** called. `flowproof audit --since` exits non-zero the moment a control
-disappears or turns failing, so a guarantee you made last month is re-proved on
-every commit instead of being remembered.
+starts failing or quietly stops being checked, so a guarantee you made last
+month is re-proved on every commit instead of being remembered.
 
-The same spec format drives web, Windows, SAP GUI, Citrix and HTTP. So the
-coverage map spans the agent *and* the enterprise system it drives - an agent
-that files an SAP order is one risk surface, not two.
+The same spec format drives web, Windows, SAP GUI, Citrix and HTTP. A bot can
+go wrong in two places — what it decided to do, and what it actually did to
+your system — and one recording covers both. An agent that files an SAP order
+is one job to get right, not two.
 
 Flows are plain YAML - short enough for an agent to write, readable enough
 for a human to review in a diff.
