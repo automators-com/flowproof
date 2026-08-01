@@ -1848,7 +1848,16 @@ mod tests {
                 tier.starts_with("not contained ("),
                 "off Linux the record must say so, not stay silent: {tier}"
             );
-            assert!(tier.contains("Linux-only"), "and say why: {tier}");
+            // Assert the SUBSTANCE - that the reason names where
+            // containment is actually enforced - rather than one wording of
+            // it. The literal this used to check ("Linux-only") stopped
+            // being true when Windows containment started, and a test
+            // pinned to a phrase fails for the wording rather than for the
+            // behaviour.
+            assert!(
+                tier.contains("Linux"),
+                "and say where it IS enforced: {tier}"
+            );
         }
         std::fs::remove_dir_all(&dir).ok();
     }
