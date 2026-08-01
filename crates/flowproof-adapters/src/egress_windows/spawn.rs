@@ -205,7 +205,8 @@ pub fn spawn(
     password: &str,
     command_line: &str,
     env: &BTreeMap<String, String>,
-    output: Option<HANDLE>,
+    stdout: Option<HANDLE>,
+    stderr: Option<HANDLE>,
 ) -> Result<Contained, WinErr> {
     unsafe {
         // Built here so it outlives both CreateProcess calls below. Passing
@@ -228,13 +229,13 @@ pub fn spawn(
         let si = STARTUPINFOW {
             cb: std::mem::size_of::<STARTUPINFOW>() as u32,
             lpDesktop: PWSTR(desktop.as_mut_ptr()),
-            dwFlags: if output.is_some() {
+            dwFlags: if stdout.is_some() || stderr.is_some() {
                 STARTF_USESTDHANDLES
             } else {
                 Default::default()
             },
-            hStdOutput: output.unwrap_or_default(),
-            hStdError: output.unwrap_or_default(),
+            hStdOutput: stdout.unwrap_or_default(),
+            hStdError: stderr.unwrap_or_default(),
             hStdInput: HANDLE::default(),
             ..Default::default()
         };
@@ -249,7 +250,7 @@ pub fn spawn(
             None,
             // The output handle has to cross into the child, and it was
             // created inheritable for exactly this.
-            output.is_some(),
+            stdout.is_some() || stderr.is_some(),
             CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
             Some(block.as_mut_ptr() as *const c_void),
             PCWSTR::null(),
@@ -282,7 +283,8 @@ pub fn spawn(
                 true
             }
         };
-        let (launcher, captures_output) = launcher_report(used_fallback, output.is_some());
+        let (launcher, captures_output) =
+            launcher_report(used_fallback, stdout.is_some() || stderr.is_some());
 
         // Assign BEFORE resuming: a process that ran even briefly outside the
         // job could have spawned something the job never sees.
