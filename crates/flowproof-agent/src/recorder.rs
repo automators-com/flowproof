@@ -214,11 +214,20 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
         // by header text + row anchor. The `kind: "cell"` payload is
         // self-describing; the adapter enriches it with column_field/row_id
         // hints at record time, and a text-only payload stays valid.
-        Target::Cell { column, anchor } => {
+        Target::Cell {
+            column,
+            anchor,
+            also,
+        } => {
             let mut payload = serde_json::Map::new();
             payload.insert("kind".into(), "cell".into());
             payload.insert("column_text".into(), column.as_str().into());
             payload.insert("row_anchor".into(), anchor.as_str().into());
+            // A new key beside the primary anchor, so a reader that only
+            // knows one anchor still reads the payload it expects.
+            if !also.is_empty() {
+                payload.insert("row_anchor_also".into(), serde_json::json!(also));
+            }
             vec![Selector {
                 tier: SelectorTier::Structural,
                 provenance: flowproof_trace::format::Adapter::Web,
@@ -241,11 +250,15 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
         Target::Scoped {
             container,
             anchor,
+            also,
             inner,
         } => {
             let mut payload = serde_json::Map::new();
             payload.insert("kind".into(), "scoped".into());
             payload.insert("container".into(), container.as_str().into());
+            if !also.is_empty() {
+                payload.insert("anchor_also".into(), serde_json::json!(also));
+            }
             payload.insert("container_anchor".into(), anchor.as_str().into());
             match inner.as_ref() {
                 Target::Css(css) => payload.insert("inner_css".into(), css.as_str().into()),
@@ -903,10 +916,15 @@ fn target_selector(target: &Target) -> Option<UiaSelector> {
                 ..UiaSelector::default()
             })
         }
-        Target::Cell { column, anchor } => Some(UiaSelector {
+        Target::Cell {
+            column,
+            anchor,
+            also,
+        } => Some(UiaSelector {
             cell: Some(flowproof_driver::CellQuery {
                 column: column.clone(),
                 anchor: anchor.clone(),
+                also: also.clone(),
                 ..Default::default()
             }),
             ..UiaSelector::default()
@@ -914,10 +932,12 @@ fn target_selector(target: &Target) -> Option<UiaSelector> {
         Target::Scoped {
             container,
             anchor,
+            also,
             inner,
         } => Some(UiaSelector {
             scope: Some(flowproof_driver::ScopeQuery {
                 container: container.clone(),
+                also: also.clone(),
                 anchor: anchor.clone(),
                 inner_css: match inner.as_ref() {
                     Target::Css(css) => Some(css.clone()),
@@ -3679,6 +3699,7 @@ steps:
         Target::Scoped {
             container: "item".into(),
             anchor: "Invoice 4711".into(),
+            also: Vec::new(),
             inner: Box::new(inner),
         }
     }
@@ -3765,6 +3786,7 @@ steps:
                 target: Target::Cell {
                     column: "Actions".into(),
                     anchor: "Grace Hopper".into(),
+                    also: Vec::new(),
                 },
                 label: "Actions".into(),
                 dialog: None,
