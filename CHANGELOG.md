@@ -8,6 +8,31 @@ together).
 
 ### Added
 
+- **A control that acts on WHERE it was hit could only be hit in the
+  middle.** `Click` goes to the element's midpoint, which is the right
+  default and the only thing there was. A split button, a slider track, a
+  canvas region - anything reading `offsetX`/`offsetY` - had exactly one
+  reachable point, and for a control whose two halves do different things
+  that point is arbitrary.
+
+  ```yaml
+  - Click "Click into my right half" at 75%,50%
+  ```
+
+  **Percentages of the element's own box, never pixels.** An element's size
+  depends on the viewport and the font, so a pixel offset recorded on one
+  machine addresses a different part of the control on another - the same
+  reason the ordinal exists instead of coordinates.
+
+  Out of range is a parse error, not a clamp: a clamped `120%` becomes an
+  edge click that looks deliberate and is not what the author wrote.
+
+  And the point is verified before the click dispatches, with the hit test
+  `Hover` already uses. An offset can leave the element entirely - a
+  rounded corner, an overlapping sibling - and a click that lands on the
+  occluder while reporting success is the false green this repository keeps
+  finding. It fails instead, naming the offset.
+
 - **A dropdown inside a table row had no spelling at all.** Every other
   action learned the scope suffix - `Click`, `Type`, `Clear`, `Check`,
   `Press … button`, `Right-click`, `Remember` - and `Select` was simply

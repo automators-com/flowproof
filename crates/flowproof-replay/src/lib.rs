@@ -1779,8 +1779,17 @@ fn execute_step<D: AppDriver>(
                 match wait_actionable(driver, &target, actionable_timeout(step))? {
                     Ok(()) => {
                         let dialog = dialog_from_params(params);
+                        // An offset click carries where inside the box to
+                        // hit; without it, the midpoint, as before.
+                        let at = params
+                            .get("x_pct")
+                            .and_then(|v| v.as_f64())
+                            .zip(params.get("y_pct").and_then(|v| v.as_f64()));
                         let outcome =
-                            dispatch_with_dialog(driver, dialog.as_ref(), |d| d.invoke(&target))?;
+                            dispatch_with_dialog(driver, dialog.as_ref(), |d| match at {
+                                Some((x, y)) => d.click_at(&target, x, y),
+                                None => d.invoke(&target),
+                            })?;
                         (outcome, matched)
                     }
                     Err(reason) => (Err(reason), matched),

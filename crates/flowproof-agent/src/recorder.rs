@@ -608,6 +608,18 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 selector_ref: Some(0),
             }),
         ),
+        ResolvedAction::ClickAt {
+            target,
+            x_pct,
+            y_pct,
+        } => {
+            let mut params = serde_json::Map::new();
+            // Percentages of the element's own box, so the point means the
+            // same thing at a different viewport or font size.
+            params.insert("x_pct".into(), serde_json::json!(x_pct));
+            params.insert("y_pct".into(), serde_json::json!(y_pct));
+            (selectors_for(app, target, None), Action::Click(params))
+        }
         ResolvedAction::SelectOptions { target, values } => {
             let mut params = flowproof_trace::format::TypeTextParams {
                 // `text` keeps the FIRST option so the step still names
@@ -965,6 +977,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         ResolvedAction::Press { target, .. }
         | ResolvedAction::TypeText { target, .. }
         | ResolvedAction::SelectOptions { target, .. }
+        | ResolvedAction::ClickAt { target, .. }
         | ResolvedAction::Upload { target, .. }
         | ResolvedAction::ContextClick { target, .. }
         | ResolvedAction::DoubleClick { target, .. }
@@ -1980,6 +1993,9 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
             }
             match &action {
                 ResolvedAction::Press { .. } => driver.invoke(targeted())?,
+                ResolvedAction::ClickAt { x_pct, y_pct, .. } => {
+                    driver.click_at(targeted(), *x_pct, *y_pct)?;
+                }
                 ResolvedAction::SelectOptions { values, .. } => {
                     // One commit for the whole set. A missing option fails
                     // the step in the driver, before anything is selected.

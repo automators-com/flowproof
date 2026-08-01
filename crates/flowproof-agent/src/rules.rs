@@ -206,6 +206,14 @@ pub enum ResolvedAction {
     /// Read a target's text into a flow-scoped name for later comparison
     /// (`Remember the "Balance" as balance`). The VALUE never enters the
     /// trace - only the name does, exactly like a `${VAR}` secret.
+    /// Click a point inside the element, as a percentage of its own box.
+    /// For controls that read `offsetX`/`offsetY` and act on WHERE they
+    /// were hit, the midpoint is one answer among many.
+    ClickAt {
+        target: Target,
+        x_pct: f64,
+        y_pct: f64,
+    },
     /// Drive a `<select multiple>` to EXACTLY these options. Not a sequence
     /// of single selections: committing one option replaces the selection,
     /// so a sequence would leave the last one standing and say nothing.
@@ -2610,6 +2618,43 @@ mod web {
             ));
         }
 
+        // `Click [the [2nd ]]"<text>" at <x>%,<y>%` - a point inside the
+        // element rather than its midpoint. Percentages, because an
+        // element's size depends on the viewport and the font, so a pixel
+        // offset would address a different part of the control elsewhere.
+        if let Some(rest) = strip_prefix_ci(trimmed, "click ") {
+            let rest = strip_prefix_ci(rest, "the ").unwrap_or(rest);
+            if let Some(pos) = rfind_ci(rest, " at ") {
+                let coords = rest[pos + " at ".len()..].trim();
+                if let Some((xs, ys)) = coords.split_once(',') {
+                    let pct = |t: &str| -> Option<f64> {
+                        t.trim().strip_suffix('%')?.trim().parse::<f64>().ok()
+                    };
+                    if let (Some(x), Some(y)) = (pct(xs), pct(ys)) {
+                        if !(0.0..=100.0).contains(&x) || !(0.0..=100.0).contains(&y) {
+                            return Err(unresolvable(
+                                trimmed,
+                                "a click offset is a percentage of the element's own box, \
+                                 so both parts must be between 0% and 100%",
+                            ));
+                        }
+                        let (nth, label) = split_ordinal(rest[..pos].trim());
+                        if let Some(q) = label.strip_prefix('"') {
+                            if let Some((text, tail)) = quoted_label(q) {
+                                if tail.trim().is_empty() {
+                                    return Ok(vec![ResolvedAction::ClickAt {
+                                        target: with_nth(nth, target_from_label(text)),
+                                        x_pct: x,
+                                        y_pct: y,
+                                    }]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // `Select <option> from|in the [Nth ]"<label>" field|dropdown` —
         // native dropdowns. Encoded as TypeText: each adapter commits the
         // option its own way (the web driver goes through the select's
@@ -3961,6 +4006,7 @@ mod tests {
             ("web", "Clear the taskName field"),
             ("web", r#"Select Admin from the "Role" field"#),
             ("web", r#"Select Admin in the "Role" dropdown"#),
+            ("web", r#"Click "Save" at 75%,50%"#),
             (
                 "web",
                 r#"Select "Functional testing", "GUI testing" and "End2End testing" from the "Methods" field"#,
@@ -5288,6 +5334,66 @@ mod framed_target_tests {
         plain("Select Admin from the roleSelect field").expect("the bare-id form still works");
         // No scope, no noun: refused, as before.
         assert!(plain(r#"Select Admin from the "Role""#).is_err());
+    }
+
+    /// A control that reads `offsetX` acts on WHERE it was hit, and the
+    /// midpoint is one answer among many. Percentages, not pixels: an
+    /// element's size depends on the viewport and the font, so a pixel
+    /// offset recorded here would address a different part of the control
+    /// on another machine.
+    #[test]
+    fn a_click_can_name_a_point_inside_the_element() {
+        assert_eq!(
+            plain(r#"Click "Save" at 75%,50%"#).expect("parses"),
+            vec![ResolvedAction::ClickAt {
+                target: Target::Text("Save".into()),
+                x_pct: 75.0,
+                y_pct: 50.0,
+            }]
+        );
+        // `the` and an ordinal both compose, like any other target.
+        assert_eq!(
+            plain(r#"Click the 2nd "Save" at 10%,90%"#).expect("parses"),
+            vec![ResolvedAction::ClickAt {
+                target: Target::Nth(2, Box::new(Target::Text("Save".into()))),
+                x_pct: 10.0,
+                y_pct: 90.0,
+            }]
+        );
+        // Fractions are allowed - a split control's boundary is rarely a
+        // whole percent.
+        assert!(matches!(
+            plain(r#"Click "Save" at 50.5%,50%"#).expect("parses").first(),
+            Some(ResolvedAction::ClickAt { x_pct, .. }) if (*x_pct - 50.5).abs() < 1e-9
+        ));
+    }
+
+    /// Out-of-range is refused rather than clamped. A clamp would turn
+    /// `120%` into an edge click that looks deliberate and is not what the
+    /// author wrote.
+    #[test]
+    fn a_click_offset_outside_the_box_is_a_parse_error() {
+        for bad in [
+            r#"Click "Save" at 120%,50%"#,
+            r#"Click "Save" at 50%,-10%"#,
+            r#"Click "Save" at 101%,101%"#,
+        ] {
+            let err = plain(bad).expect_err("an offset outside the box must be refused");
+            assert!(
+                err.to_string().contains("between 0% and 100%"),
+                "{bad}: {err}"
+            );
+        }
+        // A plain click is untouched, and so is a label that merely
+        // contains the word `at`.
+        assert!(matches!(
+            plain(r#"Click "Save""#).expect("parses").first(),
+            Some(ResolvedAction::Press { .. })
+        ));
+        assert!(matches!(
+            plain(r#"Click "Look at this""#).expect("parses").first(),
+            Some(ResolvedAction::Press { .. })
+        ));
     }
 
     #[test]
