@@ -835,8 +835,15 @@ pub fn containment(spec: &FlowSpec) -> Containment {
 fn check_egress(
     plan: &Plan,
     run: &AgentRun,
-    containment: &Containment,
+    spec_tier: &Containment,
 ) -> Result<Option<EgressTrace>, String> {
+    // The RUN's tier wins where the run determined one. `spec_tier` is a
+    // probe: it says what this host COULD enforce, taken before anything
+    // started. On Linux the two agree by construction. Elsewhere a run can
+    // fail to become contained after the probe said yes, and certifying on
+    // the probe's optimism would be the false green of #300 and #301 arriving
+    // by prediction rather than by silence.
+    let containment = run.containment.as_ref().unwrap_or(spec_tier);
     // `assert_no_egress` is a CAPABILITY claim: it can only certify where
     // containment is actually enforced. There is no bypass flag.
     if plan.assert_no_egress && !containment.is_enforced() {
@@ -1789,6 +1796,7 @@ mod tests {
             stderr: String::new(),
             upstream_error: None,
             egress: flowproof_adapters::egress::EgressLog { blocked, faults },
+            containment: None,
         }
     }
 
@@ -1851,6 +1859,48 @@ mod tests {
         let asserting = egress_plan(true, vec!["api.acme.internal:443".into()]);
         assert!(egress_warning(&asserting, &not).is_none());
         check_egress(&asserting, &egress_run(vec![]), &not).expect_err("still a capability error");
+    }
+
+    /// A run that KNOWS it was not contained overrides a probe that said it
+    /// could be.
+    ///
+    /// This is the shape Windows produces and Linux cannot: the probe passes,
+    /// then one of several later steps fails, and the run ends up uncontained
+    /// on a host that was perfectly capable. Certifying on the probe's
+    /// optimism would be #300 and #301 arriving by prediction rather than by
+    /// silence - a tier that describes the machine instead of the run.
+    #[test]
+    fn the_runs_own_tier_beats_an_optimistic_probe() {
+        let plan = egress_plan(true, vec![]);
+        let mut run = egress_run(vec![]);
+        run.containment = Some(Containment::NotContained(
+            "installing the filters: FwpmFilterAdd0 failed".into(),
+        ));
+
+        // The spec-level probe is as optimistic as it gets.
+        let err = check_egress(&plan, &run, &Containment::Enforced)
+            .expect_err("the run knows better than the probe");
+        assert!(err.contains("cannot certify"), "{err}");
+        assert!(err.contains("FwpmFilterAdd0"), "the reason survives: {err}");
+        assert!(
+            flowproof_replay::runrecord::is_capability_error(&err),
+            "could-not-check, not a control that failed: {err}"
+        );
+    }
+
+    /// And the reverse: with no tier of its own, the run defers to the spec.
+    /// Every uncontained path leaves it `None`, so this is the common case and
+    /// must not have changed.
+    #[test]
+    fn a_run_without_a_tier_defers_to_the_spec() {
+        let plan = egress_plan(true, vec![]);
+        let run = egress_run(vec![]);
+        assert!(run.containment.is_none());
+
+        check_egress(&plan, &run, &Containment::Enforced).expect("certifies on the spec tier");
+        let err = check_egress(&plan, &run, &Containment::url_flow())
+            .expect_err("and fails on the spec tier too");
+        assert!(err.contains("cannot certify"), "{err}");
     }
 
     /// The false green from #300, pinned.
@@ -2020,6 +2070,7 @@ mod tests {
             egress: Default::default(),
             divergence: None,
             timed_out: false,
+            containment: None,
         }
     }
 
