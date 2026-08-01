@@ -940,6 +940,18 @@ fn egress_warning(plan: &Plan, containment: &Containment) -> Option<String> {
     ))
 }
 
+/// Print what the run DID to the filesystem (issue #302).
+///
+/// Stderr, so `--json` keeps its stdout contract, and printed BEFORE the
+/// egress verdict so a run that is about to fail still says what it destroyed
+/// on the way. It asserts nothing and can fail nothing: this report IS the
+/// feature, and a run that destroyed nothing says nothing at all.
+fn report_fs(run: &AgentRun) {
+    for line in run.fs.report_lines() {
+        eprintln!("{line}");
+    }
+}
+
 /// The short containment tag stored in the trace lane (the parenthetical of
 /// the report line): `enforced (linux seccomp)` or `not contained (<reason>)`.
 /// The run record stores the SAME string, so the trace and the artifact an
@@ -1366,6 +1378,7 @@ fn record_inner(
     if let Some(warning) = egress_warning(&plan, &tier) {
         eprintln!("{warning}");
     }
+    report_fs(&run);
     *achieved = Some(achieved_tier(&run, &tier));
     let egress = check_egress(&plan, &run, &tier)?;
     // The secret-leak scan runs BEFORE the trace is minted: a leak fails the
@@ -1445,6 +1458,7 @@ fn replay_inner(
     if let Some(warning) = egress_warning(&plan, &tier) {
         eprintln!("{warning}");
     }
+    report_fs(&run);
     *achieved = Some(achieved_tier(&run, &tier));
     check_egress(&plan, &run, &tier)?;
     // Re-scan the recorded corpus for declared secrets by the SAME mechanism
@@ -1836,8 +1850,35 @@ mod tests {
             stderr: String::new(),
             upstream_error: None,
             egress: flowproof_adapters::egress::EgressLog { blocked, faults },
+            fs: flowproof_adapters::FsLog::default(),
             containment: None,
         }
+    }
+
+    /// Filesystem observation OBSERVES; it does not judge.
+    ///
+    /// This feature adds no assertion and no spec surface, so a run that
+    /// deleted the customer still passes every check there is - the
+    /// destruction appears in the report and nowhere else. Pinned because the
+    /// obvious "improvement" is to fail on it, and failing on a CONTINUE-based
+    /// observation is how this becomes a containment claim with a TOCTOU hole.
+    #[test]
+    fn a_destructive_run_is_reported_and_still_passes() {
+        let mut run = egress_run(vec![]);
+        run.fs.destructive.push(flowproof_adapters::FsEvent {
+            op: "unlinkat".into(),
+            path: Some("/home/u/prod.db".into()),
+            path_note: None,
+            flags: None,
+            at_ms: 12,
+        });
+        let plan = egress_plan(true, vec![]);
+        check_egress(&plan, &run, &Containment::Enforced).expect("observation is not a verdict");
+        let lines = run.fs.report_lines();
+        assert!(
+            lines.iter().any(|l| l.contains("/home/u/prod.db")),
+            "the report has to name what was destroyed: {lines:?}"
+        );
     }
 
     /// The REPORT follows the run, not the probe.
@@ -2135,6 +2176,7 @@ mod tests {
             stderr: "agent finished".into(),
             upstream_error: None,
             egress: Default::default(),
+            fs: Default::default(),
             divergence: None,
             timed_out: false,
             containment: None,

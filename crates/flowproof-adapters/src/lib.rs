@@ -32,6 +32,12 @@ pub mod egress_linux;
 #[cfg(all(windows, any(feature = "agent", feature = "sap-com")))]
 pub mod egress_windows;
 
+// Filesystem OBSERVATION. Cross-platform like `egress`, and for the same
+// reason: the "nothing was observed" path must compile and be exercised on
+// every OS, even though only Linux has a mechanism to observe with.
+#[cfg(feature = "agent")]
+pub mod fs_observe;
+
 #[cfg(feature = "agent")]
 pub mod mcp_core;
 
@@ -58,6 +64,9 @@ pub use agent_runner::{AgentRun, RunError, Trigger};
 
 #[cfg(feature = "agent")]
 pub use egress::{AllowSet, Containment, EgressLog};
+
+#[cfg(feature = "agent")]
+pub use fs_observe::{FsEvent, FsLog};
 
 #[cfg(feature = "agent")]
 pub use mcp_core::{McpCall, McpDivergence, McpServerEvent};
