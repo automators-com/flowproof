@@ -69,6 +69,10 @@ windows = { version = "0.62", features = [
     # which CreateProcessAsUserW cannot start a process at all.
     "Win32_System_JobObjects",
     "Win32_System_StationsAndDesktops",
+    # The WFP session and its private sublayer. Rpc is for the engine's
+    # authentication service constant.
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_System_Rpc",
 ], optional = true }
 
 [lints]
