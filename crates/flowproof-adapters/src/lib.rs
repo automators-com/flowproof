@@ -16,9 +16,10 @@ pub mod egress;
 #[cfg(all(feature = "agent", target_os = "linux"))]
 pub mod egress_linux;
 
-// Windows containment is being built (see `spike/windows-containment/LOG.md`).
-// Today this module is the capability PROBE only: it installs no filter and
-// cannot report "enforced", so a Windows run is still honestly not contained.
+// Windows containment (see `spike/windows-containment/LOG.md` for how it was
+// established). This module installs the filters and runs the agent behind
+// them; the tier it achieved travels back on the run rather than being
+// predicted by a probe, because several steps can fail after the probe passes.
 //
 // Gated on the `windows` DEPENDENCY (either feature that pulls it) rather than
 // on `agent`, and that is deliberate. `agent` pulls ureq, whose TLS stack
