@@ -6,6 +6,28 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **Our own suite had a flaky test, and it was red-lighting `main`.**
+  `seeded_fixture_mutation_survives_navigation` wrote two pages to disk and
+  navigated between `file://` urls, asserting that a cart mutation survived
+  the navigation. Chrome does not reliably share localStorage between two
+  file documents — it partitions them — so the mutation could vanish for a
+  reason with nothing to do with seeding, and the run failed with
+  `cart: MISSING` after three green steps.
+
+  It is off the pull-request path, running only on `main` and nightly, so it
+  failed after merge rather than before it — three times across the day,
+  interleaved with passes, on commits that had nothing in common.
+
+  The fix was already in the file. `serve_site` serves several pages from one
+  loopback port, which is one origin, and its doc comment says in as many
+  words that `file://` is not a usable substrate for storage tests. This test
+  predates its adoption and never moved over. Now it does.
+
+  A flaky test in a testing tool is worse than elsewhere: the product's whole
+  claim is that a green run means something.
+
 ## 0.11.0
 
 Three things the driver could already do, and the surface would not let you
