@@ -6,6 +6,29 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **A test that refused to pass vacuously failed instead, and it was
+  red-lighting every non-Linux machine.**
+  `a_run_that_was_not_contained_keeps_no_evidence_from_an_optimistic_probe`
+  asserts that a control record carries what the RUN achieved rather than
+  what the host probe optimistically reported. To stop that passing for the
+  wrong reason, it required the probe and the run to disagree - by asserting
+  the probe says `Enforced`.
+
+  That is only true on Linux. Everywhere else the assertion fired and the
+  test failed outright, so `cargo test --workspace` was red before anyone
+  had touched anything. The instinct was right and the mechanism was wrong:
+  a test that cannot be meaningful on this host should say so, not fail.
+
+  The disagreement is what the test needs, not which side of it the machine
+  is on. Off Linux the probe still says "not contained" - but for a
+  DIFFERENT reason - so comparing the two rendered lines keeps the test
+  honest everywhere and green everywhere it is honest.
+
+  A gate that is red by default is one people learn to read past, which is
+  the whole reason it matters that this one was.
+
 ### Added
 
 - **A contained run could delete your files and the report would not mention
