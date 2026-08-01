@@ -39,6 +39,43 @@ together).
   *without* `O_TRUNC` followed by a write at offset 0 corrupts a file and fires
   nothing.
 
+- **An action inside an iframe was refused, and the reason had stopped being
+  the whole truth.** v1 refused every framed action on the grounds that
+  actions act at composited coordinates resolved against the main document,
+  so one could "succeed" without touching the frame. That is right — about
+  COORDINATES.
+
+  A same-origin frame does not need them. The parent's own scripts can
+  reach `iframe.contentDocument`, so a value action is driven through the
+  frame's DOM, the same mechanism `Select` already uses in the main
+  document, and nothing is dispatched at a point.
+
+  ```yaml
+  - Scroll the "css:body" in the iframe "container" to 147px
+  - Type Ada into the "css:#coupon" in the iframe "container"
+  ```
+
+  `Type`, `Replace`, `Clear`, `Check`/`Uncheck`, `Remember` and `Scroll`
+  work inside a frame now. **Pointer actions stay refused** — `Click`,
+  `Press … button`, `Hover`, `Double-click`, `Right-click`, `Upload` — and
+  the error says why: a framed pointer action could only arrive as an
+  untrusted event, which an application may ignore while the step still
+  passes. That is release-without-effect, the shape `docs/design.md`
+  already refuses for drag.
+
+  **A framed `Type` is not the main-document `Type`, and the docs now say
+  so.** In the main document it is real keystrokes; in a frame it is a value
+  assignment plus `input`/`change`, so an app filtering on `keydown` will
+  not see it. Two guards keep that honest rather than silent: the target
+  must not be `disabled` or read-only — a value assignment succeeds on a
+  disabled control where real typing would be ignored, so it is refused by
+  name — and the value is read back from the element afterwards, so a
+  control that rejected it fails the step.
+
+  Resolve, guard, act and verify happen in ONE round trip, because a frame
+  can navigate between calls and a write into a detached document succeeds
+  and reads back correctly while touching nothing.
+
 - **A container could only be scrolled to its edges.** `Scroll … to the
   top|bottom` had two positions, and an application that keys behaviour to
   an exact `scrollTop` had no step at all.

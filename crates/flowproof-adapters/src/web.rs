@@ -256,6 +256,92 @@ fn cross_origin(frame: &str) -> DriverError {
     ))
 }
 
+/// Act on an element INSIDE a same-origin frame, in ONE round trip.
+///
+/// Resolve, guard, act and read back happen together deliberately: an
+/// iframe can navigate between calls, and a setter write into a detached
+/// document succeeds and reads back correctly while touching nothing.
+///
+/// No coordinates are computed, so the false green the v1 refusal named -
+/// an action dispatched at a point resolved against the MAIN document -
+/// cannot occur. The other channels each get a guard here instead:
+///
+/// - the frame must be RENDERED (a `display:none` iframe has a perfectly
+///   reachable `contentDocument`, and driving it would be acting on a
+///   surface no user can see);
+/// - the target must not be `disabled`/`readonly`. This is not theoretical:
+///   `input.value = x` succeeds on a disabled control and reads back green,
+///   where the trusted keyboard input the main document uses would simply
+///   have been ignored;
+/// - the value is read BACK from the element after the write, and a
+///   mismatch fails.
+///
+/// Returns a STATUS STRING, never a throw: an exception inside
+/// `call_js_fn` does not reach Rust as an `Err`, which has produced a
+/// silent green in this adapter before.
+const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
+  function nameOf(f){
+    return f.getAttribute('title') || f.getAttribute('name') || f.getAttribute('id')
+      || f.getAttribute('aria-label') || '';
+  }
+  var frames = Array.prototype.slice.call(document.querySelectorAll('iframe, frame'));
+  var chosen = null;
+  if (FRAME.indexOf('css:') === 0){
+    try { chosen = document.querySelector(FRAME.slice(4)); } catch (e) { chosen = null; }
+    if (chosen && chosen.tagName !== 'IFRAME' && chosen.tagName !== 'FRAME') chosen = null;
+  } else {
+    var exact = frames.filter(function(f){ return nameOf(f) === FRAME; });
+    var loose = frames.filter(function(f){ return nameOf(f).indexOf(FRAME) !== -1; });
+    chosen = exact.length ? exact[0] : (loose.length === 1 ? loose[0] : null);
+  }
+  if (!chosen){
+    return 'no_frame:' + JSON.stringify(frames.map(nameOf).filter(function(n){ return n; }));
+  }
+  // A frame nobody can see is not one an action may drive.
+  if (typeof chosen.checkVisibility === 'function' && !chosen.checkVisibility()){
+    return 'frame_hidden';
+  }
+  var doc = null;
+  try { doc = chosen.contentDocument; } catch (e) { doc = null; }
+  if (!doc) { return 'cross_origin'; }
+  var el = null;
+  if (CSS) { try { el = doc.querySelector(CSS); } catch (e) { el = null; } }
+  else if (ID) { el = doc.getElementById(ID); }
+  else if (TEXT) {
+    var all = Array.prototype.slice.call(doc.querySelectorAll('*'));
+    el = all.filter(function(n){ return (n.textContent||'').trim() === TEXT; })[0] || null;
+  }
+  if (!el) { return 'no_element'; }
+  var win = doc.defaultView;
+  if (OP === 'scroll'){
+    var target = el;
+    // In standards mode `body.scrollTop` is inert; the scrolling element
+    // is what actually moves.
+    if (target === doc.body && doc.scrollingElement) { target = doc.scrollingElement; }
+    if (target.scrollHeight <= target.clientHeight) { return 'not_scrollable'; }
+    var max = target.scrollHeight - target.clientHeight;
+    if (ARG > max) { return 'clamped:' + max; }
+    target.scrollTo({ top: ARG, behavior: 'instant' });
+    return 'at:' + target.scrollTop;
+  }
+  // Value-driving ops from here on.
+  if (OP === 'enabled'){
+    return (el.disabled === true || el.readOnly === true) ? 'not_enabled' : 'enabled';
+  }
+  if (el.disabled === true) { return 'disabled'; }
+  if (el.readOnly === true) { return 'readonly'; }
+  var proto = el.tagName === 'TEXTAREA'
+    ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+  var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  var next = OP === 'clear' ? '' : String(ARG);
+  if (desc && desc.set) { desc.set.call(el, next); } else { el.value = next; }
+  el.dispatchEvent(new win.Event('input', { bubbles: true }));
+  el.dispatchEvent(new win.Event('change', { bubbles: true }));
+  // Read BACK from the element, so a control that rejected or rewrote the
+  // value fails here rather than passing on the strength of the write.
+  return el.value === next ? 'ok' : 'took:' + el.value;
+}"#;
+
 const FRAME_PROBE: &str = r#"function(FRAME, CSS, ID, TEXT){
   function nameOf(f){
     return f.getAttribute('title') || f.getAttribute('name') || f.getAttribute('id')
@@ -1229,6 +1315,86 @@ impl Drop for WebAppDriver {
     }
 }
 
+impl WebAppDriver {
+    /// Run one framed operation and turn its status into a result.
+    ///
+    /// `op` is `type`, `clear` or `scroll`; `arg` is the text or the pixel
+    /// offset. Every failure is named, because "it did not work" inside a
+    /// frame is the hardest thing to diagnose from outside one.
+    fn frame_act(
+        &mut self,
+        query: &flowproof_driver::FrameQuery,
+        op: &str,
+        arg: serde_json::Value,
+    ) -> Result<String, DriverError> {
+        let js = |v: &Option<String>| {
+            v.as_deref()
+                .map(|x| serde_json::Value::from(x).to_string())
+                .unwrap_or_else(|| "null".into())
+        };
+        let call = format!(
+            "({FRAME_ACT})({frame},{css},{id},{text},{op},{arg})",
+            frame = serde_json::Value::from(query.frame.as_str()),
+            css = js(&query.inner_css),
+            id = js(&query.inner_id),
+            text = js(&query.inner_text),
+            op = serde_json::Value::from(op),
+            arg = arg,
+        );
+        let status = self
+            .tab()?
+            .evaluate(&call, false)
+            .map_err(|e| web_err("acting inside an iframe", e))?
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let frame = &query.frame;
+        match status.as_str() {
+            "cross_origin" => Err(cross_origin(frame)),
+            "frame_hidden" => Err(DriverError::Browser(format!(
+                "iframe '{frame}' is not rendered, so driving it would act on a surface \
+                 nobody can see"
+            ))),
+            "no_element" => Err(DriverError::Browser(format!(
+                "the target was not found inside iframe '{frame}'"
+            ))),
+            "disabled" => Err(DriverError::Browser(format!(
+                "the target inside iframe '{frame}' is disabled - real typing would be \
+                 ignored, so setting its value would be a lie"
+            ))),
+            "readonly" => Err(DriverError::Browser(format!(
+                "the target inside iframe '{frame}' is read-only"
+            ))),
+            "not_scrollable" => Err(DriverError::Browser(format!(
+                "the target inside iframe '{frame}' is not a scroll container (its content \
+                 fits), so scrolling it would pass without moving anything"
+            ))),
+            s if s.starts_with("no_frame:") => {
+                let available: Vec<String> =
+                    serde_json::from_str(&s["no_frame:".len()..]).unwrap_or_default();
+                // The same wording an assertion gives, so a missing frame
+                // reads identically whichever half of the grammar met it.
+                Err(DriverError::Browser(
+                    flowproof_driver::frame_miss(
+                        frame,
+                        &flowproof_driver::FrameProbe::NoFrame { available },
+                    )
+                    .to_string(),
+                ))
+            }
+            s if s.starts_with("clamped:") => Err(DriverError::Browser(format!(
+                "the target inside iframe '{frame}' stops at {}px",
+                &s["clamped:".len()..]
+            ))),
+            s if s.starts_with("took:") => Err(DriverError::Browser(format!(
+                "the value did not take inside iframe '{frame}': it now reads '{}'",
+                &s["took:".len()..]
+            ))),
+            _ => Ok(status),
+        }
+    }
+}
+
 impl AppDriver for WebAppDriver {
     fn cell_hints(
         &mut self,
@@ -1795,6 +1961,20 @@ impl AppDriver for WebAppDriver {
     }
 
     fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        // A framed target is not reachable through the ordinary locator.
+        // The actionable gate is answered inside the frame instead - and
+        // it is the SAME question `FRAME_ACT` refuses on, so a disabled
+        // framed control is caught here rather than written into.
+        if let Some(query) = &selector.frame {
+            let query = query.clone();
+            return match self.frame_act(&query, "enabled", serde_json::Value::Null) {
+                Ok(status) => Ok(status == "enabled"),
+                // `disabled`/`readonly` are answers, not faults.
+                Err(DriverError::Browser(m)) if m.contains("is disabled") => Ok(false),
+                Err(DriverError::Browser(m)) if m.contains("read-only") => Ok(false),
+                Err(e) => Err(e),
+            };
+        }
         let locator = Self::locator(selector)?;
         let value = self.with_element(
             &locator,
@@ -1894,6 +2074,33 @@ impl AppDriver for WebAppDriver {
     }
 
     fn scroll(&mut self, selector: Option<&UiaSelector>, to: ScrollTo) -> Result<(), DriverError> {
+        // A framed scroll goes through the frame's own document, and picks
+        // the scrolling element rather than `body` - in standards mode
+        // `body.scrollTop` is inert, so the same spelling would silently do
+        // nothing one doctype away.
+        if let (Some(sel), ScrollTo::Offset(px)) = (selector, to) {
+            if let Some(query) = &sel.frame {
+                let query = query.clone();
+                let status = self.frame_act(&query, "scroll", serde_json::json!(px))?;
+                let at: f64 = status
+                    .strip_prefix("at:")
+                    .and_then(|v| v.parse().ok())
+                    .ok_or_else(|| {
+                        DriverError::Browser(format!(
+                            "scrolling inside iframe '{}' returned no answer ({status:?})",
+                            query.frame
+                        ))
+                    })?;
+                if (at - f64::from(px)).abs() > 1.0 {
+                    return Err(DriverError::Browser(format!(
+                        "the target inside iframe '{}' did not scroll to {px}px - it is at \
+                         {at}px",
+                        query.frame
+                    )));
+                }
+                return Ok(());
+            }
+        }
         // Instant scroll, no settle-wait: the next assertion auto-waits. Every
         // form verifies the scroll took (position reached the edge, or the
         // rect is within the viewport), so a scroll that did nothing fails.
@@ -2067,6 +2274,15 @@ impl AppDriver for WebAppDriver {
         &mut self,
         selector: &UiaSelector,
     ) -> Result<Option<bool>, DriverError> {
+        // A framed target is in another document, and a framed action never
+        // dispatches at a point - this gate exists to protect coordinate
+        // clicks. `None` is the honest answer: the driver cannot tell from
+        // here, so the gate is satisfied. (The gate that DOES matter for a
+        // framed write - disabled/read-only - is answered inside the frame
+        // by `element_enabled`.)
+        if selector.frame.is_some() {
+            return Ok(None);
+        }
         let locator = Self::locator(selector)?;
         let value =
             self.with_element(&locator, &format!("hit-testing [{selector}]"), |element| {
@@ -2399,6 +2615,15 @@ impl AppDriver for WebAppDriver {
     }
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
+        // A framed target lives in another document. Driven through the
+        // frame's own DOM, with the guards `FRAME_ACT` documents - NOT the
+        // trusted-keystroke path the main document uses, which is a real
+        // difference and is stated in docs/authoring.md.
+        if let Some(query) = &selector.frame {
+            let query = query.clone();
+            self.frame_act(&query, "type", serde_json::Value::from(text))?;
+            return Ok(());
+        }
         let locator = Self::locator(selector)?;
         // A native <select> cannot be committed by clicks or keystrokes in
         // headless Chromium (and a coordinate click never fires React's
@@ -2653,6 +2878,11 @@ impl AppDriver for WebAppDriver {
     }
 
     fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        if let Some(query) = &selector.frame {
+            let query = query.clone();
+            self.frame_act(&query, "clear", serde_json::Value::Null)?;
+            return Ok(());
+        }
         let locator = Self::locator(selector)?;
         // Go through the native value setter so framework-controlled inputs
         // (React et al.) see the change, then fire the events they listen to.

@@ -160,6 +160,12 @@ these fields existed) is byte-identical:
   A new key rather than a new action, so a trace written before offsets
   still loads.
 
+  A `type_text`, `scroll` or `capture` step whose selector payload is
+  `kind: "framed"` acts INSIDE that frame. The action is performed through
+  the frame's own document rather than at composited coordinates, which is
+  why value-driving actions are recordable there and pointer actions are
+  not — see docs/authoring.md.
+
   A `type_text` step may carry `params.values: [...]` — a **multi-selection**,
   the whole set committed at once. Where `values` is present it is
   authoritative; `params.text` repeats only the first option, so a reader

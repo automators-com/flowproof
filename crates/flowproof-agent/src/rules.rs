@@ -833,30 +833,32 @@ fn reject_framed_actions(step: &str, actions: &[ResolvedAction]) -> Result<(), R
         }
     }
     for action in actions {
+        // POINTER-DRIVEN actions stay refused inside a frame. Each can only
+        // reach the frame as an untrusted event, so an application that
+        // checks `isTrusted` does nothing and the step still passes - the
+        // release-without-effect false green.
+        //
+        // VALUE-DRIVING actions (Type, Clear, Check, Remember, Scroll) are
+        // allowed: each is performed through the frame's own DOM and each
+        // reads its own effect back, so a step that did nothing fails.
         let acting = match action {
             ResolvedAction::Press { target, .. }
-            | ResolvedAction::TypeText { target, .. }
-            | ResolvedAction::Upload { target, .. }
             | ResolvedAction::ContextClick { target, .. }
             | ResolvedAction::DoubleClick { target, .. }
             | ResolvedAction::Hover { target, .. }
             | ResolvedAction::ClickAt { target, .. }
-            | ResolvedAction::Clear { target }
-            | ResolvedAction::Capture { target, .. }
-            | ResolvedAction::SetChecked { target, .. } => target,
-            ResolvedAction::Scroll {
-                target: Some(target),
-                ..
-            } => target,
+            | ResolvedAction::Upload { target, .. } => target,
             _ => continue,
         };
         if is_framed(acting) {
             return Err(unresolvable(
                 step,
-                "iframe scoping is supported for ASSERTIONS in v1: an action inside a \
-                 frame is not yet supported, because it would resolve against the main \
-                 document and could pass without acting - assert inside the frame, and \
-                 drive the action from the page itself",
+                "this action is not supported inside an iframe. A framed CLICK can only \
+                 dispatch an untrusted event (`isTrusted` is false), so an application \
+                 that checks it does nothing and the step still passes - the \
+                 release-without-effect false green. Drive the click from the page \
+                 itself, or use an action that sets and verifies a value: Type, \
+                 Replace, Clear, Check/Uncheck, Remember, Scroll",
             ));
         }
     }
@@ -4062,6 +4064,14 @@ mod tests {
             ("web", r#"Scroll "css:.list" to 147px"#),
             (
                 "web",
+                r#"Type Ada into the "Coupon" in the iframe "checkout""#,
+            ),
+            (
+                "web",
+                r#"Scroll the "css:body" in the iframe "checkout" to 147px"#,
+            ),
+            (
+                "web",
                 r#"Select "Functional testing", "GUI testing" and "End2End testing" from the "Methods" field"#,
             ),
             ("web", r#"Press the "Save" button"#),
@@ -5613,17 +5623,39 @@ mod framed_target_tests {
     }
 
     #[test]
-    fn an_action_inside_a_frame_is_rejected_rather_than_silently_missing() {
+    fn a_pointer_action_inside_a_frame_is_rejected_rather_than_silently_missing() {
+        // A framed pointer action can only reach the frame as an UNTRUSTED
+        // event, so an app checking `isTrusted` does nothing and the step
+        // still passes - release-without-effect. That must be a loud parse
+        // error, never a green step.
         for text in [
             r#"Click the "Pay" in the iframe "checkout""#,
-            r#"Type "x" into the "Coupon" in the iframe "checkout""#,
             r#"Hover over the "Pay" in the iframe "checkout""#,
+            r#"Double-click the "Pay" in the iframe "checkout""#,
+            r#"Right-click the "Pay" in the iframe "checkout""#,
         ] {
-            let err = plain(text).expect_err("a framed action must be rejected");
-            assert!(
-                err.to_string().contains("ASSERTIONS in v1"),
-                "{text}: {err}"
-            );
+            let err = plain(text).expect_err("a framed pointer action must be rejected");
+            let message = err.to_string();
+            assert!(message.contains("isTrusted"), "{text}: {message}");
+            // The refusal must point at what DOES work, or it is a dead end.
+            assert!(message.contains("Type"), "{text}: {message}");
+        }
+    }
+
+    /// The other half of the same rule: an action that SETS AND VERIFIES a
+    /// value is allowed inside a frame, because it is performed through the
+    /// frame's own DOM and reads its own effect back. A step that did
+    /// nothing fails at the readback, so the false green the pointer
+    /// refusal exists to prevent cannot occur here.
+    #[test]
+    fn a_value_driving_action_inside_a_frame_is_allowed() {
+        for text in [
+            r#"Type Ada into the "Coupon" in the iframe "checkout""#,
+            r#"Clear the "Coupon" field in the iframe "checkout""#,
+            r#"Remember the "Total" in the iframe "checkout" as total"#,
+            r#"Scroll the "css:body" in the iframe "checkout" to 147px"#,
+        ] {
+            plain(text).unwrap_or_else(|e| panic!("{text} must parse: {e}"));
         }
     }
 
