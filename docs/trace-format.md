@@ -82,8 +82,11 @@ these fields existed) is byte-identical:
 - Optional `browser` is the launch/emulation config (web flows):
   `viewport` (device emulation), `user_agent`, extra Chrome `args`, and
   `clock` (`{at, timezone}`: a pinned `Date` offset plus a CDP timezone
-  override, so a date-dependent flow replays deterministically). It travels
-  in the header so record and every replay run the SAME browser shape.
+  override, so a date-dependent flow replays deterministically), and
+  `random` (`{seed}`: a seeded `Math.random`, the clock's sibling, so a
+  flow against a page that mints random values is deterministic). Both
+  travel in the header so record and every replay run the SAME browser
+  shape.
 
 ## Step line
 

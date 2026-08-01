@@ -8,6 +8,45 @@ together).
 
 ### Added
 
+- **A page that rolls a dice could not be tested, only watched.**
+  `browser.clock` has always pinned what a page reads as "now", on the
+  argument that a flow whose meaning changes daily is not a test. The other
+  half of that argument was never built: a page that mints a value from
+  `Math.random` shows something different on every single run.
+
+  For a value the flow only has to *compare*, a second read gets you by. For
+  one it has to **enter** — a generated order id typed into the next field,
+  a sum of two drawn numbers — there is nothing to read and no literal to
+  write. The flow could not be authored at all.
+
+  ```yaml
+  browser:
+    random:
+      seed: 1234
+  ```
+
+  A seeded PRNG replaces `Math.random`, injected before any page script for
+  the same reason the clock's shim is: a page that has already drawn cannot
+  be un-randomised afterwards. Pinned, the value is a constant you can write
+  by hand, and record and every replay see the same one.
+
+  `seed` is a literal, never a `${VAR}` — a seed resolved from the
+  environment would make one trace mean different things on different
+  machines, which is the drift pinning exists to remove. Web-only, refused
+  by name elsewhere rather than silently doing nothing, because there is no
+  `Math.random` to pin on a desktop window or an OCR frame.
+
+  Deliberately narrow, and stated rather than left to be discovered:
+  `crypto.getRandomValues` is untouched (a security primitive, not a
+  convenience), workers keep their own real `Math.random`, and server-side
+  randomness remains `mock:`'s job.
+
+  The test is the CONTRAST, because a pinned run agreeing with itself proves
+  nothing if the page was going to agree anyway: unpinned, three loads draw
+  three different values; pinned, three loads draw one; and a *different*
+  seed draws something else again — without that last check, a shim that
+  returned a constant would pass.
+
 - **A row that needs two columns to name it could not be named.** The row
   target identifies by content instead of position, which is the whole
   reason it exists — but it took one anchor, and one column is often not

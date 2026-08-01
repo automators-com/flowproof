@@ -2255,6 +2255,10 @@ pub fn run_trace_with_secret_scan<D: AppDriver>(
                     at: c.at.clone(),
                     timezone: c.timezone.clone(),
                 }),
+                browser
+                    .random
+                    .as_ref()
+                    .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
             ))?;
         }
     }

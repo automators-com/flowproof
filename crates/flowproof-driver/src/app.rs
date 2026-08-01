@@ -860,6 +860,7 @@ pub struct WebBrowserConfig {
     pub args: Vec<String>,
     /// A pinned clock, applied before navigation (GAP-P).
     pub clock: Option<WebClock>,
+    pub random: Option<WebRandom>,
 }
 
 /// A pinned browser clock: the literal instant the page reads as "now" and
@@ -868,6 +869,15 @@ pub struct WebBrowserConfig {
 pub struct WebClock {
     pub at: String,
     pub timezone: Option<String>,
+}
+
+/// A pinned `Math.random`, the clock's sibling. `seed` is a literal, never
+/// a `${VAR}`: a seed resolved from the environment would make the same
+/// trace mean different things on different machines, which is the exact
+/// drift pinning exists to remove.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebRandom {
+    pub seed: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -889,6 +899,7 @@ impl WebBrowserConfig {
         user_agent: Option<&str>,
         args: &[String],
         clock: Option<WebClock>,
+        random: Option<WebRandom>,
     ) -> Self {
         Self {
             viewport: viewport.map(|(width, height, dsf, mobile, touch)| WebViewport {
@@ -899,6 +910,7 @@ impl WebBrowserConfig {
                 touch: touch.unwrap_or(false),
             }),
             user_agent: user_agent.map(str::to_string),
+            random,
             args: args.to_vec(),
             clock,
         }

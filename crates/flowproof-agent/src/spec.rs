@@ -697,6 +697,23 @@ impl FlowSpec {
         Ok(())
     }
 
+    /// Check `browser.random`. Web-only, for the same reason the clock is:
+    /// there is no `Math.random` to pin on a desktop window or an OCR
+    /// frame, and a block that silently did nothing would be worse than
+    /// one that is refused by name.
+    fn validate_random(&self) -> Result<(), SpecError> {
+        let Some(_random) = self.browser.as_ref().and_then(|b| b.random.as_ref()) else {
+            return Ok(());
+        };
+        if self.app.id() != "web" {
+            return Err(SpecError::Clock(format!(
+                "pinning randomness is web-only, but this is `app: {}`",
+                self.app.id()
+            )));
+        }
+        Ok(())
+    }
+
     fn validate_window(&self) -> Result<(), SpecError> {
         let Some(window) = &self.window else {
             return Ok(());
@@ -1364,6 +1381,7 @@ impl FlowSpec {
         spec.validate_window()?;
         spec.validate_agent()?;
         spec.validate_clock()?;
+        spec.validate_random()?;
         spec.validate_control()?;
         Ok(spec)
     }
@@ -2535,6 +2553,30 @@ browser:
 steps:
   - assert: page shows Dashboard
 "#;
+
+    /// The clock's sibling: the seed reaches the driver, and a `random:`
+    /// block on a non-web app is refused by name rather than silently
+    /// doing nothing (there is no `Math.random` on a desktop window).
+    #[test]
+    fn pinned_randomness_parses_and_is_web_only() {
+        let flow = spec(
+            "name: r\napp: web\nurl: https://e.test/x\nbrowser:\n  random:\n    seed: 1234\nsteps:\n  - Click \"Go\"\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            flow.browser.expect("browser").random.expect("random").seed,
+            1234
+        );
+
+        let err = spec(
+            "name: r\napp: calc\nbrowser:\n  random:\n    seed: 7\nsteps:\n  - Press the \"5\" button\n",
+        )
+        .expect_err("randomness is web-only");
+        assert!(
+            err.to_string().contains("web-only"),
+            "the refusal must name the restriction: {err}"
+        );
+    }
 
     #[test]
     fn a_pinned_clock_parses() {

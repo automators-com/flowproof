@@ -25,7 +25,7 @@ pub use app::{
     verify_dialog, visible_now, AppDriver, AppTarget, CellHints, CellQuery, CookieFacts,
     CookieProbe, DebugBundle, DialogArm, DialogDisposition, FiredDialog, FrameProbe, FrameQuery,
     KeyMod, NoOpDriver, PixelRect, ScopeHints, ScopeQuery, ScrollTo, UiaAppDriver, UiaSelector,
-    WebBrowserConfig, WebClock, WebMock, WebSession, WebViewport, COUNT_DIAGNOSTIC_CAP,
+    WebBrowserConfig, WebClock, WebMock, WebRandom, WebSession, WebViewport, COUNT_DIAGNOSTIC_CAP,
     STYLE_PROPS,
 };
 pub use backend::PlatformBackend;
