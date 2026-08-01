@@ -527,6 +527,28 @@ pub trait AppDriver {
         ))
     }
 
+    /// Click a POINT INSIDE the element, given as a percentage of its own
+    /// box. `(50, 50)` is the midpoint an ordinary click already uses.
+    ///
+    /// For controls that read `offsetX`/`offsetY` and act on WHERE they
+    /// were hit - a split button, a slider track, a canvas region - the
+    /// midpoint is one answer among many, and often the wrong one.
+    ///
+    /// Percentages, not pixels: an element's size depends on the viewport
+    /// and the font, so a pixel offset recorded on one machine addresses a
+    /// different part of the control on another. A fraction of the box
+    /// means the same thing wherever it replays.
+    fn click_at(
+        &mut self,
+        _selector: &UiaSelector,
+        _x_pct: f64,
+        _y_pct: f64,
+    ) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "clicking at an offset is not supported by this driver".into(),
+        ))
+    }
+
     /// Drive a multi-selection control to EXACTLY `values` — the ones named
     /// become selected and every other one does not, in a single commit.
     ///
@@ -1609,6 +1631,15 @@ impl AppDriver for Box<dyn AppDriver> {
         values: &[String],
     ) -> Result<(), DriverError> {
         (**self).select_options(selector, values)
+    }
+
+    fn click_at(
+        &mut self,
+        selector: &UiaSelector,
+        x_pct: f64,
+        y_pct: f64,
+    ) -> Result<(), DriverError> {
+        (**self).click_at(selector, x_pct, y_pct)
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {

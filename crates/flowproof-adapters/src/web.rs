@@ -2385,6 +2385,88 @@ impl AppDriver for WebAppDriver {
         })
     }
 
+    fn click_at(
+        &mut self,
+        selector: &UiaSelector,
+        x_pct: f64,
+        y_pct: f64,
+    ) -> Result<(), DriverError> {
+        let locator = Self::locator(selector)?;
+        let tab = self.tab()?.clone();
+        // Resolve the point IN THE PAGE, and verify the hit test lands on
+        // this element before dispatching. A click at an offset can leave
+        // the element entirely (a rounded corner, an overlapping sibling),
+        // and a click that lands on the occluder while reporting success is
+        // the false green `Hover` already guards against the same way.
+        let point = self.with_element(
+            &locator,
+            &format!("locating the click point in [{selector}]"),
+            |element| {
+                element.scroll_into_view()?;
+                let got = element.call_js_fn(
+                    r#"function(xp, yp) {
+                        const r = this.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) { return null; }
+                        const x = r.x + r.width * xp / 100;
+                        const y = r.y + r.height * yp / 100;
+                        const hit = document.elementFromPoint(x, y);
+                        const mine = !!(hit && (hit === this || this.contains(hit)));
+                        return JSON.stringify({ x: x, y: y, mine: mine });
+                    }"#,
+                    vec![serde_json::json!(x_pct), serde_json::json!(y_pct)],
+                    false,
+                )?;
+                Ok(got.value.and_then(|v| v.as_str().map(str::to_string)))
+            },
+        )?;
+        let point = point.ok_or_else(|| {
+            DriverError::Browser(format!("[{selector}] has no box to click inside"))
+        })?;
+        let parsed: serde_json::Value = serde_json::from_str(&point)
+            .map_err(|e| DriverError::Browser(format!("reading the click point: {e}")))?;
+        if parsed.get("mine").and_then(|v| v.as_bool()) != Some(true) {
+            return Err(DriverError::Browser(format!(
+                "{x_pct}%,{y_pct}% of [{selector}] is not on the element - the point lands \
+                 on something else, so the click would go to the wrong target"
+            )));
+        }
+        let (x, y) = (
+            parsed.get("x").and_then(|v| v.as_f64()).unwrap_or_default(),
+            parsed.get("y").and_then(|v| v.as_f64()).unwrap_or_default(),
+        );
+        let mouse = |kind, button| Input::DispatchMouseEvent {
+            Type: kind,
+            x,
+            y,
+            button,
+            click_count: Some(1),
+            modifiers: None,
+            timestamp: None,
+            buttons: None,
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        };
+        tab.call_method(mouse(Input::DispatchMouseEventTypeOption::MouseMoved, None))
+            .map_err(|e| web_err("moving onto the click point", e))?;
+        tab.call_method(mouse(
+            Input::DispatchMouseEventTypeOption::MousePressed,
+            Some(Input::MouseButton::Left),
+        ))
+        .map_err(|e| web_err("pressing at the click point", e))?;
+        tab.call_method(mouse(
+            Input::DispatchMouseEventTypeOption::MouseReleased,
+            Some(Input::MouseButton::Left),
+        ))
+        .map_err(|e| web_err("releasing at the click point", e))?;
+        Ok(())
+    }
+
     fn select_options(
         &mut self,
         selector: &UiaSelector,
