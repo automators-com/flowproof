@@ -796,10 +796,27 @@ Deliberately narrow, and stated rather than discovered:
 convenience), web workers get their own real `Math.random`, and
 server-side randomness is `mock:`'s job.
 
-**Pin the values you depend on.** A flow that types a constant derived from
-a pinned draw should assert the draw first — if the pin ever stops taking,
-that assertion fails loudly instead of the derived value being quietly
-wrong.
+**The seed pins the SEQUENCE, not the position.** The page draws the same
+series of numbers every run; which of them reaches the value you care about
+depends on how many draws the page made first. A page whose earlier scripts
+draw a *variable* number of times — an animation that fires once or twice
+depending on timing — can still hand you a different value, taken from the
+same series one place along. Observed once in the wild against a page that
+generates on focus: the value was stable across six runs and shifted by
+exactly one draw on a seventh.
+
+So **assert the drawn value before you use it**:
+
+```yaml
+- assert: the "id:no1" shows 91        # the draw itself
+- assert: the "id:no2" shows 98
+- Type 189 into the "id:result" field  # the constant derived from it
+```
+
+Without the first two lines a shifted sequence types a confidently wrong
+answer and fails somewhere else entirely, or worse, passes. With them, the
+shift is the failure — which is the whole reason a pinned value is worth
+asserting even though it is "constant".
 
 ### Pinning the clock
 
