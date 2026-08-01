@@ -298,11 +298,18 @@ fn cmd_record(
         // The containment tier prints on EVERY agent run, on every platform,
         // pass or fail - computed before the run so it shows even when
         // recording errors out.
-        let tier = agent_flow::containment(&spec);
+        let predicted = agent_flow::containment(&spec);
         if !json {
+            println!("{}", predicted.report_line());
+        }
+        let (tier, outcome) = agent_flow::record(&spec, &out);
+        // Reprinted only when the RUN decided a different tier than the probe
+        // predicted. On Linux they agree by construction, so this is silent;
+        // on Windows the run is the authority and the line above was a guess.
+        if !json && tier != predicted {
             println!("{}", tier.report_line());
         }
-        agent_flow::record(&spec, &out)?;
+        outcome?;
         if json {
             println!(
                 "{}",
@@ -706,10 +713,14 @@ fn run_agent_flow_in_suite(
     }
     // The containment tier prints on every agent run, pass or fail - the
     // single-spec path does the same, and a suite must not hide it.
+    let predicted = agent_flow::containment(spec);
     if !json {
-        println!("{}", agent_flow::containment(spec).report_line());
+        println!("{}", predicted.report_line());
     }
-    let outcome = agent_flow::replay(spec, trace_path);
+    let (tier, outcome) = agent_flow::replay(spec, trace_path);
+    if !json && tier != predicted {
+        println!("{}", tier.report_line());
+    }
     if let Some(cmd) = &manifest.after_each {
         run_hook(cmd, spec_path, "after_each")?;
     }
@@ -1284,11 +1295,14 @@ fn cmd_run(
             run_hook(cmd, spec_path, "before_each")?;
         }
         // The containment tier prints on EVERY agent run, pass or fail.
-        let tier = agent_flow::containment(&spec);
+        let predicted = agent_flow::containment(&spec);
         if !json {
+            println!("{}", predicted.report_line());
+        }
+        let (tier, outcome) = agent_flow::replay(&spec, &trace_path);
+        if !json && tier != predicted {
             println!("{}", tier.report_line());
         }
-        let outcome = agent_flow::replay(&spec, &trace_path);
         if let Some(cmd) = manifest.as_ref().and_then(|m| m.after_each.as_ref()) {
             run_hook(cmd, spec_path, "after_each")?;
         }
