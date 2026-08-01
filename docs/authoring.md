@@ -305,6 +305,23 @@ column header, and a container that is neither `item` nor a selector (`in
 the "Transaction" containing …`, where "Transaction" is a noun, not a
 container).
 
+**Steps are not instant, and some apps care.** A step costs roughly **three
+seconds** between one action landing and the next one reaching the page -
+measured at 3.1-3.2s for a click followed by a type, on a local fixture with
+no network. Most of it is CDP round trips: resolving the target, waiting for
+it to be actionable, and reading back the state that proves the step took.
+
+That is invisible until an app puts a DEADLINE on an interaction - a value
+that stays valid for two seconds, a token that expires, a confirmation that
+auto-dismisses. Those are currently **out of reach**, and the failure is at
+least loud rather than silent: the app's own complaint (an alert, a
+rejection) surfaces as a failed step rather than a green run that did the
+wrong thing.
+
+If a flow needs to beat a deadline, the honest options are to remove the
+deadline from the environment under test (`mock:` the endpoint that issues
+it, or pin the clock) rather than to hope the step lands in time.
+
 **Known boundaries.** A virtualized list or grid that keeps off-screen rows
 out of the DOM (AG Grid's row virtualization, windowed feeds) can only be
 addressed for what is rendered: scroll the anchor into view first, or use
