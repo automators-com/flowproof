@@ -48,6 +48,7 @@ before migrating a suite's setup helpers step by step.
 | `Replace the <id> field with <text>` | |
 | `Clear the [2nd ]"<label>" field` / `Clear the <id> field` | fill-with-empty semantics |
 | `Remember the [2nd ]"<target>" as <name>` | read the target's text into a flow-scoped name (`[a-z][a-z0-9_]*`) for a later assertion to compare against. The VALUE is read at execution time on record and on every replay, so it never enters the trace - the same indirection `${VAR}` secrets use. Re-using a name overwrites it |
+| `Remember how many "<target>" appear as <name>` | the COUNT of matching elements, not their text. Same family and the same indirection as the reading above: taken at execution time on record and on every replay, so a page that grew a row does not need the trace rewritten. Counting rides the ordinal every adapter implements, so it means on each adapter exactly what `the 2nd "Row"` means there. **Zero fails** - a selector typo matches nothing and so does an empty table, and `0` is a confident wrong number to hand to an app; the step that MEANS zero is `assert: the "<target>" appears 0 times`. `appears` is accepted for `appear` |
 | `Check the [2nd ]"<label>" checkbox` / `Uncheck the …` | drives a checkbox, radio, or `role=switch` to a STATE, not a toggle: `Check` on an already-checked box is a no-op, so the step means the same thing however the environment arrives. Resolves the control inside a wrapper too (the common pattern of a visually hidden `input` inside a styled label), performs a real click so the app's own handlers fire, then verifies the state took |
 | `Select <option> from the [2nd ]"<label>" field` | native `<select>`: committed via the value setter, fires `input`+`change` (React-safe). `in the` and `… dropdown` also accepted |
 | `Press the [2nd ]"<label>" button` / `Press the <id> button` | |
@@ -356,6 +357,17 @@ and it does not compose.
 
 A name that was never remembered fails closed, naming what was in scope,
 rather than typing the reference or an empty string.
+
+A **counted** capture is the same value with a different reading, so it
+composes with everything a captured value already does — including the
+computed comparison, which needs no second definition of what a number is:
+
+```yaml
+- Remember how many "css:.order-row" appear as rows
+- Type ${captured.rows} into the "Rowcount" field
+- Press the "Add row" button
+- assert: the "Total" shows ${captured.rows} + 1
+```
 
 Typing is where it stops. A capture may not choose an element or a
 destination - `Click "${captured.x}"`, `Go to ${captured.x}`, or a capture
