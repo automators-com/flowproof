@@ -1781,7 +1781,31 @@ fn execute_step<D: AppDriver>(
                 };
                 // Read at execution time, on replay exactly as on record -
                 // which is why the value never needs to be in the trace.
-                let value = driver.read_text(&target)?;
+                // `count` picks the reading; the indirection is the same.
+                let value = if params.get("count").and_then(|v| v.as_bool()) == Some(true) {
+                    let found = flowproof_driver::count_matching(
+                        driver,
+                        &target,
+                        flowproof_driver::COUNT_DIAGNOSTIC_CAP,
+                    )?;
+                    // Unreachable while the target resolved, since a
+                    // resolved element is a first match - but stated
+                    // rather than assumed, because "0" is the one value
+                    // this capture must never quietly hand on.
+                    if found == 0 {
+                        return Ok((
+                            Err(
+                                "nothing matched, so the count would be a guess - to assert \
+                                 emptiness use 'the \"<target>\" appears 0 times'"
+                                    .to_string(),
+                            ),
+                            matched,
+                        ));
+                    }
+                    found.to_string()
+                } else {
+                    driver.read_text(&target)?
+                };
                 captures.insert(name.to_string(), value);
                 (Ok(()), matched)
             }
