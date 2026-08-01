@@ -228,6 +228,21 @@ impl AllowSet {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// The resolved entries, for a mechanism that must ENUMERATE the policy
+    /// rather than ask about one address at a time.
+    ///
+    /// Linux never needs this - seccomp adjudicates each `connect` as it
+    /// happens, so [`AllowSet::allows`] is the whole interface. WFP is
+    /// declarative, installing one filter per destination before the agent
+    /// starts, so it needs the list itself.
+    ///
+    /// These are the RESOLVED entries, deliberately: resolution pins hostnames
+    /// to IPs once, and a second resolution could return a different set if
+    /// DNS moved in between - enforcing a policy that was never declared.
+    pub fn entries(&self) -> &[AllowEntry] {
+        &self.entries
+    }
 }
 
 /// Does a resolved host matcher admit `ip`?
