@@ -132,6 +132,25 @@ these fields existed) is byte-identical:
   was in scope. Captures resolve before secrets, because a `${VAR}` name may
   not contain a dot.
 
+  A `capture` step carries `{"name": "<name>"}` and, for the **counted**
+  reading, `"count": true` — how many elements match, rather than one
+  element's text. A new param key rather than a new action type, so a trace
+  written before counting existed still loads and an old reader meeting one
+  does not misread it as a text capture. Either way the trace holds only the
+  name: the number is taken at execution time on record and on every replay,
+  so a page that grew a row does not need the trace rewritten. A counted
+  capture of **zero** fails rather than remembering `0` — a selector typo
+  matches nothing and so does an empty table, and the step that means zero
+  is an `assert` with `element_count: 0`.
+
+  A `type_text` step may carry `params.values: [...]` — a **multi-selection**,
+  the whole set committed at once. Where `values` is present it is
+  authoritative; `params.text` repeats only the first option, so a reader
+  that shows text still names something concrete. A consumer that honours
+  `text` alone would under-select, which is why `values` is the field to
+  read. A new param key rather than a new action type, so a trace written
+  before multi-selection existed still loads.
+
   `type_text` variants: an **empty `selectors` array** means "type into the
   element that currently has keyboard focus"; `params.replace: true` marks
   fill semantics — the input's current value is cleared before typing (a

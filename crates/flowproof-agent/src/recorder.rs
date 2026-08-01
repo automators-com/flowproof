@@ -595,9 +595,35 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 selector_ref: Some(0),
             }),
         ),
-        ResolvedAction::Capture { target, name } => {
+        ResolvedAction::SelectOptions { target, values } => {
+            let mut params = flowproof_trace::format::TypeTextParams {
+                // `text` keeps the FIRST option so the step still names
+                // something concrete in a reader that shows only text.
+                // `values` is authoritative wherever it is present - see
+                // docs/trace-format.md.
+                text: values.first().cloned().unwrap_or_default(),
+                submit: None,
+                extra: Default::default(),
+            };
+            params
+                .extra
+                .insert("values".into(), serde_json::json!(values));
+            (selectors_for(app, target, None), Action::TypeText(params))
+        }
+        ResolvedAction::Capture {
+            target,
+            name,
+            count,
+        } => {
             let mut params = serde_json::Map::new();
             params.insert("name".into(), name.clone().into());
+            // A new PARAM KEY, not a new action: the payload is free-form,
+            // so a trace written before counting existed still loads, and
+            // an old reader meeting this simply does not understand the
+            // step rather than misreading it as a text capture.
+            if *count {
+                params.insert("count".into(), true.into());
+            }
             (selectors_for(app, target, None), Action::Capture(params))
         }
         ResolvedAction::AssertCaptured {
@@ -918,6 +944,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
     let target = match action {
         ResolvedAction::Press { target, .. }
         | ResolvedAction::TypeText { target, .. }
+        | ResolvedAction::SelectOptions { target, .. }
         | ResolvedAction::Upload { target, .. }
         | ResolvedAction::ContextClick { target, .. }
         | ResolvedAction::DoubleClick { target, .. }
@@ -1900,7 +1927,15 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                     | ResolvedAction::AssertChecked { .. }
                     | ResolvedAction::AssertCaptured { .. }
             );
-            if !is_assert {
+            // A COUNTING capture asks "how many", which is a question with
+            // a valid answer of none. The generic precheck would answer it
+            // with `ElementNotFound` - true, but it names a selector rather
+            // than the step that means zero, and this reading has its own
+            // account of why zero is refused. A TEXT capture keeps the
+            // precheck: it must read some element.
+            let is_counting_capture =
+                matches!(&action, ResolvedAction::Capture { count: true, .. });
+            if !is_assert && !is_counting_capture {
                 if let Some(selector) = &selector {
                     if !driver.element_exists(selector)? {
                         return Err(RecordError::ElementNotFound {
@@ -1921,6 +1956,11 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
             }
             match &action {
                 ResolvedAction::Press { .. } => driver.invoke(targeted())?,
+                ResolvedAction::SelectOptions { values, .. } => {
+                    // One commit for the whole set. A missing option fails
+                    // the step in the driver, before anything is selected.
+                    driver.select_options(targeted(), values)?;
+                }
                 ResolvedAction::TypeText { text, .. } => {
                     // `${captured.x}` and `${VAR}` both resolve at the moment
                     // of typing; the trace only ever stores the reference
@@ -1945,8 +1985,33 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 ResolvedAction::SetChecked { checked, .. } => {
                     driver.set_checked(targeted(), *checked)?
                 }
-                ResolvedAction::Capture { name, .. } => {
-                    let value = driver.read_text(targeted())?;
+                ResolvedAction::Capture { name, count, .. } => {
+                    let value = if *count {
+                        let found = flowproof_driver::count_matching(
+                            driver,
+                            targeted(),
+                            flowproof_driver::COUNT_DIAGNOSTIC_CAP,
+                        )?;
+                        // Zero FAILS rather than remembering "0". A
+                        // selector typo matches nothing, and so does an
+                        // empty table - and a capture that answered `0` to
+                        // both would type a confident wrong number into the
+                        // app. The step that MEANS zero is an assertion,
+                        // and the error says so.
+                        if found == 0 {
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: "at least one matching element to count".to_string(),
+                                actual: "nothing matched, so the count would be a guess - \
+                                         to assert emptiness write 'assert: the \"<target>\" \
+                                         appears 0 times'"
+                                    .to_string(),
+                            });
+                        }
+                        found.to_string()
+                    } else {
+                        driver.read_text(targeted())?
+                    };
                     captures.insert(name.clone(), value);
                 }
                 ResolvedAction::AssertCaptured {
@@ -3322,6 +3387,65 @@ steps:
     /// step - `Click "Next" until the label changes` becomes ONE click -
     /// record green, and fail one replay in five. The decline has to
     /// outrank the fallback, and `calls == 0` is what proves it does.
+    /// A count is a READING, like any capture: taken at execution time on
+    /// record and on every replay, so a page that grew a row does not need
+    /// the trace rewritten. The number therefore never enters the trace -
+    /// only the reference does, exactly as a text capture works.
+    #[test]
+    fn a_counted_capture_records_the_reference_and_not_the_number() {
+        let spec = FlowSpec::parse(
+            "name: Rows\napp: web\nurl: https://e.test/x\nsteps:\n  \
+             - Remember how many \"css:.row\" appear as rows\n  \
+             - Type ${captured.rows} into the \"Count\" field\n",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&[".row", "Count"]).with_occurrences(".row", 7);
+        let out = std::env::temp_dir().join("flowproof-count-capture.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("records");
+
+        // The app was handed the count, not the reference.
+        assert!(
+            driver.typed.iter().any(|(_, text)| text == "7"),
+            "the resolved count must be typed: {:?}",
+            driver.typed
+        );
+        let trace = std::fs::read_to_string(&out).expect("trace readable");
+        assert!(trace.contains("\"count\":true"), "the reading is recorded");
+        assert!(
+            trace.contains("${captured.rows}"),
+            "the typed step stores the REFERENCE"
+        );
+        assert!(
+            !trace.contains("\"text\":\"7\""),
+            "the number itself must never enter the trace: {trace}"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The red path, and the reason this capture is not allowed to answer
+    /// `0`. A selector typo matches nothing and so does an empty table -
+    /// and `0` is a confident, plausible number to type into an app. The
+    /// step that MEANS zero is an assertion, and the error says so.
+    #[test]
+    fn a_count_of_zero_fails_instead_of_remembering_zero() {
+        let spec = FlowSpec::parse(
+            "name: Rows\napp: web\nurl: https://e.test/x\nsteps:\n  \
+             - Remember how many \"css:.typo\" appear as rows\n",
+        )
+        .expect("parses");
+        // `.typo` is not on the page - the shape of a selector mistake.
+        let mut driver = MockAppDriver::new(&[".row"]);
+        let out = std::env::temp_dir().join("flowproof-count-zero.trace.jsonl");
+        let err =
+            record(&spec, &mut driver, &out).expect_err("a count of zero must fail the recording");
+        let message = err.to_string();
+        assert!(
+            message.contains("appears 0 times"),
+            "the failure must point at the step that MEANS zero: {message}"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
     #[test]
     fn a_declined_shape_never_reaches_the_model_author() {
         for step in [

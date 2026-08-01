@@ -201,7 +201,22 @@ pub enum ResolvedAction {
     /// Read a target's text into a flow-scoped name for later comparison
     /// (`Remember the "Balance" as balance`). The VALUE never enters the
     /// trace - only the name does, exactly like a `${VAR}` secret.
-    Capture { target: Target, name: String },
+    /// Drive a `<select multiple>` to EXACTLY these options. Not a sequence
+    /// of single selections: committing one option replaces the selection,
+    /// so a sequence would leave the last one standing and say nothing.
+    SelectOptions { target: Target, values: Vec<String> },
+    /// Remember something about the target under `name`, for a later
+    /// assertion or a later `Type` to use. `count` picks WHICH reading:
+    /// false is the element's text, true is how many elements match.
+    ///
+    /// Either way the value is taken at execution time on record and on
+    /// every replay, so it never enters the trace - the same indirection
+    /// `${VAR}` secrets use.
+    Capture {
+        target: Target,
+        name: String,
+        count: bool,
+    },
     /// Drive a checkbox-like control to a STATE (`Check`/`Uncheck`).
     /// Set-state rather than toggle, so the step means the same thing
     /// however the environment arrives: idempotent by design.
@@ -505,6 +520,49 @@ fn unresolvable(step: &str, reason: impl Into<String>) -> RulesError {
         step: step.to_string(),
         reason: reason.into(),
     }
+}
+
+/// Parse `"A", "B" and "C"` into its items.
+///
+/// Only the QUOTES delimit. Splitting on `,` or ` and ` would break the
+/// moment an option reads "Rock, Paper and Scissors", which is ordinary app
+/// text, and the break would be silent - three options selected where one
+/// was meant. Separators between quoted items are skipped, not parsed.
+fn quoted_list(step: &str, text: &str) -> Result<Vec<String>, RulesError> {
+    let mut items = Vec::new();
+    let mut rest = text.trim();
+    while let Some(after_open) = rest.strip_prefix('"') {
+        let Some((item, tail)) = quoted_label(after_open) else {
+            return Err(unresolvable(step, "an option is missing its closing quote"));
+        };
+        if item.is_empty() {
+            return Err(unresolvable(step, "an option name may not be empty"));
+        }
+        items.push(item.to_string());
+        // Whatever sits between two quoted items is a separator - `,`,
+        // `and`, or both - and none of it is part of an option name.
+        rest = tail
+            .trim_start()
+            .trim_start_matches(',')
+            .trim_start()
+            .trim_start_matches("and")
+            .trim_start();
+    }
+    if !rest.is_empty() {
+        return Err(unresolvable(
+            step,
+            "every option in a list must be quoted, because option text can \
+             itself contain a comma or the word 'and'",
+        ));
+    }
+    if items.len() < 2 {
+        return Err(unresolvable(
+            step,
+            "a quoted list needs at least two options; to select one, write it \
+             unquoted - 'Select Admin from the \"Role\" field'",
+        ));
+    }
+    Ok(items)
 }
 
 fn refused(step: &str, reason: impl Into<String>) -> RulesError {
@@ -2531,6 +2589,14 @@ mod web {
                     None
                 };
                 if let (Some(target), false) = (target, value.is_empty()) {
+                    // A QUOTED list is the multi form. Quoted because option
+                    // text is arbitrary app text: "Rock, Paper and Scissors"
+                    // is one option on some page, and an unquoted list could
+                    // not tell it from three.
+                    if value.starts_with('"') {
+                        let values = quoted_list(trimmed, value)?;
+                        return Ok(vec![ResolvedAction::SelectOptions { target, values }]);
+                    }
                     return Ok(vec![ResolvedAction::TypeText {
                         target,
                         text: value.to_string(),
@@ -2586,6 +2652,44 @@ mod web {
         // `Remember the [Nth ]"<target>" as <name>` - read a value now so a
         // later assertion can compare against it. The value is read at
         // execution time on record AND replay, so it never enters the trace.
+        // `Remember how many "<target>" appear as <name>` - the COUNT, not
+        // the text. Same family and the same indirection: the number is
+        // taken at execution time on record and on every replay, so a page
+        // that grew a row does not need the trace rewritten.
+        //
+        // Checked before `remember the` because "how many" is not a target.
+        if let Some(rest) = strip_prefix_ci(trimmed, "remember how many ") {
+            let tail = rest.trim();
+            if let Some(quoted) = tail.strip_prefix('"') {
+                if let Some((label, after)) = quoted_label(quoted) {
+                    let after = after.trim();
+                    // `appear` reads correctly for a plural count; `appears`
+                    // is accepted because the singular slips out when the
+                    // author is thinking of one row.
+                    let after = strip_prefix_ci(after, "appear as ")
+                        .or_else(|| strip_prefix_ci(after, "appears as "));
+                    if let Some(name) = after.map(str::trim) {
+                        if !valid_capture_name(name) {
+                            return Err(unresolvable(
+                                trimmed,
+                                "a capture name must start with a lowercase letter and \
+                                 contain only lowercase letters, digits, and underscores",
+                            ));
+                        }
+                        return Ok(vec![ResolvedAction::Capture {
+                            target: target_from_label(label),
+                            name: name.to_string(),
+                            count: true,
+                        }]);
+                    }
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'Remember how many \"<target>\" appear as <name>'",
+            ));
+        }
+
         if let Some(rest) = strip_prefix_ci(trimmed, "remember the ") {
             let (nth, tail) = split_ordinal(rest.trim());
             if let Some(quoted) = tail.strip_prefix('"') {
@@ -2602,6 +2706,7 @@ mod web {
                         return Ok(vec![ResolvedAction::Capture {
                             target: scoped_target(trimmed, nth, label, scope)?,
                             name: name.to_string(),
+                            count: false,
                         }]);
                     }
                 }
@@ -3793,6 +3898,10 @@ mod tests {
             ("web", "Clear the taskName field"),
             ("web", r#"Select Admin from the "Role" field"#),
             ("web", r#"Select Admin in the "Role" dropdown"#),
+            (
+                "web",
+                r#"Select "Functional testing", "GUI testing" and "End2End testing" from the "Methods" field"#,
+            ),
             ("web", r#"Press the "Save" button"#),
             ("web", "Press the submitButton button"),
             ("web", r#"Click "Templates""#),
@@ -3868,6 +3977,10 @@ mod tests {
             // Interpolation: several references in one step, and literal
             // text around them. Documented under "A typed value is
             // interpolated, not evaluated".
+            (
+                "web",
+                r#"Remember how many "css:.order-row" appear as rows"#,
+            ),
             ("web", r#"Type order-${captured.oid} into the "Ref" field"#),
             (
                 "web",
@@ -3983,6 +4096,7 @@ mod tests {
                 "web",
                 r#"the "Amount" in the "css:[data-test=transaction]" containing "Invoice 4711" shows 50"#,
             ),
+            ("web", r#"the "Total" shows ${captured.rows} + 1"#),
             ("calc", "display shows 8"),
             ("notepad", "document contains hello"),
         ];
@@ -4961,6 +5075,66 @@ mod framed_target_tests {
     /// the model author, which grounds it into some recording; a refused
     /// one stops. Each message must also say what to write instead, or the
     /// refusal is a dead end rather than a redirection.
+    /// The quoting is the whole design, not decoration. Option text is
+    /// arbitrary app text: "Rock, Paper and Scissors" is ONE option on some
+    /// page, and an unquoted list could not tell it from three - silently,
+    /// by selecting the wrong set.
+    #[test]
+    fn a_multi_select_list_is_delimited_by_quotes_and_nothing_else() {
+        let three = plain(
+            r#"Select "Functional testing", "GUI testing" and "End2End testing" from the "Methods" field"#,
+        )
+        .expect("parses");
+        assert_eq!(
+            three,
+            vec![ResolvedAction::SelectOptions {
+                target: Target::Text("Methods".into()),
+                values: vec![
+                    "Functional testing".into(),
+                    "GUI testing".into(),
+                    "End2End testing".into(),
+                ],
+            }]
+        );
+
+        // One quoted option whose TEXT contains both separators stays one
+        // option. This is the case that a split on `,`/` and ` gets wrong.
+        let one = plain(r#"Select "Rock, Paper and Scissors", "Chess" from the "Game" field"#)
+            .expect("parses");
+        assert_eq!(
+            one,
+            vec![ResolvedAction::SelectOptions {
+                target: Target::Text("Game".into()),
+                values: vec!["Rock, Paper and Scissors".into(), "Chess".into()],
+            }]
+        );
+
+        // A comma-separated list is accepted without the trailing `and`.
+        assert!(plain(r#"Select "A", "B" from the "L" field"#).is_ok());
+        // And the single form is untouched: no quotes, one value, TypeText.
+        assert_eq!(
+            plain(r#"Select Admin from the "Role" field"#).expect("parses"),
+            vec![ResolvedAction::TypeText {
+                target: Target::Text("Role".into()),
+                text: "Admin".into(),
+            }]
+        );
+    }
+
+    /// Half-quoted is a mistake worth naming, because the alternative is
+    /// selecting an option called `B" and "C`.
+    #[test]
+    fn a_partly_quoted_list_is_a_parse_error_that_says_why() {
+        let err = plain(r#"Select "A", B and "C" from the "L" field"#)
+            .expect_err("a bare item in a quoted list must be refused");
+        let message = err.to_string();
+        assert!(message.contains("must be quoted"), "{message}");
+        // A one-item quoted list points at the unquoted single form rather
+        // than silently meaning the same thing.
+        let err = plain(r#"Select "A" from the "L" field"#).expect_err("one item is not a list");
+        assert!(err.to_string().contains("at least two options"), "{err}");
+    }
+
     #[test]
     fn declined_shapes_are_refused_and_name_the_alternative() {
         let cases: &[(&str, &str, &str)] = &[
@@ -5376,7 +5550,8 @@ mod scoped_target_tests {
                 .expect("parses"),
             vec![ResolvedAction::Capture {
                 target: wanted.clone(),
-                name: "total".into()
+                name: "total".into(),
+                count: false
             }]
         );
         assert_eq!(

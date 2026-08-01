@@ -6,6 +6,75 @@ together).
 
 ## Unreleased
 
+### Added
+
+- **Selecting four options selected one, and said nothing.** `Select` commits
+  through the control's value setter, which is correct and is also a
+  *replacement*. So the obvious spelling — four `Select` steps at one
+  `<select multiple>` — left the last option standing, fired four `change`
+  events at an app expecting one, and reported success.
+
+  Nothing was available to write instead. The grammar had one option per
+  step, and a multi-selection is not a sequence of selections; it is one
+  state the control ends up in.
+
+  ```yaml
+  - Select "Functional testing", "GUI testing" and "End2End testing" from the "Methods" field
+  ```
+
+  Set-a-state, like `Check`: what is named becomes selected, what is not
+  named does not, and the step means the same thing however the environment
+  arrived. One `input`+`change` for the final state, because what the app's
+  handler expects to see is a user finishing a selection rather than three
+  of them.
+
+  **Every item is quoted**, and that is the design rather than decoration.
+  Option text is arbitrary application text: `"Rock, Paper and Scissors"` is
+  one option on somebody's page, and a list split on commas and the word
+  "and" would read it as three — silently, by selecting the wrong set. Only
+  the quotes delimit.
+
+  Names are resolved before anything is selected, so a typo in the third
+  option leaves the control untouched rather than half-applied, and the step
+  then reads the selection back to verify it took. Found while writing that
+  check: a JS exception inside the driver does **not** reach Rust as an
+  error, so the first version of this reported success on an option that
+  does not exist. The outcome is now a value that comes back and is
+  inspected, not an exception nobody catches.
+
+- **A count could be asserted but never used.** `the "css:.row" appears 5
+  times` has always worked, and it is the right step when you know the
+  answer. When the app decides the answer — a table built from whatever the
+  backend returned — there was nothing to write. The number existed, the
+  grammar could compare it to a literal, and no literal was available.
+
+  `Remember how many "<target>" appear as <name>` reads it into the same
+  flow-scoped name a text capture uses, so everything captures already do
+  keeps working:
+
+  ```yaml
+  - Remember how many "css:.order-row" appear as rows
+  - Type ${captured.rows} into the "Rowcount" field
+  - assert: the "Total" shows ${captured.rows} + 1
+  ```
+
+  Counting rides the ordinal every adapter already implements, so it means
+  on each adapter exactly what `the 2nd "Row"` means there — no adapter
+  changed to gain it. The number is read at execution time on record and on
+  every replay, so only the reference enters the trace and a page that grew
+  a row does not need it rewritten.
+
+  **Zero fails.** A selector typo matches nothing, and so does an empty
+  table — and `0` is a confident, plausible number to type into an
+  application. A capture that answered `0` to both would be the silent
+  wrong-value class again, so the step refuses and names the one that means
+  zero: `assert: the "<target>" appears 0 times`.
+
+  There is no second definition of what a number is: the computed
+  comparison's normalisation is reused as it stands, which is what lets
+  `shows ${captured.rows} + 1` compose without either side knowing about
+  the other.
+
 ### Fixed
 
 - **The docs never said what a typed capture does with the text around
