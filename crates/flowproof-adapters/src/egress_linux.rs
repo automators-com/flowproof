@@ -182,13 +182,13 @@ fn build_filter() -> Vec<libc::sock_filter> {
     // Prologue: DENY a foreign arch, then load the syscall nr.
     //
     // Syscall numbers are per-architecture, so on a foreign arch every
-    // `guard()` below compares against the wrong table and the filter means
-    // nothing. This used to resolve that by allowing the call through, which
-    // handed a 32-bit process on an x86_64 host unrestricted egress while the
-    // run still reported `enforced` and `assert_no_egress` still certified it.
-    // Denying is the only answer consistent with the rest of this filter,
-    // where every unmodelled case - an unparseable sockaddr, io_uring,
-    // AF_PACKET - denies rather than guesses.
+    // `guard()` below is comparing against the wrong table and the filter
+    // means nothing. This used to resolve that by allowing the call through -
+    // which handed a 32-bit process on an x86_64 host unrestricted egress,
+    // while the run still reported `enforced` and `assert_no_egress` still
+    // certified it. Denying is the only answer consistent with the rest of
+    // this filter, where every unmodelled case (an unparseable sockaddr,
+    // io_uring, AF_PACKET) denies rather than guesses.
     //
     // The cost is that a genuinely 32-bit agent stops working under
     // containment. That is correct: today it "works" by not being contained.
@@ -254,6 +254,7 @@ pub fn probe_containment() -> Containment {
     if r < 0 {
         return not("kernel lacks seccomp user-notification (needs >= 5.0)");
     }
+
     Containment::Enforced
 }
 
@@ -603,10 +604,15 @@ fn decide(
     } else if nr == libc::SYS_sendmsg || nr == libc::SYS_sendmmsg {
         Some(handle_sendmsg(fd, req, allow, spawn, log))
     } else if nr == libc::SYS_listen {
-        Some(handle_listen(req))
+        Some(handle_listen(req, log))
     } else {
-        // Unreachable given the filter, but fail safe: deny.
-        Some(errno_resp(libc::EPERM))
+        // Unreachable given the filter. If it ever happens the filter and this
+        // dispatch have diverged, which means some trapped syscall is being
+        // denied with nobody adjudicating it - a fault, not a denial.
+        Some(fault(
+            log,
+            &format!("no handler for trapped syscall nr {nr}"),
+        ))
     }
 }
 
@@ -633,23 +639,31 @@ fn handle_connect(
     let mut buf = [0u8; 128];
     let read = read_child(req.pid, addr_ptr, &mut buf, addr_len);
     // ID_VALID AFTER the read: proves the notif is still alive and the pid
-    // was not reused before we decide on the copy.
+    // was not reused before we decide on the copy. A dead notif is ordinary
+    // teardown (the child was killed mid-syscall), NOT a fault: the reply is
+    // discarded either way and the syscall never completes.
     if !notif_id_valid(fd, req.id) {
         return errno_resp(libc::EPERM);
     }
-    let Ok(n) = read else {
-        dbg_egress("connect: read_child FAILED -> EPERM");
-        return errno_resp(libc::EPERM);
+    let n = match read {
+        Ok(n) => n,
+        Err(e) if is_supervisor_fault(&e) => {
+            return fault(log, &format!("connect: process_vm_readv: {e}"));
+        }
+        Err(e) => {
+            dbg_egress(&format!("connect: read_child failed ({e}) -> EPERM"));
+            return errno_resp(libc::EPERM);
+        }
     };
 
     match parse_sockaddr(&buf[..n]) {
         // AF_UNIX is exempt (allowed): the supervisor performs it.
-        Some(Dest::Unix) => perform_connect(req.pid, sockfd, &buf[..n]),
+        Some(Dest::Unix) => perform_connect(req.pid, sockfd, &buf[..n], log),
         Some(Dest::Inet(ip, port)) => {
             let ip = normalize(ip);
             if allow.allows(ip, port) {
                 dbg_egress(&format!("connect: ALLOWED {ip}:{port}, performing"));
-                perform_connect(req.pid, sockfd, &buf[..n])
+                perform_connect(req.pid, sockfd, &buf[..n], log)
             } else {
                 dbg_egress(&format!("connect: DENIED by policy {ip}:{port}"));
                 record(log, spawn, &format!("{ip}:{port}"), "tcp");
@@ -697,8 +711,12 @@ fn handle_sendto(
         if !notif_id_valid(fd, req.id) {
             return errno_resp(libc::EPERM);
         }
-        let Ok(n) = read else {
-            return errno_resp(libc::EPERM);
+        let n = match read {
+            Ok(n) => n,
+            Err(e) if is_supervisor_fault(&e) => {
+                return fault(log, &format!("sendto: process_vm_readv: {e}"));
+            }
+            Err(_) => return errno_resp(libc::EPERM),
         };
         match parse_sockaddr(&addr[..n]) {
             Some(Dest::Inet(ip, port)) => {
@@ -719,7 +737,7 @@ fn handle_sendto(
             return errno_resp(libc::EPERM);
         }
     }
-    perform_sendto(req.pid, sockfd, buf_ptr, buf_len, flags, dest)
+    perform_sendto(req.pid, sockfd, buf_ptr, buf_len, flags, dest, log)
 }
 
 /// `sendmsg`/`sendmmsg`: read the message header, vet its `msg_name`, and
@@ -744,7 +762,10 @@ fn handle_sendmsg(
     if !notif_id_valid(fd, req.id) {
         return errno_resp(libc::EPERM);
     }
-    if read.is_err() {
+    if let Err(e) = read {
+        if is_supervisor_fault(&e) {
+            return fault(log, &format!("sendmsg: process_vm_readv: {e}"));
+        }
         return errno_resp(libc::EPERM);
     }
     let (name_ptr, name_len, control_len) = msghdr_fields(&hdr);
@@ -755,8 +776,12 @@ fn handle_sendmsg(
         if !notif_id_valid(fd, req.id) {
             return errno_resp(libc::EPERM);
         }
-        let Ok(n) = read else {
-            return errno_resp(libc::EPERM);
+        let n = match read {
+            Ok(n) => n,
+            Err(e) if is_supervisor_fault(&e) => {
+                return fault(log, &format!("sendmsg: process_vm_readv: {e}"));
+            }
+            Err(_) => return errno_resp(libc::EPERM),
         };
         if let Some(Dest::Inet(ip, port)) = parse_sockaddr(&addr[..n]) {
             let ip = normalize(ip);
@@ -773,17 +798,21 @@ fn handle_sendmsg(
     }
     // On-host / connected: re-perform on the child's own socket. sendmmsg is
     // serviced as its first message; the child sees one message sent.
-    perform_sendmsg(req.pid, sockfd, msg_ptr)
+    perform_sendmsg(req.pid, sockfd, msg_ptr, log)
 }
 
 /// `listen(fd, backlog)`: a NON-loopback listener is the accept-based exfil
 /// hole; deny and log it. A loopback listener is performed on the child's
 /// socket.
-fn handle_listen(req: &SeccompNotif) -> SeccompNotifResp {
+fn handle_listen(req: &SeccompNotif, log: &Mutex<EgressLog>) -> SeccompNotifResp {
     let sockfd = req.data.args[0] as RawFd;
     let backlog = req.data.args[1] as libc::c_int;
-    let Ok(dup) = dup_child_fd(req.pid, sockfd) else {
-        return errno_resp(libc::EPERM);
+    let dup = match dup_child_fd(req.pid, sockfd) {
+        Ok(dup) => dup,
+        Err(e) if is_supervisor_fault(&e) => {
+            return fault(log, &format!("listen: pidfd_getfd: {e}"));
+        }
+        Err(_) => return errno_resp(libc::EPERM),
     };
     // getsockname on the dup (same file description) to see where it is bound.
     let mut addr = [0u8; 128];
@@ -796,7 +825,10 @@ fn handle_listen(req: &SeccompNotif) -> SeccompNotifResp {
         )
     };
     if rc != 0 {
-        return errno_resp(libc::EPERM);
+        return fault(
+            log,
+            &format!("listen: getsockname: {}", io::Error::last_os_error()),
+        );
     }
     let bound_loopback = match parse_sockaddr(&addr[..len as usize]) {
         Some(Dest::Inet(ip, _)) => is_loopback(normalize(ip)),
@@ -831,10 +863,23 @@ fn handle_listen(req: &SeccompNotif) -> SeccompNotifResp {
 /// its own VERIFIED copy of the address. A nonblocking socket's EINPROGRESS
 /// is returned to the child, which epolls its own fd (the same description) -
 /// correct, and the kernel never re-reads child memory.
-fn perform_connect(pid: u32, sockfd: RawFd, addr: &[u8]) -> SeccompNotifResp {
-    let Ok(dup) = dup_child_fd(pid, sockfd) else {
-        dbg_egress("perform_connect: dup_child_fd FAILED -> EPERM");
-        return errno_resp(libc::EPERM);
+fn perform_connect(
+    pid: u32,
+    sockfd: RawFd,
+    addr: &[u8],
+    log: &Mutex<EgressLog>,
+) -> SeccompNotifResp {
+    let dup = match dup_child_fd(pid, sockfd) {
+        Ok(dup) => dup,
+        Err(e) if is_supervisor_fault(&e) => {
+            return fault(log, &format!("connect: pidfd_getfd: {e}"));
+        }
+        Err(e) => {
+            dbg_egress(&format!(
+                "perform_connect: dup_child_fd failed ({e}) -> EPERM"
+            ));
+            return errno_resp(libc::EPERM);
+        }
     };
     let rc = unsafe {
         libc::connect(
@@ -872,9 +917,14 @@ fn perform_sendto(
     buf_len: usize,
     flags: libc::c_int,
     dest: Option<([u8; 128], usize)>,
+    log: &Mutex<EgressLog>,
 ) -> SeccompNotifResp {
-    let Ok(dup) = dup_child_fd(pid, sockfd) else {
-        return errno_resp(libc::EPERM);
+    let dup = match dup_child_fd(pid, sockfd) {
+        Ok(dup) => dup,
+        Err(e) if is_supervisor_fault(&e) => {
+            return fault(log, &format!("sendto: pidfd_getfd: {e}"));
+        }
+        Err(_) => return errno_resp(libc::EPERM),
     };
     // A large payload is bounded; a genuinely huge datagram is rare and, if
     // truncated, the child simply sees a short send.
@@ -912,9 +962,18 @@ fn perform_sendto(
 /// Perform a single `sendmsg` on the child's socket. The iovec buffers are
 /// copied into supervisor memory; the destination and flags come from the
 /// child's own header (already vetted by the caller).
-fn perform_sendmsg(pid: u32, sockfd: RawFd, msg_ptr: u64) -> SeccompNotifResp {
-    let Ok(dup) = dup_child_fd(pid, sockfd) else {
-        return errno_resp(libc::EPERM);
+fn perform_sendmsg(
+    pid: u32,
+    sockfd: RawFd,
+    msg_ptr: u64,
+    log: &Mutex<EgressLog>,
+) -> SeccompNotifResp {
+    let dup = match dup_child_fd(pid, sockfd) {
+        Ok(dup) => dup,
+        Err(e) if is_supervisor_fault(&e) => {
+            return fault(log, &format!("sendmsg: pidfd_getfd: {e}"));
+        }
+        Err(_) => return errno_resp(libc::EPERM),
     };
     let mut hdr = [0u8; std::mem::size_of::<libc::msghdr>()];
     let hdr_len = hdr.len();
@@ -1144,6 +1203,40 @@ fn record(log: &Mutex<EgressLog>, spawn: Instant, destination: &str, protocol: &
         .push(event);
 }
 
+/// Record a supervisor FAULT and deny the syscall.
+///
+/// A fault is not a denial. It is the supervisor admitting it could not
+/// adjudicate: `process_vm_readv` or `pidfd_getfd` was refused, so we never
+/// learned where the syscall was going. Denying is still right - nothing
+/// reaches the network - but the run has stopped producing evidence, and a
+/// later emptiness test over `blocked` would read that silence as proof of
+/// good behaviour. Recording it is what stops `assert_no_egress` certifying a
+/// run whose supervisor was broken the whole time.
+fn fault(log: &Mutex<EgressLog>, what: &str) -> SeccompNotifResp {
+    dbg_egress(&format!("FAULT: {what}"));
+    log.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .faults
+        .push(what.to_string());
+    errno_resp(libc::EPERM)
+}
+
+/// Is this `read_child`/`dup_child_fd` failure the SUPERVISOR's problem, or
+/// the child's?
+///
+/// `EFAULT` means the child handed the kernel a bad pointer: the syscall
+/// would have failed with `EFAULT` anyway, flowproof is working perfectly,
+/// and denying is exactly right. `ESRCH` means the thread died mid-syscall,
+/// which is ordinary teardown. Anything else - `EPERM`, `EACCES` from a
+/// hardened `ptrace_scope` or a container without `CAP_SYS_PTRACE` - means
+/// the mechanism was refused and the supervisor is blind.
+fn is_supervisor_fault(err: &io::Error) -> bool {
+    !matches!(
+        err.raw_os_error(),
+        Some(libc::EFAULT) | Some(libc::ESRCH) | Some(libc::ENOMEM)
+    )
+}
+
 /// A "the syscall returned `val`" reply.
 fn ok_resp(val: i64) -> SeccompNotifResp {
     SeccompNotifResp {
@@ -1184,7 +1277,7 @@ mod tests {
     /// The EPILOGUE default-allows (asserted above) - that is the
     /// sandbox-not-a-jail posture and it stays. The PROLOGUE must not: a
     /// foreign architecture indexes a different syscall table, so every guard
-    /// after it compares against the wrong numbers. Allowing there gave a
+    /// after it is comparing against the wrong numbers. Allowing there gave a
     /// 32-bit process on an x86_64 host unrestricted egress while the run
     /// still reported `enforced`.
     ///
@@ -1209,13 +1302,41 @@ mod tests {
         assert_ne!(
             mismatch.k, SECCOMP_RET_ALLOW,
             "a foreign arch must never be allowed through: every guard below \
-             this point compares against the wrong syscall table"
+             this point is comparing against the wrong syscall table"
         );
         assert_eq!(
             mismatch.k,
             SECCOMP_RET_ERRNO | (libc::EPERM as u32),
             "and it denies with EPERM, matching every other unmodelled case"
         );
+    }
+
+    /// Which failures are the SUPERVISOR's fault, and which are the child's.
+    ///
+    /// The distinction decides whether a run can still certify, so getting it
+    /// wrong in either direction is expensive: call a child's bad pointer a
+    /// fault and every agent that passes garbage to `connect` turns the suite
+    /// into capability errors; call a refused `process_vm_readv` benign and
+    /// #300 comes straight back.
+    #[test]
+    fn only_a_refused_mechanism_counts_as_a_supervisor_fault() {
+        // The child's problem: the kernel would have failed these anyway.
+        assert!(!is_supervisor_fault(&io::Error::from_raw_os_error(
+            libc::EFAULT
+        )));
+        // Ordinary teardown: the thread died mid-syscall.
+        assert!(!is_supervisor_fault(&io::Error::from_raw_os_error(
+            libc::ESRCH
+        )));
+
+        // Ours: a hardened ptrace_scope, or a container without
+        // CAP_SYS_PTRACE, refuses with these - and then we are blind.
+        assert!(is_supervisor_fault(&io::Error::from_raw_os_error(
+            libc::EPERM
+        )));
+        assert!(is_supervisor_fault(&io::Error::from_raw_os_error(
+            libc::EACCES
+        )));
     }
 
     #[test]
