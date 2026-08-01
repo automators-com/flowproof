@@ -188,6 +188,20 @@ impl Drop for Engine {
     }
 }
 
+#[cfg(test)]
+impl Engine {
+    /// A CLOSED, sublayer-less engine, so a caller's preconditions can be
+    /// tested without a Windows kernel or Administrator. Marked closed so
+    /// `Drop` never calls `FwpmEngineClose0` on a null handle.
+    pub(crate) fn closed_for_test() -> Self {
+        Self {
+            handle: HANDLE::default(),
+            sublayer_key: GUID::zeroed(),
+            closed: true,
+        }
+    }
+}
+
 /// A fresh GUID for the per-run sublayer.
 ///
 /// `CoCreateGuid` rather than a random crate: no new dependency, and it is the
