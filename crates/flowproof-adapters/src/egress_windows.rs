@@ -1,5 +1,6 @@
-//! Windows egress containment, step 1: the **capability probe**. It installs
-//! no WFP filter, creates no run identity, and launches nothing.
+//! Windows egress containment. Still installs no WFP filter and launches
+//! nothing; [`identity`] adds the per-run account the filters will be scoped
+//! to.
 //!
 //! **Nothing here can produce a `Containment::Enforced`.** That is structural
 //! rather than a convention: this module does not name that type at all. It
@@ -21,15 +22,55 @@
 //! Net-event collection needs a WFP engine handle, so it is probed in the
 //! step that opens one.
 
+pub mod identity;
+
 use std::ffi::c_void;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
 
-/// UTF-16, NUL-terminated, for the `W` entry points.
-fn wide(s: &str) -> Vec<u16> {
+/// UTF-16, NUL-terminated. Every Win32 `W` entry point wants this, and getting
+/// the terminator wrong is a silent buffer overrun rather than a compile
+/// error.
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
+
+/// A Win32 failure with enough context to be diagnosed from a CI log alone.
+///
+/// The `api` name matters as much as the code: `FwpmFilterAdd0` returning
+/// `ERROR_ACCESS_DENIED` and `LogonUserW` returning it mean completely
+/// different things, and a bare error number cannot tell them apart. On a
+/// platform where containment is new and every failure looks like every other
+/// failure, that distinction is most of the diagnosis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WinErr {
+    pub api: &'static str,
+    pub code: u32,
+    pub context: String,
+}
+
+impl WinErr {
+    pub fn new(api: &'static str, code: u32, context: impl Into<String>) -> Self {
+        Self {
+            api,
+            code,
+            context: context.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for WinErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} failed: code={} (0x{:08x}) {}",
+            self.api, self.code, self.code, self.context
+        )
+    }
+}
+
+impl std::error::Error for WinErr {}
 
 /// What this host can and cannot do, measured rather than assumed.
 ///
