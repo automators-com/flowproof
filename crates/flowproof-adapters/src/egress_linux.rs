@@ -114,6 +114,7 @@ const BPF_W: u16 = 0x00;
 const BPF_ABS: u16 = 0x20;
 const BPF_JMP: u16 = 0x05;
 const BPF_JEQ: u16 = 0x10;
+const BPF_JSET: u16 = 0x40;
 const BPF_K: u16 = 0x00;
 const BPF_RET: u16 = 0x06;
 
@@ -122,6 +123,22 @@ const BPF_RET: u16 = 0x06;
 const OFF_NR: u32 = 0;
 const OFF_ARCH: u32 = 4;
 const OFF_ARG0_LO: u32 = 16;
+
+/// The low word of `args[i]`: the args array follows an 8-byte instruction
+/// pointer, one 8-byte slot each, little-endian.
+const fn off_arg(i: u32) -> u32 {
+    OFF_ARG0_LO + 8 * i
+}
+
+/// Where the open family keeps its flags word - and it is NOT the same index
+/// for both. `open(path, flags, mode)` puts it in `args[1]`;
+/// `openat(dirfd, path, flags, mode)` in `args[2]`.
+///
+/// Named, because getting this wrong is silent: the filter would test a path
+/// POINTER for the `O_TRUNC` bit, trapping on whatever the pointer's low bits
+/// happened to be, while every test that merely counts guards still passes.
+const OPEN_FLAGS_OFF: u32 = off_arg(1);
+const OPENAT_FLAGS_OFF: u32 = off_arg(2);
 
 // The audit arch of the process the filter runs in - the same arch flowproof
 // itself was built for, since the child is native.
@@ -253,6 +270,14 @@ fn build_filter() -> Vec<libc::sock_filter> {
     ));
     f.push(bpf_stmt(BPF_RET | BPF_K, eperm));
 
+    // The open family, gated IN-KERNEL on the `O_TRUNC` bit. Clobbering a file
+    // in place is `O_TRUNC`, and so is `>` redirection; every read and every
+    // plain append-write returns to the default allow without ever waking the
+    // supervisor, which is what keeps a contained run at its normal speed.
+    #[cfg(target_arch = "x86_64")]
+    f.extend(trunc_guard(libc::SYS_open, OPEN_FLAGS_OFF));
+    f.extend(trunc_guard(libc::SYS_openat, OPENAT_FLAGS_OFF));
+
     f.push(bpf_stmt(BPF_RET | BPF_K, allow));
     f
 }
@@ -269,6 +294,7 @@ fn fs_traps() -> Vec<(libc::c_long, &'static str)> {
         (libc::SYS_renameat2, "renameat2"),
         (libc::SYS_truncate, "truncate"),
         (libc::SYS_ftruncate, "ftruncate"),
+        (libc::SYS_openat2, "openat2"),
     ];
     #[cfg(target_arch = "x86_64")]
     traps.extend([
@@ -278,6 +304,21 @@ fn fs_traps() -> Vec<(libc::c_long, &'static str)> {
         (libc::SYS_creat, "creat"),
     ]);
     traps
+}
+
+/// `nr == X && (flags & O_TRUNC)` traps; anything else falls through.
+///
+/// The block RELOADS the syscall number first, because whatever ran before it
+/// left an ARGUMENT word in the accumulator. That is what makes these blocks
+/// safe to place after the socket block, which does the same.
+fn trunc_guard(nr: libc::c_long, flags_off: u32) -> Vec<libc::sock_filter> {
+    vec![
+        bpf_stmt(BPF_LD | BPF_W | BPF_ABS, OFF_NR),
+        bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 3),
+        bpf_stmt(BPF_LD | BPF_W | BPF_ABS, flags_off),
+        bpf_jump(BPF_JMP | BPF_JSET | BPF_K, libc::O_TRUNC as u32, 0, 1),
+        bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+    ]
 }
 
 /// Probe whether this kernel can enforce containment: it needs seccomp
@@ -1114,6 +1155,13 @@ fn fs_op_name(nr: libc::c_long) -> Option<&'static str> {
     if let Some((_, name)) = fs_traps().into_iter().find(|(n, _)| *n == nr) {
         return Some(name);
     }
+    #[cfg(target_arch = "x86_64")]
+    if nr == libc::SYS_open {
+        return Some("open");
+    }
+    if nr == libc::SYS_openat {
+        return Some("openat");
+    }
     None
 }
 
@@ -1129,6 +1177,8 @@ fn observe(
     // REPORT, never a wrong verdict - the trap already happened.
     let (subject, flags) = match op {
         "unlink" | "rmdir" | "truncate" | "creat" => (at(pid, None, a[0]), None),
+        "open" => (at(pid, None, a[0]), open_flags(a[1])),
+        "openat" => (at(pid, Some(a[0]), a[1]), open_flags(a[2])),
         "unlinkat" => (at(pid, Some(a[0]), a[1]), at_flags(a[2])),
         "rename" => (pair(at(pid, None, a[0]), at(pid, None, a[1])), None),
         "renameat" | "renameat2" => (
@@ -1136,6 +1186,18 @@ fn observe(
             None,
         ),
         "ftruncate" => (fd_subject(pid, a[0] as RawFd), None),
+        // `openat2` hides its flags in a pointed-to `open_how` that cBPF
+        // cannot see, so the filter trapped it unconditionally and the
+        // destructiveness test lands here. An unreadable struct is the one
+        // case where we cannot say whether anything was destroyed, which is
+        // what a FAULT means; a bad pointer from the child is not, because the
+        // syscall was going to fail anyway.
+        "openat2" => match open_how_flags(pid, a[2], a[3] as usize) {
+            Ok(Some(flags)) => (at(pid, Some(a[0]), a[1]), Some(flags)),
+            Ok(None) => return continue_resp(),
+            Err(e) if !is_supervisor_fault(&e) => return continue_resp(),
+            Err(e) => return fs_fault(fs, &format!("openat2: could not read open_how: {e}")),
+        },
         // Unreachable while `fs_op_name` and this match agree. If they stop
         // agreeing, a destructive syscall runs unrecorded and the empty log
         // reads as a clean run - which is what makes it a fault.
@@ -1194,9 +1256,38 @@ fn pair(from: Subject, to: Subject) -> Subject {
     (Some(format!("{} -> {}", show(&from), show(&to))), note)
 }
 
+/// The `O_*` bits worth naming, or `None` when `O_TRUNC` is absent - which is
+/// the whole destructiveness test for the open family. `open`/`openat` were
+/// gated on that bit in-kernel; `openat2` is tested only here.
+fn open_flags(flags: u64) -> Option<String> {
+    if flags & libc::O_TRUNC as u64 == 0 {
+        return None;
+    }
+    let mut out = vec![["O_RDONLY", "O_WRONLY", "O_RDWR"][(flags & 0b11).min(2) as usize]];
+    for (bit, name) in [
+        (libc::O_CREAT, "O_CREAT"),
+        (libc::O_TRUNC, "O_TRUNC"),
+        (libc::O_APPEND, "O_APPEND"),
+    ] {
+        if flags & bit as u64 != 0 {
+            out.push(name);
+        }
+    }
+    Some(out.join("|"))
+}
+
 /// `unlinkat`'s one flag worth naming: `AT_REMOVEDIR` makes it an `rmdir`.
 fn at_flags(flags: u64) -> Option<String> {
     (flags & libc::AT_REMOVEDIR as u64 != 0).then(|| "AT_REMOVEDIR".to_string())
+}
+
+/// Read `open_how.flags`, the first `__u64` of the struct, out of the child.
+fn open_how_flags(pid: u32, how: u64, size: usize) -> io::Result<Option<String>> {
+    let mut buf = [0u8; 8];
+    if size < 8 || read_child(pid, how, &mut buf, 8)? < 8 {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    Ok(open_flags(u64::from_ne_bytes(buf)))
 }
 
 /// Read a NUL-terminated path out of the child, PAGE AT A TIME:
@@ -1627,11 +1718,66 @@ mod tests {
         // And the reply itself is CONTINUE, carrying no error.
         assert_eq!(continue_resp().flags, SECCOMP_USER_NOTIF_FLAG_CONTINUE);
         assert_eq!(continue_resp().error, 0, "observing must not fail the call");
+        assert_eq!(fs_op_name(libc::SYS_openat), Some("openat"));
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(fs_op_name(libc::SYS_open), Some("open"));
         // `unlinkat` covers `rmdir` too, and the report says which it was.
         assert_eq!(at_flags(0), None);
         assert_eq!(
             at_flags(libc::AT_REMOVEDIR as u64),
             Some("AT_REMOVEDIR".to_string())
+        );
+    }
+
+    /// The `JSET O_TRUNC` amendment, and the argument index it turns on.
+    ///
+    /// `open(path, flags, mode)` keeps its flags in `args[1]` and
+    /// `openat(dirfd, path, flags, mode)` in `args[2]`. Using one offset for
+    /// both tests a path POINTER for the `O_TRUNC` bit - a filter that traps on
+    /// whatever the pointer's low bits happen to be, which is to say nothing,
+    /// reliably - while a test that only counted guards would still pass. So
+    /// the offsets are asserted directly.
+    #[test]
+    fn the_open_family_is_gated_in_kernel_on_the_o_trunc_bit() {
+        assert_eq!(OPEN_FLAGS_OFF, 24, "open(path, flags, mode): args[1]");
+        assert_eq!(
+            OPENAT_FLAGS_OFF, 32,
+            "openat(dirfd, path, flags, mode): args[2]"
+        );
+
+        let f = build_filter();
+        let mut gated = Vec::new();
+        for (i, insn) in f.iter().enumerate() {
+            if insn.code != BPF_JMP | BPF_JSET | BPF_K {
+                continue;
+            }
+            assert_eq!(insn.k, libc::O_TRUNC as u32, "the bit tested is O_TRUNC");
+            assert_eq!(insn.jt, 0, "a SET bit falls through to the trap");
+            assert_eq!(f[i - 3].k, OFF_NR, "the block reloads the syscall nr first");
+            assert_eq!(f[i - 1].code, BPF_LD | BPF_W | BPF_ABS);
+            assert_eq!(
+                f[i + 1].k,
+                SECCOMP_RET_USER_NOTIF,
+                "the O_TRUNC arm observes; it does not deny"
+            );
+            gated.push(f[i - 1].k);
+        }
+        let mut expected = vec![OPENAT_FLAGS_OFF];
+        #[cfg(target_arch = "x86_64")]
+        expected.push(OPEN_FLAGS_OFF);
+        gated.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(
+            gated, expected,
+            "exactly the open family, each at its own flags index"
+        );
+
+        // And the bit is the whole test: an `openat2` opening for writing
+        // without it is not destructive and is not recorded.
+        assert_eq!(open_flags(libc::O_WRONLY as u64), None);
+        assert_eq!(
+            open_flags((libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC) as u64),
+            Some("O_WRONLY|O_CREAT|O_TRUNC".to_string())
         );
     }
 
