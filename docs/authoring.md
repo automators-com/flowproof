@@ -223,6 +223,10 @@ content and then address the element inside it:
 
 # a container the `item` rung cannot see: name it
 - Click the "Ship" in the "css:.card" containing "Order 8801"
+
+# one column does not always name a row: require both
+- Click the "Edit" in the item containing "John" and "Doe"
+- assert: the "Email" column of the row containing "John" and "Doe" shows john@example.com
 ```
 
 The same cell target composes with every predicate (`shows`, `is empty`,
@@ -241,6 +245,7 @@ a real cell, which passes as confidently as the right one.
 | Form | Notes |
 |---|---|
 | `the "<column>" column of the row containing "<anchor>"` | a table cell; `in the row containing` also works - the of/in coin flip is one you should not have to remember |
+| `… containing "<A>" and "<B>"` | on either scoped form: EVERY anchor must be in the SAME row or item. For when one column does not name a row - two people called John, two called Doe. The quotes delimit and `and` is a separator, exactly as in a multi-option `Select`. Anchors sitting in different rows match nothing rather than picking one, and a conjunction that is still ambiguous gives the same "matches N rows" error a single anchor does |
 | `the "<inner>" in the item containing "<anchor>"` | `item` means exactly `li`, `[role=listitem]`, `[role=row]`, `[role=option]`, `[role=article]`, `tr` - a closed list, not a guess |
 | `the "<inner>" inside the item containing "<anchor>"` | `inside` is a synonym for `in` |
 | `the "<inner>" in the "css:<sel>" containing "<anchor>"` | any container, named explicitly; `"id:<id>"` too |

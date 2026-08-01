@@ -72,7 +72,7 @@ const CELL_HINTS: &str = r#"function(){
   return JSON.stringify({ field: fieldOf(c), id: id });
 }"#;
 
-const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID){
+const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID, ALSO){
   document.querySelectorAll('[data-flowproof-cell]').forEach(function(e){
     e.removeAttribute('data-flowproof-cell');
   });
@@ -134,7 +134,17 @@ const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID){
     });
     if (!rows.length) continue;
     var idRow = ROWID ? rows.find(function(r){ return idOf(r) === ROWID; }) : null;
-    var anchorRows = rows.filter(function(r){ return txt(r).indexOf(ANCHOR) !== -1; });
+    // EVERY anchor must be in the SAME row. One column is often not
+    // unique - two people called John, two called Doe - and requiring the
+    // conjunction is how a row is named without falling back to position.
+    var anchorRows = rows.filter(function(r){
+      var t = txt(r);
+      if (t.indexOf(ANCHOR) === -1) return false;
+      for (var a = 0; a < (ALSO || []).length; a++) {
+        if (t.indexOf(ALSO[a]) === -1) return false;
+      }
+      return true;
+    });
     var chosen = null;
     if (idRow){
       if (txt(idRow).indexOf(ANCHOR) !== -1) chosen = idRow;
@@ -168,7 +178,7 @@ const ITEM_CONTAINERS: &str = "li, [role=listitem], [role=row], [role=option], [
 /// discarded, so the INNERMOST wins. Exactly one must remain. Returns a
 /// status: `ok`, `no_match`, `anchor_without_container`, `ambiguous:<n>`,
 /// or `bad_container`.
-const SCOPE_RESOLVER: &str = r#"function(CONTAINER, ANCHOR, CONTAINERID, ITEMS){
+const SCOPE_RESOLVER: &str = r#"function(CONTAINER, ANCHOR, CONTAINERID, ITEMS, ALSO){
   document.querySelectorAll('[data-flowproof-scope]').forEach(function(e){
     e.removeAttribute('data-flowproof-scope');
   });
@@ -186,7 +196,15 @@ const SCOPE_RESOLVER: &str = r#"function(CONTAINER, ANCHOR, CONTAINERID, ITEMS){
   var candidates;
   try { candidates = Array.prototype.slice.call(document.querySelectorAll(selector)); }
   catch (e) { return 'bad_container'; }
-  var matching = candidates.filter(function(c){ return txt(c).indexOf(ANCHOR) !== -1; });
+  // Every anchor in the SAME container - see the cell resolver.
+  var matching = candidates.filter(function(c){
+    var t = txt(c);
+    if (t.indexOf(ANCHOR) === -1) return false;
+    for (var a = 0; a < (ALSO || []).length; a++) {
+      if (t.indexOf(ALSO[a]) === -1) return false;
+    }
+    return true;
+  });
   // Innermost wins: drop any survivor that contains another survivor.
   var inner = matching.filter(function(c){
     return !matching.some(function(o){ return o !== c && c !== o && c.contains(o); });
@@ -739,11 +757,12 @@ impl WebAppDriver {
                 .unwrap_or_else(|| "null".into())
         };
         format!(
-            "({CELL_RESOLVER})({col},{anchor},{field},{rowid})",
+            "({CELL_RESOLVER})({col},{anchor},{field},{rowid},{also})",
             col = serde_json::Value::from(cell.column.as_str()),
             anchor = serde_json::Value::from(cell.anchor.as_str()),
             field = opt(&cell.column_field),
             rowid = opt(&cell.row_id),
+            also = serde_json::Value::from(cell.also.clone()),
         )
     }
 
@@ -808,11 +827,12 @@ impl WebAppDriver {
                 .unwrap_or_else(|| "null".into())
         };
         format!(
-            "({SCOPE_RESOLVER})({container},{anchor},{id},{items})",
+            "({SCOPE_RESOLVER})({container},{anchor},{id},{items},{also})",
             container = serde_json::Value::from(scope.container.as_str()),
             anchor = serde_json::Value::from(scope.anchor.as_str()),
             id = opt(&scope.container_id),
             items = serde_json::Value::from(ITEM_CONTAINERS),
+            also = serde_json::Value::from(scope.also.clone()),
         )
     }
 

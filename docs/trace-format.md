@@ -143,6 +143,14 @@ these fields existed) is byte-identical:
   matches nothing and so does an empty table, and the step that means zero
   is an `assert` with `element_count: 0`.
 
+  A `kind: "cell"` payload may carry `row_anchor_also: [...]`, and a
+  `kind: "scoped"` payload `anchor_also: [...]` — the ADDITIONAL anchors
+  that must all be present in the same row or container, beside the primary
+  `row_anchor`/`container_anchor`. A new key rather than a changed one, so a
+  reader that knows only one anchor still finds the field it expects; absent
+  in every trace written before conjunction existed, which decodes to the
+  single-anchor behaviour unchanged.
+
   A `type_text` step may carry `params.values: [...]` — a **multi-selection**,
   the whole set committed at once. Where `values` is present it is
   authoritative; `params.text` repeats only the first option, so a reader
