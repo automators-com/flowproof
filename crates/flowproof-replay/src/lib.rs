@@ -1852,6 +1852,23 @@ fn execute_step<D: AppDriver>(
                 if let Err(reason) = wait_actionable(driver, &target, actionable_timeout(step))? {
                     return Ok((Err(reason), matched));
                 }
+                // A multi-selection is one commit of a whole set, so it is
+                // decided before the single-value path: `values` is
+                // authoritative wherever it is present, and `text` carries
+                // only the first option for a reader that shows text.
+                if let Some(values) = params.extra.get("values").and_then(|v| v.as_array()) {
+                    let wanted: Vec<String> = values
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect();
+                    return Ok((
+                        match driver.select_options(&target, &wanted) {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(e.to_string()),
+                        },
+                        matched,
+                    ));
+                }
                 // The trace stores references, never values. A
                 // `${captured.x}` resolves from this run's captures and a
                 // `${VAR}` from the environment, both at the moment of

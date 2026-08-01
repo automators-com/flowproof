@@ -144,6 +144,14 @@ these fields existed) is byte-identical:
   matches nothing and so does an empty table, and the step that means zero
   is an `assert` with `element_count: 0`.
 
+  A `type_text` step may carry `params.values: [...]` — a **multi-selection**,
+  the whole set committed at once. Where `values` is present it is
+  authoritative; `params.text` repeats only the first option, so a reader
+  that shows text still names something concrete. A consumer that honours
+  `text` alone would under-select, which is why `values` is the field to
+  read. A new param key rather than a new action type, so a trace written
+  before multi-selection existed still loads.
+
   `type_text` variants: an **empty `selectors` array** means "type into the
   element that currently has keyboard focus"; `params.replace: true` marks
   fill semantics — the input's current value is cleared before typing (a
