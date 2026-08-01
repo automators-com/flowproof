@@ -181,6 +181,21 @@
                   "type": "string"
                 }
               }
+            },
+            "random": {
+              "type": "object",
+              "description": "A seeded Math.random, the clock's sibling: the page draws the same values on every run. The seed is a literal, never a ${VAR} - a seed resolved from the environment would make one trace mean different things on different machines. Applied identically at record and replay.",
+              "required": [
+                "seed"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "seed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                }
+              }
             }
           }
         },

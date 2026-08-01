@@ -1556,6 +1556,7 @@ fn an_element_below_the_fold_is_scrolled_to_rather_than_called_obscured() {
             user_agent: None,
             args: Vec::new(),
             clock: None,
+            random: None,
         }),
         agent: None,
         tools: Vec::new(),

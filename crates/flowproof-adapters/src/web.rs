@@ -339,6 +339,41 @@ fn clock_shim(at: &str) -> String {
     )
 }
 
+/// The randomness-pinning shim, injected before any page script for the
+/// same reason the clock's is: a page that has already called `Math.random`
+/// cannot be un-randomised afterwards.
+///
+/// Same argument as the pinned clock, applied to the other source of
+/// per-run drift. A page that mints a value from `Math.random` shows
+/// something different on every run, so the only honest thing to write
+/// against it is another read - and for a value the flow must ENTER rather
+/// than compare, there is nothing to read. Pinned, the value is a constant
+/// the author can write by hand, and record and replay see the same one.
+///
+/// mulberry32: tiny, well-distributed, and exactly reproducible from a
+/// 32-bit seed. The page keeps getting plausible-looking numbers; it just
+/// gets the SAME ones.
+///
+/// Deliberately narrow, and documented as such: `crypto.getRandomValues` is
+/// untouched (it is a security primitive, not a convenience), workers get
+/// their own real `Math.random`, and server-side randomness is `mock:`'s
+/// job. A shim that quietly covered less than it claimed would be worse
+/// than one with a stated edge.
+fn random_shim(seed: u32) -> String {
+    format!(
+        r#"(function(){{
+  var a = {seed} >>> 0;
+  Math.random = function() {{
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }};
+  window.__flowproofRandomPinned = true;
+}})();"#
+    )
+}
+
 fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
     let message = format!("{context}: {err}");
     if is_transport_fault(&message) {
@@ -1362,6 +1397,19 @@ impl AppDriver for WebAppDriver {
                     })
                     .map_err(|e| web_err("pinning the timezone", e))?;
                 }
+            }
+            // Pinned randomness, on the clock's terms: injected before any
+            // page script, and NOT best-effort. A flow that silently ran
+            // against real randomness would enter a value the page never
+            // generated and fail somewhere else entirely.
+            if let Some(random) = &config.random {
+                tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+                    source: random_shim(random.seed),
+                    world_name: None,
+                    include_command_line_api: None,
+                    run_immediately: None,
+                })
+                .map_err(|e| web_err("pinning randomness", e))?;
             }
         }
         if let Some(session) = self.staged_session.take() {

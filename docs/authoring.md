@@ -764,6 +764,43 @@ for the flow, since flags only apply at process start — expect its cold
 start. A suite's `suite.yaml` may carry the same `browser:` block as a
 default for every flow; a flow's own block wins outright.
 
+### Pinning randomness
+
+`browser.random` replaces the page's `Math.random` with a seeded PRNG,
+injected before any page script for the same reason the clock's shim is: a
+page that has already drawn a random number cannot be un-randomised
+afterwards.
+
+```yaml
+browser:
+  random:
+    seed: 1234
+```
+
+Same argument as the clock, applied to the other source of per-run drift. A
+page that mints a value from `Math.random` shows something different every
+run, so the only honest thing to write against it is another read — and for
+a value the flow must ENTER rather than compare, there is nothing to read.
+Pinned, the value is a constant you can write by hand, and record and every
+replay see the same one.
+
+`seed` is a **literal**, never a `${VAR}`: a seed resolved from the
+environment would make one trace mean different things on different
+machines, which is the drift pinning exists to remove. Web-only; a
+`random:` block on any other app kind is a spec error naming the
+restriction, because there is no `Math.random` to pin on a desktop window
+or an OCR frame.
+
+Deliberately narrow, and stated rather than discovered:
+`crypto.getRandomValues` is untouched (it is a security primitive, not a
+convenience), web workers get their own real `Math.random`, and
+server-side randomness is `mock:`'s job.
+
+**Pin the values you depend on.** A flow that types a constant derived from
+a pinned draw should assert the draw first — if the pin ever stops taking,
+that assertion fails loudly instead of the derived value being quietly
+wrong.
+
 ### Pinning the clock
 
 `browser.clock` freezes what the page reads as "now", so a date-dependent

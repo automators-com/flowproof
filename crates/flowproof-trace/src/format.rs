@@ -407,11 +407,25 @@ pub struct BrowserSetup {
     /// is deterministic (#58's sibling, GAP-P). Web-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock: Option<ClockSetup>,
+    /// A pinned `Math.random`, the clock's sibling: applied before
+    /// navigation so a flow against a page that mints random values is
+    /// deterministic. Web-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub random: Option<RandomSetup>,
+}
+
+/// The seed for the pinned PRNG. A literal, never a `${VAR}` - a seed
+/// resolved from the environment would make one trace mean different
+/// things on different machines.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RandomSetup {
+    pub seed: u32,
 }
 
 impl BrowserSetup {
     pub fn is_empty(&self) -> bool {
         self.viewport.is_none()
+            && self.random.is_none()
             && self.user_agent.is_none()
             && self.args.is_empty()
             && self.clock.is_none()

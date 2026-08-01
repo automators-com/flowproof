@@ -1493,6 +1493,10 @@ fn web_browser_from_setup(
             at: c.at.clone(),
             timezone: c.timezone.clone(),
         }),
+        setup
+            .random
+            .as_ref()
+            .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
     )
 }
 
