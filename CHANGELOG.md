@@ -38,6 +38,22 @@ together).
   only by its error message would be a refusal the fallback could still walk
   around.
 
+- **The suite was red off Linux, for a wording.** `cargo test --workspace`
+  failed on macOS and Windows on `a_control_record_states_the_containment_tier_it_ran_under`,
+  which asserted the tier string contained the literal `Linux-only`. When
+  Windows containment started, the message became "enforced on Linux
+  (seccomp) and in progress on Windows" — more accurate, and no longer
+  carrying that phrase.
+
+  Linux CI stayed green, so nothing caught it: the assertion is inside the
+  `else` branch that only non-Linux hosts take. What it cost was every
+  local verification off Linux, where the required `cargo test --workspace`
+  is red before you have touched anything — and a gate that is red by
+  default teaches people to read past it.
+
+  The test now asserts the substance, that the reason names where
+  containment IS enforced, rather than one wording of it.
+
 - **Our own suite had a flaky test, and it was red-lighting `main`.**
   `seeded_fixture_mutation_survives_navigation` wrote two pages to disk and
   navigated between `file://` urls, asserting that a cart mutation survived
