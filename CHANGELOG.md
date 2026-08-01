@@ -105,6 +105,27 @@ together).
 
 ### Fixed
 
+- **`Select` typed the option name when the option did not exist.** A JS
+  exception inside the driver does not reach Rust as an `Err`, so the throw
+  on a missing option looked exactly like "this element is not a
+  `<select>`" — the one case the code below it exists to handle — and it
+  fell through to typing the option's name into the dropdown.
+
+  Typing into a `<select>` is itself a prefix search, so the step landed on
+  whatever option starts with the same letters and reported success. Not a
+  failure and not the option that was asked for: a plausible wrong answer,
+  chosen quietly.
+
+  The two cases are now different answers rather than the same one. A status
+  value comes back and is inspected: `not_select` keeps the fall-through to
+  typing, which is what it was always for, and a name matching nothing fails
+  naming it. Prefix matching is untouched — it is the documented ladder
+  (value, then exact visible text, then prefix), and `Audit` selecting
+  `Auditor` is correct.
+
+  Found while building the multi-option form, whose first version had the
+  same defect and was caught by its own red-path test.
+
 - **The docs never said what a typed capture does with the text around
   it.** `authoring.md` showed one form, `Type ${captured.oid} into the …`,
   and said the value is read fresh on every replay. It did not say that
