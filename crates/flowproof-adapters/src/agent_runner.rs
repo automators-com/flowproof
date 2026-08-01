@@ -25,6 +25,7 @@ use flowproof_trace::substitution::Mocks;
 
 use crate::agent_proxy::{AgentProxy, ProxyError};
 use crate::egress::{AllowSet, Containment, EgressLog};
+use crate::fs_observe::FsLog;
 
 /// The environment variables an OpenAI-compatible client reads for its
 /// base URL. All of them are set, because the system under test picks one
@@ -145,6 +146,13 @@ pub struct AgentRun {
     ///
     /// [`ProxyLog`]: crate::agent_proxy::ProxyLog
     pub egress: EgressLog,
+    /// What the run DID to the filesystem: observed, never prevented.
+    ///
+    /// Nothing fills this yet. The log type and the report path land ahead of
+    /// the seccomp trap guards so that the guards themselves arrive as a
+    /// change to one file, which is the only part of this that needs a kernel
+    /// to review.
+    pub fs: FsLog,
     /// The containment tier this RUN achieved, when the run itself is what
     /// decides it.
     ///
@@ -378,6 +386,7 @@ pub fn run_http(
         stderr: String::new(),
         upstream_error: log.upstream_error.clone(),
         egress: EgressLog::default(),
+        fs: FsLog::default(),
         containment: None,
     };
     drop(log);
@@ -639,6 +648,7 @@ pub fn run_against(
         stderr,
         upstream_error: log.upstream_error.clone(),
         egress: EgressLog::default(),
+        fs: FsLog::default(),
         containment: None,
     };
     drop(log);
@@ -702,6 +712,8 @@ pub fn run_against_contained(
         stderr,
         upstream_error: log.upstream_error.clone(),
         egress,
+        // Nothing observes the filesystem yet; the trap guards land next.
+        fs: FsLog::default(),
         // Reaching here means the filter installed: it goes in via `pre_exec`
         // and a failure aborts the spawn, so there is no path to a finished
         // run with no filter behind it.
@@ -755,6 +767,8 @@ pub fn run_against_contained(
             blocked: outcome.blocked,
             faults: outcome.faults,
         },
+        // Filesystem observation is a seccomp mechanism; Windows has none.
+        fs: FsLog::default(),
         containment: Some(match outcome.not_contained {
             None => Containment::Enforced,
             Some(why) => Containment::NotContained(why),
