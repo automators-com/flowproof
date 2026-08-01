@@ -41,8 +41,25 @@ together).
   not. Both sides now count header and data cells together and index the
   header within its own row.
 
-  Found by pointing flowproof at a public obstacle web page built to be
-  deliberately awkward to automate.
+- **`is visible` passed on a `display:none` element.** The second of two
+  assertions that could not fail, found alongside the column bug above and
+  sharing its shape: it answered a narrower question than the one the author
+  asked, and the narrower answer was always yes.
+
+  Presence was the whole check, and a hidden element is still in the DOM and
+  still answers every selector — so the assertion could not fail on the one
+  condition anybody writes it for. It reported an input visible while
+  `Scroll … into view` refused the same element as unreachable, which is the
+  contradiction that gave it away.
+
+  Rendered-ness is now the browser's own answer (`display:none` anywhere up
+  the tree, `visibility:hidden`, `content-visibility`, `hidden`), and
+  `is not visible` is satisfied by absent OR hidden, because the user cannot
+  see either. A failure distinguishes *present and not rendered* from *never
+  appeared* — different bugs in the app under test, and the old message sent
+  the reader after a selector that was already correct. Surfaces with no
+  notion of rendered-ness beyond resolution (UIA, SAP, vision) keep the
+  presence reading rather than inventing a second opinion.
 
 ## 0.11.0
 

@@ -1746,6 +1746,38 @@ impl AppDriver for WebAppDriver {
         Ok(value.value.and_then(|v| v.as_bool()).unwrap_or(true))
     }
 
+    fn element_visible(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        let locator = Self::locator(selector)?;
+        let value = self.with_element(
+            &locator,
+            &format!("reading visibility of [{selector}]"),
+            |element| {
+                element.call_js_fn(
+                    // `checkVisibility` is the browser's own answer and
+                    // covers the cases a hand-rolled check keeps missing:
+                    // `display:none` on an ancestor, `visibility:hidden`,
+                    // `content-visibility`, and the `hidden` attribute. The
+                    // box test behind it catches the other family - an
+                    // element that is "visible" by style yet occupies no
+                    // space at all, which no user can see or click.
+                    r#"function() {
+                        if (typeof this.checkVisibility === 'function'
+                            && !this.checkVisibility({
+                                contentVisibilityAuto: true,
+                                opacityProperty: true,
+                                visibilityProperty: true
+                            })) { return false; }
+                        var r = this.getClientRects();
+                        return r.length > 0;
+                    }"#,
+                    vec![],
+                    false,
+                )
+            },
+        )?;
+        Ok(Some(value.value.and_then(|v| v.as_bool()).unwrap_or(true)))
+    }
+
     fn element_attribute(
         &mut self,
         selector: &UiaSelector,

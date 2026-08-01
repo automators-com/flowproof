@@ -521,6 +521,21 @@ pub trait AppDriver {
         ))
     }
 
+    /// Whether a RESOLVED element is actually rendered — backs the second
+    /// half of `the "<target>" is [not] visible`. Resolution alone is not
+    /// visibility: a `display:none` input is in the DOM and answers every
+    /// selector, so a presence-only check reports it visible and an
+    /// `is visible` assertion becomes one that cannot fail.
+    ///
+    /// `None` means this surface has no notion of rendered-ness beyond
+    /// resolution, and the caller keeps the presence answer. That is the
+    /// honest default: a UIA tree hands out elements that are already the
+    /// window's live visual content, and inventing a second opinion there
+    /// would be guesswork. Only the web adapter overrides it.
+    fn element_visible(&mut self, _selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        Ok(None)
+    }
+
     /// All text currently readable on the app's surface — the whole page
     /// for a browser, the foreground window's subtree for a desktop app,
     /// the OCR'd frame for a vision adapter. Backs surface-level assertions
@@ -1453,6 +1468,26 @@ pub fn count_matching<D: AppDriver + ?Sized>(
 /// assertion asks `expected + 1` questions and stops.
 pub const COUNT_DIAGNOSTIC_CAP: usize = 50;
 
+/// What `is [not] visible` actually asks: the element resolves AND, on a
+/// surface that can tell, is rendered. Returns `(resolved, visible)` so a
+/// caller can say which half failed - "never appeared" and "is in the DOM
+/// but hidden" are different bugs in the app under test, and an error that
+/// conflates them sends the reader to the wrong place.
+///
+/// Shared between record and replay for the same reason `count_matching`
+/// is: two notions of visible would let a recording pass and its replay
+/// fail with nothing to point at.
+pub fn visible_now<D: AppDriver + ?Sized>(
+    driver: &mut D,
+    selector: &UiaSelector,
+) -> Result<(bool, bool), DriverError> {
+    if !driver.element_exists(selector)? {
+        return Ok((false, false));
+    }
+    // `None` - no notion of rendered-ness here - keeps the presence answer.
+    Ok((true, driver.element_visible(selector)?.unwrap_or(true)))
+}
+
 pub fn resolve_app(app_id: &str) -> Option<AppTarget> {
     match app_id {
         "calc" => Some(AppTarget {
@@ -1522,6 +1557,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
         (**self).element_enabled(selector)
+    }
+
+    fn element_visible(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        (**self).element_visible(selector)
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
@@ -2159,6 +2198,66 @@ mod stub_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A surface that resolves everything, and answers the rendered-ness
+    /// question however the test asks it to.
+    struct VisibilityStub(Option<bool>);
+
+    impl AppDriver for VisibilityStub {
+        fn launch(&mut self, _c: &str, _w: &str, _t: Duration) -> Result<(), DriverError> {
+            Ok(())
+        }
+        fn element_exists(&mut self, _selector: &UiaSelector) -> Result<bool, DriverError> {
+            Ok(true)
+        }
+        fn invoke(&mut self, _selector: &UiaSelector) -> Result<(), DriverError> {
+            Ok(())
+        }
+        fn read_text(&mut self, _selector: &UiaSelector) -> Result<String, DriverError> {
+            Ok(String::new())
+        }
+        fn type_text(&mut self, _s: &UiaSelector, _t: &str) -> Result<(), DriverError> {
+            Ok(())
+        }
+        fn element_visible(&mut self, _s: &UiaSelector) -> Result<Option<bool>, DriverError> {
+            Ok(self.0)
+        }
+        fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
+            Ok((1, 1))
+        }
+    }
+
+    /// The bug this pins: a `display:none` element is in the DOM and
+    /// answers every selector, so a presence-only `is visible` reported it
+    /// visible and the assertion could not fail. Resolution and
+    /// rendered-ness are now separate answers.
+    #[test]
+    fn a_resolved_but_unrendered_element_is_not_visible() {
+        let selector = UiaSelector::default();
+
+        let (resolved, visible) =
+            visible_now(&mut VisibilityStub(Some(false)), &selector).expect("stub answers");
+        assert!(resolved, "the element IS in the tree");
+        assert!(!visible, "but a hidden element must not count as visible");
+
+        let (resolved, visible) =
+            visible_now(&mut VisibilityStub(Some(true)), &selector).expect("stub answers");
+        assert!(resolved && visible, "a rendered element is visible");
+    }
+
+    /// A surface with no notion of rendered-ness keeps the presence answer
+    /// rather than guessing - the desktop reading is unchanged by the fix.
+    #[test]
+    fn a_surface_without_a_visibility_notion_keeps_the_presence_answer() {
+        let selector = UiaSelector::default();
+        let (resolved, visible) =
+            visible_now(&mut VisibilityStub(None), &selector).expect("stub answers");
+        assert!(resolved && visible);
+
+        // And an element that does not resolve is not visible anywhere.
+        let (resolved, visible) = visible_now(&mut NoOpDriver, &selector).expect("no-op answers");
+        assert!(!resolved && !visible);
+    }
 
     /// The verdict is shared by record and replay so the phases cannot
     /// disagree, and it never has a value to leak.
