@@ -384,6 +384,48 @@ pub fn run_http(
     Ok(run)
 }
 
+/// The variables flowproof sets on an agent, over an inherited environment.
+///
+/// Extracted from [`configure`] because Windows cannot use it. A contained
+/// child there is launched with an explicit environment BLOCK rather than a
+/// `Command`, so the same decisions have to be expressible as data: which
+/// names to set, and which to leave out.
+///
+/// The credential names are NOT in the returned map. `Command::env_remove`
+/// has no equivalent in a block — a block is a whole environment, not a delta
+/// — so "remove" becomes "do not inherit", and the caller is told which names
+/// to drop rather than being handed a removal it cannot perform.
+pub fn agent_env(base: &str, env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for var in BASE_URL_VARS {
+        out.insert(var.to_string(), base.to_string());
+    }
+    // Placeholders, so a client that refuses to start without a key still
+    // reaches the proxy. There is no real upstream for it to leak to.
+    out.insert(
+        "OPENAI_API_KEY".into(),
+        "flowproof-replay-no-key-needed".into(),
+    );
+    // The Anthropic SDK appends `/v1/messages` itself, so it wants the origin
+    // WITHOUT the `/v1` the OpenAI vars keep.
+    out.insert("ANTHROPIC_BASE_URL".into(), anthropic_base(base));
+    out.insert(
+        "ANTHROPIC_API_KEY".into(),
+        "flowproof-replay-no-key-needed".into(),
+    );
+    // `${FLOWPROOF_LLM_PROXY}` is the documented handle for clients that take
+    // the base URL as an argument rather than an env var.
+    out.insert("FLOWPROOF_LLM_PROXY".into(), base.to_string());
+    // The spec's own env goes LAST so a flow can override any of the above; it
+    // knows its client better than this module does. Values may reference
+    // runtime handles the spec could not know when it was written, because the
+    // proxy binds an ephemeral port.
+    for (key, value) in env {
+        out.insert(key.clone(), substitute_runtime_handles(value, base, env));
+    }
+    out
+}
+
 /// Build the agent's [`Command`] with the proxy pointed at `base` and the
 /// spec's env applied on top. Shared by the plain and contained spawn paths.
 fn configure(
@@ -403,9 +445,6 @@ fn configure(
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for var in BASE_URL_VARS {
-        child.env(var, base);
-    }
     // Drop every credential name BEFORE handing out placeholders. `Command`
     // inherits this process's environment, so a name flowproof does not
     // explicitly set is passed through — and the record path runs with a real
@@ -413,27 +452,8 @@ fn configure(
     for var in CREDENTIAL_VARS {
         child.env_remove(var);
     }
-    child.env("OPENAI_API_KEY", "flowproof-replay-no-key-needed");
-    // The Anthropic SDK reads its own base URL and appends `/v1/messages`
-    // itself, so it wants the origin WITHOUT the `/v1` the OpenAI vars keep;
-    // hand it the suffix-free form. A placeholder key for the same reason
-    // OPENAI_API_KEY gets one: a client that refuses to start without a key
-    // must still reach the proxy, and there is no real upstream to leak to.
-    child.env("ANTHROPIC_BASE_URL", anthropic_base(base));
-    child.env("ANTHROPIC_API_KEY", "flowproof-replay-no-key-needed");
-    // `${FLOWPROOF_LLM_PROXY}` is the documented handle for the base URL,
-    // for clients that take it as an argument rather than an env var.
-    child.env("FLOWPROOF_LLM_PROXY", base);
-    // The spec's own env goes on LAST so a flow can override any of the
-    // above; it knows its client better than this module does.
-    //
-    // Values may reference runtime handles the spec cannot know when it is
-    // written, because the proxy binds an ephemeral port. Without this, an
-    // agent whose client reads a non-standard variable (an AI gateway URL,
-    // say) cannot be pointed at the proxy from the spec at all, and every
-    // such adopter writes the same wrapper script.
-    for (key, value) in env {
-        child.env(key, substitute_runtime_handles(value, base, env));
+    for (key, value) in agent_env(base, env) {
+        child.env(key, value);
     }
     Ok(child)
 }
@@ -691,7 +711,60 @@ pub fn run_against_contained(
     Ok(run)
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Windows: a per-run identity behind WFP filters scoped to it.
+///
+/// Unlike Linux this cannot reuse `run_against`'s machinery at all — the child
+/// runs as a DIFFERENT user, so `std::process::Command` cannot start it and
+/// its pipes cannot reach it. `egress_windows::run` does the whole sequence
+/// and reports what it ACHIEVED, which is why the tier travels back on the run
+/// rather than being predicted by a probe.
+#[cfg(windows)]
+pub fn run_against_contained(
+    proxy: &AgentProxy,
+    command: &str,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+    allow: &AllowSet,
+) -> Result<AgentRun, RunError> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err(RunError::NoCommand);
+    }
+    let base = proxy.base_url();
+    let outcome = crate::egress_windows::run::run_contained(
+        command,
+        &agent_env(&base, env),
+        &CREDENTIAL_VARS,
+        allow.entries(),
+        timeout,
+    );
+
+    let log = proxy.log();
+    let run = AgentRun {
+        served: log.served,
+        divergence: log.divergence.clone(),
+        trigger: Trigger::Process,
+        exit_code: outcome.exit_code,
+        // `None` from the wait means the deadline passed, which is the same
+        // thing `wait_to_deadline` reports as a timeout on the other paths.
+        timed_out: outcome.exit_code.is_none(),
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
+        upstream_error: log.upstream_error.clone(),
+        egress: EgressLog {
+            blocked: outcome.blocked,
+            faults: outcome.faults,
+        },
+        containment: Some(match outcome.not_contained {
+            None => Containment::Enforced,
+            Some(why) => Containment::NotContained(why),
+        }),
+    };
+    drop(log);
+    Ok(run)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn run_against_contained(
     proxy: &AgentProxy,
     command: &str,
@@ -699,8 +772,8 @@ pub fn run_against_contained(
     timeout: Duration,
     _allow: &AllowSet,
 ) -> Result<AgentRun, RunError> {
-    // The seccomp mechanism is Linux-only; elsewhere this is the plain path,
-    // and the report's tier line says "not contained".
+    // No mechanism on this platform; the plain path, and the tier line says
+    // "not contained".
     run_against(proxy, command, env, timeout)
 }
 
@@ -825,6 +898,34 @@ mod tests {
                  nor replaces it with the placeholder; it would be inherited"
             );
         }
+    }
+
+    /// The same claim for the map the Windows path uses. A `Command` gets
+    /// removal and placeholders as two separate operations; an environment
+    /// BLOCK gets one map plus an exclusion list, and this asserts the map's
+    /// half — a credential name is in it only as the placeholder.
+    ///
+    /// Worth its own test because the two paths could drift: adding a fifth
+    /// credential name to `CREDENTIAL_VARS` keeps `configure` correct for free
+    /// (it iterates the constant) but would silently leave the map naming a
+    /// real key if someone also added it to `agent_env`.
+    #[test]
+    fn the_windows_environment_map_names_no_real_credential() {
+        let env = agent_env("http://127.0.0.1:9/v1", &BTreeMap::new());
+        for var in CREDENTIAL_VARS {
+            match env.get(var) {
+                None => {}
+                Some(v) => assert_eq!(
+                    v, "flowproof-replay-no-key-needed",
+                    "{var} is in the map handed to the contained child, and it is \
+                     not the placeholder"
+                ),
+            }
+        }
+        // And the two that MUST be present still are, or a client that
+        // refuses to start without a key never reaches the proxy.
+        assert!(env.contains_key("OPENAI_API_KEY"));
+        assert!(env.contains_key("ANTHROPIC_API_KEY"));
     }
 
     /// A spec that deliberately passes a credential through — `agent.env` with

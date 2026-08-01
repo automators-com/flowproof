@@ -205,6 +205,10 @@ pub fn spawn(
     password: &str,
     command_line: &str,
     env: &BTreeMap<String, String>,
+    // Names the child must NOT inherit — the credential variables. Passed in
+    // rather than known here: they live behind the `agent` feature, and this
+    // module stays off it so the Win32 code can be typechecked from Linux.
+    exclude: &[&str],
     stdout: Option<HANDLE>,
     stderr: Option<HANDLE>,
 ) -> Result<Contained, WinErr> {
@@ -212,7 +216,7 @@ pub fn spawn(
         // Built here so it outlives both CreateProcess calls below. Passing
         // None would hand the child flowproof's OWN environment, without the
         // per-run proxy variables - see `env_block`.
-        let mut block = environment_block(env);
+        let mut block = environment_block(env, exclude);
         let job = CreateJobObjectW(None, PCWSTR::null())
             .map_err(|e| WinErr::new("CreateJobObjectW", e.code().0 as u32, ""))?;
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();

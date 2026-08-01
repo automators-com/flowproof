@@ -82,6 +82,8 @@ impl Outcome {
 pub fn run_contained(
     command_line: &str,
     env: &BTreeMap<String, String>,
+    // Credential names the child must not inherit; see `spawn::spawn`.
+    exclude: &[&str],
     entries: &[AllowEntry],
     timeout: std::time::Duration,
 ) -> Outcome {
@@ -156,6 +158,7 @@ pub fn run_contained(
         &ident.password,
         command_line,
         env,
+        exclude,
         out_sink.as_ref().map(|c| c.handle()),
         err_sink.as_ref().map(|c| c.handle()),
     ) {

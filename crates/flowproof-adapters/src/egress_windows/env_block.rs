@@ -25,11 +25,17 @@
 use std::collections::BTreeMap;
 
 /// Build a UNICODE environment block from this process's environment plus
-/// `overrides`.
+/// `overrides`, minus `exclude`.
+///
+/// `exclude` is how a block expresses `Command::env_remove`. A block is a
+/// WHOLE environment rather than a delta, so a name is dropped by not being
+/// written — and the names that matter here are the credential variables the
+/// record path runs with a real key in. An agent is third-party code; it gets
+/// the placeholder, never the key.
 ///
 /// Returns the UTF-16 buffer; the caller passes a pointer to it and must keep
 /// it alive across the `CreateProcess*` call.
-pub fn environment_block(overrides: &BTreeMap<String, String>) -> Vec<u16> {
+pub fn environment_block(overrides: &BTreeMap<String, String>, exclude: &[&str]) -> Vec<u16> {
     // Keyed by upper-case name so an override replaces the inherited entry
     // whatever case either used. The value keeps the ORIGINAL name, because
     // the child should see the name as it was written.
@@ -41,7 +47,11 @@ pub fn environment_block(overrides: &BTreeMap<String, String>) -> Vec<u16> {
         if name.is_empty() {
             continue;
         }
-        merged.insert(name.to_uppercase(), (name, value));
+        let upper = name.to_uppercase();
+        if exclude.iter().any(|e| e.to_uppercase() == upper) {
+            continue;
+        }
+        merged.insert(upper, (name, value));
     }
     for (name, value) in overrides {
         if name.is_empty() {
@@ -99,7 +109,7 @@ mod tests {
         );
         overrides.insert("FLOWPROOF_PROMPT".to_string(), "do the thing".into());
 
-        let entries = parse(&environment_block(&overrides));
+        let entries = parse(&environment_block(&overrides, &[]));
         assert!(entries
             .iter()
             .any(|e| e == "OPENAI_BASE_URL=http://127.0.0.1:9/v1"));
@@ -112,7 +122,7 @@ mod tests {
     fn the_parents_environment_is_inherited() {
         // Something guaranteed present in this process.
         std::env::set_var("FLOWPROOF_ENV_BLOCK_PROBE", "inherited");
-        let entries = parse(&environment_block(&BTreeMap::new()));
+        let entries = parse(&environment_block(&BTreeMap::new(), &[]));
         assert!(entries
             .iter()
             .any(|e| e == "FLOWPROOF_ENV_BLOCK_PROBE=inherited"));
@@ -128,7 +138,7 @@ mod tests {
         let mut overrides = BTreeMap::new();
         overrides.insert("flowproof_case_probe".to_string(), "from-override".into());
 
-        let entries = parse(&environment_block(&overrides));
+        let entries = parse(&environment_block(&overrides, &[]));
         let matching: Vec<_> = entries
             .iter()
             .filter(|e| e.to_uppercase().starts_with("FLOWPROOF_CASE_PROBE="))
@@ -147,10 +157,39 @@ mod tests {
     /// pointer.
     #[test]
     fn the_block_is_double_nul_terminated() {
-        let block = environment_block(&BTreeMap::new());
+        let block = environment_block(&BTreeMap::new(), &[]);
         assert!(block.len() >= 2);
         assert_eq!(block[block.len() - 1], 0);
         assert_eq!(block[block.len() - 2], 0);
+    }
+
+    /// An excluded name is not inherited. This is how the credential
+    /// variables are kept from a contained agent: `Command::env_remove` has no
+    /// block equivalent, so a name is dropped by never being written. An
+    /// override of the same name still wins - the placeholder must survive.
+    #[test]
+    fn an_excluded_name_is_not_inherited() {
+        std::env::set_var("FLOWPROOF_SECRET_PROBE", "the-real-key");
+        let entries = parse(&environment_block(
+            &BTreeMap::new(),
+            &["FLOWPROOF_SECRET_PROBE"],
+        ));
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.starts_with("FLOWPROOF_SECRET_PROBE=")),
+            "the real key must not reach the agent"
+        );
+
+        // ...but an explicit override of an excluded name is still set, which
+        // is exactly the placeholder case for OPENAI_API_KEY.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("FLOWPROOF_SECRET_PROBE".to_string(), "placeholder".into());
+        let entries = parse(&environment_block(&overrides, &["FLOWPROOF_SECRET_PROBE"]));
+        assert!(entries
+            .iter()
+            .any(|e| e == "FLOWPROOF_SECRET_PROBE=placeholder"));
+        std::env::remove_var("FLOWPROOF_SECRET_PROBE");
     }
 
     /// Sorted, as Windows documents the block to be.
@@ -160,7 +199,7 @@ mod tests {
         overrides.insert("ZZ_FLOWPROOF_SORT".to_string(), "z".into());
         overrides.insert("AA_FLOWPROOF_SORT".to_string(), "a".into());
 
-        let entries = parse(&environment_block(&overrides));
+        let entries = parse(&environment_block(&overrides, &[]));
         let upper: Vec<String> = entries.iter().map(|e| e.to_uppercase()).collect();
         let mut sorted = upper.clone();
         sorted.sort();
