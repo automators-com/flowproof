@@ -24,7 +24,7 @@ use flowproof_trace::cassette::{Cassette, Divergence};
 use flowproof_trace::substitution::Mocks;
 
 use crate::agent_proxy::{AgentProxy, ProxyError};
-use crate::egress::{AllowSet, EgressLog};
+use crate::egress::{AllowSet, Containment, EgressLog};
 
 /// The environment variables an OpenAI-compatible client reads for its
 /// base URL. All of them are set, because the system under test picks one
@@ -145,6 +145,20 @@ pub struct AgentRun {
     ///
     /// [`ProxyLog`]: crate::agent_proxy::ProxyLog
     pub egress: EgressLog,
+    /// The containment tier this RUN achieved, when the run itself is what
+    /// decides it.
+    ///
+    /// `None` means "ask the spec" - an uncontained path, a `url:` service, a
+    /// flow that engages no egress. `Some` means the run determined its own
+    /// tier and that answer wins, because a probe taken beforehand can only
+    /// say what a host COULD do.
+    ///
+    /// On Linux the two agree by construction: the seccomp filter installs in
+    /// the child's `pre_exec`, so reaching a finished run means it installed.
+    /// Windows has several steps that can fail after a probe says yes, which
+    /// is why this field exists at all - reporting the probe's answer there
+    /// would let a run whose filters never installed still say "enforced".
+    pub containment: Option<Containment>,
 }
 
 impl AgentRun {
@@ -364,6 +378,7 @@ pub fn run_http(
         stderr: String::new(),
         upstream_error: log.upstream_error.clone(),
         egress: EgressLog::default(),
+        containment: None,
     };
     drop(log);
     Ok(run)
@@ -604,6 +619,7 @@ pub fn run_against(
         stderr,
         upstream_error: log.upstream_error.clone(),
         egress: EgressLog::default(),
+        containment: None,
     };
     drop(log);
     Ok(run)
@@ -666,6 +682,10 @@ pub fn run_against_contained(
         stderr,
         upstream_error: log.upstream_error.clone(),
         egress,
+        // Reaching here means the filter installed: it goes in via `pre_exec`
+        // and a failure aborts the spawn, so there is no path to a finished
+        // run with no filter behind it.
+        containment: Some(Containment::Enforced),
     };
     drop(log);
     Ok(run)
