@@ -55,10 +55,15 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
     # Windows egress containment (`agent`): the capability probe reads the
     # process token's elevation and privileges, and asks the SCM whether the
-    # Secondary Logon service exists.
+    # Secondary Logon service exists. The per-run identity creates a local
+    # account (NetManagement), resolves its SID (Security_Authorization) and
+    # takes its credential from the system RNG (Security_Cryptography).
     "Win32_Security",
     "Win32_System_Threading",
     "Win32_System_Services",
+    "Win32_NetworkManagement_NetManagement",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
 ], optional = true }
 
 [lints]
