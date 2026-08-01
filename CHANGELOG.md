@@ -8,6 +8,30 @@ together).
 
 ### Added
 
+- **A dropdown inside a table row had no spelling at all.** Every other
+  action learned the scope suffix - `Click`, `Type`, `Clear`, `Check`,
+  `Press … button`, `Right-click`, `Remember` - and `Select` was simply
+  never wired to it.
+
+  That is the one control where it hurts most. A page that puts a `<select>`
+  in each row gives them all the same label, so the only way to reach the
+  third one was `the 3rd "Value"`: counting, which is exactly the
+  positional addressing the scoped targets exist to remove. Change the row
+  order and the flow selects in the wrong row, quietly.
+
+  ```yaml
+  - Select Approved from the "Value" column of the row containing "Invoice 4711"
+  - Select "A", "B" from the "Tags" field in the item containing "Invoice 4711"
+  ```
+
+  It is the shared suffix parse, so everything it already understood comes
+  along: the cell and container forms, the multi-option list, and
+  conjunctive anchors. The role noun becomes optional once a scope has
+  named the control - `"Value" column of the row containing "X"` is already
+  unambiguous - but an unscoped quoted label still requires `field` or
+  `dropdown`, so nothing that used to be a parse error quietly becomes a
+  page-wide guess.
+
 - **A page that rolls a dice could not be tested, only watched.**
   `browser.clock` has always pinned what a page reads as "now", on the
   argument that a flow whose meaning changes daily is not a test. The other

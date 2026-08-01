@@ -62,7 +62,7 @@ before migrating a suite's setup helpers step by step.
 | `Scroll the [2nd ]"<target>" to the [top\|bottom]` | scroll the TARGET as a container to an edge (the `the` before top/bottom is optional). Web only |
 | `Scroll [the [2nd ]]"<target>" into view` | bring an in-DOM element into the viewport. Web only |
 | `Scroll to the [top\|bottom]` | scroll the PAGE itself (no target, like `Press <Key>`). Web only. Scroll is instant with no settle-wait - the next assertion auto-waits - and the step verifies the scroll took (edge reached / rect in viewport) |
-| `<action> … the "<target>" in the item containing "<anchor>"` | any action above, scoped to one list item or table cell - see [Scoped targets](#scoped-targets-table-cells-and-list-items-by-identity) |
+| `<action> … the "<target>" in the item containing "<anchor>"` | any action above, scoped to one list item or table cell - see [Scoped targets](#scoped-targets-table-cells-and-list-items-by-identity). `Select` takes it too: `Select Approved from the "Value" column of the row containing "Invoice 4711"`, where the role noun is optional because the column and the row anchor already say which control is meant |
 | `Press <Key>` / `Press <Mod>+<Key>` | `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `Space`, arrows, `Home`/`End`, `PageUp`/`PageDown`; chords `Control+V`, `Alt+Shift+Backspace`. `Mod` (aliases `CtrlOrMeta`, `ControlOrMeta`) is the **portable** primary modifier: stored neutrally in the trace and resolved at execution — Meta on macOS, Ctrl elsewhere — so `Press Mod+K` recorded on a Mac replays on Linux CI |
 | `Press F1`–`F12`, alone or in a chord (`Press Alt+F4`) | **Desktop only** — every UIA-driven app plus SAP and vision. SAP is largely driven by them (F3 back, F4 value help, F8 execute), and they are often the only way to reach an action with no clickable equivalent; `Alt+F4` is also the dependable way to close a window, since a title-bar caption button is frequently absent from the UIA tree. Spelling is case-insensitive and stored canonically (`f4` → `F4`). On **web** these are refused at authoring time, not at replay: the browser has no key definition for them, so drive the control itself with `Press the "<label>" button` or `Click "<text>"` |
 | `Go to <path-or-URL>` / `Navigate to <path-or-URL>` | relative paths resolve against the flow URL's origin; on SAP this is transaction navigation (`Go to /nVA01`) |
@@ -233,8 +233,18 @@ The same cell target composes with every predicate (`shows`, `is empty`,
 `is [not] visible`, `is enabled`, `checkbox is [not] checked`, `attribute
 <name> is [not] <value>`, `has|does not have attribute <name>`, `style <prop>
 is [not] <value>`) and every action (`Click`, `Type … into`, `Clear`,
-`Check`, `Scroll`). `in the row containing` also works - the of/in coin flip
-is one you should not have to remember.
+`Check`, `Scroll`, `Select`). `in the row containing` also works - the of/in
+coin flip is one you should not have to remember.
+
+A **dropdown inside a row** is the case this exists for. A page that puts
+one `<select>` per row gives them all the same label, so without a scope
+the only way to reach the third one is `the 3rd "Value"` - the positional
+addressing scopes were built to remove:
+
+```yaml
+- Select Approved from the "Value" column of the row containing "Invoice 4711"
+- Select "A", "B" from the "Tags" field in the item containing "Invoice 4711"
+```
 
 A column is matched by its header's text and then addressed by that
 header's position **within its own row**, counting header and data cells
