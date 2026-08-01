@@ -337,6 +337,7 @@ impl AppDriver for MockAppDriver {
             crate::app::ScrollTo::Top => "top",
             crate::app::ScrollTo::Bottom => "bottom",
             crate::app::ScrollTo::IntoView => "into_view",
+            crate::app::ScrollTo::Offset(_) => "offset",
         };
         self.scrolls.push((key, edge.into()));
         Ok(())
