@@ -179,12 +179,23 @@ fn build_filter() -> Vec<libc::sock_filter> {
         ]
     };
 
-    // Prologue: reject a foreign arch (out of scope for v1 - a 32-bit compat
-    // call is a documented punt) by allowing it, then load the syscall nr.
+    // Prologue: DENY a foreign arch, then load the syscall nr.
+    //
+    // Syscall numbers are per-architecture, so on a foreign arch every
+    // `guard()` below compares against the wrong table and the filter means
+    // nothing. This used to resolve that by allowing the call through, which
+    // handed a 32-bit process on an x86_64 host unrestricted egress while the
+    // run still reported `enforced` and `assert_no_egress` still certified it.
+    // Denying is the only answer consistent with the rest of this filter,
+    // where every unmodelled case - an unparseable sockaddr, io_uring,
+    // AF_PACKET - denies rather than guesses.
+    //
+    // The cost is that a genuinely 32-bit agent stops working under
+    // containment. That is correct: today it "works" by not being contained.
     let mut f = vec![
         bpf_stmt(BPF_LD | BPF_W | BPF_ABS, OFF_ARCH),
         bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH, 1, 0),
-        bpf_stmt(BPF_RET | BPF_K, allow),
+        bpf_stmt(BPF_RET | BPF_K, eperm),
         bpf_stmt(BPF_LD | BPF_W | BPF_ABS, OFF_NR),
     ];
     f.extend(guard(libc::SYS_io_uring_setup, eperm));
@@ -1166,6 +1177,45 @@ mod tests {
         let last = f.last().expect("non-empty");
         assert_eq!(last.code, BPF_RET | BPF_K);
         assert_eq!(last.k, SECCOMP_RET_ALLOW);
+    }
+
+    /// The false green from #301, pinned.
+    ///
+    /// The EPILOGUE default-allows (asserted above) - that is the
+    /// sandbox-not-a-jail posture and it stays. The PROLOGUE must not: a
+    /// foreign architecture indexes a different syscall table, so every guard
+    /// after it compares against the wrong numbers. Allowing there gave a
+    /// 32-bit process on an x86_64 host unrestricted egress while the run
+    /// still reported `enforced`.
+    ///
+    /// The filter is pure data, so this needs no kernel and no Linux runner
+    /// to be meaningful - which is why it is the ratchet rather than an E2E.
+    #[test]
+    fn the_prologue_denies_a_foreign_arch() {
+        let f = build_filter();
+
+        // Instruction 0 loads the arch, 1 compares it, 2 is the mismatch arm.
+        assert_eq!(f[0].code, BPF_LD | BPF_W | BPF_ABS, "loads arch first");
+        assert_eq!(f[0].k, OFF_ARCH);
+        assert_eq!(f[1].code, BPF_JMP | BPF_JEQ | BPF_K);
+        assert_eq!(f[1].k, AUDIT_ARCH, "compares against the native arch");
+        assert_eq!(
+            f[1].jt, 1,
+            "a MATCHING arch skips the mismatch arm and falls through"
+        );
+
+        let mismatch = f[2];
+        assert_eq!(mismatch.code, BPF_RET | BPF_K, "mismatch arm returns");
+        assert_ne!(
+            mismatch.k, SECCOMP_RET_ALLOW,
+            "a foreign arch must never be allowed through: every guard below \
+             this point compares against the wrong syscall table"
+        );
+        assert_eq!(
+            mismatch.k,
+            SECCOMP_RET_ERRNO | (libc::EPERM as u32),
+            "and it denies with EPERM, matching every other unmodelled case"
+        );
     }
 
     #[test]
