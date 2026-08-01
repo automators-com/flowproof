@@ -1,14 +1,24 @@
-//! Windows egress containment. Still installs no WFP filter and launches
-//! nothing; [`identity`] adds the per-run account the filters will be scoped
-//! to.
+//! Windows egress containment, end to end: a per-run local account
+//! ([`identity`]) it is logged on as ([`logon`]) and started under
+//! ([`spawn`]), WFP filters scoped to that account's SID ([`wfp`],
+//! [`filters`]), and the audit lane that evidences what they refused
+//! ([`netevents`], [`audit`]). [`run`] is the sequence; everything else is a
+//! step in it.
 //!
-//! **Nothing here can produce a `Containment::Enforced`.** That is structural
-//! rather than a convention: this module does not name that type at all. It
-//! reports facts; `Containment::command_flow` turns them into a "not
-//! contained" reason, and `enforced_is_unreachable_on_windows` in `egress`
-//! asserts the tier. Claiming enforcement before a filter exists would let
-//! `assert_no_egress` certify a run nothing was containing - the same false
-//! green as #300 and #301 by a third route.
+//! **Nothing here names `Containment`.** That is structural rather than a
+//! convention, and it survives the filters existing: this module is gated on
+//! the `windows` DEPENDENCY while `Containment` is gated on the `agent`
+//! FEATURE, so naming it would drag this code behind `agent` and cost it the
+//! only typecheck it gets without a Windows runner (see the gate on the `pub
+//! mod` in `lib.rs`).
+//!
+//! So [`run::Outcome`] reports what the run ACHIEVED as plain data, and the
+//! caller converts. `Containment::command_flow` still cannot return
+//! `Enforced` on Windows, for a reason that outlived the filters landing: it
+//! is a PRE-RUN probe, and seven steps can fail after it passes. Predicting a
+//! tier and reporting it as a result would let `assert_no_egress` certify a
+//! run nothing was containing - the same false green as #300 and #301 by a
+//! third route.
 //!
 //! Probing at all is about the REASON. Windows containment needs three things
 //! a host can be missing, each of which fails as something else (see

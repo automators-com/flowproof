@@ -72,14 +72,21 @@ impl Containment {
         crate::egress_linux::probe_containment()
     }
 
-    /// Windows is being built. Until the WFP filters land this ALWAYS returns
-    /// "not contained" - the probe only makes the REASON specific, so an
-    /// adopter learns whether their host is ready rather than guessing.
+    /// Windows decides its tier from the RUN, not from this probe, so this is
+    /// the answer for a run that has not started - and it is never optimistic.
     ///
-    /// The `Enforced` arm is absent rather than conditional. `egress_windows`
-    /// reports facts about the host and never names this type, so there is no
-    /// path from a probe result to a containment claim until the step that
-    /// installs the filters adds one.
+    /// That is the whole difference from the Linux arm above. There the filter
+    /// installs in the child's `pre_exec`, so a probe-pass implies an
+    /// install-success. Here seven steps can still fail after the probe says
+    /// yes - the account, the logon, the privileges, the desktop grant, the
+    /// engine, the sublayer, the filters - plus collection, without which
+    /// there is no audit lane. See [`crate::egress_windows::run`].
+    ///
+    /// So the `Enforced` arm is absent rather than conditional. A tier claimed
+    /// from a probe would be a PREDICTION reported as a RESULT, which is the
+    /// false green of #300 and #301 arriving by optimism instead of by
+    /// silence. The achieved tier travels back on
+    /// [`crate::agent_runner::AgentRun::containment`] and wins where present.
     #[cfg(windows)]
     pub fn command_flow() -> Self {
         use crate::egress_windows::HostReadiness;
@@ -87,14 +94,13 @@ impl Containment {
         let blockers = host.blockers();
         if blockers.is_empty() {
             Containment::NotContained(format!(
-                "egress containment is not implemented on Windows yet; this host could \
-                 support it ({})",
+                "this run has not been contained; on Windows the tier is decided by the \
+                 run, and this host can support it ({})",
                 host.summary()
             ))
         } else {
             Containment::NotContained(format!(
-                "egress containment is not implemented on Windows yet, and this host could \
-                 not support it as configured: {}",
+                "this host cannot enforce egress containment as configured: {}",
                 blockers.join("; ")
             ))
         }
@@ -285,27 +291,33 @@ mod tests {
         );
     }
 
-    /// Until the WFP filters exist, a Windows `command:` flow must report
-    /// "not contained" - whatever the host is capable of.
+    /// The PRE-RUN prediction is never optimistic on Windows.
     ///
-    /// This is the same false green as #300 and #301 arriving by a third
-    /// route: a tier that says `enforced` lets `assert_no_egress` certify a
-    /// run nothing was containing. The probe makes the REASON specific; it
-    /// must never make the VERDICT optimistic. The step that installs filters
-    /// is the step that deletes this test.
+    /// This test used to say the filters did not exist. They do now, so what
+    /// it holds has changed while staying the same claim: a tier taken before
+    /// anything starts must not say `enforced`, because seven steps can fail
+    /// after the probe passes. A tier that says `enforced` lets
+    /// `assert_no_egress` certify a run nothing was containing - the false
+    /// green of #300 and #301 arriving by prediction rather than by silence.
+    ///
+    /// The reason must also describe the RUN, not our roadmap. "Not
+    /// implemented on Windows yet" was true when this file was written and is
+    /// now prose describing code that no longer exists, which this repository
+    /// treats as a defect in its own right.
     #[cfg(windows)]
     #[test]
-    fn enforced_is_unreachable_on_windows() {
+    fn the_pre_run_prediction_is_never_optimistic_on_windows() {
         let tier = Containment::command_flow();
         assert!(
             !tier.is_enforced(),
-            "no filter is installed yet, so nothing can be contained: {}",
+            "the run has not started, so nothing has been contained yet: {}",
             tier.report_line()
         );
         let reason = tier.reason().expect("not contained carries a reason");
         assert!(
-            reason.contains("not implemented on Windows yet"),
-            "the reason must read as our roadmap, not as the adopter's host: {reason}"
+            !reason.contains("not implemented"),
+            "Windows containment IS implemented; the reason must describe this run, \
+             not a roadmap that has moved on: {reason}"
         );
     }
 
