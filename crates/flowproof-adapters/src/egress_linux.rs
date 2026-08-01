@@ -53,6 +53,25 @@
 //!    of the address and replies via `SECCOMP_IOCTL_NOTIF_SEND`. The kernel
 //!    never re-reads child memory, so the race is structurally gone.
 //! 6. A DENIED destination is recorded and answered `-ECONNREFUSED`.
+//!
+//! # Filesystem OBSERVATION, which is the opposite bargain
+//!
+//! The same filter also traps the destructive filesystem syscalls, and each of
+//! those handlers replies `SECCOMP_USER_NOTIF_FLAG_CONTINUE` - the very flag
+//! the egress path refuses. The kernel then runs the syscall itself, re-reading
+//! child memory AFTER we decided, so a sibling thread can rewrite the path in
+//! between and every path recorded there is potentially stale.
+//!
+//! Fatal for a DENIAL, acceptable for an OBSERVATION, and that asymmetry is
+//! the design: nothing is prevented, so a raced path cannot let anything
+//! through. It can only misname the victim in a run where the TRAP already
+//! proved a destructive syscall happened - and traps fire on syscall NUMBER,
+//! which no thread can race.
+//!
+//! So if you are here to upgrade this side to denial, `CONTINUE` has to go with
+//! it; adopt `perform_connect`'s pattern instead. Denying on a raced path mints
+//! a containment claim with a TOCTOU hole in it, and the report calls it
+//! enforced.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -66,6 +85,7 @@ use std::time::Instant;
 use flowproof_trace::egress::{is_loopback, EgressEvent};
 
 use crate::egress::{AllowSet, Containment, EgressLog};
+use crate::fs_observe::{FsEvent, FsLog};
 
 // ---- seccomp / notify constants (not exposed by libc) ----
 
@@ -76,6 +96,10 @@ const SECCOMP_FILTER_FLAG_NEW_LISTENER: libc::c_ulong = 1 << 3;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 const SECCOMP_RET_USER_NOTIF: u32 = 0x7fc0_0000;
+
+/// "Run the syscall yourself." The reply every FILESYSTEM handler makes, and
+/// the one no egress handler may make - see the module comment.
+const SECCOMP_USER_NOTIF_FLAG_CONTINUE: u32 = 1;
 
 // The notify ioctls, `_IOWR('!', n, struct)` / `_IOW('!', n, __u64)`. The
 // struct sizes are fixed by the kernel ABI: seccomp_notif is 80 bytes,
@@ -205,6 +229,12 @@ fn build_filter() -> Vec<libc::sock_filter> {
     f.extend(guard(libc::SYS_sendmmsg, notif));
     f.extend(guard(libc::SYS_listen, notif));
 
+    // The destructive filesystem syscalls, OBSERVED: `notif`, never `eperm`.
+    // Destructive whatever their arguments, so `nr ==` is the whole test.
+    for (nr, _) in fs_traps() {
+        f.extend(guard(nr, notif));
+    }
+
     // socket(domain, ...): deny AF_PACKET, allow the rest. Reloads `args[0]`,
     // so it is last. If nr != socket, jump the 3 following insns to the
     // default allow.
@@ -225,6 +255,29 @@ fn build_filter() -> Vec<libc::sock_filter> {
 
     f.push(bpf_stmt(BPF_RET | BPF_K, allow));
     f
+}
+
+/// The filesystem syscalls trapped on their number alone, with the name each
+/// is reported under. Read by BOTH the filter above and [`fs_op_name`], so a
+/// guard cannot be added without something to record it. The legacy
+/// path-based calls exist only where the classic syscall table does: arm64
+/// has `unlinkat`/`renameat` and no `unlink`, `rmdir` or `rename` at all.
+fn fs_traps() -> Vec<(libc::c_long, &'static str)> {
+    let mut traps = vec![
+        (libc::SYS_unlinkat, "unlinkat"), // incl. AT_REMOVEDIR
+        (libc::SYS_renameat, "renameat"),
+        (libc::SYS_renameat2, "renameat2"),
+        (libc::SYS_truncate, "truncate"),
+        (libc::SYS_ftruncate, "ftruncate"),
+    ];
+    #[cfg(target_arch = "x86_64")]
+    traps.extend([
+        (libc::SYS_unlink, "unlink"),
+        (libc::SYS_rmdir, "rmdir"),
+        (libc::SYS_rename, "rename"),
+        (libc::SYS_creat, "creat"),
+    ]);
+    traps
 }
 
 /// Probe whether this kernel can enforce containment: it needs seccomp
@@ -509,31 +562,37 @@ pub struct Supervisor {
     handle: Option<std::thread::JoinHandle<()>>,
     stop: Arc<AtomicBool>,
     log: Arc<Mutex<EgressLog>>,
+    fs: Arc<Mutex<FsLog>>,
 }
 
 impl Supervisor {
     fn start(notify_fd: OwnedFd, allow: AllowSet, spawn: Instant) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let log = Arc::new(Mutex::new(EgressLog::default()));
+        let fs = Arc::new(Mutex::new(FsLog::default()));
         let handle = {
-            let (stop, log) = (Arc::clone(&stop), Arc::clone(&log));
-            std::thread::spawn(move || serve(notify_fd, &allow, spawn, &stop, &log))
+            let (stop, log, fs) = (Arc::clone(&stop), Arc::clone(&log), Arc::clone(&fs));
+            std::thread::spawn(move || serve(notify_fd, &allow, spawn, &stop, &log, &fs))
         };
         Supervisor {
             handle: Some(handle),
             stop,
             log,
+            fs,
         }
     }
 
-    /// Stop servicing and return everything the run attempted. Called after
-    /// the child has exited.
-    pub fn stop_and_collect(mut self) -> EgressLog {
+    /// Stop servicing and return what the run attempted (egress, denied) and
+    /// what it did (filesystem, observed). Called after the child has exited.
+    pub fn stop_and_collect(mut self) -> (EgressLog, FsLog) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
-        std::mem::take(&mut self.log.lock().unwrap_or_else(|e| e.into_inner()))
+        (
+            std::mem::take(&mut self.log.lock().unwrap_or_else(|e| e.into_inner())),
+            std::mem::take(&mut self.fs.lock().unwrap_or_else(|e| e.into_inner())),
+        )
     }
 }
 
@@ -545,6 +604,7 @@ fn serve(
     spawn: Instant,
     stop: &AtomicBool,
     log: &Mutex<EgressLog>,
+    fs: &Mutex<FsLog>,
 ) {
     let fd = notify_fd.as_raw_fd();
     loop {
@@ -575,7 +635,7 @@ fn serve(
             break;
         }
 
-        if let Some(resp) = decide(fd, &req, allow, spawn, log) {
+        if let Some(resp) = decide(fd, &req, allow, spawn, log, fs) {
             let mut resp = resp;
             resp.id = req.id;
             // A failed SEND means the notif died between decide and reply -
@@ -595,8 +655,12 @@ fn decide(
     allow: &AllowSet,
     spawn: Instant,
     log: &Mutex<EgressLog>,
+    fs: &Mutex<FsLog>,
 ) -> Option<SeccompNotifResp> {
     let nr = req.data.nr as libc::c_long;
+    if let Some(op) = fs_op_name(nr) {
+        return Some(observe(op, req, spawn, fs));
+    }
     if nr == libc::SYS_connect {
         Some(handle_connect(fd, req, allow, spawn, log))
     } else if nr == libc::SYS_sendto {
@@ -1036,6 +1100,149 @@ fn perform_sendmsg(
     }
 }
 
+// ---- filesystem observation ------------------------------------------------
+// Every function below replies CONTINUE, always. Read the module comment
+// before changing that: it is safe ONLY because nothing here is prevented.
+/// What a syscall acted on: the rendered path, and a note when that rendering
+/// is weaker than it looks.
+type Subject = (Option<String>, Option<String>);
+
+/// The name a trapped number is reported under, or `None` if it is not one of
+/// the filesystem traps. Shares [`fs_traps`] with the filter, so a guard and
+/// its handler cannot drift apart.
+fn fs_op_name(nr: libc::c_long) -> Option<&'static str> {
+    if let Some((_, name)) = fs_traps().into_iter().find(|(n, _)| *n == nr) {
+        return Some(name);
+    }
+    None
+}
+
+/// Record one destructive syscall and let it run.
+fn observe(
+    op: &'static str,
+    req: &SeccompNotif,
+    spawn: Instant,
+    fs: &Mutex<FsLog>,
+) -> SeccompNotifResp {
+    let (a, pid) = (req.data.args, req.pid);
+    // Where each call keeps the thing it destroys. Wrong indices make a wrong
+    // REPORT, never a wrong verdict - the trap already happened.
+    let (subject, flags) = match op {
+        "unlink" | "rmdir" | "truncate" | "creat" => (at(pid, None, a[0]), None),
+        "unlinkat" => (at(pid, Some(a[0]), a[1]), at_flags(a[2])),
+        "rename" => (pair(at(pid, None, a[0]), at(pid, None, a[1])), None),
+        "renameat" | "renameat2" => (
+            pair(at(pid, Some(a[0]), a[1]), at(pid, Some(a[2]), a[3])),
+            None,
+        ),
+        "ftruncate" => (fd_subject(pid, a[0] as RawFd), None),
+        // Unreachable while `fs_op_name` and this match agree. If they stop
+        // agreeing, a destructive syscall runs unrecorded and the empty log
+        // reads as a clean run - which is what makes it a fault.
+        _ => return fs_fault(fs, &format!("no handler for trapped syscall {op}")),
+    };
+    let (path, path_note) = subject;
+    fs.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .destructive
+        .push(FsEvent {
+            op: op.to_string(),
+            path,
+            path_note,
+            flags,
+            at_ms: spawn.elapsed().as_millis() as u64,
+        });
+    continue_resp()
+}
+
+/// Render the path at `ptr`, resolved against `dirfd` when it is relative. A
+/// path we could not read leaves a NOTE, not a fault: the notification already
+/// proved the syscall happened, so the evidence is weaker and honestly
+/// labelled rather than absent.
+fn at(pid: u32, dirfd: Option<u64>, ptr: u64) -> Subject {
+    let path = match read_child_path(pid, ptr) {
+        Ok(path) => path,
+        Err(e) => return (None, Some(format!("unresolved: process_vm_readv: {e}"))),
+    };
+    if path.starts_with('/') {
+        return (Some(path), None);
+    }
+    let base = match dirfd {
+        Some(fd) if fd as i32 != libc::AT_FDCWD => format!("/proc/{pid}/fd/{}", fd as i32),
+        _ => format!("/proc/{pid}/cwd"),
+    };
+    match std::fs::read_link(&base) {
+        Ok(dir) => (Some(dir.join(&path).display().to_string()), None),
+        Err(e) => (Some(path), Some(format!("relative; {base}: {e}"))),
+    }
+}
+
+/// `ftruncate` names an fd, so its path comes from `/proc/<tid>/fd/<n>`. The
+/// notification's pid IS a tid, and `/proc` has a directory for each.
+fn fd_subject(pid: u32, fd: RawFd) -> Subject {
+    let link = format!("/proc/{pid}/fd/{fd}");
+    match std::fs::read_link(&link) {
+        Ok(path) => (Some(path.display().to_string()), None),
+        Err(e) => (None, Some(format!("unresolved: {link}: {e}"))),
+    }
+}
+
+/// The rename family clobbers its DESTINATION and moves its source: name both.
+fn pair(from: Subject, to: Subject) -> Subject {
+    let note = from.1.clone().or_else(|| to.1.clone());
+    let show = |s: &Subject| s.0.clone().unwrap_or_else(|| "?".to_string());
+    (Some(format!("{} -> {}", show(&from), show(&to))), note)
+}
+
+/// `unlinkat`'s one flag worth naming: `AT_REMOVEDIR` makes it an `rmdir`.
+fn at_flags(flags: u64) -> Option<String> {
+    (flags & libc::AT_REMOVEDIR as u64 != 0).then(|| "AT_REMOVEDIR".to_string())
+}
+
+/// Read a NUL-terminated path out of the child, PAGE AT A TIME:
+/// `process_vm_readv` refuses a single iovec spanning a valid and an invalid
+/// page rather than transferring part of it, so one flat `PATH_MAX` request
+/// fails for any path sitting near the end of a mapping - which has nothing to
+/// do with the path. Longer than `PATH_MAX` is truncated rather than chased.
+fn read_child_path(pid: u32, ptr: u64) -> io::Result<String> {
+    const PAGE: u64 = 4096;
+    let (mut out, mut at) = (Vec::new(), ptr);
+    while out.len() < PAGE as usize {
+        let want = (PAGE - at % PAGE) as usize;
+        let mut buf = vec![0u8; want];
+        let n = read_child(pid, at, &mut buf, want)?;
+        let end = buf[..n].iter().position(|b| *b == 0).unwrap_or(n);
+        out.extend_from_slice(&buf[..end]);
+        if end < n || n == 0 {
+            break;
+        }
+        at += n as u64;
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Record a filesystem fault and STILL continue: denying would be a containment
+/// claim this feature does not make, and the fault is what stops an empty log
+/// being read as proof that nothing was destroyed.
+fn fs_fault(fs: &Mutex<FsLog>, what: &str) -> SeccompNotifResp {
+    dbg_egress(&format!("FS FAULT: {what}"));
+    fs.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .faults
+        .push(what.to_string());
+    continue_resp()
+}
+
+/// "You run it." The only reply a filesystem handler makes.
+fn continue_resp() -> SeccompNotifResp {
+    SeccompNotifResp {
+        id: 0,
+        val: 0,
+        error: 0,
+        flags: SECCOMP_USER_NOTIF_FLAG_CONTINUE,
+    }
+}
+
 /// A destination parsed from a `sockaddr` copy.
 enum Dest {
     Inet(IpAddr, u16),
@@ -1369,6 +1576,62 @@ mod tests {
         assert_eq!(
             normalize(mapped),
             IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9))
+        );
+    }
+
+    /// The action a two-instruction `nr ==` guard returns, or `None` when the
+    /// filter does not guard that number at all.
+    fn guard_action(f: &[libc::sock_filter], nr: libc::c_long) -> Option<u32> {
+        f.windows(2)
+            .find(|w| {
+                w[0].code == BPF_JMP | BPF_JEQ | BPF_K
+                    && w[0].k == nr as u32
+                    && (w[0].jt, w[0].jf) == (0, 1)
+                    && w[1].code == BPF_RET | BPF_K
+            })
+            .map(|w| w[1].k)
+    }
+
+    /// The filter-is-data ratchet for #302: observation must never become
+    /// prevention by accident.
+    ///
+    /// An `ERRNO` here would make the destructive syscalls FAIL in the child -
+    /// a containment claim nothing backs, reachable by a one-constant edit,
+    /// breaking every agent that legitimately deletes its own temp files.
+    /// `USER_NOTIF` hands the call to a supervisor that replies CONTINUE. A
+    /// trapped number with no handler is the same defect from the other side:
+    /// the syscall runs unrecorded and the empty log reads as a clean run.
+    #[test]
+    fn the_filesystem_guards_observe_and_never_deny() {
+        let f = build_filter();
+        for (nr, name) in fs_traps() {
+            let action =
+                guard_action(&f, nr).unwrap_or_else(|| panic!("{name} is not guarded at all"));
+            assert_eq!(
+                action, SECCOMP_RET_USER_NOTIF,
+                "{name} must trap to the supervisor, not decide in-kernel"
+            );
+            assert_ne!(
+                action & 0xffff_0000,
+                SECCOMP_RET_ERRNO,
+                "{name} must NEVER deny: this feature observes, and a denial \
+                 mints a containment claim with a TOCTOU hole in it"
+            );
+            assert_eq!(fs_op_name(nr), Some(name), "{name} traps with no handler");
+        }
+        assert_eq!(
+            fs_op_name(libc::SYS_connect),
+            None,
+            "egress keeps its own handlers, and its own reply"
+        );
+        // And the reply itself is CONTINUE, carrying no error.
+        assert_eq!(continue_resp().flags, SECCOMP_USER_NOTIF_FLAG_CONTINUE);
+        assert_eq!(continue_resp().error, 0, "observing must not fail the call");
+        // `unlinkat` covers `rmdir` too, and the report says which it was.
+        assert_eq!(at_flags(0), None);
+        assert_eq!(
+            at_flags(libc::AT_REMOVEDIR as u64),
+            Some("AT_REMOVEDIR".to_string())
         );
     }
 
