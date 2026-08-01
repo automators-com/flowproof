@@ -23,6 +23,7 @@
 //! step that opens one.
 
 pub mod audit;
+pub mod env_block;
 pub mod filters;
 pub mod identity;
 pub mod logon;

@@ -44,7 +44,9 @@ use windows::Win32::System::Threading::{
     STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 
+use super::env_block::environment_block;
 use super::{wide, WinErr};
+use std::collections::BTreeMap;
 
 /// `WINSTA_ALL_ACCESS`. The identity needs the whole set: a partial grant
 /// fails later at process creation, where the error says nothing useful,
@@ -202,9 +204,14 @@ pub fn spawn(
     user: &str,
     password: &str,
     command_line: &str,
+    env: &BTreeMap<String, String>,
     output: Option<HANDLE>,
 ) -> Result<Contained, WinErr> {
     unsafe {
+        // Built here so it outlives both CreateProcess calls below. Passing
+        // None would hand the child flowproof's OWN environment, without the
+        // per-run proxy variables - see `env_block`.
+        let mut block = environment_block(env);
         let job = CreateJobObjectW(None, PCWSTR::null())
             .map_err(|e| WinErr::new("CreateJobObjectW", e.code().0 as u32, ""))?;
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
@@ -244,7 +251,7 @@ pub fn spawn(
             // created inheritable for exactly this.
             output.is_some(),
             CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-            None,
+            Some(block.as_mut_ptr() as *const c_void),
             PCWSTR::null(),
             &si,
             &mut pi,
@@ -263,7 +270,15 @@ pub fn spawn(
                 //
                 // It cannot inherit handles, so the child's output is lost on
                 // this path - reported rather than silently accepted.
-                spawn_with_logon(user, password, command_line, &mut desktop, &mut pi, e)?;
+                spawn_with_logon(
+                    user,
+                    password,
+                    command_line,
+                    &mut desktop,
+                    &mut block,
+                    &mut pi,
+                    e,
+                )?;
                 true
             }
         };
@@ -307,11 +322,13 @@ fn launcher_report(used_fallback: bool, wanted_output: bool) -> (&'static str, b
 ///
 /// # Safety
 /// Called only from [`spawn`], with its buffers still alive.
+#[allow(clippy::too_many_arguments)]
 unsafe fn spawn_with_logon(
     user: &str,
     password: &str,
     command_line: &str,
     desktop: &mut [u16],
+    block: &mut [u16],
     pi: &mut PROCESS_INFORMATION,
     primary: windows::core::Error,
 ) -> Result<(), WinErr> {
@@ -332,7 +349,7 @@ unsafe fn spawn_with_logon(
         PCWSTR::null(),
         Some(PWSTR(cmd.as_mut_ptr())),
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-        None,
+        Some(block.as_mut_ptr() as *const c_void),
         PCWSTR::null(),
         &si,
         pi,
