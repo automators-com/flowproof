@@ -198,3 +198,31 @@ three families (a trusted CDP input stream with drag interception, Playwright's
 approach), or a per-flow declared `browser: dnd: html5|mouse` if that flakes,
 never a guess; (3) same-frame only at first, since cross-frame drag is where
 CDP interception breaks. Until those hold, a Drag step would be worse than none.
+
+**Measured, 2026-08-01.** (1) and (3) were implemented and hold: a `Drag` not
+followed by an assertion is a compile error naming the reason, and the
+same-frame limit costs nothing today. **(2) does not hold**, and the numbers
+are the point:
+
+- A **mouse** dispatch - press, interpolated moves, release - against a real
+  jQuery UI `sortable` landed the drop **2 runs in 5**. Adding a priming move
+  clear of the distance threshold and pacing the moves slower than one CDP
+  round trip took it to **4 in 8**. The failures are real drops that do not
+  land, not assertion timing: the row simply stays where it was.
+- The **HTML5** path could not be measured against a live page at all, so its
+  determinism is unknown rather than good.
+- **CDP drag interception is unavailable**: `headless_chrome` 1.0.22 exposes
+  neither `Input.dispatchDragEvent` nor `Input.setInterceptDrags`, so
+  Playwright's approach - the one this section names - cannot be reached
+  without hand-rolled raw CDP methods.
+
+The `browser: dnd:` escape hatch does not rescue it. That exists for when
+DETECTION picks the wrong family; detection was correct here (it chose
+`mouse` from the source's markup and recorded it). The flakiness is one layer
+below, in the dispatch.
+
+So the blocker is now specific rather than general: **a drag mechanism this
+repository can prove deterministic needs `Input.dispatchDragEvent`**, which
+needs a newer or different Chrome client, or raw CDP methods added by hand. A
+50%-reliable drag is worse than none for the reason a flaky test always is -
+it teaches the reader to re-run instead of investigate.
