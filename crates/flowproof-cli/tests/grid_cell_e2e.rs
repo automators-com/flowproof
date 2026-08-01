@@ -94,3 +94,63 @@ fn cell_addressing_survives_a_row_insert() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A schedule grid: the header row opens with a plain stub cell above the
+/// row-label column, so the Nth `<th>` sits over the N+1th `<td>` of every
+/// data row. Indexing headers against data cells read one column to the
+/// LEFT - and returned a real cell, so the assertion passed against the
+/// wrong day. This pins each named column to its own value.
+const STUB_HEADER_HTML: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>Schedule</title></head><body>
+<table id="timeTable">
+  <tr><td></td><th scope="col">Monday</th><th scope="col">Tuesday</th>
+      <th scope="col">Wednesday</th><th scope="col">Thursday</th><th scope="col">Friday</th></tr>
+  <tr><td>09:00 - 11:00</td><td>MON-A</td><td>TUE-A</td><td>WED-A</td><td>THU-A</td><td>FRI-A</td></tr>
+  <tr><td>11:00 - 13:00</td><td>MON-B</td><td>TUE-B</td><td>WED-B</td><td>THU-B</td><td>FRI-B</td></tr>
+</table>
+</body></html>
+"#;
+
+const STUB_HEADER_SPEC: &str = r#"
+name: Columns line up under a stub header cell
+app: web
+url: __URL__
+steps:
+  - assert: the "Thursday" column of the row containing "11:00 - 13:00" shows THU-B
+  - assert: the "Monday" column of the row containing "11:00 - 13:00" shows MON-B
+  - assert: the "Friday" column of the row containing "09:00 - 11:00" shows FRI-A
+"#;
+
+#[test]
+fn a_stub_cell_in_the_header_row_does_not_shift_the_column() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping stub-header E2E: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    let dir = std::env::temp_dir().join("flowproof-stub-header-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("schedule.html");
+    std::fs::write(&page, STUB_HEADER_HTML).expect("page written");
+    let trace = dir.join("schedule.trace.jsonl");
+
+    let spec = FlowSpec::parse(
+        &STUB_HEADER_SPEC.replace("__URL__", &format!("file://{}", page.display())),
+    )
+    .expect("spec parses");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    // Recording is itself the assertion: every step is checked against the
+    // live page, so a shifted column fails here naming the cell it read.
+    let summary = flowproof_agent::record(&spec, &mut driver, &trace).expect("recording succeeds");
+    assert_eq!(summary.steps, 3);
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _) = flowproof_replay::run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "stub-header columns must replay: {report:#?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

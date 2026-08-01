@@ -89,6 +89,12 @@ const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID){
   function idOf(e){
     return (e.getAttribute && (e.getAttribute('id') || e.getAttribute('data-id') || e.getAttribute('row-id'))) || null;
   }
+  // Every cell of a row, header cells INCLUDED. Counting `td` alone on the
+  // data side and `th` alone on the header side silently misaligns the two
+  // whenever a row mixes them.
+  function cellsIn(r){
+    return r.querySelectorAll('td, th, [role=gridcell], [role=cell], [role=columnheader], [role=rowheader]');
+  }
   var tables = document.querySelectorAll('table, [role=grid], [role=table], [role=treegrid]');
   var sawHeader = false;
   for (var t=0; t<tables.length; t++){
@@ -106,6 +112,22 @@ const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID){
     if (exact.length > 1) return 'dup_header';
     var colIdx = exact.length===1 ? exact[0] : (part.length===1 ? part[0] : byField);
     if (colIdx < 0) continue;
+    // A column's POSITION is its header's index inside the header's OWN row,
+    // not its index among the table's header elements. A schedule-style grid
+    // opens its header row with a plain stub above the row-label column
+    // (`<tr><td></td><th>Monday</th>…`), so the Nth `th` sits over the N+1th
+    // cell of every data row. Indexing `th`s against `td`s reads one column
+    // to the left - and returns a real cell, which passes as confidently as
+    // the right one. Both sides count th+td together, so they line up.
+    var hdr = headers[colIdx];
+    var hdrRow = hdr.closest ? hdr.closest('tr, [role=row]') : null;
+    var colPos = colIdx;
+    if (hdrRow){
+      var hcells = cellsIn(hdrRow);
+      for (var k=0;k<hcells.length;k++){
+        if (hcells[k] === hdr) { colPos = k; break; }
+      }
+    }
     var rows = [];
     table.querySelectorAll('tr, [role=row]').forEach(function(r){
       if (r.querySelectorAll('td, [role=gridcell], [role=cell]').length) rows.push(r);
@@ -124,9 +146,9 @@ const CELL_RESOLVER: &str = r#"function(COL, ANCHOR, COLFIELD, ROWID){
       if (anchorRows.length > 1) return 'ambiguous_row:'+anchorRows.length;
       chosen = anchorRows[0];
     }
-    var cells = chosen.querySelectorAll('td, [role=gridcell], [role=cell]');
-    if (colIdx >= cells.length) continue;
-    cells[colIdx].setAttribute('data-flowproof-cell','1');
+    var cells = cellsIn(chosen);
+    if (colPos >= cells.length) continue;
+    cells[colPos].setAttribute('data-flowproof-cell','1');
     return 'ok';
   }
   return sawHeader ? 'no_match' : 'no_header';
@@ -1722,6 +1744,38 @@ impl AppDriver for WebAppDriver {
             },
         )?;
         Ok(value.value.and_then(|v| v.as_bool()).unwrap_or(true))
+    }
+
+    fn element_visible(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        let locator = Self::locator(selector)?;
+        let value = self.with_element(
+            &locator,
+            &format!("reading visibility of [{selector}]"),
+            |element| {
+                element.call_js_fn(
+                    // `checkVisibility` is the browser's own answer and
+                    // covers the cases a hand-rolled check keeps missing:
+                    // `display:none` on an ancestor, `visibility:hidden`,
+                    // `content-visibility`, and the `hidden` attribute. The
+                    // box test behind it catches the other family - an
+                    // element that is "visible" by style yet occupies no
+                    // space at all, which no user can see or click.
+                    r#"function() {
+                        if (typeof this.checkVisibility === 'function'
+                            && !this.checkVisibility({
+                                contentVisibilityAuto: true,
+                                opacityProperty: true,
+                                visibilityProperty: true
+                            })) { return false; }
+                        var r = this.getClientRects();
+                        return r.length > 0;
+                    }"#,
+                    vec![],
+                    false,
+                )
+            },
+        )?;
+        Ok(Some(value.value.and_then(|v| v.as_bool()).unwrap_or(true)))
     }
 
     fn element_attribute(

@@ -129,7 +129,7 @@ append `within <N>s` to any form to change the bound.
 | `the [2nd ]"<target>" shows <text>` | element-scoped substring |
 | `the [2nd ]"<target>" shows ${captured.<name>}` | compare against a remembered value: text, with the same matching ladder as any `shows` |
 | `the [2nd ]"<target>" shows ${captured.<name>} + <number>` / `- <number>` | compare NUMERICALLY against the remembered number offset by a literal, e.g. `the "Balance" shows ${captured.balance} - 100`. Currency symbols and thousands separators are ignored on both sides |
-| `the [2nd ]"<target>" is visible` / `is not visible` | target resolves / does not resolve |
+| `the [2nd ]"<target>" is visible` / `is not visible` | the target resolves **and is rendered**. Resolving is only half of it: a `display:none` input is in the DOM and answers every selector, so a presence-only reading called it visible and the assertion could not fail. On the web the browser's own definition decides (`display:none` anywhere up the tree, `visibility:hidden`, `content-visibility`, the `hidden` attribute); `is not visible` is satisfied by absent OR hidden, because both mean the user cannot see it. A failure says which: *present and not rendered* is a different bug from *never appeared*. An element the browser renders but which occupies no box still counts as visible. A surface with no notion of rendered-ness beyond resolution (UIA, SAP, vision) keeps the presence reading |
 | `the "<target>" appears <N> times` | how many ELEMENTS match the anchor. Exact, not a minimum. No ordinal: `the 2nd "Row"` is one element by construction, so counting it has no answer |
 | `the [2nd ]"<target>" is enabled` / `is disabled` | platform enabled state (`disabled`/`aria-disabled` on web, UIA IsEnabled on desktop) |
 | `the [2nd ]"<target>" checkbox is checked` / `is not checked` | checkbox state, read from the `checked` property or `aria-checked`. A target that is not a checkbox fails as exactly that, not as "wrong state" |
@@ -209,6 +209,13 @@ The same cell target composes with every predicate (`shows`, `is empty`,
 is [not] <value>`) and every action (`Click`, `Type … into`, `Clear`,
 `Check`, `Scroll`). `in the row containing` also works - the of/in coin flip
 is one you should not have to remember.
+
+A column is matched by its header's text and then addressed by that
+header's position **within its own row**, counting header and data cells
+together. A schedule-style grid whose header row opens with a stub above
+the row-label column (`<tr><td></td><th>Monday</th>…`) therefore lines up:
+counting `th`s against `td`s would read one column to the left, and return
+a real cell, which passes as confidently as the right one.
 | Form | Notes |
 |---|---|
 | `the "<column>" column of the row containing "<anchor>"` | a table cell; `in the row containing` also works - the of/in coin flip is one you should not have to remember |

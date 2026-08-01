@@ -28,6 +28,39 @@ together).
   A flaky test in a testing tool is worse than elsewhere: the product's whole
   claim is that a green run means something.
 
+- **A column was addressed by counting `th`s against `td`s.** The column
+  index came from the table's header elements; the cell came from the data
+  row's `td`s. A grid whose header row opens with a stub above the row-label
+  column (`<tr><td></td><th>Monday</th>…`, every schedule ever built) shifts
+  every data cell one place right of its header, so `the "Thursday" column of
+  the row containing "11:00 - 13:00"` read Wednesday.
+
+  It returned a real cell with real text, so the assertion passed — against
+  the wrong day. Silently answering about the neighbouring column is the
+  failure this target exists to remove; a header rename is loud, and this was
+  not. Both sides now count header and data cells together and index the
+  header within its own row.
+
+- **`is visible` passed on a `display:none` element.** The second of two
+  assertions that could not fail, found alongside the column bug above and
+  sharing its shape: it answered a narrower question than the one the author
+  asked, and the narrower answer was always yes.
+
+  Presence was the whole check, and a hidden element is still in the DOM and
+  still answers every selector — so the assertion could not fail on the one
+  condition anybody writes it for. It reported an input visible while
+  `Scroll … into view` refused the same element as unreachable, which is the
+  contradiction that gave it away.
+
+  Rendered-ness is now the browser's own answer (`display:none` anywhere up
+  the tree, `visibility:hidden`, `content-visibility`, `hidden`), and
+  `is not visible` is satisfied by absent OR hidden, because the user cannot
+  see either. A failure distinguishes *present and not rendered* from *never
+  appeared* — different bugs in the app under test, and the old message sent
+  the reader after a selector that was already correct. Surfaces with no
+  notion of rendered-ness beyond resolution (UIA, SAP, vision) keep the
+  presence reading rather than inventing a second opinion.
+
 ## 0.11.0
 
 Three things the driver could already do, and the surface would not let you
