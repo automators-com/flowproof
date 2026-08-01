@@ -8,6 +8,40 @@ together).
 
 ### Added
 
+- **Selecting four options selected one, and said nothing.** `Select` commits
+  through the control's value setter, which is correct and is also a
+  *replacement*. So the obvious spelling — four `Select` steps at one
+  `<select multiple>` — left the last option standing, fired four `change`
+  events at an app expecting one, and reported success.
+
+  Nothing was available to write instead. The grammar had one option per
+  step, and a multi-selection is not a sequence of selections; it is one
+  state the control ends up in.
+
+  ```yaml
+  - Select "Functional testing", "GUI testing" and "End2End testing" from the "Methods" field
+  ```
+
+  Set-a-state, like `Check`: what is named becomes selected, what is not
+  named does not, and the step means the same thing however the environment
+  arrived. One `input`+`change` for the final state, because what the app's
+  handler expects to see is a user finishing a selection rather than three
+  of them.
+
+  **Every item is quoted**, and that is the design rather than decoration.
+  Option text is arbitrary application text: `"Rock, Paper and Scissors"` is
+  one option on somebody's page, and a list split on commas and the word
+  "and" would read it as three — silently, by selecting the wrong set. Only
+  the quotes delimit.
+
+  Names are resolved before anything is selected, so a typo in the third
+  option leaves the control untouched rather than half-applied, and the step
+  then reads the selection back to verify it took. Found while writing that
+  check: a JS exception inside the driver does **not** reach Rust as an
+  error, so the first version of this reported success on an option that
+  does not exist. The outcome is now a value that comes back and is
+  inspected, not an exception nobody catches.
+
 - **A count could be asserted but never used.** `the "css:.row" appears 5
   times` has always worked, and it is the right step when you know the
   answer. When the app decides the answer — a table built from whatever the
