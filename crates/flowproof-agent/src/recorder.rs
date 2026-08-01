@@ -1686,6 +1686,14 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             if author == Author::Rules {
                 return Err(RecordError::Rules(rules_error));
             }
+            // A DECLINED shape never reaches the model. The fallback exists
+            // for steps the rules did not understand; this one was
+            // understood and refused, and asking the model would not build
+            // it - it would ground it into some other step that records
+            // green and means something nobody asked for.
+            if matches!(rules_error, RulesError::Refused { .. }) {
+                return Err(RecordError::Rules(rules_error));
+            }
             // Ambiguity from here on ends in a structured clarification:
             // the driving agent — not flowproof — resolves it and re-records.
             // `prior` holds the intents already performed, so its length is
@@ -3303,6 +3311,55 @@ steps:
             .expect_err("rules-only must fail");
         assert!(matches!(err, RecordError::Rules(_)));
         assert_eq!(client.calls, 0);
+    }
+
+    /// The load-bearing half of the refusal fence, and the reason it is a
+    /// distinct error variant rather than a better message.
+    ///
+    /// In `Auto` the rules run first and ANY failure falls through to the
+    /// model author. So a declined shape that merely failed to parse would
+    /// be handed to a model, which would ground it into some neighbouring
+    /// step - `Click "Next" until the label changes` becomes ONE click -
+    /// record green, and fail one replay in five. The decline has to
+    /// outrank the fallback, and `calls == 0` is what proves it does.
+    #[test]
+    fn a_declined_shape_never_reaches_the_model_author() {
+        for step in [
+            r#"Click "Next" until the "Status" shows Done"#,
+            r#"If the "Banner" is visible, click "Dismiss""#,
+            r#"Remember the "Total" matching /[0-9.]+/ as amount"#,
+            r#"Type ${date:tomorrow} into the "Due" field"#,
+        ] {
+            let spec = FlowSpec::parse(&format!(
+                "name: x\napp: web\nurl: https://e.test/x\nsteps:\n  - {step}\n"
+            ))
+            .expect("parses");
+            let mut driver = MockAppDriver::new(&["#shiny"]);
+            driver.scene = Some(r##"[{"target":"css:#shiny"}]"##.into());
+            let mut client = CountingClient {
+                reply: r##"{"action":"click","target":"css:#shiny"}"##.into(),
+                calls: 0,
+            };
+            let out = std::env::temp_dir().join("flowproof-declined.trace.jsonl");
+            // Auto: the mode that WOULD fall back. That is the whole test.
+            let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+                .expect_err("a declined shape must fail the recording");
+            assert!(
+                matches!(
+                    err,
+                    RecordError::Rules(crate::rules::RulesError::Refused { .. })
+                ),
+                "{step}: expected a Refused, got {err:?}"
+            );
+            assert_eq!(
+                client.calls, 0,
+                "{step}: the model was asked to author a shape that was deliberately declined"
+            );
+            assert!(
+                !out.exists(),
+                "{step}: a declined shape must not mint a trace"
+            );
+        }
     }
 
     #[test]
