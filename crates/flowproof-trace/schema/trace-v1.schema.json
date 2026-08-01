@@ -416,6 +416,8 @@
             "type_text",
             "press_key",
             "upload",
+            "capture",
+            "set_checked",
             "wait",
             "assert"
           ]
@@ -425,6 +427,58 @@
         }
       },
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "capture"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Flow-scoped capture name. Only the NAME is stored: the value is read at execution time on record and on every replay."
+                  },
+                  "count": {
+                    "type": "boolean",
+                    "description": "The counted reading - how many elements match, rather than one element's text. Absent means the text reading."
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "set_checked"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "required": [
+                  "checked"
+                ],
+                "properties": {
+                  "checked": {
+                    "type": "boolean",
+                    "description": "The STATE the control is driven to, not a toggle."
+                  }
+                }
+              }
+            }
+          }
+        },
         {
           "if": {
             "properties": {

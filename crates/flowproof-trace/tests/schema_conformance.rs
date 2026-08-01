@@ -49,7 +49,11 @@ fn fixture_lines_parse_and_validate() {
     }
     // s0003 carries an api request body + headers with raw ${VAR} refs;
     // s0002 (headerless GET) proves the backward-compat default path.
-    assert_eq!(steps, 3, "fixture should contain three steps");
+    // s0004/s0005 are the text and COUNTED capture readings and s0006 is
+    // `set_checked` - the three action types the schema did not list, which
+    // is exactly why this fixture has to carry one of each: the enum was
+    // wrong for as long as nothing here exercised them.
+    assert_eq!(steps, 6, "fixture should contain six steps");
 }
 
 #[test]
