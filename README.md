@@ -46,6 +46,21 @@ go wrong in two places — what it decided to do, and what it actually did to
 your system — and one recording covers both. An agent that files an SAP order
 is one job to get right, not two.
 
+**Three verbs, three mechanisms, and they are not equally strong.** Worth
+knowing which one is holding a given line, because the answer decides what a
+green build actually proves:
+
+| The claim | Backed by | What it is |
+|---|---|---|
+| never **approves** | `assert_no_tool_call` | the agent did not ask for the call, on any platform |
+| never **deletes** | `assert_no_tool_call` | same, when the delete goes through a tool — which is how an agent deletes a customer |
+| never **sends** | `assert_no_egress` | a real seccomp filter refused it, on Linux; the step fails outright anywhere it cannot be enforced, rather than passing vacuously |
+
+What is *not* asserted: a file the agent's own process destroys directly. On
+Linux that is now **reported** — the run prints what it unlinked, renamed or
+truncated — but a report is not a control, and no build breaks on one. See
+[docs/agent-testing.md](docs/agent-testing.md#filesystem-observation).
+
 Flows are plain YAML - short enough for an agent to write, readable enough
 for a human to review in a diff.
 
