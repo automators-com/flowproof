@@ -2026,15 +2026,22 @@ mod tests {
             "the fixture must actually carry a blocked lane, or this test proves nothing"
         );
 
-        // The probe on this host says `Enforced`; the RUN says it was not
-        // contained. They differ, so passing can only mean the run won.
-        assert!(
-            agent_flow::containment(&spec).is_enforced(),
-            "this test is only meaningful where the probe and the run DISAGREE; \
-             on a host whose probe already says 'not contained' it proves nothing"
-        );
         let achieved =
             flowproof_adapters::Containment::NotContained("the filters never installed".into());
+        // The probe and the RUN must DISAGREE, or passing proves nothing.
+        //
+        // This used to require the probe to say `Enforced`, which is true
+        // only on Linux - so the test failed outright on every other host
+        // and made `cargo test --workspace` red before anyone had touched
+        // anything. The disagreement is what matters, not which side of it
+        // this machine happens to be on: off Linux the probe still says
+        // "not contained", but for a DIFFERENT reason, and the record must
+        // carry the run's reason rather than the probe's.
+        assert_ne!(
+            agent_flow::containment(&spec).report_line(),
+            achieved.report_line(),
+            "the probe and the run must differ, or this test proves nothing"
+        );
         let record = build_control_record(
             &spec_path,
             &dir,
