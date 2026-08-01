@@ -25,6 +25,7 @@
 pub mod filters;
 pub mod identity;
 pub mod logon;
+pub mod netevents;
 pub mod spawn;
 pub mod wfp;
 
