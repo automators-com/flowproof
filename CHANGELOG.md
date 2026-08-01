@@ -6,6 +6,41 @@ together).
 
 ## Unreleased
 
+### Added
+
+- **A count could be asserted but never used.** `the "css:.row" appears 5
+  times` has always worked, and it is the right step when you know the
+  answer. When the app decides the answer — a table built from whatever the
+  backend returned — there was nothing to write. The number existed, the
+  grammar could compare it to a literal, and no literal was available.
+
+  `Remember how many "<target>" appear as <name>` reads it into the same
+  flow-scoped name a text capture uses, so everything captures already do
+  keeps working:
+
+  ```yaml
+  - Remember how many "css:.order-row" appear as rows
+  - Type ${captured.rows} into the "Rowcount" field
+  - assert: the "Total" shows ${captured.rows} + 1
+  ```
+
+  Counting rides the ordinal every adapter already implements, so it means
+  on each adapter exactly what `the 2nd "Row"` means there — no adapter
+  changed to gain it. The number is read at execution time on record and on
+  every replay, so only the reference enters the trace and a page that grew
+  a row does not need it rewritten.
+
+  **Zero fails.** A selector typo matches nothing, and so does an empty
+  table — and `0` is a confident, plausible number to type into an
+  application. A capture that answered `0` to both would be the silent
+  wrong-value class again, so the step refuses and names the one that means
+  zero: `assert: the "<target>" appears 0 times`.
+
+  There is no second definition of what a number is: the computed
+  comparison's normalisation is reused as it stands, which is what lets
+  `shows ${captured.rows} + 1` compose without either side knowing about
+  the other.
+
 ### Fixed
 
 - **The docs never said what a typed capture does with the text around
