@@ -595,6 +595,21 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 selector_ref: Some(0),
             }),
         ),
+        ResolvedAction::SelectOptions { target, values } => {
+            let mut params = flowproof_trace::format::TypeTextParams {
+                // `text` keeps the FIRST option so the step still names
+                // something concrete in a reader that shows only text.
+                // `values` is authoritative wherever it is present - see
+                // docs/trace-format.md.
+                text: values.first().cloned().unwrap_or_default(),
+                submit: None,
+                extra: Default::default(),
+            };
+            params
+                .extra
+                .insert("values".into(), serde_json::json!(values));
+            (selectors_for(app, target, None), Action::TypeText(params))
+        }
         ResolvedAction::Capture {
             target,
             name,
@@ -929,6 +944,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
     let target = match action {
         ResolvedAction::Press { target, .. }
         | ResolvedAction::TypeText { target, .. }
+        | ResolvedAction::SelectOptions { target, .. }
         | ResolvedAction::Upload { target, .. }
         | ResolvedAction::ContextClick { target, .. }
         | ResolvedAction::DoubleClick { target, .. }
@@ -1940,6 +1956,11 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
             }
             match &action {
                 ResolvedAction::Press { .. } => driver.invoke(targeted())?,
+                ResolvedAction::SelectOptions { values, .. } => {
+                    // One commit for the whole set. A missing option fails
+                    // the step in the driver, before anything is selected.
+                    driver.select_options(targeted(), values)?;
+                }
                 ResolvedAction::TypeText { text, .. } => {
                     // `${captured.x}` and `${VAR}` both resolve at the moment
                     // of typing; the trace only ever stores the reference

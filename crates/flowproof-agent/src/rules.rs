@@ -201,6 +201,10 @@ pub enum ResolvedAction {
     /// Read a target's text into a flow-scoped name for later comparison
     /// (`Remember the "Balance" as balance`). The VALUE never enters the
     /// trace - only the name does, exactly like a `${VAR}` secret.
+    /// Drive a `<select multiple>` to EXACTLY these options. Not a sequence
+    /// of single selections: committing one option replaces the selection,
+    /// so a sequence would leave the last one standing and say nothing.
+    SelectOptions { target: Target, values: Vec<String> },
     /// Remember something about the target under `name`, for a later
     /// assertion or a later `Type` to use. `count` picks WHICH reading:
     /// false is the element's text, true is how many elements match.
@@ -516,6 +520,49 @@ fn unresolvable(step: &str, reason: impl Into<String>) -> RulesError {
         step: step.to_string(),
         reason: reason.into(),
     }
+}
+
+/// Parse `"A", "B" and "C"` into its items.
+///
+/// Only the QUOTES delimit. Splitting on `,` or ` and ` would break the
+/// moment an option reads "Rock, Paper and Scissors", which is ordinary app
+/// text, and the break would be silent - three options selected where one
+/// was meant. Separators between quoted items are skipped, not parsed.
+fn quoted_list(step: &str, text: &str) -> Result<Vec<String>, RulesError> {
+    let mut items = Vec::new();
+    let mut rest = text.trim();
+    while let Some(after_open) = rest.strip_prefix('"') {
+        let Some((item, tail)) = quoted_label(after_open) else {
+            return Err(unresolvable(step, "an option is missing its closing quote"));
+        };
+        if item.is_empty() {
+            return Err(unresolvable(step, "an option name may not be empty"));
+        }
+        items.push(item.to_string());
+        // Whatever sits between two quoted items is a separator - `,`,
+        // `and`, or both - and none of it is part of an option name.
+        rest = tail
+            .trim_start()
+            .trim_start_matches(',')
+            .trim_start()
+            .trim_start_matches("and")
+            .trim_start();
+    }
+    if !rest.is_empty() {
+        return Err(unresolvable(
+            step,
+            "every option in a list must be quoted, because option text can \
+             itself contain a comma or the word 'and'",
+        ));
+    }
+    if items.len() < 2 {
+        return Err(unresolvable(
+            step,
+            "a quoted list needs at least two options; to select one, write it \
+             unquoted - 'Select Admin from the \"Role\" field'",
+        ));
+    }
+    Ok(items)
 }
 
 fn refused(step: &str, reason: impl Into<String>) -> RulesError {
@@ -2542,6 +2589,14 @@ mod web {
                     None
                 };
                 if let (Some(target), false) = (target, value.is_empty()) {
+                    // A QUOTED list is the multi form. Quoted because option
+                    // text is arbitrary app text: "Rock, Paper and Scissors"
+                    // is one option on some page, and an unquoted list could
+                    // not tell it from three.
+                    if value.starts_with('"') {
+                        let values = quoted_list(trimmed, value)?;
+                        return Ok(vec![ResolvedAction::SelectOptions { target, values }]);
+                    }
                     return Ok(vec![ResolvedAction::TypeText {
                         target,
                         text: value.to_string(),
@@ -3843,6 +3898,10 @@ mod tests {
             ("web", "Clear the taskName field"),
             ("web", r#"Select Admin from the "Role" field"#),
             ("web", r#"Select Admin in the "Role" dropdown"#),
+            (
+                "web",
+                r#"Select "Functional testing", "GUI testing" and "End2End testing" from the "Methods" field"#,
+            ),
             ("web", r#"Press the "Save" button"#),
             ("web", "Press the submitButton button"),
             ("web", r#"Click "Templates""#),
@@ -5016,6 +5075,66 @@ mod framed_target_tests {
     /// the model author, which grounds it into some recording; a refused
     /// one stops. Each message must also say what to write instead, or the
     /// refusal is a dead end rather than a redirection.
+    /// The quoting is the whole design, not decoration. Option text is
+    /// arbitrary app text: "Rock, Paper and Scissors" is ONE option on some
+    /// page, and an unquoted list could not tell it from three - silently,
+    /// by selecting the wrong set.
+    #[test]
+    fn a_multi_select_list_is_delimited_by_quotes_and_nothing_else() {
+        let three = plain(
+            r#"Select "Functional testing", "GUI testing" and "End2End testing" from the "Methods" field"#,
+        )
+        .expect("parses");
+        assert_eq!(
+            three,
+            vec![ResolvedAction::SelectOptions {
+                target: Target::Text("Methods".into()),
+                values: vec![
+                    "Functional testing".into(),
+                    "GUI testing".into(),
+                    "End2End testing".into(),
+                ],
+            }]
+        );
+
+        // One quoted option whose TEXT contains both separators stays one
+        // option. This is the case that a split on `,`/` and ` gets wrong.
+        let one = plain(r#"Select "Rock, Paper and Scissors", "Chess" from the "Game" field"#)
+            .expect("parses");
+        assert_eq!(
+            one,
+            vec![ResolvedAction::SelectOptions {
+                target: Target::Text("Game".into()),
+                values: vec!["Rock, Paper and Scissors".into(), "Chess".into()],
+            }]
+        );
+
+        // A comma-separated list is accepted without the trailing `and`.
+        assert!(plain(r#"Select "A", "B" from the "L" field"#).is_ok());
+        // And the single form is untouched: no quotes, one value, TypeText.
+        assert_eq!(
+            plain(r#"Select Admin from the "Role" field"#).expect("parses"),
+            vec![ResolvedAction::TypeText {
+                target: Target::Text("Role".into()),
+                text: "Admin".into(),
+            }]
+        );
+    }
+
+    /// Half-quoted is a mistake worth naming, because the alternative is
+    /// selecting an option called `B" and "C`.
+    #[test]
+    fn a_partly_quoted_list_is_a_parse_error_that_says_why() {
+        let err = plain(r#"Select "A", B and "C" from the "L" field"#)
+            .expect_err("a bare item in a quoted list must be refused");
+        let message = err.to_string();
+        assert!(message.contains("must be quoted"), "{message}");
+        // A one-item quoted list points at the unquoted single form rather
+        // than silently meaning the same thing.
+        let err = plain(r#"Select "A" from the "L" field"#).expect_err("one item is not a list");
+        assert!(err.to_string().contains("at least two options"), "{err}");
+    }
+
     #[test]
     fn declined_shapes_are_refused_and_name_the_alternative() {
         let cases: &[(&str, &str, &str)] = &[
