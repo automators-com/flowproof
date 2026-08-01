@@ -521,6 +521,28 @@ pub trait AppDriver {
         ))
     }
 
+    /// Drive a multi-selection control to EXACTLY `values` — the ones named
+    /// become selected and every other one does not, in a single commit.
+    ///
+    /// Not a loop over the single-option path, and it cannot be: committing
+    /// one option goes through the control's value setter, which REPLACES
+    /// the selection. Four sequential single selects therefore leave one
+    /// option chosen and no error anywhere — the silent-partial-success
+    /// shape. Setting the whole set at once is the only honest spelling.
+    ///
+    /// Idempotent, following `Check`: the step means the same thing however
+    /// the environment arrived, so a control that already carries some of
+    /// the selection is not a different case.
+    fn select_options(
+        &mut self,
+        _selector: &UiaSelector,
+        _values: &[String],
+    ) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "selecting several options at once is not supported by this driver".into(),
+        ))
+    }
+
     /// Whether a RESOLVED element is actually rendered — backs the second
     /// half of `the "<target>" is [not] visible`. Resolution alone is not
     /// visibility: a `display:none` input is in the DOM and answers every
@@ -1561,6 +1583,14 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn element_visible(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
         (**self).element_visible(selector)
+    }
+
+    fn select_options(
+        &mut self,
+        selector: &UiaSelector,
+        values: &[String],
+    ) -> Result<(), DriverError> {
+        (**self).select_options(selector, values)
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {

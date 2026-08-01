@@ -2297,6 +2297,118 @@ impl AppDriver for WebAppDriver {
         })
     }
 
+    fn select_options(
+        &mut self,
+        selector: &UiaSelector,
+        values: &[String],
+    ) -> Result<(), DriverError> {
+        let locator = Self::locator(selector)?;
+        let outcome = self.with_element(
+            &locator,
+            &format!("selecting options in [{selector}]"),
+            |element| {
+                element.call_js_fn(
+                    // The whole selection is set in ONE pass and committed
+                    // with ONE input+change pair, because that is what the
+                    // app's own handler expects to see: a user finishing a
+                    // selection, not four of them.
+                    //
+                    // Every name is resolved BEFORE anything is selected,
+                    // so a typo in the third option leaves the control
+                    // untouched rather than half-applied. A step that
+                    // failed partway would be worse than one that failed.
+                    // Returns a STATUS STRING rather than throwing. A JS
+                    // exception does not reach Rust as an `Err` here - the
+                    // single-option path quietly falls back to typing when
+                    // that happens - so an outcome that must be checked has
+                    // to be a value that comes back.
+                    r#"function(wanted) {
+                        if (this.tagName !== 'SELECT') { return 'not_a_select'; }
+                        if (!this.multiple) { return 'not_multiple'; }
+                        const options = Array.from(this.options);
+                        const pick = (w) => options.find(o => o.value === w)
+                            || options.find(o => o.textContent.trim() === w)
+                            || options.find(o => o.textContent.trim().startsWith(w));
+                        const chosen = [];
+                        for (const raw of wanted) {
+                            const w = String(raw).trim();
+                            const match = pick(w);
+                            // Every name is resolved BEFORE anything is
+                            // selected, so a typo in the third option
+                            // leaves the control untouched rather than
+                            // half-applied.
+                            if (!match) { return 'no_option:' + w; }
+                            chosen.push(match);
+                        }
+                        // Set-a-state, like Check: what is named becomes
+                        // selected and what is not named does not, however
+                        // the control arrived.
+                        for (const o of options) {
+                            o.selected = chosen.indexOf(o) !== -1;
+                        }
+                        this.dispatchEvent(new Event('input', { bubbles: true }));
+                        this.dispatchEvent(new Event('change', { bubbles: true }));
+                        // The post-condition, read back from the control
+                        // itself: what IS selected now.
+                        return 'ok:' + Array.from(this.selectedOptions)
+                            .map(o => o.textContent.trim()).join('\u001f');
+                    }"#,
+                    vec![serde_json::json!(values)],
+                    false,
+                )
+            },
+        )?;
+        let status = outcome
+            .value
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let selected = match status.as_str() {
+            "not_a_select" => {
+                return Err(DriverError::Browser(format!(
+                    "[{selector}] is not a <select>, so it has no options to select"
+                )))
+            }
+            "not_multiple" => {
+                return Err(DriverError::Browser(format!(
+                    "[{selector}] does not allow multiple options - select one option instead"
+                )))
+            }
+            s if s.starts_with("no_option:") => {
+                return Err(DriverError::Browser(format!(
+                    "no option matching '{}' in [{selector}] - the selection was left untouched",
+                    &s["no_option:".len()..]
+                )))
+            }
+            s if s.starts_with("ok:") => s["ok:".len()..].to_string(),
+            other => {
+                return Err(DriverError::Browser(format!(
+                    "selecting options in [{selector}] returned no answer ({other:?})"
+                )))
+            }
+        };
+        // Verify the state took, exactly as `Check` does. A control that
+        // accepted the assignment and then re-derived its own selection
+        // (a framework re-render) must fail here rather than pass on the
+        // strength of having been asked.
+        let got: Vec<&str> = if selected.is_empty() {
+            Vec::new()
+        } else {
+            selected.split('\u{1f}').collect()
+        };
+        if got.len() != values.len() {
+            return Err(DriverError::Browser(format!(
+                "selecting in [{selector}] did not take: asked for {} option(s), \
+                 the control now has {} ({})",
+                values.len(),
+                got.len(),
+                got.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
     fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         let locator = Self::locator(selector)?;
         // Go through the native value setter so framework-controlled inputs
