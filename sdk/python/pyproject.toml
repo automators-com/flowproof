@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "flowproof"
 version = "0.11.0"
-description = "Deterministic evidence and control-regression gating for AI agents and the SAP, web and Citrix systems they drive. Record once, replay with zero LLM calls."
+description = "Test that a bot only ever does the job it was given — and never deletes, sends or approves the thing it must not. Record it doing the job once, then replay on every commit with zero LLM calls. For the agents and RPA already running real work in production: web, desktop, SAP, Citrix."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
