@@ -444,10 +444,32 @@ Three failures are kept distinct so none of them can read as a pass:
 
 Limits in v1, each for a reason rather than for later:
 
-- **Assertions only.** An action (`Click`, `Type`) inside a frame is a parse
-  error. Actions act at composited coordinates resolved against the main
-  document, so a framed action could "succeed" without touching the frame -
-  a false green. Assert inside the frame, and drive the action from the page.
+- **Value-driving actions, not pointer actions.** `Type`, `Replace`, `Clear`,
+  `Check`/`Uncheck`, `Remember` and `Scroll` work inside a frame; `Click`,
+  `Press … button`, `Hover`, `Double-click`, `Right-click` and `Upload` are
+  a parse error naming the reason.
+
+  The original refusal covered every action, on the grounds that actions act
+  at composited coordinates resolved against the main document and so could
+  "succeed" without touching the frame. That reasoning was right, and it is
+  specifically about COORDINATES. A same-origin frame does not need them: the
+  parent's own scripts can reach `iframe.contentDocument`, so a value action
+  is driven through the frame's DOM - the same mechanism `Select` uses in the
+  main document - and nothing is dispatched at a point.
+
+  A pointer action has no such route. It could only reach the frame as an
+  untrusted event (`isTrusted` is false), which an application is free to
+  ignore while the step still passes - release-without-effect. So those stay
+  refused until a trusted mechanism exists.
+
+  **A framed `Type` is not the main-document `Type`.** In the main document
+  it is real keystrokes; inside a frame it is a value assignment plus
+  `input`/`change`. An application that filters on `keydown` will not see it.
+  Two guards keep that honest rather than silent: the target must not be
+  `disabled` or read-only (a value assignment succeeds on a disabled control
+  where typing would be ignored - so it is refused by name), and the value
+  is read BACK from the element afterwards, so a control that rejected or
+  rewrote it fails the step.
 - **Same-origin only.** A cross-origin frame's document is unreachable, and
   the CDP per-frame execution-context path is not deterministic enough to
   ship behind a grammar that looks identical.
