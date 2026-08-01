@@ -8,6 +8,34 @@ together).
 
 ### Added
 
+- **A row that needs two columns to name it could not be named.** The row
+  target identifies by content instead of position, which is the whole
+  reason it exists — but it took one anchor, and one column is often not
+  unique. A table with two people called John and two called Doe has no
+  single anchor that finds John Doe's row. `containing "Doe"` failed with
+  `matches 2 rows`, correctly and unhelpfully, and the only thing left to
+  write was `tr:nth-child(2)`: the positional selector this target was built
+  to remove, reintroduced by hand.
+
+  ```yaml
+  - Click the "Edit" in the item containing "John" and "Doe"
+  - assert: the "Email" column of the row containing "John" and "Doe" shows john@example.com
+  ```
+
+  Every anchor must be in the SAME row, so the conjunction narrows rather
+  than widens. Anchors that sit in different rows match nothing rather than
+  picking one of them, and a conjunction that is still ambiguous gives the
+  same `matches N rows` error a single anchor does — the diagnostic is not
+  weakened by having more ways to be specific.
+
+  The quotes delimit and `and` is a separator, the same rule the multi-option
+  `Select` above uses, for the same reason: an anchor is arbitrary page text.
+
+  This is not the selector growth the charter declines. That clause is about
+  adopting another framework's idioms; this is flowproof's own
+  identity-not-position principle reaching a table where one column does not
+  identify anything.
+
 - **Selecting four options selected one, and said nothing.** `Select` commits
   through the control's value setter, which is correct and is also a
   *replacement*. So the obvious spelling — four `Select` steps at one
