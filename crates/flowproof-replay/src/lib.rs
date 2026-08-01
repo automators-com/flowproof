@@ -97,6 +97,20 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             .and_then(|v| v.as_str())
             .map(str::to_string)
     };
+    // A missing key is an EMPTY list, not an error: every trace written
+    // before conjunction existed simply has no extra anchors.
+    let get_list = |key: &str| -> Vec<String> {
+        selector
+            .payload
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     let nth = selector
         .payload
         .get("nth")
@@ -118,6 +132,9 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             cell: (get("kind").as_deref() == Some("cell")).then(|| flowproof_driver::CellQuery {
                 column: get("column_text").unwrap_or_default(),
                 anchor: get("row_anchor").unwrap_or_default(),
+                // Absent in every trace written before conjunction, which
+                // decodes to the single-anchor behaviour unchanged.
+                also: get_list("row_anchor_also"),
                 column_field: get("column_field"),
                 row_id: get("row_id"),
             }),
@@ -144,6 +161,7 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
                 flowproof_driver::ScopeQuery {
                     container: get("container").unwrap_or_default(),
                     anchor: get("container_anchor").unwrap_or_default(),
+                    also: get_list("anchor_also"),
                     inner_css: get("inner_css"),
                     inner_id: get("inner_id"),
                     inner_text: get("inner_text").or_else(|| get("inner_name")),

@@ -54,6 +54,9 @@ pub enum Target {
     Cell {
         column: String,
         anchor: String,
+        /// Additional anchors that must ALSO be in the same row - the way
+        /// a row is named when one column is not unique.
+        also: Vec<String>,
     },
     /// An element addressed INSIDE a container identified by an anchor:
     /// `the "Amount" in the item containing "Invoice 4711"`. The container
@@ -63,6 +66,8 @@ pub enum Target {
     Scoped {
         container: String,
         anchor: String,
+        /// Additional anchors that must ALSO be in the same container.
+        also: Vec<String>,
         inner: Box<Target>,
     },
     /// An element addressed inside a SAME-ORIGIN iframe:
@@ -1054,17 +1059,19 @@ fn parse_scroll_edge(s: &str) -> Option<ScrollTo> {
 enum Scope {
     Cell {
         anchor: String,
+        /// Additional anchors that must ALSO be in the same row.
+        also: Vec<String>,
     },
     Container {
         container: String,
         anchor: String,
+        /// Additional anchors that must ALSO be in the same container.
+        also: Vec<String>,
     },
     /// `in|inside the iframe "<frame>"` - a whole separate document, not a
     /// narrower root in this one. It is a Scope because it occupies the
     /// same target-tail slot and obeys the same one-per-target rule.
-    Frame {
-        frame: String,
-    },
+    Frame { frame: String },
 }
 
 /// The opening of a capture reference, from the crate that resolves them.
@@ -1109,13 +1116,37 @@ const CONTAINER_FORM: &str = "a container must be the word `item` or a quoted \
 
 /// Parse `"<anchor>"` and whatever follows it, off the text after
 /// `containing`.
-fn quoted_anchor(after: &str, noun: &str) -> Result<(String, String), String> {
+/// `"<A>"` or `"<A>" and "<B>" and …` — the anchors that must ALL be found
+/// in the same row or container.
+///
+/// One column is often not unique (two people called John, two called Doe),
+/// and the only way to say the true thing today is `tr:nth-child(2)` — the
+/// positional selector this whole target exists to remove. Conjunction is
+/// the same identity-not-position idea reaching a table that needs two
+/// columns to name a row.
+///
+/// `and` between quoted anchors is a separator, never part of an anchor:
+/// the quotes delimit, exactly as they do in a multi-option `Select`.
+fn quoted_anchors(after: &str, noun: &str) -> Result<(String, Vec<String>, String), String> {
     let quoted = after
         .trim_start()
         .strip_prefix('"')
         .ok_or_else(|| format!("expected a quoted {noun} after 'containing'"))?;
     let (anchor, rest) = quoted_label(quoted).ok_or_else(|| format!("unterminated {noun}"))?;
-    Ok((anchor.to_string(), rest.trim().to_string()))
+    let mut also = Vec::new();
+    let mut rest = rest.trim();
+    while let Some(next) = strip_prefix_ci(rest, "and ") {
+        let Some(quoted) = next.trim_start().strip_prefix('"') else {
+            break;
+        };
+        let (extra, tail) = quoted_label(quoted).ok_or_else(|| format!("unterminated {noun}"))?;
+        if extra.is_empty() {
+            return Err(format!("a {noun} may not be empty"));
+        }
+        also.push(extra.to_string());
+        rest = tail.trim();
+    }
+    Ok((anchor.to_string(), also, rest.to_string()))
 }
 
 /// `column of|in the row containing "<anchor>"` - the cell form, which
@@ -1123,7 +1154,10 @@ fn quoted_anchor(after: &str, noun: &str) -> Result<(String, String), String> {
 fn strip_cell_suffix(tail: &str) -> Option<Result<(Scope, String), String>> {
     let after = strip_prefix_ci(tail, "column of the row containing ")
         .or_else(|| strip_prefix_ci(tail, "column in the row containing "))?;
-    Some(quoted_anchor(after, "row anchor").map(|(anchor, rest)| (Scope::Cell { anchor }, rest)))
+    Some(
+        quoted_anchors(after, "row anchor")
+            .map(|(anchor, also, rest)| (Scope::Cell { anchor, also }, rest)),
+    )
 }
 
 /// Where a container phrase could START: `in the …` / `inside the …`,
@@ -1182,10 +1216,18 @@ fn parse_container_phrase(after: &str) -> Option<Result<(Scope, String), String>
         }
         match parse_container_word(container_text) {
             Ok(container) => {
-                return Some(
-                    quoted_anchor(anchor_part, "container anchor")
-                        .map(|(anchor, rest)| (Scope::Container { container, anchor }, rest)),
-                );
+                return Some(quoted_anchors(anchor_part, "container anchor").map(
+                    |(anchor, also, rest)| {
+                        (
+                            Scope::Container {
+                                container,
+                                anchor,
+                                also,
+                            },
+                            rest,
+                        )
+                    },
+                ));
             }
             Err(reason) => {
                 if first_error.is_none() {
@@ -1467,13 +1509,19 @@ fn scoped_target(
         ));
     }
     Ok(match scope {
-        Scope::Cell { anchor } => Target::Cell {
+        Scope::Cell { anchor, also } => Target::Cell {
             column: label.to_string(),
             anchor,
+            also,
         },
-        Scope::Container { container, anchor } => Target::Scoped {
+        Scope::Container {
             container,
             anchor,
+            also,
+        } => Target::Scoped {
+            container,
+            anchor,
+            also,
             inner: Box::new(target_from_label(label)),
         },
         Scope::Frame { frame } => Target::Framed {
@@ -3974,6 +4022,10 @@ mod tests {
                 "web",
                 r#"Remember the "Amount" in the item containing "Invoice 4711" as amount"#,
             ),
+            (
+                "web",
+                r#"Press the "Edit" button in the item containing "John" and "Doe""#,
+            ),
             // Interpolation: several references in one step, and literal
             // text around them. Documented under "A typed value is
             // interpolated, not evaluated".
@@ -4097,6 +4149,10 @@ mod tests {
                 r#"the "Amount" in the "css:[data-test=transaction]" containing "Invoice 4711" shows 50"#,
             ),
             ("web", r#"the "Total" shows ${captured.rows} + 1"#),
+            (
+                "web",
+                r#"the "Email" column of the row containing "John" and "Doe" shows john@example.com"#,
+            ),
             ("calc", "display shows 8"),
             ("notepad", "document contains hello"),
         ];
@@ -4243,6 +4299,7 @@ mod tests {
                 target: Target::Cell {
                     column: "Actions".into(),
                     anchor: "Ada".into(),
+                    also: Vec::new(),
                 },
                 name: "href".into(),
                 check: AttrCheck::Value {
@@ -5079,6 +5136,66 @@ mod framed_target_tests {
     /// arbitrary app text: "Rock, Paper and Scissors" is ONE option on some
     /// page, and an unquoted list could not tell it from three - silently,
     /// by selecting the wrong set.
+    /// A row named by two columns, because one is not unique. The
+    /// alternative today is `tr:nth-child(2)` - the positional selector
+    /// this target exists to remove.
+    #[test]
+    fn a_row_can_be_named_by_more_than_one_anchor() {
+        assert_eq!(
+            assert_step(r#"the "Email" column of the row containing "John" and "Doe" shows x"#)
+                .expect("parses"),
+            vec![ResolvedAction::AssertText {
+                target: Target::Cell {
+                    column: "Email".into(),
+                    anchor: "John".into(),
+                    also: vec!["Doe".into()],
+                },
+                expected: "x".into(),
+                matcher: TextMatch::Contains,
+                timeout_ms: ASSERT_TIMEOUT_MS,
+            }]
+        );
+        // The container form takes the same conjunction.
+        assert_eq!(
+            plain(r#"Press the "Edit" button in the item containing "John" and "Doe""#)
+                .expect("parses"),
+            vec![ResolvedAction::Press {
+                target: Target::Scoped {
+                    container: "item".into(),
+                    anchor: "John".into(),
+                    also: vec!["Doe".into()],
+                    inner: Box::new(Target::Text("Edit".into())),
+                },
+                label: "Edit".into(),
+                dialog: None,
+            }]
+        );
+        // Three is no different from two.
+        let three =
+            plain(r#"Click the "Pay" in the item containing "John" and "Doe" and "Overdue""#)
+                .expect("parses");
+        assert!(matches!(
+            &three[0],
+            ResolvedAction::Press { target: Target::Scoped { also, .. }, .. }
+                if also.len() == 2
+        ));
+        // And a single anchor is completely unchanged.
+        assert_eq!(
+            plain(r#"Press the "Pay" button in the item containing "Invoice 4711""#)
+                .expect("parses"),
+            vec![ResolvedAction::Press {
+                target: Target::Scoped {
+                    container: "item".into(),
+                    anchor: "Invoice 4711".into(),
+                    also: Vec::new(),
+                    inner: Box::new(Target::Text("Pay".into())),
+                },
+                label: "Pay".into(),
+                dialog: None,
+            }]
+        );
+    }
+
     #[test]
     fn a_multi_select_list_is_delimited_by_quotes_and_nothing_else() {
         let three = plain(
@@ -5388,6 +5505,7 @@ mod scoped_target_tests {
         Target::Scoped {
             container: "item".into(),
             anchor: anchor.into(),
+            also: Vec::new(),
             inner: Box::new(inner),
         }
     }
@@ -5669,6 +5787,7 @@ mod scoped_target_tests {
         let cell = Target::Cell {
             column: "Actions".into(),
             anchor: "Grace Hopper".into(),
+            also: Vec::new(),
         };
         assert_eq!(
             plain(r#"Click the "Actions" column of the row containing "Grace Hopper""#)

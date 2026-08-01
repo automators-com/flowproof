@@ -52,6 +52,10 @@ pub struct UiaSelector {
 pub struct CellQuery {
     pub column: String,
     pub anchor: String,
+    /// Additional anchors that must ALSO be present in the same row. Empty
+    /// for the single-anchor form, which is every trace written before
+    /// conjunction existed.
+    pub also: Vec<String>,
     pub column_field: Option<String>,
     pub row_id: Option<String>,
 }
@@ -76,6 +80,8 @@ pub struct CellHints {
 pub struct ScopeQuery {
     pub container: String,
     pub anchor: String,
+    /// Additional anchors that must ALSO be present in the same container.
+    pub also: Vec<String>,
     pub inner_css: Option<String>,
     pub inner_id: Option<String>,
     pub inner_text: Option<String>,
