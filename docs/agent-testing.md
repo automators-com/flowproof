@@ -936,6 +936,15 @@ dropped, since the trap already proved the syscall happened. Only a syscall
 whose *destructiveness* could not be adjudicated - an `openat2` whose
 `open_how` was unreadable - is a fault.
 
+**It prints, and it is not recorded.** There is no `fs` lane in the trace,
+by decision rather than by omission: the report goes to stderr and nothing
+survives the run. A lane was designed and declined, because a trace is a
+COMMITTED artifact and these paths are absolute - `/home/alice/exports/
+acme-corp-2025.csv` would be baked into a file that is reviewed and diffed
+forever. That is the same argument that keeps `execve` out of the trap set
+for its argv. So this answers "what did that run destroy", never "what has
+this flow destroyed since March".
+
 **Punts, and they are real.** These are ATTEMPTS, not outcomes: the reply
 goes out before the kernel runs the call, so an `rmdir` of a directory that
 was not there reads exactly like one that removed a tree. `open(path,
