@@ -16,7 +16,10 @@ web = ["dep:headless_chrome"]
 vision = ["dep:ocrs", "dep:rten", "dep:ureq"]
 # Agent-boundary testing: the model-API proxy, and record mode forwarding
 # to a real model over ureq (TLS via platform-verifier, already in-tree).
-agent = ["dep:ureq"]
+# `dep:windows` is listed for the Windows containment probe; the dependency
+# itself is declared under [target.'cfg(windows)'.dependencies], so enabling
+# this feature on Linux or macOS pulls nothing.
+agent = ["dep:ureq", "dep:windows"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -50,6 +53,12 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_Variant",
     "Win32_UI_WindowsAndMessaging",
+    # Windows egress containment (`agent`): the capability probe reads the
+    # process token's elevation and privileges, and asks the SCM whether the
+    # Secondary Logon service exists.
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_Services",
 ], optional = true }
 
 [lints]

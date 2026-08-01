@@ -16,6 +16,21 @@ pub mod egress;
 #[cfg(all(feature = "agent", target_os = "linux"))]
 pub mod egress_linux;
 
+// Windows containment is being built (see `spike/windows-containment/LOG.md`).
+// Today this module is the capability PROBE only: it installs no filter and
+// cannot report "enforced", so a Windows run is still honestly not contained.
+//
+// Gated on the `windows` DEPENDENCY (either feature that pulls it) rather than
+// on `agent`, and that is deliberate. `agent` pulls ureq, whose TLS stack
+// pulls `ring`, whose build script cannot cross-compile from Linux - so
+// gating this on `agent` would make `cargo check --target
+// x86_64-pc-windows-msvc` impossible, and that command is the only way this
+// Win32 code gets typechecked without a Windows runner. Under `sap-com` alone
+// the module still builds, and the check is a few seconds on the Linux box.
+// It holds no `Containment` for the same reason: that type is agent-gated.
+#[cfg(all(windows, any(feature = "agent", feature = "sap-com")))]
+pub mod egress_windows;
+
 #[cfg(feature = "agent")]
 pub mod mcp_core;
 

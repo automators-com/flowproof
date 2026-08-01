@@ -65,16 +65,47 @@ impl Containment {
     }
 
     /// The tier a `command:` flow achieves on THIS platform and kernel: a
-    /// real seccomp probe on Linux, a flat "not contained" everywhere else.
+    /// real seccomp probe on Linux, a capability probe on Windows, and a flat
+    /// "not contained" everywhere else.
     #[cfg(target_os = "linux")]
     pub fn command_flow() -> Self {
         crate::egress_linux::probe_containment()
     }
 
-    #[cfg(not(target_os = "linux"))]
+    /// Windows is being built. Until the WFP filters land this ALWAYS returns
+    /// "not contained" - the probe only makes the REASON specific, so an
+    /// adopter learns whether their host is ready rather than guessing.
+    ///
+    /// The `Enforced` arm is absent rather than conditional. `egress_windows`
+    /// reports facts about the host and never names this type, so there is no
+    /// path from a probe result to a containment claim until the step that
+    /// installs the filters adds one.
+    #[cfg(windows)]
+    pub fn command_flow() -> Self {
+        use crate::egress_windows::HostReadiness;
+        let host = HostReadiness::probe();
+        let blockers = host.blockers();
+        if blockers.is_empty() {
+            Containment::NotContained(format!(
+                "egress containment is not implemented on Windows yet; this host could \
+                 support it ({})",
+                host.summary()
+            ))
+        } else {
+            Containment::NotContained(format!(
+                "egress containment is not implemented on Windows yet, and this host could \
+                 not support it as configured: {}",
+                blockers.join("; ")
+            ))
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub fn command_flow() -> Self {
         Containment::NotContained(
-            "egress containment is Linux-only; this platform is not contained".to_string(),
+            "egress containment is not available on this platform; it is enforced on Linux \
+             (seccomp) and in progress on Windows"
+                .to_string(),
         )
     }
 }
@@ -203,6 +234,30 @@ mod tests {
         assert_eq!(
             c.report_line(),
             "egress containment: not contained (kernel too old)"
+        );
+    }
+
+    /// Until the WFP filters exist, a Windows `command:` flow must report
+    /// "not contained" - whatever the host is capable of.
+    ///
+    /// This is the same false green as #300 and #301 arriving by a third
+    /// route: a tier that says `enforced` lets `assert_no_egress` certify a
+    /// run nothing was containing. The probe makes the REASON specific; it
+    /// must never make the VERDICT optimistic. The step that installs filters
+    /// is the step that deletes this test.
+    #[cfg(windows)]
+    #[test]
+    fn enforced_is_unreachable_on_windows() {
+        let tier = Containment::command_flow();
+        assert!(
+            !tier.is_enforced(),
+            "no filter is installed yet, so nothing can be contained: {}",
+            tier.report_line()
+        );
+        let reason = tier.reason().expect("not contained carries a reason");
+        assert!(
+            reason.contains("not implemented on Windows yet"),
+            "the reason must read as our roadmap, not as the adopter's host: {reason}"
         );
     }
 
