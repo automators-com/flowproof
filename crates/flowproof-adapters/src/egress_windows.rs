@@ -23,6 +23,7 @@
 //! step that opens one.
 
 pub mod identity;
+pub mod logon;
 
 use std::ffi::c_void;
 
