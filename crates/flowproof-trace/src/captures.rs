@@ -95,6 +95,33 @@ mod tests {
     /// contain a dot so the secret resolver left it alone. Silently entering
     /// the wrong value is the worst outcome available, so an unknown name is
     /// an error that names what IS in scope.
+    /// The documented claim, pinned: a typed capture is INTERPOLATED, not
+    /// evaluated. `12 + 30` is three tokens of displayed text, and the
+    /// reason it is worth a test of its own is that it looks close enough
+    /// to an answer for a flow to go green on it while asserting nothing
+    /// anybody meant. If arithmetic is ever added it must be a spelling
+    /// that cannot be confused with this one, and this test is what says so.
+    #[test]
+    fn a_typed_capture_is_interpolated_and_never_evaluated() {
+        let c = scope(&[("a", "12"), ("b", "30")]);
+        assert_eq!(
+            substitute("${captured.a} + ${captured.b}", &c).expect("both resolve"),
+            "12 + 30",
+            "interpolation substitutes; it does not compute"
+        );
+        // Literal text around a reference is typed as written, and several
+        // references in one step each resolve.
+        let c = scope(&[("first", "Grace"), ("last", "Hopper"), ("oid", "1061367")]);
+        assert_eq!(
+            substitute("${captured.first} ${captured.last}", &c).expect("both resolve"),
+            "Grace Hopper"
+        );
+        assert_eq!(
+            substitute("order-${captured.oid}", &c).expect("resolves"),
+            "order-1061367"
+        );
+    }
+
     #[test]
     fn an_unremembered_name_is_an_error_that_lists_the_scope() {
         let err = substitute("${captured.typo}", &scope(&[("oid", "1"), ("amount", "2")]))

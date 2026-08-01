@@ -8,6 +8,30 @@ together).
 
 ### Fixed
 
+- **The docs never said what a typed capture does with the text around
+  it.** `authoring.md` showed one form, `Type ${captured.oid} into the …`,
+  and said the value is read fresh on every replay. It did not say that
+  several references resolve in one step, that literal text between them is
+  typed as written — or, the part that matters, that none of it is
+  evaluated.
+
+  So `Type ${captured.a} + ${captured.b} into the "Sum" field` types
+  `12 + 30`. That is interpolation working exactly as designed. It is also
+  close enough to an answer that a flow can go green on it while asserting
+  nothing anybody meant, and the page that reads like the complete account
+  of captures did not mention it.
+
+  Documented now, with the non-arithmetic stated outright and the reason:
+  a capture is text the app displayed, and handing it back is data entry;
+  deriving a new value from two of them is a computation, and a trace
+  carrying a computation has stopped being a recording. The one exception
+  stays where it was — `shows ${captured.x} + <number>` on the assertion
+  side, which answers "did this change by the right amount?", a question no
+  literal can express.
+
+  Pinned by a test that asserts `12 + 30`, so if arithmetic is ever added it
+  has to arrive as a spelling that cannot be mistaken for this one.
+
 - **A step the grammar had decided not to have was built by the model
   instead.** `record` resolves with rules first and hands anything they
   cannot parse to the LLM author. That is right for a step nobody has taught
