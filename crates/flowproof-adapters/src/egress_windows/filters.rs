@@ -145,7 +145,7 @@ pub fn install(
     engine: &mut Engine,
     user: &UserCondition,
     entries: &[AllowEntry],
-) -> Result<(), WinErr> {
+) -> Result<Vec<u64>, WinErr> {
     if !engine.has_sublayer() {
         return Err(WinErr::new(
             "install",
@@ -167,17 +167,21 @@ pub fn install(
     for entry in entries {
         permit_entry(engine, user, &entry.host, entry.port)?;
     }
+    // The BLOCK ids are returned, and only those. A drop carrying one is ours
+    // by construction, which is how the audit lane attributes without having
+    // to infer from a SID that may not be set at all.
+    let mut block_ids = Vec::with_capacity(2);
     for v6 in [false, true] {
-        add_filter(
+        block_ids.push(add_filter(
             engine,
             "flowproof block (identity)",
             &[user.condition()],
             FWP_ACTION_BLOCK,
             BLOCK_WEIGHT,
             v6,
-        )?;
+        )?);
     }
-    Ok(())
+    Ok(block_ids)
 }
 
 /// One PERMIT filter for one resolved entry. The address storage is a local
