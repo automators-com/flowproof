@@ -28,6 +28,22 @@ together).
   A flaky test in a testing tool is worse than elsewhere: the product's whole
   claim is that a green run means something.
 
+- **A column was addressed by counting `th`s against `td`s.** The column
+  index came from the table's header elements; the cell came from the data
+  row's `td`s. A grid whose header row opens with a stub above the row-label
+  column (`<tr><td></td><th>Monday</th>…`, every schedule ever built) shifts
+  every data cell one place right of its header, so `the "Thursday" column of
+  the row containing "11:00 - 13:00"` read Wednesday.
+
+  It returned a real cell with real text, so the assertion passed — against
+  the wrong day. Silently answering about the neighbouring column is the
+  failure this target exists to remove; a header rename is loud, and this was
+  not. Both sides now count header and data cells together and index the
+  header within its own row.
+
+  Found by pointing flowproof at a public obstacle web page built to be
+  deliberately awkward to automate.
+
 ## 0.11.0
 
 Three things the driver could already do, and the surface would not let you

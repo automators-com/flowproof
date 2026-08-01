@@ -209,6 +209,13 @@ The same cell target composes with every predicate (`shows`, `is empty`,
 is [not] <value>`) and every action (`Click`, `Type … into`, `Clear`,
 `Check`, `Scroll`). `in the row containing` also works - the of/in coin flip
 is one you should not have to remember.
+
+A column is matched by its header's text and then addressed by that
+header's position **within its own row**, counting header and data cells
+together. A schedule-style grid whose header row opens with a stub above
+the row-label column (`<tr><td></td><th>Monday</th>…`) therefore lines up:
+counting `th`s against `td`s would read one column to the left, and return
+a real cell, which passes as confidently as the right one.
 | Form | Notes |
 |---|---|
 | `the "<column>" column of the row containing "<anchor>"` | a table cell; `in the row containing` also works - the of/in coin flip is one you should not have to remember |
