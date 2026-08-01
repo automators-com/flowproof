@@ -16,12 +16,14 @@ together).
 
   The seccomp supervisor that enforces egress now also traps the destructive
   filesystem syscalls — `unlink`, `unlinkat` (including `AT_REMOVEDIR`),
-  `rmdir`, `rename`/`renameat`/`renameat2`, `truncate` and `ftruncate` — and
-  any flow already engaging containment prints what it destroyed:
+  `rmdir`, `rename`/`renameat`/`renameat2`, `truncate`, `ftruncate`, `creat`,
+  `openat2`, and the open family when the flags carry `O_TRUNC` — and any flow
+  already engaging containment prints what it destroyed:
 
   ```
-  filesystem observation: observed (linux seccomp); 1 destructive syscall(s)
+  filesystem observation: observed (linux seccomp); 2 destructive syscall(s)
     unlinkat /home/u/exports/2025.csv at 412ms
+    openat [O_WRONLY|O_CREAT|O_TRUNC] /home/u/db.sqlite at 899ms
   ```
 
   It **observes**. No new step, no new spec key, nothing new to assert on —
@@ -30,6 +32,12 @@ together).
   re-reads child memory *after* the supervisor decided, which a sibling thread
   can race. Fatal for a verdict, acceptable for a report: the trap fires on
   syscall NUMBER, so a path can be stale but a destructive syscall cannot hide.
+
+  The open family is gated in-kernel on the `O_TRUNC` bit, so an ordinary read
+  or append never wakes the supervisor and a contained run keeps its speed.
+  Said out loud rather than left to be discovered: an `open` for writing
+  *without* `O_TRUNC` followed by a write at offset 0 corrupts a file and fires
+  nothing.
 
 - **A control that acts on WHERE it was hit could only be hit in the
   middle.** `Click` goes to the element's midpoint, which is the right
