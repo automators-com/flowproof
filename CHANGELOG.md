@@ -39,6 +39,23 @@ together).
   *without* `O_TRUNC` followed by a write at offset 0 corrupts a file and fires
   nothing.
 
+- **A container could only be scrolled to its edges.** `Scroll … to the
+  top|bottom` had two positions, and an application that keys behaviour to
+  an exact `scrollTop` had no step at all.
+
+  `Scroll "<target>" to 147px` scrolls to an exact offset. Pixels, not a
+  percentage, and this is the one place pixels are right: `scrollTop` is a
+  real DOM unit applications assert on, while a percentage of `scrollHeight`
+  is a unit nothing reads. (The click offset takes percentages for the
+  opposite reason.)
+
+  The unit is required — `to 147` is a parse error, so a second unit could
+  never change what an old flow meant — and the offset is verified after the
+  write with a ±1 tolerance, because `scrollTop` reads back fractionally
+  under a non-integer device pixel ratio. A container that stops short
+  FAILS rather than clamping silently, and a target whose content fits is
+  refused, since scrolling it would pass without moving anything.
+
 - **A control that acts on WHERE it was hit could only be hit in the
   middle.** `Click` goes to the element's midpoint, which is the right
   default and the only thing there was. A split button, a slider track, a

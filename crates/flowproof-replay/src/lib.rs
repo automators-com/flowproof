@@ -2034,6 +2034,8 @@ fn execute_step<D: AppDriver>(
         Action::Scroll(params) => {
             let to = if params.get("into_view").and_then(|v| v.as_bool()) == Some(true) {
                 Some(flowproof_driver::ScrollTo::IntoView)
+            } else if let Some(px) = params.get("to_px").and_then(|v| v.as_u64()) {
+                Some(flowproof_driver::ScrollTo::Offset(px as u32))
             } else {
                 match params.get("to").and_then(|v| v.as_str()) {
                     Some("bottom") => Some(flowproof_driver::ScrollTo::Bottom),

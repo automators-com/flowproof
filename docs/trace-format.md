@@ -155,6 +155,11 @@ these fields existed) is byte-identical:
   in every trace written before conjunction existed, which decodes to the
   single-anchor behaviour unchanged.
 
+  A `scroll` step carries `to: "top"|"bottom"`, `into_view: true`, or
+  **`to_px: <n>`** — an exact offset from the top of the scroll container.
+  A new key rather than a new action, so a trace written before offsets
+  still loads.
+
   A `type_text` step may carry `params.values: [...]` — a **multi-selection**,
   the whole set committed at once. Where `values` is present it is
   authoritative; `params.text` repeats only the first option, so a reader

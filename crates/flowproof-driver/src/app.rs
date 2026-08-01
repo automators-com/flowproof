@@ -301,6 +301,16 @@ pub enum ScrollTo {
     Top,
     Bottom,
     IntoView,
+    /// An EXACT offset in pixels from the top of the scroll container.
+    ///
+    /// Pixels, not a percentage, and this is the one place pixels are
+    /// right: `scrollTop` is a real DOM unit that applications key
+    /// behaviour to, while a percentage of `scrollHeight` is a unit nothing
+    /// asserts. (The click offset takes percentages for the opposite
+    /// reason - an element's box has no unit an app reads.) An exact offset
+    /// is only meaningful under a pinned `browser.viewport`, the same
+    /// caveat visual assertions carry.
+    Offset(u32),
 }
 
 /// How a declared JavaScript dialog (`alert`/`confirm`/`prompt`/

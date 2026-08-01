@@ -1957,6 +1957,79 @@ impl AppDriver for WebAppDriver {
                         }
                         Ok(())
                     }
+                    // Scroll the container to an EXACT offset.
+                    ScrollTo::Offset(px) => {
+                        let status = self.with_element(
+                            &locator,
+                            &format!("scrolling [{sel}] to {px}px"),
+                            |element| {
+                                element.call_js_fn(
+                                    // A STATUS STRING, because a JS throw
+                                    // does not reach Rust as an Err and a
+                                    // bare bool cannot say WHY.
+                                    r#"function(px) {
+                                        // Address the scrolling element, not
+                                        // `body`: in standards mode
+                                        // `body.scrollTop` is inert, so the
+                                        // same spelling would silently do
+                                        // nothing on a page one doctype away.
+                                        var el = this;
+                                        if (el === (el.ownerDocument.body)
+                                            && el.ownerDocument.scrollingElement) {
+                                            el = el.ownerDocument.scrollingElement;
+                                        }
+                                        if (el.scrollHeight <= el.clientHeight) {
+                                            return 'not_scrollable';
+                                        }
+                                        var max = el.scrollHeight - el.clientHeight;
+                                        if (px > max) { return 'clamped:' + max; }
+                                        // `instant`: a container with
+                                        // `scroll-behavior: smooth` animates a
+                                        // bare assignment, and the readback
+                                        // below would catch it mid-flight.
+                                        el.scrollTo({ top: px, behavior: 'instant' });
+                                        return 'at:' + el.scrollTop;
+                                    }"#,
+                                    vec![serde_json::json!(px)],
+                                    false,
+                                )
+                            },
+                        )?;
+                        let status = status
+                            .value
+                            .as_ref()
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if status == "not_scrollable" {
+                            return Err(DriverError::Browser(format!(
+                                "[{sel}] is not a scroll container (its content fits), so \
+                                 scrolling it to {px}px would pass without moving anything"
+                            )));
+                        }
+                        if let Some(max) = status.strip_prefix("clamped:") {
+                            return Err(DriverError::Browser(format!(
+                                "[{sel}] cannot scroll to {px}px - it stops at {max}px"
+                            )));
+                        }
+                        let at: f64 = status
+                            .strip_prefix("at:")
+                            .and_then(|v| v.parse().ok())
+                            .ok_or_else(|| {
+                                DriverError::Browser(format!(
+                                    "scrolling [{sel}] returned no answer ({status:?})"
+                                ))
+                            })?;
+                        // A tolerance, not equality: `scrollTop` is
+                        // fractional under a non-integer device pixel ratio,
+                        // so 147 legitimately reads back as 146.99…
+                        if (at - f64::from(px)).abs() > 1.0 {
+                            return Err(DriverError::Browser(format!(
+                                "[{sel}] did not scroll to {px}px - it is at {at}px"
+                            )));
+                        }
+                        Ok(())
+                    }
                     // Scroll the element AS A CONTAINER to an edge.
                     _ => {
                         let to_bottom = matches!(to, ScrollTo::Bottom);

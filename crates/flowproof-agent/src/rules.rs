@@ -445,6 +445,8 @@ pub enum ScrollTo {
     Top,
     Bottom,
     IntoView,
+    /// An exact offset in pixels from the top of the scroll container.
+    Offset(u32),
 }
 
 /// A capture name: `[a-z][a-z0-9_]*`. Deliberately narrow so a name can
@@ -576,6 +578,46 @@ fn quoted_list(step: &str, text: &str) -> Result<Vec<String>, RulesError> {
         ));
     }
     Ok(items)
+}
+
+/// `… to <n>px` - an exact scroll offset. `None` when the tail is not an
+/// offset form at all; an error when it looks like one but is malformed,
+/// so `to 147` (no unit) cannot quietly mean something else if a second
+/// unit is ever added.
+fn parse_scroll_offset(step: &str, tail: &str) -> Result<Option<u32>, RulesError> {
+    let tail = tail.trim();
+    // Take the LAST ` to ` so a frame scope can sit between the label and
+    // the offset: `… in the iframe "x" to 147px`. The tail arrives trimmed,
+    // so the bare leading `to ` is the same case with no room for a space.
+    let value = match rfind_ci(tail, " to ") {
+        Some(pos) => tail[pos + " to ".len()..].trim(),
+        None => match strip_prefix_ci(tail, "to ") {
+            Some(rest) => rest.trim(),
+            None => return Ok(None),
+        },
+    };
+    if value.eq_ignore_ascii_case("the top")
+        || value.eq_ignore_ascii_case("the bottom")
+        || value.eq_ignore_ascii_case("top")
+        || value.eq_ignore_ascii_case("bottom")
+    {
+        return Ok(None);
+    }
+    let Some(number) = value.strip_suffix("px") else {
+        return Err(unresolvable(
+            step,
+            "a scroll offset needs its unit: write 'to 147px', not 'to 147'",
+        ));
+    };
+    match number.trim().parse::<u32>() {
+        Ok(px) => Ok(Some(px)),
+        // A negative or fractional offset is refused rather than rounded:
+        // an offset the author did not write is not one they can review.
+        Err(_) => Err(unresolvable(
+            step,
+            "a scroll offset is a whole number of pixels from the top, e.g. 'to 147px'",
+        )),
+    }
 }
 
 fn refused(step: &str, reason: impl Into<String>) -> RulesError {
@@ -798,10 +840,10 @@ fn reject_framed_actions(step: &str, actions: &[ResolvedAction]) -> Result<(), R
             | ResolvedAction::ContextClick { target, .. }
             | ResolvedAction::DoubleClick { target, .. }
             | ResolvedAction::Hover { target, .. }
+            | ResolvedAction::ClickAt { target, .. }
             | ResolvedAction::Clear { target }
             | ResolvedAction::Capture { target, .. }
             | ResolvedAction::SetChecked { target, .. } => target,
-            // Scroll's target is optional (a bare `Scroll to the bottom`).
             ResolvedAction::Scroll {
                 target: Some(target),
                 ..
@@ -2477,6 +2519,16 @@ mod web {
             };
             if let Some(quoted) = after.strip_prefix('"') {
                 if let Some((label, tail)) = quoted_label(quoted) {
+                    // An EXACT offset, optionally inside a frame. Parsed
+                    // before the scope is split off, because the offset is
+                    // the tail's last token either way.
+                    if let Some(px) = parse_scroll_offset(trimmed, tail)? {
+                        let (scope, _) = split_scope(trimmed, tail)?;
+                        return Ok(vec![ResolvedAction::Scroll {
+                            target: Some(scoped_target(trimmed, nth, label, scope)?),
+                            to: ScrollTo::Offset(px),
+                        }]);
+                    }
                     let target = with_nth(nth, target_from_label(label));
                     if tail.eq_ignore_ascii_case("into view") {
                         return Ok(vec![ResolvedAction::Scroll {
@@ -4007,6 +4059,7 @@ mod tests {
             ("web", r#"Select Admin from the "Role" field"#),
             ("web", r#"Select Admin in the "Role" dropdown"#),
             ("web", r#"Click "Save" at 75%,50%"#),
+            ("web", r#"Scroll "css:.list" to 147px"#),
             (
                 "web",
                 r#"Select "Functional testing", "GUI testing" and "End2End testing" from the "Methods" field"#,
@@ -5371,6 +5424,44 @@ mod framed_target_tests {
     /// Out-of-range is refused rather than clamped. A clamp would turn
     /// `120%` into an edge click that looks deliberate and is not what the
     /// author wrote.
+    /// The offset must carry its unit, and be a whole number of pixels.
+    /// `to 147` is refused rather than assumed, so a second unit can never
+    /// change what an old flow meant.
+    #[test]
+    fn a_scroll_offset_needs_its_unit_and_a_whole_number() {
+        assert_eq!(
+            plain(r#"Scroll "css:.list" to 147px"#).expect("parses"),
+            vec![ResolvedAction::Scroll {
+                target: Some(Target::Css(".list".into())),
+                to: ScrollTo::Offset(147),
+            }]
+        );
+        for bad in [
+            r#"Scroll "css:.list" to 147"#,
+            r#"Scroll "css:.list" to 12.5px"#,
+            r#"Scroll "css:.list" to -3px"#,
+        ] {
+            assert!(plain(bad).is_err(), "{bad} must be refused");
+        }
+        // The edge forms are untouched.
+        assert!(matches!(
+            plain(r#"Scroll "css:.list" to the bottom"#)
+                .expect("parses")
+                .first(),
+            Some(ResolvedAction::Scroll {
+                to: ScrollTo::Bottom,
+                ..
+            })
+        ));
+        assert!(matches!(
+            plain("Scroll to the top").expect("parses").first(),
+            Some(ResolvedAction::Scroll {
+                target: None,
+                to: ScrollTo::Top
+            })
+        ));
+    }
+
     #[test]
     fn a_click_offset_outside_the_box_is_a_parse_error() {
         for bad in [
@@ -5523,9 +5614,6 @@ mod framed_target_tests {
 
     #[test]
     fn an_action_inside_a_frame_is_rejected_rather_than_silently_missing() {
-        // v1 is assertions-only: an action would resolve against the MAIN
-        // document, so it could "succeed" without touching the frame. That
-        // must be a loud parse error, never a green step.
         for text in [
             r#"Click the "Pay" in the iframe "checkout""#,
             r#"Type "x" into the "Coupon" in the iframe "checkout""#,

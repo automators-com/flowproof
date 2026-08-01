@@ -766,6 +766,11 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 ScrollTo::Bottom => {
                     params.insert("to".into(), "bottom".into());
                 }
+                // An exact offset: a new KEY on the existing scroll params,
+                // so a trace written before offsets still loads.
+                ScrollTo::Offset(px) => {
+                    params.insert("to_px".into(), serde_json::json!(px));
+                }
             }
             let selectors = match target {
                 Some(target) => selectors_for(app, target, None),
@@ -1590,6 +1595,7 @@ fn driver_scroll_to(to: ScrollTo) -> flowproof_driver::ScrollTo {
         ScrollTo::Top => flowproof_driver::ScrollTo::Top,
         ScrollTo::Bottom => flowproof_driver::ScrollTo::Bottom,
         ScrollTo::IntoView => flowproof_driver::ScrollTo::IntoView,
+        ScrollTo::Offset(px) => flowproof_driver::ScrollTo::Offset(px),
     }
 }
 
