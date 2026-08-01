@@ -2287,30 +2287,50 @@ impl AppDriver for WebAppDriver {
         let handled =
             self.with_element(&locator, &format!("selecting in [{selector}]"), |element| {
                 element.call_js_fn(
+                    // A STATUS STRING, not a throw and not a bare boolean.
+                    // A JS exception does not reach Rust as an `Err` here,
+                    // so throwing on a missing option looked identical to
+                    // "this is not a <select>" - and fell through to typing
+                    // the option's name into the dropdown, which keyboard-
+                    // selects by prefix and lands on whatever starts with
+                    // the same letters. A wrong option, selected quietly.
+                    //
+                    // The two cases are now different answers: `not_select`
+                    // is the genuine fall-through to typing, `no_option` is
+                    // a failure.
                     r#"function(wanted) {
-                        if (this.tagName !== 'SELECT') { return false; }
+                        if (this.tagName !== 'SELECT') { return 'not_select'; }
                         const w = String(wanted).trim();
                         const options = Array.from(this.options);
                         const match = options.find(o => o.value === w)
                             || options.find(o => o.textContent.trim() === w)
                             || options.find(o => o.textContent.trim().startsWith(w));
-                        if (!match) {
-                            throw new Error('no <option> matches "' + w + '"');
-                        }
+                        if (!match) { return 'no_option:' + w; }
                         const desc = Object.getOwnPropertyDescriptor(
                             HTMLSelectElement.prototype, 'value');
                         if (desc && desc.set) { desc.set.call(this, match.value); }
                         else { this.value = match.value; }
                         this.dispatchEvent(new Event('input', { bubbles: true }));
                         this.dispatchEvent(new Event('change', { bubbles: true }));
-                        return true;
+                        return 'ok';
                     }"#,
                     vec![serde_json::json!(text)],
                     false,
                 )
             })?;
-        if handled.value.and_then(|v| v.as_bool()) == Some(true) {
+        let status = handled
+            .value
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap_or("not_select");
+        if status == "ok" {
             return Ok(());
+        }
+        if let Some(wanted) = status.strip_prefix("no_option:") {
+            return Err(DriverError::Browser(format!(
+                "no option matching '{wanted}' in [{selector}] - the options are matched by \
+                 value, then by visible text; nothing was selected"
+            )));
         }
         self.with_element(&locator, &format!("typing into [{selector}]"), |element| {
             element.click()?.type_into(text).map(|_| ())
