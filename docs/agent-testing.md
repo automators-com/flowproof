@@ -878,10 +878,22 @@ filter; a non-loopback listener is denied.
 off-host, `io_uring`, and raw/packet sockets are refused, not proxied.
 Inbound `listen` off loopback is denied but not otherwise brokered. A
 local-relay exfil (writing to a loopback process that itself egresses) is
-NOT caught - loopback is trusted wholesale. `no_new_privs` breaks a setuid
-child. A `url:` service and any non-Linux host are "not contained" by
-construction. There is no runtime or production mode: this is a testing
-sandbox that fails a test, not a jail that protects a host.
+NOT caught - loopback is trusted wholesale. `AF_UNIX` is exempt on the same
+terms, so a local socket bus is reachable. Containment is **network only**:
+the filter's default action is allow, and filesystem writes, deletes and
+`execve` are not examined at all. `no_new_privs` breaks a setuid child. A
+`url:` service and any non-Linux host are "not contained" by construction.
+There is no runtime or production mode: this is a testing sandbox that fails
+a test, not a jail that protects a host.
+
+**`allow_egress` without `assert_no_egress` is not enforcement.** Declaring an
+allow-list says which destinations the agent may reach; it is
+`assert_no_egress` that turns the declaration into a claim, and it is the only
+step that fails outright where containment is unavailable. A flow with the
+declaration and no assertion still PASSES on macOS and Windows, uncontained,
+having reached whatever it liked. Since 0.11 that run prints a warning naming
+the allow-list, the reason it was not applied, and the step to add - but a
+warning is what it is, and the assertion is what makes it a control.
 
 ## Secret-leak control (`assert_no_secret_leak`)
 
