@@ -880,8 +880,11 @@ Inbound `listen` off loopback is denied but not otherwise brokered. A
 local-relay exfil (writing to a loopback process that itself egresses) is
 NOT caught - loopback is trusted wholesale. `AF_UNIX` is exempt on the same
 terms, so a local socket bus is reachable. Containment is **network only**:
-the filter's default action is allow, and filesystem writes, deletes and
-`execve` are not examined at all. `no_new_privs` breaks a setuid child. A
+the filter's default action is allow, nothing outside the network syscalls
+is ever denied, and `execve` is not examined at all. Destructive filesystem
+syscalls ARE examined, but only to report them - see [Filesystem
+observation](#filesystem-observation) below, which stops nothing.
+`no_new_privs` breaks a setuid child. A
 `url:` service and any non-Linux host are "not contained" by construction.
 There is no runtime or production mode: this is a testing sandbox that fails
 a test, not a jail that protects a host.
@@ -894,6 +897,52 @@ declaration and no assertion still PASSES on macOS and Windows, uncontained,
 having reached whatever it liked. Since 0.11 that run prints a warning naming
 the allow-list, the reason it was not applied, and the step to add - but a
 warning is what it is, and the assertion is what makes it a control.
+
+## Filesystem observation
+
+**This is not a control.** It asserts nothing, fails nothing, and has no
+spec surface at all - there is no step to add and no key to declare. It is a
+report, and it exists because a `command:` agent is a black-box process that
+can delete a file without asking anyone.
+
+Any flow that already engages containment gets it for free, because it is the
+same seccomp filter. On Linux the report prints to stderr when, and only
+when, a run destroyed something:
+
+```
+filesystem observation: observed (linux seccomp); 2 destructive syscall(s)
+  unlinkat /home/u/exports/2025.csv at 412ms
+  openat [O_WRONLY|O_CREAT|O_TRUNC] /home/u/db.sqlite at 899ms
+```
+
+Trapped: `unlink`, `unlinkat` (including `AT_REMOVEDIR`), `rmdir`,
+`rename`/`renameat`/`renameat2`, `truncate`, `ftruncate`, `creat`, `openat2`,
+and the open family **only when the flags carry `O_TRUNC`** - which is what
+clobbering a file in place looks like, and what `>` redirection does. That
+last test happens in-kernel via BPF `JSET`, so an ordinary read or an append
+never reaches the supervisor and a contained run keeps its speed.
+
+**The vocabulary is deliberately disjoint from containment's.** The tag is
+`observation`, never `containment`; the value is `observed`, never
+`enforced`. Nothing here is prevented: every trap replies
+`SECCOMP_USER_NOTIF_FLAG_CONTINUE` and the syscall runs. That is also why the
+paths can be trusted less than the events - on CONTINUE the kernel re-reads
+child memory after the supervisor decided, so a sibling thread can rewrite a
+path between the two. The trap fires on syscall NUMBER, which nothing can
+race, so a path may be stale but a destructive syscall cannot hide.
+
+A path the supervisor could not read is reported as unresolved rather than
+dropped, since the trap already proved the syscall happened. Only a syscall
+whose *destructiveness* could not be adjudicated - an `openat2` whose
+`open_how` was unreadable - is a fault.
+
+**Punts, and they are real.** These are ATTEMPTS, not outcomes: the reply
+goes out before the kernel runs the call, so an `rmdir` of a directory that
+was not there reads exactly like one that removed a tree. `open(path,
+O_WRONLY)` without `O_TRUNC` followed by a write at offset 0 corrupts a file
+and fires nothing; catching it needs a trap on every `write`, which would put
+a supervisor round-trip on every log line. Nothing is observed on macOS or
+Windows, or on a flow that engages no containment.
 
 ## Secret-leak control (`assert_no_secret_leak`)
 
@@ -992,6 +1041,7 @@ Built and tested, each independently:
 | `assert_tool_call` grammar | the prose form |
 | `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
 | egress containment | `allow_egress` / `assert_no_egress`, enforced by a Linux seccomp supervisor (proven by the Linux CI E2E); "not contained" and honestly reported on macOS/Windows and for `url:` flows |
+| filesystem observation | the same seccomp filter also traps the destructive filesystem syscalls and REPORTS them, asserting nothing - no spec surface, no step, no verdict. Linux only, and only where containment is already engaged |
 | MCP tool boundary | stdio (v3.1) and streamable-HTTP (v3.2): flowproof stands in as the server, records the JSON-RPC traffic once and replays it with no server running. A tool with a `result:` here is answered by the stand-in and never forwarded, in either phase - the one boundary that stops a tool executing |
 | Anthropic Messages | built and covered end to end, record leg included: a flow records against a Messages-dialect upstream and replays it with no model at all |
 | Streaming | built and covered end to end in both dialects, record leg included: a `stream: true` agent is served SSE at record and at replay, and the test asserts the FRAME BOUNDARIES, not the assembled text - a replay that collapsed the stream into one buffered body would still produce the same reply |
