@@ -3865,6 +3865,18 @@ mod tests {
                 "web",
                 r#"Remember the "Amount" in the item containing "Invoice 4711" as amount"#,
             ),
+            // Interpolation: several references in one step, and literal
+            // text around them. Documented under "A typed value is
+            // interpolated, not evaluated".
+            ("web", r#"Type order-${captured.oid} into the "Ref" field"#),
+            (
+                "web",
+                r#"Type ${captured.first} ${captured.last} into the "Name" field"#,
+            ),
+            (
+                "web",
+                r#"Type ${captured.a} + ${captured.b} into the "Sum" field"#,
+            ),
             (
                 "web",
                 r#"Right-click the "Pay" in the item containing "Invoice 4711""#,

@@ -320,6 +320,43 @@ stores the reference and every replay reads the value fresh:
 - Type ${captured.oid} into the "Order id" field
 ```
 
+**A typed value is interpolated, not evaluated.** Every `${captured.<name>}`
+in the text is replaced by what that element displayed, and the literal
+characters around them are typed as written:
+
+```yaml
+- Type order-${captured.oid} into the "Ref" field      # order-1061367
+- Type ${captured.first} ${captured.last} into the "Name" field
+```
+
+More than one reference in one step is fine, and so is a step that is all
+literal apart from them. What does **not** happen is arithmetic. This:
+
+```yaml
+- Remember the "id:no1" as a
+- Remember the "id:no2" as b
+- Type ${captured.a} + ${captured.b} into the "Sum" field
+```
+
+types `12 + 30` — three tokens of displayed text with a plus sign between
+them — and not `42`. That is interpolation behaving correctly, not a bug,
+and it is the reason the step is worth spelling out: `12 + 30` looks close
+enough to an answer that a flow could go green on it while asserting
+nothing anybody meant.
+
+Arithmetic is refused deliberately, not merely absent. A capture is *text
+the app displayed*, and supplying it back is data entry — the thing a user
+does with a generated id. Deriving a new value from two of them is a
+computation, and a trace that carries a computation has stopped being a
+recording of what happened. The one exception is on the assertion side,
+where `shows ${captured.x} + <number>` answers "did this change by the
+right amount?" — a question a literal cannot express, because the starting
+value is only known at run time. It takes one capture and one plain number,
+and it does not compose.
+
+A name that was never remembered fails closed, naming what was in scope,
+rather than typing the reference or an empty string.
+
 Typing is where it stops. A capture may not choose an element or a
 destination - `Click "${captured.x}"`, `Go to ${captured.x}`, or a capture
 in a target label are all parse errors, because that would let the app under
