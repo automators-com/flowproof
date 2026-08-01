@@ -2275,13 +2275,17 @@ fn seeded_fixture_mutation_survives_navigation() {
         return;
     }
 
-    let dir = std::env::temp_dir().join("flowproof-web-seed-once-e2e");
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    // Page 1 renders the cart at load time and mutates it on click.
-    std::fs::write(
-        dir.join("shop.html"),
-        r#"<!doctype html><html><body>
+    // Served from ONE loopback port, which is ONE origin, so localStorage is
+    // shared across both pages exactly as it is on a real site.
+    //
+    // This test used to write the two pages to disk and navigate between
+    // `file://` urls, which made it flaky on CI: Chrome does not reliably
+    // share localStorage between two file documents, so the mutation this
+    // asserts about could vanish for a reason that has nothing to do with
+    // seeding. `serve_site` exists for exactly that, and this test predates
+    // its adoption — the failure was `cart: MISSING` on the second page,
+    // after the first three steps had passed.
+    const SHOP: &str = r#"<!doctype html><html><body>
             <div id="cart"></div>
             <button onclick="
                 const c = JSON.parse(localStorage.getItem('cart-contents') || '[]');
@@ -2295,18 +2299,17 @@ fn seeded_fixture_mutation_survives_navigation() {
                         'cart: ' + (localStorage.getItem('cart-contents') || 'MISSING');
                 }
                 render();
-            </script></body></html>"#,
-    )
-    .expect("page 1 written");
+            </script></body></html>"#;
     // Page 2 renders the cart at load time - AFTER the init script reran.
-    std::fs::write(
-        dir.join("cart.html"),
-        r#"<!doctype html><html><body><div id="cart"></div><script>
+    const CART: &str = r#"<!doctype html><html><body><div id="cart"></div><script>
             document.getElementById('cart').textContent =
                 'cart: ' + (localStorage.getItem('cart-contents') || 'MISSING');
-        </script></body></html>"#,
-    )
-    .expect("page 2 written");
+        </script></body></html>"#;
+    let base = serve_site(&[("/shop.html", SHOP), ("/cart.html", CART)]);
+
+    let dir = std::env::temp_dir().join("flowproof-web-seed-once-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
     let trace_path = dir.join("seed-once.trace.jsonl");
 
     let mut local_storage = std::collections::BTreeMap::new();
@@ -2314,7 +2317,7 @@ fn seeded_fixture_mutation_survives_navigation() {
     let spec = flowproof_agent::FlowSpec {
         name: "Seeded cart mutation survives navigation".into(),
         app: "web".into(),
-        url: Some(format!("file://{}/shop.html", dir.display())),
+        url: Some(format!("{base}/shop.html")),
         redact: vec![],
         connection: None,
         window: None,
@@ -2340,7 +2343,7 @@ fn seeded_fixture_mutation_survives_navigation() {
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows cart: [4,5]".into(),
             },
-            flowproof_agent::SpecStep::Plain(format!("Go to file://{}/cart.html", dir.display())),
+            flowproof_agent::SpecStep::Plain(format!("Go to {base}/cart.html")),
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows cart: [4,5]".into(),
             },
@@ -2362,14 +2365,6 @@ fn seeded_fixture_mutation_survives_navigation() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Assertions do their own waiting, so a target that renders LATE must be
-/// waited for, not failed on. `checkbox is checked` and `shows
-/// ${captured.x}` were missing from the assertions-do-their-own-waiting
-/// gate, so the up-front existence probe failed the record before either
-/// assertion's own poll loop could run. Both targets here appear ~700ms
-/// after load: inside the default 10s assert bound, but past the recorder
-/// overhead that precedes the assert, so the single-shot probe cannot
-/// find them and only the assertion's own poll loop can pass this.
 #[test]
 fn late_rendered_assert_targets_are_waited_for() {
     if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
