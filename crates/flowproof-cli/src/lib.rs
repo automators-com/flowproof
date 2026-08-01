@@ -1123,6 +1123,9 @@ fn build_control_record(
     spec: &FlowSpec,
     verdict: flowproof_replay::ControlVerdict,
     reason: Option<String>,
+    // The tier the run ACHIEVED, where a run decided one. `None` for a flow
+    // that never ran an agent - a step-engine flow has no agent run to ask.
+    achieved: Option<&flowproof_adapters::Containment>,
 ) -> Option<flowproof_replay::ControlRecord> {
     let control = spec.control.as_ref()?;
     let secrets_checked = spec.secret_leak_selectors();
@@ -1144,8 +1147,19 @@ fn build_control_record(
     // The containment tier THIS host actually ran under. A flow that engages
     // no egress claims no tier, so the field stays absent rather than
     // recording a "not contained" that was never in question.
+    //
+    // The RUN's answer where it decided one, and only the probe's prediction
+    // where it did not. This field is read twice: once as the record's own
+    // containment line, and once below to decide whether the blocked lane is
+    // evidence at all. So a predicted "not contained" over a run that WAS
+    // contained does not merely mislabel the record - it discards the
+    // destinations that run actually refused.
     let containment = agent_flow::engages_egress(spec)
-        .then(|| agent_flow::containment(spec))
+        .then(|| {
+            achieved
+                .cloned()
+                .unwrap_or_else(|| agent_flow::containment(spec))
+        })
         .filter(|_| spec.app.id() == "agent");
     // The egress blocked lane is an agent-flow concept; it is a value-free
     // audit descriptor, safe to read off any agent trace.
@@ -1188,7 +1202,7 @@ fn flow_record_from_report(
     let control = match spec {
         Some(spec) if spec.control.is_some() => {
             let (verdict, reason) = flowproof_replay::ControlVerdict::from_run_report(report);
-            build_control_record(spec_path, dir, spec, verdict, reason)
+            build_control_record(spec_path, dir, spec, verdict, reason, None)
         }
         _ => None,
     };
@@ -1312,7 +1326,7 @@ fn cmd_run(
         let dir = spec_dir(spec_path);
         let (verdict, reason) = flowproof_replay::ControlVerdict::from_outcome(&outcome);
         let control = if spec.control.is_some() {
-            build_control_record(spec_path, &dir, &spec, verdict, reason)
+            build_control_record(spec_path, &dir, &spec, verdict, reason, Some(&tier))
         } else {
             None
         };
@@ -1842,6 +1856,7 @@ mod tests {
             &spec,
             flowproof_replay::ControlVerdict::Pass,
             None,
+            None,
         )
         .expect("a control-bearing flow has a record");
 
@@ -1928,6 +1943,7 @@ mod tests {
             &spec,
             flowproof_replay::ControlVerdict::Pass,
             None,
+            None,
         )
         .expect("a control-bearing flow has a record");
 
@@ -1949,6 +1965,100 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The record follows the RUN, and getting that wrong costs evidence
+    /// rather than only a label.
+    ///
+    /// `containment` is read twice in `build_control_record`: once as the
+    /// record's own tier line, and once to decide whether the blocked lane is
+    /// evidence at all. So the two tiers disagreeing does not merely mislabel
+    /// the record - it decides whether the destinations a run refused are
+    /// carried or discarded.
+    ///
+    /// # Why this asserts the PESSIMISTIC direction
+    ///
+    /// The interesting case in production is the opposite one: a Windows run
+    /// that WAS contained, over a probe that predicted otherwise. That case
+    /// cannot be made falsifiable here. This suite runs on Linux, where the
+    /// probe already answers `Enforced`, so a test asserting "the achieved
+    /// Enforced won" passes identically when the achieved tier is ignored
+    /// altogether - it was mutation-checked, and it survived the mutation.
+    /// Shipping it would have been a green tick that was never asked a
+    /// question.
+    ///
+    /// So it runs the other way: an achieved `NotContained` over a probe
+    /// saying `Enforced`. On Linux those genuinely differ, so passing can only
+    /// mean the run's answer was preferred - and it pins the safety-critical
+    /// half, which is that an uncontained run must not inherit an optimistic
+    /// probe's evidence.
+    #[test]
+    fn a_run_that_was_not_contained_keeps_no_evidence_from_an_optimistic_probe() {
+        let dir = std::env::temp_dir().join("flowproof-achieved-tier-record");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec_path = dir.join("contained.flow.yaml");
+        let trace = default_trace_path(&spec_path);
+        std::fs::write(
+            &trace,
+            serde_json::json!({
+                "app": "agent",
+                "mocks": {},
+                "cassette": {"turns": []},
+                "egress": {
+                    "containment": "enforced (linux seccomp)",
+                    "blocked": [{
+                        "destination": "evil.example.com:443",
+                        "protocol": "tcp",
+                        "at_ms": 12
+                    }]
+                }
+            })
+            .to_string(),
+        )
+        .expect("trace written");
+        let spec = FlowSpec::parse(
+            "name: contained\napp: agent\nagent:\n  command: ./agent\n  \
+             allow_egress:\n    - api.example.com:443\n\
+             control:\n  id: sec.egress.declared\n\
+             steps:\n  - prompt: fetch the invoice\n",
+        )
+        .expect("spec parses");
+        assert!(
+            !agent_flow::egress_blocked(&trace).is_empty(),
+            "the fixture must actually carry a blocked lane, or this test proves nothing"
+        );
+
+        // The probe on this host says `Enforced`; the RUN says it was not
+        // contained. They differ, so passing can only mean the run won.
+        assert!(
+            agent_flow::containment(&spec).is_enforced(),
+            "this test is only meaningful where the probe and the run DISAGREE; \
+             on a host whose probe already says 'not contained' it proves nothing"
+        );
+        let achieved =
+            flowproof_adapters::Containment::NotContained("the filters never installed".into());
+        let record = build_control_record(
+            &spec_path,
+            &dir,
+            &spec,
+            flowproof_replay::ControlVerdict::Pass,
+            None,
+            Some(&achieved),
+        )
+        .expect("a control-bearing flow has a record");
+
+        assert_eq!(
+            record.containment.as_deref(),
+            Some("not contained (the filters never installed)"),
+            "the record must carry the tier the RUN achieved, not the one this \
+             host would have predicted: {record:?}"
+        );
+        assert!(
+            record.evidence.blocked.is_empty(),
+            "a run that was NOT contained must claim no blocked evidence, however \
+             optimistic the probe was: {record:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A flow that engages no egress claims no tier at all, rather than
     /// recording a "not contained" that was never in question.
     #[test]
@@ -1967,6 +2077,7 @@ mod tests {
             &dir,
             &spec,
             flowproof_replay::ControlVerdict::Pass,
+            None,
             None,
         )
         .expect("a control-bearing flow has a record");
