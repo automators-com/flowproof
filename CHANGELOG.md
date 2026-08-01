@@ -47,6 +47,16 @@ together).
   seed draws something else again — without that last check, a shim that
   returned a constant would pass.
 
+  **What it pins is the sequence, not the position**, and that distinction
+  is worth stating before somebody meets it. The page draws the same series
+  every run; which member of it reaches the value you care about depends on
+  how many draws the page made first. A page whose earlier scripts draw a
+  variable number of times can still hand you a different value — the same
+  series, one place along. Seen once against a page that generates on
+  focus: stable across six runs, shifted by exactly one draw on a seventh.
+  So a flow that types a constant derived from a draw should assert the
+  draw first, and the docs now say so.
+
 - **A row that needs two columns to name it could not be named.** The row
   target identifies by content instead of position, which is the whole
   reason it exists — but it took one anchor, and one column is often not
