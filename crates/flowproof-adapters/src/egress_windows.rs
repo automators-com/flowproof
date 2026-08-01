@@ -22,6 +22,7 @@
 //! Net-event collection needs a WFP engine handle, so it is probed in the
 //! step that opens one.
 
+pub mod audit;
 pub mod filters;
 pub mod identity;
 pub mod logon;
