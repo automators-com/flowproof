@@ -201,7 +201,18 @@ pub enum ResolvedAction {
     /// Read a target's text into a flow-scoped name for later comparison
     /// (`Remember the "Balance" as balance`). The VALUE never enters the
     /// trace - only the name does, exactly like a `${VAR}` secret.
-    Capture { target: Target, name: String },
+    /// Remember something about the target under `name`, for a later
+    /// assertion or a later `Type` to use. `count` picks WHICH reading:
+    /// false is the element's text, true is how many elements match.
+    ///
+    /// Either way the value is taken at execution time on record and on
+    /// every replay, so it never enters the trace - the same indirection
+    /// `${VAR}` secrets use.
+    Capture {
+        target: Target,
+        name: String,
+        count: bool,
+    },
     /// Drive a checkbox-like control to a STATE (`Check`/`Uncheck`).
     /// Set-state rather than toggle, so the step means the same thing
     /// however the environment arrives: idempotent by design.
@@ -2586,6 +2597,44 @@ mod web {
         // `Remember the [Nth ]"<target>" as <name>` - read a value now so a
         // later assertion can compare against it. The value is read at
         // execution time on record AND replay, so it never enters the trace.
+        // `Remember how many "<target>" appear as <name>` - the COUNT, not
+        // the text. Same family and the same indirection: the number is
+        // taken at execution time on record and on every replay, so a page
+        // that grew a row does not need the trace rewritten.
+        //
+        // Checked before `remember the` because "how many" is not a target.
+        if let Some(rest) = strip_prefix_ci(trimmed, "remember how many ") {
+            let tail = rest.trim();
+            if let Some(quoted) = tail.strip_prefix('"') {
+                if let Some((label, after)) = quoted_label(quoted) {
+                    let after = after.trim();
+                    // `appear` reads correctly for a plural count; `appears`
+                    // is accepted because the singular slips out when the
+                    // author is thinking of one row.
+                    let after = strip_prefix_ci(after, "appear as ")
+                        .or_else(|| strip_prefix_ci(after, "appears as "));
+                    if let Some(name) = after.map(str::trim) {
+                        if !valid_capture_name(name) {
+                            return Err(unresolvable(
+                                trimmed,
+                                "a capture name must start with a lowercase letter and \
+                                 contain only lowercase letters, digits, and underscores",
+                            ));
+                        }
+                        return Ok(vec![ResolvedAction::Capture {
+                            target: target_from_label(label),
+                            name: name.to_string(),
+                            count: true,
+                        }]);
+                    }
+                }
+            }
+            return Err(unresolvable(
+                trimmed,
+                "expected 'Remember how many \"<target>\" appear as <name>'",
+            ));
+        }
+
         if let Some(rest) = strip_prefix_ci(trimmed, "remember the ") {
             let (nth, tail) = split_ordinal(rest.trim());
             if let Some(quoted) = tail.strip_prefix('"') {
@@ -2602,6 +2651,7 @@ mod web {
                         return Ok(vec![ResolvedAction::Capture {
                             target: scoped_target(trimmed, nth, label, scope)?,
                             name: name.to_string(),
+                            count: false,
                         }]);
                     }
                 }
@@ -3868,6 +3918,10 @@ mod tests {
             // Interpolation: several references in one step, and literal
             // text around them. Documented under "A typed value is
             // interpolated, not evaluated".
+            (
+                "web",
+                r#"Remember how many "css:.order-row" appear as rows"#,
+            ),
             ("web", r#"Type order-${captured.oid} into the "Ref" field"#),
             (
                 "web",
@@ -3983,6 +4037,7 @@ mod tests {
                 "web",
                 r#"the "Amount" in the "css:[data-test=transaction]" containing "Invoice 4711" shows 50"#,
             ),
+            ("web", r#"the "Total" shows ${captured.rows} + 1"#),
             ("calc", "display shows 8"),
             ("notepad", "document contains hello"),
         ];
@@ -5376,7 +5431,8 @@ mod scoped_target_tests {
                 .expect("parses"),
             vec![ResolvedAction::Capture {
                 target: wanted.clone(),
-                name: "total".into()
+                name: "total".into(),
+                count: false
             }]
         );
         assert_eq!(
