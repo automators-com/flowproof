@@ -2622,11 +2622,26 @@ mod web {
                 let value = rest[..pos].trim();
                 let (nth, field) = split_ordinal(rest[pos + sep_len..].trim());
                 let target = if let Some(quoted) = field.strip_prefix('"') {
-                    quoted_label(quoted).and_then(|(label, tail)| {
-                        (tail.eq_ignore_ascii_case("field")
-                            || tail.eq_ignore_ascii_case("dropdown"))
-                        .then(|| with_nth(nth, target_from_label(label)))
-                    })
+                    // The scope suffix every other action already takes.
+                    // `Select` was simply never wired to it, so a dropdown
+                    // inside a table row or a list item had no spelling at
+                    // all - the one place a page puts several dropdowns
+                    // that differ only by which row they sit in.
+                    let mut scoped = None;
+                    if let Some((label, tail)) = quoted_label(quoted) {
+                        let (scope, after) = split_scope(trimmed, tail)?;
+                        let after = after.trim();
+                        // The role noun is optional once a scope named the
+                        // control: `… "Value" column of the row containing
+                        // "X"` is already unambiguous.
+                        let noun_ok = after.is_empty()
+                            || after.eq_ignore_ascii_case("field")
+                            || after.eq_ignore_ascii_case("dropdown");
+                        if noun_ok && !(scope.is_none() && after.is_empty()) {
+                            scoped = Some(scoped_target(trimmed, nth, label, scope)?);
+                        }
+                    }
+                    scoped
                 } else if nth.is_none() {
                     strip_suffix_ci(field, " field")
                         .or_else(|| strip_suffix_ci(field, " dropdown"))
@@ -5194,6 +5209,85 @@ mod framed_target_tests {
                 dialog: None,
             }]
         );
+    }
+
+    /// A dropdown inside a table row had no spelling at all: `Select` was
+    /// the one action never wired to the scope suffix, so several
+    /// dropdowns differing only by their row could not be told apart
+    /// except by ordinal - the positional addressing scopes exist to
+    /// remove.
+    #[test]
+    fn select_takes_the_scope_suffix_every_other_action_takes() {
+        // The cell form: the role noun is optional, because a column and a
+        // row anchor already say which control is meant.
+        assert_eq!(
+            plain(
+                r#"Select Approved from the "Value" column of the row containing "Invoice 4711""#
+            )
+            .expect("parses"),
+            vec![ResolvedAction::TypeText {
+                target: Target::Cell {
+                    column: "Value".into(),
+                    anchor: "Invoice 4711".into(),
+                    also: Vec::new(),
+                },
+                text: "Approved".into(),
+            }]
+        );
+        // The container form, with the role noun kept.
+        assert_eq!(
+            plain(
+                r#"Select Approved from the "Status" field in the item containing "Invoice 4711""#
+            )
+            .expect("parses"),
+            vec![ResolvedAction::TypeText {
+                target: Target::Scoped {
+                    container: "item".into(),
+                    anchor: "Invoice 4711".into(),
+                    also: Vec::new(),
+                    inner: Box::new(Target::Text("Status".into())),
+                },
+                text: "Approved".into(),
+            }]
+        );
+        // The multi form composes with a scope too.
+        assert!(matches!(
+            plain(r#"Select "A", "B" from the "Tags" field in the item containing "Invoice 4711""#)
+                .expect("parses")
+                .first(),
+            Some(ResolvedAction::SelectOptions {
+                target: Target::Scoped { .. },
+                ..
+            })
+        ));
+        // Conjunctive anchors ride along, since the scope parse is shared.
+        assert!(matches!(
+            plain(r#"Select Edit from the "Value" column of the row containing "John" and "Doe""#)
+                .expect("parses")
+                .first(),
+            Some(ResolvedAction::TypeText {
+                target: Target::Cell { also, .. },
+                ..
+            }) if also.len() == 1
+        ));
+    }
+
+    /// The unscoped forms must be untouched, and a quoted label with
+    /// NEITHER a scope nor a role noun stays a parse error rather than
+    /// becoming a page-wide guess.
+    #[test]
+    fn select_without_a_scope_still_needs_its_role_noun() {
+        assert_eq!(
+            plain(r#"Select Admin from the "Role" field"#).expect("parses"),
+            vec![ResolvedAction::TypeText {
+                target: Target::Text("Role".into()),
+                text: "Admin".into(),
+            }]
+        );
+        plain(r#"Select Admin in the "Role" dropdown"#).expect("the dropdown noun still works");
+        plain("Select Admin from the roleSelect field").expect("the bare-id form still works");
+        // No scope, no noun: refused, as before.
+        assert!(plain(r#"Select Admin from the "Role""#).is_err());
     }
 
     #[test]
