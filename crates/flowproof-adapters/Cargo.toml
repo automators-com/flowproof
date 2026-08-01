@@ -75,6 +75,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Rpc",
     # The audit lane's timestamp lower bound.
     "Win32_System_SystemInformation",
+    # The inheritable temp files a contained child's stdout/stderr land in.
+    "Win32_Storage_FileSystem",
 ], optional = true }
 
 [lints]

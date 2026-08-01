@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use flowproof_trace::egress::{AllowEntry, EgressEvent};
 
-use super::{audit, filters, identity, logon, netevents, spawn, wfp, HostReadiness};
+use super::{audit, capture, filters, identity, logon, netevents, spawn, wfp, HostReadiness};
 
 /// What a contained run produced.
 ///
@@ -51,6 +51,9 @@ pub struct Outcome {
     pub exit_code: Option<i32>,
     /// Whether the launcher could capture the agent's output at all.
     pub captured_output: bool,
+    /// What the agent wrote, when it could be captured.
+    pub stdout: String,
+    pub stderr: String,
 }
 
 impl Outcome {
@@ -141,13 +144,20 @@ pub fn run_contained(
     // from before this run was being contained.
     let since = audit::now_filetime();
 
+    // A failure to create a sink is not a reason to abandon the run: the
+    // agent can still be contained, we just cannot quote it. Recorded as a
+    // fault below rather than silently losing the output.
+    let mut out_sink = capture::Capture::create("stdout").ok();
+    let mut err_sink = capture::Capture::create("stderr").ok();
+
     let contained = match spawn::spawn(
         token.handle(),
         &ident.name,
         &ident.password,
         command_line,
         env,
-        None,
+        out_sink.as_ref().map(|c| c.handle()),
+        err_sink.as_ref().map(|c| c.handle()),
     ) {
         Ok(c) => c,
         Err(e) => return Outcome::uncontained(format!("starting the agent: {e}")),
@@ -158,6 +168,8 @@ pub fn run_contained(
     let mut out = Outcome {
         exit_code,
         captured_output: contained.captures_output,
+        stdout: out_sink.as_mut().map(|c| c.take()).unwrap_or_default(),
+        stderr: err_sink.as_mut().map(|c| c.take()).unwrap_or_default(),
         ..Default::default()
     };
     if !out.captured_output {
