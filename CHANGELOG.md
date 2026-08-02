@@ -31,6 +31,24 @@ together).
 
 ### Added
 
+- **Some applications will not settle without being asked twice, and the
+  grammar had no way to ask.** Repetition and branching were refused on the
+  grounds that a trace must be a recording of what happened, not a program
+  that decides what to do. That reasoning holds. What it did not follow from
+  is that the loop had to be refused - only that it must not survive into
+  the trace.
+
+  `repeat:` (with `until:` and a required `max:`) and `when:` are blocks,
+  expanded while RECORDING. The condition is read against the live app, and
+  what lands in the trace is the passes that actually ran: concrete steps,
+  no loop and no branch. Replay reads a flat list and still decides nothing.
+  `foreach` already made this bargain at parse time, which it can only do
+  because its list is known before anything runs.
+
+  If the condition never holds, recording fails and names the bound rather
+  than pressing forever. The refusals stay, and now name the block that does
+  the job - a refusal whose alternative is real is the one worth keeping.
+
 - **A contained run could delete your files and the report would not mention
   it.** `assert_no_egress` can say an agent did not *send* the thing it must
   not; nothing said anything about *delete*. A run that unlinked the customer

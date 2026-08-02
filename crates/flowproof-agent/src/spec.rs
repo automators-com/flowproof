@@ -968,7 +968,46 @@ pub enum SpecStep {
         /// Each is validated at parse to be exactly `${NAME}` syntax.
         assert_no_secret_leak: Vec<String>,
     },
+    /// Repeat `steps` until `until` holds, at most `max` times.
+    ///
+    /// Expanded at RECORD time, not replay: the iterations that actually
+    /// happened are written into the trace as ordinary steps, so the trace
+    /// stays a recording of what happened and replay reads a flat list.
+    /// `foreach` does the same thing one phase earlier - it can expand at
+    /// parse time because its list is known statically, and this cannot.
+    Repeat {
+        repeat: RepeatSpec,
+    },
+    /// Run `steps` only if `when` holds right now. Expanded at record time
+    /// like `repeat`: the branch that was TAKEN is recorded, and the one
+    /// that was not leaves nothing behind.
+    When {
+        when: WhenSpec,
+    },
     Plain(String),
+}
+
+/// `repeat: { until, max, steps }`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepeatSpec {
+    /// An ordinary assertion, in the same grammar every `assert:` uses.
+    pub until: String,
+    /// The bound. REQUIRED: a loop against a live application with no
+    /// ceiling is one that can hang a suite, and the number is also the
+    /// author saying what they believe about the app.
+    pub max: u32,
+    pub steps: Vec<SpecStep>,
+}
+
+/// `when: <predicate>` with its own `steps`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhenSpec {
+    /// An ordinary assertion; the branch runs only if it holds NOW, with no
+    /// auto-wait - a conditional that waited would be a race, not a branch.
+    pub when: String,
+    pub steps: Vec<SpecStep>,
 }
 
 /// Validate one `assert_no_secret_leak` selector: it must be exactly a
@@ -999,7 +1038,8 @@ impl SpecStep {
          `assert_sql: {...}`, `assert_api: {...}`, `assert_screenshot: {...}`, \
          `prompt: <text>`, `assert_tool_call: <text>`, \
          `assert_no_tool_call: <text>`, `assert_no_egress`, \
-         `assert_no_secret_leak: ${VAR}`, or `foreach: {...}`";
+         `assert_no_secret_leak: ${VAR}`, `repeat: {...}`, `when: <cond>` with `steps:`, or \
+         `foreach: {...}`";
 
     fn from_yaml(value: serde_yaml::Value) -> Result<Self, String> {
         use serde_yaml::Value;
@@ -1017,6 +1057,14 @@ impl SpecStep {
                         None => format!("{k:?}"),
                     })
                     .collect();
+                // `when:` is the one two-key step form: nesting the
+                // condition a level deeper to satisfy the arity rule would
+                // buy consistency with unreadable YAML.
+                if keys.len() == 2 && keys.contains(&"when".to_string()) {
+                    return serde_yaml::from_value(Value::Mapping(map))
+                        .map(|when| SpecStep::When { when })
+                        .map_err(|e| format!("in `when` step: {e}"));
+                }
                 if map.len() != 1 {
                     return Err(format!(
                         "a step mapping must have exactly one key, got {}; \
@@ -1100,6 +1148,9 @@ impl SpecStep {
                     Some("assert_screenshot") => serde_yaml::from_value(inner)
                         .map(|assert_screenshot| SpecStep::AssertScreenshot { assert_screenshot })
                         .map_err(|e| format!("in `assert_screenshot` step: {e}")),
+                    Some("repeat") => serde_yaml::from_value(inner)
+                        .map(|repeat| SpecStep::Repeat { repeat })
+                        .map_err(|e| format!("in `repeat` step: {e}")),
                     // A foreach reaching typed parsing means it was not
                     // expanded — it is only valid as a direct entry in a
                     // spec's `steps:` (FlowSpec::parse expands it there).
@@ -1173,6 +1224,15 @@ impl Serialize for SpecStep {
         match self {
             SpecStep::Plain(text) => serializer.serialize_str(text),
             SpecStep::AssertNoEgress => serializer.serialize_str("assert_no_egress"),
+            // Block steps round-trip as their single-key mapping.
+            SpecStep::Repeat { repeat } => {
+                use serde::ser::SerializeMap;
+                let mut m = serializer.serialize_map(Some(1))?;
+                m.serialize_entry("repeat", repeat)?;
+                m.end()
+            }
+            // Flat, matching the two-key form it was written in.
+            SpecStep::When { when } => when.serialize(serializer),
             // A single selector serializes as the string form it was written
             // in; several serialize as the list form. Both reparse identically.
             SpecStep::AssertNoSecretLeak {
@@ -1335,6 +1395,10 @@ impl SpecStep {
         match self {
             SpecStep::Assert { assert } => assert.clone(),
             SpecStep::Plain(text) => text.clone(),
+            SpecStep::Repeat { repeat } => {
+                format!("repeat until {} (max {})", repeat.until, repeat.max)
+            }
+            SpecStep::When { when } => format!("when {}", when.when),
             SpecStep::AssertSql { assert_sql } => {
                 format!("sql {}: {}", assert_sql.connection, assert_sql.query)
             }
@@ -1945,6 +2009,47 @@ steps:
         let yaml = serde_yaml::to_string(&spec.steps).expect("serializes");
         let back: Vec<SpecStep> = serde_yaml::from_str(&yaml).expect("round-trips");
         assert_eq!(back, spec.steps);
+    }
+
+    #[test]
+    fn repeat_and_when_survive_a_round_trip() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nsteps:\n\
+             \x20 - repeat:\n      until: page shows Done\n      max: 3\n\
+             \x20     steps:\n        - Press go\n\
+             \x20 - when: page shows ERROR\n    steps:\n      - Press reset\n",
+        )
+        .expect("parses");
+        let SpecStep::Repeat { repeat } = &spec.steps[0] else {
+            panic!("expected a repeat, got {:?}", spec.steps[0]);
+        };
+        assert_eq!((repeat.max, repeat.steps.len()), (3, 1));
+        // A `when` must serialize back FLAT, not nested a level deeper.
+        let yaml = serde_yaml::to_string(&spec.steps).expect("serializes");
+        let back: Vec<SpecStep> = serde_yaml::from_str(&yaml).expect("round-trips");
+        assert_eq!(back, spec.steps);
+    }
+
+    #[test]
+    fn a_repeat_needs_both_its_bound_and_its_condition() {
+        let body = "\n      steps:\n        - Press go\n";
+        for (bad, wanted) in [
+            (
+                format!("  - repeat:\n      until: page shows Done{body}"),
+                "missing field",
+            ),
+            (format!("  - repeat:\n      max: 3{body}"), "missing field"),
+            // A `when` with no steps is a one-key mapping, so it reaches the
+            // unknown-key path - which names the shape it should have had.
+            (
+                "  - when: page shows X\n".to_string(),
+                "`when: <cond>` with `steps:`",
+            ),
+        ] {
+            let err = FlowSpec::parse(&format!("name: x\napp: web\nsteps:\n{bad}"))
+                .expect_err("must be rejected");
+            assert!(err.to_string().contains(wanted), "{err}");
+        }
     }
 
     #[test]

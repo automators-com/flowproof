@@ -1688,6 +1688,82 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
     }
 }
 
+/// Does this condition hold RIGHT NOW?
+///
+/// The predicate language of `repeat.until` and `when` is a deliberate
+/// SUBSET of the assertion grammar: the forms that read state without
+/// waiting for it. An auto-waiting predicate would turn a branch into a
+/// race - `when` would sit for ten seconds deciding whether to take a
+/// branch, and `until` could not tell "not yet" from "never".
+///
+/// Anything outside the subset is refused at parse time by name, rather
+/// than silently evaluating to false and taking the wrong branch.
+fn condition_holds<D: AppDriver>(
+    driver: &mut D,
+    app: &str,
+    condition: &str,
+) -> Result<bool, RecordError> {
+    let text = condition.trim();
+    // `page [does not] show <text>` - the whole surface.
+    for (prefix, positive) in [
+        ("page shows ", true),
+        ("the page shows ", true),
+        ("page does not show ", false),
+        ("the page does not show ", false),
+    ] {
+        if let Some(rest) = text.strip_prefix(prefix) {
+            let surface = driver.surface_text()?;
+            return Ok(flowproof_driver::text_contains(&surface, rest.trim()) == positive);
+        }
+    }
+    // Element forms go through the ordinary resolver, so a condition
+    // addresses an element exactly the way every other step does.
+    let resolved = crate::rules::resolve_step(
+        app,
+        &crate::spec::SpecStep::Assert {
+            assert: text.to_string(),
+        },
+    )?;
+    let Some(action) = resolved.first() else {
+        return Ok(false);
+    };
+    match action {
+        ResolvedAction::AssertText {
+            target,
+            expected,
+            matcher,
+            ..
+        } => {
+            let Some(selector) = action_selector(action) else {
+                return Ok(false);
+            };
+            let _ = target;
+            if !driver.element_exists(&selector)? {
+                // A missing element makes a positive `shows` false and a
+                // negative one true - the same reading replay takes.
+                return Ok(matches!(matcher, TextMatch::NotContains));
+            }
+            let actual = driver.read_text(&selector)?;
+            Ok(assert_holds(&actual, expected, *matcher))
+        }
+        ResolvedAction::AssertPresence { present, .. } => {
+            let Some(selector) = action_selector(action) else {
+                return Ok(false);
+            };
+            let (_, visible) = flowproof_driver::visible_now(driver, &selector)?;
+            Ok(visible == *present)
+        }
+        _ => Err(RecordError::AssertMismatch {
+            intent: text.to_string(),
+            expected: "a condition that reads state without waiting: `page [does not] show \
+                       <text>`, `the \"<target>\" shows <text>`, or `the \"<target>\" is \
+                       [not] visible`"
+                .to_string(),
+            actual: "this assertion form is not usable as a condition".to_string(),
+        }),
+    }
+}
+
 /// Record `spec` against the live app via `driver`, writing the trace to
 /// `out`. Every planned action's target element must exist before it is
 /// written — recording is a verification pass, not a transcription.
@@ -1937,7 +2013,58 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
     // (b) every `assert_api` response body probed. Populated only when the
     // flow asserts `assert_no_secret_leak`.
     let mut secret_corpus: Vec<(String, String)> = Vec::new();
-    for spec_step in &spec.steps {
+    // `repeat:` and `when:` are expanded HERE, against the live app, into the
+    // concrete steps that actually ran - so the trace stays a flat recording
+    // and replay never re-decides. `foreach` does the same thing at parse
+    // time; it can, because its list is known statically, and a condition
+    // cannot be known until something has run.
+    // Each entry carries how many passes ITS loop has made, so two loops in
+    // one flow do not share a budget.
+    let mut queue: std::collections::VecDeque<(crate::spec::SpecStep, u32)> =
+        spec.steps.iter().cloned().map(|s| (s, 0)).collect();
+    while let Some((owned_step, passes)) = queue.pop_front() {
+        match &owned_step {
+            crate::spec::SpecStep::When { when } => {
+                if condition_holds(driver, spec.app.id(), &when.when)? {
+                    for (i, inner) in when.steps.iter().enumerate() {
+                        queue.insert(i, (inner.clone(), 0));
+                    }
+                }
+                continue;
+            }
+            crate::spec::SpecStep::Repeat { repeat } => {
+                // One pass is queued at a time, with the loop re-queued
+                // behind it, so the condition is re-read against the app
+                // AFTER each pass rather than against a stale reading.
+                if condition_holds(driver, spec.app.id(), &repeat.until)? {
+                    continue;
+                }
+                if passes >= repeat.max {
+                    return Err(RecordError::AssertMismatch {
+                        intent: owned_step.intent().to_string(),
+                        expected: format!(
+                            "`{}` to hold within {} passes",
+                            repeat.until, repeat.max
+                        ),
+                        actual: format!(
+                            "it never did. The bound is the author saying what they believe \
+                             about the application - if {} passes is genuinely too few, raise \
+                             it; if the condition can never hold, the loop is not the bug",
+                            repeat.max
+                        ),
+                    });
+                }
+                let mut at = 0;
+                for inner in &repeat.steps {
+                    queue.insert(at, (inner.clone(), 0));
+                    at += 1;
+                }
+                queue.insert(at, (owned_step.clone(), passes + 1));
+                continue;
+            }
+            _ => {}
+        }
+        let spec_step = &owned_step;
         let intent = spec_step.intent().to_string();
         let actions = author_actions(
             spec,
@@ -2851,6 +2978,70 @@ steps:
             ));
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    const LOOP_SPEC: &str = "\
+name: Press until it settles
+app: calc
+steps:
+  - repeat:
+      until: page shows Done
+      max: 5
+      steps:
+        - Press plus
+  - when: page shows Error
+    steps:
+      - Press equals
+  - assert: display shows 8
+";
+
+    fn surface_reads(driver: &mut MockAppDriver, reads: &[&str]) {
+        driver.text_sequence.insert(
+            MockAppDriver::SURFACE.to_string(),
+            reads.iter().map(|s| s.to_string()).collect(),
+        );
+    }
+
+    #[test]
+    fn a_repeat_records_the_passes_that_actually_ran() {
+        let spec = FlowSpec::parse(LOOP_SPEC).expect("spec parses");
+        let mut driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+        // Read before the first pass, then after each: it settles on the
+        // third. The fourth read is the `when`, which does not hold.
+        surface_reads(
+            &mut driver,
+            &["counting", "counting", "Done", "all is well"],
+        );
+        let out = std::env::temp_dir().join("flowproof-recorder-repeat.trace.jsonl");
+        let summary = record(&spec, &mut driver, &out).expect("recording succeeds");
+
+        // Two passes ran, so two presses - not a loop, not the `max` of five -
+        // and no equalButton, because the `when` guarding it was false.
+        assert_eq!(driver.invoked, vec!["plusButton", "plusButton"]);
+        assert_eq!(summary.steps, 3);
+        let contents = std::fs::read_to_string(&out).expect("trace written");
+        assert!(
+            !contents.contains("repeat"),
+            "the trace holds no control flow"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn a_repeat_that_never_settles_names_its_bound() {
+        let spec = FlowSpec::parse(LOOP_SPEC).expect("spec parses");
+        let driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+        let mut driver = driver.with_text(MockAppDriver::SURFACE, "counting"); // forever
+        let out = std::env::temp_dir().join("flowproof-recorder-unbounded.trace.jsonl");
+        let err = record(&spec, &mut driver, &out).expect_err("must fail");
+
+        let msg = err.to_string();
+        assert!(msg.contains("within 5 passes"), "names the bound: {msg}");
+        // It ran the bound and stopped there rather than pressing forever.
+        assert_eq!(driver.invoked.len(), 5);
+        std::fs::remove_file(&out).ok();
     }
 
     #[test]

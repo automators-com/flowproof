@@ -91,8 +91,8 @@ records green and means something nobody asked for.
 
 | Refused | Why, and what to write |
 |---|---|
-| `Click "Next" until …`, `While … , …` | Repetition would make the trace a program that decides what to do rather than a recording of what happened. Drive the app with the steps that reach the state, and assert with `Wait until page shows <text>` — which is real grammar, and is not this |
-| `If … , …` / `… otherwise …` | A flow that branches asserts something different on each run, so what it proves cannot be read from the trace. Write the branch you mean to test as its own flow |
+| `Click "Next" until …`, `While … , …` | Repetition is a block, not a step — write [`repeat:`](#repeating-until-the-app-settles-repeat-and-when). A loop written inside a step could not be expanded at record time, because by the time the step's own text is parsed there is nothing left to expand it into |
+| `If … , …` / `… otherwise …` | A branch is a block, not a step — write [`when:`](#repeating-until-the-app-settles-repeat-and-when). If the two branches are two different things to prove, they are still two flows |
 | `Remember the "<t>" matching /…/ as <n>` | A regex in the grammar is a second language inside the first. A capture reads an element's whole text; give the value its own element |
 | `Remember the text between "X" and "Y" as <n>` | Pattern matching by another name. `Remember the "<target>" as <name>` reads a whole element, which is the unit a page actually renders |
 | `${date:…}` / `{Date[…]}` | Against the wall clock a flow means something different every day; against a pinned `browser.clock` it is a constant you can write by hand. Pin the clock and type the literal |
@@ -531,6 +531,52 @@ steps:
             body: { type: "${each}" }
             status: 500
 ```
+
+## Repeating until the app settles (`repeat:` and `when:`)
+
+`foreach` repeats a block as many times as you know when you write it.
+Sometimes you do not know — press a button until the label changes, recover
+if an error appeared. Those are `repeat:` and `when:`.
+
+```yaml
+steps:
+  - repeat:
+      until: the "id:button" shows Enough
+      max: 15
+      steps:
+        - Press the "id:button" button
+  - when: the "id:b1" is not visible
+    steps:
+      - Press the "id:tech" button
+```
+
+**Both expand while recording, not while replaying.** The condition is read
+against the live app, and what lands in the trace is the passes that
+actually ran — ordinary concrete steps, no `repeat` and no `when`. The trace
+stays a recording of what happened and replay still decides nothing. Against
+a non-deterministic application that recording only replays against the same
+behaviour, which for a regression test is the right way round: a flow that
+silently re-adapted every run would always pass.
+
+`until:` is checked **before** the first pass, so a `repeat:` whose
+condition already holds runs zero times. `max:` is required: if the
+condition never holds within it, recording fails and names the bound. Each
+`repeat:` gets its own budget.
+
+Conditions read state; they never wait:
+
+| Condition | Holds when |
+|---|---|
+| `page shows <text>` / `page does not show <text>` | the whole surface's text does or does not contain it |
+| `the "<target>" shows <text>` | that element's text contains it |
+| `the "<target>" is visible` / `is not visible` | it is on screen, or is missing or hidden |
+
+A missing element makes a positive `shows` false and a negative one true —
+the same reading replay takes. Anything else is refused by name; there is no
+numeric comparison, so `until:` cannot express "until this exceeds that".
+
+Scope conditions tightly: `page shows ERROR` also matches a heading reading
+"Errors occur", so name the element instead.
 
 ## Driving an arbitrary Windows app (`app:` mapping, `window:` config)
 

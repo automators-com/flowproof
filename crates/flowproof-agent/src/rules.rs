@@ -642,16 +642,18 @@ fn refused(step: &str, reason: impl Into<String>) -> RulesError {
 const DECLINED_SHAPES: &[(&str, &str)] = &[
     (
         "loop",
-        "repetition is not in the grammar: a step that repeats until the app changes \
-         makes the trace a program that decides what to do, rather than a recording of \
-         what happened - drive the app to the state you want with the steps that reach \
-         it, and assert the result with 'Wait until page shows <text>'",
+        "repetition is a block, not a step: write `repeat:` with an `until:` condition \
+         and a `max:` bound, whose passes are expanded while recording so the trace \
+         still holds what happened rather than a program that decides what to do - a \
+         loop written inside a step could not be expanded, because by the time the \
+         step's own text is parsed there is nothing left to expand it into",
     ),
     (
         "conditional",
-        "there are no conditionals: a flow that branches asserts something different on \
-         each run, so what it proves cannot be read from the trace - write the branch \
-         you mean to test as its own flow",
+        "a branch is a block, not a step: write `when: <condition>` with `steps:` under \
+         it, and the condition is read once while recording so the trace holds the \
+         branch that was actually taken - if the two branches are two different things \
+         to prove, they are still two flows",
     ),
     (
         "regex",
@@ -5556,20 +5558,23 @@ mod framed_target_tests {
     #[test]
     fn declined_shapes_are_refused_and_name_the_alternative() {
         let cases: &[(&str, &str, &str)] = &[
+            // Repetition and branching EXIST, as blocks. The step forms stay
+            // refused, and now name the block that does the job - a refusal
+            // whose alternative is real is the one worth keeping.
             (
                 r#"Click "Next" until the "Status" shows Done"#,
-                "repetition",
-                "Wait until page shows",
+                "repetition is a block",
+                "`repeat:`",
             ),
             (
                 r#"While the "Spinner" is visible, press the "Retry" button"#,
-                "repetition",
-                "Wait until page shows",
+                "repetition is a block",
+                "`repeat:`",
             ),
             (
                 r#"If the "Banner" is visible, click "Dismiss""#,
-                "conditionals",
-                "its own flow",
+                "a branch is a block",
+                "`when: <condition>`",
             ),
             (
                 r#"Remember the "Total" matching /[0-9.]+/ as amount"#,
