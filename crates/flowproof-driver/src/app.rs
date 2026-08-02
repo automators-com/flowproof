@@ -1641,6 +1641,10 @@ impl AppDriver for Box<dyn AppDriver> {
         (**self).press_key(key, modifiers)
     }
 
+    fn drag(&mut self, from: &UiaSelector, to: &UiaSelector) -> Result<(), DriverError> {
+        (**self).drag(from, to)
+    }
+
     fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
         (**self).element_enabled(selector)
     }
@@ -2301,6 +2305,26 @@ mod stub_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Box<dyn AppDriver>` forwards every method BY HAND, so a capability
+    /// added to the trait and to a real adapter still reaches the default -
+    /// silently - until it is forwarded here too. That is what happened to
+    /// `drag`: the web driver implemented it, and a boxed driver answered
+    /// "dragging is not supported by this driver" anyway.
+    ///
+    /// The failure mode is quiet and the fix is one line, which is exactly
+    /// the combination that earns a test.
+    #[test]
+    fn a_boxed_driver_forwards_drag_to_the_inner_one() {
+        let mut boxed: Box<dyn AppDriver> =
+            Box::new(crate::mock::MockAppDriver::new(&["row", "bin"]));
+        boxed
+            .drag(
+                &UiaSelector::automation_id("row"),
+                &UiaSelector::automation_id("bin"),
+            )
+            .expect("a boxed drag must reach the driver underneath");
+    }
 
     /// A surface that resolves everything, and answers the rendered-ness
     /// question however the test asks it to.

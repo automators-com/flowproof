@@ -34,7 +34,7 @@ label changes` became one click, recorded green, and failed one replay in
 five. A decline that exists only in prose is a decline the engine does not
 implement.
 
-## The 10 that are not solved
+## The 9 that are not solved
 
 ### No completion path exists (5)
 
@@ -58,13 +58,12 @@ step, and flowproof's dialog safety net catches the alert — but neither is
 reachable without making steps substantially cheaper, which would mean
 giving up the verification that makes a step trustworthy.
 
-### Blocked on drag mechanism (1)
+### Taken by `Drag` (1)
 
-23292. The mouse dispatch landed 4 drops in 8 against a real jQuery UI
-sortable. The missing `Input.dispatchDragEvent` is a red herring here: the
-page drives its rows with jQuery UI `draggable`/`connectToSortable`, which
-listens for mouse events and never for HTML5 drag ones. The mouse dispatch
-itself is the thing to make deterministic. Measured and recorded in
+23292 is solved: six rows dragged into order, recorded and replayed green
+three times running. What unblocked it was not the API the notes twice named
+but two structural defects in the dispatch — the two midpoints were read in
+different layouts, and the moves named no held button. Measured 20/20; see
 `docs/design.md`.
 
 ### Passes vacuously (1)

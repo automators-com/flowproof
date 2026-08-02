@@ -191,6 +191,15 @@ pub enum ResolvedAction {
         /// dialog suffix. Web-only at execution.
         dialog: Option<flowproof_trace::format::Dialog>,
     },
+    /// Drag one element onto another with the pointer held down. Mouse
+    /// family only; the outcome is app-defined, which is why the grammar
+    /// requires the next step to assert it.
+    Drag {
+        target: Target,
+        label: String,
+        onto: Target,
+        onto_label: String,
+    },
     /// Screenshot comparison against a named baseline. Record mints the
     /// masked baseline; replay compares with the same masks.
     AssertScreenshot {
@@ -3086,6 +3095,48 @@ mod web {
                 }
             }
             return near_miss();
+        }
+
+        // `Drag [the [Nth ]]"<source>" onto [the [Nth ]]"<target>"` → press
+        // at the source, move across with the button held, release on the
+        // target. The `onto` is mandatory and there is no shorthand: a drag
+        // with one named end could only be a guess about the other.
+        if let Some(after_drag) = strip_prefix_ci(trimmed, "drag ") {
+            let near_miss = || {
+                Err(unresolvable(
+                    trimmed,
+                    "expected 'Drag \"<source>\" onto \"<target>\"' \
+                     or 'Drag the [2nd ]\"<source>\" onto the [2nd ]\"<target>\"'",
+                ))
+            };
+            let one_end = |rest: &str| -> Option<(Option<u32>, String, String)> {
+                let rest = rest.trim();
+                let (nth, rest) = match strip_prefix_ci(rest, "the ") {
+                    Some(after_the) => split_ordinal(after_the.trim()),
+                    None => (None, rest),
+                };
+                let quoted = rest.strip_prefix('"')?;
+                let (label, tail) = quoted_label(quoted)?;
+                Some((nth, label.to_string(), tail.to_string()))
+            };
+            let Some((nth, label, tail)) = one_end(after_drag) else {
+                return near_miss();
+            };
+            let Some(after_onto) = strip_prefix_ci(tail.trim(), "onto ") else {
+                return near_miss();
+            };
+            let Some((onto_nth, onto_label, tail)) = one_end(after_onto) else {
+                return near_miss();
+            };
+            if !tail.trim().is_empty() {
+                return near_miss();
+            }
+            return Ok(vec![ResolvedAction::Drag {
+                target: with_nth(nth, target_from_label(&label)),
+                label,
+                onto: with_nth(onto_nth, target_from_label(&onto_label)),
+                onto_label,
+            }]);
         }
 
         // `Click [the [Nth ]]"<text>"` → any interactable element showing
