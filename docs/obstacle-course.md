@@ -34,7 +34,7 @@ label changes` became one click, recorded green, and failed one replay in
 five. A decline that exists only in prose is a decline the engine does not
 implement.
 
-## The 12 that are not solved
+## The 10 that are not solved
 
 ### No completion path exists (5)
 
@@ -78,7 +78,7 @@ cassette for it may enter the repository.**
 costs about 3.2 seconds. Measured, not assumed; it is the one obstacle in
 the corpus no amount of grammar reaches.
 
-### Taken by `repeat:` and `when:` (3)
+## Taken by `repeat:` and `when:` (2 of 3)
 
 70924, 73589 and 82018 were held here pending a decision on repetition and
 branching. Two of the three fell once the blocks existed; the third is above.
