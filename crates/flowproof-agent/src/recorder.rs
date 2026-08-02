@@ -2125,7 +2125,29 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 driver.arm_dialog(crate::rules::dialog_arm(dialog)?)?;
             }
             match &action {
-                ResolvedAction::Press { .. } => driver.invoke(targeted())?,
+                ResolvedAction::Press { .. } => {
+                    // Replay refuses to click an element another element
+                    // would receive the click for; recording did not, and
+                    // that asymmetry is the worst way round. The click
+                    // landed on the occluder, the page did not react, and
+                    // the step was written into the trace as a success - a
+                    // recording that cannot replay, made by the tool whose
+                    // job is to notice exactly that. Same predicate as
+                    // replay's actionability gate, so the two agree by
+                    // construction; `None` means the surface cannot tell,
+                    // which is satisfied.
+                    if driver.element_receives_events(targeted())? == Some(false) {
+                        return Err(RecordError::AssertMismatch {
+                            intent: spec_step.intent().to_string(),
+                            expected: "the click to reach the element".to_string(),
+                            actual: "another element would receive it. The click was not \
+                                     recorded, because a click that lands on an occluder \
+                                     records a success the page never saw"
+                                .to_string(),
+                        });
+                    }
+                    driver.invoke(targeted())?
+                }
                 ResolvedAction::ClickAt { x_pct, y_pct, .. } => {
                     driver.click_at(targeted(), *x_pct, *y_pct)?;
                 }
@@ -3041,6 +3063,23 @@ steps:
         assert!(msg.contains("within 5 passes"), "names the bound: {msg}");
         // It ran the bound and stopped there rather than pressing forever.
         assert_eq!(driver.invoked.len(), 5);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn an_occluded_press_is_refused_rather_than_recorded() {
+        let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
+        let mut driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+        driver.obscured.push("plusButton".to_string());
+        let out = std::env::temp_dir().join("flowproof-recorder-occluded.trace.jsonl");
+        let err = record(&spec, &mut driver, &out).expect_err("must fail");
+
+        let msg = err.to_string();
+        assert!(msg.contains("another element would receive it"), "{msg}");
+        // And the click really did not go out: recording a press whose
+        // effect the page never saw is the failure being prevented.
+        assert_eq!(driver.invoked, vec!["num5Button"]);
         std::fs::remove_file(&out).ok();
     }
 
