@@ -58,14 +58,6 @@ step, and flowproof's dialog safety net catches the alert — but neither is
 reachable without making steps substantially cheaper, which would mean
 giving up the verification that makes a step trustworthy.
 
-### Taken by `Drag` (1)
-
-23292 is solved: six rows dragged into order, recorded and replayed green
-three times running. What unblocked it was not the API the notes twice named
-but two structural defects in the dispatch — the two midpoints were read in
-different layouts, and the moves named no held button. Measured 20/20; see
-`docs/design.md`.
-
 ### Passes vacuously (1)
 
 51130 completes without anything closing a window: its check fires when the
@@ -78,6 +70,14 @@ cassette for it may enter the repository.**
 82018 is a reaction game whose window depends on the frame rate, and a step
 costs about 3.2 seconds. Measured, not assumed; it is the one obstacle in
 the corpus no amount of grammar reaches.
+
+## Taken by `Drag` (1)
+
+23292 is solved: six rows dragged into order, recorded and replayed green
+three times running. What unblocked it was not the API the notes twice named
+but two structural defects in the dispatch — the two midpoints were read in
+different layouts, and the moves named no held button. Measured 20/20; see
+`docs/design.md`.
 
 ## Taken by `repeat:` and `when:` (2 of 3)
 

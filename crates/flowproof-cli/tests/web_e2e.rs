@@ -2563,3 +2563,82 @@ fn a_comparison_condition_orders_numerically_not_textually() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// `Drag` end to end: the grammar, the recording, and the replay of what was
+/// recorded — against a mouse-family sortable in miniature.
+///
+/// The driver's own measurement (`flowproof-adapters`, `drag_spike`) proves
+/// the DISPATCH lands. This proves the rest of the path: that a spec saying
+/// `Drag … onto …` reaches it, that both ends survive into the trace as
+/// selector ladders, and that replaying the trace performs the drop again.
+///
+/// The fixture ABORTS a drag on a move reporting no button held, exactly as
+/// jQuery UI does, so a dispatch regression fails here too rather than
+/// quietly dropping nothing.
+#[test]
+fn a_drag_records_and_replays_against_a_mouse_sortable() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping drag E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    const PAGE: &str = r#"<!doctype html><html><body>
+        <div id="src" style="width:120px;height:40px;background:#ccc">drag me</div>
+        <div style="height:200px"></div>
+        <div id="dst" style="width:200px;height:80px;background:#eee">empty</div>
+        <script>
+          var down = null, started = false;
+          document.getElementById('src').addEventListener('mousedown', function (e) {
+            down = {x: e.clientX, y: e.clientY}; started = false;
+          });
+          document.addEventListener('mousemove', function (e) {
+            if (!down) { return; }
+            if (!e.buttons) { down = null; return; }   // the button came up
+            if (!started &&
+                Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y) > 4) {
+              started = true;
+            }
+          });
+          document.addEventListener('mouseup', function (e) {
+            if (!down || !started) { down = null; return; }
+            var r = document.getElementById('dst').getBoundingClientRect();
+            if (e.clientX >= r.left && e.clientX <= r.right &&
+                e.clientY >= r.top && e.clientY <= r.bottom) {
+              document.getElementById('dst').textContent = 'landed';
+            }
+            down = null; started = false;
+          });
+        </script></body></html>"#;
+    let base = serve_page(PAGE);
+
+    let dir = std::env::temp_dir().join("flowproof-web-drag-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("drag.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec::parse(&format!(
+        "name: Drag onto the target\napp: web\nurl: {base}\n\
+         browser:\n  viewport:\n    width: 1280\n    height: 900\nsteps:\n  \
+         - Drag the \"css:#src\" onto the \"css:#dst\"\n  \
+         - assert: the \"css:#dst\" shows landed\n"
+    ))
+    .expect("spec parses");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    // Both ends are in the trace, and the drop target as its own ladder -
+    // recorded as a bare string it could not survive the drift the source
+    // is protected from.
+    let trace = std::fs::read_to_string(&trace_path).expect("trace written");
+    assert!(trace.contains("\"onto\""), "the drop target is recorded");
+    assert!(trace.contains("#dst"), "including how to find it again");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "the recorded drag must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
