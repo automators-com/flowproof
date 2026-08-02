@@ -50,6 +50,25 @@ together).
 
 ### Added
 
+- **`Drag [the [2nd ]]"<source>" onto [the [2nd ]]"<target>"`.** The driver
+  could drag; now a flow can say so. Both ends resolve through the ordinary
+  selector ladder — the drop target rides in the trace as its own ladder, not
+  as a bare string, because it has to survive the same drift the source does
+  — and both wait to be actionable before the press.
+
+  **The next step must be an assertion, or the spec does not compile.** Every
+  other action has something intrinsic to verify: a click's element was hit, a
+  scroll's offset took, a checkbox is checked. A drop has nothing. Its effect
+  is app-defined and may be a reorder, a mutation that re-renders identically,
+  or nothing whatsoever, and "the events were dispatched" is not a
+  verification. Left alone, a drag would record green whether or not anything
+  moved. Requiring the author to say what the drop did turns a silent no-op
+  red at the assert.
+
+  A drag inside a `repeat:` or `when:` needs its assertion inside the block,
+  where the drop happened — an assertion after the whole loop could not say
+  which pass moved anything.
+
 - **A drag the driver can perform, measured rather than asserted once.**
   `AppDriver::drag` presses at a source, moves across with the button held,
   and releases on a target - the MOUSE family, which is what jQuery UI,

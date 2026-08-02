@@ -2026,6 +2026,43 @@ fn execute_step<D: AppDriver>(
                 StepMatch::default(),
             ),
         },
+        // Drag: BOTH ends resolve through the ordinary ladder, and the drop
+        // target gets the same actionability wait the source does. A drag
+        // onto something not yet actionable is the flake this mechanism was
+        // deferred over; waiting for it is cheaper than re-running.
+        Action::Drag(params) => {
+            let onto: Vec<flowproof_trace::format::Selector> = params
+                .get("onto")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            match (
+                resolve_target(driver, &step.selectors)?,
+                resolve_target(driver, &onto)?,
+            ) {
+                (Some((from, rung)), Some((to, _))) => {
+                    let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
+                    let timeout = actionable_timeout(step);
+                    match (
+                        wait_actionable(driver, &from, timeout)?,
+                        wait_actionable(driver, &to, timeout)?,
+                    ) {
+                        (Ok(()), Ok(())) => {
+                            (driver.drag(&from, &to).map_err(|e| e.to_string()), matched)
+                        }
+                        (Err(reason), _) | (_, Err(reason)) => (Err(reason), matched),
+                    }
+                }
+                (None, _) => (
+                    Err("no selector rung resolved the drag source".to_string()),
+                    StepMatch::default(),
+                ),
+                (_, None) => (
+                    Err("no selector rung resolved the drop target".to_string()),
+                    StepMatch::default(),
+                ),
+            }
+        }
         // Scroll a container/element/page. An empty selector list is a page
         // scroll (`Scroll to the bottom`); otherwise the target scrolls (as a
         // container for top/bottom, or into the viewport). Instant, no

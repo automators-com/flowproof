@@ -498,6 +498,27 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             selectors_for(app, target, Some(label)),
             Action::Hover(dialog_params(dialog)),
         ),
+        // The drop target rides in the params as its own selector LADDER,
+        // not as a bare string: it has to survive the same drift the source
+        // does, and a drag whose second end is brittle is a drag that lands
+        // somewhere else.
+        ResolvedAction::Drag {
+            target,
+            label,
+            onto,
+            onto_label,
+        } => {
+            let mut params = serde_json::Map::new();
+            params.insert(
+                "onto".into(),
+                serde_json::to_value(selectors_for(app, onto, Some(onto_label)))
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            (
+                selectors_for(app, target, Some(label)),
+                Action::Drag(params),
+            )
+        }
         // Whole-surface capture: no selectors; masks travel as raw
         // selector strings so replay blanks the SAME regions.
         ResolvedAction::AssertScreenshot {
@@ -987,6 +1008,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::ContextClick { target, .. }
         | ResolvedAction::DoubleClick { target, .. }
         | ResolvedAction::Hover { target, .. }
+        | ResolvedAction::Drag { target, .. }
         | ResolvedAction::Clear { target }
         | ResolvedAction::SetChecked { target, .. }
         | ResolvedAction::AssertText { target, .. }
@@ -2170,6 +2192,14 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 driver.arm_dialog(crate::rules::dialog_arm(dialog)?)?;
             }
             match &action {
+                ResolvedAction::Drag { onto, .. } => {
+                    let to = target_selector(onto).ok_or_else(|| RecordError::AssertMismatch {
+                        intent: spec_step.intent().to_string(),
+                        expected: "the drop target to resolve to an element".to_string(),
+                        actual: "it names nothing that can be dropped onto".to_string(),
+                    })?;
+                    driver.drag(targeted(), &to)?;
+                }
                 ResolvedAction::Press { .. } => {
                     // Replay refuses to click an element another element
                     // would receive the click for; recording did not, and
@@ -3173,6 +3203,32 @@ steps:
         // And the click really did not go out: recording a press whose
         // effect the page never saw is the failure being prevented.
         assert_eq!(driver.invoked, vec!["num5Button"]);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn a_drag_records_both_ends_and_dispatches_the_drop() {
+        const SPEC: &str = "\
+name: Move the row
+app: calc
+steps:
+  - Drag the \"id:row\" onto the \"id:bin\"
+  - assert: display shows 8
+";
+        let spec = FlowSpec::parse(SPEC).expect("spec parses");
+        let mut ids = CALC_ELEMENTS.to_vec();
+        ids.extend(["row", "bin"]);
+        let mut driver = MockAppDriver::new(&ids).with_text("CalculatorResults", "Display is 8");
+        let out = std::env::temp_dir().join("flowproof-recorder-drag.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("recording succeeds");
+
+        // The drop really was dispatched, at both named ends.
+        assert_eq!(driver.dragged, vec![("row".to_string(), "bin".to_string())]);
+        // And the drop target survives into the trace as its own ladder, not
+        // as a bare string - it has to resist the same drift the source does.
+        let trace = std::fs::read_to_string(&out).expect("trace written");
+        assert!(trace.contains("\"onto\""), "the drop target is recorded");
+        assert!(trace.contains("bin"), "including how to find it again");
         std::fs::remove_file(&out).ok();
     }
 

@@ -36,6 +36,8 @@ pub enum SpecError {
     Agent(String),
     #[error("invalid control: {0}")]
     Control(String),
+    #[error("invalid drag: {0}")]
+    Drag(String),
 }
 
 /// `app:` is either a registry id (`web`, `calc`, `notepad`, `sap`,
@@ -390,6 +392,51 @@ pub struct FlowSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control: Option<flowproof_trace::format::Control>,
     pub steps: Vec<SpecStep>,
+}
+
+/// A `Drag` must be followed by an assertion.
+///
+/// Every other action has something intrinsic to verify - a click's element
+/// was hit, a scroll's offset took, a check's box is checked. A drop does
+/// not: its effect is app-defined, and might be a DOM reorder, a mutation
+/// that re-renders identically, or nothing at all. "Events dispatched" is
+/// not a verification, so a drag that no assertion follows would record
+/// green whether or not anything moved - the exact false green this grammar
+/// exists to refuse. Requiring the next step to say what the drop did turns
+/// a silent no-op red at the assert.
+fn validate_drags_are_asserted(steps: &[SpecStep]) -> Result<(), SpecError> {
+    for (i, step) in steps.iter().enumerate() {
+        // Blocks carry their own step lists; a drag inside one needs the
+        // assertion inside it too, where the drop actually happened.
+        match step {
+            SpecStep::Repeat { repeat } => validate_drags_are_asserted(&repeat.steps)?,
+            SpecStep::When { when } => validate_drags_are_asserted(&when.steps)?,
+            _ => {}
+        }
+        let SpecStep::Plain(text) = step else {
+            continue;
+        };
+        if !text.trim_start().to_ascii_lowercase().starts_with("drag ") {
+            continue;
+        }
+        let asserted = matches!(
+            steps.get(i + 1),
+            Some(SpecStep::Assert { .. })
+                | Some(SpecStep::AssertSql { .. })
+                | Some(SpecStep::AssertApi { .. })
+                | Some(SpecStep::AssertScreenshot { .. })
+        );
+        if !asserted {
+            return Err(SpecError::Drag(format!(
+                "`{}` must be followed by an assertion. A drop's effect is \
+                 app-defined - there is nothing intrinsic to verify, so a drag \
+                 nothing asserts records green whether or not anything moved. \
+                 Say what the drop did",
+                text.trim()
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl FlowSpec {
@@ -1447,6 +1494,7 @@ impl FlowSpec {
         spec.validate_clock()?;
         spec.validate_random()?;
         spec.validate_control()?;
+        validate_drags_are_asserted(&spec.steps)?;
         Ok(spec)
     }
 
@@ -2050,6 +2098,42 @@ steps:
                 .expect_err("must be rejected");
             assert!(err.to_string().contains(wanted), "{err}");
         }
+    }
+
+    #[test]
+    fn a_drag_must_be_followed_by_an_assertion() {
+        let bare = "name: x\napp: web\nsteps:\n  - Drag \"a\" onto \"b\"\n";
+        let err = FlowSpec::parse(bare).expect_err("an unasserted drag must be refused");
+        assert!(
+            err.to_string().contains("must be followed by an assertion"),
+            "{err}"
+        );
+        // A following step that is not an assertion is no better.
+        let after = "name: x\napp: web\nsteps:\n  - Drag \"a\" onto \"b\"\n  - Press go\n";
+        assert!(
+            FlowSpec::parse(after).is_err(),
+            "a non-assert successor is not enough"
+        );
+        // Asserted, it parses.
+        let ok =
+            "name: x\napp: web\nsteps:\n  - Drag \"a\" onto \"b\"\n  - assert: page shows Done\n";
+        FlowSpec::parse(ok).expect("an asserted drag parses");
+    }
+
+    #[test]
+    fn a_drag_inside_a_block_needs_the_assertion_inside_it() {
+        // The drop happened in the block, so that is where the claim about
+        // it belongs - an assertion after the whole loop would not say which
+        // pass moved anything.
+        let inner = "name: x\napp: web\nsteps:\n  \
+                     - repeat:\n      until: page shows Done\n      max: 3\n      steps:\n        \
+                     - Drag \"a\" onto \"b\"\n  \
+                     - assert: page shows Done\n";
+        let err = FlowSpec::parse(inner).expect_err("a drag in a block must be asserted in it");
+        assert!(
+            err.to_string().contains("must be followed by an assertion"),
+            "{err}"
+        );
     }
 
     #[test]
