@@ -689,6 +689,129 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 impl WebAppDriver {
+    /// The mouse drag. Two things make it land where an earlier attempt
+    /// managed 4 drops in 8, and neither of them is pacing:
+    ///
+    /// 1. Both midpoints are read in ONE layout. Scrolling the target into
+    ///    view after computing the source's point moves the source out from
+    ///    under the press about to be dispatched at it.
+    /// 2. Every intermediate move names the held button. A mouse-family
+    ///    library reads a move whose `which` is 0 as the button having come
+    ///    up and abandons the drag, and CDP reports none held unless told.
+    ///    Measured: dropping it takes the fixture from 10/10 to 0/10.
+    ///
+    /// Measured 20/20 against a live jQuery UI `sortable` with
+    /// `connectToSortable`; recorded in `docs/design.md`.
+    pub(crate) fn drag_mouse(
+        &mut self,
+        from: &UiaSelector,
+        to: &UiaSelector,
+    ) -> Result<(), DriverError> {
+        // Enough moves for a sortable to compute intersection on the way in,
+        // and enough dwell at the end for it to settle a placeholder before
+        // the release.
+        let (steps, dwell) = (20u32, 4u32);
+        // Both midpoints, with the ONE scroll happening first: reading the
+        // second after a scroll of its own would move the first out from
+        // under the press that has already been dispatched at it.
+        let b = self.midpoint_of(to)?;
+        let a = self.midpoint_no_scroll(from)?;
+        let tab = self.tab()?.clone();
+        use Input::DispatchMouseEventTypeOption as K;
+        let mouse = |kind: K, x: f64, y: f64, held: bool| Input::DispatchMouseEvent {
+            Type: kind.clone(),
+            x,
+            y,
+            button: held.then_some(Input::MouseButton::Left),
+            // Redundant but explicit: Chrome derives `buttons` from `button`
+            // above, and dropping BOTH is what takes the drop rate to zero.
+            buttons: held.then_some(1),
+            click_count: Some(1),
+            modifiers: None,
+            timestamp: None,
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        };
+        let send = |e| {
+            tab.call_method(e)
+                .map(|_| ())
+                .map_err(|err| web_err("dragging", err))
+        };
+        send(mouse(K::MouseMoved, a.0, a.1, false))?;
+        send(mouse(K::MousePressed, a.0, a.1, true))?;
+        // Clear the library's distance threshold before aiming anywhere.
+        send(mouse(K::MouseMoved, a.0 + 6.0, a.1 + 6.0, true))?;
+        for i in 1..=steps {
+            let t = f64::from(i) / f64::from(steps);
+            send(mouse(
+                K::MouseMoved,
+                a.0 + (b.0 - a.0) * t,
+                a.1 + (b.1 - a.1) * t,
+                true,
+            ))?;
+        }
+        // Dwell inside the target: a sortable computes intersection on move,
+        // so the last position needs more than one event to settle on.
+        for i in 0..dwell {
+            let nudge = f64::from(i % 2);
+            send(mouse(K::MouseMoved, b.0 + nudge, b.1 + nudge, true))?;
+        }
+        send(mouse(K::MouseReleased, b.0, b.1, true))?;
+        Ok(())
+    }
+
+    /// Viewport-space midpoint WITHOUT scrolling - for the second of a pair
+    /// that must be read in the same layout.
+    fn midpoint_no_scroll(&mut self, selector: &UiaSelector) -> Result<(f64, f64), DriverError> {
+        self.midpoint_inner(selector, false)
+    }
+
+    /// Viewport-space midpoint of an element, after scrolling it into view.
+    fn midpoint_of(&mut self, selector: &UiaSelector) -> Result<(f64, f64), DriverError> {
+        self.midpoint_inner(selector, true)
+    }
+
+    fn midpoint_inner(
+        &mut self,
+        selector: &UiaSelector,
+        scroll: bool,
+    ) -> Result<(f64, f64), DriverError> {
+        let locator = Self::locator(selector)?;
+        let got = self.with_element(&locator, &format!("locating [{selector}]"), |element| {
+            if scroll {
+                element.scroll_into_view()?;
+            }
+            let v = element.call_js_fn(
+                r#"function() {
+                    const r = this.getBoundingClientRect();
+                    return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+                }"#,
+                vec![],
+                false,
+            )?;
+            Ok(v.value.and_then(|v| v.as_str().map(str::to_string)))
+        })?;
+        let raw = got.ok_or_else(|| DriverError::Browser(format!("[{selector}] has no box")))?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| DriverError::Browser(format!("reading the midpoint: {e}")))?;
+        Ok((
+            parsed
+                .get("x")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or_default(),
+            parsed
+                .get("y")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or_default(),
+        ))
+    }
+
     /// A driver on the shared browser (isolated context per flow), or a
     /// private browser when `FLOWPROOF_NO_SHARED_BROWSER=1`.
     pub fn new() -> Result<Self, AdapterError> {
@@ -2763,6 +2886,10 @@ impl AppDriver for WebAppDriver {
         ))
         .map_err(|e| web_err("releasing at the click point", e))?;
         Ok(())
+    }
+
+    fn drag(&mut self, from: &UiaSelector, to: &UiaSelector) -> Result<(), DriverError> {
+        self.drag_mouse(from, to)
     }
 
     fn select_options(

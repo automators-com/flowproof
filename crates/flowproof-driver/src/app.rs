@@ -581,6 +581,20 @@ pub trait AppDriver {
         ))
     }
 
+    /// Drag `from` onto `to` with a held pointer: press at the source, move
+    /// across, release at the target.
+    ///
+    /// The MOUSE family only - the one that libraries like jQuery UI, react-dnd's
+    /// mouse backend and SortableJS listen to. Pages using native HTML5
+    /// drag-and-drop want `dragstart`/`drop` instead and are not served by
+    /// this; that is a separate mechanism and a separate decision, not a
+    /// fallback to guess at.
+    fn drag(&mut self, _from: &UiaSelector, _to: &UiaSelector) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "dragging is not supported by this driver".into(),
+        ))
+    }
+
     /// Whether a RESOLVED element is actually rendered — backs the second
     /// half of `the "<target>" is [not] visible`. Resolution alone is not
     /// visibility: a `display:none` input is in the DOM and answers every

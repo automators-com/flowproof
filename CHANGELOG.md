@@ -50,6 +50,24 @@ together).
 
 ### Added
 
+- **A drag the driver can perform, measured rather than asserted once.**
+  `AppDriver::drag` presses at a source, moves across with the button held,
+  and releases on a target - the MOUSE family, which is what jQuery UI,
+  SortableJS and react-dnd's mouse backend listen to. Not yet reachable from
+  a flow; the grammar is the next step.
+
+  It is here because the number finally justifies it. The same drag landed 4
+  drops in 8 before, which is worse than none - a flaky mechanism teaches the
+  reader to re-run instead of investigate. It now lands 20 in 20 against a
+  live jQuery UI sortable, and the two defects that were costing it were both
+  structural: the source and target midpoints were read in different layouts,
+  so scrolling the second into view moved the first out from under the press;
+  and the intermediate moves named no held button, which a mouse-family
+  library reads as the button having come up.
+
+  The measurement is a test rather than a note, because "it worked when I ran
+  it" is not a claim this repository accepts about a mechanism.
+
 - **A condition could compare a reading to a literal, but not to another
   reading.** Anything that sorts, ranks or pairs values branches on the
   ORDER of two things on the page, and there was no way to write that.

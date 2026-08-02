@@ -49,6 +49,8 @@ pub struct MockAppDriver {
     /// Network mocks captured by `stage_mocks` — the mock stands in for
     /// the web driver here, so tests can assert the staging happened.
     pub staged_mocks: Vec<crate::WebMock>,
+    /// Source/target pairs passed to `drag`, in order.
+    pub dragged: Vec<(String, String)>,
     /// Element keys that report as disabled via `element_enabled`.
     pub disabled: Vec<String>,
     /// Scripted text sequences: each `read_text` on the key pops the next
@@ -231,6 +233,17 @@ impl AppDriver for MockAppDriver {
             .or(selector.name.as_ref())
             .ok_or_else(|| DriverError::Uia("mock: selector has no matchable key".into()))?;
         Ok(!self.disabled.contains(key))
+    }
+
+    fn drag(&mut self, from: &UiaSelector, to: &UiaSelector) -> Result<(), DriverError> {
+        let (a, b) = (Self::id_of(from)?, Self::id_of(to)?);
+        for id in [a, b] {
+            if !self.elements.iter().any(|e| e == id) {
+                return Err(DriverError::Uia(format!("mock element '{id}' not found")));
+            }
+        }
+        self.dragged.push((a.to_string(), b.to_string()));
+        Ok(())
     }
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
