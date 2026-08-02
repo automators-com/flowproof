@@ -8,6 +8,25 @@ together).
 
 ### Fixed
 
+- **A click that landed on an occluder was recorded as a success.** Replay
+  refuses to click an element another element would receive the click for.
+  Recording did not check at all, and that asymmetry is the worst way round:
+  the click went to the occluder, the page did not react, and the step was
+  written into the trace as though it had worked. The result is a recording
+  that cannot replay - produced by the tool whose entire job is to notice
+  that.
+
+  Found on a page whose second control sits at the overflow edge of a
+  fixed-height container: at some window sizes it is genuinely covered.
+  `Press` reported success sixty times while the page did nothing, and the
+  same element under `Hover` - which has always run the hit test - said
+  plainly that it was obscured.
+
+  Recording now runs replay's own predicate before dispatching, so the two
+  agree by construction. This makes recording stricter: a flow that clicked
+  a technically-covered element and appeared to work will now fail where it
+  used to pass. That is the point. It was never working; it was recording.
+
 - **A test that refused to pass vacuously failed instead, and it was
   red-lighting every non-Linux machine.**
   `a_run_that_was_not_contained_keeps_no_evidence_from_an_optimistic_probe`
