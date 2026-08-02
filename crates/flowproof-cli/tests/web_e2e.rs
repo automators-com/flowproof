@@ -2414,3 +2414,152 @@ fn late_rendered_assert_targets_are_waited_for() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// `repeat:` with a `when:` recovery nested inside it, against a page that
+/// faults on its way to the goal — the shape a real obstacle had, reduced to
+/// a fixture and made deterministic (the faults happen on known presses, so
+/// nothing here depends on a seed).
+///
+/// What it proves is what the trace holds: the passes that ACTUALLY ran, as
+/// ordinary steps. The recovery presses are in there because the page faulted,
+/// not because anyone wrote them.
+#[test]
+fn a_repeat_with_a_nested_when_records_the_passes_that_ran() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping control-flow E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    // #go advances a counter; on presses 3 and 6 it faults, replacing itself
+    // with a fault button that #fix clears. Ten clean advances finish it.
+    const PAGE: &str = r#"<!doctype html><html><body>
+        <div id="status">working</div>
+        <button id="go">Advance</button>
+        <div id="slot"></div>
+        <script>
+            var n = 0, presses = 0;
+            function render() {
+                document.getElementById('status').textContent =
+                    n >= 10 ? 'FINISHED' : ('at ' + n);
+            }
+            function bind() {
+                document.getElementById('go').onclick = function () {
+                    presses++;
+                    if (presses === 3 || presses === 6) {
+                        this.remove();
+                        document.getElementById('slot').innerHTML =
+                            '<button id="fix">Clear fault</button>';
+                        document.getElementById('fix').onclick = function () {
+                            document.getElementById('slot').innerHTML = '';
+                            document.body.insertAdjacentHTML('beforeend',
+                                '<button id="go">Advance</button>');
+                            bind();
+                        };
+                        return;
+                    }
+                    n++; render();
+                };
+            }
+            bind(); render();
+        </script></body></html>"#;
+    let base = serve_page(PAGE);
+
+    let dir = std::env::temp_dir().join("flowproof-web-repeat-when-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("repeat-when.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec::parse(&format!(
+        "name: Advance until finished\napp: web\nurl: {base}\nsteps:\n  \
+         - repeat:\n      until: page shows FINISHED\n      max: 30\n      steps:\n        \
+         - when: the \"id:go\" is not visible\n          steps:\n            \
+         - Press the \"id:fix\" button\n        \
+         - Press the \"id:go\" button\n  \
+         - assert: page shows FINISHED\n"
+    ))
+    .expect("spec parses");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let summary = flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording");
+    drop(driver);
+
+    // 10 advances + 2 faulted presses + 2 recoveries + the assert. The exact
+    // number matters: a loop that had been written into the trace, or one
+    // that ran to its bound, would not land here.
+    assert_eq!(summary.steps, 15, "the trace holds the passes that ran");
+    let trace = std::fs::read_to_string(&trace_path).expect("trace written");
+    assert!(
+        !trace.contains("repeat"),
+        "no control flow survives into the trace"
+    );
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "the recorded passes must replay: {report:#?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The numeric comparison, against a page where the TEXTUAL answer is the
+/// wrong one. `"9"` sorts after `"10"` as a string and before it as a number,
+/// so a comparison that read the two as text would swap a pair that was
+/// already in order, and the flow would run to its bound and fail. Passing
+/// this test is the assertion that it does not.
+#[test]
+fn a_comparison_condition_orders_numerically_not_textually() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping comparison E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    const PAGE: &str = r#"<!doctype html><html><body>
+        <div id="a">9</div><div id="b">10</div>
+        <div id="status">?</div>
+        <button id="swap">Swap</button>
+        <button id="check">Check</button>
+        <script>
+            var a = document.getElementById('a'), b = document.getElementById('b');
+            document.getElementById('swap').onclick = function () {
+                var t = a.textContent; a.textContent = b.textContent; b.textContent = t;
+            };
+            document.getElementById('check').onclick = function () {
+                document.getElementById('status').textContent =
+                    Number(a.textContent) < Number(b.textContent) ? 'SORTED' : 'UNSORTED';
+            };
+        </script></body></html>"#;
+    let base = serve_page(PAGE);
+
+    let dir = std::env::temp_dir().join("flowproof-web-compare-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("compare.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec::parse(&format!(
+        "name: Order a pair\napp: web\nurl: {base}\nsteps:\n  \
+         - repeat:\n      until: page shows SORTED\n      max: 4\n      steps:\n        \
+         - when: the \"id:a\" is greater than the \"id:b\"\n          steps:\n            \
+         - Press the \"id:swap\" button\n        \
+         - Press the \"id:check\" button\n  \
+         - assert: page shows SORTED\n"
+    ))
+    .expect("spec parses");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let summary = flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording");
+    drop(driver);
+
+    // One check and the assert. A textual comparison would have swapped
+    // first, and 10/9 never sorts by swapping again.
+    assert_eq!(summary.steps, 2, "9 is not greater than 10");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "the pair was already in order: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
