@@ -61,9 +61,11 @@ giving up the verification that makes a step trustworthy.
 ### Blocked on drag mechanism (1)
 
 23292. The mouse dispatch landed 4 drops in 8 against a real jQuery UI
-sortable, and `headless_chrome` 1.0.22 exposes no `Input.dispatchDragEvent`.
-Measured and recorded in `docs/design.md`; the blocker is now specific
-rather than general.
+sortable. The missing `Input.dispatchDragEvent` is a red herring here: the
+page drives its rows with jQuery UI `draggable`/`connectToSortable`, which
+listens for mouse events and never for HTML5 drag ones. The mouse dispatch
+itself is the thing to make deterministic. Measured and recorded in
+`docs/design.md`.
 
 ### Passes vacuously (1)
 

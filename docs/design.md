@@ -221,8 +221,27 @@ DETECTION picks the wrong family; detection was correct here (it chose
 `mouse` from the source's markup and recorded it). The flakiness is one layer
 below, in the dispatch.
 
-So the blocker is now specific rather than general: **a drag mechanism this
-repository can prove deterministic needs `Input.dispatchDragEvent`**, which
-needs a newer or different Chrome client, or raw CDP methods added by hand. A
-50%-reliable drag is worse than none for the reason a flaky test always is -
-it teaches the reader to re-run instead of investigate.
+**Corrected, 2026-08-02.** The sentence that used to close this section named
+`Input.dispatchDragEvent` as the way out. It is not, for the case in front of
+us. That API synthesises HTML5 drag events, and the corpus's one drag obstacle
+uses jQuery UI `draggable` with `connectToSortable` - the MOUSE family, bound
+on `mousedown`/`mousemove`/`mouseup`. Its rows carry no `draggable="true"`, so
+native drag-and-drop is not involved at any point. Adding the missing CDP
+methods by hand would leave the measured failure exactly where it is.
+
+That matters because the doc was pointing future work at the wrong layer: the
+route it named would have been implemented, would have worked, and would still
+not have moved the number.
+
+So the blocker, stated correctly: **the mouse dispatch is the mechanism that
+has to be made deterministic**, and 4 drops in 8 is what it does today. What
+would raise it is not a new API but the shape of the sequence - how many
+interpolated moves, whether the pointer dwells inside the drop target long
+enough for the sortable to compute intersection and place its placeholder, and
+what settles before the release. That is measurable, and measuring it needs
+trusted CDP input from a browser that is not being throttled; an in-page
+synthetic-event prototype is the wrong instrument, because it can only tell you
+about a sequence and not about the input path.
+
+A 50%-reliable drag is still worse than none, for the reason a flaky test
+always is - it teaches the reader to re-run instead of investigate.
