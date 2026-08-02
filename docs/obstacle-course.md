@@ -34,7 +34,7 @@ label changes` became one click, recorded green, and failed one replay in
 five. A decline that exists only in prose is a decline the engine does not
 implement.
 
-## The 12 that are not solved
+## The 10 that are not solved
 
 ### No completion path exists (5)
 
@@ -72,22 +72,38 @@ popup is `closed`, and the popup never really opens headless. Counting it
 would be exactly the false green the rest of this work removed. **No
 cassette for it may enter the repository.**
 
-### Awaiting a product decision (3)
+### Out of reach on timing (1)
 
-70924, 73589, 82018 need repetition or branching.
+82018 is a reaction game whose window depends on the frame rate, and a step
+costs about 3.2 seconds. Measured, not assumed; it is the one obstacle in
+the corpus no amount of grammar reaches.
 
-70924 is the instructive one. Its counter resets to zero on every error, so
-it needs ten consecutive clean clicks — which means deliberately triggering
-errors first to drive the error probability down (0.5 → 0.25 → 0.125 → 0.06
-→ 0.01). Deterministic under a pinned seed, but the flow would be a
-hundred-plus steps encoding one seed's error pattern.
+## Taken by `repeat:` and `when:` (2 of 3)
+
+70924, 73589 and 82018 were held here pending a decision on repetition and
+branching. Two of the three fell once the blocks existed; the third is above.
+
+**70924** resets its counter to zero on every fault, which is a `repeat:`
+with a `when:` recovery nested inside it. The recorded trace is 18 presses —
+three faults recovered, then a clean run of ten — and the loop, not the
+author, worked out which. The condition had to name the button rather than
+the page: `page shows ERROR` also matches the page's own "Errors occur"
+heading, so the recovery fired every pass and drove the loop into its bound.
+
+**73589** is a hand-driven bubble sort. The decision at each position is
+whether the left number exceeds the right, which is the numeric comparison
+condition. Its two controls sit at the overflow edge of a fixed-height
+container, so the second one is genuinely covered at some window sizes —
+pinning `browser.viewport` is what makes it clickable, and finding that out
+turned up a defect worth more than the obstacle: **`Press` did not run the
+occlusion gate that `Hover` and replay both run**, so a click landing on an
+occluder recorded as a success and produced a trace replay then refused.
 
 ## What the corpus was worth, mechanically
 
-Three obstacles that looked like they needed control flow did not:
-**81121** (click until the label changes), **32403** (branch on a displayed
-operator) and **41036** (search a table, answer True/False). Pinned, each is
-a straight line. Much of what looks like branching is randomness in
+Two obstacles that looked like they needed control flow did not: **32403**
+(branch on a displayed operator) and **41036** (search a table, answer
+True/False). Pinned, each is a straight line. Much of what looks like branching is randomness in
 disguise, and `browser.random` — one feature — made 16 of the 22 then-open
 obstacles expressible.
 

@@ -570,10 +570,16 @@ Conditions read state; they never wait:
 | `page shows <text>` / `page does not show <text>` | the whole surface's text does or does not contain it |
 | `the "<target>" shows <text>` | that element's text contains it |
 | `the "<target>" is visible` / `is not visible` | it is on screen, or is missing or hidden |
+| `the "<a>" is greater than the "<b>"` / `is less than` | both read as numbers, and the ordering holds |
 
 A missing element makes a positive `shows` false and a negative one true —
-the same reading replay takes. Anything else is refused by name; there is no
-numeric comparison, so `until:` cannot express "until this exceeds that".
+the same reading replay takes. Anything else is refused by name.
+
+The comparison is the one condition that weighs two readings against each
+other rather than a reading against a literal, and it is **numeric**: `"9"`
+is greater than `"10"` as text and smaller as a number, and a condition that
+quietly answered the text question would be worse than one that refuses. A
+side that does not read as a number fails the recording and is quoted back.
 
 Scope conditions tightly: `page shows ERROR` also matches a heading reading
 "Errors occur", so name the element instead.
