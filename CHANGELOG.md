@@ -31,6 +31,18 @@ together).
 
 ### Added
 
+- **A condition could compare a reading to a literal, but not to another
+  reading.** Anything that sorts, ranks or pairs values branches on the
+  ORDER of two things on the page, and there was no way to write that.
+  `when: the "<a>" is greater than the "<b>"` (and `is less than`) reads
+  both sides and compares them **numerically**.
+
+  Numerically, and not as text, because `"9"` beats `"10"` as a string and
+  loses as a number. Both readings look plausible in a diff and only one is
+  what anybody means by "greater", so a side that does not parse as a number
+  fails the recording and is quoted back rather than silently compared the
+  other way.
+
 - **Some applications will not settle without being asked twice, and the
   grammar had no way to ask.** Repetition and branching were refused on the
   grounds that a trace must be a recording of what happened, not a program

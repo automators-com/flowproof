@@ -1750,11 +1750,13 @@ fn condition_holds<D: AppDriver>(
         let mut read = |side: &str| -> Result<f64, RecordError> {
             let selector = condition_selector(driver, app, side)?;
             let raw = driver.read_text(&selector)?;
-            raw.trim().parse::<f64>().map_err(|_| RecordError::AssertMismatch {
-                intent: text.to_string(),
-                expected: format!("`{side}` to read as a number"),
-                actual: format!("it reads {raw:?}, which cannot be compared numerically"),
-            })
+            raw.trim()
+                .parse::<f64>()
+                .map_err(|_| RecordError::AssertMismatch {
+                    intent: text.to_string(),
+                    expected: format!("`{side}` to read as a number"),
+                    actual: format!("it reads {raw:?}, which cannot be compared numerically"),
+                })
         };
         let (a, b) = (read(lhs)?, read(rhs)?);
         return Ok(if greater { a > b } else { a < b });
