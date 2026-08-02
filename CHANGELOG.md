@@ -6,6 +6,34 @@ together).
 
 ## Unreleased
 
+## 0.12.0
+
+An application that must be asked twice, a page that faults on the way to the
+goal, a list that has to be put in order — none of these could be written
+down, because the grammar had no way to say "keep going until" or "only if".
+`repeat:` and `when:` say it, and they expand while RECORDING: what lands in
+the trace is the passes that actually ran, as ordinary steps. A recording
+stays a recording, and replay still decides nothing.
+
+`Drag` arrives on the terms it was twice refused on. It was deferred for
+landing 4 drops in 8, and a mechanism that flaky is worse than none — it
+teaches the reader to re-run instead of investigate. Two structural defects
+were costing it, and neither was the pacing these notes twice blamed: the two
+midpoints were read in different layouts, so scrolling the target into view
+moved the source out from under the press, and the intermediate moves named
+no held button, which a mouse-family library reads as the button having come
+up. It lands 20 in 20 now, and it ships with the rule that a drop nothing
+asserts is a drop nobody proved.
+
+Underneath both is a click that reported a success it never had. Replay has
+always refused to click an element another element would receive the click
+for; recording did not check at all. So the click went to the occluder, the
+page did nothing, and the step was written into the trace as though it had
+worked — a recording that cannot replay, made by the tool whose job is to
+notice exactly that. The two now run the same predicate. This makes recording
+stricter, which is the point: a flow that clicked a covered element and
+appeared to work was never working, it was recording.
+
 ### Fixed
 
 - **A click that landed on an occluder was recorded as a success.** Replay
