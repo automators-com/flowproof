@@ -233,15 +233,25 @@ That matters because the doc was pointing future work at the wrong layer: the
 route it named would have been implemented, would have worked, and would still
 not have moved the number.
 
-So the blocker, stated correctly: **the mouse dispatch is the mechanism that
-has to be made deterministic**, and 4 drops in 8 is what it does today. What
-would raise it is not a new API but the shape of the sequence - how many
-interpolated moves, whether the pointer dwells inside the drop target long
-enough for the sortable to compute intersection and place its placeholder, and
-what settles before the release. That is measurable, and measuring it needs
-trusted CDP input from a browser that is not being throttled; an in-page
-synthetic-event prototype is the wrong instrument, because it can only tell you
-about a sequence and not about the input path.
+**Resolved, 2026-08-02: 20/20.** It was not the shape of the sequence either.
+Two defects in the dispatch, both structural, and neither about pacing:
 
-A 50%-reliable drag is still worse than none, for the reason a flaky test
-always is - it teaches the reader to re-run instead of investigate.
+1. **The two midpoints were read in different layouts.** Scrolling the target
+   into view after computing the source's point moves the source out from
+   under the press about to be dispatched at it, so the drag begins on
+   whatever now occupies those coordinates. On a page where both fit on
+   screen this is invisible; on one where they do not, it is most of the
+   failure.
+2. **The intermediate moves named no held button.** A mouse-family library
+   reads a move whose `which` is 0 as the button having come up and abandons
+   the drag. CDP reports none held unless told to, so every move looked like
+   a release. Measured in isolation against the fixture: with the held button
+   10/10, without it 0/10.
+
+With both fixed the drag landed **20 times in 20** against the live jQuery UI
+`sortable`, and 10/10 against the committed fixture on every run since.
+
+The lesson is the one the correction above already paid for once: this section
+twice named a cause - first a missing API, then the pacing - and was twice
+wrong, because neither had been isolated by measurement. The number moved when
+the dispatch was instrumented rather than theorised about.
