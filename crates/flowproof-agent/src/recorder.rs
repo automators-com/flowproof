@@ -1698,6 +1698,28 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
 ///
 /// Anything outside the subset is refused at parse time by name, rather
 /// than silently evaluating to false and taking the wrong branch.
+/// Resolve the `the "<target>"` phrase on one side of a comparison, by
+/// putting it through the ordinary assert resolver - so a condition
+/// addresses an element exactly the way every other step does.
+fn condition_selector<D: AppDriver>(
+    driver: &mut D,
+    app: &str,
+    side: &str,
+) -> Result<UiaSelector, RecordError> {
+    let _ = driver;
+    let probe = crate::spec::SpecStep::Assert {
+        assert: format!("{} shows _", side.trim()),
+    };
+    crate::rules::resolve_step(app, &probe)?
+        .first()
+        .and_then(action_selector)
+        .ok_or_else(|| RecordError::AssertMismatch {
+            intent: side.trim().to_string(),
+            expected: "one side of the comparison to name an element".to_string(),
+            actual: "it names nothing that can be read".to_string(),
+        })
+}
+
 fn condition_holds<D: AppDriver>(
     driver: &mut D,
     app: &str,
@@ -1715,6 +1737,27 @@ fn condition_holds<D: AppDriver>(
             let surface = driver.surface_text()?;
             return Ok(flowproof_driver::text_contains(&surface, rest.trim()) == positive);
         }
+    }
+    // `the "<a>" is greater/less than the "<b>"` - the one condition that
+    // compares two readings rather than a reading against a literal. It is
+    // numeric on purpose: string ordering of "9" and "10" is a trap, and a
+    // condition that silently answered the wrong question would be worse
+    // than one that refuses.
+    for (op, greater) in [(" is greater than ", true), (" is less than ", false)] {
+        let Some((lhs, rhs)) = text.split_once(op) else {
+            continue;
+        };
+        let mut read = |side: &str| -> Result<f64, RecordError> {
+            let selector = condition_selector(driver, app, side)?;
+            let raw = driver.read_text(&selector)?;
+            raw.trim().parse::<f64>().map_err(|_| RecordError::AssertMismatch {
+                intent: text.to_string(),
+                expected: format!("`{side}` to read as a number"),
+                actual: format!("it reads {raw:?}, which cannot be compared numerically"),
+            })
+        };
+        let (a, b) = (read(lhs)?, read(rhs)?);
+        return Ok(if greater { a > b } else { a < b });
     }
     // Element forms go through the ordinary resolver, so a condition
     // addresses an element exactly the way every other step does.
@@ -1756,8 +1799,8 @@ fn condition_holds<D: AppDriver>(
         _ => Err(RecordError::AssertMismatch {
             intent: text.to_string(),
             expected: "a condition that reads state without waiting: `page [does not] show \
-                       <text>`, `the \"<target>\" shows <text>`, or `the \"<target>\" is \
-                       [not] visible`"
+                       <text>`, `the \"<target>\" shows <text>`, `the \"<target>\" is \
+                       [not] visible`, or `the \"<a>\" is greater/less than the \"<b>\"`"
                 .to_string(),
             actual: "this assertion form is not usable as a condition".to_string(),
         }),
@@ -3041,6 +3084,54 @@ steps:
         assert!(msg.contains("within 5 passes"), "names the bound: {msg}");
         // It ran the bound and stopped there rather than pressing forever.
         assert_eq!(driver.invoked.len(), 5);
+        std::fs::remove_file(&out).ok();
+    }
+
+    const COMPARE_SPEC: &str = "\
+name: Swap only when out of order
+app: calc
+steps:
+  - when: the \"id:left\" is greater than the \"id:right\"
+    steps:
+      - Press plus
+  - assert: display shows 8
+";
+
+    fn compare_driver(left: &str, right: &str) -> MockAppDriver {
+        let mut ids = CALC_ELEMENTS.to_vec();
+        ids.extend(["left", "right"]);
+        MockAppDriver::new(&ids)
+            .with_text("CalculatorResults", "Display is 8")
+            .with_text("left", left)
+            .with_text("right", right)
+    }
+
+    #[test]
+    fn a_comparison_reads_both_sides_as_numbers() {
+        let spec = FlowSpec::parse(COMPARE_SPEC).expect("spec parses");
+        // 9 sorts AFTER 10 as text and BEFORE it as a number. The numeric
+        // reading is the one a person means by "greater".
+        let mut driver = compare_driver("9", "10");
+        let out = std::env::temp_dir().join("flowproof-recorder-cmp-lt.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("recording succeeds");
+        assert!(driver.invoked.is_empty(), "9 is not greater than 10");
+
+        let mut driver = compare_driver("10", "9");
+        record(&spec, &mut driver, &out).expect("recording succeeds");
+        assert_eq!(driver.invoked, vec!["plusButton"]);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn a_comparison_of_unreadable_text_says_which_side() {
+        let spec = FlowSpec::parse(COMPARE_SPEC).expect("spec parses");
+        let mut driver = compare_driver("nine", "10");
+        let out = std::env::temp_dir().join("flowproof-recorder-cmp-bad.trace.jsonl");
+        let err = record(&spec, &mut driver, &out).expect_err("must fail");
+
+        let msg = err.to_string();
+        assert!(msg.contains("\"nine\""), "quotes what it read: {msg}");
+        assert!(msg.contains("id:left"), "names the side: {msg}");
         std::fs::remove_file(&out).ok();
     }
 
