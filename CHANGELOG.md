@@ -6,6 +6,31 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **Watching a web flow left a blank Chrome window behind.** The shared-browser
+  optimization kept a blank tab alive in Chrome's default window, then opened
+  the actual flow in an isolated-context window. In headed mode the useful
+  window closed with the flow and exposed the oddly-sized keep-alive window,
+  sometimes with two empty tabs; repeated executions made the leftovers look
+  like a leak.
+
+  Headed runs now own one private browser process, maximize its visible window,
+  and close it with the flow. Headless suites still reuse one warm browser.
+
+- **Natural-language capture could not read an unlabelled value in a
+  div-based row.** Web scene extraction only listed readable leaves with a
+  globally unique id, attribute, or class. A value such as the generated order
+  id in Tricentis obstacle 64161 was visible and stable relative to its `order
+  id` label, but absent from the model's allowed target inventory; a model that
+  correctly inferred a scoped selector was then rejected for inventing it.
+
+  The web scene now exposes such values as grounded scoped targets: a stable
+  container selector, neighbouring text anchor, and non-positional inner
+  selector. Model authoring copies the opaque target token, while the trace
+  persists the ordinary deterministic scoped selector and reads the value
+  fresh on every replay.
+
 ## 0.12.1
 
 Flowproof's default authoring path now treats a human sentence as intent, not

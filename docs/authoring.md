@@ -40,6 +40,15 @@ actions grounded to those listed tokens; the resulting selectors and
 actions are persisted in the trace. Replay executes that trace directly,
 with zero model calls.
 
+On the web, that inventory also represents readable values whose identity is
+relational rather than global. A value cell in a div-based row may have no
+unique id or class of its own, but still be stable as “the value beside `order
+id`”. Flowproof exposes it to the model as one opaque `scoped:` token containing
+a container, neighbouring text anchor, and inner selector. The model must copy
+that token exactly; the token itself is not persisted. Recording translates it
+to the same deterministic scoped target used by explicit rules, so replay
+finds the newly rendered row by its anchor and reads the current value.
+
 Conventions: forms are case-insensitive in their keywords. `<text>` is
 literal text (may carry `${VAR}` secret references). A quoted `"<label>"`
 is a **text anchor** — matched against visible text, accessible label

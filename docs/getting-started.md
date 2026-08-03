@@ -232,9 +232,11 @@ upload folder).
 Deterministic replay is stable, but the infrastructure under it (a dropped
 CDP frame, a momentarily slow backend) is not — `--retries N` re-runs a
 failed flow up to N more times with a fresh driver before calling it
-failed. The web adapter reuses **one browser** across the whole suite (an
-isolated context per flow), so the cold start is paid once, not per flow;
-set `FLOWPROOF_NO_SHARED_BROWSER=1` to force a browser per flow.
+failed. The web adapter reuses **one headless browser** across the whole suite
+(an isolated context per flow), so the cold start is paid once, not per flow;
+set `FLOWPROOF_NO_SHARED_BROWSER=1` to force a browser per flow. A headed run
+is private automatically: its visible browser is maximized and closes with the
+flow instead of leaving the shared keep-alive window on the desktop.
 
 **Suite manifest.** A suite usually needs sequencing a bespoke harness
 would otherwise provide — shared env, seed before each flow, cleanup after.
@@ -447,6 +449,10 @@ Deliberately an environment variable and not a spec field: watching is a
 property of the run you are supervising, not of the flow. A committed
 `headed: true` would follow the flow into CI, where nobody is watching and
 there may be no display at all.
+
+The visible browser belongs to that flow alone. Flowproof maximizes it at
+launch and closes the process when the flow finishes; headed runs do not use
+the headless suite's shared keep-alive browser or its isolated second window.
 
 **One caveat if the flow has visual assertions.** Headed Chromium sizes its
 window from the desktop; headless uses a fixed default. Record a screenshot

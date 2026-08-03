@@ -40,6 +40,8 @@ one remembered capture can fit. If more than one could fit, respond with \
 {\"action\":\"capture_ambiguity\"}. Never guess; flowproof supplies the safe \
 intent-derived reference and candidates.
 - `target` MUST be copied verbatim from one of the listed elements. \
+Scoped targets beginning with `scoped:` already encode a stable container, \
+anchor and inner element; copy the whole token exactly like any other target. \
 For assert_text you may also use \"surface\" to check everything readable \
 on the current screen.
 - Type exactly the text the step asks for; do not add anything.";
@@ -242,6 +244,38 @@ fn scene_label(scene: &str, token: &str) -> Option<String> {
         })
 }
 
+/// Resolve one model-visible scene token into the deterministic target that
+/// will be persisted in the trace. Most tokens are ordinary `css:`, `id:` or
+/// `text:` values. A web scene may additionally expose a synthetic `scoped:`
+/// token for a readable value that is only stable relative to a labelled
+/// row/card; its structured metadata becomes the existing `Target::Scoped`
+/// representation and the synthetic token itself never enters the trace.
+fn target_from_scene(scene: &str, token: &str) -> Option<Target> {
+    let elements = serde_json::from_str::<Vec<serde_json::Value>>(scene).ok()?;
+    let entry = elements.iter().find(|element| {
+        element["target"].as_str() == Some(token)
+            || element["css"]
+                .as_str()
+                .is_some_and(|css| format!("css:{css}") == token)
+    })?;
+    if let Some(scope) = entry.get("scope") {
+        let container = scope["container"].as_str()?.to_string();
+        let anchor = scope["anchor"].as_str()?.to_string();
+        let inner = crate::rules::target_from_token(scope["inner"].as_str()?)?;
+        return Some(Target::Scoped {
+            container,
+            anchor,
+            also: Vec::new(),
+            inner: Box::new(inner),
+        });
+    }
+    crate::rules::target_from_token(token).or_else(|| {
+        entry["css"]
+            .as_str()
+            .and_then(|css| crate::rules::target_from_token(&format!("css:{css}")))
+    })
+}
+
 fn scene_actionable_targets(scene: &str) -> Vec<String> {
     serde_json::from_str::<Vec<serde_json::Value>>(scene)
         .unwrap_or_default()
@@ -301,13 +335,14 @@ fn action_targets(action: &ResolvedAction) -> Vec<&Target> {
 
 fn validate_rule_action(
     action: &ResolvedAction,
+    scene: &str,
     scene_tokens: &[String],
     actionable_tokens: &[String],
     captures: &[String],
 ) -> Result<(), GroundingError> {
     let grounded: Vec<Target> = scene_tokens
         .iter()
-        .filter_map(|token| crate::rules::target_from_token(token))
+        .filter_map(|token| target_from_scene(scene, token))
         .collect();
     for target in action_targets(action) {
         if *target != Target::Surface && !grounded.contains(target) {
@@ -328,7 +363,7 @@ fn validate_rule_action(
                 | ResolvedAction::AssertPresence { .. }
         ) && !actionable_tokens
             .iter()
-            .any(|token| crate::rules::target_from_token(token).as_ref() == Some(target))
+            .any(|token| target_from_scene(scene, token).as_ref() == Some(target))
         {
             return Err(GroundingError::Rejected(format!(
                 "rule_step target '{target:?}' is readable but not actionable"
@@ -401,7 +436,7 @@ fn parse_and_ground(
         }
         let actionable = scene_actionable_targets(scene);
         for action in &actions {
-            validate_rule_action(action, targets, &actionable, captures)?;
+            validate_rule_action(action, scene, targets, &actionable, captures)?;
         }
         return Ok(actions);
     }
@@ -415,7 +450,7 @@ fn parse_and_ground(
         }
         Target::Surface
     } else if targets.iter().any(|t| t == token) {
-        crate::rules::target_from_token(token).ok_or_else(|| {
+        target_from_scene(scene, token).ok_or_else(|| {
             GroundingError::Rejected(format!(
                 "listed target '{token}' is not a well-formed token"
             ))
@@ -639,6 +674,21 @@ mod tests {
         {"target":"text:Close","control_type":"Button","text":"Close"}
     ]"##;
 
+    const SCOPED_SCENE: &str = r##"[
+        {
+          "target":"scoped:css:div.row.propertyGrid containing \"order id\" > css:div.col-md-4.border:not(.bg-info)",
+          "css":"body > div:nth-of-type(3) > div:nth-of-type(2)",
+          "tag":"div",
+          "actionable":false,
+          "text":"1092875",
+          "scope":{
+            "container":"css:div.row.propertyGrid",
+            "anchor":"order id",
+            "inner":"css:div.col-md-4.border:not(.bg-info)"
+          }
+        }
+    ]"##;
+
     fn ctx<'a>() -> AuthorContext<'a> {
         AuthorContext {
             flow_name: "Greet",
@@ -854,6 +904,40 @@ mod tests {
             ResolvedAction::Capture {
                 target: Target::css("#greet"),
                 name: "greeting".into(),
+                count: false,
+            }
+        );
+    }
+
+    #[test]
+    fn capture_text_grounds_a_scoped_scene_token_without_persisting_it() {
+        let token = r#"scoped:css:div.row.propertyGrid containing "order id" > css:div.col-md-4.border:not(.bg-info)"#;
+        let mut client = Scripted {
+            replies: vec![format!(
+                r##"{{"action":"capture_text","target":{},"name":"order_id"}}"##,
+                serde_json::to_string(token).expect("token serializes")
+            )],
+            calls: 0,
+        };
+        let action = author_step(
+            &mut client,
+            &AuthorContext {
+                intent: "Remember the value beside \"order id\" as the order ID",
+                scene: SCOPED_SCENE,
+                ..ctx()
+            },
+        )
+        .expect("scoped capture authored");
+        assert_eq!(
+            action,
+            ResolvedAction::Capture {
+                target: Target::Scoped {
+                    container: "css:div.row.propertyGrid".into(),
+                    anchor: "order id".into(),
+                    also: Vec::new(),
+                    inner: Box::new(Target::css("div.col-md-4.border:not(.bg-info)")),
+                },
+                name: "order_id".into(),
                 count: false,
             }
         );

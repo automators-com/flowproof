@@ -14,6 +14,42 @@ use flowproof_agent::{FlowSpec, SpecStep};
 
 const GREETER_HTML: &str = include_str!("../../../examples/web/greeter.html");
 
+const SCOPED_CAPTURE_HTML: &str = r##"<!doctype html>
+<html><body>
+  <div id="rows">
+    <div class="row propertyGrid">
+      <div class="col-md-4 bg-info border">aria-busy</div>
+      <div class="col-md-4 border">false</div>
+    </div>
+    <div class="row propertyGrid">
+      <div class="col-md-4 bg-info border">role</div>
+      <div class="col-md-4 border">button</div>
+    </div>
+  </div>
+  <a id="generate" href="#">Generate order ID</a>
+  <input id="offerId" placeholder="Get order id from table and enter it here!">
+  <p id="status"></p>
+  <script>
+    let currentOrderId = '';
+    document.getElementById('generate').addEventListener('click', event => {
+      event.preventDefault();
+      currentOrderId = String(Date.now()).slice(-7);
+      const row = document.createElement('div');
+      row.className = 'row propertyGrid';
+      row.innerHTML = '<div class="col-md-4 bg-info border">order id</div>' +
+        '<div class="col-md-4 border">' + currentOrderId + '</div>';
+      const rows = document.getElementById('rows');
+      rows.insertBefore(row, rows.children[1]);
+    });
+    document.getElementById('offerId').addEventListener('input', event => {
+      document.getElementById('status').textContent = event.target.value === currentOrderId
+        ? 'You solved this automation problem' : '';
+    });
+  </script>
+</body></html>"##;
+
+const SCOPED_ORDER_TOKEN: &str = r#"scoped:css:div.row.propertyGrid containing "order id" > css:div.col-md-4.border:not(.bg-info)"#;
+
 /// Natural UI steps for the model, followed by a deterministic assertion.
 fn freeform_spec(url: String) -> FlowSpec {
     FlowSpec {
@@ -51,9 +87,9 @@ fn serve_scripted(server: tiny_http::Server) -> std::thread::JoinHandle<Vec<Stri
         while let Ok(mut request) = server.recv() {
             let mut body = String::new();
             std::io::Read::read_to_string(request.as_reader(), &mut body).ok();
-            let reply = if body.contains("Put Ada into the box") {
+            let reply = if body.contains("Current step to perform: Put Ada into the box") {
                 r##"{"action":"type_text","target":"css:#name","text":"Ada"}"##
-            } else if body.contains("Smash the greeting button") {
+            } else if body.contains("Current step to perform: Smash the greeting button") {
                 r##"{"action":"click","target":"css:#greet"}"##
             } else {
                 r##"{"action":"click","target":"css:#nonsense"}"##
@@ -68,6 +104,58 @@ fn serve_scripted(server: tiny_http::Server) -> std::thread::JoinHandle<Vec<Stri
             bodies.push(body);
             request.respond(response).ok();
             if bodies.len() >= 2 {
+                break;
+            }
+        }
+        bodies
+    })
+}
+
+fn serve_scoped_capture(server: tiny_http::Server) -> std::thread::JoinHandle<Vec<String>> {
+    std::thread::spawn(move || {
+        let mut bodies = Vec::new();
+        while let Ok(mut request) = server.recv() {
+            let mut body = String::new();
+            std::io::Read::read_to_string(request.as_reader(), &mut body).ok();
+            let parsed: serde_json::Value = serde_json::from_str(&body).expect("request is JSON");
+            let prompt = parsed["messages"]
+                .as_array()
+                .and_then(|messages| messages.last())
+                .and_then(|message| message["content"].as_str())
+                .expect("request carries the user prompt");
+            let reply = if prompt
+                .contains("Current step to perform: Click the generate order ID control")
+            {
+                serde_json::json!({"action":"click", "target":"css:#generate"})
+            } else if prompt.contains(
+                "Current step to perform: Remember the value beside \"order id\" as the order ID",
+            ) {
+                serde_json::json!({
+                    "action":"capture_text",
+                    "target":SCOPED_ORDER_TOKEN,
+                    "name":"order_id"
+                })
+            } else if prompt
+                .contains("Current step to perform: Enter the order ID in the destination field")
+            {
+                serde_json::json!({
+                    "action":"type_captured",
+                    "target":"css:#offerId",
+                    "capture":"order_id"
+                })
+            } else {
+                serde_json::json!({"action":"click", "target":"css:#nonsense"})
+            };
+            let payload = serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": reply.to_string()}}]
+            });
+            let response = tiny_http::Response::from_string(payload.to_string()).with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                    .expect("header"),
+            );
+            bodies.push(body);
+            request.respond(response).ok();
+            if bodies.len() >= 3 {
                 break;
             }
         }
@@ -136,6 +224,89 @@ fn authors_via_openai_compatible_server() {
         eprintln!("{:?} {} {}", step.status, step.id, step.intent);
     }
     assert!(report.passed, "authored flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn authors_scoped_capture_from_human_language() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping scoped-capture E2E: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-llm-scoped-capture-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("scoped-capture.html");
+    std::fs::write(&page, SCOPED_CAPTURE_HTML).expect("page written");
+    let trace_path = dir.join("scoped-capture.trace.jsonl");
+
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("fake server binds");
+    let base_url = format!("http://{}", server.server_addr());
+    let server_thread = serve_scoped_capture(server);
+    let spec = FlowSpec {
+        name: "Scoped capture freeform".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        connection: None,
+        window: None,
+        session: None,
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        agent: None,
+        tools: Vec::new(),
+        mcp: Vec::new(),
+        strict: false,
+        control: None,
+        steps: vec![
+            SpecStep::Plain("Click the generate order ID control".into()),
+            SpecStep::Plain("Remember the value beside \"order id\" as the order ID".into()),
+            SpecStep::Plain("Enter the order ID in the destination field".into()),
+            SpecStep::Assert {
+                assert: "page shows You solved this automation problem".into(),
+            },
+        ],
+    };
+    let config = flowproof_agent::BackendConfig {
+        kind: flowproof_agent::BackendKind::OpenAiCompatible,
+        base_url: Some(base_url),
+        model: Some("fake-local-model".into()),
+        api_key: None,
+    };
+    let mut client = flowproof_agent::HttpModelClient::new(config);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::recorder::record_with_client(
+        &spec,
+        &mut driver,
+        &trace_path,
+        flowproof_agent::Author::Auto,
+        Some(&mut client),
+    )
+    .expect("human-language scoped capture records");
+    drop(driver);
+
+    let bodies = server_thread.join().expect("server thread");
+    assert_eq!(bodies.len(), 3);
+    assert!(
+        bodies[1].contains("scoped:css:div.row.propertyGrid")
+            && bodies[1].contains("order id")
+            && bodies[1].contains("css:div.col-md-4.border:not(.bg-info)"),
+        "the generated value must be listed as a scoped model target"
+    );
+    let trace = std::fs::read_to_string(&trace_path).expect("trace readable");
+    assert!(trace.contains("scoped"), "trace persists scoped resolution");
+    assert!(
+        !trace.contains(SCOPED_ORDER_TOKEN),
+        "synthetic authoring token must not enter the trace"
+    );
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "scoped capture must replay: {report:#?}");
 
     std::fs::remove_dir_all(&dir).ok();
 }
