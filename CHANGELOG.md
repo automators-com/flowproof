@@ -6,6 +6,42 @@ together).
 
 ## Unreleased
 
+## 0.12.1
+
+Flowproof's default authoring path now treats a human sentence as intent, not
+as a partly structured command. An author can write “type other into the name
+field” without knowing that the application calls the element `name01`:
+Flowproof gives the model the live scene, lets it ground the request to that
+element, and records the resolved action deterministically. Replay still makes
+no model calls.
+
+Authors who need exact control can opt into the existing rules syntax with a
+`rules:` prefix or `--author rules`. The same `auto`, `llm`, and `rules` modes
+now behave consistently in the CLI, suite recording, Python SDK, MCP server,
+and healing flows.
+
+### Fixed
+
+- **Natural-language steps could silently take the deterministic rules path.**
+  Small wording changes could therefore reinterpret ordinary prose as an ID or
+  selector and fail to find an element. Plain steps are now model-grounded by
+  default, while rules parsing is explicit and visible.
+
+- **The model did not have a usable view of the application to ground intent.**
+  Authoring now distinguishes readable scene context from actionable targets,
+  resolves labels and human descriptions to live element identities, and
+  returns structured ambiguity when more than one target remains plausible.
+
+- **Authoring mode differed between entry points.** CLI authoring, missing-suite
+  recording, Python, MCP, and healing now share the same routing contract and
+  report whether a step used the model, explicit rules, a fallback, or a reused
+  resolution.
+
+- **Some model expansions could produce unsafe or unverifiable actions.**
+  Targetless typing and drags without an assertion are rejected, multi-action
+  expansions are validated, and every accepted result is compiled into an
+  ordinary deterministic trace before replay.
+
 ## 0.12.0
 
 An application that must be asked twice, a page that faults on the way to the
