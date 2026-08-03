@@ -198,11 +198,26 @@ mod tests {
         let mut overrides = BTreeMap::new();
         overrides.insert("ZZ_FLOWPROOF_SORT".to_string(), "z".into());
         overrides.insert("AA_FLOWPROOF_SORT".to_string(), "a".into());
+        // Windows runner images carry this same prefix shape as
+        // COMMONPROGRAMFILES and COMMONPROGRAMFILES(X86). Comparing whole
+        // NAME=VALUE entries would put '(' before '=' and falsely call the
+        // correctly name-sorted block unsorted.
+        overrides.insert("MM_FLOWPROOF_SORT".to_string(), "plain".into());
+        overrides.insert("MM_FLOWPROOF_SORT(X86)".to_string(), "qualified".into());
 
         let entries = parse(&environment_block(&overrides, &[]));
-        let upper: Vec<String> = entries.iter().map(|e| e.to_uppercase()).collect();
+        let upper: Vec<String> = entries
+            .iter()
+            .map(|entry| {
+                entry
+                    .split_once('=')
+                    .expect("an environment entry has a name and value")
+                    .0
+                    .to_uppercase()
+            })
+            .collect();
         let mut sorted = upper.clone();
         sorted.sort();
-        assert_eq!(upper, sorted, "the block must be sorted");
+        assert_eq!(upper, sorted, "the block must be sorted by name");
     }
 }
