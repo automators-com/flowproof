@@ -3226,9 +3226,13 @@ impl AppDriver for WebAppDriver {
                 return null;
               }
               const all = Array.from(document.querySelectorAll('body *'));
+              const styledLeaf = el => el.children.length === 0 &&
+                ['DIV', 'SPAN'].includes(el.tagName) &&
+                /(?:background|color)\s*:/i.test(el.getAttribute('style') || '');
               const interactive = el => el.matches(
-                'input, button, a, select, textarea, [role=button], [role=checkbox], [role=radio], [role=menuitem]'
-              );
+                'input, button, a, select, textarea, [role=button], [role=checkbox], [role=radio], [role=menuitem], [draggable], [ondrop], .draggable-row, .droparea'
+              ) || (!!el.id && el.children.length === 0 && ['DIV', 'SPAN'].includes(el.tagName)) ||
+                styledLeaf(el);
               const readableLeaf = el => {
                 if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(el.tagName)) return false;
                 const text = (el.textContent || '').trim();
@@ -3243,14 +3247,17 @@ impl AppDriver for WebAppDriver {
               const chosen = ordered.filter(el => {
                 const r = el.getBoundingClientRect();
                 const style = getComputedStyle(el);
+                // Authoring inventories the rendered PAGE, not only the
+                // current viewport. A user naturally says "enter the date"
+                // even when the field starts below the fold, and every web
+                // action already scrolls its target into view before acting.
                 const rendered = style.display !== 'none' && style.visibility !== 'hidden' &&
-                  Number(style.opacity) > 0 && r.width > 0 && r.height > 0 &&
-                  r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+                  Number(style.opacity) > 0 && r.width > 0 && r.height > 0;
                 if (!rendered || seen.has(el)) return false;
                 seen.add(el);
                 return true;
               }).slice(0, 100);
-              return JSON.stringify(chosen.map(el => {
+              const entries = chosen.map(el => {
                 const css = cssPath(el);
                 const scoped = !interactive(el) && !semanticCss(el) ? scopedReadable(el) : null;
                 const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
@@ -3263,6 +3270,7 @@ impl AppDriver for WebAppDriver {
                     type: el.getAttribute('type') || undefined,
                     text: (el.textContent || '').trim().slice(0, 80) || undefined,
                     label: label || undefined,
+                    background_color: styledLeaf(el) ? getComputedStyle(el).backgroundColor : undefined,
                 };
                 if (scoped) entry.scope = {
                   container: scoped.container,
@@ -3270,7 +3278,103 @@ impl AppDriver for WebAppDriver {
                   inner: scoped.inner,
                 };
                 return entry;
-              }));
+              });
+
+              // A human can ask for the number of displayed rows or the
+              // final cell without naming one current row. Represent those
+              // collection identities directly so the model can ground the
+              // intent without inventing a selector from today's DOM.
+              for (const table of document.querySelectorAll('table')) {
+                const tableCss = semanticCss(table);
+                if (!tableCss) continue;
+                const rows = Array.from(table.querySelectorAll('tr'));
+                if (rows.length) {
+                  const css = tableCss + ' tr';
+                  entries.push({
+                    target: 'css:' + css,
+                    css,
+                    tag: 'collection',
+                    actionable: false,
+                    count: rows.length,
+                    label: 'rows in ' + tableCss,
+                  });
+                }
+                const lastCell = table.querySelector('tr:last-child td:last-child');
+                if (lastCell) {
+                  const css = tableCss + ' tr:last-child td:last-child';
+                  entries.push({
+                    target: 'css:' + css,
+                    css,
+                    tag: 'td',
+                    actionable: false,
+                    text: (lastCell.textContent || '').trim().slice(0, 80) || undefined,
+                    label: 'last cell in the final row of ' + tableCss,
+                  });
+                }
+              }
+
+              // Same-origin iframe values are a normal part of the live
+              // scene. Their synthetic token is translated to Target::Framed
+              // before tracing, just like a scoped row token; no synthetic
+              // authoring syntax is persisted or shown to the human.
+              for (const frameEl of document.querySelectorAll('iframe, frame')) {
+                const frameRect = frameEl.getBoundingClientRect();
+                const frameStyle = getComputedStyle(frameEl);
+                if (frameStyle.display === 'none' || frameStyle.visibility === 'hidden' ||
+                    Number(frameStyle.opacity) <= 0 || frameRect.width <= 0 || frameRect.height <= 0) {
+                  continue;
+                }
+                const frame = frameEl.getAttribute('title') || frameEl.getAttribute('name') ||
+                  frameEl.id || frameEl.getAttribute('aria-label');
+                if (!frame) continue;
+                let frameDoc;
+                try { frameDoc = frameEl.contentDocument; } catch (_) { continue; }
+                if (!frameDoc || !frameDoc.body) continue;
+                const inner = [frameDoc.body].concat(Array.from(frameDoc.querySelectorAll(
+                  'input, button, select, textarea, a, [role=button], [role=checkbox], [role=radio], [role=menuitem], [id]'
+                )));
+                for (const el of inner) {
+                  const style = frameDoc.defaultView.getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  if (style.display === 'none' || style.visibility === 'hidden' ||
+                      Number(style.opacity) <= 0 || rect.width <= 0 || rect.height <= 0) {
+                    continue;
+                  }
+                  let css = el === frameDoc.body ? 'body' : null;
+                  if (!css && el.id) css = '#' + CSS.escape(el.id);
+                  if (!css) {
+                    for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name']) {
+                      const value = el.getAttribute(attr);
+                      if (!value) continue;
+                      const candidate = el.tagName.toLowerCase() + '[' + attr + '="' +
+                        CSS.escape(value) + '"]';
+                      if (frameDoc.querySelectorAll(candidate).length === 1) {
+                        css = candidate;
+                        break;
+                      }
+                    }
+                  }
+                  if (!css) continue;
+                  const innerTarget = 'css:' + css;
+                  const token = 'framed:' + JSON.stringify(frame) + ' > ' + innerTarget;
+                  const actionable = el.matches(
+                    'input, button, select, textarea, a, [role=button], [role=checkbox], [role=radio], [role=menuitem]'
+                  );
+                  const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
+                    : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+                  entries.push({
+                    target: token,
+                    css,
+                    tag: el.tagName.toLowerCase(),
+                    actionable,
+                    text: el === frameDoc.body ? undefined
+                      : (el.value || el.textContent || '').trim().slice(0, 80) || undefined,
+                    label: label || (el === frameDoc.body ? 'scroll surface' : undefined),
+                    scope: { frame, inner: innerTarget },
+                  });
+                }
+              }
+              return JSON.stringify(entries);
             })()
         "#;
         let value = self

@@ -49,6 +49,23 @@ that token exactly; the token itself is not persisted. Recording translates it
 to the same deterministic scoped target used by explicit rules, so replay
 finds the newly rendered row by its anchor and reads the current value.
 
+The inventory covers the rendered page, not just the current viewport, because
+users naturally refer to a control that starts below the fold. It also gives
+the model grounded identities for table-row collections, final table cells,
+drag sources and destinations, small styled or identified visual targets, and
+readable/actionable elements inside visible same-origin frames. Frame and
+scoped tokens are authoring-only handles: Flowproof translates them to ordinary
+deterministic targets before writing the trace.
+
+Plain language is not limited to midpoint clicks and typing. The structured
+model response can directly express clicking a point within a control,
+dragging, remembering a count or value, choosing one or several select options,
+scrolling a container to an exact offset, typing inside a frame, and pressing a
+key. These are capabilities of the authoring protocol, not syntax authors must
+learn. Write the user intent—for example, `Select Functional, End2End, GUI, and
+Exploratory testing together`—and keep `rules:` for the comparatively rare case
+where exact deterministic grammar is deliberately wanted in the source spec.
+
 Conventions: forms are case-insensitive in their keywords. `<text>` is
 literal text (may carry `${VAR}` secret references). A quoted `"<label>"`
 is a **text anchor** — matched against visible text, accessible label

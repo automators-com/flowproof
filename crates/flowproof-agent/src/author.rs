@@ -17,13 +17,20 @@ against the app under test (a web page, a desktop window, ...). You are \
 given the actionable or readable elements of the current screen as JSON; each \
 carries a `target` token. Rules:
 - Respond with ONLY a JSON object, no prose, no code fences.
-- The JSON action is one of: \"click\", \"type_text\", \"assert_text\", \
-\"capture_text\", \"type_captured\", \"rule_step\", or \"capture_ambiguity\".
+- The JSON action is one of: \"click\", \"click_at\", \"drag\", \"type_text\", \
+\"assert_text\", \"capture_text\", \"capture_count\", \"type_captured\", \
+\"select_option\", \"select_options\", \"scroll\", \"press_key\", \"rule_step\", or \
+\"capture_ambiguity\".
 - UI actions MUST include \"target\": \"<target token of a listed element>\". \
 Clicking and typing require an entry whose \"actionable\" field is true. \
 Readable-only entries may be captured or asserted, never acted on. \
 type_text also needs \"text\"; assert_text needs \"expected\" and optional \
 \"contains\"; capture_text needs a safe \"name\"; type_captured needs \"capture\". \
+drag needs \"onto\" with a second listed actionable target. click_at needs \
+\"x_pct\" and \"y_pct\" from 0 through 100. capture_count needs a safe \"name\". \
+select_option needs one \"text\" value; select_options is only for a multi-select \
+and needs a non-empty \"values\" array. scroll needs \"to_px\". \
+press_key needs \"key\" and has no target. \
 For another action, use rule_step with \"step\" containing exact \
 deterministic grammar and copy listed target tokens into quoted targets, for \
 example `Clear the \"css:#name\" field`, `Check the \"css:#terms\" checkbox`, \
@@ -93,6 +100,18 @@ struct AuthoredAction {
     capture: Option<String>,
     #[serde(default)]
     step: Option<String>,
+    #[serde(default)]
+    onto: Option<String>,
+    #[serde(default)]
+    values: Option<Vec<String>>,
+    #[serde(default)]
+    x_pct: Option<f64>,
+    #[serde(default)]
+    y_pct: Option<f64>,
+    #[serde(default)]
+    to_px: Option<u32>,
+    #[serde(default)]
+    key: Option<String>,
 }
 
 /// Context for authoring one step.
@@ -259,6 +278,13 @@ fn target_from_scene(scene: &str, token: &str) -> Option<Target> {
                 .is_some_and(|css| format!("css:{css}") == token)
     })?;
     if let Some(scope) = entry.get("scope") {
+        if let Some(frame) = scope.get("frame").and_then(|value| value.as_str()) {
+            let inner = crate::rules::target_from_token(scope["inner"].as_str()?)?;
+            return Some(Target::Framed {
+                frame: frame.to_string(),
+                inner: Box::new(inner),
+            });
+        }
         let container = scope["container"].as_str()?.to_string();
         let anchor = scope["anchor"].as_str()?.to_string();
         let inner = crate::rules::target_from_token(scope["inner"].as_str()?)?;
@@ -375,7 +401,7 @@ fn validate_rule_action(
             "rule_step cannot use targetless typing; choose a listed field target".into(),
         )),
         ResolvedAction::Drag { .. } => Err(GroundingError::Rejected(
-            "rule_step cannot author a drag without proving its adjacent assertion; use an explicit rules: drag followed by assert:".into(),
+            "rule_step cannot smuggle a drag past the spec's adjacent-assertion check; use the grounded drag action for a human step beginning with 'Drag'".into(),
         )),
         ResolvedAction::Capture { name, .. } if captures.contains(name) => {
             Err(GroundingError::Rejected(format!(
@@ -441,6 +467,17 @@ fn parse_and_ground(
         return Ok(actions);
     }
 
+    if authored.action == "press_key" {
+        let key = authored
+            .key
+            .filter(|key| !key.trim().is_empty())
+            .ok_or("press_key needs a non-empty 'key'")?;
+        return Ok(vec![ResolvedAction::PressKey {
+            key,
+            modifiers: Vec::new(),
+        }]);
+    }
+
     let token = authored.target.trim();
     let asserting = authored.action == "assert_text";
     // "body" is the legacy web spelling of the whole readable surface.
@@ -474,6 +511,53 @@ fn parse_and_ground(
                 dialog: None,
             }])
         }
+        "click_at" => {
+            if !scene_token_is_actionable(scene, token) {
+                return Err("click_at target is readable but not actionable".into());
+            }
+            let x_pct = authored
+                .x_pct
+                .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+                .ok_or("click_at needs 'x_pct' from 0 through 100")?;
+            let y_pct = authored
+                .y_pct
+                .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+                .ok_or("click_at needs 'y_pct' from 0 through 100")?;
+            Ok(vec![ResolvedAction::ClickAt {
+                target,
+                x_pct,
+                y_pct,
+            }])
+        }
+        "drag" => {
+            if !scene_token_is_actionable(scene, token) {
+                return Err("drag source is readable but not actionable".into());
+            }
+            let onto_token = authored
+                .onto
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or("drag needs a non-empty 'onto' target")?;
+            if !targets.iter().any(|candidate| candidate == onto_token) {
+                return Err(GroundingError::Rejected(format!(
+                    "drag target '{onto_token}' is not one of the listed elements"
+                )));
+            }
+            if !scene_token_is_actionable(scene, onto_token) {
+                return Err("drag destination is readable but not actionable".into());
+            }
+            let onto = target_from_scene(scene, onto_token).ok_or_else(|| {
+                GroundingError::Rejected(format!(
+                    "listed drag target '{onto_token}' is not a well-formed token"
+                ))
+            })?;
+            Ok(vec![ResolvedAction::Drag {
+                label: scene_label(scene, token).unwrap_or_default(),
+                target,
+                onto_label: scene_label(scene, onto_token).unwrap_or_default(),
+                onto,
+            }])
+        }
         "type_text" => {
             let text = authored
                 .text
@@ -489,7 +573,7 @@ fn parse_and_ground(
             }
             Ok(vec![ResolvedAction::TypeText { target, text }])
         }
-        "capture_text" => {
+        "capture_text" | "capture_count" => {
             let name = authored
                 .name
                 .filter(|name| valid_capture_name(name))
@@ -502,9 +586,37 @@ fn parse_and_ground(
             Ok(vec![ResolvedAction::Capture {
                 target,
                 name,
-                count: false,
+                count: authored.action == "capture_count",
             }])
         }
+        "select_options" => {
+            if !scene_token_is_actionable(scene, token) {
+                return Err("select_options target is readable but not actionable".into());
+            }
+            let values = authored.values.filter(|values| {
+                !values.is_empty() && values.iter().all(|value| !value.is_empty())
+            });
+            Ok(vec![ResolvedAction::SelectOptions {
+                target,
+                values: values.ok_or("select_options needs a non-empty 'values' array")?,
+            }])
+        }
+        "select_option" => {
+            if !scene_token_is_actionable(scene, token) {
+                return Err("select_option target is readable but not actionable".into());
+            }
+            let text = authored
+                .text
+                .filter(|text| !text.is_empty())
+                .ok_or("select_option needs a non-empty 'text'")?;
+            Ok(vec![ResolvedAction::TypeText { target, text }])
+        }
+        "scroll" => Ok(vec![ResolvedAction::Scroll {
+            target: Some(target),
+            to: crate::rules::ScrollTo::Offset(
+                authored.to_px.ok_or("scroll needs a 'to_px' offset")?,
+            ),
+        }]),
         "type_captured" => {
             let name = authored
                 .capture
@@ -686,6 +798,28 @@ mod tests {
             "anchor":"order id",
             "inner":"css:div.col-md-4.border:not(.bg-info)"
           }
+        }
+    ]"##;
+
+    const HUMAN_PRIMITIVE_SCENE: &str = r##"[
+        {"target":"css:#task-1","tag":"tr","actionable":true,"text":"task 1"},
+        {"target":"css:#todo","tag":"tbody","actionable":true,"label":"todo drop area"},
+        {"target":"css:#half","tag":"button","actionable":true,"text":"Click into my right half"},
+        {"target":"css:#rows tr","tag":"collection","actionable":false,"count":7,"label":"displayed table rows"},
+        {"target":"css:#methods","tag":"select","actionable":true,"label":"testing methods"},
+        {
+          "target":"framed:\"container\" > css:body",
+          "tag":"body",
+          "actionable":false,
+          "label":"scroll surface",
+          "scope":{"frame":"container","inner":"css:body"}
+        },
+        {
+          "target":"framed:\"container\" > css:#textfield",
+          "tag":"input",
+          "actionable":true,
+          "label":"text field",
+          "scope":{"frame":"container","inner":"css:#textfield"}
         }
     ]"##;
 
@@ -941,6 +1075,112 @@ mod tests {
                 count: false,
             }
         );
+    }
+
+    #[test]
+    fn human_language_primitives_ground_without_rules_in_the_input() {
+        let cases = [
+            (
+                "Drag task 1 into the todo drop area",
+                r#"{"action":"drag","target":"css:#task-1","onto":"css:#todo"}"#,
+                ResolvedAction::Drag {
+                    target: Target::css("#task-1"),
+                    label: "task 1".into(),
+                    onto: Target::css("#todo"),
+                    onto_label: "todo drop area".into(),
+                },
+            ),
+            (
+                "Click the right half of \"Click into my right half\"",
+                r#"{"action":"click_at","target":"css:#half","x_pct":75,"y_pct":50}"#,
+                ResolvedAction::ClickAt {
+                    target: Target::css("#half"),
+                    x_pct: 75.0,
+                    y_pct: 50.0,
+                },
+            ),
+            (
+                "Remember the number of displayed table rows as the row count",
+                r#"{"action":"capture_count","target":"css:#rows tr","name":"row_count"}"#,
+                ResolvedAction::Capture {
+                    target: Target::css("#rows tr"),
+                    name: "row_count".into(),
+                    count: true,
+                },
+            ),
+            (
+                "Choose WebDriver in the second dropdown",
+                r#"{"action":"select_option","target":"css:#methods","text":"WebDriver"}"#,
+                ResolvedAction::TypeText {
+                    target: Target::css("#methods"),
+                    text: "WebDriver".into(),
+                },
+            ),
+            (
+                "Select Functional, End2End, GUI, and Exploratory testing together",
+                r#"{"action":"select_options","target":"css:#methods","values":["Functional testing","End2End testing","GUI testing","Exploratory testing"]}"#,
+                ResolvedAction::SelectOptions {
+                    target: Target::css("#methods"),
+                    values: vec![
+                        "Functional testing".into(),
+                        "End2End testing".into(),
+                        "GUI testing".into(),
+                        "Exploratory testing".into(),
+                    ],
+                },
+            ),
+            (
+                "Scroll the embedded challenge to 147 pixels",
+                r#"{"action":"scroll","target":"framed:\"container\" > css:body","to_px":147}"#,
+                ResolvedAction::Scroll {
+                    target: Some(Target::Framed {
+                        frame: "container".into(),
+                        inner: Box::new(Target::css("body")),
+                    }),
+                    to: crate::rules::ScrollTo::Offset(147),
+                },
+            ),
+            (
+                "Enter Tosca in the text field inside the embedded challenge",
+                r#"{"action":"type_text","target":"framed:\"container\" > css:#textfield","text":"Tosca"}"#,
+                ResolvedAction::TypeText {
+                    target: Target::Framed {
+                        frame: "container".into(),
+                        inner: Box::new(Target::css("#textfield")),
+                    },
+                    text: "Tosca".into(),
+                },
+            ),
+            (
+                "Move focus to the next field",
+                r#"{"action":"press_key","key":"Tab"}"#,
+                ResolvedAction::PressKey {
+                    key: "Tab".into(),
+                    modifiers: Vec::new(),
+                },
+            ),
+        ];
+
+        for (intent, reply, expected) in cases {
+            assert!(
+                !intent.contains("rules:") && !intent.contains("css:") && !intent.contains("id:"),
+                "the human input must stay free of authoring syntax"
+            );
+            let mut client = Scripted {
+                replies: vec![reply.into()],
+                calls: 0,
+            };
+            let action = author_step(
+                &mut client,
+                &AuthorContext {
+                    intent,
+                    scene: HUMAN_PRIMITIVE_SCENE,
+                    ..ctx()
+                },
+            )
+            .unwrap_or_else(|error| panic!("{intent}: {error}"));
+            assert_eq!(action, expected, "{intent}");
+        }
     }
 
     #[test]

@@ -886,6 +886,15 @@ model is an author at recording time, not an executor at replay time:
 `flowproof run` reads those persisted deterministic actions and makes zero
 authoring-model calls.
 
+Write what a person would do; selector and rule syntax are not required. This
+includes dragging between visible regions, clicking a particular part of a
+control, remembering a value or row count, choosing one or several options,
+scrolling an embedded surface, typing in a same-origin frame, and moving focus
+with a key. The live inventory includes rendered controls below the fold as
+well as stable table, frame, and relational targets. The model may only choose
+from that inventory, and Flowproof compiles the choice into the same
+deterministic trace used by an explicitly rule-authored flow.
+
 ```bash
 export FLOWPROOF_AI_PROVIDER=anthropic        # or openai-compatible
 export FLOWPROOF_AI_API_KEY=sk-...            # falls back to ANTHROPIC_API_KEY

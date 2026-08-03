@@ -31,6 +31,22 @@ together).
   persists the ordinary deterministic scoped selector and reads the value
   fresh on every replay.
 
+- **Several ordinary human instructions still required rules syntax.** The
+  authoring model could only emit a small set of direct actions, and its live
+  scene omitted useful off-screen controls, table collections, same-origin
+  frame contents, drag targets, and small visual targets. Instructions such as
+  “drag task 1 into todo”, “click the right half”, “remember the number of
+  rows”, “select these four options”, or “enter Tosca in the embedded form”
+  could therefore fail even though the intended control was visible to a
+  person.
+
+  Model authoring now grounds drag, point click, count capture, single and
+  multi-select, exact scrolling, frame-scoped input, and key presses directly
+  from natural language. The expanded page inventory includes rendered
+  off-screen elements and stable collection/frame targets; the model still
+  cannot invent selectors, and replay still uses only the persisted
+  deterministic trace.
+
 ## 0.12.1
 
 Flowproof's default authoring path now treats a human sentence as intent, not
