@@ -274,9 +274,7 @@ def test_heal_result_parses_engine_payload():
                 "steps_removed": 0,
                 "proposed_path": "/tmp/calc.proposed.jsonl",
                 "diff_html": "/tmp/calc.heal.html",
-                "routing": [
-                    {"step": 1, "intent": "Press plus", "route": "llm"}
-                ],
+                "routing": [{"step": 1, "intent": "Press plus", "route": "llm"}],
             },
             "applied": False,
         }

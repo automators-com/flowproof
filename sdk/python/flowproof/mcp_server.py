@@ -25,9 +25,7 @@ if FastMCP is not None:
     mcp = FastMCP("flowproof")
 
     @mcp.tool()
-    def flowproof_record(
-        spec: str, out: str | None = None, author: str = "auto"
-    ) -> dict[str, Any]:
+    def flowproof_record(spec: str, out: str | None = None, author: str = "auto") -> dict[str, Any]:
         """Record a flow: perform it once against the live app and write a
         deterministic trace. Requires the target platform (Windows for UIA
         apps like calc/notepad; any OS for `app: web`). `author` accepts

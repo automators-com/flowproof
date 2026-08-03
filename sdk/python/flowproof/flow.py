@@ -239,9 +239,7 @@ class Flow:
         return _parse_heal_result(data)
 
 
-def record(
-    spec: str | Path, out: str | Path | None = None, author: str = "auto"
-) -> RecordResult:
+def record(spec: str | Path, out: str | Path | None = None, author: str = "auto") -> RecordResult:
     """Record a flow from a YAML spec. See :meth:`Flow.record`."""
     return Flow(spec).record(out, author)
 
