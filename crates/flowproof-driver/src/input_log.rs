@@ -35,6 +35,8 @@ pub struct KeyEvent {
 
 /// Keys worth logging: the ones a click never lands on. Matches SAP's
 /// own scripting VKey table (Enter, F1-F12) for a familiar vocabulary.
+/// Only the Windows hook (below) reads this - dead code everywhere else.
+#[cfg(windows)]
 const MONITORED_KEYS: &[(i32, &str)] = &[
     (0x0D, "Enter"),
     (0x09, "Tab"),
