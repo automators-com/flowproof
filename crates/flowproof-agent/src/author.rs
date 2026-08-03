@@ -16,6 +16,12 @@ You translate ONE natural-language test step into concrete UI actions \
 against the app under test (a web page, a desktop window, ...). You are \
 given the actionable or readable elements of the current screen as JSON; each \
 carries a `target` token. Rules:
+- Interpret the user's meaning, not a fixed phrase, keyword list, or deterministic \
+grammar. Instructions may be terse, conversational, indirect, or use synonyms. \
+Use the current screen, prior steps, and remembered captures to infer the intent.
+- The user never needs to provide selectors, target tokens, or rule syntax. Choose \
+the matching target from the live-screen inventory and let flowproof validate and \
+persist its deterministic target. Never invent a selector from the user's wording.
 - Respond with ONLY a JSON object, no prose, no code fences.
 - The JSON action is one of: \"click\", \"click_at\", \"drag\", \"type_text\", \
 \"assert_text\", \"capture_text\", \"capture_count\", \"type_captured\", \
@@ -832,6 +838,34 @@ mod tests {
             intent: "Put Ada into the box labelled name",
             scene: SCENE,
             captures: &[],
+        }
+    }
+
+    #[test]
+    fn prompt_contract_is_semantic_and_framework_grounded() {
+        assert!(SYSTEM_PROMPT.contains("Interpret the user's meaning"));
+        assert!(SYSTEM_PROMPT.contains("terse, conversational, indirect, or use synonyms"));
+        assert!(SYSTEM_PROMPT.contains("user never needs to provide selectors"));
+        assert!(SYSTEM_PROMPT.contains("Never invent a selector"));
+
+        for instruction in [
+            "Put Ada in the name field",
+            "The person's name should be Ada",
+            "Could you fill in Ada where this page asks who I am?",
+            "name = Ada please",
+        ] {
+            let prompt = user_prompt(&AuthorContext {
+                intent: instruction,
+                ..ctx()
+            });
+            assert!(
+                prompt.contains(&format!("Current step to perform: {instruction}")),
+                "the raw wording must reach the semantic model unchanged"
+            );
+            assert!(
+                prompt.contains("css:#name"),
+                "the live deterministic target inventory must accompany the intent"
+            );
         }
     }
 
