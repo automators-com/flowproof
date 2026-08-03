@@ -172,7 +172,8 @@ enum Command {
     /// EXPERIMENTAL (spike, #227): draft a `.flow.yaml` from a screen
     /// recording. DRAFT only — no asserts, still needs a live `record` pass.
     AuthorFromVideo {
-        /// Path to the screen-recording video.
+        /// Path to the screen-recording video. With --record-for-secs,
+        /// this is the OUTPUT path for a fresh recording instead.
         video: PathBuf,
         /// Target app id (e.g. sap, web, calc).
         #[arg(long)]
@@ -185,6 +186,10 @@ enum Command {
         /// Milliseconds between sampled frames.
         #[arg(long, default_value_t = 2000)]
         interval_ms: u64,
+        /// Record a fresh screen+keypress session for this many seconds
+        /// instead of reading an existing video file.
+        #[arg(long)]
+        record_for_secs: Option<u64>,
     },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
@@ -1771,6 +1776,7 @@ fn cmd_author_from_video(
     name: String,
     out: PathBuf,
     interval_ms: u64,
+    record_for_secs: Option<u64>,
 ) -> Result<u8, String> {
     let opts = flowproof_agent::video_author::VideoAuthorOptions {
         video,
@@ -1778,6 +1784,7 @@ fn cmd_author_from_video(
         name,
         interval_ms,
         out,
+        record_for_secs,
     };
     match flowproof_agent::video_author::author_from_video(&opts) {
         Ok(path) => {
@@ -1960,7 +1967,8 @@ where
             name,
             out,
             interval_ms,
-        } => cmd_author_from_video(video, app, name, out, interval_ms),
+            record_for_secs,
+        } => cmd_author_from_video(video, app, name, out, interval_ms, record_for_secs),
         Command::Heal {
             spec,
             trace,

@@ -9,6 +9,7 @@ pub mod app;
 mod backend;
 #[cfg(windows)]
 pub mod gdi;
+pub mod input_log;
 pub mod mock;
 #[cfg(feature = "oob")]
 pub mod oob;
