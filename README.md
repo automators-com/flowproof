@@ -192,7 +192,7 @@ report on stdout.
 from flowproof import Flow
 
 flow = Flow("calc.flow.yaml")
-flow.record()                    # RecordResult(trace_path=..., steps=5)
+flow.record()                    # RecordResult(..., routing=({"route": "llm", ...},))
 
 result = flow.run()              # RunResult — truthy iff the flow passed
 result.steps[4].status           # "passed"
@@ -206,14 +206,14 @@ over MCP: `pip install flowproof[mcp]`, run `flowproof-mcp`.
 
 ## What works today
 
-**Author** — steps in plain language, resolved two ways:
-- A deterministic rules grammar ([docs/authoring.md](docs/authoring.md) —
-  every documented form is enforced by a test) covers the common
-  vocabulary: type, click, select, navigate, wait, assert.
-- For anything freeform, a model grounds the step against the live app's
-  real elements via neutral target tokens — it can never invent a
-  selector — and the result still replays with zero model calls.
-  Anthropic or any OpenAI-compatible endpoint (vLLM).
+**Author** — plain scalar steps are human intent: a model grounds them
+against the live app's real elements via neutral target tokens, and the
+result replays with zero model calls. It cannot invent selectors. Use
+`rules: <text>` for one deterministic step or `--author rules` for an
+entire flow; the complete grammar is in
+[docs/authoring.md](docs/authoring.md), with every documented form enforced
+by a test. Anthropic and OpenAI-compatible endpoints (including vLLM) are
+supported.
 - When a step is too ambiguous to author ("make required field changes"),
   recording returns a structured clarification payload — the stuck step
   plus the live screen's field inventory — so the driving agent can
@@ -286,8 +286,8 @@ real OCR over synthetic screens.
 
 ```
 spec (natural language, YAML)
-   │  flowproof record          ← agent authors: rules first, model fallback,
-   ▼                              grounded against the live app
+   │  flowproof record          ← model grounds plain human intent; explicit
+   ▼                              `rules:` stays deterministic
 trace (JSON-lines, versioned)  ← selectors + actions + assertions, ${VAR} refs
    │  flowproof run             ← deterministic, zero LLM calls
    ▼

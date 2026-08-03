@@ -1,12 +1,44 @@
 # The authoring grammar — every accepted form
 
-`record` resolves each spec step with deterministic rules first; anything
-the rules cannot parse falls back to the LLM author (when a model backend
-is configured). This page is the **complete rules grammar**. Nothing here
-requires a model call, and everything here is covered by a test that
-parses the exact examples shown (`documented_grammar_examples_all_resolve`
+In the default `--author auto` mode, a plain scalar UI step is
+**natural-language model intent**:
+
+```yaml
+- Enter 24 Market Street in the shipping address field
+```
+
+`record` grounds that intent against the live scene. To opt one step into
+the deterministic grammar instead, mark it explicitly:
+
+```yaml
+- rules: Type Ada into the "Full name" field
+- rules: Press the "Save" button
+```
+
+`--author rules` remains the global opt-in when a whole flow already uses
+the deterministic grammar; `--author llm` forces model authoring for plain
+UI steps. Structured forms such as `assert:`, `assert_api:`, `repeat:` and
+`when:` retain their own semantics in every mode.
+
+If auto mode has no configured authoring model, recording says so visibly
+and falls back to deterministic rules for plain steps. It never silently
+reinterprets model intent. Human output identifies each step's route as
+`rules`, `llm`, `reused`, or `fallback`, and structured/JSON output carries the same
+per-step routing information for tooling; consumers should use the
+structured output rather than scraping the display text.
+
+This page is the **complete rules grammar**. The forms below are the text
+accepted inside `rules: <text>` (or as plain steps under global
+`--author rules`). They require no model call and are covered by tests that
+parse the exact examples shown (`documented_grammar_examples_all_resolve`
 in `crates/flowproof-agent/src/rules.rs` — if the doc and the code drift,
 CI fails).
+
+Model authoring does not make replay probabilistic. The driver gives the
+model a finite list of provenance-neutral scene tokens and accepts only
+actions grounded to those listed tokens; the resulting selectors and
+actions are persisted in the trace. Replay executes that trace directly,
+with zero model calls.
 
 Conventions: forms are case-insensitive in their keywords. `<text>` is
 literal text (may carry `${VAR}` secret references). A quoted `"<label>"`
@@ -81,14 +113,12 @@ exercised with `Press Tab`.
 
 ### Refused on purpose
 
-`Blur` is one of a set. These shapes are **recognised in order to be
-refused**: each fails at authoring time with the reason and what to write
-instead, and — unlike a step the rules merely cannot parse — a refused one
-is **never handed to the LLM author**. That difference is the point. An
-unparsed step is a question, and asking a model is a reasonable answer to a
-question. A refused step is a decision, and asking a model does not build
-it — it gets the step quietly reinterpreted as something adjacent that
-records green and means something nobody asked for.
+`Blur` is one of a set. When deterministic rule authoring is selected,
+these shapes are **recognised in order to be refused**: each fails with the
+reason and what to write instead. A refused `rules:` step is never rerouted
+to the model. That difference is the point: explicit deterministic intent
+must either mean exactly what the grammar says or stop, never be quietly
+reinterpreted as something adjacent that records green.
 
 | Refused | Why, and what to write |
 |---|---|
@@ -333,6 +363,41 @@ anchor that appears in EVERY item ("Invoice", when every item says
 "Invoice") is ambiguous by design: it identifies nothing, and the error
 says so instead of picking the first one. `appears <N> times` cannot be
 scoped to a container yet.
+
+### Remembering and reusing live values
+
+Model-authored steps may describe a remembered value naturally and use a
+clear name or an unambiguous pronoun later:
+
+```yaml
+- Remember the order number
+- Enter it in the "Confirmation" field
+```
+
+Recording grounds both steps to the live scene and persists deterministic
+capture/read and type actions. The remembered value itself is still read
+fresh during recording and replay; it is not baked into the trace. A named
+reference is useful when the flow remembers more than one value:
+
+```yaml
+- Remember the order number as the order ID
+- Remember the customer number as the customer ID
+- Enter the order ID in the "Confirmation" field
+```
+
+A pronoun such as `it` is accepted only when one remembered value is an
+unambiguous candidate. If two values could be meant, recording stops with
+a structured clarification that lists the candidates. It does not choose
+the nearest name or the first value.
+
+For exact deterministic grammar, `${captured.<name>}` remains the explicit
+advanced syntax. Mark the steps with `rules:` (or record the whole flow with
+`--author rules`):
+
+```yaml
+- rules: Remember the "id:oid" as oid
+- rules: Type ${captured.oid} into the "Order id" field
+```
 
 Computed assertions answer "did this change by the right amount?", which a
 literal cannot express because the starting value is only known at run time:
@@ -1215,18 +1280,30 @@ and **cross-run report diffing** (`audit --since <run-id>`, including
 removed-control detection). Retention keeps the most recent 10 records per
 suite, pruned after each run, so the `--since` window stays bounded.
 
-## When a step doesn't parse
+## When a step cannot be authored
 
-The error names the accepted forms for that app. Anything freeform (e.g.
-`Smash the shiny button`) is handled by the LLM author when a model
-backend is configured (`FLOWPROOF_AI_PROVIDER` / `FLOWPROOF_AI_API_KEY`)
-— the model grounds the step against the live scene and can never invent
-a selector; replay stays zero-model either way. See
-[getting-started](getting-started.md#authoring-with-a-model-arbitrary-steps).
+In auto mode, plain freeform UI text (for example, `Smash the shiny
+button`) is model intent. The model receives the live scene and must ground
+its answer to one of the listed target tokens; it cannot invent a selector.
+An explicit `rules:` step instead succeeds or fails against the grammar on
+this page and names the accepted forms for that app. Use `--author rules`
+or `--author llm` when the entire recording should force one backend.
+
+When auto mode has no configured model (`FLOWPROOF_AI_PROVIDER` /
+`FLOWPROOF_AI_API_KEY`), the CLI emits a visible warning before trying the
+deterministic grammar. This fallback is identified as its own `fallback` route in
+the per-step human and structured diagnostics, so ordinary prose is never
+silently mistaken for deliberate rule syntax.
 
 When a step is too *ambiguous* to author at all ("make required field
-changes" — which fields?), recording fails with a structured
-**clarification payload**: the stuck step plus the live screen's field
-inventory, via `record --json`, the MCP record tool, or Python's
-`ClarificationNeeded`. The driving agent rewrites the step into concrete
-grammar and re-records — see [self-help.md](self-help.md) for the loop.
+changes" — which fields? — or `Enter it` with several remembered values),
+recording fails with a structured **clarification payload**: the stuck step
+plus the relevant live-scene fields or remembered-value candidates. It is
+available via `record --json`, the MCP record tool, or Python's
+`ClarificationNeeded`. The driving agent rewrites the step more precisely
+and re-records — see [self-help.md](self-help.md) for the loop.
+
+Whichever route authors a step, recording persists grounded selectors and
+actions in the trace. `flowproof run` executes those deterministic artifacts
+directly and makes zero authoring-model calls. See
+[getting-started](getting-started.md#authoring-with-a-model-arbitrary-steps).

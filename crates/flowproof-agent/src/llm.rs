@@ -27,8 +27,14 @@ impl HttpModelClient {
     /// Build from environment configuration. Returns `None` when no usable
     /// backend is configured (the recorder then stays rules-only).
     pub fn from_env() -> Option<Self> {
-        let config = BackendConfig::from_env().ok()?;
-        config.is_usable().then(|| Self::new(config))
+        Self::from_env_result().ok().flatten()
+    }
+
+    /// Like [`Self::from_env`], but preserves invalid configuration as an
+    /// error so recording cannot mistake a typo for an intentional fallback.
+    pub fn from_env_result() -> Result<Option<Self>, AgentError> {
+        let config = BackendConfig::from_env()?;
+        Ok(config.is_usable().then(|| Self::new(config)))
     }
 
     pub fn new(config: BackendConfig) -> Self {

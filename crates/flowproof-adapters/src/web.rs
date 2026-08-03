@@ -3097,31 +3097,83 @@ impl AppDriver for WebAppDriver {
     }
 
     fn scene(&mut self) -> Result<Option<String>, DriverError> {
-        // Enumerate visible interactable elements with stable selectors —
+        // Enumerate visible interactable elements plus readable leaf text —
         // the grounding set an authoring model must choose targets from.
+        // Static text matters for natural `Remember the order number` steps,
+        // not only for assertions.
         // `target` is the provenance-neutral token the model echoes; the
         // bare `css` key is kept one release for older agents.
         const SCENE_JS: &str = r#"
-            JSON.stringify(Array.from(document.querySelectorAll(
-                'input, button, a, select, textarea, [role=button], [id]'
-            )).filter(el => {
+            (() => {
+              function semanticCss(el) {
+                if (el.id) return '#' + CSS.escape(el.id);
+                for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name']) {
+                  const value = el.getAttribute(attr);
+                  if (value) {
+                    const candidate = el.tagName.toLowerCase() + '[' + attr + '="' +
+                      CSS.escape(value) + '"]';
+                    if (document.querySelectorAll(candidate).length === 1) return candidate;
+                  }
+                }
+                for (const cls of Array.from(el.classList)) {
+                  const candidate = el.tagName.toLowerCase() + '.' + CSS.escape(cls);
+                  if (document.querySelectorAll(candidate).length === 1) return candidate;
+                }
+                return null;
+              }
+              function cssPath(el) {
+                const semantic = semanticCss(el);
+                if (semantic) return semantic;
+                const parts = [];
+                while (el && el.nodeType === 1 && el !== document.body) {
+                  const tag = el.tagName.toLowerCase();
+                  const siblings = Array.from(el.parentElement.children)
+                    .filter(s => s.tagName === el.tagName);
+                  parts.unshift(tag + ':nth-of-type(' + (siblings.indexOf(el) + 1) + ')');
+                  el = el.parentElement;
+                }
+                return 'body > ' + parts.join(' > ');
+              }
+              const all = Array.from(document.querySelectorAll('body *'));
+              const interactive = el => el.matches(
+                'input, button, a, select, textarea, [role=button], [role=checkbox], [role=radio], [role=menuitem]'
+              );
+              const readableLeaf = el => {
+                if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(el.tagName)) return false;
+                const text = (el.textContent || '').trim();
+                return text && semanticCss(el) && !Array.from(el.children).some(child =>
+                  (child.textContent || '').trim()
+                );
+              };
+              const ordered = all.filter(interactive).concat(
+                all.filter(el => !interactive(el) && readableLeaf(el))
+              );
+              const seen = new Set();
+              const chosen = ordered.filter(el => {
                 const r = el.getBoundingClientRect();
-                return r.width > 0 && r.height > 0;
-            }).slice(0, 100).map((el, i) => {
-                const css = el.id ? '#' + el.id
-                    : el.tagName.toLowerCase() + ':nth-of-type(' +
-                      (Array.from(document.querySelectorAll(el.tagName)).indexOf(el) + 1) + ')';
+                const style = getComputedStyle(el);
+                const rendered = style.display !== 'none' && style.visibility !== 'hidden' &&
+                  Number(style.opacity) > 0 && r.width > 0 && r.height > 0 &&
+                  r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+                if (!rendered || seen.has(el)) return false;
+                seen.add(el);
+                return true;
+              }).slice(0, 100);
+              return JSON.stringify(chosen.map(el => {
+                const css = cssPath(el);
                 const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
                     : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
                 return {
                     target: 'css:' + css,
                     css,
                     tag: el.tagName.toLowerCase(),
+                    actionable: interactive(el),
                     type: el.getAttribute('type') || undefined,
                     text: (el.textContent || '').trim().slice(0, 80) || undefined,
                     label: label || undefined,
                 };
-            }))
+              }));
+            })()
         "#;
         let value = self
             .tab()?

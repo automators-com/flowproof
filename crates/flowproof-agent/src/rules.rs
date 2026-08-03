@@ -802,6 +802,14 @@ fn ci_positions<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usiz
 /// step, not abort the whole suite. The specific known sites are fixed;
 /// this is the backstop for the variant nobody has written yet.
 pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, RulesError> {
+    let explicit;
+    let step = match step {
+        SpecStep::Rules { rules } => {
+            explicit = SpecStep::Plain(rules.clone());
+            &explicit
+        }
+        other => other,
+    };
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // Declines are checked FIRST, on the raw text. A declined shape does
         // not parse, so without this it would reach the model author and be
@@ -3493,6 +3501,24 @@ mod tests {
                 dialog: None,
             }]
         );
+    }
+
+    #[test]
+    fn public_resolver_accepts_the_explicit_rules_wrapper() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Rules {
+                rules: "Press the greet button".into(),
+            },
+        )
+        .expect("rules wrapper resolves through the public API");
+        assert!(matches!(
+            &actions[..],
+            [ResolvedAction::Press {
+                target: Target::AutomationId(id),
+                ..
+            }] if id == "greet"
+        ));
     }
 
     #[test]

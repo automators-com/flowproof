@@ -64,6 +64,14 @@ pub struct Clarification {
     pub stage: ClarifyStage,
     /// Human-readable diagnostic from the stage that gave up.
     pub reason: String,
+    /// The ambiguous natural-language reference, when this clarification is
+    /// specifically about choosing among remembered captures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_reference: Option<String>,
+    /// Safe capture names that the reference could mean. Values are never
+    /// included: remembered data remains run-scoped and secret-safe.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_candidates: Vec<String>,
     /// The rules diagnostic, when the model stage was reached (the rules
     /// failed first — their error often names the accepted forms).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,6 +160,8 @@ mod tests {
             step_index: 4,
             stage: ClarifyStage::Model,
             reason: "target 'invented' is not one of the listed elements".into(),
+            capture_reference: None,
+            capture_candidates: vec![],
             rules_error: Some("no rule matches".into()),
             completed_steps: vec!["Press the \"Edit\" button".into()],
             scene: vec![SceneElement {

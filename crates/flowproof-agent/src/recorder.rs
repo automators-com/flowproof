@@ -12,23 +12,24 @@ use flowproof_trace::format::{
 };
 use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 
-use crate::author::{author_step, AuthorContext};
+use crate::author::{author_steps, AuthorContext};
 use crate::llm::{HttpModelClient, ModelClient};
 use crate::rules::{
-    resolve_step, AttrCheck, ResolvedAction, RulesError, ScrollTo, Target, TextMatch,
-    NOTEPAD_EDITOR_ID,
+    resolve_step, AttrCheck, ResolvedAction, ScrollTo, Target, TextMatch, NOTEPAD_EDITOR_ID,
 };
 use crate::spec::FlowSpec;
 
 /// Which authoring backend records a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Author {
-    /// Rules first, model fallback for steps the rules cannot resolve.
+    /// Bare natural-language steps use the model when configured. Structured
+    /// and `rules:` steps stay deterministic; without a model, bare steps use
+    /// a visible rules fallback.
     #[default]
     Auto,
-    /// Deterministic rules only (today's behavior).
+    /// Deterministic rules for every plain UI step.
     Rules,
-    /// Model for every step.
+    /// Model for every plain UI step; explicit/structured forms keep their semantics.
     Llm,
 }
 
@@ -111,13 +112,58 @@ pub enum RecordError {
 }
 
 /// Outcome of a recording session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RecordSummary {
     pub trace_path: std::path::PathBuf,
     pub steps: usize,
     /// Steps reused verbatim from the previous trace (`record --reuse`);
     /// 0 on a fresh recording.
     pub reused_steps: usize,
+    /// One routing decision per executable spec step, in execution order.
+    /// A single spec step may mint several trace actions, so this is kept
+    /// separate from `steps` rather than pretending the two indexes align.
+    pub routing: Vec<StepAuthoringDiagnostic>,
+}
+
+/// The backend that supplied one executable spec step's actions.
+///
+/// These serialized spellings are a small public contract consumed by the
+/// CLI and JSON output. `Fallback` is deliberately distinct from `Rules`:
+/// in `Author::Auto` it means ordinary prose reached deterministic grammar
+/// only because no model was configured, a decision that must stay visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StepAuthoringRoute {
+    Reused,
+    Rules,
+    Llm,
+    Fallback,
+}
+
+impl std::fmt::Display for StepAuthoringRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Reused => "reused",
+            Self::Rules => "rules",
+            Self::Llm => "llm",
+            Self::Fallback => "fallback",
+        })
+    }
+}
+
+/// Machine-readable routing evidence for one executable spec step.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StepAuthoringDiagnostic {
+    /// One-based executable-spec-step index, after `when` / `repeat`
+    /// expansion. This is not a trace-action index.
+    pub step: usize,
+    pub intent: String,
+    pub route: StepAuthoringRoute,
+    /// Present for a visible but non-fatal routing caveat. Today that is the
+    /// no-model Auto fallback; failed authoring remains a `RecordError` and
+    /// therefore cannot appear in a successful `RecordSummary`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 fn native_selector(payload: serde_json::Map<String, serde_json::Value>) -> Selector {
@@ -413,6 +459,11 @@ fn dialog_from_params(
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
+fn selector_label(label: &str) -> Option<&str> {
+    let label = label.trim();
+    (!label.is_empty() && !label.starts_with("css:") && !label.starts_with("id:")).then_some(label)
+}
+
 fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step {
     let (mut selectors, trace_action) = match action {
         ResolvedAction::Press {
@@ -420,7 +471,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             label,
             dialog,
         } => (
-            selectors_for(app, target, Some(label)),
+            selectors_for(app, target, selector_label(label)),
             Action::Click(dialog_params(dialog)),
         ),
         ResolvedAction::TypeText { target, text } => (
@@ -479,7 +530,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             label,
             dialog,
         } => (
-            selectors_for(app, target, Some(label)),
+            selectors_for(app, target, selector_label(label)),
             Action::RightClick(dialog_params(dialog)),
         ),
         ResolvedAction::DoubleClick {
@@ -487,7 +538,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             label,
             dialog,
         } => (
-            selectors_for(app, target, Some(label)),
+            selectors_for(app, target, selector_label(label)),
             Action::DoubleClick(dialog_params(dialog)),
         ),
         ResolvedAction::Hover {
@@ -495,7 +546,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             label,
             dialog,
         } => (
-            selectors_for(app, target, Some(label)),
+            selectors_for(app, target, selector_label(label)),
             Action::Hover(dialog_params(dialog)),
         ),
         // The drop target rides in the params as its own selector LADDER,
@@ -511,11 +562,11 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             let mut params = serde_json::Map::new();
             params.insert(
                 "onto".into(),
-                serde_json::to_value(selectors_for(app, onto, Some(onto_label)))
+                serde_json::to_value(selectors_for(app, onto, selector_label(onto_label)))
                     .unwrap_or(serde_json::Value::Null),
             );
             (
-                selectors_for(app, target, Some(label)),
+                selectors_for(app, target, selector_label(label)),
                 Action::Drag(params),
             )
         }
@@ -1834,13 +1885,14 @@ fn condition_holds<D: AppDriver>(
 /// Record `spec` against the live app via `driver`, writing the trace to
 /// `out`. Every planned action's target element must exist before it is
 /// written — recording is a verification pass, not a transcription.
-/// Uses [`Author::Auto`]: rules first, model fallback when configured.
+/// Uses [`Author::Auto`]: natural-language steps use the model when configured;
+/// explicit grammar stays deterministic.
 pub fn record<D: AppDriver>(
     spec: &FlowSpec,
     driver: &mut D,
     out: &Path,
 ) -> Result<RecordSummary, RecordError> {
-    let mut client = HttpModelClient::from_env();
+    let mut client = HttpModelClient::from_env_result()?;
     record_with_client(spec, driver, out, Author::Auto, client.as_mut())
 }
 
@@ -1851,7 +1903,7 @@ pub fn record_with_author<D: AppDriver>(
     out: &Path,
     author: Author,
 ) -> Result<RecordSummary, RecordError> {
-    let mut client = HttpModelClient::from_env();
+    let mut client = HttpModelClient::from_env_result()?;
     record_with_client(spec, driver, out, author, client.as_mut())
 }
 
@@ -1864,8 +1916,14 @@ pub fn record_incremental<D: AppDriver>(
     author: Author,
     old_steps: &[Step],
 ) -> Result<RecordSummary, RecordError> {
-    let mut client = HttpModelClient::from_env();
+    let mut client = HttpModelClient::from_env_result()?;
     record_with_reuse(spec, driver, out, author, client.as_mut(), Some(old_steps))
+}
+
+struct AuthoredActions {
+    actions: Vec<ResolvedAction>,
+    route: StepAuthoringRoute,
+    warning: Option<String>,
 }
 
 /// Resolve one spec step into actions per the authoring mode.
@@ -1876,96 +1934,169 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     author: Author,
     client: &mut Option<&mut C>,
     prior: &[String],
+    captures: &[String],
     spec_step: &crate::spec::SpecStep,
     llm_used: &mut bool,
     reuse: &mut Option<ReuseCursor>,
-) -> Result<Vec<ResolvedAction>, RecordError> {
+) -> Result<AuthoredActions, RecordError> {
     let intent = spec_step.intent();
     let intent = intent.as_str();
+    let explicit_rules = spec_step.explicit_rules();
     // Incremental re-record: an old step group whose intent matches and
     // whose target still resolves is reused VERBATIM — no rules, no model.
-    if let Some(cursor) = reuse {
-        if let Some(actions) = cursor.take_matching(driver, intent)? {
-            return Ok(actions);
+    // A new `rules:` marker is a routing change even when the inner intent
+    // is byte-identical, so it must be re-authored to honor the opt-in.
+    if explicit_rules.is_none() {
+        if let Some(cursor) = reuse {
+            if let Some(actions) = cursor.take_matching(driver, intent)? {
+                return Ok(AuthoredActions {
+                    actions,
+                    route: StepAuthoringRoute::Reused,
+                    warning: None,
+                });
+            }
         }
     }
-    let rules_result = match author {
-        Author::Llm => Err(RulesError::UnsupportedApp("llm forced".into())),
-        _ => resolve_step(spec.app.id(), spec_step),
+
+    // Structured steps (`assert:`, `assert_api:`, ...) are already explicit
+    // grammar. A `rules:` step opts a plain action into the same deterministic
+    // path. Only a bare `Plain` step in Auto is natural-language model intent.
+    let plain_natural =
+        explicit_rules.is_none() && matches!(spec_step, crate::spec::SpecStep::Plain(_));
+    let plain_auto = author == Author::Auto && plain_natural;
+
+    let clarify = |stage, reason: String, rules_err: Option<String>, scene: Vec<_>| {
+        let ambiguity = serde_json::from_str::<crate::author::CaptureAmbiguity>(&reason)
+            .ok()
+            .filter(|value| value.kind == crate::author::CAPTURE_AMBIGUITY_KIND);
+        let (reason, capture_reference, capture_candidates) = match ambiguity {
+            Some(value) => (
+                format!(
+                    "remembered-value reference '{}' is ambiguous; name one of: {}",
+                    value.reference,
+                    value.candidates.join(", ")
+                ),
+                Some(value.reference),
+                value.candidates,
+            ),
+            None => (reason, None, Vec::new()),
+        };
+        RecordError::NeedsClarification(Box::new(crate::clarify::Clarification {
+            step: intent.to_string(),
+            step_index: prior.len(),
+            stage,
+            reason,
+            capture_reference,
+            capture_candidates,
+            rules_error: rules_err,
+            completed_steps: prior.to_vec(),
+            scene,
+            hint: crate::clarify::Clarification::HINT.into(),
+        }))
     };
+
+    // A per-step `rules:` wrapper carries routing intent, not a new grammar
+    // shape. Strip it before calling the existing resolver so the rules crate
+    // need not know about authoring policy.
+    let explicit_step = explicit_rules.map(|text| crate::spec::SpecStep::Plain(text.to_string()));
+    let rules_step = explicit_step.as_ref().unwrap_or(spec_step);
+
+    let use_model = plain_natural && (author == Author::Llm || (plain_auto && client.is_some()));
+    if use_model {
+        let Some(client) = client.as_mut() else {
+            // Forced LLM mode never changes meaning because a key is absent.
+            let inventory = driver
+                .scene()
+                .ok()
+                .flatten()
+                .map(|s| crate::clarify::scene_inventory(&s))
+                .unwrap_or_default();
+            return Err(clarify(
+                crate::clarify::ClarifyStage::NoModel,
+                "--author llm was requested, but no model backend is configured (set \
+                 FLOWPROOF_AI_PROVIDER / FLOWPROOF_AI_API_KEY)"
+                    .into(),
+                None,
+                inventory,
+            ));
+        };
+        let scene = driver
+            .scene()?
+            .ok_or_else(|| RecordError::NoScene(spec.app.id().to_string()))?;
+        let ctx = AuthorContext {
+            flow_name: &spec.name,
+            app: spec.app.id(),
+            url: spec.url.as_deref(),
+            prior_steps: prior,
+            captures,
+            intent,
+            scene: &scene,
+        };
+        return match author_steps(*client, &ctx) {
+            Ok(actions) => {
+                *llm_used = true;
+                Ok(AuthoredActions {
+                    actions,
+                    route: StepAuthoringRoute::Llm,
+                    warning: None,
+                })
+            }
+            // Grounding failure after the retry = genuine ambiguity.
+            // Config errors (bad key, network) stay plain errors.
+            Err(crate::AgentError::Authoring { reason, .. }) => Err(clarify(
+                crate::clarify::ClarifyStage::Model,
+                reason,
+                None,
+                crate::clarify::scene_inventory(&scene),
+            )),
+            Err(other) => Err(other.into()),
+        };
+    }
+
+    let rules_result = resolve_step(spec.app.id(), rules_step);
     match rules_result {
-        Ok(actions) => Ok(actions),
+        Ok(actions) => {
+            let fallback = plain_auto;
+            Ok(AuthoredActions {
+                actions,
+                route: if fallback {
+                    StepAuthoringRoute::Fallback
+                } else {
+                    StepAuthoringRoute::Rules
+                },
+                warning: fallback.then(|| {
+                    "no model backend is configured; Author::Auto used deterministic rules for \
+                     this plain step. Configure a model for natural-language authoring, use \
+                     `rules:` for an intentional per-step rule, or `--author rules` globally"
+                        .to_string()
+                }),
+            })
+        }
         Err(rules_error) => {
-            if author == Author::Rules {
+            // Explicit deterministic authoring preserves the rules error
+            // exactly. A plain Auto step reaches this branch only as the
+            // visible no-model fallback, so even a deliberate rules refusal
+            // is reported as a no-model clarification rather than hiding why
+            // ordinary prose was sent to rules at all.
+            if author == Author::Rules || explicit_rules.is_some() || !plain_auto {
                 return Err(RecordError::Rules(rules_error));
             }
-            // A DECLINED shape never reaches the model. The fallback exists
-            // for steps the rules did not understand; this one was
-            // understood and refused, and asking the model would not build
-            // it - it would ground it into some other step that records
-            // green and means something nobody asked for.
-            if matches!(rules_error, RulesError::Refused { .. }) {
-                return Err(RecordError::Rules(rules_error));
-            }
-            // Ambiguity from here on ends in a structured clarification:
-            // the driving agent — not flowproof — resolves it and re-records.
-            // `prior` holds the intents already performed, so its length is
-            // this step's index and the live scene reflects their effects.
-            let clarify = |stage, reason: String, rules_err: Option<String>, scene: Vec<_>| {
-                RecordError::NeedsClarification(Box::new(crate::clarify::Clarification {
-                    step: intent.to_string(),
-                    step_index: prior.len(),
-                    stage,
-                    reason,
-                    rules_error: rules_err,
-                    completed_steps: prior.to_vec(),
-                    scene,
-                    hint: crate::clarify::Clarification::HINT.into(),
-                }))
-            };
-            let Some(client) = client.as_mut() else {
-                let inventory = driver
-                    .scene()
-                    .ok()
-                    .flatten()
-                    .map(|s| crate::clarify::scene_inventory(&s))
-                    .unwrap_or_default();
-                return Err(clarify(
-                    crate::clarify::ClarifyStage::NoModel,
-                    format!(
-                        "no model backend is configured (set FLOWPROOF_AI_PROVIDER / \
-                         FLOWPROOF_AI_API_KEY to enable LLM authoring): {rules_error}"
-                    ),
-                    Some(rules_error.to_string()),
-                    inventory,
-                ));
-            };
-            let scene = driver
-                .scene()?
-                .ok_or_else(|| RecordError::NoScene(spec.app.id().to_string()))?;
-            let ctx = AuthorContext {
-                flow_name: &spec.name,
-                app: spec.app.id(),
-                url: spec.url.as_deref(),
-                prior_steps: prior,
-                intent,
-                scene: &scene,
-            };
-            match author_step(*client, &ctx) {
-                Ok(action) => {
-                    *llm_used = true;
-                    Ok(vec![action])
-                }
-                // Grounding failure after the retry = genuine ambiguity.
-                // Config errors (bad key, network) stay plain errors.
-                Err(crate::AgentError::Authoring { reason, .. }) => Err(clarify(
-                    crate::clarify::ClarifyStage::Model,
-                    reason,
-                    Some(rules_error.to_string()),
-                    crate::clarify::scene_inventory(&scene),
-                )),
-                Err(other) => Err(other.into()),
-            }
+
+            let inventory = driver
+                .scene()
+                .ok()
+                .flatten()
+                .map(|s| crate::clarify::scene_inventory(&s))
+                .unwrap_or_default();
+            Err(clarify(
+                crate::clarify::ClarifyStage::NoModel,
+                format!(
+                    "no model backend is configured, and the visible deterministic fallback \
+                     could not author this step: {rules_error}"
+                ),
+                Some(rules_error.to_string()),
+                inventory,
+            ))
         }
     }
 }
@@ -2074,6 +2205,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
     let mut captures: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut prior_intents: Vec<String> = Vec::new();
     let mut llm_used = false;
+    let mut routing = Vec::new();
     // The secret-leak corpus, held in memory for this run only, exactly like a
     // resolved `${VAR}` value: (a) the web surface text read at each step
     // boundary (the same text `page shows` reads, not the page source) and
@@ -2133,18 +2265,27 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
         }
         let spec_step = &owned_step;
         let intent = spec_step.intent().to_string();
-        let actions = author_actions(
+        let mut capture_names: Vec<String> = captures.keys().cloned().collect();
+        capture_names.sort();
+        let authored = author_actions(
             spec,
             driver,
             author,
             &mut client,
             &prior_intents,
+            &capture_names,
             spec_step,
             &mut llm_used,
             &mut reuse,
         )?;
+        routing.push(StepAuthoringDiagnostic {
+            step: routing.len() + 1,
+            intent: intent.clone(),
+            route: authored.route,
+            warning: authored.warning,
+        });
         prior_intents.push(intent);
-        for action in actions {
+        for action in authored.actions {
             let step_id = format!("s{:04}", steps.len() + 1);
             if let Some(rec) = recorder.as_mut() {
                 rec.step_started(driver, &step_id);
@@ -3011,6 +3152,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
         trace_path: out.to_path_buf(),
         steps: steps.len(),
         reused_steps: reuse.map(|c| c.reused_steps).unwrap_or(0),
+        routing,
     })
 }
 
@@ -3728,24 +3870,49 @@ steps:
         }
     }
 
+    struct PromptClient {
+        reply: String,
+        prompts: Vec<String>,
+    }
+
+    impl crate::ModelClient for PromptClient {
+        fn complete(&mut self, _system: &str, user: &str) -> Result<String, crate::AgentError> {
+            self.prompts.push(user.to_string());
+            Ok(self.reply.clone())
+        }
+
+        fn identity(&self) -> (String, String) {
+            ("openai-compatible".into(), "test-model".into())
+        }
+    }
+
     #[test]
-    fn rules_resolvable_steps_never_call_the_model() {
-        let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
-        let mut driver =
-            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+    fn auto_plain_steps_prefer_the_model_even_when_rules_can_resolve_them() {
+        let spec = FlowSpec::parse(
+            "name: Model first\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Press the greet button\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["greet", "#shiny"]);
+        driver.scene = Some(r##"[{"target":"css:#shiny","tag":"button","text":"Shiny"}]"##.into());
         let mut client = CountingClient {
-            reply: String::new(),
+            reply: r##"{"action":"click","target":"css:#shiny"}"##.into(),
             calls: 0,
         };
-        let out = std::env::temp_dir().join("flowproof-rules-first.trace.jsonl");
-        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
-            .expect("rules author the whole flow");
-        assert_eq!(client.calls, 0, "rules-first: model must not be consulted");
+        let out = std::env::temp_dir().join("flowproof-model-first.trace.jsonl");
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("model authors the plain step");
+        assert_eq!(client.calls, 1);
+        assert_eq!(driver.invoked, vec!["#shiny"]);
+        assert_eq!(summary.routing.len(), 1);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Llm);
+        assert_eq!(summary.routing[0].step, 1);
+        assert!(summary.routing[0].warning.is_none());
         std::fs::remove_file(&out).ok();
     }
 
     #[test]
-    fn unresolvable_step_falls_back_to_the_model_and_stamps_agent() {
+    fn plain_step_uses_the_model_and_stamps_agent() {
         let spec = FlowSpec::parse(
             "name: Freeform
 app: web
@@ -3764,9 +3931,10 @@ steps:
         let dir = std::env::temp_dir().join("flowproof-llm-fallback");
         std::fs::create_dir_all(&dir).expect("temp dir");
         let out = dir.join("freeform.trace.jsonl");
-        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
             .expect("model authors the step");
         assert_eq!(client.calls, 1);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Llm);
         assert_eq!(driver.invoked, vec!["#shiny"]);
         let header = std::fs::read_to_string(&out)
             .expect("trace written")
@@ -3777,6 +3945,80 @@ steps:
         assert!(header.contains("\"agent\""), "agent stamped: {header}");
         assert!(header.contains("openai-compatible"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn model_authored_uia_click_records_the_scene_name_not_the_full_intent() {
+        let spec =
+            FlowSpec::parse("name: Save\napp: notepad\nsteps:\n  - Please save the document now\n")
+                .expect("parses");
+        let mut driver = MockAppDriver::new(&["save"]);
+        driver.scene =
+            Some(r##"[{"target":"id:save","control_type":"Button","text":"Save"}]"##.into());
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target":"id:save"}"##.into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-model-uia-label.trace.jsonl");
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("records");
+        let (_, steps) = load_steps(&out);
+        assert_eq!(steps[0].selectors[0].payload["automation_id"], "save");
+        assert_eq!(steps[0].selectors[0].payload["name"], "Save");
+        assert_ne!(
+            steps[0].selectors[0].payload["name"],
+            "Please save the document now"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn explicit_rules_step_stays_deterministic_with_a_model_configured() {
+        let spec = FlowSpec::parse(
+            "name: Explicit rules\napp: web\nurl: https://example.test\nsteps:\n  \
+             - rules: Press the greet button\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["greet", "#wrong"]);
+        driver.scene = Some(r##"[{"target":"css:#wrong","tag":"button"}]"##.into());
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target":"css:#wrong"}"##.into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-explicit-rules.trace.jsonl");
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("explicit rules author the step");
+        assert_eq!(client.calls, 0);
+        assert_eq!(driver.invoked, vec!["greet"]);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
+        assert!(summary.routing[0].warning.is_none());
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn auto_without_a_model_warns_and_falls_back_to_rules() {
+        let spec = FlowSpec::parse(
+            "name: Visible fallback\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Press the greet button\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["greet"]);
+        let out = std::env::temp_dir().join("flowproof-visible-fallback.trace.jsonl");
+        let summary = record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Auto,
+            Option::<&mut CountingClient>::None,
+        )
+        .expect("rules fallback authors the step");
+        assert_eq!(driver.invoked, vec!["greet"]);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Fallback);
+        assert!(summary.routing[0]
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("no model backend is configured")));
+        std::fs::remove_file(&out).ok();
     }
 
     #[test]
@@ -3803,15 +4045,148 @@ steps:
         assert_eq!(client.calls, 0);
     }
 
-    /// The load-bearing half of the refusal fence, and the reason it is a
-    /// distinct error variant rather than a better message.
-    ///
-    /// In `Auto` the rules run first and ANY failure falls through to the
-    /// model author. So a declined shape that merely failed to parse would
-    /// be handed to a model, which would ground it into some neighbouring
-    /// step - `Click "Next" until the label changes` becomes ONE click -
-    /// record green, and fail one replay in five. The decline has to
-    /// outrank the fallback, and `calls == 0` is what proves it does.
+    #[test]
+    fn rules_only_mode_authors_plain_steps_without_calling_a_configured_model() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nurl: https://e.test/x\nsteps:\n  - Press the greet button\n",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["greet", "#wrong"]);
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target":"css:#wrong"}"##.into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-rules-only-success.trace.jsonl");
+        let summary =
+            record_with_client(&spec, &mut driver, &out, Author::Rules, Some(&mut client))
+                .expect("rules-only authors the plain step");
+        assert_eq!(client.calls, 0);
+        assert_eq!(driver.invoked, vec!["greet"]);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn llm_only_mode_without_a_model_does_not_fall_back_to_rules() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nurl: https://e.test/x\nsteps:\n  - Press the greet button\n",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["greet"]);
+        let out = std::env::temp_dir().join("flowproof-llm-only-no-model.trace.jsonl");
+        let err = record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Llm,
+            Option::<&mut CountingClient>::None,
+        )
+        .expect_err("forced model authoring must not silently change meaning");
+        let RecordError::NeedsClarification(clarification) = err else {
+            panic!("expected model configuration clarification, got {err:?}");
+        };
+        assert_eq!(clarification.stage, crate::ClarifyStage::NoModel);
+        assert!(clarification.reason.contains("--author llm was requested"));
+        assert!(driver.invoked.is_empty());
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn explicit_rules_step_stays_deterministic_under_global_llm_mode() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nurl: https://e.test/x\nsteps:\n  - rules: Press the greet button\n",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["greet", "#wrong"]);
+        let mut client = CountingClient {
+            reply: r##"{"action":"click","target":"css:#wrong"}"##.into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-explicit-rules-under-llm.trace.jsonl");
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Llm, Some(&mut client))
+            .expect("per-step rules marker wins");
+        assert_eq!(client.calls, 0);
+        assert_eq!(driver.invoked, vec!["greet"]);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn model_context_receives_sorted_capture_names_from_prior_steps() {
+        let spec = FlowSpec::parse(
+            "name: Captures\napp: web\nurl: https://e.test/x\nsteps:\n  \
+             - rules: Remember the \"Zulu\" as zulu\n  \
+             - rules: Remember the \"Alpha\" as alpha\n  \
+             - Type alpha into the \"Destination\" field\n",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["Zulu", "Alpha", "Destination"])
+            .with_text("Zulu", "Z")
+            .with_text("Alpha", "A");
+        driver.scene = Some(r##"[{"target":"text:Destination","tag":"input"}]"##.into());
+        let mut client = PromptClient {
+            reply: r##"{"action":"type_captured","target":"text:Destination","capture":"alpha"}"##
+                .into(),
+            prompts: Vec::new(),
+        };
+        let out = std::env::temp_dir().join("flowproof-model-captures.trace.jsonl");
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("model reuses a remembered capture");
+        assert_eq!(client.prompts.len(), 1);
+        assert!(client.prompts[0].contains(r#"Remembered captures in scope: ["alpha","zulu"]"#));
+        assert!(driver.typed.iter().any(|(_, text)| text == "A"));
+        assert_eq!(
+            summary
+                .routing
+                .iter()
+                .map(|diagnostic| diagnostic.route)
+                .collect::<Vec<_>>(),
+            vec![
+                StepAuthoringRoute::Rules,
+                StepAuthoringRoute::Rules,
+                StepAuthoringRoute::Llm,
+            ]
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn ambiguous_pronoun_surfaces_structured_capture_candidates() {
+        let spec = FlowSpec::parse(
+            "name: Captures\napp: web\nurl: https://e.test/x\nsteps:\n  \
+             - rules: Remember the \"Order\" as order_number\n  \
+             - rules: Remember the \"Customer\" as customer_id\n  \
+             - Enter it in the destination field\n",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["Order", "Customer", "Destination"])
+            .with_text("Order", "O-1")
+            .with_text("Customer", "C-1");
+        driver.scene = Some(r##"[{"target":"text:Destination","tag":"input"}]"##.into());
+        let mut client = PromptClient {
+            reply:
+                r##"{"action":"type_captured","target":"text:Destination","capture":"order_number"}"##
+                    .into(),
+            prompts: Vec::new(),
+        };
+        let out = std::env::temp_dir().join("flowproof-ambiguous-capture.trace.jsonl");
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("an ambiguous pronoun must stop");
+        let RecordError::NeedsClarification(clarification) = err else {
+            panic!("expected clarification, got {err:?}");
+        };
+        assert_eq!(
+            clarification.capture_reference.as_deref(),
+            Some("Enter it in the destination field")
+        );
+        assert_eq!(
+            clarification.capture_candidates,
+            vec!["customer_id", "order_number"]
+        );
+        assert!(clarification.reason.contains("ambiguous"));
+        assert!(!out.exists(), "a failed recording must not mint a trace");
+    }
+
     /// A count is a READING, like any capture: taken at execution time on
     /// record and on every replay, so a page that grew a row does not need
     /// the trace rewritten. The number therefore never enters the trace -
@@ -3890,9 +4265,11 @@ steps:
                 calls: 0,
             };
             let out = std::env::temp_dir().join("flowproof-declined.trace.jsonl");
-            // Auto: the mode that WOULD fall back. That is the whole test.
-            let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
-                .expect_err("a declined shape must fail the recording");
+            // A deterministic authoring request must preserve the rules
+            // refusal exactly and never reinterpret it through a model.
+            let err =
+                record_with_client(&spec, &mut driver, &out, Author::Rules, Some(&mut client))
+                    .expect_err("a declined shape must fail the recording");
             assert!(
                 matches!(
                     err,
@@ -3914,7 +4291,7 @@ steps:
     #[test]
     fn incremental_reuses_stable_steps_with_zero_model_calls() {
         let spec = FlowSpec::parse(
-            "name: Mixed\napp: web\nurl: https://e.test/x\nsteps:\n  - Type hello into the \"Name\" field\n  - Smash that shiny button\n",
+            "name: Mixed\napp: web\nurl: https://e.test/x\nsteps:\n  - rules: Type hello into the \"Name\" field\n  - Smash that shiny button\n",
         )
         .expect("parses");
         let dir = std::env::temp_dir().join("flowproof-incremental-stable");
@@ -3934,7 +4311,9 @@ steps:
         let (_, old_steps) = load_steps(&out);
         let old_selectors: Vec<_> = old_steps.iter().map(|s| s.selectors.clone()).collect();
 
-        // Unchanged app: everything reuses, the model is NEVER consulted.
+        // Unchanged app: the explicit rules step re-authors deterministically
+        // so a newly-added marker can never reuse an old model decision. The
+        // natural step reuses and the model is NEVER consulted.
         let mut driver = MockAppDriver::new(&["Name", "#shiny"]);
         driver.scene = Some(r##"[{"target":"css:#shiny","tag":"button"}]"##.into());
         let mut client = CountingClient {
@@ -3951,7 +4330,15 @@ steps:
         )
         .expect("incremental records");
         assert_eq!(client.calls, 0, "stable steps must not consult the model");
-        assert_eq!(summary.reused_steps, old_steps.len());
+        assert_eq!(summary.reused_steps, 1);
+        assert_eq!(
+            summary
+                .routing
+                .iter()
+                .map(|diagnostic| diagnostic.route)
+                .collect::<Vec<_>>(),
+            vec![StepAuthoringRoute::Rules, StepAuthoringRoute::Reused]
+        );
         let (_, new_steps) = load_steps(&out);
         let new_selectors: Vec<_> = new_steps.iter().map(|s| s.selectors.clone()).collect();
         assert_eq!(new_selectors, old_selectors, "selectors identical");
@@ -3961,7 +4348,7 @@ steps:
     #[test]
     fn incremental_reauthors_only_the_drifted_step() {
         let spec = FlowSpec::parse(
-            "name: Mixed\napp: web\nurl: https://e.test/x\nsteps:\n  - Type hello into the \"Name\" field\n  - Smash that shiny button\n",
+            "name: Mixed\napp: web\nurl: https://e.test/x\nsteps:\n  - rules: Type hello into the \"Name\" field\n  - Smash that shiny button\n",
         )
         .expect("parses");
         let dir = std::env::temp_dir().join("flowproof-incremental-drift");
@@ -3978,8 +4365,9 @@ steps:
             .expect("original records");
         let (_, old_steps) = load_steps(&out);
 
-        // The app drifted: #shiny became #polished. The Type step reuses;
-        // the drifted step re-grounds via the model against the new scene.
+        // The app drifted: #shiny became #polished. The explicit Type step
+        // re-authors through rules; the drifted natural step re-grounds via
+        // the model against the new scene.
         let mut driver = MockAppDriver::new(&["Name", "#polished"]);
         driver.scene = Some(r##"[{"target":"css:#polished","tag":"button"}]"##.into());
         let mut client = CountingClient {
@@ -3996,7 +4384,15 @@ steps:
         )
         .expect("incremental records");
         assert_eq!(client.calls, 1, "only the drifted step consults the model");
-        assert_eq!(summary.reused_steps, 1, "the stable Type step reused");
+        assert_eq!(summary.reused_steps, 0, "explicit rules do not reuse");
+        assert_eq!(
+            summary
+                .routing
+                .iter()
+                .map(|diagnostic| diagnostic.route)
+                .collect::<Vec<_>>(),
+            vec![StepAuthoringRoute::Rules, StepAuthoringRoute::Llm]
+        );
         let trace = std::fs::read_to_string(&out).expect("trace readable");
         assert!(trace.contains("#polished"), "drifted step re-grounded");
         assert!(!trace.contains("#shiny"), "stale selector gone");
@@ -4045,6 +4441,7 @@ steps:
         assert_eq!(c.step, "make required field changes");
         assert_eq!(c.step_index, 1);
         assert_eq!(c.stage, crate::ClarifyStage::NoModel);
+        assert!(c.reason.contains("visible deterministic fallback"));
         assert_eq!(
             c.completed_steps,
             vec!["Type acme into the \"Supplier\" field"]
@@ -4083,7 +4480,10 @@ steps:
         };
         assert_eq!(c.stage, crate::ClarifyStage::Model);
         assert_eq!(client.calls, 2, "one attempt + one self-correcting retry");
-        assert!(c.rules_error.is_some(), "rules diagnostic travels along");
+        assert!(
+            c.rules_error.is_none(),
+            "model-first authoring has no speculative rules diagnostic"
+        );
         assert_eq!(c.scene[0].target, "css:#price");
         std::fs::remove_file(&out).ok();
     }

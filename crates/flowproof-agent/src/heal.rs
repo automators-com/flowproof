@@ -13,7 +13,7 @@ use flowproof_trace::format::{Header, Step};
 use flowproof_trace::TraceLine;
 use serde::{Deserialize, Serialize};
 
-use crate::recorder::{record_with_author, Author, RecordError};
+use crate::recorder::{record_with_author, Author, RecordError, StepAuthoringDiagnostic};
 use crate::spec::FlowSpec;
 
 #[derive(Debug, thiserror::Error)]
@@ -55,6 +55,9 @@ pub struct HealReport {
     /// of both executions. Rendered FROM this structured report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff_html: Option<PathBuf>,
+    /// How every spec step was converted into deterministic trace actions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routing: Vec<StepAuthoringDiagnostic>,
 }
 
 fn load_trace_parts(path: &Path) -> Result<(Option<Header>, Vec<Step>), HealError> {
@@ -147,7 +150,7 @@ pub fn heal_with_author<D: AppDriver>(
     let old_steps = load_steps(trace_path)?;
 
     let proposal = proposed_path(trace_path);
-    record_with_author(spec, driver, &proposal, author)?;
+    let recording = record_with_author(spec, driver, &proposal, author)?;
     let new_steps = load_steps(&proposal)?;
 
     let (steps_changed, steps_added, steps_removed) = diff_steps(&old_steps, &new_steps);
@@ -162,6 +165,7 @@ pub fn heal_with_author<D: AppDriver>(
         steps_removed,
         proposed_path: changed.then_some(proposal),
         diff_html: None,
+        routing: recording.routing,
     };
     if report.changed {
         report.diff_html = write_diff_html(&report, trace_path).ok();

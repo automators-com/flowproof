@@ -27,10 +27,10 @@ Not the score. Four separate defects it surfaced share one shape:
 - The published JSON Schema omitted two shipped action types. Nothing
   caught it because the conformance fixture exercised neither.
 
-The fifth is the systemic one. `record` falls back to the LLM author for
-anything the rules cannot parse — so every shape the grammar had DECLINED
-was being silently improvised into a recording. `Click "Next" until the
-label changes` became one click, recorded green, and failed one replay in
+The fifth was systemic in the former rules-first auto mode. `record` fell
+back to the LLM author for anything the rules could not parse — so every
+shape the grammar had DECLINED was being silently improvised into a recording.
+`Click "Next" until the label changes` became one click, recorded green, and failed one replay in
 five. A decline that exists only in prose is a decline the engine does not
 implement.
 

@@ -1,6 +1,6 @@
-//! End-to-end proof of the LLM authoring loop: steps the rules CANNOT parse
-//! get authored against real headless Chromium, producing a standard trace
-//! that then replays deterministically.
+//! End-to-end proof of the LLM authoring loop: natural UI steps get authored
+//! against real headless Chromium, while structured assertions stay
+//! deterministic. The resulting standard trace then replays without a model.
 //!
 //! Two variants:
 //! - `authors_via_openai_compatible_server`: the model is a LOCAL fake HTTP
@@ -14,7 +14,7 @@ use flowproof_agent::{FlowSpec, SpecStep};
 
 const GREETER_HTML: &str = include_str!("../../../examples/web/greeter.html");
 
-/// Steps deliberately phrased so the rules resolver cannot parse them.
+/// Natural UI steps for the model, followed by a deterministic assertion.
 fn freeform_spec(url: String) -> FlowSpec {
     FlowSpec {
         name: "Greet freeform".into(),
@@ -36,7 +36,7 @@ fn freeform_spec(url: String) -> FlowSpec {
             SpecStep::Plain("Put Ada into the box labelled with the name".into()),
             SpecStep::Plain("Smash the greeting button".into()),
             SpecStep::Assert {
-                assert: "the page should now be greeting Ada".into(),
+                assert: "page shows Hello, Ada".into(),
             },
         ],
     }
@@ -55,8 +55,6 @@ fn serve_scripted(server: tiny_http::Server) -> std::thread::JoinHandle<Vec<Stri
                 r##"{"action":"type_text","target":"css:#name","text":"Ada"}"##
             } else if body.contains("Smash the greeting button") {
                 r##"{"action":"click","target":"css:#greet"}"##
-            } else if body.contains("greeting Ada") {
-                r##"{"action":"assert_text","target":"css:#greeting","expected":"Hello, Ada","contains":true}"##
             } else {
                 r##"{"action":"click","target":"css:#nonsense"}"##
             };
@@ -69,7 +67,7 @@ fn serve_scripted(server: tiny_http::Server) -> std::thread::JoinHandle<Vec<Stri
             );
             bodies.push(body);
             request.respond(response).ok();
-            if bodies.len() >= 3 {
+            if bodies.len() >= 2 {
                 break;
             }
         }
@@ -116,7 +114,7 @@ fn authors_via_openai_compatible_server() {
 
     // The prompts carried the REAL scene from the live page.
     let bodies = server_thread.join().expect("server thread");
-    assert_eq!(bodies.len(), 3);
+    assert_eq!(bodies.len(), 2);
     for body in &bodies {
         assert!(
             body.contains("css:#name") && body.contains("css:#greet"),

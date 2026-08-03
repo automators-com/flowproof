@@ -27,12 +27,12 @@ pub struct Cli {
 /// Authoring backend selection for record/heal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 enum AuthorArg {
-    /// Rules first, model fallback for steps the rules cannot resolve.
+    /// Model-ground plain steps; visibly fall back to rules if no model exists.
     #[default]
     Auto,
     /// Deterministic rules only.
     Rules,
-    /// Model for every step.
+    /// Model for every plain UI step; explicit/structured forms stay deterministic.
     Llm,
 }
 
@@ -59,7 +59,7 @@ enum Command {
         /// Emit the result as JSON on stdout (for programmatic callers).
         #[arg(long)]
         json: bool,
-        /// Authoring backend: rules, llm, or auto (rules with llm fallback).
+        /// Authoring backend: rules, llm, or auto (model intent with a visible no-model fallback).
         #[arg(long, value_enum, default_value_t)]
         author: AuthorArg,
         /// Incremental re-record: reuse every old step whose target still
@@ -88,6 +88,9 @@ enum Command {
         /// replay it (default: traceless specs are reported as skipped).
         #[arg(long)]
         record_missing: bool,
+        /// Authoring backend used only when --record-missing records a suite flow.
+        #[arg(long, value_enum, default_value_t)]
+        author: AuthorArg,
         /// Suite runs only: a missing trace is a hard error (pre-0.2.2
         /// behavior) instead of a skipped flow. For CI that must not let
         /// coverage silently shrink. Single-spec runs always error.
@@ -180,7 +183,7 @@ enum Command {
         /// Emit the heal report as JSON on stdout (for programmatic callers).
         #[arg(long)]
         json: bool,
-        /// Authoring backend: rules, llm, or auto (rules with llm fallback).
+        /// Authoring backend: rules, llm, or auto (model intent with a visible no-model fallback).
         #[arg(long, value_enum, default_value_t)]
         author: AuthorArg,
     },
@@ -292,6 +295,18 @@ fn cmd_record(
     }
     let out = out.unwrap_or_else(|| default_trace_path(spec_path));
 
+    if author == AuthorArg::Auto
+        && spec.has_plain_steps()
+        && matches!(
+            flowproof_agent::HttpModelClient::from_env_result(),
+            Ok(None)
+        )
+    {
+        eprintln!(
+            "WARNING: no authoring model is configured; plain steps will try deterministic grammar fallback"
+        );
+    }
+
     // An agent flow does not use the record/replay driver at all: its
     // trace is a cassette recorded at the model boundary.
     if spec.app.id() == "agent" {
@@ -364,12 +379,23 @@ fn cmd_record(
         let payload = serde_json::json!({
             "trace_path": summary.trace_path,
             "steps": summary.steps,
+            "reused_steps": summary.reused_steps,
+            "routing": summary.routing,
         });
         println!(
             "{}",
             serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
         );
     } else {
+        for decision in &summary.routing {
+            println!(
+                "  [AUTHOR {}] {}: {}",
+                decision.route, decision.step, decision.intent
+            );
+            if let Some(warning) = &decision.warning {
+                eprintln!("WARNING: step {}: {warning}", decision.step);
+            }
+        }
         let reused = if summary.reused_steps > 0 {
             format!(" ({} reused)", summary.reused_steps)
         } else {
@@ -654,7 +680,8 @@ fn record_one(
     spec_path: &Path,
     out: &Path,
     manifest: &flowproof_agent::SuiteManifest,
-) -> Result<(), String> {
+    author: AuthorArg,
+) -> Result<flowproof_agent::RecordSummary, String> {
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     if spec.browser.is_none() {
         spec.browser = manifest.browser.clone();
@@ -662,10 +689,22 @@ fn record_one(
     // A directory run is a suite context, so a `session: <name>` resolves
     // against the manifest's identities (empty if none declared).
     spec.dereference_session(&manifest.identities, true)?;
+    let fallback = author == AuthorArg::Auto
+        && spec.has_plain_steps()
+        && matches!(
+            flowproof_agent::HttpModelClient::from_env_result(),
+            Ok(None)
+        );
     let mut driver = driver_for(spec.app.id())?;
-    flowproof_agent::record(&spec, &mut driver, out)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    flowproof_agent::record_with_author(&spec, &mut driver, out, author.into()).map_err(|e| {
+        if fallback {
+            format!(
+                "no authoring model is configured; plain steps may use deterministic grammar fallback: {e}"
+            )
+        } else {
+            e.to_string()
+        }
+    })
 }
 
 /// Run every recorded flow under `dir` as one suite: per-flow bundles as
@@ -728,6 +767,16 @@ fn run_agent_flow_in_suite(
 }
 
 pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> Result<u8, String> {
+    run_suite_with_author(dir, json, retries, missing, AuthorArg::Auto)
+}
+
+fn run_suite_with_author(
+    dir: &Path,
+    json: bool,
+    retries: u8,
+    missing: MissingTrace,
+    author: AuthorArg,
+) -> Result<u8, String> {
     let mut specs = Vec::new();
     discover_specs(dir, &mut specs)?;
     if specs.is_empty() {
@@ -757,6 +806,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
     let mut reports: Vec<flowproof_replay::RunReport> = Vec::new();
     let mut flows = Vec::new();
     for spec_path in &specs {
+        let mut authoring = None;
         // The env-flag gate wins over everything (including --strict's
         // missing-trace error): a deliberately gated flow with no trace
         // is a skip, not a failure. Loading here also surfaces spec parse
@@ -812,16 +862,32 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
                     if !json {
                         println!("[RECORD] {} (no trace yet)", spec_path.display());
                     }
-                    if let Err(e) = record_one(spec_path, &trace_path, &manifest) {
-                        errored_flow(
-                            spec_path,
-                            &gated_spec.name,
-                            e,
-                            json,
-                            &mut flows,
-                            &mut reports,
-                        );
-                        continue;
+                    match record_one(spec_path, &trace_path, &manifest, author) {
+                        Ok(summary) => {
+                            if !json {
+                                for decision in &summary.routing {
+                                    println!(
+                                        "  [AUTHOR {}] {}: {}",
+                                        decision.route, decision.step, decision.intent
+                                    );
+                                    if let Some(warning) = &decision.warning {
+                                        eprintln!("WARNING: step {}: {warning}", decision.step);
+                                    }
+                                }
+                            }
+                            authoring = Some(summary);
+                        }
+                        Err(e) => {
+                            errored_flow(
+                                spec_path,
+                                &gated_spec.name,
+                                e,
+                                json,
+                                &mut flows,
+                                &mut reports,
+                            );
+                            continue;
+                        }
                     }
                     // Fall through to the normal replay below.
                 }
@@ -841,6 +907,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
                         "spec": spec_path,
                         "report": report,
                         "report_path": null,
+                        "authoring": authoring,
                     }));
                     reports.push(report);
                     continue;
@@ -989,6 +1056,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
             "spec": spec_path,
             "report": report,
             "report_path": result_path,
+            "authoring": authoring,
         }));
         reports.push(report);
     }
@@ -1252,9 +1320,10 @@ fn cmd_run(
     json: bool,
     retries: u8,
     missing: MissingTrace,
+    author: AuthorArg,
 ) -> Result<u8, String> {
     if spec_path.is_dir() {
-        return run_suite(spec_path, json, retries, missing);
+        return run_suite_with_author(spec_path, json, retries, missing, author);
     }
     // A single flow gets its suite's env/data too — replay resolves ${VAR}
     // at moment-of-use, so the same values must be present as at record.
@@ -1688,10 +1757,33 @@ fn cmd_heal(
 ) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
+    if author == AuthorArg::Auto
+        && spec.has_plain_steps()
+        && matches!(
+            flowproof_agent::HttpModelClient::from_env_result(),
+            Ok(None)
+        )
+    {
+        eprintln!(
+            "WARNING: no authoring model is configured; plain steps will try deterministic grammar fallback"
+        );
+    }
     let mut driver = driver_for(spec.app.id())?;
     let mut report =
-        flowproof_agent::heal_with_author(&spec, &mut driver, &trace_path, author.into())
-            .map_err(|e| e.to_string())?;
+        match flowproof_agent::heal_with_author(&spec, &mut driver, &trace_path, author.into()) {
+            Ok(report) => report,
+            Err(flowproof_agent::HealError::Record(err)) if json => {
+                if let Some(payload) = record_failure_json(&err) {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+                    );
+                    return Ok(EXIT_ERROR);
+                }
+                return Err(err.to_string());
+            }
+            Err(err) => return Err(err.to_string()),
+        };
 
     let mut applied = false;
     if apply && report.changed {
@@ -1709,33 +1801,44 @@ fn cmd_heal(
             "{}",
             serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
         );
-    } else if !report.changed {
-        println!("HEALTHY: {} — trace matches the live app", spec.name);
     } else {
-        for change in &report.steps_changed {
+        for decision in &report.routing {
             println!(
-                "  [CHANGED] {} {} ({})",
-                change.id,
-                change.intent,
-                change.fields.join(", ")
+                "  [AUTHOR {}] {}: {}",
+                decision.route, decision.step, decision.intent
             );
+            if let Some(warning) = &decision.warning {
+                eprintln!("WARNING: step {}: {warning}", decision.step);
+            }
         }
-        if report.steps_added > 0 || report.steps_removed > 0 {
-            println!(
-                "  steps added: {}, removed: {}",
-                report.steps_added, report.steps_removed
-            );
-        }
-        if let Some(page) = &report.diff_html {
-            println!("REVIEW: {} (before/after with frames)", page.display());
-        }
-        if applied {
-            println!("APPLIED: {} updated in place", trace_path.display());
-        } else if let Some(proposal) = &report.proposed_path {
-            println!(
-                "PROPOSED: review {} then re-run with --apply",
-                proposal.display()
-            );
+        if !report.changed {
+            println!("HEALTHY: {} — trace matches the live app", spec.name);
+        } else {
+            for change in &report.steps_changed {
+                println!(
+                    "  [CHANGED] {} {} ({})",
+                    change.id,
+                    change.intent,
+                    change.fields.join(", ")
+                );
+            }
+            if report.steps_added > 0 || report.steps_removed > 0 {
+                println!(
+                    "  steps added: {}, removed: {}",
+                    report.steps_added, report.steps_removed
+                );
+            }
+            if let Some(page) = &report.diff_html {
+                println!("REVIEW: {} (before/after with frames)", page.display());
+            }
+            if applied {
+                println!("APPLIED: {} updated in place", trace_path.display());
+            } else if let Some(proposal) = &report.proposed_path {
+                println!(
+                    "PROPOSED: review {} then re-run with --apply",
+                    proposal.display()
+                );
+            }
         }
     }
     Ok(if !report.changed || applied {
@@ -1783,6 +1886,7 @@ where
             json,
             retries,
             record_missing,
+            author,
             strict,
         } => {
             let missing = if record_missing {
@@ -1792,7 +1896,7 @@ where
             } else {
                 MissingTrace::Skip
             };
-            cmd_run(&spec, trace, json, retries, missing)
+            cmd_run(&spec, trace, json, retries, missing, author)
         }
         Command::Audit {
             dir,
@@ -2130,6 +2234,8 @@ mod tests {
             step_index: 3,
             stage: flowproof_agent::ClarifyStage::NoModel,
             reason: "no model backend".into(),
+            capture_reference: None,
+            capture_candidates: vec![],
             rules_error: Some("no rule matches".into()),
             completed_steps: vec![],
             scene: vec![],

@@ -330,7 +330,8 @@ from flowproof import Flow
 
 flow = Flow("calc.flow.yaml")
 
-rec = flow.record()          # RecordResult(trace_path=..., steps=5)
+rec = flow.record()          # includes per-step llm/rules/fallback routing
+rec = flow.record(author="rules")  # deterministic grammar for all plain steps
 
 result = flow.run()          # RunResult — truthy iff the flow passed
 result.passed                # True
@@ -856,14 +857,28 @@ example is `examples/agent-demo/`.
 
 ## Authoring with a model (arbitrary steps)
 
-The rules only know the demo vocabularies. With a model backend configured,
-`record` falls back to the **LLM author** for any step the rules can't
-parse, on web and Windows desktop apps alike. The driver describes its live
-scene — each interactable element tagged with a provenance-neutral *target
-token* (`css:#name` on the web, `id:15` / `text:Close` under UI
-Automation) — and the model must copy one of those tokens verbatim; it can
-never invent a selector. Assertions may also target the literal `surface`
-token: everything readable on the current screen, whatever the driver:
+In the default `--author auto` mode, a plain scalar UI step is
+**natural-language model intent**:
+
+```yaml
+steps:
+  - Enter 24 Market Street in the shipping address field
+  - Press the Save button
+  - assert: page shows Address updated
+```
+
+With an authoring model configured, `record` grounds the plain step against
+the live scene on web and Windows desktop apps alike. The driver lists each
+actionable or readable element with a provenance-neutral *target token*
+(`css:#name` on the web, `id:15` / `text:Close` under UI Automation), and
+the model must copy one of those listed tokens verbatim; it cannot invent a
+selector. Assertions may also target the literal `surface` token:
+everything readable on the current screen, whatever the driver.
+
+The grounded actions and selector ladder are written to the trace. The
+model is an author at recording time, not an executor at replay time:
+`flowproof run` reads those persisted deterministic actions and makes zero
+authoring-model calls.
 
 ```bash
 export FLOWPROOF_AI_PROVIDER=anthropic        # or openai-compatible
@@ -872,10 +887,52 @@ flowproof record shop.flow.yaml               # steps in your own words
 flowproof run shop.flow.yaml                  # replays with ZERO model calls
 ```
 
-`--author rules|llm|auto` controls the mode (default auto). The trace header
-records `agent: {backend, model}` whenever a model authored steps — reviewers
-always know. For a local model: `FLOWPROOF_AI_PROVIDER=openai-compatible`
-plus `FLOWPROOF_AI_BASE_URL=http://localhost:8000/v1` (vLLM).
+Use `rules: <text>` when one step should bypass model authoring and use the
+deterministic grammar explicitly:
+
+```yaml
+steps:
+  - Enter the customer's new address
+  - rules: Press the "Save" button
+  - assert: page shows Address updated
+```
+
+`--author rules|llm|auto` controls the whole recording. `--author rules`
+is the global deterministic opt-in for a flow already written in the
+[rules grammar](authoring.md); `--author llm` forces model authoring for
+plain UI steps. Structured steps such as `assert:` keep their own meaning.
+
+If auto mode has no configured model, recording warns visibly and then
+tries the deterministic rules for plain steps. It does not silently change
+the route. Human output identifies each step as `rules`, `llm`, `reused`, or `fallback`,
+and structured/JSON output exposes the same routing information without
+requiring callers to parse terminal prose. The trace also records the
+authoring backend and model whenever one participated.
+
+Natural remembered values work across model-authored steps:
+
+```yaml
+steps:
+  - Remember the order number
+  - Enter it in the "Confirmation" field
+```
+
+`it` is accepted only when one remembered value is the clear candidate. If
+the flow has remembered, for example, both an order number and a customer
+number, an ambiguous `Enter it ...` stops with a structured clarification
+listing the candidates instead of guessing. Give the value a natural name
+to disambiguate it (`Remember the order number as the order ID`, then
+`Enter the order ID ...`). For exact rule-authored flows, the explicit
+`${captured.name}` syntax remains available:
+
+```yaml
+steps:
+  - rules: Remember the "id:oid" as oid
+  - rules: Type ${captured.oid} into the "Confirmation" field
+```
+
+For a local model, set `FLOWPROOF_AI_PROVIDER=openai-compatible` plus
+`FLOWPROOF_AI_BASE_URL=http://localhost:8000/v1` (vLLM).
 
 ## When the app drifts: fallback selectors and `degraded`
 
