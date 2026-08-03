@@ -232,9 +232,11 @@ upload folder).
 Deterministic replay is stable, but the infrastructure under it (a dropped
 CDP frame, a momentarily slow backend) is not — `--retries N` re-runs a
 failed flow up to N more times with a fresh driver before calling it
-failed. The web adapter reuses **one browser** across the whole suite (an
-isolated context per flow), so the cold start is paid once, not per flow;
-set `FLOWPROOF_NO_SHARED_BROWSER=1` to force a browser per flow.
+failed. The web adapter reuses **one headless browser** across the whole suite
+(an isolated context per flow), so the cold start is paid once, not per flow;
+set `FLOWPROOF_NO_SHARED_BROWSER=1` to force a browser per flow. A headed run
+is private automatically: its visible browser is maximized and closes with the
+flow instead of leaving the shared keep-alive window on the desktop.
 
 **Suite manifest.** A suite usually needs sequencing a bespoke harness
 would otherwise provide — shared env, seed before each flow, cleanup after.
@@ -447,6 +449,10 @@ Deliberately an environment variable and not a spec field: watching is a
 property of the run you are supervising, not of the flow. A committed
 `headed: true` would follow the flow into CI, where nobody is watching and
 there may be no display at all.
+
+The visible browser belongs to that flow alone. Flowproof maximizes it at
+launch and closes the process when the flow finishes; headed runs do not use
+the headless suite's shared keep-alive browser or its isolated second window.
 
 **One caveat if the flow has visual assertions.** Headed Chromium sizes its
 window from the desktop; headless uses a fixed default. Record a screenshot
@@ -879,6 +885,15 @@ The grounded actions and selector ladder are written to the trace. The
 model is an author at recording time, not an executor at replay time:
 `flowproof run` reads those persisted deterministic actions and makes zero
 authoring-model calls.
+
+Write what a person would do; selector and rule syntax are not required. This
+includes dragging between visible regions, clicking a particular part of a
+control, remembering a value or row count, choosing one or several options,
+scrolling an embedded surface, typing in a same-origin frame, and moving focus
+with a key. The live inventory includes rendered controls below the fold as
+well as stable table, frame, and relational targets. The model may only choose
+from that inventory, and Flowproof compiles the choice into the same
+deterministic trace used by an explicitly rule-authored flow.
 
 ```bash
 export FLOWPROOF_AI_PROVIDER=anthropic        # or openai-compatible

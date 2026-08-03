@@ -15,6 +15,7 @@ use flowproof_driver::{
 use headless_chrome::browser::tab::{ModifierKey, Tab};
 use headless_chrome::protocol::cdp::Target::CreateTarget;
 use headless_chrome::protocol::cdp::{Emulation, Input, Network, Page};
+use headless_chrome::types::Bounds;
 use headless_chrome::{Browser, LaunchOptions};
 
 use crate::AdapterError;
@@ -526,6 +527,16 @@ fn headed_requested() -> bool {
     std::env::var_os("FLOWPROOF_HEADED").is_some()
 }
 
+/// Headed runs are deliberately private. A shared browser isolates each flow
+/// in an incognito context, which Chromium presents as a second window. When
+/// the flow tab closes, the original window (including the keep-alive tab)
+/// becomes visible again and looks like a leaked browser. A visible run is for
+/// a person to watch, so cold-start reuse is worth less than owning one window
+/// whose lifetime exactly matches the flow.
+fn should_share_browser(headed: bool, no_shared: bool) -> bool {
+    !headed && !no_shared
+}
+
 /// Build the launch options, split out from [`launch_browser`] so the headless
 /// decision is testable without starting a browser.
 fn launch_options_for(
@@ -813,9 +824,14 @@ impl WebAppDriver {
     }
 
     /// A driver on the shared browser (isolated context per flow), or a
-    /// private browser when `FLOWPROOF_NO_SHARED_BROWSER=1`.
+    /// private browser when `FLOWPROOF_NO_SHARED_BROWSER=1` or the browser is
+    /// headed. Headed ownership prevents the keep-alive window from surviving
+    /// after the visible flow window closes.
     pub fn new() -> Result<Self, AdapterError> {
-        if std::env::var_os("FLOWPROOF_NO_SHARED_BROWSER").is_some() {
+        if !should_share_browser(
+            headed_requested(),
+            std::env::var_os("FLOWPROOF_NO_SHARED_BROWSER").is_some(),
+        ) {
             return Ok(Self {
                 browser: launch_browser(&[])?,
                 context_id: None,
@@ -1427,9 +1443,9 @@ fn xpath_literal(text: &str) -> String {
 
 impl Drop for WebAppDriver {
     fn drop(&mut self) {
-        // The shared browser outlives this driver: close the tab so pages
-        // don't accumulate across a suite. A private browser (opt-out) is
-        // torn down with its own process, so nothing to do there.
+        // The shared browser outlives this driver: close the flow tab so pages
+        // don't accumulate across a suite. A private browser (opt-out or
+        // headed) is torn down with its process.
         if self.context_id.is_some() {
             if let Some(tab) = self.tab.take() {
                 let _ = tab.close(false);
@@ -1633,6 +1649,16 @@ impl AppDriver for WebAppDriver {
             None => self.browser.new_tab(),
         }
         .map_err(|e| web_err("opening tab", e))?;
+        // A visible flow is the only Chrome window the user should have to
+        // manage. Chromium's default launch bounds can be a narrow utility
+        // window (and an incognito context used to create another one), so
+        // present the privately-owned headed window at the desktop's normal
+        // maximized size. Device emulation below still pins the page viewport
+        // when the spec requests one.
+        if headed_requested() {
+            tab.set_bounds(Bounds::Maximized)
+                .map_err(|e| web_err("maximizing headed browser window", e))?;
+        }
         // Viewport/UA emulation BEFORE navigation, so the app boots into
         // the emulated device (responsive breakpoints, UA sniffing). NOT
         // best-effort: a flow recorded mobile must never run desktop.
@@ -3134,16 +3160,85 @@ impl AppDriver for WebAppDriver {
                 }
                 return 'body > ' + parts.join(' > ');
               }
+              function compoundCss(el) {
+                const classes = Array.from(el.classList);
+                if (!classes.length) return null;
+                return el.tagName.toLowerCase() + classes.map(cls => '.' + CSS.escape(cls)).join('');
+              }
+              function relativeCss(el, container) {
+                const semantic = semanticCss(el);
+                if (semantic && container.querySelectorAll(semantic).length === 1) return semantic;
+                const compound = compoundCss(el);
+                if (!compound) return null;
+                if (container.querySelectorAll(compound).length === 1) return compound;
+
+                // A value cell often shares its base classes with the label
+                // beside it, while the label has one extra presentation class
+                // (`bg-info`, for example). Excluding that distinguishing
+                // class gives the scoped target a stable, non-positional inner
+                // selector without smuggling visible text into CSS.
+                const extras = new Set();
+                for (const other of container.querySelectorAll(compound)) {
+                  if (other === el) continue;
+                  for (const cls of other.classList) {
+                    if (!el.classList.contains(cls)) extras.add(cls);
+                  }
+                }
+                for (const extra of extras) {
+                  const candidate = compound + ':not(.' + CSS.escape(extra) + ')';
+                  if (container.querySelectorAll(candidate).length === 1) return candidate;
+                }
+                return null;
+              }
+              function scopedReadable(el) {
+                const container = el.parentElement;
+                if (!container) return null;
+                const containerCss = semanticCss(container) || compoundCss(container);
+                const innerCss = relativeCss(el, container);
+                if (!containerCss || !innerCss) return null;
+
+                // Use a neighbouring leaf as the row/card identity. Require
+                // that the anchor identifies one matching container on the
+                // current screen; runtime scoped resolution will enforce the
+                // same relationship again on every replay.
+                const siblings = Array.from(container.children);
+                const before = siblings.slice(0, siblings.indexOf(el)).reverse();
+                const after = siblings.slice(siblings.indexOf(el) + 1);
+                for (const anchorEl of before.concat(after)) {
+                  const anchor = (anchorEl.textContent || '').trim();
+                  if (!anchor || anchor.length > 120) continue;
+                  const matching = Array.from(document.querySelectorAll(containerCss)).filter(candidate =>
+                    Array.from(candidate.children).some(child =>
+                      child !== el && (child.textContent || '').trim() === anchor
+                    )
+                  );
+                  if (matching.length !== 1 || matching[0] !== container) continue;
+                  const containerTarget = 'css:' + containerCss;
+                  const innerTarget = 'css:' + innerCss;
+                  return {
+                    token: 'scoped:' + containerTarget + ' containing ' + JSON.stringify(anchor) +
+                      ' > ' + innerTarget,
+                    container: containerTarget,
+                    anchor,
+                    inner: innerTarget,
+                  };
+                }
+                return null;
+              }
               const all = Array.from(document.querySelectorAll('body *'));
+              const styledLeaf = el => el.children.length === 0 &&
+                ['DIV', 'SPAN'].includes(el.tagName) &&
+                /(?:background|color)\s*:/i.test(el.getAttribute('style') || '');
               const interactive = el => el.matches(
-                'input, button, a, select, textarea, [role=button], [role=checkbox], [role=radio], [role=menuitem]'
-              );
+                'input, button, a, select, textarea, [role=button], [role=checkbox], [role=radio], [role=menuitem], [draggable], [ondrop], .draggable-row, .droparea'
+              ) || (!!el.id && el.children.length === 0 && ['DIV', 'SPAN'].includes(el.tagName)) ||
+                styledLeaf(el);
               const readableLeaf = el => {
                 if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(el.tagName)) return false;
                 const text = (el.textContent || '').trim();
-                return text && semanticCss(el) && !Array.from(el.children).some(child =>
+                return text && !Array.from(el.children).some(child =>
                   (child.textContent || '').trim()
-                );
+                ) && (semanticCss(el) || scopedReadable(el));
               };
               const ordered = all.filter(interactive).concat(
                 all.filter(el => !interactive(el) && readableLeaf(el))
@@ -3152,27 +3247,134 @@ impl AppDriver for WebAppDriver {
               const chosen = ordered.filter(el => {
                 const r = el.getBoundingClientRect();
                 const style = getComputedStyle(el);
+                // Authoring inventories the rendered PAGE, not only the
+                // current viewport. A user naturally says "enter the date"
+                // even when the field starts below the fold, and every web
+                // action already scrolls its target into view before acting.
                 const rendered = style.display !== 'none' && style.visibility !== 'hidden' &&
-                  Number(style.opacity) > 0 && r.width > 0 && r.height > 0 &&
-                  r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+                  Number(style.opacity) > 0 && r.width > 0 && r.height > 0;
                 if (!rendered || seen.has(el)) return false;
                 seen.add(el);
                 return true;
               }).slice(0, 100);
-              return JSON.stringify(chosen.map(el => {
+              const entries = chosen.map(el => {
                 const css = cssPath(el);
+                const scoped = !interactive(el) && !semanticCss(el) ? scopedReadable(el) : null;
                 const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
                     : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
-                return {
-                    target: 'css:' + css,
+                const entry = {
+                    target: scoped ? scoped.token : 'css:' + css,
                     css,
                     tag: el.tagName.toLowerCase(),
                     actionable: interactive(el),
                     type: el.getAttribute('type') || undefined,
                     text: (el.textContent || '').trim().slice(0, 80) || undefined,
                     label: label || undefined,
+                    background_color: styledLeaf(el) ? getComputedStyle(el).backgroundColor : undefined,
                 };
-              }));
+                if (scoped) entry.scope = {
+                  container: scoped.container,
+                  anchor: scoped.anchor,
+                  inner: scoped.inner,
+                };
+                return entry;
+              });
+
+              // A human can ask for the number of displayed rows or the
+              // final cell without naming one current row. Represent those
+              // collection identities directly so the model can ground the
+              // intent without inventing a selector from today's DOM.
+              for (const table of document.querySelectorAll('table')) {
+                const tableCss = semanticCss(table);
+                if (!tableCss) continue;
+                const rows = Array.from(table.querySelectorAll('tr'));
+                if (rows.length) {
+                  const css = tableCss + ' tr';
+                  entries.push({
+                    target: 'css:' + css,
+                    css,
+                    tag: 'collection',
+                    actionable: false,
+                    count: rows.length,
+                    label: 'rows in ' + tableCss,
+                  });
+                }
+                const lastCell = table.querySelector('tr:last-child td:last-child');
+                if (lastCell) {
+                  const css = tableCss + ' tr:last-child td:last-child';
+                  entries.push({
+                    target: 'css:' + css,
+                    css,
+                    tag: 'td',
+                    actionable: false,
+                    text: (lastCell.textContent || '').trim().slice(0, 80) || undefined,
+                    label: 'last cell in the final row of ' + tableCss,
+                  });
+                }
+              }
+
+              // Same-origin iframe values are a normal part of the live
+              // scene. Their synthetic token is translated to Target::Framed
+              // before tracing, just like a scoped row token; no synthetic
+              // authoring syntax is persisted or shown to the human.
+              for (const frameEl of document.querySelectorAll('iframe, frame')) {
+                const frameRect = frameEl.getBoundingClientRect();
+                const frameStyle = getComputedStyle(frameEl);
+                if (frameStyle.display === 'none' || frameStyle.visibility === 'hidden' ||
+                    Number(frameStyle.opacity) <= 0 || frameRect.width <= 0 || frameRect.height <= 0) {
+                  continue;
+                }
+                const frame = frameEl.getAttribute('title') || frameEl.getAttribute('name') ||
+                  frameEl.id || frameEl.getAttribute('aria-label');
+                if (!frame) continue;
+                let frameDoc;
+                try { frameDoc = frameEl.contentDocument; } catch (_) { continue; }
+                if (!frameDoc || !frameDoc.body) continue;
+                const inner = [frameDoc.body].concat(Array.from(frameDoc.querySelectorAll(
+                  'input, button, select, textarea, a, [role=button], [role=checkbox], [role=radio], [role=menuitem], [id]'
+                )));
+                for (const el of inner) {
+                  const style = frameDoc.defaultView.getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  if (style.display === 'none' || style.visibility === 'hidden' ||
+                      Number(style.opacity) <= 0 || rect.width <= 0 || rect.height <= 0) {
+                    continue;
+                  }
+                  let css = el === frameDoc.body ? 'body' : null;
+                  if (!css && el.id) css = '#' + CSS.escape(el.id);
+                  if (!css) {
+                    for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name']) {
+                      const value = el.getAttribute(attr);
+                      if (!value) continue;
+                      const candidate = el.tagName.toLowerCase() + '[' + attr + '="' +
+                        CSS.escape(value) + '"]';
+                      if (frameDoc.querySelectorAll(candidate).length === 1) {
+                        css = candidate;
+                        break;
+                      }
+                    }
+                  }
+                  if (!css) continue;
+                  const innerTarget = 'css:' + css;
+                  const token = 'framed:' + JSON.stringify(frame) + ' > ' + innerTarget;
+                  const actionable = el.matches(
+                    'input, button, select, textarea, a, [role=button], [role=checkbox], [role=radio], [role=menuitem]'
+                  );
+                  const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
+                    : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+                  entries.push({
+                    target: token,
+                    css,
+                    tag: el.tagName.toLowerCase(),
+                    actionable,
+                    text: el === frameDoc.body ? undefined
+                      : (el.value || el.textContent || '').trim().slice(0, 80) || undefined,
+                    label: label || (el === frameDoc.body ? 'scroll surface' : undefined),
+                    scope: { frame, inner: innerTarget },
+                  });
+                }
+              }
+              return JSON.stringify(entries);
             })()
         "#;
         let value = self
@@ -3224,6 +3426,17 @@ mod tests {
 
         let headed = super::launch_options_for(&no_args, true).expect("options build");
         assert!(!headed.headless, "FLOWPROOF_HEADED must show the window");
+    }
+
+    /// A visible shared browser leaks its keep-alive window into the user's
+    /// desktop after the flow tab closes. Headless suites retain reuse; either
+    /// explicit opt-out or headed mode must select one privately-owned process.
+    #[test]
+    fn headed_runs_never_use_the_shared_keep_alive_browser() {
+        assert!(super::should_share_browser(false, false));
+        assert!(!super::should_share_browser(true, false));
+        assert!(!super::should_share_browser(false, true));
+        assert!(!super::should_share_browser(true, true));
     }
 
     /// The headed launch failure must name the display, and must not invent one
