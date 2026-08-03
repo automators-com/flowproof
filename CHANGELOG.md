@@ -6,6 +6,19 @@ together).
 
 ## Unreleased
 
+## 0.12.2
+
+Flowproof now completes the natural-language authoring path for the browser
+actions used throughout the obstacle-course material. Authors describe what a
+person does—drag a task, click part of a control, count rows, choose several
+options, work inside a frame—and the recording model grounds that intent to the
+live page. The resulting trace remains deterministic and replay makes no model
+calls.
+
+Headed Chrome runs also have a clean lifecycle: one maximized private window is
+owned and closed by each flow, with no oddly sized keep-alive window or empty
+tabs left behind.
+
 ### Fixed
 
 - **Watching a web flow left a blank Chrome window behind.** The shared-browser
