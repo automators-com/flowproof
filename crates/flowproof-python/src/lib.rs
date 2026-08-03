@@ -21,6 +21,17 @@ fn to_json(value: &serde_json::Value) -> PyResult<String> {
     serde_json::to_string(value).map_err(runtime_err)
 }
 
+fn parse_author(author: &str) -> PyResult<flowproof_agent::Author> {
+    match author {
+        "auto" => Ok(flowproof_agent::Author::Auto),
+        "rules" => Ok(flowproof_agent::Author::Rules),
+        "llm" => Ok(flowproof_agent::Author::Llm),
+        other => Err(runtime_err(format!(
+            "unknown authoring mode '{other}' (expected auto, rules, or llm)"
+        ))),
+    }
+}
+
 /// Run the flowproof CLI with `args` (excluding the program name) and
 /// return the process exit code (0 pass, 1 fail, 2 error).
 #[pyfunction]
@@ -29,14 +40,16 @@ fn cli_main(py: Python<'_>, args: Vec<String>) -> PyResult<u8> {
     Ok(py.detach(|| flowproof_cli::run_cli(args)))
 }
 
-/// Record `spec`. Returns JSON: `{"trace_path": …, "steps": …}` on success,
+/// Record `spec`. Returns JSON with the trace path, step counts, and per-step
+/// authoring routing on success,
 /// or `{"needs_clarification": …}` when a step could not be authored — the
 /// payload carries the stuck step and the live-screen inventory so the
 /// calling agent can rewrite the step and re-record. Only genuine execution
 /// errors raise.
 #[pyfunction]
-#[pyo3(signature = (spec, out=None))]
-fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<String> {
+#[pyo3(signature = (spec, out=None, author="auto"))]
+fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>, author: &str) -> PyResult<String> {
+    let author = parse_author(author)?;
     py.detach(|| {
         let mut parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
         // Suite env/data (suite.yaml env_from + env) governs MCP-driven
@@ -51,15 +64,23 @@ fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>) -> PyResult<Strin
         }
         let out = out.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
         let mut driver = flowproof_cli::driver_for(parsed.app.id()).map_err(runtime_err)?;
-        match flowproof_agent::record(&parsed, &mut driver, &out) {
+        let fallback = author == flowproof_agent::Author::Auto
+            && parsed.has_plain_steps()
+            && matches!(flowproof_agent::HttpModelClient::from_env_result(), Ok(None));
+        match flowproof_agent::record_with_author(&parsed, &mut driver, &out, author) {
             Ok(summary) => to_json(&serde_json::json!({
                 "trace_path": summary.trace_path,
                 "steps": summary.steps,
+                "reused_steps": summary.reused_steps,
+                "routing": summary.routing,
             })),
             Err(flowproof_agent::RecordError::NeedsClarification(c)) => {
                 // Ambiguity is data for the driving agent, not an exception.
                 to_json(&serde_json::json!({ "needs_clarification": c }))
             }
+            Err(err) if fallback => Err(runtime_err(format!(
+                "no authoring model is configured; plain steps may use deterministic grammar fallback: {err}"
+            ))),
             Err(err) => Err(runtime_err(err)),
         }
     })
@@ -117,14 +138,27 @@ fn get_trace(py: Python<'_>, path: PathBuf) -> PyResult<String> {
 /// `{"report": <HealReport>, "applied": bool}`. Only replaces the trace
 /// when `apply` is explicitly true and changes were found.
 #[pyfunction]
-#[pyo3(signature = (spec, trace=None, apply=false))]
-fn heal(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>, apply: bool) -> PyResult<String> {
+#[pyo3(signature = (spec, trace=None, apply=false, author="auto"))]
+fn heal(
+    py: Python<'_>,
+    spec: PathBuf,
+    trace: Option<PathBuf>,
+    apply: bool,
+    author: &str,
+) -> PyResult<String> {
+    let author = parse_author(author)?;
     py.detach(|| {
         let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
         let trace_path = trace.unwrap_or_else(|| flowproof_cli::default_trace_path(&spec));
         let mut driver = flowproof_cli::driver_for(parsed.app.id()).map_err(runtime_err)?;
         let mut report =
-            flowproof_agent::heal(&parsed, &mut driver, &trace_path).map_err(runtime_err)?;
+            match flowproof_agent::heal_with_author(&parsed, &mut driver, &trace_path, author) {
+                Ok(report) => report,
+                Err(flowproof_agent::HealError::Record(
+                    flowproof_agent::RecordError::NeedsClarification(c),
+                )) => return to_json(&serde_json::json!({ "needs_clarification": c })),
+                Err(err) => return Err(runtime_err(err)),
+            };
         let mut applied = false;
         if apply && report.changed {
             if let Some(proposal) = &report.proposed_path {

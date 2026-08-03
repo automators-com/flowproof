@@ -125,6 +125,13 @@ def test_missing_spec_is_a_clean_error():
         flowproof.record("does-not-exist.flow.yaml")
 
 
+def test_python_author_mode_is_validated_before_execution():
+    with pytest.raises(RuntimeError, match="expected auto, rules, or llm"):
+        flowproof.record("does-not-exist.flow.yaml", author="guess")
+    with pytest.raises(RuntimeError, match="expected auto, rules, or llm"):
+        flowproof.heal("does-not-exist.flow.yaml", author="guess")
+
+
 def test_missing_trace_is_a_clean_error(tmp_path):
     # run() now loads the spec first (skip gates + parse errors surface on
     # single runs); a nonexistent spec fails there, cleanly.
@@ -267,6 +274,7 @@ def test_heal_result_parses_engine_payload():
                 "steps_removed": 0,
                 "proposed_path": "/tmp/calc.proposed.jsonl",
                 "diff_html": "/tmp/calc.heal.html",
+                "routing": [{"step": 1, "intent": "Press plus", "route": "llm"}],
             },
             "applied": False,
         }
@@ -276,6 +284,7 @@ def test_heal_result_parses_engine_payload():
     assert result.steps_changed[0]["fields"] == ["selectors"]
     assert result.proposed_path == Path("/tmp/calc.proposed.jsonl")
     assert result.diff_html == Path("/tmp/calc.heal.html")
+    assert result.routing[0]["route"] == "llm"
     assert not result.applied
 
 
@@ -296,3 +305,4 @@ def test_heal_result_diff_html_is_optional():
     result = _parse_heal_result(payload)
     assert not result.changed
     assert result.diff_html is None
+    assert result.routing == ()

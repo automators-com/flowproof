@@ -782,7 +782,7 @@ pub trait AppDriver {
     }
 
     /// Structured observation of the current UI for authoring: a JSON array
-    /// of interactable elements (selector, role, label/text). `Ok(None)`
+    /// of actionable or readable elements (selector, role, label/text). `Ok(None)`
     /// means this driver cannot describe its scene yet — LLM authoring is
     /// unavailable on it.
     fn scene(&mut self) -> Result<Option<String>, DriverError> {
@@ -2055,8 +2055,8 @@ mod windows_impl {
 
         fn scene(&mut self) -> Result<Option<String>, DriverError> {
             // The desktop grounding set for LLM authoring: the same window
-            // subtree walk as surface_text, filtered to control types a
-            // model can act on. Each entry carries the TARGET TOKEN the
+            // subtree walk as surface_text, filtered to controls a model can
+            // act on or read from. Each entry carries the TARGET TOKEN the
             // model must echo — the stable automation id when the element
             // has one, its accessible name otherwise. Elements with
             // neither cannot be addressed and are skipped.
@@ -2070,6 +2070,7 @@ mod windows_impl {
                 ControlType::TabItem,
                 ControlType::MenuItem,
                 ControlType::Hyperlink,
+                ControlType::Text,
             ];
             let window = self.window()?;
             let elements = self
@@ -2102,6 +2103,7 @@ mod windows_impl {
                 let mut entry = serde_json::json!({ "target": target });
                 if let Ok(control_type) = element.get_control_type() {
                     entry["control_type"] = format!("{control_type:?}").into();
+                    entry["actionable"] = (control_type != ControlType::Text).into();
                 }
                 if !name.is_empty() {
                     entry["text"] = name.into();

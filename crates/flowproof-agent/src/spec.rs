@@ -413,8 +413,9 @@ fn validate_drags_are_asserted(steps: &[SpecStep]) -> Result<(), SpecError> {
             SpecStep::When { when } => validate_drags_are_asserted(&when.steps)?,
             _ => {}
         }
-        let SpecStep::Plain(text) = step else {
-            continue;
+        let text = match step {
+            SpecStep::Plain(text) | SpecStep::Rules { rules: text } => text,
+            _ => continue,
         };
         if !text.trim_start().to_ascii_lowercase().starts_with("drag ") {
             continue;
@@ -1031,6 +1032,12 @@ pub enum SpecStep {
     When {
         when: WhenSpec,
     },
+    /// An action explicitly opted into deterministic rule authoring for this
+    /// step. A bare scalar is natural-language intent; this keyed form is the
+    /// per-step counterpart to the global `--author rules` control.
+    Rules {
+        rules: String,
+    },
     Plain(String),
 }
 
@@ -1081,7 +1088,7 @@ fn parse_secret_selector(selector: &str) -> Result<String, String> {
 }
 
 impl SpecStep {
-    const FORMS: &'static str = "a plain string, `assert: <text>`, \
+    const FORMS: &'static str = "a plain string, `rules: <text>`, `assert: <text>`, \
          `assert_sql: {...}`, `assert_api: {...}`, `assert_screenshot: {...}`, \
          `prompt: <text>`, `assert_tool_call: <text>`, \
          `assert_no_tool_call: <text>`, `assert_no_egress`, \
@@ -1125,6 +1132,10 @@ impl SpecStep {
                 }
                 let (key, inner) = map.into_iter().next().expect("len checked above");
                 match key.as_str() {
+                    Some("rules") => match inner {
+                        Value::String(s) => Ok(SpecStep::Rules { rules: s }),
+                        _ => Err("`rules:` takes a string (the deterministic action text)".into()),
+                    },
                     Some("assert") => match inner {
                         Value::String(s) => Ok(SpecStep::Assert { assert: s }),
                         _ => Err("`assert:` takes a string (the expectation text)".into()),
@@ -1270,6 +1281,7 @@ impl Serialize for SpecStep {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             SpecStep::Plain(text) => serializer.serialize_str(text),
+            SpecStep::Rules { rules } => single(serializer, "rules", rules),
             SpecStep::AssertNoEgress => serializer.serialize_str("assert_no_egress"),
             // Block steps round-trip as their single-key mapping.
             SpecStep::Repeat { repeat } => {
@@ -1438,10 +1450,21 @@ pub struct ApiAssertSpec {
 }
 
 impl SpecStep {
+    /// The deterministic action text when this step explicitly opted into
+    /// rule authoring. `None` means routing was not forced by a per-step
+    /// marker (structured steps retain their existing first-class variants).
+    pub fn explicit_rules(&self) -> Option<&str> {
+        match self {
+            SpecStep::Rules { rules } => Some(rules),
+            _ => None,
+        }
+    }
+
     pub fn intent(&self) -> String {
         match self {
             SpecStep::Assert { assert } => assert.clone(),
             SpecStep::Plain(text) => text.clone(),
+            SpecStep::Rules { rules } => rules.clone(),
             SpecStep::Repeat { repeat } => {
                 format!("repeat until {} (max {})", repeat.until, repeat.max)
             }
@@ -1476,6 +1499,21 @@ impl SpecStep {
 }
 
 impl FlowSpec {
+    /// Whether model-first authoring can be requested anywhere in this spec.
+    /// Explicit `rules:` and structured steps do not count.
+    pub fn has_plain_steps(&self) -> bool {
+        fn contains(steps: &[SpecStep]) -> bool {
+            steps.iter().any(|step| match step {
+                SpecStep::Plain(_) => true,
+                SpecStep::Repeat { repeat } => contains(&repeat.steps),
+                SpecStep::When { when } => contains(&when.steps),
+                _ => false,
+            })
+        }
+
+        contains(&self.steps)
+    }
+
     pub fn parse(yaml: &str) -> Result<Self, SpecError> {
         // The Value round-trip costs line/column info in errors (names
         // still appear); only pay it when a foreach is actually present.
@@ -1870,6 +1908,68 @@ steps:
             SpecStep::Assert {
                 assert: "display shows 8".into()
             }
+        );
+    }
+
+    #[test]
+    fn rules_marker_is_explicit_and_plain_scalars_remain_natural_language() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nsteps:\n  - Type Ada into the name field\n  - rules: Type other into the \"Name\" field\n",
+        )
+        .expect("rules marker parses");
+
+        assert_eq!(
+            spec.steps[0],
+            SpecStep::Plain("Type Ada into the name field".into()),
+            "a plain scalar remains natural-language intent"
+        );
+        assert_eq!(spec.steps[0].explicit_rules(), None);
+
+        assert_eq!(
+            spec.steps[1],
+            SpecStep::Rules {
+                rules: "Type other into the \"Name\" field".into()
+            }
+        );
+        assert_eq!(
+            spec.steps[1].explicit_rules(),
+            Some("Type other into the \"Name\" field")
+        );
+        assert_eq!(spec.steps[1].intent(), "Type other into the \"Name\" field");
+    }
+
+    #[test]
+    fn rules_marker_round_trips_and_rejects_non_string_payloads() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nsteps:\n  - rules: Press the \"Save\" button\n  - assert: page shows Saved\n",
+        )
+        .expect("rules marker parses");
+        let yaml = serde_yaml::to_string(&spec.steps).expect("serializes");
+        let back: Vec<SpecStep> = serde_yaml::from_str(&yaml).expect("reparses");
+        assert_eq!(back, spec.steps);
+        assert!(
+            yaml.contains("rules: Press the"),
+            "keeps the explicit marker: {yaml}"
+        );
+
+        let err =
+            FlowSpec::parse("name: x\napp: web\nsteps:\n  - rules:\n      action: Press Save\n")
+                .expect_err("rules payload must be text");
+        let message = err.to_string();
+        assert!(message.contains("rules:"), "names the marker: {message}");
+        assert!(
+            message.contains("string"),
+            "names the required type: {message}"
+        );
+    }
+
+    #[test]
+    fn explicit_rules_drag_keeps_the_assertion_guard() {
+        let err = FlowSpec::parse("name: x\napp: web\nsteps:\n  - rules: Drag \"a\" onto \"b\"\n")
+            .expect_err("an explicit unasserted drag must still be refused");
+        assert!(
+            err.to_string().contains("must be followed by an assertion"),
+            "{err}"
         );
     }
 

@@ -21,10 +21,10 @@ Self-healing on failure proposes a reviewable diff — never a silent mutation.
 - **Selector ladder** per step (deterministic first): 1) native ID
   2) structural 3) OCR/text anchor + spatial relation 4) visual template
   5) AI relocation. See `docs/trace-format.md`.
-- **Authoring backends** (`flowproof-agent`): pluggable, rules-first. The
-  deterministic rules resolver handles known vocabularies; the LLM author
-  handles arbitrary steps: the driver describes the live scene graph
-  (interactable elements with real selectors), the model must choose its
+- **Authoring backends** (`flowproof-agent`): pluggable and explicit. Plain
+  scalar steps are model-grounded human intent; `rules:` and global
+  `--author rules` select the deterministic grammar. The driver describes
+  the live scene graph (interactable elements with real selectors), the model must choose its
   target FROM that list — it cannot invent selectors — and the chosen action
   is performed and verified like any other before being recorded. Backends:
   Anthropic Messages API and any OpenAI-compatible endpoint (e.g. vLLM),

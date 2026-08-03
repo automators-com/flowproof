@@ -25,20 +25,22 @@ if FastMCP is not None:
     mcp = FastMCP("flowproof")
 
     @mcp.tool()
-    def flowproof_record(spec: str, out: str | None = None) -> dict[str, Any]:
+    def flowproof_record(spec: str, out: str | None = None, author: str = "auto") -> dict[str, Any]:
         """Record a flow: perform it once against the live app and write a
         deterministic trace. Requires the target platform (Windows for UIA
-        apps like calc/notepad; any OS for `app: web`). Returns
-        {"trace_path", "steps"} on success, OR {"needs_clarification":
-        {step, step_index, stage, reason, rules_error?, completed_steps,
+        apps like calc/notepad; any OS for `app: web`). `author` accepts
+        auto, rules, or llm. Returns
+        {"trace_path", "steps", "reused_steps", "routing"} on success, OR
+        {"needs_clarification": {step, step_index, stage, reason,
+        capture_reference?, capture_candidates?, rules_error?, completed_steps,
         scene: [{target, tag?, label?, text?, type?}], hint}} when a step is
         too ambiguous to author — the scene is the live screen's
-        interactable inventory: rewrite the stuck step into concrete grammar
+        actionable/readable inventory: rewrite the stuck step into concrete grammar
         (docs/authoring.md) targeting a listed element, consulting your data
         source for domain questions (e.g. which fields are required), then
         call this tool again. A spec whose skip_unless_env gate is not
         satisfied returns {"skipped": reason} — nothing was recorded."""
-        return json.loads(_native.record(spec, out))
+        return json.loads(_native.record(spec, out, author))
 
     @mcp.tool()
     def flowproof_run(spec: str, trace: str | None = None) -> dict[str, Any]:
@@ -57,12 +59,18 @@ if FastMCP is not None:
         return json.loads(_native.get_trace(path))
 
     @mcp.tool()
-    def flowproof_heal(spec: str, trace: str | None = None, apply: bool = False) -> dict[str, Any]:
+    def flowproof_heal(
+        spec: str,
+        trace: str | None = None,
+        apply: bool = False,
+        author: str = "auto",
+    ) -> dict[str, Any]:
         """Re-author the flow against the live app and propose a reviewable
         trace diff (written as *.proposed.jsonl). Never modifies the trace
         unless apply=true is passed explicitly. Returns
-        {"report": {"changed", "steps_changed", ...}, "applied"}."""
-        return json.loads(_native.heal(spec, trace, apply))
+        {"report": {"changed", "steps_changed", ...}, "applied"}; author
+        accepts auto, rules, or llm."""
+        return json.loads(_native.heal(spec, trace, apply, author))
 
 
 def main() -> None:

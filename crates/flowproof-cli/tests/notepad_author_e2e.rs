@@ -18,7 +18,7 @@ fn kill_notepad() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 }
 
-/// Steps deliberately phrased so the rules resolver cannot parse them.
+/// A natural UI step for the model, followed by a deterministic assertion.
 fn freeform_spec() -> FlowSpec {
     FlowSpec {
         name: "Notepad freeform".into(),
@@ -39,7 +39,7 @@ fn freeform_spec() -> FlowSpec {
         steps: vec![
             SpecStep::Plain("Write hello from flowproof into the editor".into()),
             SpecStep::Assert {
-                assert: "the document should now be showing hello from flowproof".into(),
+                assert: "document contains hello from flowproof".into(),
             },
         ],
     }
@@ -59,7 +59,7 @@ fn serve_scripted(server: tiny_http::Server) -> std::thread::JoinHandle<Vec<Stri
                 // scene must list it or grounding rejects this reply.
                 r##"{"action":"type_text","target":"id:15","text":"hello from flowproof"}"##
             } else {
-                r##"{"action":"assert_text","target":"surface","expected":"hello from flowproof","contains":true}"##
+                r##"{"action":"click","target":"id:nonsense"}"##
             };
             let payload = serde_json::json!({
                 "choices": [{"message": {"role": "assistant", "content": reply}}]
@@ -70,7 +70,7 @@ fn serve_scripted(server: tiny_http::Server) -> std::thread::JoinHandle<Vec<Stri
             );
             bodies.push(body);
             request.respond(response).ok();
-            if bodies.len() >= 2 {
+            if bodies.len() >= 1 {
                 break;
             }
         }
@@ -118,7 +118,7 @@ fn authors_against_real_notepad() {
 
     // The prompts carried the REAL UIA scene: the editor's native id token.
     let bodies = server_thread.join().expect("server thread");
-    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies.len(), 1);
     assert!(
         bodies[0].contains("id:15"),
         "scene must list the editor's automation id token: {}",

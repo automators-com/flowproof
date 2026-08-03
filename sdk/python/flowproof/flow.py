@@ -21,6 +21,9 @@ class RecordResult:
 
     trace_path: Path
     steps: int
+    reused_steps: int = 0
+    routing: tuple[dict[str, Any], ...] = ()
+    """Per-step ``llm``, ``rules``, ``fallback``, or ``reused`` decisions."""
 
 
 @dataclass(frozen=True)
@@ -148,6 +151,7 @@ class HealResult:
     steps_removed: int
     proposed_path: Path | None
     applied: bool
+    routing: tuple[dict[str, Any], ...] = ()
     diff_html: Path | None = None
     """Human review page: before/after per changed step, with frames."""
 
@@ -164,6 +168,7 @@ def _parse_heal_result(payload: str) -> HealResult:
         steps_removed=report["steps_removed"],
         proposed_path=Path(proposed) if proposed else None,
         applied=data["applied"],
+        routing=tuple(report.get("routing", ())),
         diff_html=Path(diff_html) if diff_html else None,
     )
 
@@ -177,21 +182,30 @@ class Flow:
     def __init__(self, spec: str | Path) -> None:
         object.__setattr__(self, "spec", Path(spec))
 
-    def record(self, out: str | Path | None = None) -> RecordResult | RecordSkipped:
+    def record(
+        self, out: str | Path | None = None, author: str = "auto"
+    ) -> RecordResult | RecordSkipped:
         """Perform the flow once against the live app and write a trace.
 
         Returns :class:`RecordSkipped` (falsy) when the spec's
         ``skip_unless_env`` gate is not satisfied — nothing was recorded.
+        Set ``author="rules"`` for deterministic grammar across all plain
+        steps, or ``author="llm"`` to require a configured model.
         Raises :class:`ClarificationNeeded` when a step is too ambiguous to
         author — its ``clarification`` payload tells you what was stuck and
         what the live screen offered, so you can rewrite the step and retry.
         """
-        data = json.loads(_native.record(self.spec, Path(out) if out else None))
+        data = json.loads(_native.record(self.spec, Path(out) if out else None, author))
         if "needs_clarification" in data:
             raise ClarificationNeeded(data["needs_clarification"])
         if "skipped" in data:
             return RecordSkipped(reason=data["skipped"])
-        return RecordResult(trace_path=Path(data["trace_path"]), steps=data["steps"])
+        return RecordResult(
+            trace_path=Path(data["trace_path"]),
+            steps=data["steps"],
+            reused_steps=data.get("reused_steps", 0),
+            routing=tuple(data.get("routing", ())),
+        )
 
     def run(self, trace: str | Path | None = None) -> RunResult:
         """Deterministically replay the recorded trace (zero LLM calls).
@@ -206,18 +220,28 @@ class Flow:
         """Load the recorded trace for inspection: ``{"header": …, "steps": […]}``."""
         return json.loads(_native.get_trace(Path(trace) if trace else self.spec))
 
-    def heal(self, trace: str | Path | None = None, apply: bool = False) -> HealResult:
+    def heal(
+        self,
+        trace: str | Path | None = None,
+        apply: bool = False,
+        author: str = "auto",
+    ) -> HealResult:
         """Re-author the flow against the live app and propose a trace diff.
 
         Never modifies the trace unless ``apply=True`` is passed explicitly;
         the proposal lands next to the trace as ``*.proposed.jsonl``.
+        ``author`` has the same ``auto`` / ``rules`` / ``llm`` modes as record.
         """
-        return _parse_heal_result(_native.heal(self.spec, Path(trace) if trace else None, apply))
+        data = _native.heal(self.spec, Path(trace) if trace else None, apply, author)
+        parsed = json.loads(data)
+        if "needs_clarification" in parsed:
+            raise ClarificationNeeded(parsed["needs_clarification"])
+        return _parse_heal_result(data)
 
 
-def record(spec: str | Path, out: str | Path | None = None) -> RecordResult:
+def record(spec: str | Path, out: str | Path | None = None, author: str = "auto") -> RecordResult:
     """Record a flow from a YAML spec. See :meth:`Flow.record`."""
-    return Flow(spec).record(out)
+    return Flow(spec).record(out, author)
 
 
 def run(spec: str | Path, trace: str | Path | None = None) -> RunResult:
@@ -230,6 +254,11 @@ def get_trace(path: str | Path) -> dict[str, Any]:
     return json.loads(_native.get_trace(Path(path)))
 
 
-def heal(spec: str | Path, trace: str | Path | None = None, apply: bool = False) -> HealResult:
+def heal(
+    spec: str | Path,
+    trace: str | Path | None = None,
+    apply: bool = False,
+    author: str = "auto",
+) -> HealResult:
     """Propose a heal diff for a stale trace. See :meth:`Flow.heal`."""
-    return Flow(spec).heal(trace, apply)
+    return Flow(spec).heal(trace, apply, author)
