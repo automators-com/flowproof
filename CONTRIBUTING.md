@@ -8,8 +8,8 @@ codebase to move quickly.
 - `crates/` — Rust workspace: driver (capture/input/UIA), trace (format + compiler),
   replay (deterministic executor), agent (planner loop + model backends), adapters
   (SAP GUI Scripting COM, web — behind feature flags), cli (`flowproof` binary).
-- `sdk/python` — Python SDK (hatchling; will become PyO3/maturin bindings later).
-- `sdk/js` — JavaScript SDK placeholder.
+- `sdk/python` — Python package built with maturin/PyO3 (`flowproof._native`).
+- `sdk/js` — npm launcher that resolves the platform-native flowproof binary.
 - `docs/` — design and format documentation.
 
 ## Toolchain
