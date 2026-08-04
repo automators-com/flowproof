@@ -31,6 +31,16 @@ together).
   portable transaction `SMEN` rather than the internal `SESSION_MANAGER` name
   in its Easy Access smoke flow.
 
+- **Sonnet 5 could spend Flowproof's entire 1,024-token authoring allowance on
+  reasoning and never reach its answer.** Anthropic returned a valid signed
+  thinking block with `stop_reason: max_tokens`; Flowproof called that an
+  unexpected response shape and printed the enormous opaque signature into
+  the terminal. Anthropic authoring now has an 8,192-token ceiling, leaving
+  room for reasoning and the small structured answer, while the
+  OpenAI-compatible path keeps its existing 1,024-token bound. If a model
+  still reaches the ceiling before emitting text, the error now names token
+  exhaustion and the configured budget instead of misdiagnosing the response.
+
 ## 0.12.2
 
 Flowproof now completes the natural-language authoring path for the browser
