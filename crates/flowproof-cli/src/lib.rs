@@ -17,6 +17,23 @@ pub const EXIT_PASS: u8 = 0;
 pub const EXIT_FAIL: u8 = 1;
 pub const EXIT_ERROR: u8 = 2;
 
+/// Scope the adapter's interactive browser lifetime to one CLI invocation.
+/// The adapter reads this at launch and again when its driver is dropped.
+fn with_keep_browser_open<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    if !enabled {
+        return action();
+    }
+    const KEY: &str = "FLOWPROOF_KEEP_BROWSER_OPEN";
+    let previous = std::env::var_os(KEY);
+    std::env::set_var(KEY, "1");
+    let result = action();
+    match previous {
+        Some(value) => std::env::set_var(KEY, value),
+        None => std::env::remove_var(KEY),
+    }
+    result
+}
+
 #[derive(Parser)]
 #[command(name = "flowproof", version, about)]
 pub struct Cli {
@@ -66,6 +83,10 @@ enum Command {
         /// resolves; re-author only what drifted (needs an existing trace).
         #[arg(long)]
         reuse: bool,
+        /// Show Chromium and keep it open after the flow finishes. Close the
+        /// flow window to let Flowproof exit.
+        #[arg(long, conflicts_with = "json")]
+        keep_open: bool,
     },
     /// Deterministically replay a recorded flow (zero LLM calls). Point it
     /// at a DIRECTORY to run every *.flow.yaml under it as a suite with one
@@ -96,6 +117,10 @@ enum Command {
         /// coverage silently shrink. Single-spec runs always error.
         #[arg(long, conflicts_with = "record_missing")]
         strict: bool,
+        /// Show Chromium and keep it open after one flow finishes. Close the
+        /// flow window to let Flowproof exit. Not available for suites.
+        #[arg(long, conflicts_with = "json")]
+        keep_open: bool,
     },
     /// Internal: the stdio MCP stand-in the agent spawns as its server
     /// command. Not run by hand - flowproof injects
@@ -1879,7 +1904,8 @@ where
             json,
             author,
             reuse,
-        } => cmd_record(&spec, out, json, author, reuse),
+            keep_open,
+        } => with_keep_browser_open(keep_open, || cmd_record(&spec, out, json, author, reuse)),
         Command::Run {
             spec,
             trace,
@@ -1888,15 +1914,25 @@ where
             record_missing,
             author,
             strict,
+            keep_open,
         } => {
-            let missing = if record_missing {
-                MissingTrace::Record
-            } else if strict {
-                MissingTrace::Error
+            if keep_open && spec.is_dir() {
+                Err("--keep-open accepts one flow, not a suite directory".to_string())
+            } else if keep_open && retries > 0 {
+                Err("--keep-open cannot be combined with --retries; inspect one final run at a time"
+                    .to_string())
             } else {
-                MissingTrace::Skip
-            };
-            cmd_run(&spec, trace, json, retries, missing, author)
+                let missing = if record_missing {
+                    MissingTrace::Record
+                } else if strict {
+                    MissingTrace::Error
+                } else {
+                    MissingTrace::Skip
+                };
+                with_keep_browser_open(keep_open, || {
+                    cmd_run(&spec, trace, json, retries, missing, author)
+                })
+            }
         }
         Command::Audit {
             dir,
@@ -2200,6 +2236,92 @@ mod tests {
     fn cli_definition_is_valid() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn keep_open_is_explicit_on_record_and_run() {
+        let record =
+            Cli::try_parse_from(["flowproof", "record", "insurance.flow.yaml", "--keep-open"])
+                .expect("record flag parses");
+        assert!(matches!(
+            record.command,
+            Command::Record {
+                keep_open: true,
+                ..
+            }
+        ));
+
+        let run = Cli::try_parse_from(["flowproof", "run", "insurance.flow.yaml", "--keep-open"])
+            .expect("run flag parses");
+        assert!(matches!(
+            run.command,
+            Command::Run {
+                keep_open: true,
+                ..
+            }
+        ));
+
+        let default = Cli::try_parse_from(["flowproof", "record", "insurance.flow.yaml"])
+            .expect("default parses");
+        assert!(matches!(
+            default.command,
+            Command::Record {
+                keep_open: false,
+                ..
+            }
+        ));
+
+        assert!(
+            Cli::try_parse_from([
+                "flowproof",
+                "record",
+                "insurance.flow.yaml",
+                "--keep-open",
+                "--json",
+            ])
+            .is_err(),
+            "interactive waiting and machine-readable output must not mix"
+        );
+    }
+
+    #[test]
+    fn keep_open_rejects_suites_and_retries_before_execution() {
+        let dir = std::env::temp_dir().join("flowproof-keep-open-suite-test");
+        std::fs::create_dir_all(&dir).expect("temp directory");
+        assert_eq!(
+            run_cli(["run", &dir.to_string_lossy(), "--keep-open"]),
+            EXIT_ERROR,
+            "a suite must not pause once per flow"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(
+            run_cli([
+                "run",
+                "insurance.flow.yaml",
+                "--keep-open",
+                "--retries",
+                "1",
+            ]),
+            EXIT_ERROR,
+            "inspection is one final attempt, not every retry"
+        );
+    }
+
+    #[test]
+    fn keep_open_environment_is_scoped_to_the_command() {
+        const KEY: &str = "FLOWPROOF_KEEP_BROWSER_OPEN";
+        let restore = std::env::var_os(KEY);
+        std::env::remove_var(KEY);
+        let visible_inside = with_keep_browser_open(true, || std::env::var_os(KEY).is_some());
+        assert!(visible_inside, "the adapter sees the scoped flag");
+        assert!(
+            std::env::var_os(KEY).is_none(),
+            "the flag is restored after"
+        );
+        if let Some(value) = restore {
+            std::env::set_var(KEY, value);
+        }
     }
 
     #[test]

@@ -524,7 +524,14 @@ const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// A flow with visual assertions should pin `browser.viewport` in its spec, or
 /// its baselines will be recorded at one size and replayed at another.
 fn headed_requested() -> bool {
-    std::env::var_os("FLOWPROOF_HEADED").is_some()
+    std::env::var_os("FLOWPROOF_HEADED").is_some() || keep_browser_open_requested()
+}
+
+/// Keep a privately-owned visible browser available for inspection after its
+/// flow completes. Presence implies headed mode; a headless window cannot be
+/// inspected. The CLI exposes this as `--keep-open`.
+fn keep_browser_open_requested() -> bool {
+    std::env::var_os("FLOWPROOF_KEEP_BROWSER_OPEN").is_some()
 }
 
 /// Headed runs are deliberately private. A shared browser isolates each flow
@@ -535,6 +542,40 @@ fn headed_requested() -> bool {
 /// whose lifetime exactly matches the flow.
 fn should_share_browser(headed: bool, no_shared: bool) -> bool {
     !headed && !no_shared
+}
+
+/// The small visible-window surface used at launch. Keeping it behind a trait
+/// makes the important ordering testable without starting Chromium: maximize
+/// first, then activate the flow tab before the app begins navigating.
+trait HeadedTabWindow {
+    fn maximize(&self) -> Result<(), DriverError>;
+    fn foreground(&self) -> Result<(), DriverError>;
+}
+
+impl HeadedTabWindow for Tab {
+    fn maximize(&self) -> Result<(), DriverError> {
+        self.set_bounds(Bounds::Maximized)
+            .map(|_| ())
+            .map_err(|e| web_err("maximizing headed browser window", e))
+    }
+
+    fn foreground(&self) -> Result<(), DriverError> {
+        // Target.activate selects the new flow target; Page.bringToFront asks
+        // Chromium to activate the native window as well as its tab.
+        self.activate()
+            .map_err(|e| web_err("activating headed browser tab", e))?;
+        self.bring_to_front()
+            .map(|_| ())
+            .map_err(|e| web_err("bringing headed browser window to the foreground", e))
+    }
+}
+
+fn present_headed_window(window: &impl HeadedTabWindow, headed: bool) -> Result<(), DriverError> {
+    if headed {
+        window.maximize()?;
+        window.foreground()?;
+    }
+    Ok(())
 }
 
 /// Build the launch options, split out from [`launch_browser`] so the headless
@@ -573,11 +614,17 @@ fn launch_failure_message(err: &str, headed: bool) -> String {
     }
     format!(
         "launching browser: {err}\n\
-         note: FLOWPROOF_HEADED is set, so Chromium was asked for a VISIBLE window. \
+         note: Chromium was asked for a VISIBLE window by FLOWPROOF_HEADED or --keep-open. \
          A host with no desktop session (SSH, a container, a CI runner) cannot give it \
          one, and Chromium exits during startup — which surfaces as a port or timeout \
          error rather than as a missing display. Unset FLOWPROOF_HEADED to run headless."
     )
+}
+
+fn wait_until_closed(mut is_open: impl FnMut() -> bool, mut pause: impl FnMut()) {
+    while is_open() {
+        pause();
+    }
 }
 
 /// Launch a fresh Chromium (`CHROME` env var overrides the binary), optionally
@@ -1443,6 +1490,28 @@ fn xpath_literal(text: &str) -> String {
 
 impl Drop for WebAppDriver {
     fn drop(&mut self) {
+        // An inspected browser remains owned by Flowproof: wait until the user
+        // closes its flow tab, then perform the ordinary Browser drop so the
+        // child process is reaped and its temporary profile is removed. This
+        // is intentionally a wait rather than a leaked/detached Chrome.
+        if self.context_id.is_none() && keep_browser_open_requested() {
+            if let Some(flow_tab) = self.tab.as_ref() {
+                eprintln!(
+                    "flow finished; keeping Chromium open (--keep-open). Close its window to exit."
+                );
+                wait_until_closed(
+                    || {
+                        self.browser
+                            .get_tabs()
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .iter()
+                            .any(|tab| Arc::ptr_eq(tab, flow_tab))
+                    },
+                    || std::thread::sleep(Duration::from_millis(200)),
+                );
+            }
+        }
         // The shared browser outlives this driver: close the flow tab so pages
         // don't accumulate across a suite. A private browser (opt-out or
         // headed) is torn down with its process.
@@ -1655,10 +1724,7 @@ impl AppDriver for WebAppDriver {
         // present the privately-owned headed window at the desktop's normal
         // maximized size. Device emulation below still pins the page viewport
         // when the spec requests one.
-        if headed_requested() {
-            tab.set_bounds(Bounds::Maximized)
-                .map_err(|e| web_err("maximizing headed browser window", e))?;
-        }
+        present_headed_window(tab.as_ref(), headed_requested())?;
         // Viewport/UA emulation BEFORE navigation, so the app boots into
         // the emulated device (responsive breakpoints, UA sniffing). NOT
         // best-effort: a flow recorded mobile must never run desktop.
@@ -3412,6 +3478,41 @@ impl AppDriver for WebAppDriver {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
+    use flowproof_driver::DriverError;
+
+    struct VisibleWindowProbe {
+        calls: RefCell<Vec<&'static str>>,
+    }
+
+    impl super::HeadedTabWindow for VisibleWindowProbe {
+        fn maximize(&self) -> Result<(), DriverError> {
+            self.calls.borrow_mut().push("maximize");
+            Ok(())
+        }
+
+        fn foreground(&self) -> Result<(), DriverError> {
+            self.calls.borrow_mut().push("foreground");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn visible_flow_window_is_foregrounded_at_launch() {
+        let headed = VisibleWindowProbe {
+            calls: RefCell::new(Vec::new()),
+        };
+        super::present_headed_window(&headed, true).expect("present visible window");
+        assert_eq!(*headed.calls.borrow(), ["maximize", "foreground"]);
+
+        let headless = VisibleWindowProbe {
+            calls: RefCell::new(Vec::new()),
+        };
+        super::present_headed_window(&headless, false).expect("headless is a no-op");
+        assert!(headless.calls.borrow().is_empty());
+    }
+
     /// The wiring, without starting a browser: `headed` must reach
     /// `LaunchOptions.headless` inverted. Asserting on the built options rather
     /// than on the boolean that produced them is the point — the previous code
@@ -3454,8 +3555,8 @@ mod tests {
             "the underlying error is still the truth"
         );
         assert!(
-            headed.contains("FLOWPROOF_HEADED"),
-            "must name the variable that caused it: {headed}"
+            headed.contains("FLOWPROOF_HEADED") && headed.contains("--keep-open"),
+            "must name both ways a visible browser can be requested: {headed}"
         );
         assert!(
             headed.contains("desktop session"),
@@ -3479,9 +3580,11 @@ mod tests {
     /// Safe to mutate the environment here because no other test in this
     /// workspace reads `FLOWPROOF_HEADED`; the value is restored either way.
     #[test]
-    fn the_env_var_is_spelled_flowproof_headed() {
+    fn visibility_and_keep_open_env_vars_are_wired() {
         let restore = std::env::var_os("FLOWPROOF_HEADED");
+        let restore_keep = std::env::var_os("FLOWPROOF_KEEP_BROWSER_OPEN");
         std::env::remove_var("FLOWPROOF_HEADED");
+        std::env::remove_var("FLOWPROOF_KEEP_BROWSER_OPEN");
         assert!(!super::headed_requested(), "unset must mean headless");
 
         // Deliberately "0": a variable someone bothered to set is one they
@@ -3489,10 +3592,37 @@ mod tests {
         std::env::set_var("FLOWPROOF_HEADED", "0");
         assert!(super::headed_requested(), "any value must mean headed");
 
+        std::env::remove_var("FLOWPROOF_HEADED");
+        std::env::set_var("FLOWPROOF_KEEP_BROWSER_OPEN", "0");
+        assert!(
+            super::headed_requested(),
+            "keeping a browser open must also make it visible"
+        );
+        assert!(super::keep_browser_open_requested());
+
         match restore {
             Some(v) => std::env::set_var("FLOWPROOF_HEADED", v),
             None => std::env::remove_var("FLOWPROOF_HEADED"),
         }
+        match restore_keep {
+            Some(v) => std::env::set_var("FLOWPROOF_KEEP_BROWSER_OPEN", v),
+            None => std::env::remove_var("FLOWPROOF_KEEP_BROWSER_OPEN"),
+        }
+    }
+
+    #[test]
+    fn keep_open_waits_until_the_flow_window_closes() {
+        let mut observations = vec![false, true, true];
+        let mut pauses = 0;
+        super::wait_until_closed(
+            || observations.pop().expect("one observation per check"),
+            || pauses += 1,
+        );
+        assert_eq!(pauses, 2, "one pause for each still-open observation");
+        assert!(
+            observations.is_empty(),
+            "the closed observation was consumed"
+        );
     }
 
     #[test]

@@ -6,6 +6,16 @@ together).
 
 ## Unreleased
 
+### Added
+
+- **A visible browser can stay open for inspection without changing the safe
+  default.** `flowproof record <spec> --keep-open` and single-flow
+  `flowproof run <spec> --keep-open` imply headed Chromium, wait after the flow
+  completes, and exit when its window is closed. The steered window is
+  maximized and brought to the foreground before navigation begins. Ordinary
+  runs still close their browser automatically. Suites, retries, and JSON mode
+  reject the flag rather than turning unattended automation into a hidden wait.
+
 ### Fixed
 
 - **A SAP flow could neither start SAP Logon nor reliably select its requested

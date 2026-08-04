@@ -450,9 +450,23 @@ property of the run you are supervising, not of the flow. A committed
 `headed: true` would follow the flow into CI, where nobody is watching and
 there may be no display at all.
 
-The visible browser belongs to that flow alone. Flowproof maximizes it at
-launch and closes the process when the flow finishes; headed runs do not use
-the headless suite's shared keep-alive browser or its isolated second window.
+The visible browser belongs to that flow alone. Flowproof maximizes it and
+brings it to the foreground before navigation starts, then closes the process
+when the flow finishes; headed runs do not use the headless suite's shared
+keep-alive browser or its isolated second window.
+
+To inspect the final page after a single flow completes, use `--keep-open`:
+
+```bash
+flowproof record web.flow.yaml --keep-open
+flowproof run web.flow.yaml --keep-open
+```
+
+It implies a visible browser and waits after execution. Close that Chromium
+window to let Flowproof exit; the normal default remains to close it
+automatically. The option is intentionally unavailable for directory suites,
+retries, and `--json` callers, where waiting for a person would make automation
+hang.
 
 **One caveat if the flow has visual assertions.** Headed Chromium sizes its
 window from the desktop; headless uses a fixed default. Record a screenshot
