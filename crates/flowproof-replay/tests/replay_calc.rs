@@ -3,7 +3,8 @@
 
 use flowproof_agent::{record, FlowSpec};
 use flowproof_driver::mock::MockAppDriver;
-use flowproof_replay::{run_trace, StepStatus};
+use flowproof_driver::{RecordingDetail, RecordingOptions};
+use flowproof_replay::{run_trace, run_trace_with_options, StepStatus};
 
 const CALC_SPEC: &str = "\
 name: Add two numbers
@@ -58,6 +59,79 @@ fn replay_passes_when_display_matches() {
             .expect("valid JSON artifact");
     assert_eq!(json["passed"], serde_json::Value::Bool(true));
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn replay_can_disable_visual_recording_entirely() {
+    let dir = std::env::temp_dir().join("flowproof-replay-recording-off");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_calc_trace(&dir);
+
+    let mut driver =
+        MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+    driver.frame = Some(image::RgbaImage::from_pixel(
+        20,
+        20,
+        image::Rgba([10, 20, 30, 255]),
+    ));
+    let options = RecordingOptions {
+        detail: RecordingDetail::Off,
+        video: false,
+        highlight_cursor: false,
+    };
+    let (report, run_dir) =
+        run_trace_with_options(&trace, &mut driver, options).expect("replay runs");
+
+    assert!(report.passed);
+    assert!(report.recording.is_none());
+    assert!(!run_dir.join("recording").exists());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn replay_can_add_highlighted_pointer_checkpoints() {
+    let dir = std::env::temp_dir().join("flowproof-replay-highlight-cursor");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_calc_trace(&dir);
+
+    let mut driver =
+        MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+    driver.frame = Some(image::RgbaImage::from_pixel(
+        120,
+        100,
+        image::Rgba([0, 0, 0, 255]),
+    ));
+    for (index, id) in CALC_ELEMENTS[..4].iter().enumerate() {
+        driver
+            .rects
+            .insert((*id).to_string(), (20 + index as i32 * 20, 30, 16, 16));
+    }
+    let options = RecordingOptions {
+        detail: RecordingDetail::Low,
+        video: false,
+        highlight_cursor: true,
+    };
+    let (report, run_dir) =
+        run_trace_with_options(&trace, &mut driver, options).expect("replay runs");
+
+    assert!(report.passed);
+    let recording = report.recording.expect("recording produced");
+    assert_eq!(recording.frames.len(), 6, "initial + four clicks + final");
+    let has_highlight = recording.frames.iter().any(|frame| {
+        let Ok(png) = std::fs::read(run_dir.join("recording").join(&frame.file)) else {
+            return false;
+        };
+        let Ok(decoded) = image::load_from_memory(&png) else {
+            return false;
+        };
+        decoded
+            .to_rgba8()
+            .pixels()
+            .any(|pixel| pixel[0] > 180 && pixel[1] > 130 && pixel[2] < 40)
+    });
+    assert!(has_highlight, "at least one event frame contains the halo");
     std::fs::remove_dir_all(&dir).ok();
 }
 

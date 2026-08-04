@@ -181,6 +181,15 @@ regions are masked before frames are written: declare `redact:` rules in
 the spec, and password fields are always masked automatically
 (see [docs/recording.md](recording.md)).
 
+For faster runs, visual evidence is optional and tunable. `--no-video`
+skips GIF creation while retaining screenshots; `--recording-detail low`
+captures only the initial state, every fifth step, and the final state; and
+`--recording-detail off` disables screenshots and video entirely. The flags
+work on both `record` and `run`, and affect artifacts rather than execution
+or verdicts. Add `--highlight-cursor` when reviewers should see a synthetic
+cursor and bright click halo at each pointer action; drag steps highlight both
+their source and destination.
+
 **When a step fails**, the bundle additionally answers the first two
 questions a human asks. `debug/dom.html` is the full DOM at the moment of
 failure and `debug/console.log` the page's recent console/exception tail

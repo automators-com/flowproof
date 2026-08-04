@@ -17,7 +17,8 @@ pub use clarify::{Clarification, ClarifyStage};
 pub use heal::{heal, heal_with_author, HealError, HealReport};
 pub use llm::{HttpModelClient, ModelClient};
 pub use recorder::{
-    record, record_incremental, record_with_author, Author, RecordError, RecordSummary,
+    record, record_incremental, record_incremental_with_options, record_with_author,
+    record_with_author_and_options, Author, RecordError, RecordSummary,
 };
 pub use spec::{check_control_ids, FlowSpec, McpServerSpec, SessionRef, SpecStep, SuiteManifest};
 
