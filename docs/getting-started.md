@@ -175,11 +175,21 @@ self-contained bundle under `.flowproof/runs/<timestamp>/`: `result.json`
 what happened), `junit.xml` (one testcase per step, for Jenkins / GitLab /
 Azure DevOps / any CI that ingests JUnit — point your test-report collector
 at `.flowproof/runs/*/junit.xml`), and `recording/` with the captured
-keyframes plus `recording.gif` — the whole run as one animation, paced
-like the real execution, embedded at the top of the report. Sensitive
+keyframes. Pass `--video` to additionally create `recording.gif` — the whole
+run as one animation, paced like the real execution, embedded at the top of
+the report. Sensitive
 regions are masked before frames are written: declare `redact:` rules in
 the spec, and password fields are always masked automatically
 (see [docs/recording.md](recording.md)).
+
+For faster runs, GIF/video assembly is off by default while screenshots remain
+available. Use `--video` to opt in. `--recording-detail low` captures only the
+initial state, every fifth step, and the final state; `--recording-detail off`
+disables screenshots and video entirely. The flags work on both `record` and
+`run`, and affect artifacts rather than execution or verdicts. Add
+`--highlight-cursor` when reviewers should see a synthetic cursor and bright
+click halo at each pointer action; drag steps highlight both their source and
+destination.
 
 **When a step fails**, the bundle additionally answers the first two
 questions a human asks. `debug/dom.html` is the full DOM at the moment of

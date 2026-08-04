@@ -229,8 +229,12 @@ seed/cleanup hooks, and data minted by an external CLI
 (`env_from` → `${VAR}`).
 
 **Review** — every run writes a bundle: `result.json`, JUnit XML,
-an HTML report, and a trace-synced `recording.gif` so a human can watch
-what the run actually did. `flowproof heal` re-authors a broken flow
+an HTML report, and screenshot checkpoints. GIF/video assembly is off by
+default for faster execution; pass `--video` when a trace-synced
+`recording.gif` is useful. Use `--recording-detail low` or
+`--recording-detail off` to reduce capture work further. Add
+`--highlight-cursor` to render an unmistakable cursor and click halo into the
+evidence frames. `flowproof heal` re-authors a broken flow
 against the live app and proposes a reviewable trace diff with
 before/after frames — applied only with explicit `--apply`.
 

@@ -1741,6 +1741,7 @@ fn execute_step<D: AppDriver>(
     visual_paths: &VisualPaths,
     captures: &mut std::collections::HashMap<String, String>,
     api_corpus: &mut Vec<(String, String)>,
+    mut recorder: Option<&mut flowproof_driver::RunRecorder>,
 ) -> Result<(Result<(), String>, StepMatch), ReplayError> {
     for condition in &step.sync.pre {
         if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
@@ -1785,6 +1786,8 @@ fn execute_step<D: AppDriver>(
                             .get("x_pct")
                             .and_then(|v| v.as_f64())
                             .zip(params.get("y_pct").and_then(|v| v.as_f64()));
+                        let (x_pct, y_pct) = at.unwrap_or((50.0, 50.0));
+                        pointer_checkpoint(&mut recorder, driver, &target, x_pct, y_pct);
                         let outcome =
                             dispatch_with_dialog(driver, dialog.as_ref(), |d| match at {
                                 Some((x, y)) => d.click_at(&target, x, y),
@@ -1971,6 +1974,7 @@ fn execute_step<D: AppDriver>(
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
                 match wait_actionable(driver, &target, actionable_timeout(step))? {
                     Ok(()) => {
+                        pointer_checkpoint(&mut recorder, driver, &target, 50.0, 50.0);
                         let dialog = dialog_from_params(params);
                         let outcome = dispatch_with_dialog(driver, dialog.as_ref(), |d| {
                             d.context_click(&target)
@@ -1990,6 +1994,7 @@ fn execute_step<D: AppDriver>(
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
                 match wait_actionable(driver, &target, actionable_timeout(step))? {
                     Ok(()) => {
+                        pointer_checkpoint(&mut recorder, driver, &target, 50.0, 50.0);
                         let dialog = dialog_from_params(params);
                         let outcome = dispatch_with_dialog(driver, dialog.as_ref(), |d| {
                             d.double_click(&target)
@@ -2013,6 +2018,7 @@ fn execute_step<D: AppDriver>(
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
                 match wait_actionable(driver, &target, actionable_timeout(step))? {
                     Ok(()) => {
+                        pointer_checkpoint(&mut recorder, driver, &target, 50.0, 50.0);
                         let dialog = dialog_from_params(params);
                         let outcome =
                             dispatch_with_dialog(driver, dialog.as_ref(), |d| d.hover(&target))?;
@@ -2048,7 +2054,12 @@ fn execute_step<D: AppDriver>(
                         wait_actionable(driver, &to, timeout)?,
                     ) {
                         (Ok(()), Ok(())) => {
-                            (driver.drag(&from, &to).map_err(|e| e.to_string()), matched)
+                            pointer_checkpoint(&mut recorder, driver, &from, 50.0, 50.0);
+                            let outcome = driver.drag(&from, &to);
+                            if outcome.is_ok() {
+                                pointer_checkpoint(&mut recorder, driver, &to, 50.0, 50.0);
+                            }
+                            (outcome.map_err(|e| e.to_string()), matched)
                         }
                         (Err(reason), _) | (_, Err(reason)) => (Err(reason), matched),
                     }
@@ -2158,6 +2169,18 @@ fn execute_step<D: AppDriver>(
     Ok((Ok(()), matched))
 }
 
+fn pointer_checkpoint<D: AppDriver>(
+    recorder: &mut Option<&mut flowproof_driver::RunRecorder>,
+    driver: &mut D,
+    selector: &flowproof_driver::UiaSelector,
+    x_pct: f64,
+    y_pct: f64,
+) {
+    if let Some(recorder) = recorder.as_deref_mut() {
+        recorder.pointer_event(driver, selector, x_pct, y_pct);
+    }
+}
+
 /// Replay the trace at `path` against the live application. Deterministic:
 /// walks recorded selectors only, stops at the first failing step. Creates
 /// the run's self-contained artifact directory up front so the recording
@@ -2166,7 +2189,16 @@ pub fn run_trace<D: AppDriver>(
     path: &Path,
     driver: &mut D,
 ) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
-    run_trace_with_secret_scan(path, driver, &SecretScan::disabled())
+    run_trace_with_options(path, driver, flowproof_driver::RecordingOptions::default())
+}
+
+/// Replay with explicit visual-recording controls.
+pub fn run_trace_with_options<D: AppDriver>(
+    path: &Path,
+    driver: &mut D,
+    recording: flowproof_driver::RecordingOptions,
+) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
+    run_trace_with_secret_scan_and_options(path, driver, &SecretScan::disabled(), recording)
 }
 
 /// Replay the trace, additionally running the flow's `assert_no_secret_leak`
@@ -2179,6 +2211,21 @@ pub fn run_trace_with_secret_scan<D: AppDriver>(
     path: &Path,
     driver: &mut D,
     scan: &SecretScan,
+) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
+    run_trace_with_secret_scan_and_options(
+        path,
+        driver,
+        scan,
+        flowproof_driver::RecordingOptions::default(),
+    )
+}
+
+/// Replay with both secret-scanning and visual-recording controls.
+pub fn run_trace_with_secret_scan_and_options<D: AppDriver>(
+    path: &Path,
+    driver: &mut D,
+    scan: &SecretScan,
+    recording: flowproof_driver::RecordingOptions,
 ) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
     let (header, steps) = load_trace(path)?;
 
@@ -2202,8 +2249,13 @@ pub fn run_trace_with_secret_scan<D: AppDriver>(
         .iter()
         .map(|value| serde_json::from_value(value.clone()).ok())
         .collect();
-    let mut recorder =
-        rules.and_then(|rules| flowproof_driver::RunRecorder::new(&run_dir, rules).ok());
+    let mut recorder = recording
+        .enabled()
+        .then_some(rules)
+        .flatten()
+        .and_then(|rules| {
+            flowproof_driver::RunRecorder::with_options(&run_dir, rules, recording).ok()
+        });
     let target =
         if header.app.name == "web" {
             let raw = header
@@ -2358,6 +2410,7 @@ pub fn run_trace_with_secret_scan<D: AppDriver>(
             &visual_paths,
             &mut captures,
             &mut secret_corpus,
+            recorder.as_mut(),
         )?;
         let duration_ms = step_started.elapsed().as_millis() as u64;
         if let Some(rec) = recorder.as_mut() {
@@ -2422,14 +2475,16 @@ pub fn run_trace_with_secret_scan<D: AppDriver>(
     }
 
     let degraded = results.iter().any(|s| s.degraded);
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let recording = recorder.and_then(|recorder| recorder.finish_with_driver(driver));
     let report = RunReport {
         name,
         trace_id: header.trace_id.clone(),
         passed: !failed && !results.is_empty(),
         degraded,
         steps: results,
-        duration_ms: started.elapsed().as_millis() as u64,
-        recording: recorder.and_then(flowproof_driver::RunRecorder::finish),
+        duration_ms,
+        recording,
     };
     Ok((report, run_dir))
 }

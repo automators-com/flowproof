@@ -29,7 +29,9 @@ pub use app::{
     STYLE_PROPS,
 };
 pub use backend::PlatformBackend;
-pub use recording::{FrameRef, Recording, RunRecorder, StepTiming};
+pub use recording::{
+    FrameRef, Recording, RecordingDetail, RecordingOptions, RunRecorder, StepTiming,
+};
 pub use redact::{RedactMode, RedactTarget, RedactionRule};
 
 /// A captured frame of the target screen or window.

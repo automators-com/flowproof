@@ -63,6 +63,39 @@ impl From<AuthorArg> for flowproof_agent::Author {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+enum RecordingDetailArg {
+    /// Capture before and after every step.
+    #[default]
+    Full,
+    /// Capture the initial state, every fifth step, and the final state.
+    Low,
+    /// Do not capture screenshots or create a video.
+    Off,
+}
+
+impl From<RecordingDetailArg> for flowproof_driver::RecordingDetail {
+    fn from(value: RecordingDetailArg) -> Self {
+        match value {
+            RecordingDetailArg::Full => flowproof_driver::RecordingDetail::Full,
+            RecordingDetailArg::Low => flowproof_driver::RecordingDetail::Low,
+            RecordingDetailArg::Off => flowproof_driver::RecordingDetail::Off,
+        }
+    }
+}
+
+fn recording_options(
+    detail: RecordingDetailArg,
+    video: bool,
+    highlight_cursor: bool,
+) -> flowproof_driver::RecordingOptions {
+    flowproof_driver::RecordingOptions {
+        detail: detail.into(),
+        video,
+        highlight_cursor,
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Record a flow from a YAML spec: perform it once against the live app
@@ -87,6 +120,15 @@ enum Command {
         /// flow window to let Flowproof exit.
         #[arg(long, conflicts_with = "json")]
         keep_open: bool,
+        /// Visual capture density: full, low, or off.
+        #[arg(long, value_enum, default_value_t)]
+        recording_detail: RecordingDetailArg,
+        /// Assemble screenshot checkpoints into recording.gif (off by default).
+        #[arg(long)]
+        video: bool,
+        /// Draw a visible cursor and prominent click halo into recordings.
+        #[arg(long)]
+        highlight_cursor: bool,
     },
     /// Deterministically replay a recorded flow (zero LLM calls). Point it
     /// at a DIRECTORY to run every *.flow.yaml under it as a suite with one
@@ -121,6 +163,15 @@ enum Command {
         /// flow window to let Flowproof exit. Not available for suites.
         #[arg(long, conflicts_with = "json")]
         keep_open: bool,
+        /// Visual capture density: full, low, or off.
+        #[arg(long, value_enum, default_value_t)]
+        recording_detail: RecordingDetailArg,
+        /// Assemble screenshot checkpoints into recording.gif (off by default).
+        #[arg(long)]
+        video: bool,
+        /// Draw a visible cursor and prominent click halo into recordings.
+        #[arg(long)]
+        highlight_cursor: bool,
     },
     /// Internal: the stdio MCP stand-in the agent spawns as its server
     /// command. Not run by hand - flowproof injects
@@ -297,6 +348,7 @@ fn cmd_record(
     json: bool,
     author: AuthorArg,
     reuse: bool,
+    recording: flowproof_driver::RecordingOptions,
 ) -> Result<u8, String> {
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     // The suite's data (env_from) and env govern recording too — the
@@ -377,10 +429,21 @@ fn cmd_record(
         None
     };
     let result = match &old_steps {
-        Some(steps) => {
-            flowproof_agent::record_incremental(&spec, &mut driver, &out, author.into(), steps)
-        }
-        None => flowproof_agent::record_with_author(&spec, &mut driver, &out, author.into()),
+        Some(steps) => flowproof_agent::record_incremental_with_options(
+            &spec,
+            &mut driver,
+            &out,
+            author.into(),
+            steps,
+            recording,
+        ),
+        None => flowproof_agent::record_with_author_and_options(
+            &spec,
+            &mut driver,
+            &out,
+            author.into(),
+            recording,
+        ),
     };
     let summary = match result {
         Ok(summary) => summary,
@@ -471,14 +534,19 @@ fn replay_with_retries(
     retries: u8,
     announce: bool,
     secret_scan: &flowproof_replay::SecretScan,
+    recording: flowproof_driver::RecordingOptions,
 ) -> Result<(flowproof_replay::RunReport, PathBuf, u32), String> {
     let mut attempt = 0u32;
     loop {
         attempt += 1;
         let mut driver = driver_for(app_name)?;
-        let (report, run_dir) =
-            flowproof_replay::run_trace_with_secret_scan(trace_path, &mut driver, secret_scan)
-                .map_err(|e| e.to_string())?;
+        let (report, run_dir) = flowproof_replay::run_trace_with_secret_scan_and_options(
+            trace_path,
+            &mut driver,
+            secret_scan,
+            recording,
+        )
+        .map_err(|e| e.to_string())?;
         if report.passed || attempt > u32::from(retries) {
             return Ok((report, run_dir, attempt));
         }
@@ -706,6 +774,7 @@ fn record_one(
     out: &Path,
     manifest: &flowproof_agent::SuiteManifest,
     author: AuthorArg,
+    recording: flowproof_driver::RecordingOptions,
 ) -> Result<flowproof_agent::RecordSummary, String> {
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     if spec.browser.is_none() {
@@ -721,7 +790,14 @@ fn record_one(
             Ok(None)
         );
     let mut driver = driver_for(spec.app.id())?;
-    flowproof_agent::record_with_author(&spec, &mut driver, out, author.into()).map_err(|e| {
+    flowproof_agent::record_with_author_and_options(
+        &spec,
+        &mut driver,
+        out,
+        author.into(),
+        recording,
+    )
+    .map_err(|e| {
         if fallback {
             format!(
                 "no authoring model is configured; plain steps may use deterministic grammar fallback: {e}"
@@ -792,7 +868,14 @@ fn run_agent_flow_in_suite(
 }
 
 pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> Result<u8, String> {
-    run_suite_with_author(dir, json, retries, missing, AuthorArg::Auto)
+    run_suite_with_author(
+        dir,
+        json,
+        retries,
+        missing,
+        AuthorArg::Auto,
+        flowproof_driver::RecordingOptions::default(),
+    )
 }
 
 fn run_suite_with_author(
@@ -801,6 +884,7 @@ fn run_suite_with_author(
     retries: u8,
     missing: MissingTrace,
     author: AuthorArg,
+    recording: flowproof_driver::RecordingOptions,
 ) -> Result<u8, String> {
     let mut specs = Vec::new();
     discover_specs(dir, &mut specs)?;
@@ -887,7 +971,7 @@ fn run_suite_with_author(
                     if !json {
                         println!("[RECORD] {} (no trace yet)", spec_path.display());
                     }
-                    match record_one(spec_path, &trace_path, &manifest, author) {
+                    match record_one(spec_path, &trace_path, &manifest, author, recording) {
                         Ok(summary) => {
                             if !json {
                                 for decision in &summary.routing {
@@ -1015,7 +1099,14 @@ fn run_suite_with_author(
             // A fresh driver per flow: full isolation, like Playwright
             // contexts. A driver fault here ends THIS flow only.
             .and_then(|(header, _)| {
-                replay_with_retries(&trace_path, &header.app.name, retries, !json, &secret_scan)
+                replay_with_retries(
+                    &trace_path,
+                    &header.app.name,
+                    retries,
+                    !json,
+                    &secret_scan,
+                    recording,
+                )
             });
         // Cleanup always runs, pass, fail or error.
         let cleanup = match &manifest.after_each {
@@ -1346,9 +1437,10 @@ fn cmd_run(
     retries: u8,
     missing: MissingTrace,
     author: AuthorArg,
+    recording: flowproof_driver::RecordingOptions,
 ) -> Result<u8, String> {
     if spec_path.is_dir() {
-        return run_suite_with_author(spec_path, json, retries, missing, author);
+        return run_suite_with_author(spec_path, json, retries, missing, author, recording);
     }
     // A single flow gets its suite's env/data too — replay resolves ${VAR}
     // at moment-of-use, so the same values must be present as at record.
@@ -1491,7 +1583,14 @@ fn cmd_run(
     let secret_scan = flowproof_replay::SecretScan {
         assertions: spec.secret_leak_assertions(),
     };
-    let replayed = replay_with_retries(&trace_path, &header.app.name, retries, !json, &secret_scan);
+    let replayed = replay_with_retries(
+        &trace_path,
+        &header.app.name,
+        retries,
+        !json,
+        &secret_scan,
+        recording,
+    );
     // Cleanup always runs, pass, fail or error - the suite's rule, and the
     // reason it exists is that a flow which errors is exactly when a left
     // -behind fixture hurts most.
@@ -1905,7 +2004,19 @@ where
             author,
             reuse,
             keep_open,
-        } => with_keep_browser_open(keep_open, || cmd_record(&spec, out, json, author, reuse)),
+            recording_detail,
+            video,
+            highlight_cursor,
+        } => with_keep_browser_open(keep_open, || {
+            cmd_record(
+                &spec,
+                out,
+                json,
+                author,
+                reuse,
+                recording_options(recording_detail, video, highlight_cursor),
+            )
+        }),
         Command::Run {
             spec,
             trace,
@@ -1915,6 +2026,9 @@ where
             author,
             strict,
             keep_open,
+            recording_detail,
+            video,
+            highlight_cursor,
         } => {
             if keep_open && spec.is_dir() {
                 Err("--keep-open accepts one flow, not a suite directory".to_string())
@@ -1930,7 +2044,15 @@ where
                     MissingTrace::Skip
                 };
                 with_keep_browser_open(keep_open, || {
-                    cmd_run(&spec, trace, json, retries, missing, author)
+                    cmd_run(
+                        &spec,
+                        trace,
+                        json,
+                        retries,
+                        missing,
+                        author,
+                        recording_options(recording_detail, video, highlight_cursor),
+                    )
                 })
             }
         }
@@ -2322,6 +2444,37 @@ mod tests {
         if let Some(value) = restore {
             std::env::set_var(KEY, value);
         }
+    }
+
+    #[test]
+    fn cli_accepts_opt_in_video_with_low_detail() {
+        let cli = Cli::try_parse_from([
+            "flowproof",
+            "run",
+            "demo.flow.yaml",
+            "--recording-detail",
+            "low",
+            "--video",
+            "--highlight-cursor",
+        ])
+        .expect("recording controls parse");
+        match cli.command {
+            Command::Run {
+                recording_detail,
+                video,
+                highlight_cursor,
+                ..
+            } => {
+                assert_eq!(recording_detail, RecordingDetailArg::Low);
+                assert!(video);
+                assert!(highlight_cursor);
+            }
+            _ => panic!("expected run command"),
+        }
+
+        let default = Cli::try_parse_from(["flowproof", "run", "demo.flow.yaml"])
+            .expect("default recording controls parse");
+        assert!(matches!(default.command, Command::Run { video: false, .. }));
     }
 
     #[test]

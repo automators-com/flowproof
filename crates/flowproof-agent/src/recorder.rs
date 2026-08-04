@@ -1903,8 +1903,25 @@ pub fn record_with_author<D: AppDriver>(
     out: &Path,
     author: Author,
 ) -> Result<RecordSummary, RecordError> {
+    record_with_author_and_options(
+        spec,
+        driver,
+        out,
+        author,
+        flowproof_driver::RecordingOptions::default(),
+    )
+}
+
+/// Record with an explicit authoring mode and visual-recording controls.
+pub fn record_with_author_and_options<D: AppDriver>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+    recording: flowproof_driver::RecordingOptions,
+) -> Result<RecordSummary, RecordError> {
     let mut client = HttpModelClient::from_env_result()?;
-    record_with_client(spec, driver, out, author, client.as_mut())
+    record_with_client_and_options(spec, driver, out, author, client.as_mut(), recording)
 }
 
 /// Incremental re-record (the CLI's `record --reuse`): env-configured
@@ -1916,8 +1933,35 @@ pub fn record_incremental<D: AppDriver>(
     author: Author,
     old_steps: &[Step],
 ) -> Result<RecordSummary, RecordError> {
+    record_incremental_with_options(
+        spec,
+        driver,
+        out,
+        author,
+        old_steps,
+        flowproof_driver::RecordingOptions::default(),
+    )
+}
+
+/// Incremental re-record with explicit visual-recording controls.
+pub fn record_incremental_with_options<D: AppDriver>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+    old_steps: &[Step],
+    recording: flowproof_driver::RecordingOptions,
+) -> Result<RecordSummary, RecordError> {
     let mut client = HttpModelClient::from_env_result()?;
-    record_with_reuse(spec, driver, out, author, client.as_mut(), Some(old_steps))
+    record_with_reuse_and_options(
+        spec,
+        driver,
+        out,
+        author,
+        client.as_mut(),
+        Some(old_steps),
+        recording,
+    )
 }
 
 struct AuthoredActions {
@@ -2110,7 +2154,25 @@ pub fn record_with_client<D: AppDriver, C: ModelClient>(
     author: Author,
     client: Option<&mut C>,
 ) -> Result<RecordSummary, RecordError> {
-    record_with_reuse(spec, driver, out, author, client, None)
+    record_with_client_and_options(
+        spec,
+        driver,
+        out,
+        author,
+        client,
+        flowproof_driver::RecordingOptions::default(),
+    )
+}
+
+pub fn record_with_client_and_options<D: AppDriver, C: ModelClient>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+    client: Option<&mut C>,
+    recording: flowproof_driver::RecordingOptions,
+) -> Result<RecordSummary, RecordError> {
+    record_with_reuse_and_options(spec, driver, out, author, client, None, recording)
 }
 
 /// Incremental re-record: reuse every old step whose intent still matches
@@ -2122,8 +2184,28 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
     driver: &mut D,
     out: &Path,
     author: Author,
+    client: Option<&mut C>,
+    old_steps: Option<&[Step]>,
+) -> Result<RecordSummary, RecordError> {
+    record_with_reuse_and_options(
+        spec,
+        driver,
+        out,
+        author,
+        client,
+        old_steps,
+        flowproof_driver::RecordingOptions::default(),
+    )
+}
+
+pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
     mut client: Option<&mut C>,
     old_steps: Option<&[Step]>,
+    recording_options: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, RecordError> {
     let mut reuse = old_steps.map(ReuseCursor::new);
     // `assert_no_secret_leak` selectors, grouped by asserting step. The scan
@@ -2193,7 +2275,17 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(&bundle_rel);
-    let mut recorder = flowproof_driver::RunRecorder::new(&bundle_base, spec.redact.clone()).ok();
+    let mut recorder = recording_options
+        .enabled()
+        .then(|| {
+            flowproof_driver::RunRecorder::with_options(
+                &bundle_base,
+                spec.redact.clone(),
+                recording_options,
+            )
+            .ok()
+        })
+        .flatten();
 
     // Recording PERFORMS the flow once: buttons are really pressed and the
     // assert is checked against the live display, so a trace is only ever
@@ -2339,7 +2431,13 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                         expected: "the drop target to resolve to an element".to_string(),
                         actual: "it names nothing that can be dropped onto".to_string(),
                     })?;
+                    if let Some(rec) = recorder.as_mut() {
+                        rec.pointer_event(driver, targeted(), 50.0, 50.0);
+                    }
                     driver.drag(targeted(), &to)?;
+                    if let Some(rec) = recorder.as_mut() {
+                        rec.pointer_event(driver, &to, 50.0, 50.0);
+                    }
                 }
                 ResolvedAction::Press { .. } => {
                     // Replay refuses to click an element another element
@@ -2362,9 +2460,15 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                                 .to_string(),
                         });
                     }
+                    if let Some(rec) = recorder.as_mut() {
+                        rec.pointer_event(driver, targeted(), 50.0, 50.0);
+                    }
                     driver.invoke(targeted())?
                 }
                 ResolvedAction::ClickAt { x_pct, y_pct, .. } => {
+                    if let Some(rec) = recorder.as_mut() {
+                        rec.pointer_event(driver, targeted(), *x_pct, *y_pct);
+                    }
                     driver.click_at(targeted(), *x_pct, *y_pct)?;
                 }
                 ResolvedAction::SelectOptions { values, .. } => {
@@ -2495,9 +2599,24 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
                 ResolvedAction::Upload { path, .. } => {
                     driver.set_files(targeted(), std::slice::from_ref(path))?
                 }
-                ResolvedAction::ContextClick { .. } => driver.context_click(targeted())?,
-                ResolvedAction::DoubleClick { .. } => driver.double_click(targeted())?,
-                ResolvedAction::Hover { .. } => driver.hover(targeted())?,
+                ResolvedAction::ContextClick { .. } => {
+                    if let Some(rec) = recorder.as_mut() {
+                        rec.pointer_event(driver, targeted(), 50.0, 50.0);
+                    }
+                    driver.context_click(targeted())?
+                }
+                ResolvedAction::DoubleClick { .. } => {
+                    if let Some(rec) = recorder.as_mut() {
+                        rec.pointer_event(driver, targeted(), 50.0, 50.0);
+                    }
+                    driver.double_click(targeted())?
+                }
+                ResolvedAction::Hover { .. } => {
+                    if let Some(rec) = recorder.as_mut() {
+                        rec.pointer_event(driver, targeted(), 50.0, 50.0);
+                    }
+                    driver.hover(targeted())?
+                }
                 ResolvedAction::AssertScreenshot { name, masks, .. } => {
                     // Recording MINTS the masked baseline — re-record (or
                     // `record --reuse`) is the update path.
@@ -3021,7 +3140,7 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
             .map_err(RecordError::SecretLeak)?;
     }
 
-    let recording = recorder.and_then(flowproof_driver::RunRecorder::finish);
+    let recording = recorder.and_then(|recorder| recorder.finish_with_driver(driver));
     if let Some(recording) = &recording {
         for step in &mut steps {
             if let Some(timing) = recording.steps.iter().find(|t| t.id == step.id) {
