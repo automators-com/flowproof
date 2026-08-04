@@ -298,7 +298,8 @@ trace (JSON-lines, versioned)  ← selectors + actions + assertions, ${VAR} refs
    │  flowproof run             ← deterministic, zero LLM calls
    ▼
 run bundle                     ← result.json · junit.xml · report.html ·
-                                 recording.gif · healing diffs on drift
+                                 screenshot checkpoints (--video adds
+                                 recording.gif) · healing diffs on drift
 ```
 
 | Path | What it is |
