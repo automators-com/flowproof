@@ -205,33 +205,24 @@ fn serve_human_primitives(server: tiny_http::Server) -> std::thread::JoinHandle<
         while let Ok(mut request) = server.recv() {
             let mut body = String::new();
             std::io::Read::read_to_string(request.as_reader(), &mut body).ok();
-            let parsed: serde_json::Value = serde_json::from_str(&body).expect("request is JSON");
-            let prompt = parsed["messages"]
-                .as_array()
-                .and_then(|messages| messages.last())
-                .and_then(|message| message["content"].as_str())
-                .expect("request carries the user prompt");
-            let reply = if prompt.contains("Current step to perform: Drag task 1") {
-                serde_json::json!({"action":"drag","target":"css:#task1","onto":"css:#todo"})
-            } else if prompt.contains("Current step to perform: Click the right half") {
-                serde_json::json!({"action":"click_at","target":"css:#half","x_pct":75,"y_pct":50})
-            } else if prompt.contains("Current step to perform: Remember the number") {
-                serde_json::json!({"action":"capture_count","target":"css:#rows tr","name":"row_count"})
-            } else if prompt.contains("Current step to perform: Enter the remembered row count") {
-                serde_json::json!({"action":"type_captured","target":"css:#rowCount","capture":"row_count"})
-            } else if prompt.contains("Current step to perform: Select Functional") {
-                serde_json::json!({"action":"select_options","target":"css:#methods","values":["Functional testing","End2End testing","GUI testing","Exploratory testing"]})
-            } else if prompt.contains("Current step to perform: Scroll the embedded") {
-                serde_json::json!({"action":"scroll","target":FRAME_BODY_TOKEN,"to_px":147})
-            } else if prompt.contains("Current step to perform: Enter Tosca") {
-                serde_json::json!({"action":"type_text","target":FRAME_FIELD_TOKEN,"text":"Tosca"})
-            } else if prompt.contains("Current step to perform: Click the first field") {
-                serde_json::json!({"action":"click","target":"css:#first"})
-            } else if prompt.contains("Current step to perform: Move focus") {
-                serde_json::json!({"action":"press_key","key":"Tab"})
-            } else {
-                serde_json::json!({"action":"click","target":"css:#nonsense"})
-            };
+            // This fake stands in only for the semantic model. It answers by
+            // turn, not by matching phrases, so the E2E proves FlowProof does
+            // not require aliases or deterministic grammar in human input.
+            let replies = [
+                serde_json::json!({"action":"drag","target":"css:#task1","onto":"css:#todo"}),
+                serde_json::json!({"action":"click_at","target":"css:#half","x_pct":75,"y_pct":50}),
+                serde_json::json!({"action":"capture_count","target":"css:#rows tr","name":"row_count"}),
+                serde_json::json!({"action":"type_captured","target":"css:#rowCount","capture":"row_count"}),
+                serde_json::json!({"action":"select_options","target":"css:#methods","values":["Functional testing","End2End testing","GUI testing","Exploratory testing"]}),
+                serde_json::json!({"action":"scroll","target":FRAME_BODY_TOKEN,"to_px":147}),
+                serde_json::json!({"action":"type_text","target":FRAME_FIELD_TOKEN,"text":"Tosca"}),
+                serde_json::json!({"action":"click","target":"css:#first"}),
+                serde_json::json!({"action":"press_key","key":"Tab"}),
+            ];
+            let reply = replies
+                .get(bodies.len())
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"action":"click","target":"css:#nonsense"}));
             let payload = serde_json::json!({
                 "choices": [{"message": {"role": "assistant", "content": reply.to_string()}}]
             });
@@ -413,15 +404,15 @@ fn human_language_primitives_record_and_replay_without_rule_inputs() {
     let base_url = format!("http://{}", server.server_addr());
     let server_thread = serve_human_primitives(server);
     let plain = [
-        "Drag task 1 into the todo drop area",
-        "Click the right half of \"Click into my right half\"",
-        "Remember the number of displayed table rows as the row count",
-        "Enter the remembered row count in the row-count field",
-        "Select Functional, End2End, GUI, and Exploratory testing together",
-        "Scroll the embedded challenge to 147 pixels",
-        "Enter Tosca in the text field inside the embedded challenge",
-        "Click the first field",
-        "Move focus to the next field",
+        "Could you put task 1 where unfinished work belongs?",
+        "Hit the side of the wide button that's nearer its right edge",
+        "Keep track of how many table rows are showing",
+        "That number should go in the box asking for a row count",
+        "For testing methods I'd like Functional, End2End, GUI and Exploratory",
+        "Inside the embedded challenge, go down 147 pixels",
+        "The text box in that embedded area should say Tosca",
+        "Start in the first box",
+        "Now advance keyboard focus once",
     ];
     assert!(plain.iter().all(|step| {
         !step.contains("rules:") && !step.contains("css:") && !step.contains("id:")
@@ -488,10 +479,34 @@ fn human_language_primitives_record_and_replay_without_rule_inputs() {
         "framed field target missing from prompts: {prompts:#?}"
     );
     assert!(prompts.iter().any(|prompt| prompt.contains("css:#rows tr")));
+    for (prompt, instruction) in prompts.iter().zip(plain) {
+        assert!(
+            prompt.contains(&format!("Current step to perform: {instruction}")),
+            "raw conversational instruction must reach the semantic model unchanged"
+        );
+    }
     let trace = std::fs::read_to_string(&trace_path).expect("trace readable");
     assert!(
         !trace.contains("framed:\""),
         "synthetic frame tokens stay out of traces"
+    );
+    let (_, authored_steps) =
+        flowproof_replay::load_trace(&trace_path).expect("authored trace loads");
+    let authored_human_steps: Vec<_> = authored_steps
+        .iter()
+        .filter(|step| plain.contains(&step.intent.as_str()))
+        .collect();
+    assert_eq!(
+        authored_human_steps.len(),
+        plain.len(),
+        "every conversational instruction must be present in the trace"
+    );
+    assert!(
+        authored_human_steps
+            .iter()
+            .all(|step| !step.selectors.is_empty()
+                || matches!(&step.action, flowproof_trace::format::Action::PressKey(_))),
+        "each conversational UI intent must become recorded deterministic selectors (except a selector-free key press)"
     );
 
     let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
