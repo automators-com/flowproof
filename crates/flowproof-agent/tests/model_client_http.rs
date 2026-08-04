@@ -65,6 +65,36 @@ fn a_thinking_block_before_the_answer_is_skipped() {
     assert_eq!(reply, "the answer", "the first TEXT block is the answer");
 }
 
+/// Sonnet 5 may use the entire output allowance for reasoning and return only
+/// a signed thinking block. That is token exhaustion, not an unknown response
+/// shape, and the opaque signature must not flood the terminal diagnostic.
+#[test]
+fn a_thinking_only_max_tokens_response_names_token_exhaustion() {
+    let (base, rx) = serve_once(
+        200,
+        r#"{"content":[{"type":"thinking","thinking":"","signature":"opaque-secret-signature"}],"stop_reason":"max_tokens"}"#,
+    );
+    let err = anthropic_client(&base)
+        .complete("system", "user")
+        .expect_err("a response without a text answer must fail");
+    let text = err.to_string();
+    assert!(
+        text.contains("exhausted its 8192-token output budget"),
+        "the actual failure and configured budget are named: {text}"
+    );
+    assert!(
+        !text.contains("opaque-secret-signature"),
+        "the thinking signature must not be dumped: {text}"
+    );
+
+    let sent: serde_json::Value =
+        serde_json::from_str(&rx.recv().expect("request captured")).expect("request is JSON");
+    assert_eq!(
+        sent["max_tokens"], 8192,
+        "Anthropic gets enough headroom to reason and still answer"
+    );
+}
+
 /// `http status: 400` with the body discarded is not a diagnostic. The
 /// sentence that solves it is in the body.
 #[test]

@@ -7,7 +7,13 @@ use serde_json::json;
 
 use crate::{AgentError, BackendConfig, BackendKind};
 
-const MAX_TOKENS: u32 = 1024;
+// Sonnet 5 can spend more than 1K tokens reasoning before it emits the small
+// structured answer authoring needs. With a 1,024-token ceiling the API can
+// therefore return a perfectly valid message containing only a signed
+// `thinking` block and `stop_reason: "max_tokens"`. 8K leaves room for that
+// reasoning and the answer while remaining a bounded per-step request.
+const ANTHROPIC_MAX_TOKENS: u32 = 8192;
+const OPENAI_COMPATIBLE_MAX_TOKENS: u32 = 1024;
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-5";
 
 /// A minimal chat completion: system + user in, text out.
@@ -146,7 +152,7 @@ impl HttpModelClient {
             .header("anthropic-version", "2023-06-01")
             .send_json(json!({
                 "model": self.model(),
-                "max_tokens": MAX_TOKENS,
+                "max_tokens": ANTHROPIC_MAX_TOKENS,
                 "system": system,
                 "messages": [{"role": "user", "content": user}],
             }))
@@ -158,7 +164,7 @@ impl HttpModelClient {
         // a block with no `text` field and reports the response shape as
         // unexpected — when the response is perfectly ordinary and the answer
         // is one element further on.
-        response["content"]
+        let text = response["content"]
             .as_array()
             .and_then(|blocks| {
                 blocks
@@ -166,10 +172,24 @@ impl HttpModelClient {
                     .find(|b| b["type"] == "text")
                     .and_then(|b| b["text"].as_str())
             })
-            .map(str::to_string)
-            .ok_or_else(|| {
-                AgentError::Config(format!("unexpected anthropic response shape: {response}"))
-            })
+            .map(str::to_string);
+        if let Some(text) = text {
+            return Ok(text);
+        }
+
+        // Reaching the output ceiling before the first text block is not a
+        // malformed provider response. Name the real failure without dumping
+        // the (large, opaque) thinking signature into the terminal.
+        if response["stop_reason"].as_str() == Some("max_tokens") {
+            return Err(AgentError::Config(format!(
+                "anthropic model '{}' exhausted its {ANTHROPIC_MAX_TOKENS}-token output budget before producing a text answer",
+                self.model()
+            )));
+        }
+
+        Err(AgentError::Config(format!(
+            "unexpected anthropic response shape: {response}"
+        )))
     }
 
     fn complete_openai(&mut self, system: &str, user: &str) -> Result<String, AgentError> {
@@ -189,7 +209,7 @@ impl HttpModelClient {
         let mut response = request
             .send_json(json!({
                 "model": self.model(),
-                "max_tokens": MAX_TOKENS,
+                "max_tokens": OPENAI_COMPATIBLE_MAX_TOKENS,
                 "temperature": 0,
                 "messages": [
                     {"role": "system", "content": system},
