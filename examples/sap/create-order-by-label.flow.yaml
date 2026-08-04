@@ -1,0 +1,22 @@
+# A SAP GUI flow. Requirements on the recording/replaying machine:
+# Windows, SAP GUI for Windows installed, SAP Logon running and logged in,
+# and scripting enabled (RZ11: sapgui/user_scripting = TRUE).
+#
+# Same task as create-order.flow.yaml, addressed the other way: by the
+# field's VISIBLE label instead of its scripting id. VA01's "Order Type"
+# caption is a separate read-only element from the actual input, which
+# carries no matching text of its own at all - resolving "Order Type" by
+# label means finding that caption, then falling back to the changeable
+# field beside it (see SapAppDriver::nearest_changeable). This is also
+# the form a video-recorded or hand-authored-from-observation flow
+# naturally produces, since a label is what's visible on screen, not a
+# scripting id - this file exists to keep that path itself under CI,
+# not just the id-addressed workaround the original flow already covers.
+name: Create standard order (by label)
+app: sap
+connection: ${SAP_CONNECTION}
+steps:
+  - Go to /nVA01
+  - Type OR into the "Order Type" field
+  - Press Enter
+  - assert: page shows Create Standard Order
