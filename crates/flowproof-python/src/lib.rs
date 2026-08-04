@@ -32,6 +32,30 @@ fn parse_author(author: &str) -> PyResult<flowproof_agent::Author> {
     }
 }
 
+/// Build the per-execution recording controls, validating `detail` up front
+/// so a typo fails before the engine has driven anything.
+fn recording_options(
+    detail: &str,
+    video: bool,
+    highlight_cursor: bool,
+) -> PyResult<flowproof_driver::RecordingOptions> {
+    let detail = match detail {
+        "full" => flowproof_driver::RecordingDetail::Full,
+        "low" => flowproof_driver::RecordingDetail::Low,
+        "off" => flowproof_driver::RecordingDetail::Off,
+        other => {
+            return Err(runtime_err(format!(
+                "unknown recording detail '{other}' (expected full, low, or off)"
+            )))
+        }
+    };
+    Ok(flowproof_driver::RecordingOptions {
+        detail,
+        video,
+        highlight_cursor,
+    })
+}
+
 /// Run the flowproof CLI with `args` (excluding the program name) and
 /// return the process exit code (0 pass, 1 fail, 2 error).
 #[pyfunction]
@@ -46,10 +70,23 @@ fn cli_main(py: Python<'_>, args: Vec<String>) -> PyResult<u8> {
 /// payload carries the stuck step and the live-screen inventory so the
 /// calling agent can rewrite the step and re-record. Only genuine execution
 /// errors raise.
+///
+/// `recording_detail` (`full` / `low` / `off`), `video` and
+/// `highlight_cursor` are the same visual-capture controls the CLI exposes.
+/// They change artifacts only, never which actions run.
 #[pyfunction]
-#[pyo3(signature = (spec, out=None, author="auto"))]
-fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>, author: &str) -> PyResult<String> {
+#[pyo3(signature = (spec, out=None, author="auto", recording_detail="full", video=false, highlight_cursor=false))]
+fn record(
+    py: Python<'_>,
+    spec: PathBuf,
+    out: Option<PathBuf>,
+    author: &str,
+    recording_detail: &str,
+    video: bool,
+    highlight_cursor: bool,
+) -> PyResult<String> {
     let author = parse_author(author)?;
+    let recording = recording_options(recording_detail, video, highlight_cursor)?;
     py.detach(|| {
         let mut parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
         // Suite env/data (suite.yaml env_from + env) governs MCP-driven
@@ -67,7 +104,9 @@ fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>, author: &str) -> 
         let fallback = author == flowproof_agent::Author::Auto
             && parsed.has_plain_steps()
             && matches!(flowproof_agent::HttpModelClient::from_env_result(), Ok(None));
-        match flowproof_agent::record_with_author(&parsed, &mut driver, &out, author) {
+        match flowproof_agent::record_with_author_and_options(
+            &parsed, &mut driver, &out, author, recording,
+        ) {
             Ok(summary) => to_json(&serde_json::json!({
                 "trace_path": summary.trace_path,
                 "steps": summary.steps,
@@ -89,9 +128,21 @@ fn record(py: Python<'_>, spec: PathBuf, out: Option<PathBuf>, author: &str) -> 
 /// Replay the trace recorded for `spec`. Returns JSON:
 /// `{"report": <RunReport>, "report_path": …}`. Raises RuntimeError only
 /// when the run cannot execute at all; test failures are data, not errors.
+///
+/// `recording_detail` (`full` / `low` / `off`), `video` and
+/// `highlight_cursor` are the same visual-capture controls the CLI exposes.
+/// They change artifacts only, never the verdict.
 #[pyfunction]
-#[pyo3(signature = (spec, trace=None))]
-fn run(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>) -> PyResult<String> {
+#[pyo3(signature = (spec, trace=None, recording_detail="full", video=false, highlight_cursor=false))]
+fn run(
+    py: Python<'_>,
+    spec: PathBuf,
+    trace: Option<PathBuf>,
+    recording_detail: &str,
+    video: bool,
+    highlight_cursor: bool,
+) -> PyResult<String> {
+    let recording = recording_options(recording_detail, video, highlight_cursor)?;
     py.detach(|| {
         flowproof_cli::apply_suite_context(&spec).map_err(runtime_err)?;
         let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
@@ -106,7 +157,8 @@ fn run(py: Python<'_>, spec: PathBuf, trace: Option<PathBuf>) -> PyResult<String
         let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(runtime_err)?;
         let mut driver = flowproof_cli::driver_for(&header.app.name).map_err(runtime_err)?;
         let (report, run_dir) =
-            flowproof_replay::run_trace(&trace_path, &mut driver).map_err(runtime_err)?;
+            flowproof_replay::run_trace_with_options(&trace_path, &mut driver, recording)
+                .map_err(runtime_err)?;
         let report_path = report.write_into(&run_dir).map_err(runtime_err)?;
         to_json(&serde_json::json!({
             "report": report,

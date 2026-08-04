@@ -91,6 +91,17 @@ flowproof run checkout.flow.yaml --highlight-cursor
 flowproof run checkout.flow.yaml --recording-detail off
 ```
 
+The SDK and the MCP tools take the same three controls with the same
+defaults, so an agent does not have to shell out to the CLI to choose them:
+
+```python
+from flowproof import Flow
+
+flow = Flow("checkout.flow.yaml")
+flow.record(recording_detail="low")
+flow.run(video=True, highlight_cursor=True)
+```
+
 `--recording-detail full` remains the screenshot-density default, while GIF
 assembly is disabled unless `--video` is present. `low` deliberately lets
 several steps share one visual checkpoint, producing a less fluent but much

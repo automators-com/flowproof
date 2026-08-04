@@ -1465,6 +1465,12 @@ fn notif_id_valid(fd: RawFd, id: u64) -> bool {
 }
 
 /// Extract `(msg_name, msg_namelen, msg_controllen)` from a raw msghdr copy.
+// `msg_controllen` is not the same type on every Linux target: `size_t` under
+// glibc, `socklen_t` under uclibc/arm and l4re. Clippy only ever sees the
+// target it is running on, so on x86_64-gnu it calls the cast redundant. It is
+// load-bearing everywhere else - libc writes the same `as usize` in its own
+// portable CMSG helpers. Removing it breaks those targets.
+#[allow(clippy::unnecessary_cast)]
 fn msghdr_fields(hdr: &[u8]) -> (u64, u32, usize) {
     let msg: libc::msghdr =
         unsafe { std::ptr::read_unaligned(hdr.as_ptr() as *const libc::msghdr) };
@@ -1476,6 +1482,9 @@ fn msghdr_fields(hdr: &[u8]) -> (u64, u32, usize) {
 }
 
 /// Extract `(msg_iov ptr, msg_iovlen)` from a raw msghdr copy.
+// Same story as `msghdr_fields`: `msg_iovlen` is `size_t` under glibc and
+// `c_int` under uclibc/arm, uclibc/mips32, l4re and emscripten.
+#[allow(clippy::unnecessary_cast)]
 fn msghdr_iov(hdr: &[u8]) -> (u64, usize) {
     let msg: libc::msghdr =
         unsafe { std::ptr::read_unaligned(hdr.as_ptr() as *const libc::msghdr) };
