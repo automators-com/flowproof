@@ -1,0 +1,68 @@
+name: Tricentis Insurance
+app: web
+browser:
+  viewport:
+    width: 1280
+    height: 900
+  clock:
+    at: "2026-08-04T12:00:00Z"
+    timezone: Europe/Vienna
+url: https://sampleapp.tricentis.com/101
+steps:
+  # Open the Truck application. The page renders two elements with this id;
+  # only the first is visible at the pinned viewport.
+  - rules: Click the 1st "id:nav_truck"
+
+  # Enter Vehicle Data.
+  - rules: Select BMW from the "id:make" field
+  - rules: Type 150 into the "id:engineperformance" field
+  - rules: Type 01/15/2020 into the "id:dateofmanufacture" field
+  - rules: Select 2 from the "id:numberofseats" field
+  - rules: Select Diesel from the "id:fuel" field
+  - rules: Type 500 into the "id:payload" field
+  - rules: Type 3500 into the "id:totalweight" field
+  - rules: Type 50000 into the "id:listprice" field
+  - rules: Type TRUCK1 into the "id:licenseplatenumber" field
+  - rules: Type 12000 into the "id:annualmileage" field
+  - rules: Press the "id:nextenterinsurantdata" button
+
+  # Enter Insurant Data.
+  - rules: Type Nikolai into the "id:firstname" field
+  - rules: Type Tester into the "id:lastname" field
+  - rules: Type 01/15/1990 into the "id:birthdate" field
+  - rules: Click "css:label:has(#gendermale)"
+  - assert: the "id:gendermale" checkbox is checked
+  - rules: Type Teststrasse 1 into the "id:streetaddress" field
+  - rules: Select Austria from the "id:country" field
+  - rules: Type 1010 into the "id:zipcode" field
+  - rules: Type Vienna into the "id:city" field
+  - rules: Select Employee from the "id:occupation" field
+  - rules: Click "css:label:has(#speeding)"
+  - assert: the "id:speeding" checkbox is checked
+  - rules: Type https://example.com into the "id:website" field
+  - rules: Press the "id:nextenterproductdata" button
+
+  # Enter Product Data.
+  - rules: Type 10/15/2026 into the "id:startdate" field
+  - rules: Select 3000000 from the "id:insurancesum" field
+  - rules: Select Full Coverage from the "id:damageinsurance" field
+  - rules: Click "css:label:has(#EuroProtection)"
+  - assert: the "id:EuroProtection" checkbox is checked
+  - rules: Click "css:label:has(#LegalDefenseInsurance)"
+  - assert: the "id:LegalDefenseInsurance" checkbox is checked
+  - rules: Press the "id:nextselectpriceoption" button
+
+  # Select Price Option.
+  - rules: Click "css:label:has(#selectsilver)"
+  - assert: the "id:selectsilver" checkbox is checked
+  - rules: Press the "id:nextsendquote" button
+
+  # Send Quote.
+  - rules: Type flowproof@example.com into the "id:email" field
+  - rules: Type 1234567890 into the "id:phone" field
+  - rules: Type flowproofuser into the "id:username" field
+  - rules: Type Password123! into the "id:password" field
+  - rules: Type Password123! into the "id:confirmpassword" field
+  - rules: Type Automated FlowProof test into the "id:Comments" field
+  - rules: Press the "id:sendemail" button
+  - assert: page shows Sending e-mail success! within 20s
