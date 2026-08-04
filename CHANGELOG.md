@@ -16,6 +16,24 @@ together).
   runs still close their browser automatically. Suites, retries, and JSON mode
   reject the flag rather than turning unattended automation into a hidden wait.
 
+### Changed
+
+- **Every run paid for a GIF almost nobody opened.** Visual capture had one
+  setting: a frame before and after every single step, assembled into
+  `recording.gif` at the end. That is evidence a reviewer wants when a flow
+  drifts, and dead weight on the hundred green suite runs between those
+  moments — paid on the path that is supposed to be the cheap, repeatable one.
+
+  Capture density and animation are now separate, execution-time choices on
+  both `record` and `run`. Screenshot checkpoints remain the default, because
+  the report's step viewer is built from them; GIF assembly is opt-in with
+  `--video`. `--recording-detail low` keeps the initial state, every fifth
+  completed step, and the final state; `--recording-detail off` stops capture
+  entirely. `--highlight-cursor` draws a visible cursor and a bright click halo
+  into the frames, rendered after redaction so it cannot expose masked pixels.
+  All of it changes artifacts only: the same actions, assertions, redaction,
+  and verdict execute either way.
+
 ### Fixed
 
 - **A SAP flow could neither start SAP Logon nor reliably select its requested
