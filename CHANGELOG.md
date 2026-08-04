@@ -4,7 +4,20 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
-## Unreleased
+## 0.13.0
+
+This release is about what a run leaves behind, and what a person is allowed to
+watch. Visual evidence used to be a fixed tax: every run captured a frame around
+every step and assembled a GIF, whether or not anyone would ever open it. It is
+now a choice made per run — screenshots by default because the report is built
+from them, animation on request, and a sparse or silent mode for suites that
+only need a verdict. When a person does want to look, `--keep-open` holds one
+visible browser at the final page instead of forcing a rerun to see what
+happened.
+
+SAP flows also start. A named SAP flow can now launch SAP Logon, pick the right
+connection out of several, and treat a transaction SAP refused as the failure it
+is rather than a step that passed.
 
 ### Added
 

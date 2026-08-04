@@ -1,6 +1,6 @@
 {
   "name": "flowproof",
-  "version": "0.12.2",
+  "version": "0.13.0",
   "description": "Test that a bot only ever does the job it was given — and never deletes, sends or approves the thing it must not. Record it doing the job once, then replay on every commit with zero LLM calls. For the agents and RPA already running real work in production: web, desktop, SAP, Citrix.",
   "bin": {
     "flowproof": "bin/flowproof.js"
@@ -14,10 +14,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@automators/flowproof-cli-linux-x64": "0.12.2",
-    "@automators/flowproof-cli-darwin-x64": "0.12.2",
-    "@automators/flowproof-cli-darwin-arm64": "0.12.2",
-    "@automators/flowproof-cli-win32-x64": "0.12.2"
+    "@automators/flowproof-cli-linux-x64": "0.13.0",
+    "@automators/flowproof-cli-darwin-x64": "0.13.0",
+    "@automators/flowproof-cli-darwin-arm64": "0.13.0",
+    "@automators/flowproof-cli-win32-x64": "0.13.0"
   },
   "repository": {
     "type": "git",

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "flowproof"
-version = "0.12.2"
+version = "0.13.0"
 description = "Test that a bot only ever does the job it was given — and never deletes, sends or approves the thing it must not. Record it doing the job once, then replay on every commit with zero LLM calls. For the agents and RPA already running real work in production: web, desktop, SAP, Citrix."
 readme = "README.md"
 license = "Apache-2.0"
