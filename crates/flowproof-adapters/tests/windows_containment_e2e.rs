@@ -40,7 +40,7 @@
 #![cfg(all(windows, any(feature = "agent", feature = "sap-com")))]
 
 use std::io::Read;
-use std::net::TcpListener;
+use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,20 +59,20 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(180);
 /// Bound in the TEST process, not the child's - that is what makes it an
 /// independent witness rather than a restatement of the child's own opinion.
 struct Oracle {
+    host: Ipv4Addr,
     port: u16,
     seen: Arc<AtomicUsize>,
 }
 
 impl Oracle {
-    /// Bind on loopback and accept in the background until dropped.
+    /// Bind on the runner's primary NIC and accept in the background.
     ///
-    /// Loopback is a deliberate choice and was checked on a real runner: the
-    /// spike found WFP's ALE layer classifies and drops loopback connects,
-    /// with `loopback=true` on the drop record. Had it not, an agent could
-    /// reach a local service the flow never declared, which would be a hole
-    /// rather than a convenience.
-    fn bind() -> std::io::Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
+    /// Flowproof deliberately permits 127.0.0.0/8 so a replay can reach its
+    /// local model proxy. Using that address here would test the exception,
+    /// not the default-deny policy. The primary NIC still stays entirely on
+    /// this host while traversing ALE_AUTH_CONNECT like ordinary traffic.
+    fn bind(host: Ipv4Addr) -> std::io::Result<Self> {
+        let listener = TcpListener::bind((host, 0))?;
         let port = listener.local_addr()?.port();
         let seen = Arc::new(AtomicUsize::new(0));
         let counter = seen.clone();
@@ -87,7 +87,7 @@ impl Oracle {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
         });
-        Ok(Self { port, seen })
+        Ok(Self { host, port, seen })
     }
 
     fn sightings(&self) -> usize {
@@ -96,10 +96,38 @@ impl Oracle {
 
     fn allow_entry(&self) -> AllowEntry {
         AllowEntry {
-            host: HostMatch::Ip("127.0.0.1".parse().expect("static addr")),
+            host: HostMatch::Ip(IpAddr::V4(self.host)),
             port: Some(self.port),
         }
     }
+}
+
+/// The address selected by the routing table without sending a packet.
+fn primary_ipv4() -> Option<Ipv4Addr> {
+    UdpSocket::bind("0.0.0.0:0")
+        .and_then(|socket| {
+            socket.connect("192.0.2.1:9")?;
+            socket.local_addr()
+        })
+        .ok()
+        .and_then(|addr| match addr.ip() {
+            IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip),
+            _ => None,
+        })
+}
+
+/// A machine with no non-loopback route cannot exercise the policy honestly.
+fn test_host() -> Option<Ipv4Addr> {
+    let host = primary_ipv4();
+    if host.is_some() {
+        return host;
+    }
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "CI must expose a non-loopback IPv4 address for the containment oracle"
+    );
+    eprintln!("SKIP windows containment E2E: no non-loopback IPv4 address");
+    None
 }
 
 /// The probe the contained child runs: connect to each port, write a byte,
@@ -114,7 +142,7 @@ impl Oracle {
 /// Only the outer quotes are double quotes. The command line crosses
 /// `CreateProcessW` as ONE string, and nesting doubles inside it is how this
 /// kind of probe usually breaks.
-fn probe_command(ports: &[u16]) -> String {
+fn probe_command(host: Ipv4Addr, ports: &[u16]) -> String {
     let list = ports
         .iter()
         .map(|p| p.to_string())
@@ -123,7 +151,8 @@ fn probe_command(ports: &[u16]) -> String {
     format!(
         "powershell.exe -NoProfile -NonInteractive -Command \
          \"foreach($p in @({list})){{try{{$c=New-Object Net.Sockets.TcpClient;\
-         $c.Connect('127.0.0.1',$p);$s=$c.GetStream();\
+         $t=$c.ConnectAsync('{host}',$p);\
+         if(-not $t.Wait(10000)){{throw 'connect timeout'}};$s=$c.GetStream();\
          $s.Write([Text.Encoding]::ASCII.GetBytes('fp'),0,2);$s.Flush();$c.Close();\
          Write-Output ('PROBE|'+$p+'|CONNECTED')}}catch{{\
          Write-Output ('PROBE|'+$p+'|REFUSED')}}}}\""
@@ -140,7 +169,7 @@ struct Observed {
 /// Run the probe against both oracles, declaring `allow`.
 fn probe_run(declared: &Oracle, undeclared: &Oracle, allow: &[AllowEntry]) -> Observed {
     let outcome = run::run_contained(
-        &probe_command(&[declared.port, undeclared.port]),
+        &probe_command(declared.host, &[declared.port, undeclared.port]),
         &Default::default(),
         &[],
         allow,
@@ -155,6 +184,27 @@ fn probe_run(declared: &Oracle, undeclared: &Oracle, allow: &[AllowEntry]) -> Ob
         undeclared_sightings: undeclared.sightings(),
         outcome,
     }
+}
+
+/// Output capture and the privileged launcher are not witnesses in this test:
+/// the two destination oracles and the WFP audit lane are. GitHub's hosted
+/// Windows runner currently takes the documented CreateProcessWithLogonW
+/// fallback, so accept only those launcher diagnostics while continuing to
+/// reject every audit or collection fault.
+fn assert_evidence_lane_intact(o: &Observed, ev: &str) {
+    let unexpected = o
+        .outcome
+        .faults
+        .iter()
+        .filter(|fault| {
+            !fault.starts_with("the agent was started through CreateProcessWithLogonW")
+                && !fault.starts_with("launch privileges were not all enabled")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        unexpected.is_empty(),
+        "the containment evidence lane reported faults: {unexpected:?}. {ev}"
+    );
 }
 
 /// Everything a failure needs, in one block, because reproducing this locally
@@ -204,14 +254,29 @@ fn host_can_enforce() -> bool {
     false
 }
 
-/// The claim, with all three witnesses agreeing.
+/// Prove the positive control first, then invert exactly one declaration.
+///
+/// These phases mutate process-global Windows state (net-event collection and
+/// the interactive desktop ACL), and the positive control also establishes
+/// that this runner's primary-NIC route works before a refusal is treated as
+/// containment evidence. Keeping both phases in one test makes their order
+/// explicit instead of leaving it to Rust's parallel test scheduler.
 #[test]
-fn an_undeclared_destination_is_refused_and_a_declared_one_is_not() {
+fn declared_and_undeclared_destinations_invert_with_the_policy() {
     if !host_can_enforce() {
         return;
     }
-    let declared = Oracle::bind().expect("bind the declared oracle");
-    let undeclared = Oracle::bind().expect("bind the undeclared oracle");
+    let Some(host) = test_host() else {
+        return;
+    };
+    assert_both_declared_destinations_connect(host);
+    assert_undeclared_destination_is_refused(host);
+}
+
+/// The claim, with all three witnesses agreeing.
+fn assert_undeclared_destination_is_refused(host: Ipv4Addr) {
+    let declared = Oracle::bind(host).expect("bind the declared oracle");
+    let undeclared = Oracle::bind(host).expect("bind the undeclared oracle");
 
     let o = probe_run(&declared, &undeclared, &[declared.allow_entry()]);
     let ev = evidence("enforced", &o);
@@ -220,10 +285,7 @@ fn an_undeclared_destination_is_refused_and_a_declared_one_is_not() {
     // anything. A run that never installed its filters and then saw no traffic
     // is not evidence of containment.
     assert!(o.outcome.is_contained(), "the run was not contained. {ev}");
-    assert!(
-        o.outcome.faults.is_empty(),
-        "a fault is the absence of evidence, so nothing below can be certified over it. {ev}"
-    );
+    assert_evidence_lane_intact(&o, &ev);
 
     // Witness 3 first: without it, everything after is consistent with a child
     // that never ran.
@@ -256,18 +318,14 @@ fn an_undeclared_destination_is_refused_and_a_declared_one_is_not() {
 /// The negative control: with the same probe and the undeclared port DECLARED,
 /// the connection must go through.
 ///
-/// This is what makes the test above non-vacuous. If this one ever fails, the
-/// test above stops meaning anything - not because containment broke, but
+/// This is what makes the refusal phase non-vacuous. If this one ever fails,
+/// the refusal stops meaning anything - not because containment broke, but
 /// because the probe stopped reaching the network at all, and a test that
 /// cannot connect when it is allowed to cannot prove anything by failing to
 /// connect when it is not.
-#[test]
-fn the_same_probe_connects_when_the_destination_is_declared() {
-    if !host_can_enforce() {
-        return;
-    }
-    let declared = Oracle::bind().expect("bind the declared oracle");
-    let undeclared = Oracle::bind().expect("bind the second oracle");
+fn assert_both_declared_destinations_connect(host: Ipv4Addr) {
+    let declared = Oracle::bind(host).expect("bind the declared oracle");
+    let undeclared = Oracle::bind(host).expect("bind the second oracle");
 
     let o = probe_run(
         &declared,
@@ -277,6 +335,7 @@ fn the_same_probe_connects_when_the_destination_is_declared() {
     let ev = evidence("negative-control", &o);
 
     assert!(o.outcome.is_contained(), "the run was not contained. {ev}");
+    assert_evidence_lane_intact(&o, &ev);
     assert!(
         o.declared_sightings >= 1 && o.undeclared_sightings >= 1,
         "both destinations were declared, so both must have been reached; a probe that \
