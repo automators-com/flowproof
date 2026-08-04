@@ -142,12 +142,22 @@ Two frames from a screen recording: FIRST is before an action, SECOND is \
 after. You also see the flow's steps already inferred so far, in order.
 
 Describe the action(s) that bridge FIRST to SECOND, each on its own \
-line, using ONLY these forms:
+line, using ONLY these forms. <label> is always the element's VISIBLE \
+text, in double quotes, exactly as flowproof's own step grammar expects \
+it (unquoted text there is parsed as a literal internal element id, not \
+a label to search for - it will never match anything real). <value> and \
+<option> are the opposite: plain text, NEVER quoted - example: for a \
+field visibly labelled Order Type where you typed OR, write exactly \
+Type OR into the \"Order Type\" field, not \"OR\". \"Press Enter\" is \
+its own distinct form, for a KEY NAME, and is NEVER quoted either - \
+write exactly Press Enter, not Press \"Enter\" - do not confuse it with \
+Press the \"<label>\" button, which is for clicking something and DOES \
+need its label quoted:
 - \"Go to /nVA01\" (a transaction code in the command field)
-- \"Type <value> into the <label> field\"
-- \"Press Enter\"
-- \"Press the <label> button\"
-- \"Select <option> from the <label> field\"
+- Type <value> into the \"<label>\" field
+- Press Enter (bare, no quotes - a key name, not a button label)
+- Press the \"<label>\" button
+- Select <option> from the \"<label>\" field
 
 A keypress like Enter leaves no pixel of its own behind - only its \
 effect does. So: if the LAST prior step typed a value into a field, and \
