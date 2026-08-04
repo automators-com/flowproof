@@ -7,7 +7,10 @@ use serde_json::json;
 
 use crate::{AgentError, BackendConfig, BackendKind};
 
-const MAX_TOKENS: u32 = 1024;
+// 1024 wasn't enough headroom: extended thinking can burn the entire
+// budget before the model reaches its actual answer, truncating the
+// reply to nothing (stop_reason "max_tokens", no text block at all).
+const MAX_TOKENS: u32 = 4096;
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-5";
 
 /// A minimal chat completion: system + user in, text out.

@@ -638,11 +638,34 @@ pub mod com {
             }
         }
 
-        fn walk_into(element: &Disp, depth: u32, out: &mut Vec<SapElement>) {
+        /// How far into a menu-bar subtree (`GuiMenubar`/`GuiMenu`) to
+        /// descend before giving up on it. SAP's menu bar cascades deep -
+        /// System > Utilities > Runtime Analysis > Execute is 4+ levels
+        /// just for one entry - wide and deep enough on its own to exhaust
+        /// the whole 400-element walk budget before the walk ever reaches
+        /// the toolbar or the screen's actual content, which sit beside
+        /// `mbar` as siblings and get visited later. Real flows address
+        /// those directly (an OK-code field, a named button, a scripting
+        /// id) and essentially never click through the menu, so this only
+        /// gives up depth a step-authoring model would rarely have wanted.
+        const MENU_SUBTREE_DEPTH_CAP: u32 = 2;
+
+        fn walk_into(
+            element: &Disp,
+            depth: u32,
+            menu_depth: Option<u32>,
+            out: &mut Vec<SapElement>,
+        ) {
             if depth > 14 || out.len() >= 400 {
                 return;
             }
-            out.push(Self::element_info(element));
+            let info = Self::element_info(element);
+            let in_menu = menu_depth.is_some() || info.kind.starts_with("GuiMenu");
+            let menu_depth = in_menu.then(|| menu_depth.unwrap_or(0) + 1);
+            out.push(info);
+            if menu_depth.is_some_and(|d| d > Self::MENU_SUBTREE_DEPTH_CAP) {
+                return;
+            }
             // Leaves have no Children property — that's fine.
             let Ok(children) = element.get_disp("Children") else {
                 return;
@@ -650,7 +673,7 @@ pub mod com {
             let count = children.get_i32("Count").unwrap_or(0);
             for i in 0..count {
                 if let Ok(child) = children.call_disp("ElementAt", vec![VARIANT::from(i)]) {
-                    Self::walk_into(&child, depth + 1, out);
+                    Self::walk_into(&child, depth + 1, menu_depth, out);
                 }
             }
         }
@@ -811,7 +834,7 @@ pub mod com {
 
         fn walk(&mut self) -> Result<Vec<SapElement>, DriverError> {
             let mut out = Vec::new();
-            Self::walk_into(self.session()?, 0, &mut out);
+            Self::walk_into(self.session()?, 0, None, &mut out);
             Ok(out)
         }
 
