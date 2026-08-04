@@ -50,3 +50,9 @@ yarn-error.log*
 # (`cargo build --release` + a generated package.json). Ephemeral on a CI
 # runner, but a 20MB binary one `git add -A` away from a commit locally.
 /dist-npm/
+
+# Local presentation build workspace and rendered QA images.
+/docs/slides/.build/
+/docs/slides/*.pptx.inspect.ndjson
+/docs/slides/flowproof-training-*/
+/docs/slides/flowproof-solutions-*/

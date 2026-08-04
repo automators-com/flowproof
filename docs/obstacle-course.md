@@ -34,11 +34,11 @@ shape the grammar had DECLINED was being silently improvised into a recording.
 five. A decline that exists only in prose is a decline the engine does not
 implement.
 
-## The 9 that are not solved
+## The 12 that are not solved
 
-### No completion path exists (5)
+### No completion path exists (6)
 
-22505, 12952, 73590, 73591, 60469.
+22505, 12952, 73590, 73591, 60469, 92248.
 
 Their inline scripts never execute — `typeof drag === "undefined"`, no
 handler bound, no call to `obstacleCompleted()` anywhere. Verified by
@@ -46,30 +46,35 @@ clicking in a real browser and watching the network: no request is made.
 flowproof performs the correct action on several of them; the page simply
 has no way to say so. **Not a flowproof limitation.**
 
-### Blocked on step latency (2)
+### Interaction limit reached (4)
 
-87912 accepts a generated value for 2 seconds. 16384 deletes its record
-after 5. A step costs ~3.2s (measured; see `docs/authoring.md`), so both
-deadlines pass before the next step lands. On 16384 the record is already
-gone by the time the SECOND step runs.
+87912 and 16384 are blocked on step latency. 87912 accepts a generated
+value for 2 seconds; 16384 deletes its record after 5. A step costs ~3.2s
+(measured; see `docs/authoring.md`), so both deadlines pass before the next
+step lands. On 16384 the record is already gone by the time the SECOND step
+runs.
 
-The failure is at least loud — the page's own complaint surfaces as a failed
-step, and flowproof's dialog safety net catches the alert — but neither is
-reachable without making steps substantially cheaper, which would mean
-giving up the verification that makes a step trustworthy.
+82018 is a reaction game whose window depends on the frame rate, and a step
+costs about 3.2 seconds. 41040 asks the pointer to land on a target whose
+movement window is shorter than FlowProof's verified interaction cycle.
+Neither is reachable without weakening the verification that makes a step
+trustworthy.
 
-### Passes vacuously (1)
+The failures are loud: the page's own complaint or the bounded-step error is
+preserved as evidence rather than converted into a green recording.
+
+### Proof correctly refused (2)
 
 51130 completes without anything closing a window: its check fires when the
 popup is `closed`, and the popup never really opens headless. Counting it
 would be exactly the false green the rest of this work removed. **No
 cassette for it may enter the repository.**
 
-### Out of reach on timing (1)
-
-82018 is a reaction game whose window depends on the frame rate, and a step
-costs about 3.2 seconds. Measured, not assumed; it is the one obstacle in
-the corpus no amount of grammar reaches.
+66666 requires clicking a hidden element. The semantic author receives the
+rendered live-screen inventory, so an invisible control is not a human target
+it can ground. Inventing a selector would violate the authoring contract;
+`record` therefore refuses the step and returns the live inventory for
+clarification.
 
 ## Taken by `Drag` (1)
 
