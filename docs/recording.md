@@ -61,10 +61,10 @@ redact→persist path, so upgrading capture never touches sync or redaction:
   Keyframes make step sync *exact by construction* and keep the bundle
   small. The visual result is a step-synchronized filmstrip, not 30fps
   video — an accepted v1 tradeoff, stated in the artifact format so
-  consumers can distinguish it. For review, the bundle also carries a
-  ready-to-play `recording.gif`: the keyframes as one animation, each
-  frame shown for the real gap to the next (clamped to stay watchable),
-  so a whole run reviews like a video without continuous capture.
+  consumers can distinguish it. With `--video`, the bundle also carries a
+  ready-to-play `recording.gif`: the keyframes as one animation, each frame
+  shown for the real gap to the next (clamped to stay watchable), so a whole
+  run reviews like a video without continuous capture.
 - **Later — continuous source** (follow-up PRs): DXGI desktop duplication on
   Windows, CDP screencast for web, feeding the same sink at N fps and
   assembled into WebM. The bundle format below already carries a `format`
@@ -75,8 +75,11 @@ Capture density and GIF creation are execution-time choices, available on
 both `record` and `run`:
 
 ```bash
-# Keep all before/after screenshots but skip GIF assembly.
-flowproof run checkout.flow.yaml --no-video
+# Default: keep screenshots and skip GIF assembly.
+flowproof run checkout.flow.yaml
+
+# Opt in to GIF/video assembly.
+flowproof run checkout.flow.yaml --video
 
 # Initial state, every fifth completed step, and final state.
 flowproof run checkout.flow.yaml --recording-detail low
@@ -88,12 +91,13 @@ flowproof run checkout.flow.yaml --highlight-cursor
 flowproof run checkout.flow.yaml --recording-detail off
 ```
 
-`--recording-detail full` remains the default. `low` deliberately lets
+`--recording-detail full` remains the screenshot-density default, while GIF
+assembly is disabled unless `--video` is present. `low` deliberately lets
 several steps share one visual checkpoint, producing a less fluent but much
 cheaper review artifact. `off` changes artifacts only: the same actions,
 assertions, redaction-independent safety checks, and verdict still execute.
-`--no-video` is independent of detail, so `low --no-video` retains only the
-sparse PNG checkpoints. `--highlight-cursor` adds a pre-action checkpoint for
+`--video` is independent of detail, so `low --video` creates a sparse
+animation. `--highlight-cursor` adds a pre-action checkpoint for
 click, right-click, double-click, and hover actions; drag actions mark both
 ends. The bright halo appears on the event checkpoint, while later frames
 retain the cursor at its last known position. Because the cursor is rendered

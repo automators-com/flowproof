@@ -2251,7 +2251,7 @@ pub fn run_trace_with_secret_scan_and_options<D: AppDriver>(
         .collect();
     let mut recorder = recording
         .enabled()
-        .then(|| rules)
+        .then_some(rules)
         .flatten()
         .and_then(|rules| {
             flowproof_driver::RunRecorder::with_options(&run_dir, rules, recording).ok()

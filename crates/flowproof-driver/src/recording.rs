@@ -44,7 +44,7 @@ impl Default for RecordingOptions {
     fn default() -> Self {
         Self {
             detail: RecordingDetail::Full,
-            video: true,
+            video: false,
             highlight_cursor: false,
         }
     }
@@ -272,7 +272,11 @@ impl RunRecorder {
                     self.last_snapshot_after_step = self.completed_steps;
                 }
             }
-            RecordingDetail::Low if self.completed_steps % LOW_DETAIL_STEP_INTERVAL == 0 => {
+            RecordingDetail::Low
+                if self
+                    .completed_steps
+                    .is_multiple_of(LOW_DETAIL_STEP_INTERVAL) =>
+            {
                 if self.snap(driver) {
                     self.last_snapshot_after_step = self.completed_steps;
                 }
@@ -598,7 +602,11 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
         std::fs::create_dir_all(&base).expect("temp dir");
         let mut driver = mock_with_frame();
-        let mut recorder = RunRecorder::new(&base, vec![]).expect("recorder");
+        let options = RecordingOptions {
+            video: true,
+            ..RecordingOptions::default()
+        };
+        let mut recorder = RunRecorder::with_options(&base, vec![], options).expect("recorder");
         recorder.step_started(&mut driver, "s0001");
         // Change the screen mid-run so the GIF has distinct frames.
         driver.frame = Some(image::RgbaImage::from_pixel(
@@ -624,17 +632,12 @@ mod tests {
     }
 
     #[test]
-    fn video_can_be_disabled_without_disabling_keyframes() {
-        let base = std::env::temp_dir().join("flowproof-recording-no-video");
+    fn video_is_off_by_default_without_disabling_keyframes() {
+        let base = std::env::temp_dir().join("flowproof-recording-default-no-video");
         std::fs::remove_dir_all(&base).ok();
         std::fs::create_dir_all(&base).expect("temp dir");
         let mut driver = mock_with_frame();
-        let options = RecordingOptions {
-            detail: RecordingDetail::Full,
-            video: false,
-            highlight_cursor: false,
-        };
-        let mut recorder = RunRecorder::with_options(&base, vec![], options).expect("recorder");
+        let mut recorder = RunRecorder::new(&base, vec![]).expect("recorder");
         recorder.step_started(&mut driver, "s0001");
         recorder.step_finished(&mut driver);
         let recording = recorder.finish().expect("recording produced");

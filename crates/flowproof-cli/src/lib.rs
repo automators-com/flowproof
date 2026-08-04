@@ -86,12 +86,12 @@ impl From<RecordingDetailArg> for flowproof_driver::RecordingDetail {
 
 fn recording_options(
     detail: RecordingDetailArg,
-    no_video: bool,
+    video: bool,
     highlight_cursor: bool,
 ) -> flowproof_driver::RecordingOptions {
     flowproof_driver::RecordingOptions {
         detail: detail.into(),
-        video: !no_video,
+        video,
         highlight_cursor,
     }
 }
@@ -123,9 +123,9 @@ enum Command {
         /// Visual capture density: full, low, or off.
         #[arg(long, value_enum, default_value_t)]
         recording_detail: RecordingDetailArg,
-        /// Keep screenshot checkpoints but skip recording.gif generation.
+        /// Assemble screenshot checkpoints into recording.gif (off by default).
         #[arg(long)]
-        no_video: bool,
+        video: bool,
         /// Draw a visible cursor and prominent click halo into recordings.
         #[arg(long)]
         highlight_cursor: bool,
@@ -166,9 +166,9 @@ enum Command {
         /// Visual capture density: full, low, or off.
         #[arg(long, value_enum, default_value_t)]
         recording_detail: RecordingDetailArg,
-        /// Keep screenshot checkpoints but skip recording.gif generation.
+        /// Assemble screenshot checkpoints into recording.gif (off by default).
         #[arg(long)]
-        no_video: bool,
+        video: bool,
         /// Draw a visible cursor and prominent click halo into recordings.
         #[arg(long)]
         highlight_cursor: bool,
@@ -2005,7 +2005,7 @@ where
             reuse,
             keep_open,
             recording_detail,
-            no_video,
+            video,
             highlight_cursor,
         } => with_keep_browser_open(keep_open, || {
             cmd_record(
@@ -2014,7 +2014,7 @@ where
                 json,
                 author,
                 reuse,
-                recording_options(recording_detail, no_video, highlight_cursor),
+                recording_options(recording_detail, video, highlight_cursor),
             )
         }),
         Command::Run {
@@ -2027,7 +2027,7 @@ where
             strict,
             keep_open,
             recording_detail,
-            no_video,
+            video,
             highlight_cursor,
         } => {
             if keep_open && spec.is_dir() {
@@ -2051,7 +2051,7 @@ where
                         retries,
                         missing,
                         author,
-                        recording_options(recording_detail, no_video, highlight_cursor),
+                        recording_options(recording_detail, video, highlight_cursor),
                     )
                 })
             }
@@ -2447,30 +2447,34 @@ mod tests {
     }
 
     #[test]
-    fn cli_accepts_low_detail_without_video() {
+    fn cli_accepts_opt_in_video_with_low_detail() {
         let cli = Cli::try_parse_from([
             "flowproof",
             "run",
             "demo.flow.yaml",
             "--recording-detail",
             "low",
-            "--no-video",
+            "--video",
             "--highlight-cursor",
         ])
         .expect("recording controls parse");
         match cli.command {
             Command::Run {
                 recording_detail,
-                no_video,
+                video,
                 highlight_cursor,
                 ..
             } => {
                 assert_eq!(recording_detail, RecordingDetailArg::Low);
-                assert!(no_video);
+                assert!(video);
                 assert!(highlight_cursor);
             }
             _ => panic!("expected run command"),
         }
+
+        let default = Cli::try_parse_from(["flowproof", "run", "demo.flow.yaml"])
+            .expect("default recording controls parse");
+        assert!(matches!(default.command, Command::Run { video: false, .. }));
     }
 
     #[test]
