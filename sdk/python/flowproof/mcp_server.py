@@ -25,7 +25,14 @@ if FastMCP is not None:
     mcp = FastMCP("flowproof")
 
     @mcp.tool()
-    def flowproof_record(spec: str, out: str | None = None, author: str = "auto") -> dict[str, Any]:
+    def flowproof_record(
+        spec: str,
+        out: str | None = None,
+        author: str = "auto",
+        recording_detail: str = "full",
+        video: bool = False,
+        highlight_cursor: bool = False,
+    ) -> dict[str, Any]:
         """Record a flow: perform it once against the live app and write a
         deterministic trace. Requires the target platform (Windows for UIA
         apps like calc/notepad; any OS for `app: web`). `author` accepts
@@ -39,17 +46,33 @@ if FastMCP is not None:
         (docs/authoring.md) targeting a listed element, consulting your data
         source for domain questions (e.g. which fields are required), then
         call this tool again. A spec whose skip_unless_env gate is not
-        satisfied returns {"skipped": reason} — nothing was recorded."""
-        return json.loads(_native.record(spec, out, author))
+        satisfied returns {"skipped": reason} — nothing was recorded.
+        recording_detail (full/low/off), video and highlight_cursor are the
+        visual-capture controls described on flowproof_run."""
+        return json.loads(
+            _native.record(spec, out, author, recording_detail, video, highlight_cursor)
+        )
 
     @mcp.tool()
-    def flowproof_run(spec: str, trace: str | None = None) -> dict[str, Any]:
+    def flowproof_run(
+        spec: str,
+        trace: str | None = None,
+        recording_detail: str = "full",
+        video: bool = False,
+        highlight_cursor: bool = False,
+    ) -> dict[str, Any]:
         """Deterministically replay a recorded flow (zero LLM calls). A
         failing test is data ({"report": {"passed": false, ...}}), not an
         error. Returns {"report", "report_path"}; a spec whose
         skip_unless_env gate is not satisfied returns a skipped report with
-        {"report_path": null, "skipped": reason} — the flow never ran."""
-        return json.loads(_native.run(spec, trace))
+        {"report_path": null, "skipped": reason} — the flow never ran.
+        recording_detail picks the visual-capture density: "full" (before and
+        after every step), "low" (initial state, every fifth completed step,
+        final state), or "off". video assembles the checkpoints into
+        recording.gif (off by default); highlight_cursor draws a visible
+        cursor and click halo. All three affect artifacts only, never the
+        verdict."""
+        return json.loads(_native.run(spec, trace, recording_detail, video, highlight_cursor))
 
     @mcp.tool()
     def flowproof_get_trace(path: str) -> dict[str, Any]:

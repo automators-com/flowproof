@@ -8,6 +8,19 @@ together).
 
 ### Added
 
+- **The recording controls stopped at the command line.** `--recording-detail`,
+  `--video` and `--highlight-cursor` reached only shell callers, so the SDK and
+  the MCP tools — the surfaces agents actually drive — were stuck at full
+  density with no way to ask for a GIF. An agent replaying a suite paid for
+  screenshots it had no use for, and an agent that wanted an animation to hand
+  a reviewer had to shell out to the CLI to get one.
+
+  `record()` and `run()` now take `recording_detail`, `video` and
+  `highlight_cursor` — on `Flow`, on the module-level functions, and on the
+  `flowproof_record` / `flowproof_run` MCP tools. The defaults match the CLI's,
+  so existing callers see no change, and an unknown density is rejected before
+  the engine drives anything rather than after.
+
 - **A visible browser can stay open for inspection without changing the safe
   default.** `flowproof record <spec> --keep-open` and single-flow
   `flowproof run <spec> --keep-open` imply headed Chromium, wait after the flow
