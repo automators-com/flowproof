@@ -183,7 +183,12 @@ class Flow:
         object.__setattr__(self, "spec", Path(spec))
 
     def record(
-        self, out: str | Path | None = None, author: str = "auto"
+        self,
+        out: str | Path | None = None,
+        author: str = "auto",
+        recording_detail: str = "full",
+        video: bool = False,
+        highlight_cursor: bool = False,
     ) -> RecordResult | RecordSkipped:
         """Perform the flow once against the live app and write a trace.
 
@@ -194,8 +199,21 @@ class Flow:
         Raises :class:`ClarificationNeeded` when a step is too ambiguous to
         author — its ``clarification`` payload tells you what was stuck and
         what the live screen offered, so you can rewrite the step and retry.
+
+        ``recording_detail`` / ``video`` / ``highlight_cursor`` are the
+        visual-capture controls, matching the CLI's ``--recording-detail``,
+        ``--video`` and ``--highlight-cursor``. See :meth:`Flow.run`.
         """
-        data = json.loads(_native.record(self.spec, Path(out) if out else None, author))
+        data = json.loads(
+            _native.record(
+                self.spec,
+                Path(out) if out else None,
+                author,
+                recording_detail,
+                video,
+                highlight_cursor,
+            )
+        )
         if "needs_clarification" in data:
             raise ClarificationNeeded(data["needs_clarification"])
         if "skipped" in data:
@@ -207,14 +225,37 @@ class Flow:
             routing=tuple(data.get("routing", ())),
         )
 
-    def run(self, trace: str | Path | None = None) -> RunResult:
+    def run(
+        self,
+        trace: str | Path | None = None,
+        recording_detail: str = "full",
+        video: bool = False,
+        highlight_cursor: bool = False,
+    ) -> RunResult:
         """Deterministically replay the recorded trace (zero LLM calls).
 
         A failing test is a ``RunResult`` with ``passed=False``, not an
         exception; ``RuntimeError`` means the run could not execute at all
         (missing trace, unsupported platform, ...).
+
+        ``recording_detail`` chooses how densely visual evidence is captured:
+        ``"full"`` (before and after every step), ``"low"`` (initial state,
+        every fifth completed step, final state), or ``"off"`` (no capture).
+        ``video`` assembles the captured checkpoints into ``recording.gif``;
+        it is off by default, so a suite run does not pay for a GIF nobody
+        opens. ``highlight_cursor`` draws a visible cursor and click halo into
+        the frames. All three change artifacts only — the same actions,
+        assertions, redaction and verdict execute either way.
         """
-        return _parse_run_result(_native.run(self.spec, Path(trace) if trace else None))
+        return _parse_run_result(
+            _native.run(
+                self.spec,
+                Path(trace) if trace else None,
+                recording_detail,
+                video,
+                highlight_cursor,
+            )
+        )
 
     def get_trace(self, trace: str | Path | None = None) -> dict[str, Any]:
         """Load the recorded trace for inspection: ``{"header": …, "steps": […]}``."""
@@ -239,14 +280,27 @@ class Flow:
         return _parse_heal_result(data)
 
 
-def record(spec: str | Path, out: str | Path | None = None, author: str = "auto") -> RecordResult:
+def record(
+    spec: str | Path,
+    out: str | Path | None = None,
+    author: str = "auto",
+    recording_detail: str = "full",
+    video: bool = False,
+    highlight_cursor: bool = False,
+) -> RecordResult:
     """Record a flow from a YAML spec. See :meth:`Flow.record`."""
-    return Flow(spec).record(out, author)
+    return Flow(spec).record(out, author, recording_detail, video, highlight_cursor)
 
 
-def run(spec: str | Path, trace: str | Path | None = None) -> RunResult:
+def run(
+    spec: str | Path,
+    trace: str | Path | None = None,
+    recording_detail: str = "full",
+    video: bool = False,
+    highlight_cursor: bool = False,
+) -> RunResult:
     """Replay a recorded flow deterministically. See :meth:`Flow.run`."""
-    return Flow(spec).run(trace)
+    return Flow(spec).run(trace, recording_detail, video, highlight_cursor)
 
 
 def get_trace(path: str | Path) -> dict[str, Any]:

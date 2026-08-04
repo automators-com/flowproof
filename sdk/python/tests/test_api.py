@@ -132,6 +132,85 @@ def test_python_author_mode_is_validated_before_execution():
         flowproof.heal("does-not-exist.flow.yaml", author="guess")
 
 
+def test_python_recording_detail_is_validated_before_execution():
+    """A typo'd density must fail before the engine drives anything — the
+    spec here does not exist, so reaching the engine would raise a DIFFERENT
+    error. Matching the detail message proves validation happens first."""
+    with pytest.raises(RuntimeError, match="expected full, low, or off"):
+        flowproof.record("does-not-exist.flow.yaml", recording_detail="medium")
+    with pytest.raises(RuntimeError, match="expected full, low, or off"):
+        flowproof.run("does-not-exist.flow.yaml", recording_detail="medium")
+
+
+def test_recording_options_reach_the_engine_in_order(monkeypatch):
+    """record() and run() forward the visual-capture controls positionally.
+    Swapping two of them silently sends a bool where a density belongs, which
+    the engine would reject only at execution time on a real flow."""
+    from flowproof import flow as flow_module
+
+    seen: dict[str, tuple] = {}
+
+    class FakeNative:
+        @staticmethod
+        def record(*args):
+            seen["record"] = args
+            return json.dumps({"trace_path": "t.jsonl", "steps": 1})
+
+        @staticmethod
+        def run(*args):
+            seen["run"] = args
+            return json.dumps(
+                {
+                    "report": {
+                        "name": "n",
+                        "trace_id": "t",
+                        "passed": True,
+                        "duration_ms": 1,
+                        "steps": [],
+                    },
+                    "report_path": None,
+                }
+            )
+
+    monkeypatch.setattr(flow_module, "_native", FakeNative)
+
+    flowproof.record("a.flow.yaml", recording_detail="low", video=True, highlight_cursor=True)
+    assert seen["record"] == (Path("a.flow.yaml"), None, "auto", "low", True, True)
+
+    flowproof.run("a.flow.yaml", recording_detail="off", video=False, highlight_cursor=True)
+    assert seen["run"] == (Path("a.flow.yaml"), None, "off", False, True)
+
+
+def test_recording_defaults_keep_screenshots_and_skip_video(monkeypatch):
+    """The default stays: capture checkpoints (the report's step viewer is
+    built from them), assemble no GIF."""
+    from flowproof import flow as flow_module
+
+    seen: dict[str, tuple] = {}
+
+    class FakeNative:
+        @staticmethod
+        def run(*args):
+            seen["run"] = args
+            return json.dumps(
+                {
+                    "report": {
+                        "name": "n",
+                        "trace_id": "t",
+                        "passed": True,
+                        "duration_ms": 1,
+                        "steps": [],
+                    },
+                    "report_path": None,
+                }
+            )
+
+    monkeypatch.setattr(flow_module, "_native", FakeNative)
+
+    flowproof.run("a.flow.yaml")
+    assert seen["run"][2:] == ("full", False, False)
+
+
 def test_missing_trace_is_a_clean_error(tmp_path):
     # run() now loads the spec first (skip gates + parse errors surface on
     # single runs); a nonexistent spec fails there, cleanly.
