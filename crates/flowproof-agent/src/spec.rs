@@ -311,10 +311,10 @@ pub struct FlowSpec {
     /// For `app: web`: the URL to open (relative paths become `file://`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// For `app: sap`: the SAP Logon connection description to open when no
-    /// session is already running (e.g. `S/4HANA Development`). Omitted =
-    /// attach to whatever logged-in SAP GUI session exists. May carry
-    /// `${VAR}` references, resolved at launch time.
+    /// For `app: sap`: the SAP Logon connection description to select or open
+    /// (e.g. `S/4HANA Development`). Flowproof starts SAP Logon if necessary.
+    /// Omitted = attach to any logged-in SAP GUI session already running. May
+    /// carry `${VAR}` references, resolved at launch time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
     /// The window this flow drives: which one, and what shape.

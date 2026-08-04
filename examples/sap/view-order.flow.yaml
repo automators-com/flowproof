@@ -1,6 +1,7 @@
 # A SAP GUI flow. Requirements on the recording/replaying machine:
-# Windows, SAP GUI for Windows installed, SAP Logon running and logged in,
-# and scripting enabled (RZ11: sapgui/user_scripting = TRUE).
+# Windows, SAP GUI for Windows installed, and scripting enabled on the client
+# and server (RZ11: sapgui/user_scripting = TRUE). `connection` starts SAP
+# Logon if needed; SAP_USER and SAP_PASSWORD complete the standard login.
 #
 # Read-only complement to create-order.flow.yaml: views an existing order
 # instead of creating one, via VA03. Order 314 is real sample data on the

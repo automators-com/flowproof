@@ -54,6 +54,7 @@ class Component:
         "Name",
         "Text",
         "Tooltip",
+        "MessageType",
         "Changeable",
         "ScreenLeft",
         "ScreenTop",
@@ -70,6 +71,7 @@ class Component:
         self.Name = name
         self.Text = text
         self.Tooltip = tooltip
+        self.MessageType = ""
         self.Changeable = changeable
         self.ScreenLeft = 10
         self.ScreenTop = 10
@@ -99,6 +101,7 @@ class Window(Component):
 
     def SendVKey(self, vkey):
         self._screen.vkeys.append(int(vkey))
+        self._screen.on_vkey(int(vkey))
 
 
 class Collection:
@@ -149,14 +152,15 @@ class Session(Component):
     _public_methods_ = Component._public_methods_ + ["FindById"]
     _public_attrs_ = Component._public_attrs_ + ["Info"]
 
-    def __init__(self, screen):
+    def __init__(self, screen, user="FLOWPROOF", system="SIM"):
         Component.__init__(self, screen, "ses", "GuiSession", "ses[0]")
         self.Id = "/app/con[0]/ses[0]"
         # Wrapped, like every other nested object here (`Children`, `child`,
         # `connection`). An unwrapped Python instance is not dispatchable, so
         # the engine's `get_disp("Info")` would fail and the session would look
         # exactly as "not logged in" as before.
-        self.Info = wrap(SessionInfo())
+        self._info = SessionInfo(user=user, system=system)
+        self.Info = wrap(self._info)
 
     def FindById(self, element_id):
         element = self._screen.by_id.get(str(element_id))
@@ -170,41 +174,56 @@ class Session(Component):
 class Screen:
     """The VA01-ish screen plus its behavior (press effects, vkeys)."""
 
-    def __init__(self):
+    def __init__(self, user="FLOWPROOF", title="Create Standard Order", order_screen=True):
         self.vkeys = []
         self.by_id = {}
-        self.session = Session(self)
-        window = Window(self, "wnd[0]", "GuiMainWindow", "wnd[0]", text="Create Standard Order")
-        self.session.add(window)
-        self._register("wnd[0]", window)
+        self.session = Session(self, user=user, system="SIM" if order_screen else "OTHER")
+        self.window = Window(self, "wnd[0]", "GuiMainWindow", "wnd[0]", text=title)
+        self.session.add(self.window)
+        self._register("wnd[0]", self.window)
 
         def field(rel_id, kind, name, tooltip, changeable=True, text=""):
             component = Component(self, rel_id, kind, name, text, tooltip, changeable)
-            window.add(component)
+            self.window.add(component)
             self._register(rel_id, component)
             return component
 
         field("wnd[0]/tbar[0]/okcd", "GuiOkCodeField", "okcd", "Command field")
-        field(
-            "wnd[0]/usr/ctxtVBAK-AUART",
-            "GuiCTextField",
-            "VBAK-AUART",
-            "Order Type",
+        # Standard SAP login controls. The desired simulated connection starts
+        # logged out so the Rust adapter must fill these and submit Enter.
+        self.client_field = field(
+            "wnd[0]/usr/txtRSYST-MANDT", "GuiTextField", "RSYST-MANDT", "Client"
         )
-        field(
-            "wnd[0]/usr/txtVBAK-KUNNR",
-            "GuiTextField",
-            "VBAK-KUNNR",
-            "Customer",
+        self.user_field = field(
+            "wnd[0]/usr/txtRSYST-BNAME", "GuiTextField", "RSYST-BNAME", "User"
         )
-        field(
-            "wnd[0]/tbar[1]/btn[8]",
-            "GuiButton",
-            "btn[8]",
-            "Continue (Enter)",
-            changeable=False,
-            text="Continue",
+        self.password_field = field(
+            "wnd[0]/usr/pwdRSYST-BCODE", "GuiPasswordField", "RSYST-BCODE", "Password"
         )
+        self.language_field = field(
+            "wnd[0]/usr/txtRSYST-LANGU", "GuiTextField", "RSYST-LANGU", "Language"
+        )
+        if order_screen:
+            field(
+                "wnd[0]/usr/ctxtVBAK-AUART",
+                "GuiCTextField",
+                "VBAK-AUART",
+                "Order Type",
+            )
+            field(
+                "wnd[0]/usr/txtVBAK-KUNNR",
+                "GuiTextField",
+                "VBAK-KUNNR",
+                "Customer",
+            )
+            field(
+                "wnd[0]/tbar[1]/btn[8]",
+                "GuiButton",
+                "btn[8]",
+                "Continue (Enter)",
+                changeable=False,
+                text="Continue",
+            )
         self.sbar = field("wnd[0]/sbar", "GuiStatusbar", "sbar", "", changeable=False)
 
     def _register(self, rel_id, component):
@@ -217,16 +236,43 @@ class Screen:
         if rel_id == "wnd[0]/tbar[1]/btn[8]":
             self.sbar.Text = "Order 4711 saved"
 
+    def on_vkey(self, vkey):
+        if (
+            vkey == 0
+            and not self.session._info.User
+            and self.user_field.Text == "SIMUSER"
+            and self.password_field.Text == "SIMPASS"
+        ):
+            self.session._info.User = "SIMUSER"
+            self.session._info.Client = self.client_field.Text or "001"
+            self.window.Text = "Create Standard Order"
+
+
+class Connection(Component):
+    _public_attrs_ = Component._public_attrs_ + ["Description", "SystemName"]
+
+    def __init__(self, screen, description, system):
+        Component.__init__(self, screen, "con", "GuiConnection", description)
+        self.Id = "/app/con[0]"
+        self.Description = description
+        self.SystemName = system
+        self.add(screen.session)
+
 
 class Engine:
     _public_methods_ = ["OpenConnection"]
     _public_attrs_ = ["Children"]
 
     def __init__(self, screen):
-        connection = Component(screen, "con", "GuiConnection", "con[0]")
-        connection.Id = "/app/con[0]"
-        connection.add(screen.session)
-        self.Children = wrap(Collection([wrap(connection)]))
+        # An unrelated connection deliberately comes first. Flowproof must
+        # select the connection requested by the flow instead of blindly
+        # attaching to Children[0].
+        unrelated_screen = Screen(
+            user="OTHERUSER", title="SAP Easy Access - Other", order_screen=False
+        )
+        unrelated = Connection(unrelated_screen, "Other system", "OTHER")
+        desired = Connection(screen, "SIM", "SIM")
+        self.Children = wrap(Collection([wrap(unrelated), wrap(desired)]))
 
     def OpenConnection(self, description, sync=True):
         raise COMException(desc="simulator: a session is already running")
@@ -261,7 +307,7 @@ def register_in_rot(obj):
 
 def main():
     pythoncom.CoInitialize()
-    screen = Screen()
+    screen = Screen(user="", title="SAP Logon", order_screen=True)
     sapgui = wrap(SapGui(Engine(screen)))
     handle = register_in_rot(sapgui)
     print("READY", flush=True)
