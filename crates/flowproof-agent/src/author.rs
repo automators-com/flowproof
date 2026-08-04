@@ -1278,6 +1278,33 @@ mod tests {
     }
 
     #[test]
+    fn sap_transaction_intent_can_ground_to_deterministic_navigation() {
+        let mut client = Scripted {
+            replies: vec![r##"{"action":"rule_step","step":"Go to /nVA01"}"##.into()],
+            calls: 0,
+        };
+        let action = author_step(
+            &mut client,
+            &AuthorContext {
+                flow_name: "Create an order",
+                app: "sap",
+                url: None,
+                prior_steps: &[],
+                intent: "Open transaction VA01 to create a sales order",
+                scene: "[]",
+                captures: &[],
+            },
+        )
+        .expect("SAP transaction intent needs no element selector");
+        assert_eq!(
+            action,
+            ResolvedAction::Navigate {
+                path: "/nVA01".into()
+            }
+        );
+    }
+
+    #[test]
     fn capture_text_rejects_unsafe_names() {
         let reply = r##"{"action":"capture_text","target":"css:#greet","name":"Order Number"}"##;
         let mut client = Scripted {

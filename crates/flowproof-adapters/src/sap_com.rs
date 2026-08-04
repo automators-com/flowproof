@@ -30,6 +30,9 @@ pub struct SapElement {
     pub text: String,
     /// Human-readable tooltip / quick info.
     pub tooltip: String,
+    /// SAP status-bar severity (`S`, `W`, `E`, `A`, or empty). Other
+    /// component types normally leave this empty.
+    pub message_type: String,
     /// Whether the element accepts input right now.
     pub changeable: bool,
     /// Checkbox / radio state, when the element has one.
@@ -66,9 +69,9 @@ impl SapElement {
 /// Implemented by the COM bridge on Windows and by [`fake::FakeEngine`]
 /// everywhere for tests.
 pub trait SapEngine {
-    /// Attach to a running, logged-in SAP GUI session. `connection` is the
-    /// SAP Logon connection description to open if no session exists yet
-    /// (empty = attach-only).
+    /// Attach to a logged-in SAP GUI session. `connection` is the SAP Logon
+    /// entry to select or open, starting SAP Logon when necessary (empty =
+    /// attach-only).
     fn connect(&mut self, connection: &str, timeout: Duration) -> Result<(), DriverError>;
     /// Look an element up by scripting id. `Ok(None)` = not on screen.
     fn find_by_id(&mut self, id: &str) -> Result<Option<SapElement>, DriverError>;
@@ -161,6 +164,27 @@ impl<E: SapEngine> SapAppDriver<E> {
             DriverError::Uia(format!("sap: no element matches selector [{selector}]"))
         })
     }
+
+    /// SAP GUI scripting calls can return successfully even when the
+    /// application rejected the action. The actual failure is reported in
+    /// `wnd[0]/sbar`, so promote error/abort messages to driver failures.
+    fn reject_status_error(&mut self, action: &str) -> Result<(), DriverError> {
+        let Some(status) = self.engine.find_by_id("wnd[0]/sbar")? else {
+            return Ok(());
+        };
+        if matches!(status.message_type.trim(), "E" | "A") {
+            let message = status.text.trim();
+            return Err(DriverError::Uia(if message.is_empty() {
+                format!(
+                    "sap: {action} was rejected (status {})",
+                    status.message_type
+                )
+            } else {
+                format!("sap: {action} was rejected: {message}")
+            }));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -198,7 +222,8 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
             // Labels, list rows, everything else: focus is the closest
             // scripted equivalent of a click.
             _ => self.engine.set_focus(&element.id),
-        }
+        }?;
+        self.reject_status_error(&format!("action on '{}'", element.id))
     }
 
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
@@ -233,7 +258,8 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
                  (supported: Enter, F1–F12, Shift/Ctrl+F1–F12)"
             ))
         })?;
-        self.engine.send_vkey(vkey)
+        self.engine.send_vkey(vkey)?;
+        self.reject_status_error(&format!("key '{key}'"))
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
@@ -255,8 +281,22 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
     fn navigate(&mut self, path: &str) -> Result<(), DriverError> {
         // `Go to /nVA01` — type the transaction code into the command
         // field and hit Enter, exactly how a user navigates SAP.
-        self.engine.set_text(OKCODE_FIELD, path)?;
-        self.engine.send_vkey(0)
+        let transaction = path.trim();
+        if transaction.is_empty() {
+            return Err(DriverError::Uia(
+                "sap: transaction code must not be empty".into(),
+            ));
+        }
+        // A human may simply say `Go to VA01`; `/n` is the deterministic SAP
+        // OK-code form for replacing the current transaction.
+        let ok_code = if transaction.starts_with('/') {
+            transaction.to_string()
+        } else {
+            format!("/n{transaction}")
+        };
+        self.engine.set_text(OKCODE_FIELD, &ok_code)?;
+        self.engine.send_vkey(0)?;
+        self.reject_status_error(&format!("transaction '{ok_code}'"))
     }
 
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
@@ -421,6 +461,8 @@ pub mod fake {
 /// → `FindById` / property access), so behavior matches SAP's own tooling.
 #[cfg(windows)]
 pub mod com {
+    use std::path::PathBuf;
+    use std::process::Command;
     use std::time::{Duration, Instant};
 
     use windows::core::{Interface, BSTR, GUID, PCWSTR};
@@ -583,6 +625,7 @@ pub mod com {
                 name: element.get_string("Name"),
                 text: element.get_string("Text"),
                 tooltip: element.get_string("Tooltip"),
+                message_type: element.get_string("MessageType"),
                 changeable: element.get_bool("Changeable").unwrap_or(false),
                 selected: element.get_bool("Selected"),
                 rect,
@@ -605,37 +648,126 @@ pub mod com {
                 .map(Disp)
         }
 
+        /// Start SAP Logon when a flow names a connection but no scripting
+        /// root is running yet. SAP GUI does not register `SAPGUI` in the ROT
+        /// until SAP Logon starts, so OpenConnection cannot be the first call.
+        /// `SAP_LOGON_EXE` handles non-default and centrally managed installs;
+        /// the two standard install roots and PATH cover normal clients.
+        fn start_sap_logon() -> Result<(), DriverError> {
+            let mut candidates = Vec::<PathBuf>::new();
+            if let Some(explicit) = std::env::var("SAP_LOGON_EXE")
+                .ok()
+                .map(|value| value.trim().trim_matches('"').to_string())
+                .filter(|value| !value.is_empty())
+            {
+                candidates.push(PathBuf::from(explicit));
+            }
+            if let Some(home) = std::env::var("SAPGUI_HOME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+            {
+                candidates.push(PathBuf::from(home).join("saplogon.exe"));
+            }
+            for root in ["ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"] {
+                if let Some(root) = std::env::var(root)
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    candidates.push(
+                        PathBuf::from(root)
+                            .join("SAP")
+                            .join("FrontEnd")
+                            .join("SAPgui")
+                            .join("saplogon.exe"),
+                    );
+                }
+            }
+            candidates.push(PathBuf::from("saplogon.exe"));
+
+            let mut failures = Vec::new();
+            for executable in candidates {
+                match Command::new(&executable).spawn() {
+                    Ok(_) => {
+                        eprintln!("sap-com: started SAP Logon; waiting for scripting");
+                        return Ok(());
+                    }
+                    Err(error) => failures.push(format!("{}: {error}", executable.display())),
+                }
+            }
+            Err(DriverError::Uia(format!(
+                "sap-com: could not start SAP Logon; set SAP_LOGON_EXE to saplogon.exe \
+                 ({})",
+                failures.join("; ")
+            )))
+        }
+
+        /// SAP exposes several names for a connection depending on GUI
+        /// version and landscape source. Match the Logon entry description
+        /// first, while also accepting its technical name/system id.
+        fn connection_matches(candidate: &Disp, requested: &str) -> bool {
+            let requested = requested.trim();
+            !requested.is_empty()
+                && ["Description", "Name", "SystemName"]
+                    .iter()
+                    .map(|property| candidate.get_string(property))
+                    .any(|value| value.trim().eq_ignore_ascii_case(requested))
+        }
+
         /// Log in on SAP's own logon screen, using the standard fields every
         /// SAP system ships (client/user/password - the same ones a VBScript
-        /// recording of a manual login would drive). A no-op unless both
-        /// SAP_USER and SAP_PASSWORD are set: attach-only and an explicit
-        /// OpenConnection-without-login stay exactly as they were before this
-        /// existed. Values are read fresh from the environment and used only
-        /// as this one property-put each - never logged, never traced, never
-        /// stored anywhere by this function.
-        fn try_auto_login(session: &Disp) {
-            let (Ok(user), Ok(password)) =
-                (std::env::var("SAP_USER"), std::env::var("SAP_PASSWORD"))
-            else {
-                return;
+        /// recording of a manual login would drive). Returns `Ok(false)` when
+        /// neither credential is configured. A half-configured login and a
+        /// non-standard login screen are errors instead of a silent timeout.
+        /// Values are read fresh and used only for these property puts - never
+        /// logged, traced, or stored by this function.
+        fn try_auto_login(session: &Disp) -> Result<bool, DriverError> {
+            let user = std::env::var("SAP_USER").ok();
+            let password = std::env::var("SAP_PASSWORD").ok();
+            let (user, password) = match (user, password) {
+                (None, None) => return Ok(false),
+                (Some(user), Some(password)) if !user.is_empty() && !password.is_empty() => {
+                    (user, password)
+                }
+                _ => {
+                    return Err(DriverError::Uia(
+                        "sap-com: auto-login requires both SAP_USER and SAP_PASSWORD".into(),
+                    ))
+                }
             };
             eprintln!("sap-com: not logged in - attempting auto-login");
             if let Some(client) = std::env::var("SAP_CLIENT").ok().filter(|c| !c.is_empty()) {
                 if let Some(field) = Self::find_in(session, "wnd[0]/usr/txtRSYST-MANDT") {
-                    let _ = field.put("Text", VARIANT::from(BSTR::from(client.as_str())));
+                    field.put("Text", VARIANT::from(BSTR::from(client.as_str())))?;
                 }
             }
-            if let Some(field) = Self::find_in(session, "wnd[0]/usr/txtRSYST-BNAME") {
-                let _ = field.put("Text", VARIANT::from(BSTR::from(user.as_str())));
+            if let Some(language) = std::env::var("SAP_LANGUAGE")
+                .ok()
+                .filter(|value| !value.is_empty())
+            {
+                if let Some(field) = Self::find_in(session, "wnd[0]/usr/txtRSYST-LANGU") {
+                    field.put("Text", VARIANT::from(BSTR::from(language.as_str())))?;
+                }
             }
-            if let Some(field) = Self::find_in(session, "wnd[0]/usr/pwdRSYST-BCODE") {
-                let _ = field.put("Text", VARIANT::from(BSTR::from(password.as_str())));
-            }
+            let user_field = Self::find_in(session, "wnd[0]/usr/txtRSYST-BNAME").ok_or_else(|| {
+                DriverError::Uia(
+                    "sap-com: login screen has no standard user field; SSO or a custom login dialog needs an already logged-in session".into(),
+                )
+            })?;
+            user_field.put("Text", VARIANT::from(BSTR::from(user.as_str())))?;
+            let password_field = Self::find_in(session, "wnd[0]/usr/pwdRSYST-BCODE")
+                .ok_or_else(|| {
+                    DriverError::Uia(
+                        "sap-com: login screen has no standard password field; SSO or a custom login dialog needs an already logged-in session".into(),
+                    )
+                })?;
+            password_field.put("Text", VARIANT::from(BSTR::from(password.as_str())))?;
             // Submit - Enter on the window, exactly how navigate() confirms
             // any other screen.
-            if let Some(window) = Self::find_in(session, "wnd[0]") {
-                let _ = window.call("SendVKey", vec![VARIANT::from(0i32)]);
-            }
+            let window = Self::find_in(session, "wnd[0]").ok_or_else(|| {
+                DriverError::Uia("sap-com: login screen has no main window".into())
+            })?;
+            window.call("SendVKey", vec![VARIANT::from(0i32)])?;
+            Ok(true)
         }
 
         fn walk_into(element: &Disp, depth: u32, out: &mut Vec<SapElement>) {
@@ -729,77 +861,142 @@ pub mod com {
                 // COM is already usable here.
                 let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             }
+            // Starting SAP Logon, crossing SAProuter, and authenticating is a
+            // materially longer bootstrap than attaching to an existing app.
+            // Keep attach-only fast, but give named connections a practical
+            // default and an explicit override for slow landscapes.
+            let timeout = if connection.is_empty() {
+                timeout
+            } else {
+                std::env::var("FLOWPROOF_SAP_CONNECT_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .map(Duration::from_millis)
+                    .unwrap_or_else(|| timeout.max(Duration::from_secs(60)))
+            };
             let deadline = Instant::now() + timeout;
-            let mut opened = false;
-            let mut login_attempted = false;
+            let mut opened_connection: Option<Disp> = None;
+            let mut sap_logon_start_attempted = false;
+            let mut login_checked = false;
+            let mut auto_login_submitted = false;
+            let mut saw_login_screen = false;
+            let mut startup_error: Option<DriverError> = None;
+            let mut login_error: Option<DriverError> = None;
+            let mut last_error: Option<DriverError> = None;
             loop {
-                let attempt = (|| -> Result<(Option<Disp>, bool), DriverError> {
-                    let sapgui = Disp(attach_to_sapgui()?);
+                let attempt = (|| -> Result<Option<Disp>, DriverError> {
+                    let sapgui = match attach_to_sapgui() {
+                        Ok(sapgui) => Disp(sapgui),
+                        Err(error) => {
+                            // Attach-only remains attach-only. A named
+                            // connection, however, contains enough intent to
+                            // start SAP Logon before opening that connection.
+                            if !connection.is_empty() && !sap_logon_start_attempted {
+                                sap_logon_start_attempted = true;
+                                if let Err(start_error) = Self::start_sap_logon() {
+                                    startup_error = Some(start_error);
+                                }
+                            }
+                            return Err(error);
+                        }
+                    };
                     let engine = sapgui.call_disp("GetScriptingEngine", vec![])?;
                     let connections = engine.get_disp("Children")?;
-                    if connections.get_i32("Count").unwrap_or(0) == 0 {
-                        if !connection.is_empty() && !opened {
-                            engine.call(
+
+                    let mut candidates = Vec::new();
+                    if let Some(opened) = &opened_connection {
+                        candidates.push(opened.clone());
+                    } else {
+                        let count = connections.get_i32("Count").unwrap_or(0);
+                        for index in 0..count {
+                            let candidate =
+                                connections.call_disp("ElementAt", vec![VARIANT::from(index)])?;
+                            if connection.is_empty()
+                                || Self::connection_matches(&candidate, connection)
+                            {
+                                candidates.push(candidate);
+                            }
+                        }
+
+                        // SAP may already have an unrelated connection (or a
+                        // connection object with no session). That must not
+                        // suppress opening the connection named by this flow.
+                        if candidates.is_empty() && !connection.is_empty() {
+                            let opened = engine.call_disp(
                                 "OpenConnection",
                                 vec![VARIANT::from(BSTR::from(connection)), VARIANT::from(true)],
                             )?;
+                            opened_connection = Some(opened.clone());
+                            candidates.push(opened);
                         }
-                        return Ok((None, false)); // keep waiting for a session
                     }
-                    let conn = connections.call_disp("ElementAt", vec![VARIANT::from(0)])?;
-                    let sessions = conn.get_disp("Children")?;
-                    if sessions.get_i32("Count").unwrap_or(0) == 0 {
-                        return Ok((None, false));
-                    }
-                    let session = sessions.call_disp("ElementAt", vec![VARIANT::from(0)])?;
-                    // A session object exists as soon as its window opens -
-                    // including the SAP login screen itself, and logging off
-                    // leaves that same window (and session object) open too.
-                    // Existence alone can't tell "logged in" from "sitting at
-                    // the login screen" - the login screen has the standard
-                    // toolbar and command field just like any other screen.
-                    // `Info.User` is empty until a user actually authenticates
-                    // (the login screen itself reports transaction `S000`,
-                    // SAP's own code for "not logged on yet").
-                    let logged_in = session
-                        .get_disp("Info")
-                        .map(|info| !info.get_string("User").is_empty())
-                        .unwrap_or(false);
-                    if !logged_in {
-                        // #226 follow-up: an unattended nightly run has
-                        // nobody to log back in when a session expires.
-                        // SAP_USER/SAP_PASSWORD let us do that ourselves,
-                        // once per attach - a no-op when they're unset, so
-                        // attach-only and interactive use are unchanged.
-                        if !login_attempted {
-                            Self::try_auto_login(&session);
+
+                    for candidate in candidates {
+                        let sessions = candidate.get_disp("Children")?;
+                        let count = sessions.get_i32("Count").unwrap_or(0);
+                        for index in 0..count {
+                            let session =
+                                sessions.call_disp("ElementAt", vec![VARIANT::from(index)])?;
+                            // A session object exists as soon as its window
+                            // opens, including SAP's login screen. Info.User
+                            // is populated only after authentication.
+                            let logged_in = session
+                                .get_disp("Info")
+                                .map(|info| !info.get_string("User").is_empty())
+                                .unwrap_or(false);
+                            if logged_in {
+                                return Ok(Some(session));
+                            }
+                            saw_login_screen = true;
+                            if !login_checked {
+                                login_checked = true;
+                                match Self::try_auto_login(&session) {
+                                    Ok(submitted) => auto_login_submitted = submitted,
+                                    Err(error) => login_error = Some(error),
+                                }
+                            }
                         }
-                        return Ok((None, true)); // keep waiting - not logged in yet
                     }
-                    Ok((Some(session), false))
+                    Ok(None)
                 })();
 
                 match attempt {
-                    Ok((Some(session), _)) => {
+                    Ok(Some(session)) => {
                         self.session = Some(session);
                         return Ok(());
                     }
-                    Ok((None, at_login_screen)) => {
-                        opened = !connection.is_empty();
-                        login_attempted = login_attempted || at_login_screen;
-                    }
-                    Err(e) if Instant::now() >= deadline => {
-                        return Err(DriverError::Uia(format!(
-                            "{e} — start SAP Logon, log in, and enable scripting \
-                             (sapgui/user_scripting = TRUE)"
-                        )));
-                    }
-                    Err(_) => {}
+                    Ok(None) => {}
+                    Err(error) => last_error = Some(error),
                 }
                 if Instant::now() >= deadline {
-                    return Err(DriverError::Uia(
-                        "sap-com: timed out waiting for a logged-in SAP GUI session".into(),
-                    ));
+                    let detail = if let Some(error) = login_error {
+                        error.to_string()
+                    } else if let Some(error) = startup_error {
+                        error.to_string()
+                    } else if saw_login_screen && !auto_login_submitted {
+                        "SAP reached its login screen; set both SAP_USER and SAP_PASSWORD \
+                         (optionally SAP_CLIENT and SAP_LANGUAGE), or log in interactively"
+                            .to_string()
+                    } else if saw_login_screen {
+                        "SAP credentials were submitted but no logged-in session appeared; \
+                         check the client and credentials, and dismiss any multi-login, SSO, \
+                         password-change, or license dialog"
+                            .to_string()
+                    } else if let Some(error) = last_error {
+                        error.to_string()
+                    } else if connection.is_empty() {
+                        "no logged-in SAP session was found; add `connection:` to open one, \
+                         or log in before running an attach-only flow"
+                            .to_string()
+                    } else {
+                        format!("connection '{connection}' did not produce an SAP session")
+                    };
+                    return Err(DriverError::Uia(format!(
+                        "sap-com: timed out waiting for a logged-in SAP GUI session: {detail}. \
+                         Ensure SAP GUI scripting is enabled on the client and server \
+                         (sapgui/user_scripting = TRUE)"
+                    )));
                 }
                 std::thread::sleep(Duration::from_millis(500));
             }
@@ -983,6 +1180,35 @@ mod tests {
             vec![("wnd[0]/tbar[0]/okcd".to_string(), "/nVA01".to_string())]
         );
         assert_eq!(d.engine.vkeys, vec![0]);
+    }
+
+    #[test]
+    fn navigate_normalizes_a_bare_transaction_code() {
+        let mut d = driver();
+        d.navigate("VA01").expect("navigates");
+        assert_eq!(
+            d.engine.set_texts,
+            vec![("wnd[0]/tbar[0]/okcd".to_string(), "/nVA01".to_string())]
+        );
+    }
+
+    #[test]
+    fn navigate_reports_sap_status_bar_errors() {
+        let mut d = driver();
+        let status = d
+            .engine
+            .elements
+            .iter_mut()
+            .find(|element| element.id == "wnd[0]/sbar")
+            .expect("status bar");
+        status.message_type = "E".into();
+        status.text = "This function is not possible".into();
+
+        let error = d.navigate("/nSESSION_MANAGER").expect_err("SAP rejects it");
+        assert!(error
+            .to_string()
+            .contains("transaction '/nSESSION_MANAGER'"));
+        assert!(error.to_string().contains("This function is not possible"));
     }
 
     #[test]

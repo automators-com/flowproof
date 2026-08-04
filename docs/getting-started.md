@@ -704,17 +704,36 @@ the denial pattern, `assert_no_secret_leak`, and `flowproof audit`), see
 
 `app: sap` drives SAP GUI for Windows through **SAP GUI Scripting** — the
 COM automation surface SAP ships — never through pixels or synthetic
-keystrokes. Requirements: SAP Logon running and logged in, scripting
-enabled (`sapgui/user_scripting = TRUE` in RZ11), and flowproof on the
-same Windows machine.
+keystrokes. Requirements: SAP GUI for Windows installed, scripting enabled on
+the client and server (`sapgui/user_scripting = TRUE` in RZ11), and flowproof
+on the same Windows machine. With `connection:` present, Flowproof starts SAP
+Logon when needed, selects or opens that connection, and can complete the
+standard SAP login screen from environment variables. Without `connection:`,
+the flow remains attach-only and needs an existing logged-in session.
+
+On the client, enable **SAP Logon Options → Accessibility & Scripting →
+Scripting → Enable scripting**. The server setting alone is not sufficient.
+
+```powershell
+$env:SAP_CONNECTION = "S/4HANA Development" # SAP Logon entry description
+$env:SAP_USER = "training-user"
+$env:SAP_PASSWORD = "..."                    # never written to the trace
+$env:SAP_CLIENT = "100"                      # optional
+$env:SAP_LANGUAGE = "EN"                     # optional
+```
+
+For a non-standard installation, set `SAP_LOGON_EXE` to the full path of
+`saplogon.exe`. Named connections wait up to 60 seconds by default; override
+that for slow SAProuter landscapes with `FLOWPROOF_SAP_CONNECT_TIMEOUT_MS`.
 
 ```yaml
 name: Create standard order
 app: sap
-connection: ${SAP_CONNECTION}   # SAP Logon entry to open if no session is
-                                # running yet; omit to attach to the current one
+connection: ${SAP_CONNECTION}   # SAP Logon entry to select/open; SAP Logon is
+                                # started if needed. Omit for attach-only.
 steps:
-  - Go to /nVA01                                    # navigate by transaction code
+  - Go to VA01                                      # plain transaction code; Flowproof
+                                                    #   records deterministic /nVA01
   - Type ZOR into the "Order Type" field            # anchors match the tooltip,
                                                     #   visible text, or technical
                                                     #   name (VBAK-AUART)
@@ -730,6 +749,10 @@ deterministically, and offered to the LLM author as `id:` target tokens
 like any other scene. Labelled press targets also record the label as a
 text-anchor fallback rung, so those steps survive id drift (degraded,
 reported, healable). See `examples/sap/create-order.flow.yaml`.
+
+After an Enter or scripted control action, Flowproof reads SAP's status bar.
+An SAP error or abort (for example, `This function is not possible`) now fails
+that exact step with SAP's message instead of allowing recording to continue.
 
 ## Vision flows: pixels only (Citrix, RDP, anything)
 

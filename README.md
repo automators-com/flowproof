@@ -239,7 +239,8 @@ before/after frames — applied only with explicit `--apply`.
   default, `FLOWPROOF_HEADED=1` to watch it
 - Windows desktop via UI Automation (`calc`, `notepad`)
 - `app: sap` — SAP GUI Scripting over COM: native scripting ids,
-  transaction-code navigation (`Go to /nVA01`), SAP virtual keys; an
+  transaction-code navigation (`Go to /nVA01`), SAP virtual keys, SAP Logon
+  launch/connection selection, and optional environment-backed login; an
   in-memory fake engine keeps the pipeline tested on every platform
 - `app: vision` — pixels-only driving for Citrix/RDP: OCR perception
   (pure-Rust ocrs), spatial text anchors, real input injection

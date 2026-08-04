@@ -28,6 +28,7 @@ use flowproof_agent::FlowSpec;
 const SPEC: &str = "\
 name: Create order
 app: sap
+connection: SIM
 steps:
   - Go to /nVA01
   - Type ZOR into the \"Order Type\" field
@@ -66,6 +67,35 @@ fn real_com_engine_records_and_replays_against_the_simulator() {
         return;
     }
 
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    // The simulator puts an unrelated logged-in connection first and the
+    // requested SIM connection second, sitting at the login screen. This one
+    // run therefore proves connection selection and environment-backed login
+    // through the production COM implementation.
+    let _user = EnvGuard::set("SAP_USER", "SIMUSER");
+    let _password = EnvGuard::set("SAP_PASSWORD", "SIMPASS");
+    let _client = EnvGuard::set("SAP_CLIENT", "001");
+
     let dir = std::env::temp_dir().join("flowproof-sap-sim-e2e");
     std::fs::create_dir_all(&dir).expect("temp dir");
     let trace_path = dir.join("order.trace.jsonl");
@@ -86,6 +116,10 @@ fn real_com_engine_records_and_replays_against_the_simulator() {
         assert!(
             header.contains("\"adapter\":\"sap-com\""),
             "header: {header}"
+        );
+        assert!(
+            header.contains("\"url\":\"SIM\""),
+            "the requested SAP connection must remain replayable: {header}"
         );
         assert!(
             trace.contains(r#""id":"wnd[0]/usr/txtVBAK-KUNNR""#),

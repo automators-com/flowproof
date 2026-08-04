@@ -21,7 +21,7 @@ fn spec_yaml() -> String {
     if std::env::var("SAP_CONNECTION").is_ok() {
         spec.push_str("connection: ${SAP_CONNECTION}\n");
     }
-    spec.push_str("steps:\n  - Go to /nSESSION_MANAGER\n  - assert: page shows Session\n");
+    spec.push_str("steps:\n  - Go to SMEN\n  - assert: page shows SAP Easy Access\n");
     spec
 }
 

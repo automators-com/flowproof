@@ -8,6 +8,29 @@ together).
 
 ### Fixed
 
+- **A SAP flow could neither start SAP Logon nor reliably select its requested
+  connection.** `connection:` was passed to `OpenConnection`, but only after a
+  `SAPGUI` COM object already existed, so a closed SAP Logon could never reach
+  that call. When SAP was open, the adapter inspected only the first connection
+  and could attach to the wrong system or wait forever behind an unrelated
+  half-open connection.
+
+  A named SAP flow now starts `saplogon.exe` when needed, discovers default
+  installs or `SAP_LOGON_EXE`, selects an existing matching connection or opens
+  the requested one, scans all candidate sessions, and completes the standard
+  login from `SAP_USER`/`SAP_PASSWORD` (plus optional client/language). Startup
+  gets a practical 60-second default, and failures distinguish missing paired
+  credentials, non-standard login screens, post-login dialogs, and disabled
+  scripting without exposing secrets.
+
+- **SAP could reject a transaction while Flowproof treated the navigation as
+  successful.** The COM call itself succeeds when SAP reports an application
+  error only in `wnd[0]/sbar`. Flowproof now promotes SAP status types `E` and
+  `A` to failures with the original status text, accepts a plain transaction
+  code such as `VA01` and records the deterministic `/nVA01` OK code, and uses
+  portable transaction `SMEN` rather than the internal `SESSION_MANAGER` name
+  in its Easy Access smoke flow.
+
 - **Sonnet 5 could spend Flowproof's entire 1,024-token authoring allowance on
   reasoning and never reach its answer.** Anthropic returned a valid signed
   thinking block with `stop_reason: max_tokens`; Flowproof called that an
