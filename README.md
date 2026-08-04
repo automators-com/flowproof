@@ -236,7 +236,8 @@ before/after frames — applied only with explicit `--apply`.
 
 **Reach** — adapters behind one spec format:
 - `app: web` — Chromium via DevTools protocol, cross-platform; headless by
-  default, `FLOWPROOF_HEADED=1` to watch it
+  default, `FLOWPROOF_HEADED=1` to watch it; `--keep-open` leaves a single
+  flow visible for inspection until its window is closed
 - Windows desktop via UI Automation (`calc`, `notepad`)
 - `app: sap` — SAP GUI Scripting over COM: native scripting ids,
   transaction-code navigation (`Go to /nVA01`), SAP virtual keys, SAP Logon
