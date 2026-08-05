@@ -70,6 +70,15 @@ these fields existed) is byte-identical:
   SAP Logon connection description for `sap` (absent = attach to the
   running session). Either may be a `${VAR}` reference, stored raw and
   resolved at every launch.
+- Optional `app.login_user` (sap) is the user the recording logged in as,
+  stored raw like `url`. The identity is part of what a recording *means* —
+  an order created by a clerk and one created by an approver are different
+  evidence — so a trace that could not name it would not be reviewable.
+  There is deliberately **no password field**: the password lives in the
+  spec's `login:` block and is resolved fresh at every launch, so a
+  committed trace has nothing to leak and nothing to redact. Absent =
+  the flow took whatever session was open, from `SAP_USER`/`SAP_PASSWORD`
+  or from a human's own login.
 - `agent` records provenance of authorship only; replay never uses it.
 - Optional `recording` references the authoring execution's recording bundle
   (`{"format": "filmstrip/1", "dir": "...", "started_at"?}`); each step's
