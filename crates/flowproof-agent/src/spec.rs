@@ -40,6 +40,8 @@ pub enum SpecError {
     Drag(String),
     #[error("invalid exports: {0}")]
     Exports(String),
+    #[error("invalid apps: {0}")]
+    Surfaces(String),
 }
 
 /// `app:` is either a registry id (`web`, `calc`, `notepad`, `sap`,
@@ -60,7 +62,21 @@ pub enum AppSpec {
     },
 }
 
+impl Default for AppSpec {
+    /// The UNSET sentinel, never a real app: it exists so `app:` can be
+    /// omitted when a flow gives `apps:` instead, and `validate_surfaces`
+    /// refuses a flow where neither (or both) is given.
+    fn default() -> Self {
+        AppSpec::Id(String::new())
+    }
+}
+
 impl AppSpec {
+    /// Whether this is the unset sentinel (no `app:` in the spec).
+    pub fn is_unset(&self) -> bool {
+        matches!(self, AppSpec::Id(id) if id.is_empty())
+    }
+
     /// The app id a driver is selected by. The mapping form reports the
     /// reserved id `windows`.
     pub fn id(&self) -> &str {
@@ -79,6 +95,25 @@ impl AppSpec {
             } => Some((command, window_title)),
         }
     }
+}
+
+/// One named surface of a multi-surface flow. Deliberately narrower than a
+/// flow: `app` (registry id or Windows launch mapping), `url` for a web
+/// surface, `connection` for a SAP GUI surface. Per-surface `window:` and
+/// `browser:` config are OPEN design work (docs/multi-surface.md), so
+/// `deny_unknown_fields` turns them into loud errors today instead of
+/// silently ignored keys that look configured.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurfaceSpec {
+    pub app: AppSpec,
+    /// For web surfaces: the URL to open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// For sap surfaces: the SAP Logon connection description (omitted =
+    /// attach to a logged-in session), as on a single-surface flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
 }
 
 impl From<&str> for AppSpec {
@@ -308,8 +343,20 @@ pub struct McpServerSpec {
 pub struct FlowSpec {
     pub name: String,
     /// App id resolved via `flowproof_driver::resolve_app` (e.g. `calc`),
-    /// or `web` for browser flows.
+    /// or `web` for browser flows. Defaulted (to the unset sentinel) only
+    /// so a multi-surface flow can give `apps:` INSTEAD — `validate_surfaces`
+    /// enforces exactly one of the two, so a flow with neither still fails
+    /// at parse with an error naming both spellings.
+    #[serde(default, skip_serializing_if = "AppSpec::is_unset")]
     pub app: AppSpec,
+    /// Named surfaces for a MULTI-surface flow: `name -> {app, url|connection}`.
+    /// Mutually exclusive with `app:`. Steps then live in `in: <name>`
+    /// blocks, exactly one surface active at a time — SAP GUI scripting,
+    /// UIA and vision all inject real input into the foreground window, so
+    /// sequential blocks are correctness, not a simplification. Captures
+    /// share ONE namespace across blocks; that reach is the feature.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub apps: std::collections::BTreeMap<String, SurfaceSpec>,
     /// For `app: web`: the URL to open (relative paths become `file://`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -410,6 +457,18 @@ pub struct FlowSpec {
     /// nobody set.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub exports: std::collections::BTreeMap<String, String>,
+}
+
+/// First `in:` block anywhere in `steps` (recursing into `repeat`/`when`
+/// bodies), returning its surface name — used both to refuse blocks in
+/// single-surface flows and to refuse NESTED blocks in multi-surface ones.
+fn find_in_block(steps: &[SpecStep]) -> Option<&str> {
+    steps.iter().find_map(|step| match step {
+        SpecStep::InSurface { block } => Some(block.surface.as_str()),
+        SpecStep::Repeat { repeat } => find_in_block(&repeat.steps),
+        SpecStep::When { when } => find_in_block(&when.steps),
+        _ => None,
+    })
 }
 
 /// A `Drag` must be followed by an assertion.
@@ -877,6 +936,92 @@ impl FlowSpec {
         Ok(())
     }
 
+    /// Check `apps:` and the `in:` block structure — the multi-surface
+    /// vocabulary. Every wrong combination is a parse error naming the
+    /// right spelling, never a key that silently does nothing: exactly ONE
+    /// of `app:`/`apps:`; blocks require `apps:`, name a declared surface,
+    /// hold at least one step, and never nest (one surface is active at a
+    /// time — a switch inside a `repeat`/`when` pass would interleave real
+    /// input across surfaces); and every step lives inside a block.
+    /// WHICH kinds may be a surface, and where url/connection config sits,
+    /// is the next slice of this validation (docs/multi-surface.md).
+    fn validate_surfaces(&self) -> Result<(), SpecError> {
+        let bad = |m: String| Err(SpecError::Surfaces(m));
+        let multi = !self.apps.is_empty();
+        if self.app.is_unset() && !multi {
+            return bad(
+                "a flow drives a surface: give `app:` (e.g. `app: web`) or, for a \
+                 multi-surface flow, `apps:` with `in:` step blocks"
+                    .into(),
+            );
+        }
+        if !self.app.is_unset() && multi {
+            return bad(
+                "`app:` and `apps:` are mutually exclusive: a single-surface flow names \
+                 its one app, a multi-surface flow declares them all under `apps:`"
+                    .into(),
+            );
+        }
+        if !multi {
+            if let Some(name) = find_in_block(&self.steps) {
+                return bad(format!(
+                    "`in: {name}` needs `apps:` — a single-surface flow's steps all run \
+                     on its one `app:` and take no blocks"
+                ));
+            }
+            return Ok(());
+        }
+        for (name, surface) in &self.apps {
+            let mut chars = name.chars();
+            let valid = chars.next().is_some_and(|c| c.is_ascii_lowercase())
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-".contains(c));
+            if !valid {
+                return bad(format!(
+                    "surface name `{name}` must match [a-z][a-z0-9_-]* — it will name the \
+                     surface in traces and failure output"
+                ));
+            }
+            if surface.app.is_unset() {
+                return bad(format!("surface `{name}` names no app"));
+            }
+        }
+        let declared = || {
+            self.apps
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        for step in &self.steps {
+            let SpecStep::InSurface { block } = step else {
+                return bad(format!(
+                    "in a multi-surface flow every step lives inside an `in:` block; \
+                     `{}` sits at the top level (out-of-band asserts run fine inside a \
+                     block)",
+                    step.intent()
+                ));
+            };
+            if !self.apps.contains_key(&block.surface) {
+                return bad(format!(
+                    "`in: {}` names no declared surface (declared: {})",
+                    block.surface,
+                    declared()
+                ));
+            }
+            if block.steps.is_empty() {
+                return bad(format!("`in: {}` has no steps", block.surface));
+            }
+            if let Some(nested) = find_in_block(&block.steps) {
+                return bad(format!(
+                    "`in: {nested}` cannot nest inside `in: {}` — one surface is active \
+                     at a time, and a switch inside a block would interleave input",
+                    block.surface
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Check `exports:`. Each key becomes an environment variable for the
     /// suite's remaining flows, so it must be a legal env name — the same
     /// shape `env_from` output enforces. Whether a `${captured.<name>}` in
@@ -1093,7 +1238,28 @@ pub enum SpecStep {
     Rules {
         rules: String,
     },
+    /// A multi-surface flow's surface block: every step inside runs with
+    /// the named surface active (`- in: gui` with its own `steps:`). Only
+    /// valid when the flow declares `apps:`, and only at the TOP level of
+    /// `steps:` — a surface switch inside a `repeat`/`when` block would
+    /// interleave input across surfaces mid-loop, which the one-active-
+    /// surface model exists to prevent.
+    InSurface {
+        block: InBlock,
+    },
     Plain(String),
+}
+
+/// `in: <surface>` with its own `steps` — the second two-key step form
+/// (`when` is the first, and the same arity reasoning applies: nesting the
+/// surface name a level deeper would buy consistency with unreadable YAML).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InBlock {
+    /// The surface name, resolved against the flow's `apps:` map.
+    #[serde(rename = "in")]
+    pub surface: String,
+    pub steps: Vec<SpecStep>,
 }
 
 /// `repeat: { until, max, steps }`.
@@ -1147,8 +1313,8 @@ impl SpecStep {
          `assert_sql: {...}`, `assert_api: {...}`, `assert_screenshot: {...}`, \
          `prompt: <text>`, `assert_tool_call: <text>`, \
          `assert_no_tool_call: <text>`, `assert_no_egress`, \
-         `assert_no_secret_leak: ${VAR}`, `repeat: {...}`, `when: <cond>` with `steps:`, or \
-         `foreach: {...}`";
+         `assert_no_secret_leak: ${VAR}`, `repeat: {...}`, `when: <cond>` with `steps:`, \
+         `in: <surface>` with `steps:`, or `foreach: {...}`";
 
     fn from_yaml(value: serde_yaml::Value) -> Result<Self, String> {
         use serde_yaml::Value;
@@ -1166,13 +1332,18 @@ impl SpecStep {
                         None => format!("{k:?}"),
                     })
                     .collect();
-                // `when:` is the one two-key step form: nesting the
-                // condition a level deeper to satisfy the arity rule would
-                // buy consistency with unreadable YAML.
+                // `when:` and `in:` are the two two-key step forms: nesting
+                // the condition (or surface name) a level deeper to satisfy
+                // the arity rule would buy consistency with unreadable YAML.
                 if keys.len() == 2 && keys.contains(&"when".to_string()) {
                     return serde_yaml::from_value(Value::Mapping(map))
                         .map(|when| SpecStep::When { when })
                         .map_err(|e| format!("in `when` step: {e}"));
+                }
+                if keys.len() == 2 && keys.contains(&"in".to_string()) {
+                    return serde_yaml::from_value(Value::Mapping(map))
+                        .map(|block| SpecStep::InSurface { block })
+                        .map_err(|e| format!("in `in` step: {e}"));
                 }
                 if map.len() != 1 {
                     return Err(format!(
@@ -1272,6 +1443,11 @@ impl SpecStep {
                          `steps:` list (nested foreach is not supported)"
                             .into())
                     }
+                    // A lone `in:` key is a block missing its body, which
+                    // deserves a better error than "unknown step key".
+                    Some("in") => Err("`in:` names a surface and needs its own `steps:` \
+                         list beside it (`- in: gui` then an indented `steps:`)"
+                        .into()),
                     _ => Err(format!(
                         "unknown step key `{}`; recognized step forms are {}",
                         keys[0],
@@ -1347,6 +1523,7 @@ impl Serialize for SpecStep {
             }
             // Flat, matching the two-key form it was written in.
             SpecStep::When { when } => when.serialize(serializer),
+            SpecStep::InSurface { block } => block.serialize(serializer),
             // A single selector serializes as the string form it was written
             // in; several serialize as the list form. Both reparse identically.
             SpecStep::AssertNoSecretLeak {
@@ -1524,6 +1701,9 @@ impl SpecStep {
                 format!("repeat until {} (max {})", repeat.until, repeat.max)
             }
             SpecStep::When { when } => format!("when {}", when.when),
+            SpecStep::InSurface { block } => {
+                format!("in {}: {} steps", block.surface, block.steps.len())
+            }
             SpecStep::AssertSql { assert_sql } => {
                 format!("sql {}: {}", assert_sql.connection, assert_sql.query)
             }
@@ -1582,6 +1762,10 @@ impl FlowSpec {
         if spec.steps.is_empty() {
             return Err(SpecError::Empty);
         }
+        // Surfaces first: a multi-surface flow should get surface errors,
+        // and a flow with no `app:` at all should get the error naming both
+        // spellings before any app-kind check reads the unset sentinel.
+        spec.validate_surfaces()?;
         spec.validate_window()?;
         spec.validate_agent()?;
         spec.validate_clock()?;
@@ -3306,5 +3490,103 @@ mod security_spine_tests {
             err.to_string().contains("agent") && err.to_string().contains("captures"),
             "says why: {err}"
         );
+    }
+
+    const MULTI: &str = "\
+name: Order across GUI and portal
+apps:
+  gui: {app: sap, connection: \"${SAP_CONNECTION}\"}
+  portal: {app: web, url: \"${PORTAL_URL}\"}
+steps:
+  - in: gui
+    steps:
+      - Go to /nVA01
+      - Remember the \"id:wnd[0]/sbar\" matching /\\d+/ as order
+  - in: portal
+    steps:
+      - Type ${captured.order} into the \"Search\" field
+      - assert: page shows ${captured.order}
+";
+
+    #[test]
+    fn a_multi_surface_flow_parses_and_round_trips() {
+        let flow = spec(MULTI).expect("parses");
+        assert!(flow.app.is_unset());
+        assert_eq!(flow.apps.len(), 2);
+        assert_eq!(flow.apps["gui"].app.id(), "sap");
+        assert_eq!(flow.apps["portal"].url.as_deref(), Some("${PORTAL_URL}"));
+        let SpecStep::InSurface { block } = &flow.steps[0] else {
+            panic!("first step is an in-block: {:?}", flow.steps[0]);
+        };
+        assert_eq!(block.surface, "gui");
+        assert_eq!(block.steps.len(), 2);
+        // Round trip: serialize and reparse identically, in-blocks intact.
+        let yaml = serde_yaml::to_string(&flow).expect("serializes");
+        let back = spec(&yaml).expect("reparses");
+        assert_eq!(back, flow);
+    }
+
+    #[test]
+    fn app_and_apps_are_exactly_one_of() {
+        let both = spec(
+            "name: n\napp: web\nurl: x\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n    steps: [Press Enter]\n",
+        )
+        .expect_err("both given");
+        assert!(both.to_string().contains("mutually exclusive"), "{both}");
+        let neither =
+            spec("name: n\nsteps:\n  - assert: page shows x\n").expect_err("neither given");
+        assert!(
+            neither.to_string().contains("`app:`") && neither.to_string().contains("`apps:`"),
+            "names both spellings: {neither}"
+        );
+    }
+
+    #[test]
+    fn in_blocks_bind_to_declared_surfaces_only() {
+        let undeclared = spec(
+            "name: n\napps:\n  gui: {app: sap}\nsteps:\n  - in: portal\n    steps: [Press Enter]\n",
+        )
+        .expect_err("undeclared surface");
+        assert!(
+            undeclared.to_string().contains("portal")
+                && undeclared.to_string().contains("declared: gui"),
+            "names the declared surfaces: {undeclared}"
+        );
+        let without_apps =
+            spec("name: n\napp: web\nurl: x\nsteps:\n  - in: gui\n    steps: [Press Enter]\n")
+                .expect_err("in-block without apps");
+        assert!(
+            without_apps.to_string().contains("needs `apps:`"),
+            "{without_apps}"
+        );
+    }
+
+    #[test]
+    fn multi_surface_steps_all_live_inside_blocks_and_blocks_do_not_nest() {
+        let bare = spec("name: n\napps:\n  gui: {app: sap}\nsteps:\n  - Press Enter\n")
+            .expect_err("bare step at top level");
+        assert!(bare.to_string().contains("inside an `in:` block"), "{bare}");
+        let nested = spec(
+            "name: n\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n    steps:\n      - in: gui\n        steps: [Press Enter]\n",
+        )
+        .expect_err("nested block");
+        assert!(nested.to_string().contains("cannot nest"), "{nested}");
+        let hidden = spec(
+            "name: n\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n    steps:\n      - repeat:\n          until: page shows Done\n          max: 2\n          steps:\n            - in: gui\n              steps: [Press Enter]\n",
+        )
+        .expect_err("block inside repeat");
+        assert!(hidden.to_string().contains("cannot nest"), "{hidden}");
+        let empty = spec("name: n\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n    steps: []\n")
+            .expect_err("empty block");
+        assert!(empty.to_string().contains("no steps"), "{empty}");
+    }
+
+    /// A lone `in:` key (block missing its `steps:`) gets a better error
+    /// than "unknown step key".
+    #[test]
+    fn a_bodyless_in_step_says_what_is_missing() {
+        let err = spec("name: n\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n")
+            .expect_err("bodyless in");
+        assert!(err.to_string().contains("needs its own `steps:`"), "{err}");
     }
 }

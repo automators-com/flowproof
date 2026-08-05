@@ -105,6 +105,7 @@ fn freeform_spec(url: String) -> FlowSpec {
         strict: false,
         control: None,
         exports: Default::default(),
+        apps: Default::default(),
         steps: vec![
             SpecStep::Plain("Put Ada into the box labelled with the name".into()),
             SpecStep::Plain("Smash the greeting button".into()),
@@ -339,6 +340,7 @@ fn authors_scoped_capture_from_human_language() {
         strict: false,
         control: None,
         exports: Default::default(),
+        apps: Default::default(),
         steps: vec![
             SpecStep::Plain("Click the generate order ID control".into()),
             SpecStep::Plain("Remember the value beside \"order id\" as the order ID".into()),

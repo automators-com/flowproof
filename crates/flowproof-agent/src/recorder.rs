@@ -103,6 +103,16 @@ pub enum RecordError {
     NoAuthor { step: String, rules_error: String },
     #[error("driver cannot describe its scene; LLM authoring is unavailable for app '{0}'")]
     NoScene(String),
+    /// A multi-surface flow (`apps:` + `in:` blocks) reached an engine that
+    /// cannot run one yet. The vocabulary ships ahead of the engine so the
+    /// format and its validation are real; execution refuses by name.
+    #[error(
+        "this flow declares `apps:` (multi-surface), and the multi-surface engine has \
+         not shipped yet — recording refuses rather than drive the wrong surface. \
+         Until it lands, split the flow into a suite of single-surface flows chained \
+         with `exports:` (docs/authoring.md)"
+    )]
+    MultiSurfaceNotShipped,
     #[error(
         "cannot author step '{}' ({}): {} — a structured clarification payload with the \
          live-screen inventory is available via `record --json` or the MCP record tool",
@@ -2207,6 +2217,13 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     old_steps: Option<&[Step]>,
     recording_options: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, RecordError> {
+    // The multi-surface vocabulary parses (so the format is stable and its
+    // validation is real) but the engine has not shipped: refuse before
+    // launching anything, rather than drive the wrong surface or hand an
+    // `in:` block to the model as prose intent.
+    if !spec.apps.is_empty() {
+        return Err(RecordError::MultiSurfaceNotShipped);
+    }
     let mut reuse = old_steps.map(ReuseCursor::new);
     // `assert_no_secret_leak` selectors, grouped by asserting step. The scan
     // is a whole-run store-guard: it runs on the in-memory corpus BEFORE the
@@ -2352,6 +2369,14 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 }
                 queue.insert(at, (owned_step.clone(), passes + 1));
                 continue;
+            }
+            // Defense in depth: the top-of-function guard refuses every
+            // multi-surface SPEC, and validation ties `in:` blocks to
+            // `apps:` — but a hand-built FlowSpec could still smuggle one
+            // here, where the catch-all would send "in gui: 3 steps" to the
+            // model as prose intent.
+            crate::spec::SpecStep::InSurface { .. } => {
+                return Err(RecordError::MultiSurfaceNotShipped);
             }
             _ => {}
         }

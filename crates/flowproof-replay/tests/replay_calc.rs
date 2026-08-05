@@ -1976,3 +1976,31 @@ fn an_export_naming_an_unremembered_capture_fails_the_run_that_owns_it() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The multi-surface vocabulary parses ahead of its engine; RECORDING a
+/// multi-surface flow refuses by name — before launching anything — rather
+/// than driving the wrong surface or handing an `in:` block to the model
+/// as prose intent.
+#[test]
+fn recording_a_multi_surface_flow_refuses_by_name() {
+    let spec = FlowSpec::parse(
+        "name: Multi\napps:\n  portal: {app: web, url: \"https://e.test/x\"}\nsteps:\n  - in: portal\n    steps:\n      - Press the \"Go\" button\n",
+    )
+    .expect("the vocabulary parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-refusal");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+    let mut driver = MockAppDriver::new(&["Go"]);
+    let err = record(&spec, &mut driver, &trace).expect_err("engine has not shipped");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("multi-surface engine has not shipped") && msg.contains("exports:"),
+        "names the gap and the alternative: {msg}"
+    );
+    assert!(
+        driver.launched.is_none(),
+        "refused before launching anything"
+    );
+    assert!(!trace.exists(), "no trace minted");
+    std::fs::remove_dir_all(&dir).ok();
+}
