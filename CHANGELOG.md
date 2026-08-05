@@ -14,9 +14,12 @@ until now the only bridge between two flows was a hand-written script, exactly
 the glue flowproof exists to replace. A flow can now declare `exports:`, handing
 named values from its own captures to the flows after it, resolved at replay
 time from replay-time captures. The vocabulary for the seam *inside* one flow
-ships alongside it: `apps:` and `in:` parse and validate, with recording
-refusing by name and pointing at the shipped alternative, so specs can be
-written and reviewed before the engine exists.
+ships alongside it: `apps:` and `in:` parse and validate, the trace format
+carries the surfaces and attributes each step to one, and `record` and `run`
+refuse a multi-surface flow by name rather than driving the wrong surface. The
+format lands before the engine on purpose — specs can be written and reviewed
+now, single-surface traces still serialize byte-for-byte as before, and the
+refusal is the documentation of the gap.
 
 A step also stopped being one action. "Fill out all the vehicle data" authored
 a single field and moved on, because the authoring protocol accepted only one
