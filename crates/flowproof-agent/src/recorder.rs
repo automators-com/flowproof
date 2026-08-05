@@ -61,6 +61,19 @@ pub enum RecordError {
     MissingUrl,
     #[error("app 'vision' requires a `window:` field in the spec (title of the window to drive)")]
     MissingWindow,
+    /// A surface named an identity nothing can act as yet. `login:` parses
+    /// and validates on a surface entry — it is the shape a same-system
+    /// two-user case wants — but no surface stages its credentials, so
+    /// recording it would drive whatever session was already open while the
+    /// spec says otherwise. That is the exact confusion `login:` exists to
+    /// prevent, so it is refused by name rather than run as somebody else.
+    #[error(
+        "surface `{0}` declares `login:`, but no surface logs itself in yet — recording it \
+         would drive whatever SAP session is already open, as whoever opened it. Until the \
+         engine lands, put each identity on its own single-surface `app: sap` flow with a \
+         `login:` block and chain the case with `exports:`"
+    )]
+    SurfaceLogin(String),
     #[error("element for step '{intent}' not found: [{selector}]")]
     ElementNotFound { intent: String, selector: String },
     /// `expected` and `actual` are complete phrases, not bare values: the
@@ -1131,6 +1144,12 @@ fn surface_app_info(surface: &crate::spec::SurfaceSpec) -> AppInfo {
         // A web surface's launch/emulation shape travels with the surface,
         // so record and every replay stage it before THIS surface launches.
         browser: surface.browser.clone(),
+        // Deliberately not `surface.login`: no surface logs itself in yet,
+        // so a recording never acted as that user, and a header that named
+        // one would be claiming evidence the run does not have. Record
+        // refuses such a flow by name (`RecordError::SurfaceLogin`), so
+        // this arm is only ever reached by a surface with no `login:`.
+        login_user: None,
         version: None,
     }
 }
@@ -1145,6 +1164,13 @@ pub fn surface_targets(
     spec.apps
         .iter()
         .map(|(name, surface)| {
+            // The one surface shape that parses but cannot be driven: an
+            // identity nothing stages. Refused here, at the launch seam
+            // both `record` and `heal` pass through, so no trace is ever
+            // written claiming a user the run never was.
+            if surface.login.is_some() {
+                return Err(RecordError::SurfaceLogin(name.clone()));
+            }
             let target = match surface.app.id() {
                 "web" => {
                     let url = surface.url.as_deref().ok_or(RecordError::MissingUrl)?;
@@ -2371,6 +2397,12 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             local_storage,
         })?;
     }
+    // Who this flow logs in as. Resolved here and again at every replay, so
+    // a `${VAR}` password is never frozen into the recording — and a literal
+    // one stays in the spec file, which is the only place it appears.
+    if let Some(login) = &spec.login {
+        driver.stage_credentials(login.resolved()?)?;
+    }
     if !spec.mock.is_empty() {
         driver.stage_mocks(spec.mock.iter().map(web_mock_from_rule).collect())?;
     }
@@ -3448,6 +3480,10 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     .or_else(|| (!target.command.is_empty()).then(|| target.command.clone())),
                 _ => None,
             },
+            // RAW, like every other header identity: a `${VAR}` stays a
+            // reference so it resolves fresh at replay. The password has no
+            // header field at all — it never leaves the spec.
+            login_user: spec.login.as_ref().map(|login| login.user.clone()),
             // Single-surface flows keep the header-level `browser` field.
             browser: None,
             version: None,
@@ -3491,6 +3527,9 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             geometry: None,
             url: None,
             browser: None,
+            // The sentinel names no identity either: identities live on
+            // the surfaces, and no surface logs itself in yet.
+            login_user: None,
             version: None,
         };
         header.apps = spec
@@ -4982,6 +5021,46 @@ steps:
                 .and_then(|v| v.as_str()),
             Some("cell")
         );
+    }
+
+    /// `login:` on a surface parses and validates — it is the shape a
+    /// same-system two-user case wants — but nothing stages a surface's
+    /// credentials yet. Launching anyway would drive whatever session was
+    /// already open while the spec names somebody else, so the launch seam
+    /// refuses by name and no trace is written claiming that identity.
+    #[test]
+    fn a_surface_that_names_a_login_refuses_to_launch() {
+        let spec = FlowSpec::parse(
+            "name: Two users\napps:\n  \
+             clerk: {app: sap, connection: TS3, login: {user: obeva, password: pw}}\n  \
+             portal: {app: web, url: 'http://x'}\nsteps:\n  - in: clerk\n    \
+             steps: [Go to /nVA01]\n  - in: portal\n    steps: [Click \"Search\"]\n",
+        )
+        .expect("spec parses — the refusal is at launch, not at parse");
+        let err = surface_targets(&spec).expect_err("a surface login cannot launch");
+        let message = err.to_string();
+        assert!(
+            message.contains("clerk") && message.contains("logs itself in"),
+            "the refusal names the surface and the gap: {message}"
+        );
+        assert!(
+            message.contains("exports:"),
+            "and names the shape that does work today: {message}"
+        );
+    }
+
+    /// The counterpart: surfaces without `login:` still launch, so the
+    /// refusal is scoped to the one shape that cannot be driven.
+    #[test]
+    fn surfaces_without_a_login_still_launch() {
+        let spec = FlowSpec::parse(
+            "name: Two surfaces\napps:\n  gui: {app: sap, connection: TS3}\n  \
+             portal: {app: web, url: 'http://x'}\nsteps:\n  - in: gui\n    \
+             steps: [Go to /nVA01]\n  - in: portal\n    steps: [Click \"Search\"]\n",
+        )
+        .expect("spec parses");
+        let targets = surface_targets(&spec).expect("targets resolve");
+        assert_eq!(targets.len(), 2);
     }
 
     /// The live-driver selector carries the container query, so the web

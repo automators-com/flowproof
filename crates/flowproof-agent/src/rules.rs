@@ -4273,6 +4273,14 @@ mod tests {
             ),
             ("sap", "Go to /nVA01"),
             ("sap", r#"Type ZOR into the "Order Type" field"#),
+            // The `exports:` example in authoring.md and the Phase 2 example
+            // in multi-surface.md. Both once showed the REFUSED regex form
+            // of `Remember` — documented grammar that could not be recorded,
+            // because nothing here read those two pages.
+            (
+                "sap",
+                r#"Remember the "id:wnd[0]/usr/ctxtVBAK-VBELN" as order"#,
+            ),
             ("vision", r#"Press the "Submit" button"#),
             ("calc", "Type 53"),
             ("calc", "Press plus"),

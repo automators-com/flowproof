@@ -25,9 +25,9 @@ pub use app::{
     secure_over_http_warning, split_command_line, style_matches, text_contains, text_occurrences,
     url_matches, url_origin, verify_dialog, visible_now, AppDriver, AppTarget, CellHints,
     CellQuery, CookieFacts, CookieProbe, DebugBundle, DialogArm, DialogDisposition, FiredDialog,
-    FrameProbe, FrameQuery, KeyMod, NoOpDriver, PixelRect, ScopeHints, ScopeQuery, ScrollTo,
-    UiaAppDriver, UiaSelector, WebBrowserConfig, WebClock, WebMock, WebRandom, WebSession,
-    WebViewport, COUNT_DIAGNOSTIC_CAP, STABILITY_INTERVAL, STYLE_PROPS,
+    FrameProbe, FrameQuery, KeyMod, LoginCredentials, NoOpDriver, PixelRect, ScopeHints,
+    ScopeQuery, ScrollTo, UiaAppDriver, UiaSelector, WebBrowserConfig, WebClock, WebMock,
+    WebRandom, WebSession, WebViewport, COUNT_DIAGNOSTIC_CAP, STABILITY_INTERVAL, STYLE_PROPS,
 };
 pub use backend::PlatformBackend;
 pub use recording::{

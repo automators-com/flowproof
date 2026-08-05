@@ -6,7 +6,67 @@ together).
 
 ## Unreleased
 
+## 0.14.0
+
+This release is about the test case that does not fit in one flow. Real work
+crosses seams — SAP GUI creates the order, the web portal must show it — and
+until now the only bridge between two flows was a hand-written script, exactly
+the glue flowproof exists to replace. A flow can now declare `exports:`, handing
+named values from its own captures to the flows after it, resolved at replay
+time from replay-time captures.
+
+The seam *inside* one flow closed in the same release. `apps:` declares named
+surfaces, steps live in `in:` blocks, and a flow written that way records,
+replays and heals: one flow file, one trace, every step routed to the surface
+that ran it, and replay from the trace alone with zero LLM calls, exactly as a
+single-surface replay. Each surface carries its own config — `browser:` for a
+web surface, `window:` for a desktop one, vision included — and a screenshot
+baseline names its surface, so a `gui` baseline can never be compared against a
+`portal` frame. Single-surface traces serialize byte-for-byte as before.
+
+SAP flows also stopped borrowing their identity from the environment. A flow
+names the user it logs in as, so the clerk-then-approver case is two flows with
+one `login:` block each rather than two process-global variables that cannot
+both be set at once — and the password stays in the spec, with no field in the
+trace to leak it.
+
+A step also stopped being one action. "Fill out all the vehicle data" authored
+a single field and moved on, because the authoring protocol accepted only one
+JSON object — so the form failed its own validation with a trace that looked
+authored. A step is now a unit of intent: the model may answer with a sequence,
+grounded as a whole, and the scene it reasons over finally reports what a
+control holds rather than only what it is.
+
+And runs got faster where the time actually was. Every web probe walked an
+element-handle path costing four to six CDP calls, which is why turning video
+off never helped: a click is ~1.3s now against ~3.9s, a short type ~2.5s
+against ~5.6s, headed and headless alike.
+
 ### Added
+
+- **A SAP flow can name the user it logs in as.** Credentials came from
+  `SAP_USER`/`SAP_PASSWORD`, which are process-global — so a test case that
+  acts as a clerk and then as an approver could not express its second user
+  at all, and a run needed environment set up outside the spec before it
+  would work. A flow now takes a `login:` block (`user`, `password`,
+  optional `client` and `language`), and a suite of flows with one block
+  each is the two-user test case. Values may be `${VAR}` references
+  resolved at every launch, or literals, so a flow can run with nothing
+  configured anywhere. The password never enters the trace: it has no
+  header field, is read from the spec at each launch, and the header
+  carries only `login_user`, because a recording that cannot say which
+  identity produced it is not reviewable. `login:` without `connection:`
+  is refused — it reads like it picks an identity, but with nothing to open
+  it could only attach to whatever session was already there. And a session
+  logged in as somebody else is no longer taken over: flowproof opens its
+  own connection and logs in beside them, since driving the wrong identity
+  passes while proving nothing. Flows with no `login:` block behave exactly
+  as before. An `apps:` surface entry parses and validates the same block —
+  it is the shape a same-system two-user case wants — but nothing stages a
+  surface's credentials yet, so `record` and `heal` refuse such a flow by
+  name at launch rather than driving whatever session was already open as
+  whoever opened it. Until that lands, the same case is a suite of
+  single-surface flows chained with `exports:`, one `login:` each.
 
 - **`flowproof heal` works on multi-surface flows — Phase 2's list is
   empty.** Healing was refused on the belief it needed multi-surface
@@ -64,8 +124,8 @@ together).
   against a different order number than record saw. On a plain
   single-surface driver the first attributed step refuses by name — a
   multi trace can never quietly replay against one app. `run` and suites
-  lost their refusal; `heal` keeps one (it does not speak surfaces yet;
-  re-record instead). The test case that started all this — SAP GUI
+  lost their refusal, and `heal` lost its own a slice later (above). The
+  test case that started all this — SAP GUI
   creates the order, the portal must show it, SAP confirms — is now one
   flow file, one trace, free on every CI run.
 
@@ -80,10 +140,9 @@ together).
   and the trace stores the NAME, never the value, exactly as before. The
   header is the `multi` sentinel plus the surface map with config stored
   as written, so a `${VAR}` connection resolves fresh at every replay.
-  What remains is replay itself: `run` and `heal` refuse a multi-surface
-  flow naming exactly that (recording works, replay is the next slice),
-  and `assert_no_secret_leak` on one is refused until its corpus is
-  defined rather than scanned vacuously.
+  Replay was the next slice and landed in this same release (above);
+  `assert_no_secret_leak` on a multi-surface flow is still refused until
+  its corpus is defined rather than scanned vacuously.
 
 - **The driver layer can now hold several surfaces and drive exactly one.**
   A `SurfaceRegistry` stands where a single driver otherwise would,
@@ -114,21 +173,21 @@ together).
   as the action-enum gap before it, and the reason the new fixture
   exercises a `command`+`geometry` surface explicitly.
 
-- **The multi-surface vocabulary ships ahead of its engine.** A flow can
-  now declare `apps:` — named surfaces (`gui: {app: sap}`, `portal: {app:
-  web, url: …}`) — with its steps in `in: <surface>` blocks, exactly one
-  surface active at a time. The vocabulary parses and validates for real:
-  every wrong combination is a parse error naming the right spelling — a
-  block naming an undeclared surface lists the declared ones, a bare step
-  at top level says where steps live, `agent`, `api` and `vision`
-  surfaces are refused each with its reason, `url:`/`connection:` sit on
-  the surface of their kind, and flow-level surface config says where it
-  moved. What does NOT ship yet is the engine: `record` and `run` refuse
-  a multi-surface flow by name and point at the shipped alternative (a
-  suite of single-surface flows chained with `exports:`) rather than
-  driving the wrong surface or handing an `in:` block to the model as
-  prose. Shipping the format first means specs can be written and
-  reviewed now, and the refusal is the documentation of the gap
+- **The multi-surface vocabulary, one slice ahead of its engine.** A flow
+  can now declare `apps:` — named surfaces (`gui: {app: sap}`, `portal:
+  {app: web, url: …}`) — with its steps in `in: <surface>` blocks, exactly
+  one surface active at a time. The vocabulary parses and validates for
+  real: every wrong combination is a parse error naming the right spelling
+  — a block naming an undeclared surface lists the declared ones, a bare
+  step at top level says where steps live, `agent` and `api` surfaces are
+  refused each with its reason, `url:`/`connection:` sit on the surface of
+  their kind, and flow-level surface config says where it moved. The
+  engine followed within this release, slice by slice (the entries above),
+  and until each slice landed `record` and `run` refused by name and
+  pointed at the shipped alternative — a suite of single-surface flows
+  chained with `exports:` — rather than driving the wrong surface. The
+  vocabulary first meant specs could be written and reviewed while the
+  engine was built, and every refusal was the documentation of its own gap
   (docs/multi-surface.md has the plan).
 
 - **A test case that crossed technologies had no way to carry a value
@@ -206,6 +265,16 @@ together).
   listed as out of scope in the same document whose §8 describes it as built.
 
 ### Fixed
+
+- **Two documented examples showed grammar the engine refuses.** The
+  `exports:` walkthrough and the multi-surface example both captured an
+  order number with `Remember the "…" matching /\d+/ as order` — a regex
+  form the rules grammar declines by name, so a reader following either page
+  got a refusal from the tool that had just taught them the step. Both now
+  read the number from the field that holds it, which is what the refusal
+  tells you to do. The examples are strings in
+  `documented_grammar_examples_all_resolve` now, so the next drift fails
+  a test instead of a user's first recording.
 
 - **The report attached ten screenshots when eight were captured.** Step
   time ranges are contiguous — one step ends on the millisecond the next

@@ -533,8 +533,13 @@ name: Create standard order
 app: sap
 steps:
   - Go to /nVA01
-  # ... create the order ...
-  - Remember the "id:wnd[0]/sbar" matching /\d+/ as order
+  # ... create and save the order ...
+  # VA02 opens with the order just created already filled in, so the number
+  # has an element of its OWN. That is the shape a capture needs — reading
+  # it out of the status bar's sentence would be pattern matching, which
+  # the grammar refuses.
+  - Go to /nVA02
+  - Remember the "id:wnd[0]/usr/ctxtVBAK-VBELN" as order
 exports:
   ORDER_NO: ${captured.order}
 ```

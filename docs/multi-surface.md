@@ -10,7 +10,10 @@
 > zero LLM calls. Per-surface `browser:` and `window:` are shipped —
 > vision surfaces included — `assert_screenshot` baselines are
 > surface-qualified (`<name>@<surface>.png`), and `heal` runs on the same
-> surface registry recording uses. **Nothing from Phase 2 remains open.** Phase 3 remains a proposal.
+> surface registry recording uses. **Nothing from Phase 2 remains open.**
+> The one multi-surface shape still refused is a surface that names a
+> `login:` — nothing stages a surface's credentials yet ([below](#phase-2--multi-surface-flows-shipped)).
+> Phase 3 remains a proposal.
 
 ## The problem
 
@@ -64,13 +67,32 @@ steps:
   - in: gui
     steps:
       - Go to /nVA01
-      # ...
-      - Remember the "id:wnd[0]/sbar" matching /\d+/ as order
+      # ... create and save the order, then read the number from its own
+      # field rather than out of the status bar's sentence ...
+      - Go to /nVA02
+      - Remember the "id:wnd[0]/usr/ctxtVBAK-VBELN" as order
   - in: portal
     steps:
       - Type ${captured.order} into the "Search" field
       - assert: page shows ${captured.order}
 ```
+
+A sap surface takes `login:` too, with the same shape and the same rules as
+on a single-surface flow — which is what a *same-system, two-user* case
+wants, one flow with a `clerk` and an `approver` surface:
+
+```yaml
+apps:
+  clerk:    { app: sap, connection: TS3, login: { user: obeva,    password: ${CLERK_PW} } }
+  approver: { app: sap, connection: TS3, login: { user: approver, password: ${APPROVER_PW} } }
+```
+
+That parses and validates today. It does not RUN today: nothing stages a
+surface's credentials yet, so `record` and `heal` refuse a surface that names
+a `login:` — launching anyway would drive whatever SAP session was already
+open, as whoever opened it, which is the exact confusion `login:` exists to
+prevent. Until it lands, the same case is a suite of single-surface flows with
+one `login:` each, chained with `exports:` — Phase 1, which is shipped.
 
 Design decisions, each with its reason:
 

@@ -273,6 +273,37 @@ pub struct WebSession {
     pub local_storage: Vec<(String, String)>,
 }
 
+/// Login credentials for a surface that authenticates at launch, with
+/// RESOLVED values — `${VAR}` references are resolved by the caller before
+/// staging, exactly as for [`WebSession`], so resolution happens fresh on
+/// record and on every replay and the driver never sees a reference.
+///
+/// SAP GUI today; `client` and `language` are that login screen's other two
+/// fields. Staged state rather than a launch argument because credentials
+/// are per-FLOW: the environment pair every SAP flow has always read is
+/// process-global, so a test case spanning two users could not name its
+/// second one.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct LoginCredentials {
+    pub user: String,
+    pub password: String,
+    pub client: Option<String>,
+    pub language: Option<String>,
+}
+
+/// Never print the password, not even through `{:?}`: resolving late is
+/// pointless if a Debug rendering puts the value in a log line.
+impl std::fmt::Debug for LoginCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginCredentials")
+            .field("user", &self.user)
+            .field("password", &"<redacted>")
+            .field("client", &self.client)
+            .field("language", &self.language)
+            .finish()
+    }
+}
+
 /// A keyboard modifier held while pressing a key (`Ctrl+V`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyMod {
@@ -787,6 +818,15 @@ pub trait AppDriver {
     fn stage_session(&mut self, _session: WebSession) -> Result<(), DriverError> {
         Err(DriverError::Uia(
             "stage_session is not supported by this driver".into(),
+        ))
+    }
+
+    /// Stage login credentials for the NEXT `launch`. A driver that cannot
+    /// authenticate REJECTS them rather than ignoring them: dropping them
+    /// silently would run the flow as whoever happened to be logged in.
+    fn stage_credentials(&mut self, _credentials: LoginCredentials) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "this app does not log in at launch: `user:`/`password:` are for `app: sap`".into(),
         ))
     }
 
@@ -1792,6 +1832,12 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
         (**self).stage_session(session)
+    }
+
+    // Must forward explicitly: a boxed driver otherwise hits the trait
+    // DEFAULT, which REFUSES — and every real run holds a `Box<dyn AppDriver>`.
+    fn stage_credentials(&mut self, credentials: LoginCredentials) -> Result<(), DriverError> {
+        (**self).stage_credentials(credentials)
     }
 
     fn navigate(&mut self, url: &str) -> Result<(), DriverError> {
