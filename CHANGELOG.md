@@ -6,6 +6,26 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **The published wheel carried two known PyO3 advisories.** `flowproof-python`
+  was pinned to PyO3 0.26, which RUSTSEC-2026-0176 (out-of-bounds read in
+  `nth` / `nth_back` for `PyList` and `PyTuple` iterators) and RUSTSEC-2026-0177
+  (missing `Sync` bound on `PyCFunction::new_closure` closures) both name, and
+  both are fixed only in 0.29. This is the one dependency in the workspace that
+  ships to users rather than staying in a build: the extension module is the
+  wheel.
+
+  Now on 0.29, which required no source change - the binding was already written
+  against the `Bound` API the advisories left alone. `cargo audit` reports no
+  vulnerabilities. The `abi3-py39` floor is unchanged, so the wheel still
+  targets Python 3.9 and older interpreters keep working.
+
+  Two unmaintained-crate warnings remain, `paste` (RUSTSEC-2024-0436) and
+  `ttf-parser` (RUSTSEC-2026-0192). Both arrive through `imageproc`, a
+  dev-dependency of `flowproof-cli`, so neither is in a shipped artifact and
+  neither is a vulnerability.
+
 ## 0.14.0
 
 This release is about the test case that does not fit in one flow. Real work
