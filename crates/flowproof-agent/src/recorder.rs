@@ -2578,6 +2578,26 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         });
         prior_intents.push(intent);
         for action in authored.actions {
+            // A multi-surface baseline's IDENTITY names its surface —
+            // stored and compared as `<name>@<surface>.png` — so two
+            // blocks may reuse a spec name and a `gui` baseline can never
+            // be compared against a `portal` frame. Qualified once, here:
+            // minting, the trace, and replay all follow.
+            let action = match action {
+                ResolvedAction::AssertScreenshot {
+                    name,
+                    masks,
+                    threshold,
+                } if current_surface.is_some() => ResolvedAction::AssertScreenshot {
+                    name: format!(
+                        "{name}@{}",
+                        current_surface.as_deref().expect("guarded above")
+                    ),
+                    masks,
+                    threshold,
+                },
+                other => other,
+            };
             let step_id = format!("s{:04}", steps.len() + 1);
             if let Some(rec) = recorder.as_mut() {
                 rec.step_started(driver, &step_id);

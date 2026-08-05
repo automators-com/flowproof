@@ -2235,3 +2235,86 @@ fn a_surfaces_window_geometry_pins_at_first_activation_and_replays() {
     assert!(report.passed, "report: {report:#?}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Two surfaces may reuse one `assert_screenshot` NAME: the baseline's
+/// stored identity is `<name>@<surface>.png`, so gui's frame and portal's
+/// frame each compare against their own baseline. The frames differ by
+/// construction — if the identity ignored the surface, the second mint
+/// would overwrite the first and one replay compare would fail; both
+/// files existing and the replay passing is the proof.
+#[test]
+fn a_screenshot_baseline_is_qualified_by_its_surface() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Shots\napps:\n  gui: {app: sap}\n  portal: {app: web, url: \"https://portal.test/x\"}\nsteps:\n  - in: gui\n    steps:\n      - assert_screenshot:\n          name: dash\n  - in: portal\n    steps:\n      - assert_screenshot:\n          name: dash\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-screenshot");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+
+    // Distinct frames per surface, identical at record and replay.
+    let mocks = || -> SurfaceFactory {
+        Box::new(|name| {
+            let mut mock = MockAppDriver::new(&[]);
+            mock.frame = Some(image::RgbaImage::from_pixel(
+                8,
+                8,
+                if name == "gui" {
+                    image::Rgba([255, 0, 0, 255])
+                } else {
+                    image::Rgba([0, 0, 255, 255])
+                },
+            ));
+            Ok(Box::new(mock))
+        })
+    };
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks(),
+        std::time::Duration::from_millis(50),
+    );
+    record(&spec, &mut registry, &trace).expect("records");
+
+    let baselines = flowproof_driver::visual::baselines_dir(&trace);
+    assert!(
+        baselines.join("dash@gui.png").exists() && baselines.join("dash@portal.png").exists(),
+        "one baseline per surface, from one spec name"
+    );
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(
+        persisted.contains("dash@gui.png") && persisted.contains("dash@portal.png"),
+        "the trace carries the qualified identity: {persisted}"
+    );
+
+    let mut registry = SurfaceRegistry::new(targets, mocks(), std::time::Duration::from_millis(50));
+    let (report, _run_dir) = run_trace(&trace, &mut registry).expect("replay runs");
+    assert!(
+        report.passed,
+        "each frame met ITS OWN surface's baseline: {report:#?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `@` is the surface qualifier in a baseline's stored identity, so a
+/// user-chosen name carrying one could collide with another surface's
+/// baseline — refused at record, naming the reservation.
+#[test]
+fn a_screenshot_name_with_the_surface_qualifier_is_refused() {
+    let spec = FlowSpec::parse(
+        "name: n\napp: web\nurl: https://e.test/x\nsteps:\n  - assert_screenshot:\n      name: dash@gui\n",
+    )
+    .expect("parses");
+    let dir = std::env::temp_dir().join("flowproof-screenshot-at");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let mut driver = MockAppDriver::new(&[]);
+    let err = record(&spec, &mut driver, &dir.join("t.trace.jsonl")).expect_err("refused");
+    assert!(
+        err.to_string().contains("reserved for the"),
+        "names the reservation: {err}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -7,10 +7,10 @@
 > ([authoring.md](authoring.md#multi-surface-flows-apps-and-in-blocks)):
 > `apps:` + `in:` blocks, one surface active at a time, captures crossing
 > blocks, per-step surface attribution, replay from the trace alone with
-> zero LLM calls. Still open from Phase 2: surface-aware `assert_screenshot`
-> baselines, and `heal` on multi-surface flows (re-record instead).
-> Per-surface `browser:` and `window:` are shipped — vision surfaces
-> included. Phase 3 remains a proposal.
+> zero LLM calls. Still open from Phase 2: `heal` on multi-surface flows
+> (re-record instead). Per-surface `browser:` and `window:` are shipped —
+> vision surfaces included — and `assert_screenshot` baselines are
+> surface-qualified (`<name>@<surface>.png`). Phase 3 remains a proposal.
 
 ## The problem
 
@@ -106,8 +106,9 @@ Open questions Phase 2 must answer before it ships:
 - `window:` geometry and `browser:` config become per-surface.
 - `flowproof heal` must know which surface a failed step belonged to (the
   selector ladder itself is per-adapter already and needs no change).
-- `assert_screenshot` baselines need a surface in their identity, or a
-  `gui` baseline could be compared against a `portal` frame.
+- `assert_screenshot` baselines carry the surface in their identity
+  (`<name>@<surface>.png`), so a `gui` baseline can never be compared
+  against a `portal` frame. Shipped.
 
 Delivery is several small PRs (the ratchets refuse large ones): spec
 parsing and refusals first, trace format with schema and docs second, the

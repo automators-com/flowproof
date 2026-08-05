@@ -484,18 +484,6 @@ fn find_in_block(steps: &[SpecStep]) -> Option<&str> {
     })
 }
 
-/// Whether any step in the tree is an `assert_screenshot` (recursing into
-/// `repeat`/`when` bodies) — refused in multi-surface flows until a
-/// baseline's identity names its surface.
-fn has_screenshot_step(steps: &[SpecStep]) -> bool {
-    steps.iter().any(|step| match step {
-        SpecStep::AssertScreenshot { .. } => true,
-        SpecStep::Repeat { repeat } => has_screenshot_step(&repeat.steps),
-        SpecStep::When { when } => has_screenshot_step(&when.steps),
-        _ => false,
-    })
-}
-
 /// A `Drag` must be followed by an assertion.
 ///
 /// Every other action has something intrinsic to verify - a click's element
@@ -971,11 +959,10 @@ impl FlowSpec {
     /// kinds are surfaces (`agent` and `api` are refused each with its
     /// reason; `vision` requires its `window: {title: …}` attach selector);
     /// `url:`/`connection:`/`browser:`/`window:` sit on the surface of
-    /// their kind; flow-level surface config is refused naming where it
-    /// goes;
-    /// and `assert_screenshot` is refused until a baseline's identity
-    /// names its surface — a `gui` baseline compared against a `portal`
-    /// frame would be a green lie.
+    /// their kind; and flow-level surface config is refused naming where
+    /// it goes. (`assert_screenshot` needs no rule here: the recorder
+    /// qualifies each baseline with its surface, so a `gui` baseline can
+    /// never be compared against a `portal` frame.)
     fn validate_surfaces(&self) -> Result<(), SpecError> {
         let bad = |m: String| Err(SpecError::Surfaces(m));
         let multi = !self.apps.is_empty();
@@ -1122,15 +1109,6 @@ impl FlowSpec {
                      at a time, and a switch inside a block would interleave input",
                     block.surface
                 ));
-            }
-            if has_screenshot_step(&block.steps) {
-                return bad(
-                    "`assert_screenshot` in a multi-surface flow is not supported yet: a \
-                     baseline's identity does not yet name its surface, and a baseline \
-                     from one surface compared against another's frame would be a green \
-                     lie (docs/multi-surface.md)"
-                        .into(),
-                );
             }
         }
         // Flow-level config that either belongs to the surface entries or
@@ -3811,11 +3789,12 @@ steps:
                 .contains("moves into the web surface"),
             "{flow_level}"
         );
-        let screenshot = spec(
+        // `assert_screenshot` PARSES in a multi-surface flow now: the
+        // recorder qualifies each baseline with its surface.
+        spec(
             "name: n\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n    steps:\n      - assert_screenshot:\n          name: x\n",
         )
-        .expect_err("screenshot in multi");
-        assert!(screenshot.to_string().contains("baseline"), "{screenshot}");
+        .expect("screenshot in multi parses");
     }
 
     /// `browser:` is web surface config: it parses on a web surface and is
