@@ -2661,3 +2661,76 @@ fn a_drag_records_and_replays_against_a_mouse_sortable() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The cross-technology handoff: a value one flow MINTS (captured off its
+/// surface, typed nowhere) reaches the next flow as an environment
+/// variable. Flow A remembers an order number and exports it; flow B types
+/// `${HANDOFF_ORDER_NO}` — a variable nothing in the environment sets. If
+/// the suite runner did not thread A's export to B, B's replay fails
+/// naming the unset variable; a pass proves the value crossed flows, and
+/// crossed them at REPLAY time (the var is scrubbed before the run, so a
+/// stale record-time value cannot satisfy it).
+#[test]
+fn suite_run_hands_a_passing_flows_exports_to_the_flows_after_it() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web suite E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-e2e-exports");
+    std::fs::remove_dir_all(&dir).ok();
+    let specs_dir = dir.join("specs");
+    std::fs::create_dir_all(&specs_dir).expect("temp dirs");
+
+    // Flow A's page carries the order number; A captures and exports it.
+    let mint_page = dir.join("mint.html");
+    std::fs::write(
+        &mint_page,
+        r#"<!doctype html><html><body><div id="order">4711</div></body></html>"#,
+    )
+    .expect("page written");
+    let mint_yaml = format!(
+        "name: Mint order\napp: web\nurl: file://{}\nsteps:\n  - Remember the \"css:#order\" as order\nexports:\n  HANDOFF_ORDER_NO: ${{captured.order}}\n",
+        mint_page.display()
+    );
+    let mint_path = specs_dir.join("a-mint.flow.yaml");
+    std::fs::write(&mint_path, &mint_yaml).expect("spec written");
+
+    // Flow B's page greets whatever is typed; B types the exported value.
+    let spend_page = dir.join("spend.html");
+    std::fs::write(&spend_page, GREETER_HTML).expect("page written");
+    let spend_yaml = format!(
+        "name: Spend order\napp: web\nurl: file://{}\nsteps:\n  - Type ${{HANDOFF_ORDER_NO}} into the name field\n  - Press the greet button\n  - assert: page shows Hello, 4711\n",
+        spend_page.display()
+    );
+    let spend_path = specs_dir.join("b-spend.flow.yaml");
+    std::fs::write(&spend_path, &spend_yaml).expect("spec written");
+
+    // Record both through the normal pipeline. B's recording needs the
+    // variable, exactly as it would in a suite-mode `record` (where A's
+    // verification replay has already exported it).
+    std::env::set_var("HANDOFF_ORDER_NO", "4711");
+    for (path, yaml) in [(&mint_path, &mint_yaml), (&spend_path, &spend_yaml)] {
+        let spec = flowproof_agent::FlowSpec::parse(yaml).expect("spec parses");
+        let trace_path = flowproof_cli::default_trace_path(path);
+        let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+        flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    }
+
+    // Scrub the variable: from here on, only flow A's replay can set it.
+    std::env::remove_var("HANDOFF_ORDER_NO");
+    let code = flowproof_cli::run_suite(&specs_dir, false, 0, flowproof_cli::MissingTrace::Error)
+        .expect("suite runs");
+    assert_eq!(
+        code,
+        flowproof_cli::EXIT_PASS,
+        "flow B resolves the variable flow A's replay exported"
+    );
+    assert_eq!(
+        std::env::var("HANDOFF_ORDER_NO").as_deref(),
+        Ok("4711"),
+        "the export was set from A's replay-time capture"
+    );
+    std::env::remove_var("HANDOFF_ORDER_NO");
+    std::fs::remove_dir_all(&dir).ok();
+}

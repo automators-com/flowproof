@@ -6,6 +6,30 @@ together).
 
 ## Unreleased
 
+### Added
+
+- **A test case that crossed technologies had no way to carry a value
+  across the seam.** A flow drives exactly one surface — that is by design,
+  one driver per flow — but the real-world test case is "SAP GUI creates
+  the order, the web portal must show it", and the order number exists
+  nowhere except on SAP's status bar at run time. Captures are flow-scoped
+  and suite `env` is fixed before any flow runs, so the only bridge was a
+  hand-written script between two flowproof invocations: exactly the
+  harness glue flowproof exists to replace.
+
+  A flow can now declare `exports:` — `ENV_NAME: template`, where the
+  template resolves `${captured.<name>}` from the flow's own captures once
+  its last step has passed. The pairs become environment variables for the
+  suite's remaining flows, which reference them as ordinary `${VAR}`s: the
+  downstream trace stores only the reference, and the handoff happens at
+  replay time from replay-time captures, so flow B replays against the
+  value flow A's replay just read. Nothing is persisted — the trace holds
+  the capture name, the report and the `[EXPORT]` line hold the export
+  name, and the value lives only in the memory of the run. An export whose
+  capture was never remembered fails the flow that owns the captures,
+  naming what was in scope, rather than a downstream flow failing over a
+  variable nobody visibly set — and a failed flow exports nothing.
+
 ### Changed
 
 - **The docs on automators.ai were a release behind, and nothing said so.**
