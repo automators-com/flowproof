@@ -835,6 +835,62 @@ For running a UWP app on a CI runner that does not ship one, see
 a Windows Server image has no Store apps, but it can build and side-load
 the one a suite needs.
 
+## Multi-surface flows (`apps:` and `in:` blocks)
+
+One test case, several technologies, one flow file, one trace. Declare the
+surfaces under `apps:` and put steps in `in:` blocks; exactly one surface
+is active at a time, and captures share one namespace across blocks:
+
+```yaml
+name: Order across GUI and portal
+apps:
+  gui: {app: sap, connection: "${SAP_CONNECTION}"}
+  portal: {app: web, url: "${PORTAL_URL}/orders"}
+steps:
+  - in: gui
+    steps:
+      - Go to /nVA01
+      # ... create the order ...
+      - Remember the "id:wnd[0]/sbar" matching /\d+/ as order
+  - in: portal
+    steps:
+      - Type ${captured.order} into the "Search" field
+      - assert: page shows ${captured.order}
+```
+
+What holds, and why:
+
+- **One surface active at a time.** SAP GUI scripting, UIA and vision all
+  inject real input into the foreground window; sequential blocks are
+  correctness, not a limitation. A block boundary launches its surface on
+  the first visit and re-foregrounds it on returns — a later `in: gui`
+  resumes the same session, same login, same screen.
+- **Captures cross blocks.** The order number read off SAP's status bar
+  types into the portal as `${captured.order}` — and the trace stores the
+  NAME, never the value, exactly as in a single-surface flow. On replay
+  the capture is re-read live from this run's SAP and typed into this
+  run's portal.
+- **Replay needs the trace and nothing else.** The header carries the
+  surface map with config stored as written, so a `${VAR}` connection or
+  url resolves fresh at every replay — and replay makes zero LLM calls,
+  as always.
+- **Steps author against their surface's own grammar** (what SAP performs
+  differs from what a browser does), and out-of-band asserts
+  (`assert_api`, `assert_sql`) run fine inside any block.
+- Surface kinds are UI kinds: `agent` (chain an `app: agent` flow in the
+  suite instead), `api` (nothing to drive) and `vision` (needs per-surface
+  `window:` config, not shipped) are refused at parse, each with its
+  reason — as are flow-level `window`/`browser`/`session`/`mock`/`redact`
+  and `assert_screenshot` (a baseline's identity does not yet name its
+  surface). `flowproof heal` does not support multi-surface flows yet:
+  re-record instead.
+
+When the case is "do in system A, prove in system B" with no ping-pong, a
+suite of single-surface flows chained with
+[`exports:`](#handing-a-value-to-the-next-flow-exports) is still the
+simpler spelling — one driver per flow, per-flow verdicts, and the same
+value handoff.
+
 ## Out-of-band assertions (any app; structured steps, not prose)
 
 ```yaml

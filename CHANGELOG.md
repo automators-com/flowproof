@@ -8,6 +8,22 @@ together).
 
 ### Added
 
+- **A multi-surface trace REPLAYS — Phase 2 closes.** Each step recorded
+  which surface ran it, and replay now dispatches on exactly that: a
+  surface change is an activation (lazy launch on the first visit,
+  re-foreground after), performed by a registry rebuilt from the header's
+  own surface map — so a replay needs the trace and nothing else, makes
+  zero LLM calls, and resolves `${VAR}` urls and connections fresh from
+  this run's environment. A capture minted on one surface is re-read LIVE
+  and typed into another, which the round-trip test proves by replaying
+  against a different order number than record saw. On a plain
+  single-surface driver the first attributed step refuses by name — a
+  multi trace can never quietly replay against one app. `run` and suites
+  lost their refusal; `heal` keeps one (it does not speak surfaces yet;
+  re-record instead). The test case that started all this — SAP GUI
+  creates the order, the portal must show it, SAP confirms — is now one
+  flow file, one trace, free on every CI run.
+
 - **A multi-surface flow RECORDS.** The recorder meets an `in:` block by
   activating its surface on the registry — lazy launch on the first
   visit, re-foreground after — and every recorded step carries the
