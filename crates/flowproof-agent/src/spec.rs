@@ -38,6 +38,8 @@ pub enum SpecError {
     Control(String),
     #[error("invalid drag: {0}")]
     Drag(String),
+    #[error("invalid exports: {0}")]
+    Exports(String),
 }
 
 /// `app:` is either a registry id (`web`, `calc`, `notepad`, `sap`,
@@ -392,6 +394,22 @@ pub struct FlowSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control: Option<flowproof_trace::format::Control>,
     pub steps: Vec<SpecStep>,
+    /// Values this flow hands to the flows that RUN AFTER it in a suite:
+    /// `ENV_NAME -> template`. Templates may carry `${captured.<name>}`
+    /// references (resolved from this flow's captures when its last step
+    /// has passed) and `${VAR}` references (resolved from the environment,
+    /// like suite `env`). The resolved pairs become environment variables
+    /// for the remaining flows in the run — which is how a value one
+    /// technology mints (an order number typed nowhere but read off SAP's
+    /// status bar) reaches a flow driving another (the portal that must
+    /// show it). Resolution happens on record's verification replay and on
+    /// every later replay alike; the trace stores nothing — like a capture,
+    /// an exported value lives only in the memory of the run that minted
+    /// it. An export whose capture was never remembered fails THIS flow,
+    /// not the downstream one that would otherwise fail holding a variable
+    /// nobody set.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub exports: std::collections::BTreeMap<String, String>,
 }
 
 /// A `Drag` must be followed by an assertion.
@@ -855,6 +873,43 @@ impl FlowSpec {
             return bad(format!(
                 "`control.id` `{id}` must be dotted lowercase, matching [a-z0-9._-]+"
             ));
+        }
+        Ok(())
+    }
+
+    /// Check `exports:`. Each key becomes an environment variable for the
+    /// suite's remaining flows, so it must be a legal env name — the same
+    /// shape `env_from` output enforces. Whether a `${captured.<name>}` in
+    /// a value will resolve is NOT checkable here: a capture may be
+    /// authored by the model at record time, so the honest failure is at
+    /// the end of the run that owns the captures, naming what was in
+    /// scope. `app: agent` is refused outright — an agent flow has no
+    /// captures to export from, and a vocabulary that parses but can never
+    /// resolve would be a trap.
+    fn validate_exports(&self) -> Result<(), SpecError> {
+        if self.exports.is_empty() {
+            return Ok(());
+        }
+        let bad = |m: String| Err(SpecError::Exports(m));
+        if self.app.id() == "agent" {
+            return bad(
+                "`exports:` resolves from this flow's captures, and an `app: agent` flow \
+                 has none — export from the UI or api flow that observes the value"
+                    .into(),
+            );
+        }
+        for name in self.exports.keys() {
+            let mut chars = name.chars();
+            let valid = chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !valid {
+                return bad(format!(
+                    "`{name}` is not a legal environment variable name \
+                     (must match [A-Za-z_][A-Za-z0-9_]*)"
+                ));
+            }
         }
         Ok(())
     }
@@ -1532,6 +1587,7 @@ impl FlowSpec {
         spec.validate_clock()?;
         spec.validate_random()?;
         spec.validate_control()?;
+        spec.validate_exports()?;
         validate_drags_are_asserted(&spec.steps)?;
         Ok(spec)
     }
@@ -3201,5 +3257,54 @@ mod security_spine_tests {
         assert!(flow.control.is_none());
         let yaml = serde_yaml::to_string(&flow).expect("serializes");
         assert!(!yaml.contains("control"), "no control key: {yaml}");
+    }
+
+    #[test]
+    fn exports_parse_and_a_flow_without_them_omits_the_key() {
+        let flow = spec(
+            "name: n\napp: web\nurl: http://x\nsteps:\n  - assert: page shows x\n\
+             exports:\n  ORDER_NO: ${captured.order}\n  PORTAL_HINT: order ${captured.order}\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            flow.exports.get("ORDER_NO").map(String::as_str),
+            Some("${captured.order}")
+        );
+        let bare = spec("name: n\napp: web\nurl: http://x\nsteps:\n  - assert: page shows x\n")
+            .expect("parses");
+        let yaml = serde_yaml::to_string(&bare).expect("serializes");
+        assert!(!yaml.contains("exports"), "no exports key: {yaml}");
+    }
+
+    /// The key becomes an env var for the rest of the suite, so a name the
+    /// environment cannot hold is a parse error naming the rule — not a
+    /// downstream flow failing over a variable that silently never set.
+    #[test]
+    fn an_export_name_that_is_not_a_legal_env_name_is_refused() {
+        let err = spec(
+            "name: n\napp: web\nurl: http://x\nsteps:\n  - assert: page shows x\n\
+             exports:\n  order-no: ${captured.order}\n",
+        )
+        .expect_err("dash is not a legal env name");
+        assert!(
+            err.to_string().contains("order-no")
+                && err.to_string().contains("environment variable"),
+            "names the key and the rule: {err}"
+        );
+    }
+
+    /// An agent flow has no captures, so `exports:` on one could never
+    /// resolve — refusing at parse beats a vocabulary that is a trap.
+    #[test]
+    fn exports_on_an_agent_flow_are_refused_at_parse() {
+        let err = spec(
+            "name: n\napp: agent\nagent:\n  command: run-it\nsteps:\n  - prompt: do the thing\n\
+             exports:\n  OUT: ${captured.x}\n",
+        )
+        .expect_err("agent flows cannot export");
+        assert!(
+            err.to_string().contains("agent") && err.to_string().contains("captures"),
+            "says why: {err}"
+        );
     }
 }

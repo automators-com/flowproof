@@ -36,6 +36,7 @@ fn records_and_replays_a_browser_flow() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -106,6 +107,7 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -204,6 +206,7 @@ fn secret_reference_types_real_value_but_never_persists_it() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type ${FLOWPROOF_E2E_PW} into the pw field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -284,6 +287,7 @@ fn assertions_wait_for_async_page_updates() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Press the start button".into()),
             flowproof_agent::SpecStep::Plain(
@@ -354,6 +358,7 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain(
                 "Type Customers into the \"Template name\" field".into(),
@@ -435,6 +440,7 @@ fn assertion_forms_wait_and_verify_on_real_pages() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "the searchBox field contains prefilled".into(),
@@ -537,6 +543,7 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             // Fill semantics: clear the prefilled value, retype, Enter.
             // "Submitted: fresh" (not "…stale textfresh") proves the clear.
@@ -643,6 +650,7 @@ fn session_seeding_and_navigation_drive_real_pages() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows project: ${FLOWPROOF_E2E_PROJECT}".into(),
@@ -717,6 +725,7 @@ fn persisted_frames_never_contain_masked_data() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type bob into the user field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -893,6 +902,7 @@ fn select_own_text_anchors_and_state_asserts_work() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: FlowSpec::parse(
             "name: x\napp: web\nurl: x\nsteps:\n\
              - assert: the \"Save\" is disabled\n\
@@ -1470,6 +1480,7 @@ fn a_navigation_after_a_long_idle_does_not_kill_the_connection() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             // Out-waits the 30s default idle timeout.
             flowproof_agent::SpecStep::Plain(
@@ -1563,6 +1574,7 @@ fn an_element_below_the_fold_is_scrolled_to_rather_than_called_obscured() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type Ada into the name field".into()),
             flowproof_agent::SpecStep::Plain("Press the \"Save\" button".into()),
@@ -1637,6 +1649,7 @@ fn attribute_style_and_scroll_record_and_replay() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: r#"the "css:#dl" has attribute download"#.into(),
@@ -1727,6 +1740,7 @@ fn a_secret_in_web_surface_text_fails_the_record_and_mints_no_trace() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows Welcome".into(),
@@ -1809,6 +1823,7 @@ fn a_clean_web_flow_records_and_replays_with_the_secret_absent() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows Welcome".into(),
@@ -1895,6 +1910,7 @@ fn native_dialogs_arm_and_verify() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             // Accept a confirm: the page proceeds (marker shows "Deleted").
             flowproof_agent::SpecStep::Plain(
@@ -1999,6 +2015,7 @@ fn undeclared_dialog_fails_and_does_not_hang() {
             mcp: Vec::new(),
             strict: false,
             control: None,
+            exports: Default::default(),
             // A PLAIN click, no dialog suffix: the dialog is undeclared.
             steps: vec![flowproof_agent::SpecStep::Plain("Click \"Danger\"".into())],
         };
@@ -2241,6 +2258,7 @@ fn the_seed_does_not_follow_a_cross_origin_navigation() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows cart: [4]".into(),
@@ -2336,6 +2354,7 @@ fn seeded_fixture_mutation_survives_navigation() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows cart: [4]".into(),
