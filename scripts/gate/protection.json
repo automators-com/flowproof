@@ -6,7 +6,9 @@
       "versions agree",
       "fmt + clippy + test (ubuntu)",
       "build + test (ubuntu)",
-      "ruff + pytest (sdk/python)"
+      "ruff + pytest (sdk/python)",
+      "constitution",
+      "adversary"
     ]
   },
   "enforce_admins": false,

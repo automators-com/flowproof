@@ -133,13 +133,20 @@ is there to isolate.
 
 ## `protection.json`
 
-Branch protection payload for `main`. **Not applied** — the API call was
-blocked by the permission classifier, correctly, since it writes your repo
-settings. Apply with:
+Branch protection payload for `main`. **Applied and live** — this file is the
+committed record of what is set server-side. Re-apply with:
 
 ```bash
 gh api -X PUT repos/automators-com/flowproof/branches/main/protection --input protection.json
 ```
+
+**That call replaces the whole payload, so this file has to stay in step with
+the live setting or applying it silently weakens `main`.** It has drifted once
+already: `constitution` and `adversary` were added as required checks on the
+server and not written back here, so for a period this file — the one whose
+purpose is to enforce the constitution — would have *removed* the two checks
+that enforce it. Add a required check on the server, add it here in the same
+change.
 
 Two deliberate choices worth understanding before you run it:
 
@@ -157,8 +164,10 @@ merging, which mechanically enforces the rebase-and-recheck that catches the
 semantic conflicts described in the concept (two independently-green PRs that
 break `main` together).
 
-The five required checks are the ones that always report. `windows build + E2E`
-and `web E2E (ubuntu)` are deliberately excluded — they are off the PR path by
+The seven required checks are the ones that always report: the five build and
+lint jobs, plus `constitution` and `adversary`, which gate the loops and must
+be required rather than merely present. `windows build + E2E` and
+`web E2E (ubuntu)` are deliberately excluded — they are off the PR path by
 design (~50 min), and the Integrator covers them post-merge on `main`.
 
 ## Applied state, as of this session
