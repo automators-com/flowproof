@@ -538,16 +538,18 @@ fn replay_driver(header: &flowproof_trace::Header) -> Result<Box<dyn AppDriver>,
         return driver_for(&header.app.name);
     }
     let targets = replay_surface_targets(header)?;
-    let kinds: std::collections::BTreeMap<String, String> = header
+    let surfaces: std::collections::BTreeMap<_, _> = header
         .apps
         .iter()
-        .map(|(n, info)| (n.clone(), info.name.clone()))
+        .map(|(n, info)| (n.clone(), (info.name.clone(), info.browser.clone())))
         .collect();
     let factory: flowproof_driver::surface::SurfaceFactory = Box::new(move |name| {
-        let kind = kinds.get(name).ok_or_else(|| {
+        let (kind, browser) = surfaces.get(name).ok_or_else(|| {
             flowproof_driver::DriverError::Uia(format!("surface '{name}' is not in the header"))
         })?;
-        driver_for(kind).map_err(flowproof_driver::DriverError::Uia)
+        let mut driver = driver_for(kind).map_err(flowproof_driver::DriverError::Uia)?;
+        stage_surface_browser(driver.as_mut(), browser.as_ref())?;
+        Ok(driver)
     });
     Ok(Box::new(flowproof_driver::surface::SurfaceRegistry::new(
         targets,
@@ -600,6 +602,35 @@ fn replay_surface_targets(
         .collect()
 }
 
+/// Stage a surface's `browser:` config on its freshly built driver —
+/// called by BOTH factories (record from the spec, replay from the
+/// header), between the driver's construction and the launch its first
+/// activation performs, which is the only window where staging can land.
+fn stage_surface_browser(
+    driver: &mut dyn AppDriver,
+    browser: Option<&flowproof_trace::format::BrowserSetup>,
+) -> Result<(), flowproof_driver::DriverError> {
+    let Some(browser) = browser.filter(|b| !b.is_empty()) else {
+        return Ok(());
+    };
+    driver.stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
+        browser
+            .viewport
+            .as_ref()
+            .map(|v| (v.width, v.height, v.device_scale_factor, v.mobile, v.touch)),
+        browser.user_agent.as_deref(),
+        &browser.args,
+        browser.clock.as_ref().map(|c| flowproof_driver::WebClock {
+            at: c.at.clone(),
+            timezone: c.timezone.clone(),
+        }),
+        browser
+            .random
+            .as_ref()
+            .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
+    ))
+}
+
 /// The driver a RECORDING run gets: the single app's driver, or — for a
 /// multi-surface flow — a `SurfaceRegistry` over `driver_for`, one driver
 /// per surface, launched lazily at each surface's first `in:` block.
@@ -608,16 +639,18 @@ fn record_driver(spec: &FlowSpec) -> Result<Box<dyn AppDriver>, String> {
         return driver_for(spec.app.id());
     }
     let targets = flowproof_agent::surface_targets(spec).map_err(|e| e.to_string())?;
-    let kinds: std::collections::BTreeMap<String, String> = spec
+    let surfaces: std::collections::BTreeMap<_, _> = spec
         .apps
         .iter()
-        .map(|(n, s)| (n.clone(), s.app.id().to_string()))
+        .map(|(n, s)| (n.clone(), (s.app.id().to_string(), s.browser.clone())))
         .collect();
     let factory: flowproof_driver::surface::SurfaceFactory = Box::new(move |name| {
-        let kind = kinds.get(name).ok_or_else(|| {
+        let (kind, browser) = surfaces.get(name).ok_or_else(|| {
             flowproof_driver::DriverError::Uia(format!("surface '{name}' is not declared"))
         })?;
-        driver_for(kind).map_err(flowproof_driver::DriverError::Uia)
+        let mut driver = driver_for(kind).map_err(flowproof_driver::DriverError::Uia)?;
+        stage_surface_browser(driver.as_mut(), browser.as_ref())?;
+        Ok(driver)
     });
     Ok(Box::new(flowproof_driver::surface::SurfaceRegistry::new(
         targets,
@@ -2236,6 +2269,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A surface's `browser:` config stages on its freshly built driver —
+    /// the window between construction and first-activation launch is the
+    /// only place staging can land, and BOTH factories (record and replay)
+    /// go through this one helper, so the two executions stage identically.
+    #[test]
+    fn a_surfaces_browser_config_stages_before_its_launch() {
+        let setup: flowproof_trace::format::BrowserSetup = serde_yaml::from_str(
+            "viewport:\n  width: 390\n  height: 844\n  mobile: true\n  touch: true\nuser_agent: fp-test\n",
+        )
+        .expect("setup parses");
+        let mut mock = flowproof_driver::mock::MockAppDriver::new(&[]);
+        stage_surface_browser(&mut mock, Some(&setup)).expect("stages");
+        let staged = mock.staged_browser.expect("browser staged");
+        let vp = staged.viewport.expect("viewport staged");
+        assert_eq!((vp.width, vp.height), (390, 844));
+        assert!(vp.mobile && vp.touch);
+        assert_eq!(staged.user_agent.as_deref(), Some("fp-test"));
+        // No config, no call: an empty setup must not disturb the driver.
+        let mut untouched = flowproof_driver::mock::MockAppDriver::new(&[]);
+        stage_surface_browser(&mut untouched, None).expect("no-op");
+        assert!(untouched.staged_browser.is_none());
+    }
 
     /// A multi-surface replay rebuilds its launch targets from the header
     /// alone — `${VAR}` config resolves at replay time from THIS run's

@@ -877,11 +877,28 @@ What holds, and why:
 - **Steps author against their surface's own grammar** (what SAP performs
   differs from what a browser does), and out-of-band asserts
   (`assert_api`, `assert_sql`) run fine inside any block.
+- **A web surface carries its own `browser:`** — viewport/device
+  emulation, user-agent, pinned clock, seeded random, exactly the
+  single-surface block, one level deeper:
+
+  ```yaml
+  apps:
+    portal:
+      app: web
+      url: "${PORTAL_URL}/orders"
+      browser:
+        viewport: {width: 390, height: 844, mobile: true, touch: true}
+  ```
+
+  It travels on the surface's header entry, so record and every replay
+  launch that surface the same shape. On a non-web surface it is a parse
+  error naming whose config it is.
 - Surface kinds are UI kinds: `agent` (chain an `app: agent` flow in the
   suite instead), `api` (nothing to drive) and `vision` (needs per-surface
   `window:` config, not shipped) are refused at parse, each with its
-  reason — as are flow-level `window`/`browser`/`session`/`mock`/`redact`
-  and `assert_screenshot` (a baseline's identity does not yet name its
+  reason — as are flow-level `window`/`session`/`mock`/`redact` (and
+  flow-level `browser:`, which moved into the surface entry) and
+  `assert_screenshot` (a baseline's identity does not yet name its
   surface). `flowproof heal` does not support multi-surface flows yet:
   re-record instead.
 

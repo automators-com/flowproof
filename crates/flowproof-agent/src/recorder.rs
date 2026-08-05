@@ -1118,6 +1118,9 @@ fn surface_app_info(surface: &crate::spec::SurfaceSpec) -> AppInfo {
             "sap" => surface.connection.clone(),
             _ => None,
         },
+        // A web surface's launch/emulation shape travels with the surface,
+        // so record and every replay stage it before THIS surface launches.
+        browser: surface.browser.clone(),
         version: None,
     }
 }
@@ -3374,6 +3377,8 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     .or_else(|| (!target.command.is_empty()).then(|| target.command.clone())),
                 _ => None,
             },
+            // Single-surface flows keep the header-level `browser` field.
+            browser: None,
             version: None,
         },
         // Single-surface recording mints no surface map; the multi-surface
@@ -3414,6 +3419,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             command: None,
             geometry: None,
             url: None,
+            browser: None,
             version: None,
         };
         header.apps = spec

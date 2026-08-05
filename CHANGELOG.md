@@ -8,6 +8,18 @@ together).
 
 ### Added
 
+- **A web surface of a multi-surface flow carries its own `browser:`.**
+  A Fiori portal surface could not pin its viewport: `browser:` was
+  flow-level config, refused on multi-surface flows, so a flow recorded
+  on one window shape could replay on another — the exact drift the
+  single-surface header field exists to prevent. The block now sits on
+  the surface entry (same shape, one level deeper), travels on the
+  surface's header entry, and both factories stage it through one shared
+  helper in the only window staging can land: between the driver's
+  construction and the launch its first activation performs. Record and
+  every replay launch that surface the same shape; on a non-web surface
+  the key is a parse error naming whose config it is.
+
 - **A multi-surface trace REPLAYS — Phase 2 closes.** Each step recorded
   which surface ran it, and replay now dispatches on exactly that: a
   surface change is an activation (lazy launch on the first visit,
