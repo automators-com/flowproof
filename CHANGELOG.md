@@ -8,6 +8,19 @@ together).
 
 ### Added
 
+- **A desktop surface carries its own `window:` — and vision becomes a
+  surface.** A Citrix/RDP-published app could not join a multi-surface
+  flow: vision attaches to a window by title, and there was nowhere
+  per-surface to say which. `window: {title: …}` on a vision surface is
+  that attach selector (required, stored raw in the surface entry so a
+  `${VAR}` resolves at every replay), and `width`/`height` (optionally
+  `x`/`y`) pin any desktop surface's shape at its FIRST activation — what
+  was APPLIED is recorded per surface, position included even when the
+  spec never asked for one, and replay reproduces it exactly. On a web
+  surface `window:` is a parse error naming `browser: viewport`; a
+  lopsided geometry (width without height) is refused like the
+  single-surface rule before it.
+
 - **A web surface of a multi-surface flow carries its own `browser:`.**
   A Fiori portal surface could not pin its viewport: `browser:` was
   flow-level config, refused on multi-surface flows, so a flow recorded

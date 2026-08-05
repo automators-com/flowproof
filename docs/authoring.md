@@ -893,12 +893,27 @@ What holds, and why:
   It travels on the surface's header entry, so record and every replay
   launch that surface the same shape. On a non-web surface it is a parse
   error naming whose config it is.
+- **A desktop surface carries its own `window:`** — for `vision`, the
+  `title:` names the window pixels mode attaches to (required there, and
+  what finally makes a Citrix/RDP-published app a surface); for `sap` and
+  windows-mapping surfaces, `width`/`height` (optionally `x`/`y`) pin the
+  shape at the surface's FIRST activation, recording what was applied so
+  replay reproduces it exactly:
+
+  ```yaml
+  apps:
+    citrix:
+      app: vision
+      window: {title: "Citrix Receiver", width: 1280, height: 720}
+  ```
+
+  On a web surface `window:` is a parse error — a page is sized with
+  `browser: viewport`.
 - Surface kinds are UI kinds: `agent` (chain an `app: agent` flow in the
-  suite instead), `api` (nothing to drive) and `vision` (needs per-surface
-  `window:` config, not shipped) are refused at parse, each with its
-  reason — as are flow-level `window`/`session`/`mock`/`redact` (and
-  flow-level `browser:`, which moved into the surface entry) and
-  `assert_screenshot` (a baseline's identity does not yet name its
+  suite instead) and `api` (nothing to drive) are refused at parse, each
+  with its reason — as are flow-level `session`/`mock`/`redact` (and
+  flow-level `browser:`/`window:`, which moved into the surface entries)
+  and `assert_screenshot` (a baseline's identity does not yet name its
   surface). `flowproof heal` does not support multi-surface flows yet:
   re-record instead.
 
