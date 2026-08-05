@@ -454,6 +454,39 @@ pub fn secure_over_http_warning(fact: &str, url: &str) -> Option<String> {
     ))
 }
 
+/// Spacing between the two rect samples of the stability gate — long
+/// enough that a CSS transition moves the box between samples, short
+/// enough that the fast path costs almost nothing.
+pub const STABILITY_INTERVAL: Duration = Duration::from_millis(60);
+
+/// The default [`AppDriver::actionability_gate`]: composes the three
+/// individual probes. A free function so a driver override can fall back
+/// to it for the selector shapes its fast path does not cover.
+pub fn composed_actionability_gate<D: AppDriver + ?Sized>(
+    driver: &mut D,
+    target: &UiaSelector,
+) -> Result<Option<String>, DriverError> {
+    // Enabled: an Err means the driver has no enabled concept — satisfied.
+    if !driver.element_enabled(target).unwrap_or(true) {
+        return Ok(Some("disabled".into()));
+    }
+    // Stable: the bounding box must not move between two samples. None
+    // (driver has no geometry) = satisfied.
+    if let Some(first) = driver.element_rect(target)? {
+        std::thread::sleep(STABILITY_INTERVAL);
+        if driver.element_rect(target)? != Some(first) {
+            return Ok(Some("unstable (still moving/animating)".into()));
+        }
+    }
+    // Receives events at its center: None = driver can't tell, satisfied.
+    if driver.element_receives_events(target)? == Some(false) {
+        return Ok(Some(
+            "obscured (another element would receive the click)".into(),
+        ));
+    }
+    Ok(None)
+}
+
 pub trait AppDriver {
     /// Record-time hints for a resolved table cell (#58). Only the web
     /// adapter overrides this - a cell is a DOM concept - and it does so
@@ -805,6 +838,19 @@ pub trait AppDriver {
         _selector: &UiaSelector,
     ) -> Result<Option<bool>, DriverError> {
         Ok(None)
+    }
+
+    /// One actionability pass — enabled → stable → receives-events:
+    /// `None` = actionable, `Some(gate)` names the first gate that failed.
+    /// Unknown answers (the driver can't tell) satisfy the gate; the name
+    /// travels into the failure message, which is what makes a flake
+    /// debuggable instead of mysterious.
+    ///
+    /// A driver that can answer all three questions in one round trip
+    /// should override this: the default composes the three individual
+    /// probes, and on a chatty transport that costs a probe-per-question.
+    fn actionability_gate(&mut self, target: &UiaSelector) -> Result<Option<String>, DriverError> {
+        composed_actionability_gate(self, target)
     }
 
     /// Stage network mocks to apply at the next `launch` (before the page
@@ -1647,6 +1693,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
         (**self).element_enabled(selector)
+    }
+
+    fn actionability_gate(&mut self, target: &UiaSelector) -> Result<Option<String>, DriverError> {
+        (**self).actionability_gate(target)
     }
 
     fn element_visible(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {

@@ -371,18 +371,15 @@ fn wait_for_condition<D: AppDriver>(
     }
 }
 
-/// Spacing between the two rect samples of the stability gate — long
-/// enough that a CSS transition moves the box between samples, short
-/// enough that the fast path costs almost nothing.
-const STABILITY_INTERVAL: Duration = Duration::from_millis(60);
-
 /// An element can exist and still not be actionable: disabled while a
 /// mutation is in flight, mid-animation, or under a toast/modal backdrop.
 /// Gate element actions on enabled → stable → receives-events, polling to
 /// the deadline — the flakiness class auto-waiting eliminates (issue #42).
 /// Unknown answers (driver can't tell) satisfy the gate; the failure
 /// message names the specific gate, which is what makes a flake
-/// debuggable instead of mysterious.
+/// debuggable instead of mysterious. The pass itself is the driver's
+/// [`AppDriver::actionability_gate`], so a driver that answers all three
+/// questions in one round trip can.
 fn wait_actionable<D: AppDriver>(
     driver: &mut D,
     target: &UiaSelector,
@@ -390,7 +387,7 @@ fn wait_actionable<D: AppDriver>(
 ) -> Result<Result<(), String>, ReplayError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        let gate = actionability_gate(driver, target)?;
+        let gate = driver.actionability_gate(target)?;
         match gate {
             None => return Ok(Ok(())),
             Some(name) => {
@@ -403,31 +400,6 @@ fn wait_actionable<D: AppDriver>(
             }
         }
     }
-}
-
-/// One actionability pass: `None` = actionable, `Some(gate)` names the
-/// first gate that failed.
-fn actionability_gate<D: AppDriver>(
-    driver: &mut D,
-    target: &UiaSelector,
-) -> Result<Option<&'static str>, ReplayError> {
-    // Enabled: an Err means the driver has no enabled concept — satisfied.
-    if !driver.element_enabled(target).unwrap_or(true) {
-        return Ok(Some("disabled"));
-    }
-    // Stable: the bounding box must not move between two samples. None
-    // (driver has no geometry) = satisfied.
-    if let Some(first) = driver.element_rect(target)? {
-        std::thread::sleep(STABILITY_INTERVAL);
-        if driver.element_rect(target)? != Some(first) {
-            return Ok(Some("unstable (still moving/animating)"));
-        }
-    }
-    // Receives events at its center: None = driver can't tell, satisfied.
-    if driver.element_receives_events(target)? == Some(false) {
-        return Ok(Some("obscured (another element would receive the click)"));
-    }
-    Ok(None)
 }
 
 /// The auto-wait bound for the actionability gate: the step's recorded

@@ -373,18 +373,23 @@ column header, and a container that is neither `item` nor a selector (`in
 the "Transaction" containing …`, where "Transaction" is a noun, not a
 container).
 
-**Steps are not instant, and some apps care.** A step costs roughly **three
-seconds** between one action landing and the next one reaching the page -
-measured at 3.1-3.2s for a click followed by a type, on a local fixture with
-no network. Most of it is CDP round trips: resolving the target, waiting for
-it to be actionable, and reading back the state that proves the step took.
+**Steps are not instant, and some apps care.** A click step costs roughly
+**1.3 seconds** between the action landing and the next one reaching the
+page, and typing adds about **0.2s per character** — measured on a local
+fixture with no network. The cost is CDP round trips: the transport
+underneath pays a fixed latency of up to ~100ms per call (the sender
+serializes behind the reader's blocking socket read), and a keystroke is
+two calls. The probes that only need an answer — does the target exist, is
+it actionable — each ask the page in a single round trip for css and
+text-anchor targets; earlier engines walked an element-handle path that
+cost four to six calls per question, which put a step at 3.1-3.2s.
 
-That is invisible until an app puts a DEADLINE on an interaction - a value
-that stays valid for two seconds, a token that expires, a confirmation that
-auto-dismisses. Those are currently **out of reach**, and the failure is at
-least loud rather than silent: the app's own complaint (an alert, a
-rejection) surfaces as a failed step rather than a green run that did the
-wrong thing.
+A deadline-bearing interaction — a value that stays valid for two seconds,
+a token that expires, a confirmation that auto-dismisses — may still be
+**out of reach** once a step involves typing more than a few characters,
+and the failure is at least loud rather than silent: the app's own
+complaint (an alert, a rejection) surfaces as a failed step rather than a
+green run that did the wrong thing.
 
 If a flow needs to beat a deadline, the honest options are to remove the
 deadline from the environment under test (`mock:` the endpoint that issues
