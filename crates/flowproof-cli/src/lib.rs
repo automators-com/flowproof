@@ -2058,15 +2058,6 @@ fn cmd_heal(
     author: AuthorArg,
 ) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
-    // Healing replays the trace to find the break, and multi-surface
-    // replay is the next slice — refuse with the same story `run` tells.
-    if !spec.apps.is_empty() {
-        return Err(
-            "healing a multi-surface flow needs multi-surface replay, which has not \
-             shipped yet — re-record the flow instead"
-                .into(),
-        );
-    }
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if author == AuthorArg::Auto
         && spec.has_plain_steps()
@@ -2079,7 +2070,9 @@ fn cmd_heal(
             "WARNING: no authoring model is configured; plain steps will try deterministic grammar fallback"
         );
     }
-    let mut driver = driver_for(spec.app.id())?;
+    // Healing re-records the spec against the live app and diffs — so a
+    // multi-surface flow heals with the same registry recording uses.
+    let mut driver = record_driver(&spec)?;
     let mut report =
         match flowproof_agent::heal_with_author(&spec, &mut driver, &trace_path, author.into()) {
             Ok(report) => report,

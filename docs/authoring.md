@@ -918,8 +918,10 @@ What holds, and why:
   suite instead) and `api` (nothing to drive) are refused at parse, each
   with its reason — as are flow-level `session`/`mock`/`redact` (and
   flow-level `browser:`/`window:`, which moved into the surface entries).
-  `flowproof heal` does not support multi-surface flows yet: re-record
-  instead.
+- **`flowproof heal` works on multi-surface flows** — healing is
+  re-record-plus-diff, so it runs on the same surface registry recording
+  uses, and a step that moved between surfaces is flagged as a `surface`
+  change: the same action against another app is not the same step.
 
 When the case is "do in system A, prove in system B" with no ping-pong, a
 suite of single-surface flows chained with

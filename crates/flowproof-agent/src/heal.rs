@@ -100,6 +100,11 @@ fn diff_steps(old: &[Step], new: &[Step]) -> (Vec<StepChange>, usize, usize) {
         if old_step.action != new_step.action {
             fields.push("action".to_string());
         }
+        // A step that moved to a different surface is a real change — the
+        // same action against another app is not the same step.
+        if old_step.surface != new_step.surface {
+            fields.push("surface".to_string());
+        }
         if old_step.selectors != new_step.selectors {
             fields.push("selectors".to_string());
         }
