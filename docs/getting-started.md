@@ -959,6 +959,26 @@ well as stable table, frame, and relational targets. The model may only choose
 from that inventory, and Flowproof compiles the choice into the same
 deterministic trace used by an explicitly rule-authored flow.
 
+A step is a unit of **intent**, not a single click. One step may cover a whole
+form:
+
+```yaml
+steps:
+  - Fill out all the vehicle data and click next
+  - Fill out all the insurant data and click next
+  - assert: page shows Select Price Option
+```
+
+Each such step is still one model call: the model answers with the sequence of
+grounded actions that carries it out, and the recorder performs and verifies
+each one exactly as if it had been written out by hand. The trace that results
+lists every action individually, so replay is no less deterministic than a flow
+whose steps were spelled out field by field. The scene the model works from
+carries what a form-filler needs — what each field currently holds, which ones
+the page marks required, which boxes are ticked, and a dropdown's exact
+options — so a chosen option is one the control actually offers. A password's
+value is never included.
+
 ```bash
 export FLOWPROOF_AI_PROVIDER=anthropic        # or openai-compatible
 export FLOWPROOF_AI_API_KEY=sk-...            # falls back to ANTHROPIC_API_KEY

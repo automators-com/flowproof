@@ -1,8 +1,10 @@
 //! The LLM authoring loop: given a natural-language step and the live app's
-//! scene graph, ask a model to choose ONE action against an element it can
-//! see. The model must pick its target from the offered scene — it cannot
-//! invent selectors — and the chosen action is then performed and verified
-//! by the recorder exactly like a rules-authored one.
+//! scene graph, ask a model for the actions that carry that step out against
+//! elements it can see. A step is a unit of INTENT, not a unit of work — "fill
+//! in the vehicle data and continue" is one step and a dozen actions — so the
+//! reply may be a sequence. The model must pick every target from the offered
+//! scene — it cannot invent selectors — and each chosen action is then
+//! performed and verified by the recorder exactly like a rules-authored one.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +24,22 @@ Use the current screen, prior steps, and remembered captures to infer the intent
 - The user never needs to provide selectors, target tokens, or rule syntax. Choose \
 the matching target from the live-screen inventory and let flowproof validate and \
 persist its deterministic target. Never invent a selector from the user's wording.
-- Respond with ONLY a JSON object, no prose, no code fences.
+- A step is a unit of INTENT, not a single click. One step may need many actions - \
+\"fill in the vehicle data and continue\" is one step covering every field on that \
+form plus the button. CARRY OUT THE WHOLE STEP: reply with a JSON ARRAY of action \
+objects, in the order they must happen. Reply with a bare object only when the step \
+really is one action. Never do part of a step and leave the rest to a later reply: \
+there is no later reply for this step.
+- When a step asks for a whole form, group or screen, cover EVERY field it names, \
+including ones the user did not enumerate. Each scene entry tells you what a field \
+holds now (`value`, `checked`), whether the page demands it (`required`), and, for a \
+dropdown, its exact `options` - choose an option verbatim from that list. Invent \
+plausible, valid data for fields the step leaves unspecified, and leave a field alone \
+when it already holds a value the step does not contradict.
+- If the step's goal cannot be reached without data the screen requires first - a \
+submit button behind mandatory fields - include the actions that supply it, then the \
+action that reaches the goal.
+- Respond with ONLY JSON, no prose, no code fences.
 - The JSON action is one of: \"click\", \"click_at\", \"drag\", \"type_text\", \
 \"assert_text\", \"capture_text\", \"capture_count\", \"type_captured\", \
 \"select_option\", \"select_options\", \"scroll\", \"press_key\", \"rule_step\", or \
@@ -423,6 +440,12 @@ fn validate_rule_action(
     }
 }
 
+/// The most actions one natural step may author. A step that means a whole
+/// form legitimately runs to a couple of dozen; a reply an order of magnitude
+/// past that is a model that has started looping, and a bound says so at the
+/// point of authoring rather than after the run has clicked sixty times.
+const MAX_STEP_ACTIONS: usize = 60;
+
 fn parse_and_ground(
     reply: &str,
     targets: &[String],
@@ -438,8 +461,75 @@ fn parse_and_ground(
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim();
-    let authored: AuthoredAction = serde_json::from_str(trimmed)
+    let reply: serde_json::Value = serde_json::from_str(trimmed)
         .map_err(|e| GroundingError::Rejected(format!("reply is not valid JSON: {e}")))?;
+    // One step may be one action or a sequence. `{"actions": [...]}` is the
+    // shape models reach for unprompted often enough to be worth accepting.
+    let authored = match reply {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Object(mut fields) => match fields.remove("actions") {
+            Some(serde_json::Value::Array(items)) => items,
+            Some(_) => {
+                return Err(GroundingError::Rejected(
+                    "'actions' must be an array of action objects".into(),
+                ))
+            }
+            None => vec![serde_json::Value::Object(fields)],
+        },
+        other => {
+            return Err(GroundingError::Rejected(format!(
+                "reply must be an action object or an array of them, not {other}"
+            )))
+        }
+    };
+    if authored.is_empty() {
+        return Err(GroundingError::Rejected(
+            "reply authored no action; a step must do something".into(),
+        ));
+    }
+    if authored.len() > MAX_STEP_ACTIONS {
+        return Err(GroundingError::Rejected(format!(
+            "reply authored {} actions for one step; the bound is {MAX_STEP_ACTIONS}",
+            authored.len()
+        )));
+    }
+
+    let total = authored.len();
+    // A capture made partway through the sequence is in scope for the rest of
+    // it, exactly as it would be for a later step.
+    let mut scope = captures.to_vec();
+    let mut resolved = Vec::new();
+    for (index, item) in authored.into_iter().enumerate() {
+        let mut actions =
+            ground_one(item, targets, scene, app, intent, &scope).map_err(|error| match error {
+                GroundingError::Rejected(reason) if total > 1 => GroundingError::Rejected(format!(
+                    "action {} of {total} was rejected: {reason}",
+                    index + 1
+                )),
+                other => other,
+            })?;
+        for action in &actions {
+            if let ResolvedAction::Capture { name, .. } = action {
+                scope.push(name.clone());
+            }
+        }
+        resolved.append(&mut actions);
+    }
+    Ok(resolved)
+}
+
+/// Ground ONE model-authored action object. A deterministic `rule_step` may
+/// still expand to more than one action, which is why this returns a vector.
+fn ground_one(
+    item: serde_json::Value,
+    targets: &[String],
+    scene: &str,
+    app: &str,
+    intent: &str,
+    captures: &[String],
+) -> Result<Vec<ResolvedAction>, GroundingError> {
+    let authored: AuthoredAction = serde_json::from_value(item)
+        .map_err(|e| GroundingError::Rejected(format!("reply is not a valid action: {e}")))?;
 
     if authored.action == "capture_ambiguity" {
         if captures.len() < 2 {
@@ -867,6 +957,179 @@ mod tests {
                 "the live deterministic target inventory must accompany the intent"
             );
         }
+    }
+
+    /// The scene of a small form, shaped like the live web scene: what each
+    /// field holds, what the page demands, and a dropdown's exact options.
+    const FORM_SCENE: &str = r##"[
+        {"target":"css:#make","tag":"select","actionable":true,"label":"Make","required":true,
+         "options":["Audi","BMW","Tesla"]},
+        {"target":"css:#seats","tag":"select","actionable":true,"label":"Seats","required":true,
+         "options":["1","2","3"]},
+        {"target":"css:#plate","tag":"input","actionable":true,"label":"Licence plate","value":""},
+        {"target":"css:#next","tag":"button","actionable":true,"text":"Next »"}
+    ]"##;
+
+    #[test]
+    fn one_step_may_author_the_whole_form_it_names() {
+        // The step is one INTENT over several fields. Before this, a reply
+        // could only be one action, so nine of ten fields stayed empty and
+        // the form's own validation failed the run.
+        let mut client = Scripted {
+            replies: vec![r##"[
+                {"action":"select_option","target":"css:#make","text":"BMW"},
+                {"action":"select_option","target":"css:#seats","text":"2"},
+                {"action":"type_text","target":"css:#plate","text":"W-12345"},
+                {"action":"click","target":"css:#next"}
+            ]"##
+            .into()],
+            calls: 0,
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                intent: "Fill out all the vehicle data and click next",
+                scene: FORM_SCENE,
+                ..ctx()
+            },
+        )
+        .expect("a whole-form step authors a whole form");
+        assert_eq!(
+            actions,
+            vec![
+                ResolvedAction::TypeText {
+                    target: Target::css("#make"),
+                    text: "BMW".into()
+                },
+                ResolvedAction::TypeText {
+                    target: Target::css("#seats"),
+                    text: "2".into()
+                },
+                ResolvedAction::TypeText {
+                    target: Target::css("#plate"),
+                    text: "W-12345".into()
+                },
+                ResolvedAction::Press {
+                    target: Target::css("#next"),
+                    label: "Next »".into(),
+                    dialog: None
+                },
+            ]
+        );
+        assert_eq!(client.calls, 1, "one step is still one model call");
+    }
+
+    #[test]
+    fn a_sequence_grounds_every_action_and_names_the_one_it_rejects() {
+        // Partial grounding would be the worst outcome: half a form filled
+        // and a trace that looks authored. The step fails, saying which
+        // action failed and where in the sequence it was.
+        let reply = r##"[
+            {"action":"select_option","target":"css:#make","text":"BMW"},
+            {"action":"type_text","target":"css:#invented","text":"W-12345"}
+        ]"##;
+        let mut client = Scripted {
+            replies: vec![reply.into(), reply.into()],
+            calls: 0,
+        };
+        let error = author_steps(
+            &mut client,
+            &AuthorContext {
+                intent: "Fill out all the vehicle data",
+                scene: FORM_SCENE,
+                ..ctx()
+            },
+        )
+        .expect_err("one ungrounded action rejects the sequence");
+        let reason = error.to_string();
+        assert!(reason.contains("action 2 of 2"), "{reason}");
+        assert!(
+            reason.contains("not one of the listed elements"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn the_actions_wrapper_shape_is_accepted() {
+        let mut client = Scripted {
+            replies: vec![r##"{"actions":[{"action":"click","target":"css:#next"}]}"##.into()],
+            calls: 0,
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                intent: "Continue",
+                scene: FORM_SCENE,
+                ..ctx()
+            },
+        )
+        .expect("the wrapper object models reach for is accepted");
+        assert!(matches!(actions[..], [ResolvedAction::Press { .. }]));
+    }
+
+    #[test]
+    fn a_sequence_that_authors_nothing_or_runs_away_is_refused() {
+        for (reply, expected) in [
+            ("[]", "a step must do something"),
+            (
+                &format!(
+                    "[{}]",
+                    vec![r##"{"action":"click","target":"css:#next"}"##; MAX_STEP_ACTIONS + 1]
+                        .join(",")
+                ),
+                "the bound is 60",
+            ),
+        ] {
+            let mut client = Scripted {
+                replies: vec![reply.to_string(), reply.to_string()],
+                calls: 0,
+            };
+            let error = author_steps(
+                &mut client,
+                &AuthorContext {
+                    intent: "Fill out all the vehicle data",
+                    scene: FORM_SCENE,
+                    ..ctx()
+                },
+            )
+            .expect_err("a degenerate sequence is not a step");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_capture_made_mid_sequence_is_in_scope_for_the_rest_of_it() {
+        let mut client = Scripted {
+            replies: vec![r##"[
+                {"action":"capture_text","target":"css:#greet","name":"greeting"},
+                {"action":"type_captured","target":"css:#name","capture":"greeting"}
+            ]"##
+            .into()],
+            calls: 0,
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                intent: "Remember the greeting as the greeting, then put it in the name box",
+                ..ctx()
+            },
+        )
+        .expect("the capture is in scope for the action after it");
+        assert!(matches!(
+            actions[1],
+            ResolvedAction::TypeText { ref text, .. } if text == "${captured.greeting}"
+        ));
+    }
+
+    #[test]
+    fn prompt_contract_asks_for_the_whole_step() {
+        assert!(SYSTEM_PROMPT.contains("a unit of INTENT, not a single click"));
+        assert!(SYSTEM_PROMPT.contains("CARRY OUT THE WHOLE STEP"));
+        assert!(SYSTEM_PROMPT.contains("cover EVERY field it names"));
+        assert!(
+            SYSTEM_PROMPT.contains("`options`"),
+            "the model is told a dropdown's options are authoritative"
+        );
     }
 
     #[test]

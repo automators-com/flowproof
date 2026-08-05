@@ -6,6 +6,36 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **"Fill out all the vehicle data" authored one field and moved on.** A plain
+  step could only ever become ONE action, because that is what the authoring
+  protocol accepted: one JSON object, one target, one verb. So a step naming a
+  whole form filled its first control, the next step pressed Next, and the form
+  failed its own validation — with a trace that looked authored. The tool
+  answered a different question from the one asked, and said nothing about the
+  difference. A person driving the same page does not stop after one field;
+  neither should the step that says "all".
+
+  A step is now a unit of intent. The model may answer with a SEQUENCE of
+  actions, and the contract asks it to carry out the whole step rather than a
+  first instalment. It is still one model call per step, still grounded to the
+  same listed inventory — the sequence is rejected as a whole if any one action
+  in it is not grounded, so a half-filled form cannot reach the trace — and the
+  recorder performs and verifies each action exactly as before. The trace lists
+  every action individually, so replay is no less deterministic than a flow
+  spelled out field by field. A bound of sixty actions per step distinguishes a
+  large form from a model that has started looping.
+
+  The scene was the other half of it. It described what a control *was* and
+  never what it *held*, and a `<select>` was represented by its text content
+  truncated at eighty characters — on the Tricentis sample form, that is
+  "– please select –, Audi", with the remaining fifteen makes invisible. A
+  model asked to fill that dropdown could only guess, and a `<select>` refuses
+  a name it does not have. Entries now carry `value`, `checked`, `required`,
+  and, for a dropdown, its exact `options`. A password's value is never
+  reported: the scene travels to a model.
+
 ### Changed
 
 - **The docs on automators.ai were a release behind, and nothing said so.**

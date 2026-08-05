@@ -83,6 +83,34 @@ const HUMAN_PRIMITIVES_HTML: &str = r##"<!doctype html>
   </script>
 </body></html>"##;
 
+/// A form shaped like the ones people actually ask flowproof to fill: a
+/// dropdown whose options must be named exactly, required text fields, a box
+/// to tick, and a button that refuses until all of it is done.
+const WHOLE_FORM_HTML: &str = r##"<!doctype html>
+<html><body>
+  <form id="vehicle">
+    <label for="make">Make</label>
+    <select id="make" required>
+      <option value=""></option><option>Audi</option><option>BMW</option><option>Tesla</option>
+    </select>
+    <label for="plate">Licence plate</label><input id="plate" required>
+    <label for="mileage">Annual mileage</label><input id="mileage" required>
+    <label for="terms">I accept</label><input type="checkbox" id="terms">
+    <label for="pin">PIN</label><input type="password" id="pin" value="hunter2">
+  </form>
+  <button id="next">Next »</button>
+  <p id="status"></p>
+  <script>
+    document.getElementById('next').addEventListener('click', () => {
+      const complete = make.value && plate.value && mileage.value && terms.checked;
+      // `status` is a legacy window property, so this one is looked up.
+      document.getElementById('status').textContent = complete
+        ? 'You solved this automation problem'
+        : 'Please complete every field';
+    });
+  </script>
+</body></html>"##;
+
 const FRAME_BODY_TOKEN: &str = r#"framed:"container" > css:body"#;
 const FRAME_FIELD_TOKEN: &str = r#"framed:"container" > css:#textfield"#;
 
@@ -238,6 +266,124 @@ fn serve_human_primitives(server: tiny_http::Server) -> std::thread::JoinHandle<
         }
         bodies
     })
+}
+
+/// One reply, one sequence: the fake model answers the single natural step
+/// with every action the form needs, the way a real one now may.
+fn serve_whole_form(server: tiny_http::Server) -> std::thread::JoinHandle<Vec<String>> {
+    std::thread::spawn(move || {
+        let mut bodies = Vec::new();
+        // The whole step is one call, so one request is the whole exchange.
+        if let Ok(mut request) = server.recv() {
+            let mut body = String::new();
+            std::io::Read::read_to_string(request.as_reader(), &mut body).ok();
+            let reply = serde_json::json!([
+                {"action": "select_option", "target": "css:#make", "text": "BMW"},
+                {"action": "type_text", "target": "css:#plate", "text": "W-12345"},
+                {"action": "type_text", "target": "css:#mileage", "text": "12000"},
+                {"action": "click", "target": "css:#terms"},
+                {"action": "click", "target": "css:#next"},
+            ]);
+            let payload = serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": reply.to_string()}}]
+            });
+            let response = tiny_http::Response::from_string(payload.to_string()).with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                    .expect("header"),
+            );
+            bodies.push(body);
+            request.respond(response).ok();
+        }
+        bodies
+    })
+}
+
+/// "Fill in the whole form and continue" is ONE step. It used to author one
+/// action, leave the rest of the form empty, and fail on the page's own
+/// validation — which is exactly what an agent driving the same page by hand
+/// does not do, because it keeps acting until the form is done.
+#[test]
+fn one_natural_step_fills_a_whole_form_and_replays() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping whole-form E2E: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-whole-form-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("whole-form.html");
+    std::fs::write(&page, WHOLE_FORM_HTML).expect("page written");
+    let trace_path = dir.join("whole-form.trace.jsonl");
+
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("fake server binds");
+    let base_url = format!("http://{}", server.server_addr());
+    let server_thread = serve_whole_form(server);
+
+    let mut spec = freeform_spec(format!("file://{}", page.display()));
+    spec.name = "Whole form".into();
+    spec.steps = vec![
+        SpecStep::Plain("Fill out all the vehicle data and continue".into()),
+        SpecStep::Assert {
+            assert: "page shows You solved this automation problem".into(),
+        },
+    ];
+
+    let config = flowproof_agent::BackendConfig {
+        kind: flowproof_agent::BackendKind::OpenAiCompatible,
+        base_url: Some(base_url),
+        model: Some("fake-local-model".into()),
+        api_key: None,
+    };
+    let mut client = flowproof_agent::HttpModelClient::new(config);
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::recorder::record_with_client(
+        &spec,
+        &mut driver,
+        &trace_path,
+        flowproof_agent::Author::Auto,
+        Some(&mut client),
+    )
+    .expect("one step authors the whole form");
+    drop(driver);
+
+    // The step cost ONE model call, and the prompt carried the facts a form
+    // needs: the dropdown's exact options, and which fields the page demands.
+    let bodies = server_thread.join().expect("server thread");
+    assert_eq!(bodies.len(), 1, "a sequence is still one call per step");
+    let parsed: serde_json::Value = serde_json::from_str(&bodies[0]).expect("request is JSON");
+    let prompt = parsed["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .and_then(|message| message["content"].as_str())
+        .expect("request carries the user prompt")
+        .to_string();
+    assert!(
+        prompt.contains(r#""options":["Audi","BMW","Tesla"]"#),
+        "a dropdown's exact options must reach the model: {prompt}"
+    );
+    assert!(prompt.contains(r#""required":true"#), "{prompt}");
+    assert!(
+        prompt.contains(r#""checked":false"#),
+        "an unticked box must be visible as unticked: {prompt}"
+    );
+    // The scene now reports what fields hold, and the scene travels to a
+    // third party. A password's value never does.
+    assert!(
+        !prompt.contains("hunter2"),
+        "password value reached the model"
+    );
+
+    // Five actions were recorded under the one step, and the trace replays
+    // with no model at all.
+    let (_header, steps) = flowproof_replay::load_trace(&trace_path).expect("trace loads");
+    assert_eq!(steps.len(), 6, "five authored actions plus the assertion");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "the filled form must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
