@@ -59,8 +59,10 @@ steps:
   - in: gui
     steps:
       - Go to /nVA01
-      # ...
-      - Remember the "id:wnd[0]/sbar" matching /\d+/ as order
+      # ... create and save the order, then read the number from its own
+      # field rather than out of the status bar's sentence ...
+      - Go to /nVA02
+      - Remember the "id:wnd[0]/usr/ctxtVBAK-VBELN" as order
   - in: portal
     steps:
       - Type ${captured.order} into the "Search" field

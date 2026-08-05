@@ -6,6 +6,18 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **Two documented examples showed grammar the engine refuses.** The
+  `exports:` walkthrough and the multi-surface Phase 2 example both captured
+  an order number with `Remember the "…" matching /\d+/ as order` — a regex
+  form the rules grammar declines by name, so a reader following either page
+  got a refusal from the tool that had just taught them the step. Both now
+  read the number from the field that holds it, which is what the refusal
+  tells you to do. The examples are strings in
+  `documented_grammar_examples_all_resolve` now, so the next drift fails
+  a test instead of a user's first recording.
+
 ## 0.14.0
 
 This release is about the test case that does not fit in one flow. Real work
