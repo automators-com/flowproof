@@ -418,7 +418,7 @@ fn cmd_record(
         return Ok(EXIT_PASS);
     }
 
-    let mut driver = driver_for(spec.app.id())?;
+    let mut driver = record_driver(&spec)?;
     // --reuse: consult the existing trace per step, re-authoring only
     // drift; the old steps come from the trace being replaced.
     let old_steps = if reuse {
@@ -526,21 +526,44 @@ fn discover_specs(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
 /// with a fresh driver each time. Deterministic replay should be stable,
 /// but the infrastructure under it (a dropped CDP frame, a momentarily
 /// slow backend) is not — a flow that passes on a second look should not
-/// The multi-surface vocabulary (`apps:` + `in:` blocks) parses — so the
-/// format is stable and its validation is real — but the engine has not
-/// shipped. Replay refuses by name; `record` refuses inside the recorder
-/// with the same story. One message for both, so the refusal reads the
-/// same wherever it is met.
+/// Recording a multi-surface flow works; REPLAYING its trace is the next
+/// slice. Refused by name so nothing replays half a flow on one surface.
 fn refuse_multi_surface(spec: &FlowSpec) -> Result<(), String> {
     if spec.apps.is_empty() {
         return Ok(());
     }
     Err(
-        "this flow declares `apps:` (multi-surface), and the multi-surface engine has \
-         not shipped yet — split the flow into a suite of single-surface flows chained \
-         with `exports:` (docs/authoring.md) until it lands"
+        "this flow declares `apps:` (multi-surface): recording works, but REPLAY of a \
+         multi-surface trace has not shipped yet — until it lands, split the flow into \
+         a suite of single-surface flows chained with `exports:` (docs/authoring.md)"
             .into(),
     )
+}
+
+/// The driver a RECORDING run gets: the single app's driver, or — for a
+/// multi-surface flow — a `SurfaceRegistry` over `driver_for`, one driver
+/// per surface, launched lazily at each surface's first `in:` block.
+fn record_driver(spec: &FlowSpec) -> Result<Box<dyn AppDriver>, String> {
+    if spec.apps.is_empty() {
+        return driver_for(spec.app.id());
+    }
+    let targets = flowproof_agent::surface_targets(spec).map_err(|e| e.to_string())?;
+    let kinds: std::collections::BTreeMap<String, String> = spec
+        .apps
+        .iter()
+        .map(|(n, s)| (n.clone(), s.app.id().to_string()))
+        .collect();
+    let factory: flowproof_driver::surface::SurfaceFactory = Box::new(move |name| {
+        let kind = kinds.get(name).ok_or_else(|| {
+            flowproof_driver::DriverError::Uia(format!("surface '{name}' is not declared"))
+        })?;
+        driver_for(kind).map_err(flowproof_driver::DriverError::Uia)
+    });
+    Ok(Box::new(flowproof_driver::surface::SurfaceRegistry::new(
+        targets,
+        factory,
+        std::time::Duration::from_secs(15),
+    )))
 }
 
 /// fail the suite. Returns the first passing report, else the last
@@ -816,7 +839,7 @@ fn record_one(
             flowproof_agent::HttpModelClient::from_env_result(),
             Ok(None)
         );
-    let mut driver = driver_for(spec.app.id())?;
+    let mut driver = record_driver(&spec)?;
     flowproof_agent::record_with_author_and_options(
         &spec,
         &mut driver,
@@ -1944,6 +1967,15 @@ fn cmd_heal(
     author: AuthorArg,
 ) -> Result<u8, String> {
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    // Healing replays the trace to find the break, and multi-surface
+    // replay is the next slice — refuse with the same story `run` tells.
+    if !spec.apps.is_empty() {
+        return Err(
+            "healing a multi-surface flow needs multi-surface replay, which has not \
+             shipped yet — re-record the flow instead"
+                .into(),
+        );
+    }
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if author == AuthorArg::Auto
         && spec.has_plain_steps()
@@ -2159,9 +2191,9 @@ where
 mod tests {
     use super::*;
 
-    /// The multi-surface vocabulary parses; running it does not fly yet.
-    /// The refusal names the gap AND the shipped alternative, and a
-    /// single-surface flow passes through untouched.
+    /// Recording a multi-surface flow works; REPLAYING its trace is the
+    /// next slice. The refusal says exactly that, and a single-surface
+    /// flow passes through untouched.
     #[test]
     fn a_multi_surface_spec_is_refused_at_run_naming_the_alternative() {
         let multi = FlowSpec::parse(
@@ -2169,10 +2201,10 @@ mod tests {
              steps:\n  - in: portal\n    steps: [Press Enter]\n",
         )
         .expect("the vocabulary parses");
-        let err = refuse_multi_surface(&multi).expect_err("engine has not shipped");
+        let err = refuse_multi_surface(&multi).expect_err("replay has not shipped");
         assert!(
-            err.contains("multi-surface engine has not shipped") && err.contains("exports:"),
-            "names the gap and the alternative: {err}"
+            err.contains("recording works") && err.contains("REPLAY") && err.contains("exports:"),
+            "says what works, what does not, and the alternative: {err}"
         );
         let single =
             FlowSpec::parse("name: s\napp: web\nurl: x\nsteps:\n  - assert: page shows x\n")

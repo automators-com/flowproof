@@ -103,16 +103,6 @@ pub enum RecordError {
     NoAuthor { step: String, rules_error: String },
     #[error("driver cannot describe its scene; LLM authoring is unavailable for app '{0}'")]
     NoScene(String),
-    /// A multi-surface flow (`apps:` + `in:` blocks) reached an engine that
-    /// cannot run one yet. The vocabulary ships ahead of the engine so the
-    /// format and its validation are real; execution refuses by name.
-    #[error(
-        "this flow declares `apps:` (multi-surface), and the multi-surface engine has \
-         not shipped yet — recording refuses rather than drive the wrong surface. \
-         Until it lands, split the flow into a suite of single-surface flows chained \
-         with `exports:` (docs/authoring.md)"
-    )]
-    MultiSurfaceNotShipped,
     #[error(
         "cannot author step '{}' ({}): {} — a structured clarification payload with the \
          live-screen inventory is available via `record --json` or the MCP record tool",
@@ -1100,6 +1090,87 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
 /// Resolve where to launch: registry apps by id, `web` from the spec URL
 /// (`${VAR}` references resolve from the environment; relative paths become
 /// absolute `file://` URLs).
+/// One surface's header entry, config stored as WRITTEN: a `${VAR}` url or
+/// connection keeps its reference, so it resolves fresh at every replay —
+/// the same discipline every single-surface header field follows.
+fn surface_app_info(surface: &crate::spec::SurfaceSpec) -> AppInfo {
+    let id = surface.app.id();
+    let (command, window_title) = match surface.app.launch_parts() {
+        Some((c, w)) => (Some(c.to_string()), Some(w.to_string())),
+        None => (None, None),
+    };
+    AppInfo {
+        name: if id.is_empty() {
+            "windows".into()
+        } else {
+            id.to_string()
+        },
+        adapter: match id {
+            "web" => flowproof_trace::format::Adapter::Web,
+            "sap" => flowproof_trace::format::Adapter::SapCom,
+            _ => flowproof_trace::format::Adapter::Uia,
+        },
+        window_title,
+        command,
+        geometry: None,
+        url: match id {
+            "web" => surface.url.clone(),
+            "sap" => surface.connection.clone(),
+            _ => None,
+        },
+        version: None,
+    }
+}
+
+/// Each surface's launch target, `${VAR}` refs resolved — what the CLI
+/// hands a `SurfaceRegistry` so activation can launch. Validation already
+/// pinned the shapes (a web surface has `url:`, `agent`/`api`/`vision` are
+/// not surfaces), so the arms here mirror `launch_target` minus those.
+pub fn surface_targets(
+    spec: &FlowSpec,
+) -> Result<Vec<(String, flowproof_driver::AppTarget)>, RecordError> {
+    spec.apps
+        .iter()
+        .map(|(name, surface)| {
+            let target = match surface.app.id() {
+                "web" => {
+                    let url = surface.url.as_deref().ok_or(RecordError::MissingUrl)?;
+                    let url = flowproof_trace::secret::resolve_refs(url)?;
+                    let url = if url.contains("://") {
+                        url
+                    } else {
+                        let absolute =
+                            std::fs::canonicalize(&url).map_err(|source| RecordError::Io {
+                                path: url.to_string(),
+                                source,
+                            })?;
+                        format!("file://{}", absolute.display())
+                    };
+                    flowproof_driver::AppTarget {
+                        command: url,
+                        window_name: String::new(),
+                    }
+                }
+                "sap" => flowproof_driver::AppTarget {
+                    command: flowproof_trace::secret::resolve_refs(
+                        surface.connection.as_deref().unwrap_or_default(),
+                    )?,
+                    window_name: "SAP".into(),
+                },
+                id => match surface.app.launch_parts() {
+                    Some((command, window_title)) => flowproof_driver::AppTarget {
+                        command: flowproof_trace::secret::resolve_refs(command)?,
+                        window_name: flowproof_trace::secret::resolve_refs(window_title)?,
+                    },
+                    None => flowproof_driver::resolve_app(id)
+                        .ok_or_else(|| RecordError::UnknownApp(id.to_string()))?,
+                },
+            };
+            Ok((name.clone(), target))
+        })
+        .collect()
+}
+
 fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordError> {
     if spec.app.id() == "web" {
         let url = spec.url.as_deref().ok_or(RecordError::MissingUrl)?;
@@ -1986,6 +2057,10 @@ struct AuthoredActions {
 #[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
 fn author_actions<D: AppDriver, C: ModelClient>(
     spec: &FlowSpec,
+    // The app id this step authors against: the ACTIVE surface's on a
+    // multi-surface flow (which rules an adapter performs differs by
+    // kind), the flow's own otherwise.
+    app_id: &str,
     driver: &mut D,
     author: Author,
     client: &mut Option<&mut C>,
@@ -2078,10 +2153,10 @@ fn author_actions<D: AppDriver, C: ModelClient>(
         };
         let scene = driver
             .scene()?
-            .ok_or_else(|| RecordError::NoScene(spec.app.id().to_string()))?;
+            .ok_or_else(|| RecordError::NoScene(app_id.to_string()))?;
         let ctx = AuthorContext {
             flow_name: &spec.name,
-            app: spec.app.id(),
+            app: app_id,
             url: spec.url.as_deref(),
             prior_steps: prior,
             captures,
@@ -2109,7 +2184,7 @@ fn author_actions<D: AppDriver, C: ModelClient>(
         };
     }
 
-    let rules_result = resolve_step(spec.app.id(), rules_step);
+    let rules_result = resolve_step(app_id, rules_step);
     match rules_result {
         Ok(actions) => {
             let fallback = plain_auto;
@@ -2222,10 +2297,10 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     // The multi-surface vocabulary parses (so the format is stable and its
     // validation is real) but the engine has not shipped: refuse before
     // launching anything, rather than drive the wrong surface or hand an
-    // `in:` block to the model as prose intent.
-    if !spec.apps.is_empty() {
-        return Err(RecordError::MultiSurfaceNotShipped);
-    }
+    // Multi-surface: steps live in `in:` blocks, and the driver is a
+    // surface registry (any other driver's `activate_surface` refuses by
+    // name at the first block). Launch happens per surface, at activation.
+    let multi = !spec.apps.is_empty();
     let mut reuse = old_steps.map(ReuseCursor::new);
     // `assert_no_secret_leak` selectors, grouped by asserting step. The scan
     // is a whole-run store-guard: it runs on the in-memory corpus BEFORE the
@@ -2238,12 +2313,29 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     // refused at execution (the same rule `assert_no_egress` follows), before
     // launching anything, so nothing is minted for a control that cannot be
     // checked. web and api are covered; agent never reaches this recorder.
+    if scan_secrets && multi {
+        // Which surfaces' output makes up the corpus is undecided design
+        // (docs/multi-surface.md) — refused, never a vacuous pass.
+        return Err(RecordError::SecretLeak(
+            "multi-surface flows have no defined secret-leak corpus yet; assert it in a \
+             single-surface flow of the suite"
+                .into(),
+        ));
+    }
     if scan_secrets && !flowproof_trace::secret_scan::has_readable_corpus(spec.app.id()) {
         return Err(RecordError::SecretLeak(
             flowproof_trace::secret_scan::capability_error(spec.app.id()),
         ));
     }
-    let target = launch_target(spec)?;
+    let target = if multi {
+        // Unused: each surface launches from its own target, at activation.
+        flowproof_driver::AppTarget {
+            command: String::new(),
+            window_name: String::new(),
+        }
+    } else {
+        launch_target(spec)?
+    };
     // The session is an inline mapping by now: a `session: <name>` ref is
     // dereferenced to its identity's inline setup at flow load, so record
     // never sees an unresolved name.
@@ -2262,7 +2354,16 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             driver.stage_browser(web_browser_from_setup(browser))?;
         }
     }
-    driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+    if multi {
+        // Lazy launch means the FIRST block's surface starts now anyway —
+        // activating it here (its block re-activates, an attach) gives env
+        // resolution below a real screen to read.
+        if let Some(crate::spec::SpecStep::InSurface { block }) = spec.steps.first() {
+            driver.activate_surface(&block.surface)?;
+        }
+    } else {
+        driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+    }
     // Shape the window BEFORE the first step, so every frame and every
     // visual baseline in this recording sees the same geometry replay will.
     let applied_geometry = match spec.window.as_ref().map(|w| w.config()) {
@@ -2332,10 +2433,21 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     // one flow do not share a budget.
     let mut queue: std::collections::VecDeque<(crate::spec::SpecStep, u32)> =
         spec.steps.iter().cloned().map(|s| (s, 0)).collect();
+    // The surface the CURRENT step runs on (multi-surface flows): set at
+    // each `in:` boundary, stamped into every recorded step, and the app id
+    // steps author and record against follows it.
+    let mut current_surface: Option<String> = None;
+    let surface_app = |current: &Option<String>| -> String {
+        current
+            .as_ref()
+            .and_then(|name| spec.apps.get(name))
+            .map(|s| s.app.id().to_string())
+            .unwrap_or_else(|| spec.app.id().to_string())
+    };
     while let Some((owned_step, passes)) = queue.pop_front() {
         match &owned_step {
             crate::spec::SpecStep::When { when } => {
-                if condition_holds(driver, spec.app.id(), &when.when)? {
+                if condition_holds(driver, &surface_app(&current_surface), &when.when)? {
                     for (i, inner) in when.steps.iter().enumerate() {
                         queue.insert(i, (inner.clone(), 0));
                     }
@@ -2346,7 +2458,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 // One pass is queued at a time, with the loop re-queued
                 // behind it, so the condition is re-read against the app
                 // AFTER each pass rather than against a stale reading.
-                if condition_holds(driver, spec.app.id(), &repeat.until)? {
+                if condition_holds(driver, &surface_app(&current_surface), &repeat.until)? {
                     continue;
                 }
                 if passes >= repeat.max {
@@ -2372,22 +2484,29 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 queue.insert(at, (owned_step.clone(), passes + 1));
                 continue;
             }
-            // Defense in depth: the top-of-function guard refuses every
-            // multi-surface SPEC, and validation ties `in:` blocks to
-            // `apps:` — but a hand-built FlowSpec could still smuggle one
-            // here, where the catch-all would send "in gui: 3 steps" to the
-            // model as prose intent.
-            crate::spec::SpecStep::InSurface { .. } => {
-                return Err(RecordError::MultiSurfaceNotShipped);
+            // The block boundary: activate the surface (lazy launch on its
+            // first visit, re-foreground after), then queue the block's
+            // steps. On a single-surface driver `activate_surface` refuses
+            // by name — a smuggled block can never reach the model as
+            // prose intent.
+            crate::spec::SpecStep::InSurface { block } => {
+                driver.activate_surface(&block.surface)?;
+                current_surface = Some(block.surface.clone());
+                for (i, inner) in block.steps.iter().enumerate() {
+                    queue.insert(i, (inner.clone(), 0));
+                }
+                continue;
             }
             _ => {}
         }
         let spec_step = &owned_step;
         let intent = spec_step.intent().to_string();
+        let step_app = surface_app(&current_surface);
         let mut capture_names: Vec<String> = captures.keys().cloned().collect();
         capture_names.sort();
         let authored = author_actions(
             spec,
+            &step_app,
             driver,
             author,
             &mut client,
@@ -3119,12 +3238,11 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             if let Some(rec) = recorder.as_mut() {
                 rec.step_finished(driver);
             }
-            steps.push(step_for(
-                steps.len() + 1,
-                &spec_step.intent(),
-                spec.app.id(),
-                &action,
-            ));
+            let mut step = step_for(steps.len() + 1, &spec_step.intent(), &step_app, &action);
+            // Which surface ran it — how a multi-surface replay knows the
+            // driver a step belongs to. None on single-surface flows.
+            step.surface = current_surface.clone();
+            steps.push(step);
             // Harvest record-time hints for a cell target (#58): the
             // column's field and the row's id, so replay can fall back to
             // them if the header text or the anchor changed. Best-effort -
@@ -3179,7 +3297,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         }
     }
 
-    let header = Header {
+    let mut header = Header {
         format: FORMAT_NAME.to_string(),
         version: FORMAT_VERSION,
         trace_id: trace_id.clone(),
@@ -3283,6 +3401,27 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         // `control:` block, which serialize byte-identical to before.
         control: spec.control.clone(),
     };
+    if multi {
+        // The sentinel: deliberately not a copy of any one surface, so an
+        // engine predating multi-surface fails loudly at load instead of
+        // replaying every step against whichever surface happened first.
+        // The real surfaces travel in `apps`, config stored as WRITTEN —
+        // a `${VAR}` url or connection resolves again at every replay.
+        header.app = AppInfo {
+            name: "multi".into(),
+            adapter: flowproof_trace::format::Adapter::Multi,
+            window_title: None,
+            command: None,
+            geometry: None,
+            url: None,
+            version: None,
+        };
+        header.apps = spec
+            .apps
+            .iter()
+            .map(|(name, s)| (name.clone(), surface_app_info(s)))
+            .collect();
+    }
 
     let io_err = |source: std::io::Error| RecordError::Io {
         path: out.display().to_string(),
