@@ -6,6 +6,29 @@ together).
 
 ## Unreleased
 
+### Added
+
+- **A SAP flow can name the user it logs in as.** Credentials came from
+  `SAP_USER`/`SAP_PASSWORD`, which are process-global — so a test case that
+  acts as a clerk and then as an approver could not express its second user
+  at all, and a run needed environment set up outside the spec before it
+  would work. A flow now takes a `login:` block (`user`, `password`,
+  optional `client` and `language`), and a suite of flows with one block
+  each is the two-user test case. Values may be `${VAR}` references
+  resolved at every launch, or literals, so a flow can run with nothing
+  configured anywhere. The password never enters the trace: it has no
+  header field, is read from the spec at each launch, and the header
+  carries only `login_user`, because a recording that cannot say which
+  identity produced it is not reviewable. `login:` without `connection:`
+  is refused — it reads like it picks an identity, but with nothing to open
+  it could only attach to whatever session was already there. And a session
+  logged in as somebody else is no longer taken over: flowproof opens its
+  own connection and logs in beside them, since driving the wrong identity
+  passes while proving nothing. Flows with no `login:` block behave exactly
+  as before. The `apps:` surface entry accepts the same block, which is the
+  shape a same-system two-user case wants; as with the rest of that
+  vocabulary it validates but does not yet run.
+
 ## 0.14.0
 
 This release is about the test case that does not fit in one flow. Real work

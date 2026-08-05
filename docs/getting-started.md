@@ -767,6 +767,49 @@ For a non-standard installation, set `SAP_LOGON_EXE` to the full path of
 `saplogon.exe`. Named connections wait up to 60 seconds by default; override
 that for slow SAProuter landscapes with `FLOWPROOF_SAP_CONNECT_TIMEOUT_MS`.
 
+### `login:` — the flow names its own user
+
+Those variables are *process-global*, which is fine until a test case needs
+two identities: a clerk creates the order, an approver releases it. One
+process has one `SAP_USER`, so the second user could not be expressed at all.
+A flow's own `login:` block can, and it needs no environment whatsoever:
+
+```yaml
+name: Clerk creates the order
+app: sap
+connection: TS3
+login:
+  user: obeva
+  password: ${TS3_PASSWORD}   # a literal works too — see below
+  client: "100"               # optional
+  language: EN                # optional
+steps:
+  - Go to /nVA01
+```
+
+The two-user test case is then two flows in a suite, one `login:` each,
+chained with [`exports:`](authoring.md#handing-a-value-to-the-next-flow-exports).
+`login:` requires `connection:`: without one the flow would attach to
+whatever session is already open, which may be a different user than the one
+named — so that combination is a parse error rather than a surprise at run
+time. When a flow has no `login:` block, nothing changes: the environment
+pair still answers, exactly as before.
+
+What holds:
+
+- **The password never enters the trace.** It is not a header field, so
+  there is nothing to redact and nothing to leak into a committed artifact.
+  Only `login_user` travels, because a recording that cannot say which
+  identity produced it is not reviewable.
+- **Values resolve at the moment of use**, on record and on every replay —
+  so `${TS3_PASSWORD}` picks up a rotated password rather than the one that
+  was true when the trace was cut, and a literal password needs no
+  environment at all. A literal stays in the spec file, which is then the
+  only place it appears; prefer a `${VAR}` for anything you commit.
+- **A session belonging to another user is never taken over.** Naming a user
+  and silently driving somebody else's session would pass while proving
+  nothing, so flowproof opens its own connection and logs in beside them.
+
 ```yaml
 name: Create standard order
 app: sap
