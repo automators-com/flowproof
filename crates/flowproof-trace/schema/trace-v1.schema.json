@@ -100,6 +100,10 @@
           "type": "string",
           "description": "For web traces: the URL the flow was recorded against. For sap: the SAP Logon connection description."
         },
+        "login_user": {
+          "type": "string",
+          "description": "For sap traces: the user the recording logged in as, stored raw (a ${VAR} reference is not resolved here). There is deliberately NO password field: the password is resolved from the spec's `login:` block at every launch and never enters the trace."
+        },
         "version": {
           "type": "string"
         }

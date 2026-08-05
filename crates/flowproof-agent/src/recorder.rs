@@ -3256,6 +3256,10 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     .or_else(|| (!target.command.is_empty()).then(|| target.command.clone())),
                 _ => None,
             },
+            // Written by the record path in the commit that stages a flow's
+            // `login:` block on the driver; the field exists here first so
+            // the format and its schema land together.
+            login_user: None,
             version: None,
         },
         // Single-surface recording mints no surface map; the multi-surface
