@@ -84,6 +84,15 @@ together).
 
 ### Fixed
 
+- **The report attached ten screenshots when eight were captured.** Step
+  time ranges are contiguous — one step ends on the millisecond the next
+  begins — and the report viewer bracketed frames inclusively on both ends,
+  so a frame captured on the shared boundary rendered under BOTH steps. A
+  reviewer counting evidence saw captures that never happened. Each frame
+  now renders under exactly one step, the earliest whose range brackets it,
+  with a test that puts frames on the boundary and counts what the HTML
+  shows.
+
 - **"Fill out all the vehicle data" authored one field and moved on.** A plain
   step could only ever become ONE action, because that is what the authoring
   protocol accepted: one JSON object, one target, one verb. So a step naming a
