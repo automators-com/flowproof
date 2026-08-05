@@ -3611,7 +3611,7 @@ steps:
   - in: gui
     steps:
       - Go to /nVA01
-      - Remember the \"id:wnd[0]/sbar\" matching /\\d+/ as order
+      - Remember the \"id:wnd[0]/usr/ctxtVBAK-VBELN\" as order
   - in: portal
     steps:
       - Type ${captured.order} into the \"Search\" field
