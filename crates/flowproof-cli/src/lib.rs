@@ -526,6 +526,23 @@ fn discover_specs(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
 /// with a fresh driver each time. Deterministic replay should be stable,
 /// but the infrastructure under it (a dropped CDP frame, a momentarily
 /// slow backend) is not — a flow that passes on a second look should not
+/// The multi-surface vocabulary (`apps:` + `in:` blocks) parses — so the
+/// format is stable and its validation is real — but the engine has not
+/// shipped. Replay refuses by name; `record` refuses inside the recorder
+/// with the same story. One message for both, so the refusal reads the
+/// same wherever it is met.
+fn refuse_multi_surface(spec: &FlowSpec) -> Result<(), String> {
+    if spec.apps.is_empty() {
+        return Ok(());
+    }
+    Err(
+        "this flow declares `apps:` (multi-surface), and the multi-surface engine has \
+         not shipped yet — split the flow into a suite of single-surface flows chained \
+         with `exports:` (docs/authoring.md) until it lands"
+            .into(),
+    )
+}
+
 /// fail the suite. Returns the first passing report, else the last
 /// failure, with the attempt count.
 fn replay_with_retries(
@@ -957,6 +974,19 @@ fn run_suite_with_author(
                 "report_path": null,
             }));
             reports.push(report);
+            continue;
+        }
+        // Multi-surface vocabulary parses; the engine has not shipped. One
+        // errored flow, not a broken suite — the rest still run.
+        if let Err(e) = refuse_multi_surface(&gated_spec) {
+            errored_flow(
+                spec_path,
+                &gated_spec.name,
+                e,
+                json,
+                &mut flows,
+                &mut reports,
+            );
             continue;
         }
         let trace_path = default_trace_path(spec_path);
@@ -1482,6 +1512,7 @@ fn cmd_run(
     // Load the spec for its gate (this also surfaces spec parse errors on
     // single runs, deliberately — a typo'd spec should not replay).
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    refuse_multi_surface(&spec)?;
     // Surface a bad `session: <name>` the same way record would: a bare name
     // with no governing suite is a load-time error naming the missing suite.
     dereference_identity(&mut spec, manifest.as_ref())?;
@@ -2127,6 +2158,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The multi-surface vocabulary parses; running it does not fly yet.
+    /// The refusal names the gap AND the shipped alternative, and a
+    /// single-surface flow passes through untouched.
+    #[test]
+    fn a_multi_surface_spec_is_refused_at_run_naming_the_alternative() {
+        let multi = FlowSpec::parse(
+            "name: m\napps:\n  portal: {app: web, url: \"https://e.test\"}\n\
+             steps:\n  - in: portal\n    steps: [Press Enter]\n",
+        )
+        .expect("the vocabulary parses");
+        let err = refuse_multi_surface(&multi).expect_err("engine has not shipped");
+        assert!(
+            err.contains("multi-surface engine has not shipped") && err.contains("exports:"),
+            "names the gap and the alternative: {err}"
+        );
+        let single =
+            FlowSpec::parse("name: s\napp: web\nurl: x\nsteps:\n  - assert: page shows x\n")
+                .expect("parses");
+        assert!(refuse_multi_surface(&single).is_ok());
+    }
 
     /// A flow that engages egress records the tier it ACTUALLY ran under.
     /// Without this, an `egress` lane on a host with no containment reads

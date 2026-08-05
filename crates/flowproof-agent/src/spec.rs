@@ -107,7 +107,7 @@ impl AppSpec {
 #[serde(deny_unknown_fields)]
 pub struct SurfaceSpec {
     pub app: AppSpec,
-    /// For web surfaces: the URL to open.
+    /// For web surfaces: the URL to open. Required there, refused elsewhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// For sap surfaces: the SAP Logon connection description (omitted =
@@ -468,6 +468,18 @@ fn find_in_block(steps: &[SpecStep]) -> Option<&str> {
         SpecStep::Repeat { repeat } => find_in_block(&repeat.steps),
         SpecStep::When { when } => find_in_block(&when.steps),
         _ => None,
+    })
+}
+
+/// Whether any step in the tree is an `assert_screenshot` (recursing into
+/// `repeat`/`when` bodies) — refused in multi-surface flows until a
+/// baseline's identity names its surface.
+fn has_screenshot_step(steps: &[SpecStep]) -> bool {
+    steps.iter().any(|step| match step {
+        SpecStep::AssertScreenshot { .. } => true,
+        SpecStep::Repeat { repeat } => has_screenshot_step(&repeat.steps),
+        SpecStep::When { when } => has_screenshot_step(&when.steps),
+        _ => false,
     })
 }
 
@@ -942,9 +954,13 @@ impl FlowSpec {
     /// of `app:`/`apps:`; blocks require `apps:`, name a declared surface,
     /// hold at least one step, and never nest (one surface is active at a
     /// time — a switch inside a `repeat`/`when` pass would interleave real
-    /// input across surfaces); and every step lives inside a block.
-    /// WHICH kinds may be a surface, and where url/connection config sits,
-    /// is the next slice of this validation (docs/multi-surface.md).
+    /// input across surfaces); every step lives inside a block; only UI
+    /// kinds are surfaces (`agent`, `api` and `vision` are refused each
+    /// with its reason); `url:`/`connection:` sit on the surface of their
+    /// kind; flow-level surface config is refused naming where it goes;
+    /// and `assert_screenshot` is refused until a baseline's identity
+    /// names its surface — a `gui` baseline compared against a `portal`
+    /// frame would be a green lie.
     fn validate_surfaces(&self) -> Result<(), SpecError> {
         let bad = |m: String| Err(SpecError::Surfaces(m));
         let multi = !self.apps.is_empty();
@@ -984,6 +1000,45 @@ impl FlowSpec {
             if surface.app.is_unset() {
                 return bad(format!("surface `{name}` names no app"));
             }
+            let id = surface.app.id();
+            match id {
+                "agent" => {
+                    return bad(format!(
+                        "surface `{name}`: `agent` is a model boundary, not a UI surface — \
+                         chain an `app: agent` flow in the suite instead (docs/multi-surface.md \
+                         defers the in-flow agent seam deliberately)"
+                    ))
+                }
+                "api" => {
+                    return bad(format!(
+                        "surface `{name}`: an `api` surface has nothing to drive — \
+                         `assert_api` runs fine inside any `in:` block"
+                    ))
+                }
+                "vision" => {
+                    return bad(format!(
+                        "surface `{name}`: a vision surface attaches by window title, and \
+                         per-surface `window:` config has not shipped yet \
+                         (docs/multi-surface.md)"
+                    ))
+                }
+                _ => {}
+            }
+            if id == "web" && surface.url.is_none() {
+                return bad(format!("web surface `{name}` needs `url:`"));
+            }
+            if id != "web" && surface.url.is_some() {
+                return bad(format!(
+                    "`url:` on surface `{name}` means nothing for `app: {id}` — it is web \
+                     surface config"
+                ));
+            }
+            if id != "sap" && surface.connection.is_some() {
+                return bad(format!(
+                    "`connection:` on surface `{name}` means nothing for `app: {id}` — it \
+                     is sap surface config"
+                ));
+            }
         }
         let declared = || {
             self.apps
@@ -1018,6 +1073,61 @@ impl FlowSpec {
                     block.surface
                 ));
             }
+            if has_screenshot_step(&block.steps) {
+                return bad(
+                    "`assert_screenshot` in a multi-surface flow is not supported yet: a \
+                     baseline's identity does not yet name its surface, and a baseline \
+                     from one surface compared against another's frame would be a green \
+                     lie (docs/multi-surface.md)"
+                        .into(),
+                );
+            }
+        }
+        // Flow-level config that either belongs to the surface entries or
+        // is open per-surface design. Each refusal names where it goes.
+        let refusals: [(&str, bool); 7] = [
+            (
+                "`url:` moves into the web surface's entry",
+                self.url.is_some(),
+            ),
+            (
+                "`connection:` moves into the sap surface's entry",
+                self.connection.is_some(),
+            ),
+            (
+                "per-surface `window:` config has not shipped yet",
+                self.window.is_some(),
+            ),
+            (
+                "per-surface `browser:` config has not shipped yet",
+                self.browser.is_some(),
+            ),
+            (
+                "per-surface `session:` config has not shipped yet",
+                self.session.is_some(),
+            ),
+            (
+                "per-surface `mock:` rules have not shipped yet",
+                !self.mock.is_empty(),
+            ),
+            (
+                "per-surface `redact:` rules have not shipped yet",
+                !self.redact.is_empty(),
+            ),
+        ];
+        for (why, present) in refusals {
+            if present {
+                return bad(format!(
+                    "on a multi-surface flow, {why} (docs/multi-surface.md)"
+                ));
+            }
+        }
+        if self.agent.is_some() || !self.tools.is_empty() || !self.mcp.is_empty() || self.strict {
+            return bad(
+                "`agent:`, `tools:`, `mcp:` and `strict:` belong to an `app: agent` flow \
+                 — an agent is a model boundary, not a surface"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -3579,6 +3689,59 @@ steps:
         let empty = spec("name: n\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n    steps: []\n")
             .expect_err("empty block");
         assert!(empty.to_string().contains("no steps"), "{empty}");
+    }
+
+    /// Each refused surface kind names its reason and its alternative —
+    /// a vocabulary that parses but cannot run would be a trap.
+    #[test]
+    fn non_ui_surface_kinds_are_refused_by_name() {
+        for (kind, expect) in [
+            ("agent", "model boundary"),
+            ("api", "nothing to drive"),
+            ("vision", "window"),
+        ] {
+            let err = spec(&format!(
+                "name: n\napps:\n  s: {{app: {kind}}}\nsteps:\n  - in: s\n    steps: [Press Enter]\n"
+            ))
+            .expect_err("refused kind");
+            assert!(
+                err.to_string().contains(expect),
+                "`{kind}` names its reason: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_config_sits_on_the_right_surface() {
+        let no_url = spec(
+            "name: n\napps:\n  portal: {app: web}\nsteps:\n  - in: portal\n    steps: [Press Enter]\n",
+        )
+        .expect_err("web needs url");
+        assert!(no_url.to_string().contains("needs `url:`"), "{no_url}");
+        let misplaced = spec(
+            "name: n\napps:\n  gui: {app: sap, url: http://x}\nsteps:\n  - in: gui\n    steps: [Press Enter]\n",
+        )
+        .expect_err("url on sap");
+        assert!(
+            misplaced.to_string().contains("web surface config"),
+            "{misplaced}"
+        );
+        // Flow-level surface config is refused, naming where it goes.
+        let flow_level = spec(
+            "name: n\nurl: http://x\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n    steps: [Press Enter]\n",
+        )
+        .expect_err("flow-level url");
+        assert!(
+            flow_level
+                .to_string()
+                .contains("moves into the web surface"),
+            "{flow_level}"
+        );
+        let screenshot = spec(
+            "name: n\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n    steps:\n      - assert_screenshot:\n          name: x\n",
+        )
+        .expect_err("screenshot in multi");
+        assert!(screenshot.to_string().contains("baseline"), "{screenshot}");
     }
 
     /// A lone `in:` key (block missing its `steps:`) gets a better error
