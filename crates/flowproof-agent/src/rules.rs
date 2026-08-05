@@ -1014,6 +1014,16 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                     "assert_screenshot name must be a plain file name (no path separators)",
                 ));
             }
+            // `@` is the surface qualifier: a multi-surface flow's baseline
+            // is stored as `<name>@<surface>.png`, so a user name carrying
+            // one could collide with another surface's baseline.
+            if assert_screenshot.name.contains('@') {
+                return Err(unresolvable(
+                    &assert_screenshot.name,
+                    "assert_screenshot name must not contain `@` (reserved for the \
+                     surface qualifier)",
+                ));
+            }
             return Ok(vec![ResolvedAction::AssertScreenshot {
                 name: assert_screenshot.name.clone(),
                 masks: assert_screenshot.mask.clone(),

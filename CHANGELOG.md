@@ -8,6 +8,17 @@ together).
 
 ### Added
 
+- **`assert_screenshot` works in multi-surface flows: a baseline's
+  identity names its surface.** It was refused because the identity did
+  not — two blocks reusing one name would have overwritten each other's
+  baseline, and a `gui` baseline could quietly stand in for a `portal`
+  frame. The recorder now qualifies each baseline once, at authoring:
+  stored and compared as `<name>@<surface>.png`, carried in the trace, so
+  minting and replay follow with no changes of their own. Two surfaces
+  may reuse one spec name; `@` in a spec-chosen name is refused, naming
+  the reservation, so no user name can collide with another surface's
+  baseline.
+
 - **A desktop surface carries its own `window:` — and vision becomes a
   surface.** A Citrix/RDP-published app could not join a multi-surface
   flow: vision attaches to a window by title, and there was nowhere

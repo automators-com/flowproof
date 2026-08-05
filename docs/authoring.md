@@ -909,13 +909,17 @@ What holds, and why:
 
   On a web surface `window:` is a parse error — a page is sized with
   `browser: viewport`.
+- **`assert_screenshot` works in any block, and its baseline names its
+  surface**: the stored identity is `<name>@<surface>.png`, so two blocks
+  may reuse one spec name and a `gui` baseline can never be compared
+  against a `portal` frame. (`@` in a spec-chosen name is refused for
+  exactly that reason.)
 - Surface kinds are UI kinds: `agent` (chain an `app: agent` flow in the
   suite instead) and `api` (nothing to drive) are refused at parse, each
   with its reason — as are flow-level `session`/`mock`/`redact` (and
-  flow-level `browser:`/`window:`, which moved into the surface entries)
-  and `assert_screenshot` (a baseline's identity does not yet name its
-  surface). `flowproof heal` does not support multi-surface flows yet:
-  re-record instead.
+  flow-level `browser:`/`window:`, which moved into the surface entries).
+  `flowproof heal` does not support multi-surface flows yet: re-record
+  instead.
 
 When the case is "do in system A, prove in system B" with no ping-pong, a
 suite of single-surface flows chained with
