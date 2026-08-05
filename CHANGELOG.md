@@ -6,35 +6,29 @@ together).
 
 ## Unreleased
 
-### Fixed
+### Added
 
-- **"Fill out all the vehicle data" authored one field and moved on.** A plain
-  step could only ever become ONE action, because that is what the authoring
-  protocol accepted: one JSON object, one target, one verb. So a step naming a
-  whole form filled its first control, the next step pressed Next, and the form
-  failed its own validation — with a trace that looked authored. The tool
-  answered a different question from the one asked, and said nothing about the
-  difference. A person driving the same page does not stop after one field;
-  neither should the step that says "all".
+- **A test case that crossed technologies had no way to carry a value
+  across the seam.** A flow drives exactly one surface — that is by design,
+  one driver per flow — but the real-world test case is "SAP GUI creates
+  the order, the web portal must show it", and the order number exists
+  nowhere except on SAP's status bar at run time. Captures are flow-scoped
+  and suite `env` is fixed before any flow runs, so the only bridge was a
+  hand-written script between two flowproof invocations: exactly the
+  harness glue flowproof exists to replace.
 
-  A step is now a unit of intent. The model may answer with a SEQUENCE of
-  actions, and the contract asks it to carry out the whole step rather than a
-  first instalment. It is still one model call per step, still grounded to the
-  same listed inventory — the sequence is rejected as a whole if any one action
-  in it is not grounded, so a half-filled form cannot reach the trace — and the
-  recorder performs and verifies each action exactly as before. The trace lists
-  every action individually, so replay is no less deterministic than a flow
-  spelled out field by field. A bound of sixty actions per step distinguishes a
-  large form from a model that has started looping.
-
-  The scene was the other half of it. It described what a control *was* and
-  never what it *held*, and a `<select>` was represented by its text content
-  truncated at eighty characters — on the Tricentis sample form, that is
-  "– please select –, Audi", with the remaining fifteen makes invisible. A
-  model asked to fill that dropdown could only guess, and a `<select>` refuses
-  a name it does not have. Entries now carry `value`, `checked`, `required`,
-  and, for a dropdown, its exact `options`. A password's value is never
-  reported: the scene travels to a model.
+  A flow can now declare `exports:` — `ENV_NAME: template`, where the
+  template resolves `${captured.<name>}` from the flow's own captures once
+  its last step has passed. The pairs become environment variables for the
+  suite's remaining flows, which reference them as ordinary `${VAR}`s: the
+  downstream trace stores only the reference, and the handoff happens at
+  replay time from replay-time captures, so flow B replays against the
+  value flow A's replay just read. Nothing is persisted — the trace holds
+  the capture name, the report and the `[EXPORT]` line hold the export
+  name, and the value lives only in the memory of the run. An export whose
+  capture was never remembered fails the flow that owns the captures,
+  naming what was in scope, rather than a downstream flow failing over a
+  variable nobody visibly set — and a failed flow exports nothing.
 
 ### Changed
 
@@ -72,6 +66,34 @@ together).
   listed as out of scope in the same document whose §8 describes it as built.
 
 ### Fixed
+
+- **"Fill out all the vehicle data" authored one field and moved on.** A plain
+  step could only ever become ONE action, because that is what the authoring
+  protocol accepted: one JSON object, one target, one verb. So a step naming a
+  whole form filled its first control, the next step pressed Next, and the form
+  failed its own validation — with a trace that looked authored. The tool
+  answered a different question from the one asked, and said nothing about the
+  difference. A person driving the same page does not stop after one field;
+  neither should the step that says "all".
+
+  A step is now a unit of intent. The model may answer with a SEQUENCE of
+  actions, and the contract asks it to carry out the whole step rather than a
+  first instalment. It is still one model call per step, still grounded to the
+  same listed inventory — the sequence is rejected as a whole if any one action
+  in it is not grounded, so a half-filled form cannot reach the trace — and the
+  recorder performs and verifies each action exactly as before. The trace lists
+  every action individually, so replay is no less deterministic than a flow
+  spelled out field by field. A bound of sixty actions per step distinguishes a
+  large form from a model that has started looping.
+
+  The scene was the other half of it. It described what a control *was* and
+  never what it *held*, and a `<select>` was represented by its text content
+  truncated at eighty characters — on the Tricentis sample form, that is
+  "– please select –, Audi", with the remaining fifteen makes invisible. A
+  model asked to fill that dropdown could only guess, and a `<select>` refuses
+  a name it does not have. Entries now carry `value`, `checked`, `required`,
+  and, for a dropdown, its exact `options`. A password's value is never
+  reported: the scene travels to a model.
 
 - **Three flags shipped without ever being written down.** `run --trace`,
   `heal --trace` and `doctor --prompt` existed, worked, and appeared in

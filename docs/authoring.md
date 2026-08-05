@@ -513,6 +513,69 @@ test decide what the flow does next. Supplying text it just displayed is
 data entry; picking the next element is control flow. A name that was never
 remembered fails closed, naming what was in scope.
 
+### Handing a value to the next flow (`exports:`)
+
+A capture is flow-scoped. `exports:` is how one crosses to the flows that
+run AFTER this one in a suite — which is how a test case spans
+technologies: one flow drives SAP GUI and captures the order number off the
+status bar, the next drives the web portal that must show it. Each flow
+keeps its own `app:` and its own driver; the suite is the test case, and
+the export is the thread through it.
+
+```yaml
+# a-create-order.flow.yaml — SAP GUI mints the order number
+name: Create standard order
+app: sap
+steps:
+  - Go to /nVA01
+  # ... create the order ...
+  - Remember the "id:wnd[0]/sbar" matching /\d+/ as order
+exports:
+  ORDER_NO: ${captured.order}
+```
+
+```yaml
+# b-verify-portal.flow.yaml — the portal must show what SAP minted
+name: Order appears in the portal
+app: web
+url: ${PORTAL_URL}/orders
+steps:
+  - Type ${ORDER_NO} into the "Search" field
+  - assert: page shows ${ORDER_NO}
+```
+
+Each export is `ENV_NAME: template`. The template may carry
+`${captured.<name>}` references (this flow's captures) and plain `${VAR}`
+references (the environment, resolved like suite `env`). When the flow's
+last step has passed, the templates resolve and the pairs become
+environment variables for the remaining flows — which reference them as
+ordinary `${VAR}`s, so the downstream trace stores only the reference and
+resolves it fresh on every replay. The handoff happens at REPLAY time, from
+replay-time captures: flow B replays against the value flow A's replay just
+read, not against a value frozen at record.
+
+What holds, and why:
+
+- **Nothing is persisted.** Like a capture, an exported value exists only
+  in the memory of the run. The trace holds the capture name, the run
+  report and the `[EXPORT]` line hold the export NAME — an order number or
+  balance stays out of committed artifacts and CI logs alike.
+- **An export that cannot resolve fails the flow that owns it.** A
+  `${captured.<name>}` never remembered fails THIS flow with the captures
+  that were in scope — not the downstream flow, which would otherwise fail
+  holding a variable nobody visibly set. And a failed flow exports
+  nothing: no partial contract.
+- **A single `flowproof run <spec>` resolves exports too**, though there is
+  no downstream flow to receive them — the verdict must not depend on
+  whether the flow ran alone or in a suite.
+- **`app: agent` flows cannot export** (a parse error): they record at the
+  model boundary and have no captures. Chain them as consumers — an agent
+  flow's spec can reference `${ORDER_NO}` like any other.
+
+The suite's existing machinery composes: `env_from` mints the data the
+FIRST flow needs, `order:` in `suite.yaml` pins who runs before whom, and
+`exports:` carries what a flow LEARNED to whoever follows.
+
 ### iframes (same-origin, assertions)
 
 An element inside an iframe is addressed with the same target-tail shape as
