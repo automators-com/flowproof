@@ -26,6 +26,20 @@ together).
   as the action-enum gap before it, and the reason the new fixture
   exercises a `command`+`geometry` surface explicitly.
 
+- **The multi-surface vocabulary ships ahead of its engine.** A flow can
+  now declare `apps:` — named surfaces (`gui: {app: sap}`, `portal: {app:
+  web, url: …}`) — with its steps in `in: <surface>` blocks, exactly one
+  surface active at a time. The vocabulary parses and validates for real:
+  every wrong combination is a parse error naming the right spelling — a
+  block naming an undeclared surface lists the declared ones, and a bare
+  step at top level says where steps live. What does NOT ship yet is
+  the engine: recording a multi-surface flow refuses by name and points
+  at the shipped alternative (a suite of single-surface flows chained
+  with `exports:`) rather than driving the wrong surface or handing an
+  `in:` block to the model as prose. Shipping the format first means
+  specs can be written and reviewed now, and the refusal is the
+  documentation of the gap (docs/multi-surface.md has the plan).
+
 - **A test case that crossed technologies had no way to carry a value
   across the seam.** A flow drives exactly one surface — that is by design,
   one driver per flow — but the real-world test case is "SAP GUI creates
@@ -101,6 +115,15 @@ together).
   listed as out of scope in the same document whose §8 describes it as built.
 
 ### Fixed
+
+- **The report attached ten screenshots when eight were captured.** Step
+  time ranges are contiguous — one step ends on the millisecond the next
+  begins — and the report viewer bracketed frames inclusively on both ends,
+  so a frame captured on the shared boundary rendered under BOTH steps. A
+  reviewer counting evidence saw captures that never happened. Each frame
+  now renders under exactly one step, the earliest whose range brackets it,
+  with a test that puts frames on the boundary and counts what the HTML
+  shows.
 
 - **"Fill out all the vehicle data" authored one field and moved on.** A plain
   step could only ever become ONE action, because that is what the authoring

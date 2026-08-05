@@ -402,6 +402,10 @@ impl RunReport {
                 gif = escape(gif),
             ));
         }
+        // Step ranges are contiguous, so a frame captured on the shared
+        // boundary millisecond falls inside two ranges; each frame renders
+        // under exactly one step — the earliest whose range brackets it.
+        let mut attached = vec![false; recording.frames.len()];
         for timing in &recording.steps {
             let intent = self
                 .steps
@@ -410,11 +414,14 @@ impl RunReport {
                 .map(|s| s.intent.as_str())
                 .unwrap_or("");
             let mut imgs = String::new();
-            for frame in recording
-                .frames
-                .iter()
-                .filter(|f| f.offset_ms >= timing.start_ms && f.offset_ms <= timing.end_ms)
-            {
+            for (i, frame) in recording.frames.iter().enumerate() {
+                if attached[i]
+                    || frame.offset_ms < timing.start_ms
+                    || frame.offset_ms > timing.end_ms
+                {
+                    continue;
+                }
+                attached[i] = true;
                 imgs.push_str(&format!(
                     "<a href=\"{dir}/{file}\"><img src=\"{dir}/{file}\" \
                      alt=\"frame at {offset} ms\" loading=\"lazy\"></a>",
@@ -580,6 +587,66 @@ mod tests {
         let mut report = report;
         report.recording.as_mut().expect("recording").gif = None;
         assert!(!report.to_html().contains("recording.gif"));
+    }
+
+    /// A frame captured on the millisecond two contiguous steps share must
+    /// render under ONE step, not both: the report used to attach 8 files
+    /// as 10 images, which reads as evidence that was never captured.
+    #[test]
+    fn a_boundary_frame_renders_under_exactly_one_step() {
+        let frame = |offset_ms: u64| flowproof_driver::FrameRef {
+            offset_ms,
+            file: format!("frame-{offset_ms:08}.png"),
+        };
+        let timing = |id: &str, start_ms: u64, end_ms: u64| flowproof_driver::StepTiming {
+            id: id.into(),
+            start_ms,
+            end_ms,
+            frames_dropped: None,
+        };
+        let recording = flowproof_driver::Recording {
+            format: "filmstrip/1".into(),
+            dir: "recording".into(),
+            // 100 and 200 sit exactly on the step boundaries.
+            frames: vec![frame(50), frame(100), frame(150), frame(200), frame(250)],
+            steps: vec![
+                timing("s0001", 0, 100),
+                timing("s0002", 100, 200),
+                timing("s0003", 200, 300),
+            ],
+            gif: None,
+        };
+        let step = |id: &str| StepResult {
+            id: id.into(),
+            intent: "step".into(),
+            status: StepStatus::Passed,
+            detail: None,
+            started_ms: 0,
+            duration_ms: 1,
+            selector_tier: None,
+            degraded: false,
+        };
+        let report = RunReport {
+            name: "x".into(),
+            trace_id: "t".into(),
+            passed: true,
+            degraded: false,
+            duration_ms: 300,
+            steps: vec![step("s0001"), step("s0002"), step("s0003")],
+            recording: Some(recording),
+        };
+        let html = report.to_html();
+        assert_eq!(
+            html.matches("<img ").count(),
+            5,
+            "every frame renders exactly once: {html}"
+        );
+        // The boundary frames land on the EARLIER of the two steps that
+        // bracket them (its after-evidence), never on both.
+        for file in ["frame-00000100.png", "frame-00000200.png"] {
+            // href + src: one attachment names the file twice.
+            assert_eq!(html.matches(file).count(), 2, "{file} appears once");
+        }
     }
 
     #[test]
