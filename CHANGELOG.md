@@ -6,6 +6,27 @@ together).
 
 ## Unreleased
 
+### Changed
+
+- **The recording page answered a question nobody was asking.** `/docs/recording`
+  opened as a design specification — status line, numbered sections, scope
+  notes — so someone arriving to find out how to turn the video off met §1's
+  principles instead. The controls were on the page, buried in §3 between the
+  `FrameSource` abstraction and the artifact bundle layout. A reader who gave
+  up before finding them concluded the flags did not exist.
+
+  The page now opens with what a reader came for: a table of the three
+  recording controls with their defaults, the CLI and SDK forms, and how to
+  review what was captured. The design record follows under *Design notes*,
+  unchanged in substance and still numbered, because it is worth keeping — it
+  just is not the first thing a person needs.
+
+  Three pieces of prose had also outlived their subject. The trace schema
+  section was still labelled `PROPOSAL` though `recording` and `redaction`
+  ship in `trace-v1.schema.json` today; the redaction layer was still
+  described as something "this PR creates"; and the healing diff view was
+  listed as out of scope in the same document whose §8 describes it as built.
+
 ## 0.13.0
 
 This release is about what a run leaves behind, and what a person is allowed to

@@ -1,9 +1,84 @@
-# Run recording as a review surface — design
+# Run recording
 
-Status: **approved and implemented** (v1 keyframe filmstrip; continuous
-capture sources remain follow-ups per §3).
+Every run leaves visual evidence behind: redacted, step-synchronized frames
+you can open beside the verdict, and — on request — a GIF of the whole
+execution. This page is the reference for controlling that, followed by the
+design record for why the pipeline is shaped the way it is.
 
-## 1. Why and what
+## Controlling what a run records
+
+Capture density and GIF assembly are execution-time choices, available on both
+`record` and `run`:
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--recording-detail full` | yes | A frame before each step, after each step, and on failure. |
+| `--recording-detail low` | | Initial state, every fifth completed step, and final state. |
+| `--recording-detail off` | | No screenshots and no GIF. |
+| `--video` | off | Assemble the captured frames into a `recording.gif`. |
+| `--highlight-cursor` | off | Draw a visible cursor and a bright click halo into the frames. |
+
+```bash
+# Default: keep screenshots and skip GIF assembly.
+flowproof run checkout.flow.yaml
+
+# Opt in to GIF/video assembly.
+flowproof run checkout.flow.yaml --video
+
+# Initial state, every fifth completed step, and final state.
+flowproof run checkout.flow.yaml --recording-detail low
+
+# Add a visible cursor and bright click halo at every pointer action.
+flowproof run checkout.flow.yaml --highlight-cursor
+
+# Fastest path: no screenshots and no GIF.
+flowproof run checkout.flow.yaml --recording-detail off
+```
+
+`--recording-detail full` remains the screenshot-density default, while GIF
+assembly is disabled unless `--video` is present. `low` deliberately lets
+several steps share one visual checkpoint, producing a less fluent but much
+cheaper review artifact. `off` changes artifacts only: the same actions,
+assertions, redaction-independent safety checks, and verdict still execute.
+`--video` is independent of detail, so `low --video` creates a sparse
+animation. `--highlight-cursor` adds a pre-action checkpoint for
+click, right-click, double-click, and hover actions; drag actions mark both
+ends. The bright halo appears on the event checkpoint, while later frames
+retain the cursor at its last known position. Because the cursor is rendered
+after redaction, it cannot reveal pixels hidden by a mask. Pointer checkpoints
+are retained in low-detail mode so important clicks are not lost.
+
+The SDK and the MCP tools take the same three controls with the same
+defaults, so an agent does not have to shell out to the CLI to choose them:
+
+```python
+from flowproof import Flow
+
+flow = Flow("checkout.flow.yaml")
+flow.record(recording_detail="low")
+flow.run(video=True, highlight_cursor=True)
+```
+
+## Reviewing what it captured
+
+`report.html` (generated from `result.json`) carries a step-synchronized
+viewer: the step table is clickable, showing that step's frames
+(before/after, failure frame highlighted). Self-contained — frames are
+referenced relatively from the bundle, with no external resources. This is
+the "jump to the assert step" experience, driven entirely by the structured
+timeline, never by scrubbing.
+
+Two things worth knowing before you read a bundle, both detailed below:
+frames are named by capture offset and content hash rather than step number
+(*Artifact bundle layout*), and masks are applied in memory before any PNG is
+encoded, so there is no unredacted intermediate to clean up (*Redaction*).
+
+## Design notes
+
+The rest of this page is the design record: **approved and implemented** (v1
+keyframe filmstrip; continuous capture sources remain follow-ups per §3).
+
+### 1. Why and what
 
 flowproof's primary human interaction is oversight: reviewing and approving
 agent-authored and agent-healed tests. The visual recording of an execution
@@ -27,7 +102,7 @@ Principles this design enforces:
   There is no unredacted intermediate on disk, and no post-processing step
   that could be skipped.
 
-## 2. The execution timeline (shared by record and replay)
+### 2. The execution timeline (shared by record and replay)
 
 Both `record` and `run` execute the same step loop against an `AppDriver`.
 This design introduces one shared component, the **RunRecorder**, that both
@@ -47,13 +122,13 @@ execution start, plus the persisted frame offsets falling in that range.
 Timestamps are captured once, by the RunRecorder — the executor and the
 recorder cannot disagree, because the executor doesn't keep its own clock.
 
-## 3. Capture pipeline
+### 3. Capture pipeline
 
 **`FrameSource` abstraction** (in `flowproof-driver`): produces timestamped
 raw frames. Two implementations planned; both feed the identical
 redact→persist path, so upgrading capture never touches sync or redaction:
 
-- **v1 — keyframe source** (this PR): captures a full frame *before each
+- **v1 — keyframe source** (shipped): captures a full frame *before each
   step*, *after each step*, and *on failure*, via the driver:
   - Web: `Tab::capture_screenshot` (already available in headless_chrome).
   - Windows: GDI `BitBlt` screen grab behind the existing `Capture` trait
@@ -71,58 +146,10 @@ redact→persist path, so upgrading capture never touches sync or redaction:
   discriminator (`filmstrip/1` now, `webm/1` later) so this lands without
   schema changes.
 
-Capture density and GIF creation are execution-time choices, available on
-both `record` and `run`:
+The user-facing controls over this pipeline are documented under *Controlling
+what a run records*, above.
 
-```bash
-# Default: keep screenshots and skip GIF assembly.
-flowproof run checkout.flow.yaml
-
-# Opt in to GIF/video assembly.
-flowproof run checkout.flow.yaml --video
-
-# Initial state, every fifth completed step, and final state.
-flowproof run checkout.flow.yaml --recording-detail low
-
-# Add a visible cursor and bright click halo at every pointer action.
-flowproof run checkout.flow.yaml --highlight-cursor
-
-# Fastest path: no screenshots and no GIF.
-flowproof run checkout.flow.yaml --recording-detail off
-```
-
-The SDK and the MCP tools take the same three controls with the same
-defaults, so an agent does not have to shell out to the CLI to choose them:
-
-```python
-from flowproof import Flow
-
-flow = Flow("checkout.flow.yaml")
-flow.record(recording_detail="low")
-flow.run(video=True, highlight_cursor=True)
-```
-
-`--recording-detail full` remains the screenshot-density default, while GIF
-assembly is disabled unless `--video` is present. `low` deliberately lets
-several steps share one visual checkpoint, producing a less fluent but much
-cheaper review artifact. `off` changes artifacts only: the same actions,
-assertions, redaction-independent safety checks, and verdict still execute.
-`--video` is independent of detail, so `low --video` creates a sparse
-animation. `--highlight-cursor` adds a pre-action checkpoint for
-click, right-click, double-click, and hover actions; drag actions mark both
-ends. The bright halo appears on the event checkpoint, while later frames
-retain the cursor at its last known position. Because the cursor is rendered
-after redaction, it cannot reveal pixels hidden by a mask. Pointer checkpoints
-are retained in low-detail mode so important clicks are not lost.
-
-**Viewer**: `report.html` (already generated from `result.json`) gains a
-step-synchronized viewer: the step table becomes clickable, showing that
-step's frames (before/after, failure frame highlighted). Self-contained as
-before — frames referenced relatively from the bundle, no external
-resources. This is the "jump to the assert step" experience, driven entirely
-by the structured timeline, never by scrubbing.
-
-## 4. Artifact bundle layout
+### 4. Artifact bundle layout
 
 Each execution's bundle is self-contained (stateless; safe for future
 parallel runs):
@@ -143,7 +170,7 @@ timeline entry → file is derivable from the structured data alone and files
 are tamper-evident. There is deliberately **no** `timeline.json` in the
 bundle: the timeline lives in `result.json` / the trace (§5–6).
 
-## 5. Trace schema changes (PROPOSAL — additive, optional, v1-compatible)
+### 5. Trace schema changes (additive, optional, v1-compatible)
 
 The trace carries the *authoring* execution's recording, so reviewing an
 agent-authored test needs only the trace + its bundle:
@@ -168,18 +195,17 @@ Rationale for putting timing in the trace rather than a sidecar: the trace
 is already the single reviewed, diffed, healed artifact; its schema is the
 one place a step and its evidence can't drift apart.
 
-## 6. Run report changes (replay executions)
+### 6. Run report changes (replay executions)
 
 - `StepResult` gains `started_ms` (offset from run start; with the existing
   `duration_ms` this *is* the step→time mapping — no new sidecar).
 - `RunReport` gains optional `recording { format, dir }`.
 - Python `RunResult` mirrors both; MCP/CLI `--json` inherit automatically.
 
-## 7. Redaction (new shared layer, introduced by this PR)
+### 7. Redaction (the shared layer for every persisted pixel)
 
-No redaction layer exists today; this PR creates it as the single
-implementation for **all** persisted pixels (video frames now, trace
-screenshots when they land):
+Redaction is the single implementation for **all** persisted pixels (video
+frames now, trace screenshots when they land):
 
 - **Rules** (`flowproof-driver::redact`): `{target, mode}` where `target` is
   a selector (css / automation_id) or a fixed rect, `mode: mask` (solid
@@ -196,7 +222,7 @@ screenshots when they land):
   is known to be on screen, the affected frames are dropped (not persisted
   unmasked) and the timeline entry records `frames_dropped: "redaction"`.
 
-## 8. Healing diff seam (built: `<name>.heal.html`)
+### 8. Healing diff seam (built: `<name>.heal.html`)
 
 Heal already produces a proposed trace whose steps are diffed against the
 original by position with per-field changes. Because *every* authoring
@@ -210,7 +236,7 @@ per-trace bundles, step-keyed ranges) needed rework for that; heal now
 renders exactly this composition as a self-contained `<name>.heal.html`
 next to the trace (path surfaced as `diff_html` in the heal report).
 
-## 9. Testing
+### 9. Testing
 
 - **Sync correctness**: mock `FrameSource` emitting deterministic frames;
   assert every step's `[start_ms, end_ms]` brackets exactly its frames and
@@ -224,8 +250,9 @@ next to the trace (path surfaced as `diff_html` in the heal report).
   `redaction` blocks validates against the updated JSON Schema; round-trip
   stability as usual.
 
-## 10. Out of scope (this PR)
+### 10. Not built
 
 Playback UI beyond the report viewer; continuous-capture sources
-(DXGI/screencast) and video-file assembly; the healing diff *view* (seam
-only, §8); any agent-facing video parsing (never planned).
+(DXGI/screencast) and video-file assembly; any agent-facing video parsing
+(never planned). The healing diff view was scoped here as a seam only; it has
+since been built, and §8 describes what shipped.
