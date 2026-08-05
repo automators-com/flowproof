@@ -545,6 +545,7 @@ fn refuse_multi_surface(spec: &FlowSpec) -> Result<(), String> {
 
 /// fail the suite. Returns the first passing report, else the last
 /// failure, with the attempt count.
+#[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
 fn replay_with_retries(
     trace_path: &Path,
     app_name: &str,
@@ -553,6 +554,7 @@ fn replay_with_retries(
     secret_scan: &flowproof_replay::SecretScan,
     recording: flowproof_driver::RecordingOptions,
     exports: &std::collections::BTreeMap<String, String>,
+    login: Option<&flowproof_agent::LoginSpec>,
 ) -> Result<
     (
         flowproof_replay::RunReport,
@@ -566,6 +568,15 @@ fn replay_with_retries(
     loop {
         attempt += 1;
         let mut driver = driver_for(app_name)?;
+        // Credentials are SPEC-driven, like the secret-leak scan: the
+        // password is not a header field, so it cannot come from the trace,
+        // and every `run` has the spec in hand. `${VAR}`s resolve here, on
+        // this replay, not at record.
+        if let Some(login) = login {
+            driver
+                .stage_credentials(login.resolved().map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        }
         let (report, run_dir, resolved) = flowproof_replay::run_trace_with_exports(
             trace_path,
             &mut driver,
@@ -1147,6 +1158,7 @@ fn run_suite_with_author(
                     &secret_scan,
                     recording,
                     &gated_spec.exports,
+                    gated_spec.login.as_ref(),
                 )
             });
         // Cleanup always runs, pass, fail or error.
@@ -1654,6 +1666,7 @@ fn cmd_run(
         &secret_scan,
         recording,
         &spec.exports,
+        spec.login.as_ref(),
     );
     // Cleanup always runs, pass, fail or error - the suite's rule, and the
     // reason it exists is that a flow which errors is exactly when a left
