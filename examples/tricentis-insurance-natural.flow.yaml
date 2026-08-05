@@ -1,0 +1,25 @@
+# The same flow as tricentis-insurance.flow.yaml, written the way a tester
+# would describe it rather than field by field. Each step here is a unit of
+# intent: "fill out all the vehicle data" covers eleven controls and the
+# button, and the authoring model answers it with that whole sequence in one
+# call. Recording needs a model (FLOWPROOF_AI_PROVIDER / FLOWPROOF_AI_API_KEY);
+# the trace it writes replays with zero model calls, exactly like the
+# field-by-field version.
+name: Tricentis Insurance (natural)
+app: web
+browser:
+  viewport:
+    width: 1280
+    height: 900
+  clock:
+    at: "2026-08-04T12:00:00Z"
+    timezone: Europe/Vienna
+url: https://sampleapp.tricentis.com/101
+steps:
+  - Open the truck insurance quote
+  - Fill out all the vehicle data and click next
+  - Fill out all the insurant data and click next
+  - Fill out all the product data and click next
+  - Pick one of the price options
+  - Fill in what sending the quote needs and send it
+  - assert: page shows Sending e-mail success! within 20s

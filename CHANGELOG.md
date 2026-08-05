@@ -46,6 +46,23 @@ together).
 
 ### Changed
 
+- **A web step spent most of its time asking the page questions the slow
+  way.** Every probe — exists, enabled, stable, would a click reach it —
+  walked an element-handle path costing four to six CDP calls, and the
+  transport pays up to ~100ms per call (its sender serializes behind the
+  reader's blocking socket read). A click cost ~3.9s and a short type ~5.6s
+  with recording OFF — which is why turning video and keyframes off never
+  made runs faster: the time was not in the artifacts. The probes now ask
+  the page once: existence is one `evaluate` for css and text-anchor
+  targets, and the whole actionability gate is one round trip through the
+  new `AppDriver::actionability_gate`, whose default composes the three
+  probes so every other driver behaves as before. Cell, scoped, and framed
+  targets stay on the element-handle path, where their resolution semantics
+  live. Same questions, same order, same answers: a click is ~1.3s, the
+  type ~2.5s, headed and headless alike. What remains is the transport's
+  per-call latency — visible in typing, two calls per character — which is
+  headless_chrome's to fix. `docs/authoring.md` is re-measured to match.
+
 - **The docs on automators.ai were a release behind, and nothing said so.**
   The workflow that republishes them skipped when its deploy-hook secret was
   missing and exited 0, so every run since the workflow was added reported
@@ -80,6 +97,34 @@ together).
   listed as out of scope in the same document whose §8 describes it as built.
 
 ### Fixed
+
+- **"Fill out all the vehicle data" authored one field and moved on.** A plain
+  step could only ever become ONE action, because that is what the authoring
+  protocol accepted: one JSON object, one target, one verb. So a step naming a
+  whole form filled its first control, the next step pressed Next, and the form
+  failed its own validation — with a trace that looked authored. The tool
+  answered a different question from the one asked, and said nothing about the
+  difference. A person driving the same page does not stop after one field;
+  neither should the step that says "all".
+
+  A step is now a unit of intent. The model may answer with a SEQUENCE of
+  actions, and the contract asks it to carry out the whole step rather than a
+  first instalment. It is still one model call per step, still grounded to the
+  same listed inventory — the sequence is rejected as a whole if any one action
+  in it is not grounded, so a half-filled form cannot reach the trace — and the
+  recorder performs and verifies each action exactly as before. The trace lists
+  every action individually, so replay is no less deterministic than a flow
+  spelled out field by field. A bound of sixty actions per step distinguishes a
+  large form from a model that has started looping.
+
+  The scene was the other half of it. It described what a control *was* and
+  never what it *held*, and a `<select>` was represented by its text content
+  truncated at eighty characters — on the Tricentis sample form, that is
+  "– please select –, Audi", with the remaining fifteen makes invisible. A
+  model asked to fill that dropdown could only guess, and a `<select>` refuses
+  a name it does not have. Entries now carry `value`, `checked`, `required`,
+  and, for a dropdown, its exact `options`. A password's value is never
+  reported: the scene travels to a model.
 
 - **Three flags shipped without ever being written down.** `run --trace`,
   `heal --trace` and `doctor --prompt` existed, worked, and appeared in
