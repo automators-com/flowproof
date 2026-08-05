@@ -4,7 +4,29 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
-## Unreleased
+## 0.14.0
+
+This release is about the test case that does not fit in one flow. Real work
+crosses seams — SAP GUI creates the order, the web portal must show it — and
+until now the only bridge between two flows was a hand-written script, exactly
+the glue flowproof exists to replace. A flow can now declare `exports:`, handing
+named values from its own captures to the flows after it, resolved at replay
+time from replay-time captures. The vocabulary for the seam *inside* one flow
+ships alongside it: `apps:` and `in:` parse and validate, with recording
+refusing by name and pointing at the shipped alternative, so specs can be
+written and reviewed before the engine exists.
+
+A step also stopped being one action. "Fill out all the vehicle data" authored
+a single field and moved on, because the authoring protocol accepted only one
+JSON object — so the form failed its own validation with a trace that looked
+authored. A step is now a unit of intent: the model may answer with a sequence,
+grounded as a whole, and the scene it reasons over finally reports what a
+control holds rather than only what it is.
+
+And runs got faster where the time actually was. Every web probe walked an
+element-handle path costing four to six CDP calls, which is why turning video
+off never helped: a click is ~1.3s now against ~3.9s, a short type ~2.5s
+against ~5.6s, headed and headless alike.
 
 ### Added
 
