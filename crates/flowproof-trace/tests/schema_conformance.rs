@@ -65,3 +65,77 @@ fn unsupported_version_is_rejected() {
         .replace("\"version\":1", "\"version\":99");
     assert!(TraceLine::parse(&bad).is_err());
 }
+
+const MULTI_FIXTURE: &str = include_str!("fixtures/multi.trace.jsonl");
+
+/// The multi-surface trace shape: a `multi` sentinel header whose `apps`
+/// map carries the real surfaces, and steps attributed to a surface by
+/// name. The `legacy` surface exercises `command` + `geometry`, which the
+/// schema's app object refused before app_info was factored out — a
+/// `windows` flow's header failed validation for as long as nothing here
+/// carried one. The final step carries NO surface (out-of-band asserts
+/// need no UI), proving the field is optional per step, not per trace.
+#[test]
+fn multi_surface_fixture_lines_parse_and_validate() {
+    let validator = validator();
+    let mut surfaces = Vec::new();
+    for (i, line) in MULTI_FIXTURE
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .enumerate()
+    {
+        let raw: serde_json::Value = serde_json::from_str(line).expect("line is JSON");
+        assert!(
+            validator.validate(&raw).is_ok(),
+            "multi fixture line {} failed schema validation: {:?}",
+            i + 1,
+            validator.iter_errors(&raw).next()
+        );
+        let parsed = TraceLine::parse(line).expect("line parses into typed model");
+        match &parsed {
+            TraceLine::Header(header) => {
+                assert_eq!(header.app.name, "multi");
+                assert_eq!(header.apps.len(), 3, "gui, portal, legacy");
+                let legacy = &header.apps["legacy"];
+                assert!(legacy.command.is_some() && legacy.geometry.is_some());
+            }
+            TraceLine::Step(step) => surfaces.push(step.surface.clone()),
+        }
+        // Round-trip: what we serialize must still satisfy the schema and
+        // reparse identically — surface attribution intact.
+        let reserialized = serde_json::to_value(&parsed).expect("typed model serializes");
+        assert!(
+            validator.validate(&reserialized).is_ok(),
+            "round-tripped multi line failed schema validation: {:?}",
+            validator.iter_errors(&reserialized).next()
+        );
+        let reparsed: TraceLine =
+            serde_json::from_value(reserialized).expect("round-trip reparses");
+        assert_eq!(reparsed, parsed);
+    }
+    assert_eq!(
+        surfaces,
+        vec![
+            Some("gui".to_string()),
+            Some("gui".to_string()),
+            Some("portal".to_string()),
+            None
+        ],
+        "steps carry their surface; the out-of-band assert carries none"
+    );
+}
+
+/// A single-surface trace serializes byte-identically to before `apps`
+/// and `surface` existed: the additive fields leave no key behind when
+/// unset, so nothing rewrites what correct means for existing cassettes.
+#[test]
+fn single_surface_traces_serialize_without_the_new_keys() {
+    for line in FIXTURE.lines().filter(|l| !l.trim().is_empty()) {
+        let parsed = TraceLine::parse(line).expect("line parses");
+        let reserialized = serde_json::to_string(&parsed).expect("typed model serializes");
+        assert!(
+            !reserialized.contains("\"apps\"") && !reserialized.contains("\"surface\""),
+            "unset additive fields must leave no key: {reserialized}"
+        );
+    }
+}
