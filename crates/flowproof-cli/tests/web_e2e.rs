@@ -36,6 +36,7 @@ fn records_and_replays_a_browser_flow() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -106,6 +107,7 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
             .expect("example spec parses")
             .steps,
@@ -204,6 +206,7 @@ fn secret_reference_types_real_value_but_never_persists_it() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type ${FLOWPROOF_E2E_PW} into the pw field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -284,6 +287,7 @@ fn assertions_wait_for_async_page_updates() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Press the start button".into()),
             flowproof_agent::SpecStep::Plain(
@@ -354,6 +358,7 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain(
                 "Type Customers into the \"Template name\" field".into(),
@@ -435,6 +440,7 @@ fn assertion_forms_wait_and_verify_on_real_pages() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "the searchBox field contains prefilled".into(),
@@ -537,6 +543,7 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             // Fill semantics: clear the prefilled value, retype, Enter.
             // "Submitted: fresh" (not "…stale textfresh") proves the clear.
@@ -643,6 +650,7 @@ fn session_seeding_and_navigation_drive_real_pages() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows project: ${FLOWPROOF_E2E_PROJECT}".into(),
@@ -717,6 +725,7 @@ fn persisted_frames_never_contain_masked_data() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type bob into the user field".into()),
             flowproof_agent::SpecStep::Plain("Press the go button".into()),
@@ -893,6 +902,7 @@ fn select_own_text_anchors_and_state_asserts_work() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: FlowSpec::parse(
             "name: x\napp: web\nurl: x\nsteps:\n\
              - assert: the \"Save\" is disabled\n\
@@ -1470,6 +1480,7 @@ fn a_navigation_after_a_long_idle_does_not_kill_the_connection() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             // Out-waits the 30s default idle timeout.
             flowproof_agent::SpecStep::Plain(
@@ -1563,6 +1574,7 @@ fn an_element_below_the_fold_is_scrolled_to_rather_than_called_obscured() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Plain("Type Ada into the name field".into()),
             flowproof_agent::SpecStep::Plain("Press the \"Save\" button".into()),
@@ -1637,6 +1649,7 @@ fn attribute_style_and_scroll_record_and_replay() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: r#"the "css:#dl" has attribute download"#.into(),
@@ -1727,6 +1740,7 @@ fn a_secret_in_web_surface_text_fails_the_record_and_mints_no_trace() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows Welcome".into(),
@@ -1809,6 +1823,7 @@ fn a_clean_web_flow_records_and_replays_with_the_secret_absent() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows Welcome".into(),
@@ -1895,6 +1910,7 @@ fn native_dialogs_arm_and_verify() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             // Accept a confirm: the page proceeds (marker shows "Deleted").
             flowproof_agent::SpecStep::Plain(
@@ -1999,6 +2015,7 @@ fn undeclared_dialog_fails_and_does_not_hang() {
             mcp: Vec::new(),
             strict: false,
             control: None,
+            exports: Default::default(),
             // A PLAIN click, no dialog suffix: the dialog is undeclared.
             steps: vec![flowproof_agent::SpecStep::Plain("Click \"Danger\"".into())],
         };
@@ -2241,6 +2258,7 @@ fn the_seed_does_not_follow_a_cross_origin_navigation() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows cart: [4]".into(),
@@ -2336,6 +2354,7 @@ fn seeded_fixture_mutation_survives_navigation() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        exports: Default::default(),
         steps: vec![
             flowproof_agent::SpecStep::Assert {
                 assert: "page shows cart: [4]".into(),
@@ -2640,5 +2659,78 @@ fn a_drag_records_and_replays_against_a_mouse_sortable() {
         flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
     assert!(report.passed, "the recorded drag must replay: {report:#?}");
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The cross-technology handoff: a value one flow MINTS (captured off its
+/// surface, typed nowhere) reaches the next flow as an environment
+/// variable. Flow A remembers an order number and exports it; flow B types
+/// `${HANDOFF_ORDER_NO}` — a variable nothing in the environment sets. If
+/// the suite runner did not thread A's export to B, B's replay fails
+/// naming the unset variable; a pass proves the value crossed flows, and
+/// crossed them at REPLAY time (the var is scrubbed before the run, so a
+/// stale record-time value cannot satisfy it).
+#[test]
+fn suite_run_hands_a_passing_flows_exports_to_the_flows_after_it() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web suite E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-e2e-exports");
+    std::fs::remove_dir_all(&dir).ok();
+    let specs_dir = dir.join("specs");
+    std::fs::create_dir_all(&specs_dir).expect("temp dirs");
+
+    // Flow A's page carries the order number; A captures and exports it.
+    let mint_page = dir.join("mint.html");
+    std::fs::write(
+        &mint_page,
+        r#"<!doctype html><html><body><div id="order">4711</div></body></html>"#,
+    )
+    .expect("page written");
+    let mint_yaml = format!(
+        "name: Mint order\napp: web\nurl: file://{}\nsteps:\n  - Remember the \"css:#order\" as order\nexports:\n  HANDOFF_ORDER_NO: ${{captured.order}}\n",
+        mint_page.display()
+    );
+    let mint_path = specs_dir.join("a-mint.flow.yaml");
+    std::fs::write(&mint_path, &mint_yaml).expect("spec written");
+
+    // Flow B's page greets whatever is typed; B types the exported value.
+    let spend_page = dir.join("spend.html");
+    std::fs::write(&spend_page, GREETER_HTML).expect("page written");
+    let spend_yaml = format!(
+        "name: Spend order\napp: web\nurl: file://{}\nsteps:\n  - Type ${{HANDOFF_ORDER_NO}} into the name field\n  - Press the greet button\n  - assert: page shows Hello, 4711\n",
+        spend_page.display()
+    );
+    let spend_path = specs_dir.join("b-spend.flow.yaml");
+    std::fs::write(&spend_path, &spend_yaml).expect("spec written");
+
+    // Record both through the normal pipeline. B's recording needs the
+    // variable, exactly as it would in a suite-mode `record` (where A's
+    // verification replay has already exported it).
+    std::env::set_var("HANDOFF_ORDER_NO", "4711");
+    for (path, yaml) in [(&mint_path, &mint_yaml), (&spend_path, &spend_yaml)] {
+        let spec = flowproof_agent::FlowSpec::parse(yaml).expect("spec parses");
+        let trace_path = flowproof_cli::default_trace_path(path);
+        let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+        flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    }
+
+    // Scrub the variable: from here on, only flow A's replay can set it.
+    std::env::remove_var("HANDOFF_ORDER_NO");
+    let code = flowproof_cli::run_suite(&specs_dir, false, 0, flowproof_cli::MissingTrace::Error)
+        .expect("suite runs");
+    assert_eq!(
+        code,
+        flowproof_cli::EXIT_PASS,
+        "flow B resolves the variable flow A's replay exported"
+    );
+    assert_eq!(
+        std::env::var("HANDOFF_ORDER_NO").as_deref(),
+        Ok("4711"),
+        "the export was set from A's replay-time capture"
+    );
+    std::env::remove_var("HANDOFF_ORDER_NO");
     std::fs::remove_dir_all(&dir).ok();
 }

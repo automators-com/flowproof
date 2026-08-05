@@ -1268,6 +1268,46 @@ impl WebAppDriver {
         Ok(self.try_find(locator)?.is_some())
     }
 
+    /// The in-page mirror of `try_find` for css and text-anchor locators:
+    /// one JS expression that resolves to the element or `null`. `None`
+    /// for the locator shapes it does not cover (cell, scope) — those stay
+    /// on the element-handle path.
+    ///
+    /// This exists because the CDP transport pays a fixed latency per
+    /// round trip, and `find_element` alone is four of them. Probes that
+    /// only need an answer — exists, the actionability gate — ask the page
+    /// once instead.
+    fn js_resolver(locator: &WebLocator) -> Option<String> {
+        if locator.cell.is_some() || locator.scope.is_some() {
+            return None;
+        }
+        let nth = locator
+            .nth
+            .map_or_else(|| "null".to_string(), |n| n.to_string());
+        if let Some(css) = &locator.css {
+            let css = serde_json::Value::from(css.as_str()).to_string();
+            return Some(format!(
+                "((css, nth) => nth ? (document.querySelectorAll(css)[nth - 1] || null) \
+                 : document.querySelector(css))({css}, {nth})"
+            ));
+        }
+        let text = locator.text.as_deref()?;
+        // The SAME xpath ladder try_find walks, evaluated in order in one
+        // pass: the first rung with a match wins.
+        let xpaths = serde_json::Value::from(text_xpaths(text)).to_string();
+        Some(format!(
+            "((xpaths, nth) => {{
+                for (const xp of xpaths) {{
+                    const q = nth ? '(' + xp + ')[' + nth + ']' : xp;
+                    const found = document.evaluate(
+                        q, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                    if (found.singleNodeValue) {{ return found.singleNodeValue; }}
+                }}
+                return null;
+            }})({xpaths}, {nth})"
+        ))
+    }
+
     /// Run an element operation with ONE retry on a CDP transport fault:
     /// re-resolve the element (its object id may be gone with the dead
     /// connection) and try again before failing the step.
@@ -2172,7 +2212,77 @@ impl AppDriver for WebAppDriver {
         let Some(locator) = Self::locator_of(selector) else {
             return Ok(false); // non-web ladder rungs simply don't match
         };
+        // One round trip where the locator allows it; the CDP transport's
+        // per-call latency makes the four-call element-handle path the
+        // expensive way to learn a boolean.
+        if let Some(resolver) = Self::js_resolver(&locator) {
+            let value = self
+                .tab()?
+                .evaluate(&format!("!!({resolver})"), false)
+                .map_err(|e| web_err(&format!("probing for [{selector}]"), e))?;
+            return Ok(value.value.and_then(|v| v.as_bool()).unwrap_or(false));
+        }
         self.exists(&locator)
+    }
+
+    fn actionability_gate(&mut self, target: &UiaSelector) -> Result<Option<String>, DriverError> {
+        // The enabled → stable → receives-events pass in ONE round trip,
+        // including the stability interval (it elapses inside the page).
+        // Same questions, same order, same answers as the composed default
+        // — which remains the path for the locator shapes the in-page
+        // resolver does not cover, and for framed targets.
+        let resolver = (target.frame.is_none())
+            .then(|| {
+                Self::locator_of(target)
+                    .as_ref()
+                    .and_then(Self::js_resolver)
+            })
+            .flatten();
+        let Some(resolver) = resolver else {
+            return flowproof_driver::composed_actionability_gate(self, target);
+        };
+        let gate_js = format!(
+            "(async el => {{
+                if (!el) {{ return 'missing'; }}
+                if (el.disabled === true || el.getAttribute('aria-disabled') === 'true'
+                    || el.closest('fieldset[disabled]')) {{ return 'disabled'; }}
+                const a = el.getBoundingClientRect();
+                await new Promise(tick => setTimeout(tick, {interval}));
+                const b = el.getBoundingClientRect();
+                if (a.x !== b.x || a.y !== b.y || a.width !== b.width
+                    || a.height !== b.height) {{ return 'unstable'; }}
+                // Scroll first, exactly as the click itself will —
+                // elementFromPoint outside the viewport returns null, and an
+                // element below the fold must not read as obscured.
+                if (el.scrollIntoViewIfNeeded) {{ el.scrollIntoViewIfNeeded(); }}
+                else {{ el.scrollIntoView({{ block: 'center', inline: 'center' }}); }}
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) {{ return 'obscured'; }}
+                const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+                return (hit && (hit === el || el.contains(hit) || hit.contains(el)))
+                    ? 'ok' : 'obscured';
+            }})({resolver})",
+            interval = flowproof_driver::STABILITY_INTERVAL.as_millis(),
+        );
+        let value = self
+            .tab()?
+            .evaluate(&gate_js, true)
+            .map_err(|e| web_err(&format!("actionability of [{target}]"), e))?;
+        let verdict = value.value.and_then(|v| v.as_str().map(str::to_string));
+        Ok(match verdict.as_deref() {
+            Some("ok") => None,
+            Some("disabled") => Some("disabled".into()),
+            Some("unstable") => Some("unstable (still moving/animating)".into()),
+            Some("obscured") => Some("obscured (another element would receive the click)".into()),
+            // The target resolved a moment ago and is gone now: keep the
+            // gate polling — a re-render usually brings it back.
+            Some("missing") => Some("no longer present (was removed from the DOM)".into()),
+            other => {
+                return Err(DriverError::Browser(format!(
+                    "actionability of [{target}]: unexpected gate answer {other:?}"
+                )))
+            }
+        })
     }
 
     fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
@@ -2845,42 +2955,51 @@ impl AppDriver for WebAppDriver {
         // onChange). Committing a value IS a property set + events: match
         // an option by value, then visible text, set through the native
         // setter, and fire input+change like a user's selection would.
-        let handled =
-            self.with_element(&locator, &format!("selecting in [{selector}]"), |element| {
-                element.call_js_fn(
-                    // A STATUS STRING, not a throw and not a bare boolean.
-                    // A JS exception does not reach Rust as an `Err` here,
-                    // so throwing on a missing option looked identical to
-                    // "this is not a <select>" - and fell through to typing
-                    // the option's name into the dropdown, which keyboard-
-                    // selects by prefix and lands on whatever starts with
-                    // the same letters. A wrong option, selected quietly.
-                    //
-                    // The two cases are now different answers: `not_select`
-                    // is the genuine fall-through to typing, `no_option` is
-                    // a failure.
-                    r#"function(wanted) {
-                        if (this.tagName !== 'SELECT') { return 'not_select'; }
-                        const w = String(wanted).trim();
-                        const options = Array.from(this.options);
-                        const match = options.find(o => o.value === w)
-                            || options.find(o => o.textContent.trim() === w)
-                            || options.find(o => o.textContent.trim().startsWith(w));
-                        if (!match) { return 'no_option:' + w; }
-                        const desc = Object.getOwnPropertyDescriptor(
-                            HTMLSelectElement.prototype, 'value');
-                        if (desc && desc.set) { desc.set.call(this, match.value); }
-                        else { this.value = match.value; }
-                        this.dispatchEvent(new Event('input', { bubbles: true }));
-                        this.dispatchEvent(new Event('change', { bubbles: true }));
-                        return 'ok';
-                    }"#,
-                    vec![serde_json::json!(text)],
+        // A STATUS STRING, not a throw and not a bare boolean. A JS
+        // exception does not reach Rust as an `Err` here, so throwing on a
+        // missing option looked identical to "this is not a <select>" - and
+        // fell through to typing the option's name into the dropdown, which
+        // keyboard-selects by prefix and lands on whatever starts with the
+        // same letters. A wrong option, selected quietly.
+        //
+        // The two cases are now different answers: `not_select` is the
+        // genuine fall-through to typing, `no_option` is a failure.
+        const SELECT_COMMIT_JS: &str = r#"function(wanted) {
+            if (this.tagName !== 'SELECT') { return 'not_select'; }
+            const w = String(wanted).trim();
+            const options = Array.from(this.options);
+            const match = options.find(o => o.value === w)
+                || options.find(o => o.textContent.trim() === w)
+                || options.find(o => o.textContent.trim().startsWith(w));
+            if (!match) { return 'no_option:' + w; }
+            const desc = Object.getOwnPropertyDescriptor(
+                HTMLSelectElement.prototype, 'value');
+            if (desc && desc.set) { desc.set.call(this, match.value); }
+            else { this.value = match.value; }
+            this.dispatchEvent(new Event('input', { bubbles: true }));
+            this.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'ok';
+        }"#;
+        // One round trip where the locator allows it — the resolved element
+        // becomes `this` exactly as on the element-handle path. A vanished
+        // element makes the call throw, which reads as `not_select` and
+        // falls through to the typing path's own find-and-retry.
+        let status = if let Some(resolver) = Self::js_resolver(&locator) {
+            let wanted = serde_json::Value::from(text).to_string();
+            self.tab()?
+                .evaluate(
+                    &format!("({SELECT_COMMIT_JS}).call(({resolver}), {wanted})"),
                     false,
                 )
-            })?;
-        let status = handled
+                .map_err(|e| web_err(&format!("selecting in [{selector}]"), e))?
+                .value
+        } else {
+            self.with_element(&locator, &format!("selecting in [{selector}]"), |element| {
+                element.call_js_fn(SELECT_COMMIT_JS, vec![serde_json::json!(text)], false)
+            })?
             .value
+        };
+        let status = status
             .as_ref()
             .and_then(|v| v.as_str())
             .unwrap_or("not_select");
@@ -3323,11 +3442,27 @@ impl AppDriver for WebAppDriver {
                 seen.add(el);
                 return true;
               }).slice(0, 100);
+              // A step meaning "fill in this form" needs the state of the
+              // form, not only its shape: which fields are empty, which the
+              // page demands, which boxes are ticked, and — for a dropdown —
+              // the exact option strings. Without the options an authoring
+              // model guesses a label, and a <select> refuses a name it does
+              // not have. A password's value is never reported: the scene
+              // travels to a model.
+              const fieldValue = el => {
+                const tag = el.tagName;
+                if (!['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return undefined;
+                if (tag === 'INPUT' && ['checkbox', 'radio', 'password'].includes(el.type)) {
+                  return undefined;
+                }
+                return (el.value || '').trim().slice(0, 80) || undefined;
+              };
               const entries = chosen.map(el => {
                 const css = cssPath(el);
                 const scoped = !interactive(el) && !semanticCss(el) ? scopedReadable(el) : null;
                 const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
                     : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+                const ticks = el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.type);
                 const entry = {
                     target: scoped ? scoped.token : 'css:' + css,
                     css,
@@ -3336,6 +3471,15 @@ impl AppDriver for WebAppDriver {
                     type: el.getAttribute('type') || undefined,
                     text: (el.textContent || '').trim().slice(0, 80) || undefined,
                     label: label || undefined,
+                    value: fieldValue(el),
+                    checked: ticks ? el.checked : undefined,
+                    required: el.required || undefined,
+                    options: el.tagName === 'SELECT'
+                      ? Array.from(el.options)
+                          .map(option => (option.textContent || '').trim())
+                          .filter(Boolean)
+                          .slice(0, 60)
+                      : undefined,
                     background_color: styledLeaf(el) ? getComputedStyle(el).backgroundColor : undefined,
                 };
                 if (scoped) entry.scope = {
@@ -3496,6 +3640,60 @@ mod tests {
             self.calls.borrow_mut().push("foreground");
             Ok(())
         }
+    }
+
+    /// The single-round-trip probes exist because the CDP transport pays a
+    /// fixed latency per call; this pins WHICH locator shapes they cover.
+    /// A cell or scoped locator must return `None` — their resolution
+    /// (tag-then-find, ambiguity as a hard error) lives on the
+    /// element-handle path, and a JS mirror that silently diverged would
+    /// resolve a different element than the action then operates on.
+    #[test]
+    fn js_resolver_covers_css_and_text_and_declines_cell_and_scope() {
+        let css = super::WebLocator {
+            css: Some("#order".into()),
+            text: None,
+            nth: Some(2),
+            cell: None,
+            scope: None,
+        };
+        let resolver = super::WebAppDriver::js_resolver(&css).expect("css is fast-path");
+        assert!(resolver.contains("\"#order\""));
+        assert!(resolver.contains("querySelectorAll"), "nth needs the list");
+
+        let text = super::WebLocator {
+            css: None,
+            text: Some("Greet".into()),
+            nth: None,
+            cell: None,
+            scope: None,
+        };
+        let resolver = super::WebAppDriver::js_resolver(&text).expect("text is fast-path");
+        // The SAME xpath ladder the element-handle path walks.
+        for xpath in super::text_xpaths("Greet") {
+            assert!(
+                resolver.contains(&serde_json::Value::from(xpath.as_str()).to_string()),
+                "every rung travels into the page"
+            );
+        }
+
+        let cell = super::WebLocator {
+            css: None,
+            text: None,
+            nth: None,
+            cell: Some(flowproof_driver::CellQuery {
+                column: "Total".into(),
+                anchor: "Order 7".into(),
+                also: Vec::new(),
+                column_field: None,
+                row_id: None,
+            }),
+            scope: None,
+        };
+        assert!(
+            super::WebAppDriver::js_resolver(&cell).is_none(),
+            "cells stay on the element-handle path"
+        );
     }
 
     #[test]

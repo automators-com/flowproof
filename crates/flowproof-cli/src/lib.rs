@@ -535,20 +535,30 @@ fn replay_with_retries(
     announce: bool,
     secret_scan: &flowproof_replay::SecretScan,
     recording: flowproof_driver::RecordingOptions,
-) -> Result<(flowproof_replay::RunReport, PathBuf, u32), String> {
+    exports: &std::collections::BTreeMap<String, String>,
+) -> Result<
+    (
+        flowproof_replay::RunReport,
+        PathBuf,
+        u32,
+        flowproof_replay::ResolvedExports,
+    ),
+    String,
+> {
     let mut attempt = 0u32;
     loop {
         attempt += 1;
         let mut driver = driver_for(app_name)?;
-        let (report, run_dir) = flowproof_replay::run_trace_with_secret_scan_and_options(
+        let (report, run_dir, resolved) = flowproof_replay::run_trace_with_exports(
             trace_path,
             &mut driver,
             secret_scan,
             recording,
+            exports,
         )
         .map_err(|e| e.to_string())?;
         if report.passed || attempt > u32::from(retries) {
-            return Ok((report, run_dir, attempt));
+            return Ok((report, run_dir, attempt, resolved));
         }
         if announce {
             println!(
@@ -1106,6 +1116,7 @@ fn run_suite_with_author(
                     !json,
                     &secret_scan,
                     recording,
+                    &gated_spec.exports,
                 )
             });
         // Cleanup always runs, pass, fail or error.
@@ -1115,21 +1126,21 @@ fn run_suite_with_author(
         };
         // Replay first, cleanup second, and only then decide the outcome:
         // whichever failed, the cleanup has already run.
-        let (report, run_dir, attempts) = match replayed.and_then(|triple| cleanup.map(|()| triple))
-        {
-            Ok(triple) => triple,
-            Err(e) => {
-                errored_flow(
-                    spec_path,
-                    &gated_spec.name,
-                    e,
-                    json,
-                    &mut flows,
-                    &mut reports,
-                );
-                continue;
-            }
-        };
+        let (report, run_dir, attempts, exported) =
+            match replayed.and_then(|tuple| cleanup.map(|()| tuple)) {
+                Ok(tuple) => tuple,
+                Err(e) => {
+                    errored_flow(
+                        spec_path,
+                        &gated_spec.name,
+                        e,
+                        json,
+                        &mut flows,
+                        &mut reports,
+                    );
+                    continue;
+                }
+            };
         let result_path = match report.write_into(&run_dir).map_err(|e| e.to_string()) {
             Ok(path) => path,
             Err(e) => {
@@ -1144,6 +1155,19 @@ fn run_suite_with_author(
                 continue;
             }
         };
+        // A passing flow's exports become environment variables for the
+        // flows that follow — how a value minted on one surface (an order
+        // number off SAP's status bar) reaches a spec driving another (the
+        // portal that must show it). Process-local, gone when the run ends.
+        // The visible line names WHAT was exported, never what it held: a
+        // captured value stays out of CI logs the same way it stays out of
+        // the trace.
+        let export_names: Vec<&str> = exported.iter().map(|(n, _)| n.as_str()).collect();
+        if report.passed {
+            for (name, value) in &exported {
+                std::env::set_var(name, value);
+            }
+        }
         if !json {
             println!(
                 "[{}] {} ({} ms){}{}",
@@ -1157,6 +1181,9 @@ fn run_suite_with_author(
                     String::new()
                 },
             );
+            if report.passed && !export_names.is_empty() {
+                println!("  [EXPORT] {}", export_names.join(", "));
+            }
             if !report.passed {
                 for step in report.steps.iter().filter(|s| s.detail.is_some()) {
                     println!(
@@ -1173,6 +1200,8 @@ fn run_suite_with_author(
             "report": report,
             "report_path": result_path,
             "authoring": authoring,
+            // Names only, by the same rule as the [EXPORT] line.
+            "exports": export_names,
         }));
         reports.push(report);
     }
@@ -1583,6 +1612,9 @@ fn cmd_run(
     let secret_scan = flowproof_replay::SecretScan {
         assertions: spec.secret_leak_assertions(),
     };
+    // Exports resolve here too — a single run has no downstream flow to
+    // hand them to, but the VERDICT must not depend on suite vs single
+    // invocation: an export that cannot resolve fails the flow either way.
     let replayed = replay_with_retries(
         &trace_path,
         &header.app.name,
@@ -1590,6 +1622,7 @@ fn cmd_run(
         !json,
         &secret_scan,
         recording,
+        &spec.exports,
     );
     // Cleanup always runs, pass, fail or error - the suite's rule, and the
     // reason it exists is that a flow which errors is exactly when a left
@@ -1598,7 +1631,7 @@ fn cmd_run(
         Some(cmd) => run_hook(cmd, spec_path, "after_each"),
         None => Ok(()),
     };
-    let (report, run_dir, _attempts) = replayed?;
+    let (report, run_dir, _attempts, _exported) = replayed?;
     cleanup?;
 
     let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;

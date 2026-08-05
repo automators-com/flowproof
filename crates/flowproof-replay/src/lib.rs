@@ -371,18 +371,15 @@ fn wait_for_condition<D: AppDriver>(
     }
 }
 
-/// Spacing between the two rect samples of the stability gate — long
-/// enough that a CSS transition moves the box between samples, short
-/// enough that the fast path costs almost nothing.
-const STABILITY_INTERVAL: Duration = Duration::from_millis(60);
-
 /// An element can exist and still not be actionable: disabled while a
 /// mutation is in flight, mid-animation, or under a toast/modal backdrop.
 /// Gate element actions on enabled → stable → receives-events, polling to
 /// the deadline — the flakiness class auto-waiting eliminates (issue #42).
 /// Unknown answers (driver can't tell) satisfy the gate; the failure
 /// message names the specific gate, which is what makes a flake
-/// debuggable instead of mysterious.
+/// debuggable instead of mysterious. The pass itself is the driver's
+/// [`AppDriver::actionability_gate`], so a driver that answers all three
+/// questions in one round trip can.
 fn wait_actionable<D: AppDriver>(
     driver: &mut D,
     target: &UiaSelector,
@@ -390,7 +387,7 @@ fn wait_actionable<D: AppDriver>(
 ) -> Result<Result<(), String>, ReplayError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        let gate = actionability_gate(driver, target)?;
+        let gate = driver.actionability_gate(target)?;
         match gate {
             None => return Ok(Ok(())),
             Some(name) => {
@@ -403,31 +400,6 @@ fn wait_actionable<D: AppDriver>(
             }
         }
     }
-}
-
-/// One actionability pass: `None` = actionable, `Some(gate)` names the
-/// first gate that failed.
-fn actionability_gate<D: AppDriver>(
-    driver: &mut D,
-    target: &UiaSelector,
-) -> Result<Option<&'static str>, ReplayError> {
-    // Enabled: an Err means the driver has no enabled concept — satisfied.
-    if !driver.element_enabled(target).unwrap_or(true) {
-        return Ok(Some("disabled"));
-    }
-    // Stable: the bounding box must not move between two samples. None
-    // (driver has no geometry) = satisfied.
-    if let Some(first) = driver.element_rect(target)? {
-        std::thread::sleep(STABILITY_INTERVAL);
-        if driver.element_rect(target)? != Some(first) {
-            return Ok(Some("unstable (still moving/animating)"));
-        }
-    }
-    // Receives events at its center: None = driver can't tell, satisfied.
-    if driver.element_receives_events(target)? == Some(false) {
-        return Ok(Some("obscured (another element would receive the click)"));
-    }
-    Ok(None)
 }
 
 /// The auto-wait bound for the actionability gate: the step's recorded
@@ -2227,6 +2199,34 @@ pub fn run_trace_with_secret_scan_and_options<D: AppDriver>(
     scan: &SecretScan,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
+    run_trace_with_exports(path, driver, scan, recording, &Default::default())
+        .map(|(report, run_dir, _)| (report, run_dir))
+}
+
+/// `NAME -> value` pairs an exporting replay resolved, in name order.
+/// Empty unless the run passed and the spec declared `exports:`.
+pub type ResolvedExports = Vec<(String, String)>;
+
+/// Replay, additionally resolving the spec's `exports:` — the values this
+/// flow hands to the flows that run after it in a suite. Each template
+/// resolves its `${captured.<name>}` references from THIS run's captures
+/// once every step has passed, then plain `${VAR}` refs from the
+/// environment (the same resolution suite `env` gets). The resolved pairs
+/// are RETURNED, never persisted: like a capture, an exported order number
+/// or balance lives only in the memory of the run — the suite runner turns
+/// the pairs into env vars for the remaining flows. An export that cannot
+/// resolve fails this run with its own result entry (the same shape the
+/// secret-leak scan uses), because a flow whose contract to its successors
+/// cannot be met has not passed — and the alternative is a downstream flow
+/// failing over a variable nobody visibly set. A failed or leaking flow
+/// exports nothing.
+pub fn run_trace_with_exports<D: AppDriver>(
+    path: &Path,
+    driver: &mut D,
+    scan: &SecretScan,
+    recording: flowproof_driver::RecordingOptions,
+    exports: &std::collections::BTreeMap<String, String>,
+) -> Result<(RunReport, std::path::PathBuf, ResolvedExports), ReplayError> {
     let (header, steps) = load_trace(path)?;
 
     let base = path
@@ -2474,6 +2474,42 @@ pub fn run_trace_with_secret_scan_and_options<D: AppDriver>(
         }
     }
 
+    // `exports:` resolve last, and only from a run that passed: a failed
+    // flow has no contract to hand on. Resolution reads the same in-memory
+    // captures the steps populated; an export that cannot resolve is its
+    // own failed result (mirroring the secret-leak scan), because "the
+    // flow passed but downstream flows hold a variable nobody set" is the
+    // confusing failure this ordering exists to prevent. The error text is
+    // value-free — it names the capture and what was in scope, never what
+    // any capture held.
+    let mut resolved_exports: ResolvedExports = Vec::new();
+    if !exports.is_empty() && !failed {
+        for (export_name, template) in exports {
+            let resolved = flowproof_trace::captures::substitute(template, &captures)
+                .and_then(|v| flowproof_trace::secret::resolve_refs(&v).map_err(|e| e.to_string()));
+            match resolved {
+                Ok(value) => resolved_exports.push((export_name.clone(), value)),
+                Err(why) => {
+                    failed = true;
+                    results.push(StepResult {
+                        id: "exports".to_string(),
+                        intent: format!("export {export_name}"),
+                        status: StepStatus::Failed,
+                        detail: Some(why),
+                        started_ms: started.elapsed().as_millis() as u64,
+                        duration_ms: 0,
+                        selector_tier: None,
+                        degraded: false,
+                    });
+                }
+            }
+        }
+        if failed {
+            // No partial contract: either every export resolves or none ship.
+            resolved_exports.clear();
+        }
+    }
+
     let degraded = results.iter().any(|s| s.degraded);
     let duration_ms = started.elapsed().as_millis() as u64;
     let recording = recorder.and_then(|recorder| recorder.finish_with_driver(driver));
@@ -2486,7 +2522,7 @@ pub fn run_trace_with_secret_scan_and_options<D: AppDriver>(
         duration_ms,
         recording,
     };
-    Ok((report, run_dir))
+    Ok((report, run_dir, resolved_exports))
 }
 
 #[cfg(test)]

@@ -1883,3 +1883,96 @@ steps:
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// `exports:` is how a value one technology mints reaches a flow driving
+/// another: resolved from this run's captures at the end of a passing
+/// replay, returned to the caller, and NEVER persisted — not in the trace
+/// (which holds only the capture name) and not in the run report.
+#[test]
+fn exports_resolve_from_captures_and_never_enter_the_artifacts() {
+    let dir = std::env::temp_dir().join("flowproof-replay-exports");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Order\napp: web\nurl: https://app.test/orders\nsteps:\n  - Remember the \"Order\" as order\nexports:\n  ORDER_NO: ${captured.order}\n  ORDER_HINT: order ${captured.order}\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("order.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Order"]).with_text("Order", "4711");
+    record(&spec, &mut rec, &trace).expect("records");
+
+    let mut driver = MockAppDriver::new(&["Order"]).with_text("Order", "4711");
+    let (report, run_dir, exports) = flowproof_replay::run_trace_with_exports(
+        &trace,
+        &mut driver,
+        &flowproof_replay::SecretScan::disabled(),
+        RecordingOptions::default(),
+        &spec.exports,
+    )
+    .expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    assert_eq!(
+        exports,
+        vec![
+            ("ORDER_HINT".to_string(), "order 4711".to_string()),
+            ("ORDER_NO".to_string(), "4711".to_string()),
+        ],
+        "templates resolve against the run's captures, in name order"
+    );
+
+    // The exported VALUE lives only in the return: the trace holds the
+    // capture name, and the run report holds no exports entry at all.
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(
+        !persisted.contains("4711"),
+        "trace is value-free: {persisted}"
+    );
+    let result_path = report.write_into(&run_dir).expect("artifact written");
+    let artifact = std::fs::read_to_string(result_path).expect("read artifact");
+    assert!(
+        !artifact.contains("4711"),
+        "report is value-free: {artifact}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An export whose capture was never remembered fails THIS flow — the one
+/// that owns the captures and can name what was in scope — not a
+/// downstream flow left holding a variable nobody set. And a run that
+/// fails exports nothing: no partial contract.
+#[test]
+fn an_export_naming_an_unremembered_capture_fails_the_run_that_owns_it() {
+    let dir = std::env::temp_dir().join("flowproof-replay-exports-missing");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Order\napp: web\nurl: https://app.test/orders\nsteps:\n  - Remember the \"Order\" as order\nexports:\n  ORDER_NO: ${captured.orderr}\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("order.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Order"]).with_text("Order", "4711");
+    record(&spec, &mut rec, &trace).expect("records");
+
+    let mut driver = MockAppDriver::new(&["Order"]).with_text("Order", "4711");
+    let (report, _run_dir, exports) = flowproof_replay::run_trace_with_exports(
+        &trace,
+        &mut driver,
+        &flowproof_replay::SecretScan::disabled(),
+        RecordingOptions::default(),
+        &spec.exports,
+    )
+    .expect("replay runs");
+    assert!(!report.passed, "an unresolvable export is a failed run");
+    assert!(exports.is_empty(), "a failed run exports nothing");
+    let last = report.steps.last().expect("has the exports result");
+    assert_eq!(last.id, "exports");
+    assert_eq!(last.intent, "export ORDER_NO");
+    let detail = last.detail.clone().unwrap_or_default();
+    assert!(
+        detail.contains("was never remembered") && detail.contains("order"),
+        "names the missing capture and what was in scope: {detail}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

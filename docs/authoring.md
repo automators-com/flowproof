@@ -57,6 +57,16 @@ readable/actionable elements inside visible same-origin frames. Frame and
 scoped tokens are authoring-only handles: Flowproof translates them to ordinary
 deterministic targets before writing the trace.
 
+A plain step is a unit of intent, not a unit of work. `Fill out all the vehicle
+data and click next` is one step, and the model answers it with the whole
+sequence of grounded actions it takes — one per field, plus the button — in a
+single call. Every action in that sequence is grounded against the same listed
+inventory and rejected as a whole if any one of them is not, so a half-filled
+form never reaches the trace. The inventory also reports what each field
+currently holds, which the page marks required, which boxes are ticked, and a
+dropdown's exact options, so a `<select>` is given a name it really has rather
+than a plausible guess. Values of password fields are never reported.
+
 Plain language is not limited to midpoint clicks and typing. The structured
 model response can directly express clicking a point within a control,
 dragging, remembering a count or value, choosing one or several select options,
@@ -363,18 +373,23 @@ column header, and a container that is neither `item` nor a selector (`in
 the "Transaction" containing …`, where "Transaction" is a noun, not a
 container).
 
-**Steps are not instant, and some apps care.** A step costs roughly **three
-seconds** between one action landing and the next one reaching the page -
-measured at 3.1-3.2s for a click followed by a type, on a local fixture with
-no network. Most of it is CDP round trips: resolving the target, waiting for
-it to be actionable, and reading back the state that proves the step took.
+**Steps are not instant, and some apps care.** A click step costs roughly
+**1.3 seconds** between the action landing and the next one reaching the
+page, and typing adds about **0.2s per character** — measured on a local
+fixture with no network. The cost is CDP round trips: the transport
+underneath pays a fixed latency of up to ~100ms per call (the sender
+serializes behind the reader's blocking socket read), and a keystroke is
+two calls. The probes that only need an answer — does the target exist, is
+it actionable — each ask the page in a single round trip for css and
+text-anchor targets; earlier engines walked an element-handle path that
+cost four to six calls per question, which put a step at 3.1-3.2s.
 
-That is invisible until an app puts a DEADLINE on an interaction - a value
-that stays valid for two seconds, a token that expires, a confirmation that
-auto-dismisses. Those are currently **out of reach**, and the failure is at
-least loud rather than silent: the app's own complaint (an alert, a
-rejection) surfaces as a failed step rather than a green run that did the
-wrong thing.
+A deadline-bearing interaction — a value that stays valid for two seconds,
+a token that expires, a confirmation that auto-dismisses — may still be
+**out of reach** once a step involves typing more than a few characters,
+and the failure is at least loud rather than silent: the app's own
+complaint (an alert, a rejection) surfaces as a failed step rather than a
+green run that did the wrong thing.
 
 If a flow needs to beat a deadline, the honest options are to remove the
 deadline from the environment under test (`mock:` the endpoint that issues
@@ -502,6 +517,69 @@ in a target label are all parse errors, because that would let the app under
 test decide what the flow does next. Supplying text it just displayed is
 data entry; picking the next element is control flow. A name that was never
 remembered fails closed, naming what was in scope.
+
+### Handing a value to the next flow (`exports:`)
+
+A capture is flow-scoped. `exports:` is how one crosses to the flows that
+run AFTER this one in a suite — which is how a test case spans
+technologies: one flow drives SAP GUI and captures the order number off the
+status bar, the next drives the web portal that must show it. Each flow
+keeps its own `app:` and its own driver; the suite is the test case, and
+the export is the thread through it.
+
+```yaml
+# a-create-order.flow.yaml — SAP GUI mints the order number
+name: Create standard order
+app: sap
+steps:
+  - Go to /nVA01
+  # ... create the order ...
+  - Remember the "id:wnd[0]/sbar" matching /\d+/ as order
+exports:
+  ORDER_NO: ${captured.order}
+```
+
+```yaml
+# b-verify-portal.flow.yaml — the portal must show what SAP minted
+name: Order appears in the portal
+app: web
+url: ${PORTAL_URL}/orders
+steps:
+  - Type ${ORDER_NO} into the "Search" field
+  - assert: page shows ${ORDER_NO}
+```
+
+Each export is `ENV_NAME: template`. The template may carry
+`${captured.<name>}` references (this flow's captures) and plain `${VAR}`
+references (the environment, resolved like suite `env`). When the flow's
+last step has passed, the templates resolve and the pairs become
+environment variables for the remaining flows — which reference them as
+ordinary `${VAR}`s, so the downstream trace stores only the reference and
+resolves it fresh on every replay. The handoff happens at REPLAY time, from
+replay-time captures: flow B replays against the value flow A's replay just
+read, not against a value frozen at record.
+
+What holds, and why:
+
+- **Nothing is persisted.** Like a capture, an exported value exists only
+  in the memory of the run. The trace holds the capture name, the run
+  report and the `[EXPORT]` line hold the export NAME — an order number or
+  balance stays out of committed artifacts and CI logs alike.
+- **An export that cannot resolve fails the flow that owns it.** A
+  `${captured.<name>}` never remembered fails THIS flow with the captures
+  that were in scope — not the downstream flow, which would otherwise fail
+  holding a variable nobody visibly set. And a failed flow exports
+  nothing: no partial contract.
+- **A single `flowproof run <spec>` resolves exports too**, though there is
+  no downstream flow to receive them — the verdict must not depend on
+  whether the flow ran alone or in a suite.
+- **`app: agent` flows cannot export** (a parse error): they record at the
+  model boundary and have no captures. Chain them as consumers — an agent
+  flow's spec can reference `${ORDER_NO}` like any other.
+
+The suite's existing machinery composes: `env_from` mints the data the
+FIRST flow needs, `order:` in `suite.yaml` pins who runs before whom, and
+`exports:` carries what a flow LEARNED to whoever follows.
 
 ### iframes (same-origin, assertions)
 

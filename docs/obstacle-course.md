@@ -49,9 +49,10 @@ has no way to say so. **Not a flowproof limitation.**
 ### Blocked on step latency (2)
 
 87912 accepts a generated value for 2 seconds. 16384 deletes its record
-after 5. A step costs ~3.2s (measured; see `docs/authoring.md`), so both
-deadlines pass before the next step lands. On 16384 the record is already
-gone by the time the SECOND step runs.
+after 5. A step cost ~3.2s when this was measured; the single-round-trip
+probes have since brought a click to ~1.3s (see `docs/authoring.md`), so
+both are worth re-trying — typing speed is still ~0.2s per character, which
+may keep 87912 out of reach.
 
 The failure is at least loud — the page's own complaint surfaces as a failed
 step, and flowproof's dialog safety net catches the alert — but neither is
@@ -68,8 +69,9 @@ cassette for it may enter the repository.**
 ### Out of reach on timing (1)
 
 82018 is a reaction game whose window depends on the frame rate, and a step
-costs about 3.2 seconds. Measured, not assumed; it is the one obstacle in
-the corpus no amount of grammar reaches.
+still costs over a second (~3.2s when this was measured; ~1.3s now — see
+`docs/authoring.md`). It is the one obstacle in the corpus no amount of
+grammar reaches.
 
 ## Taken by `Drag` (1)
 
