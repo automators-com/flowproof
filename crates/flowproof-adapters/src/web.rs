@@ -3323,11 +3323,27 @@ impl AppDriver for WebAppDriver {
                 seen.add(el);
                 return true;
               }).slice(0, 100);
+              // A step meaning "fill in this form" needs the state of the
+              // form, not only its shape: which fields are empty, which the
+              // page demands, which boxes are ticked, and — for a dropdown —
+              // the exact option strings. Without the options an authoring
+              // model guesses a label, and a <select> refuses a name it does
+              // not have. A password's value is never reported: the scene
+              // travels to a model.
+              const fieldValue = el => {
+                const tag = el.tagName;
+                if (!['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return undefined;
+                if (tag === 'INPUT' && ['checkbox', 'radio', 'password'].includes(el.type)) {
+                  return undefined;
+                }
+                return (el.value || '').trim().slice(0, 80) || undefined;
+              };
               const entries = chosen.map(el => {
                 const css = cssPath(el);
                 const scoped = !interactive(el) && !semanticCss(el) ? scopedReadable(el) : null;
                 const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
                     : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+                const ticks = el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.type);
                 const entry = {
                     target: scoped ? scoped.token : 'css:' + css,
                     css,
@@ -3336,6 +3352,15 @@ impl AppDriver for WebAppDriver {
                     type: el.getAttribute('type') || undefined,
                     text: (el.textContent || '').trim().slice(0, 80) || undefined,
                     label: label || undefined,
+                    value: fieldValue(el),
+                    checked: ticks ? el.checked : undefined,
+                    required: el.required || undefined,
+                    options: el.tagName === 'SELECT'
+                      ? Array.from(el.options)
+                          .map(option => (option.textContent || '').trim())
+                          .filter(Boolean)
+                          .slice(0, 60)
+                      : undefined,
                     background_color: styledLeaf(el) ? getComputedStyle(el).backgroundColor : undefined,
                 };
                 if (scoped) entry.scope = {

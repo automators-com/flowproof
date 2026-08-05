@@ -57,6 +57,16 @@ readable/actionable elements inside visible same-origin frames. Frame and
 scoped tokens are authoring-only handles: Flowproof translates them to ordinary
 deterministic targets before writing the trace.
 
+A plain step is a unit of intent, not a unit of work. `Fill out all the vehicle
+data and click next` is one step, and the model answers it with the whole
+sequence of grounded actions it takes — one per field, plus the button — in a
+single call. Every action in that sequence is grounded against the same listed
+inventory and rejected as a whole if any one of them is not, so a half-filled
+form never reaches the trace. The inventory also reports what each field
+currently holds, which the page marks required, which boxes are ticked, and a
+dropdown's exact options, so a `<select>` is given a name it really has rather
+than a plausible guess. Values of password fields are never reported.
+
 Plain language is not limited to midpoint clicks and typing. The structured
 model response can directly express clicking a point within a control,
 dragging, remembering a count or value, choosing one or several select options,
