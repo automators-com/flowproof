@@ -147,10 +147,24 @@ It reports what it saw rather than declaring the wiring correct, because an
 agent with more than one client can reach the proxy with one and the real
 provider with another. `record` is what settles that.
 
+The task it hands the agent is `Say hello.`, delivered through
+`FLOWPROOF_PROMPT`. Change it with `--prompt` when that default would not
+make your agent call a model at all — one that routes on the task, or
+short-circuits something trivial, can answer without a single request and
+report a zero that says nothing about the wiring:
+
+```bash
+flowproof doctor --agent "./start-agent" --prompt "Look up order 4711."
+```
+
+The reply is canned either way, so the prompt only decides whether the agent
+reaches for a model — never what comes back.
+
 Two limits worth knowing. It cannot tell a hang from a slow agent, so a
-process waiting for a useful answer sits until `--timeout`. And if the agent
-spawns a child that outlives it, the wall clock can exceed that timeout,
-because flowproof stops the process it started rather than the tree.
+process waiting for a useful answer sits until `--timeout` (60 seconds by
+default). And if the agent spawns a child that outlives it, the wall clock
+can exceed that timeout, because flowproof stops the process it started
+rather than the tree.
 
 **A record run that captures nothing FAILS.** If zero model requests reach
 the proxy, `record` errors and writes NO trace. That is the one failure a

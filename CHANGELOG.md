@@ -41,6 +41,27 @@ together).
   described as something "this PR creates"; and the healing diff view was
   listed as out of scope in the same document whose §8 describes it as built.
 
+### Fixed
+
+- **Three flags shipped without ever being written down.** `run --trace`,
+  `heal --trace` and `doctor --prompt` existed, worked, and appeared in
+  `--help`, but no page a user reads mentioned them. That is a quiet way to
+  not ship a feature: an adopter who cannot find a flag does not have it. The
+  trace-path overrides now sit in `docs/getting-started.md` next to the
+  convention they override — including the part that bites, that a suite run
+  resolves traces by name and ignores `--trace`, so a relocated trace reads as
+  a flow that was never recorded. `--prompt` is documented in
+  `docs/agent-testing.md` for the case that motivates it: an agent that routes
+  on the task can answer `Say hello.` without calling a model at all, and
+  report a zero that says nothing about the wiring.
+
+  A test now holds the line. `documented_flags.rs` walks the clap definition
+  and fails when a visible flag or subcommand appears in no `docs/*.md` and
+  not in `README.md` — mechanically, the way the trace schema is checked
+  against its docs, because "remember to write the prose" has now failed
+  several times. It only asks that a flag be *mentioned*; a bad explanation is
+  still a human's job to catch.
+
 ## 0.13.0
 
 This release is about what a run leaves behind, and what a person is allowed to
