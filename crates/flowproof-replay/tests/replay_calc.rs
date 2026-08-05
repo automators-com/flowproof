@@ -2058,3 +2058,62 @@ fn recording_multi_surface_on_a_single_surface_driver_refuses_by_name() {
     assert!(!trace.exists(), "no trace minted");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The whole point of Phase 2, closed: a multi-surface trace REPLAYS with
+/// zero LLM calls — a fresh registry, fresh drivers, every step dispatched
+/// to its recorded surface, the capture re-read live and typed across the
+/// block boundary. Elements exist on exactly one surface each, so a pass
+/// is itself the proof of routing; the replayed capture is re-read from
+/// THIS run's gui (a different value than record saw), proving the value
+/// crosses surfaces live rather than from the recording.
+#[test]
+fn a_multi_surface_trace_replays_across_surfaces_with_a_fresh_registry() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Order across surfaces\napps:\n  gui: {app: sap}\n  portal: {app: web, url: \"https://portal.test/orders\"}\nsteps:\n  - in: gui\n    steps:\n      - Remember the \"OrderNo\" as order\n  - in: portal\n    steps:\n      - Type ${captured.order} into the \"Search\" field\n      - assert: the \"Search\" shows ${captured.order}\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-replay");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+
+    let mocks = |order: &'static str| -> SurfaceFactory {
+        Box::new(move |name| {
+            Ok(Box::new(match name {
+                "gui" => MockAppDriver::new(&["OrderNo"]).with_text("OrderNo", order),
+                // The mock echoes typed text back from read_text, so the
+                // assertion can read what landed.
+                _ => MockAppDriver::new(&["Search"]),
+            }))
+        })
+    };
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut rec_registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks("4711"),
+        std::time::Duration::from_millis(50),
+    );
+    record(&spec, &mut rec_registry, &trace).expect("records");
+
+    // Replay against a DIFFERENT order number: the capture is re-read from
+    // this run's gui surface and typed into this run's portal.
+    let mut registry =
+        SurfaceRegistry::new(targets, mocks("9042"), std::time::Duration::from_millis(50));
+    let (report, _run_dir) = run_trace(&trace, &mut registry).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    assert_eq!(registry.launched_surfaces(), vec!["gui", "portal"]);
+    assert_eq!(registry.active_surface(), Some("portal"));
+
+    // And a plain single-surface driver still refuses the multi trace by
+    // name at the first attributed step — never a replay on the wrong app.
+    let mut single = MockAppDriver::new(&["OrderNo", "Search"]);
+    let outcome = run_trace(&trace, &mut single);
+    let msg = match outcome {
+        Ok((report, _)) => format!("{report:?}"),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.contains("one surface"), "refuses by name: {msg}");
+    std::fs::remove_dir_all(&dir).ok();
+}

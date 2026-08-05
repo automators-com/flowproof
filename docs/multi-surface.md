@@ -1,13 +1,15 @@
 # Test cases that span technologies
 
-> Status: `exports:` (Phase 1) is shipped and documented in
-> [authoring.md](authoring.md#handing-a-value-to-the-next-flow-exports).
-> Of Phase 2, the **vocabulary, the trace format, and RECORDING are
-> shipped**: `apps:` and `in:` blocks parse, validate, and record exactly
-> as shown below — one surface active at a time, captures crossing blocks,
-> per-step surface attribution in the trace. REPLAY of a multi-surface
-> trace is the remaining slice; `run` and `heal` refuse one by name until
-> it lands. Phase 3 remains a proposal.
+> Status: Phases 1 and 2 are **shipped**. `exports:` chains
+> single-surface flows through a suite
+> ([authoring.md](authoring.md#handing-a-value-to-the-next-flow-exports)),
+> and multi-surface flows record AND replay
+> ([authoring.md](authoring.md#multi-surface-flows-apps-and-in-blocks)):
+> `apps:` + `in:` blocks, one surface active at a time, captures crossing
+> blocks, per-step surface attribution, replay from the trace alone with
+> zero LLM calls. Still open from Phase 2: per-surface `window:`/`browser:`
+> config, surface-aware `assert_screenshot` baselines, and `heal` on
+> multi-surface flows (re-record instead). Phase 3 remains a proposal.
 
 ## The problem
 
@@ -47,7 +49,7 @@ system A, prove in system B* — with one driver per flow and no new trace
 format. When a case genuinely ping-pongs between surfaces mid-flow, Phase 2
 is the answer.
 
-## Phase 2 — multi-surface flows (recording shipped, replay pending)
+## Phase 2 — multi-surface flows (shipped)
 
 One flow file, one trace, several named surfaces, exactly one active at a
 time:
