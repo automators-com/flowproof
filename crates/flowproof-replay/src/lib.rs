@@ -2411,6 +2411,7 @@ pub fn run_trace_with_exports<D: AppDriver>(
     // performed, replayed deterministically from the trace alone. A step
     // with NO surface (an out-of-band assert) keeps the current one.
     let mut active_surface: Option<String> = None;
+    let mut configured_surfaces: std::collections::BTreeSet<String> = Default::default();
     for step in &steps {
         if failed {
             results.push(StepResult::skipped(step));
@@ -2419,6 +2420,14 @@ pub fn run_trace_with_exports<D: AppDriver>(
         if let Some(surface) = &step.surface {
             if active_surface.as_deref() != Some(surface.as_str()) {
                 driver.activate_surface(surface)?;
+                // First visit: reproduce the geometry the recording APPLIED
+                // to this surface, exactly as the single-surface path does
+                // with the header's one `app.geometry`.
+                if configured_surfaces.insert(surface.clone()) {
+                    if let Some(g) = header.apps.get(surface).and_then(|i| i.geometry.as_ref()) {
+                        driver.set_window_geometry(g.width, g.height, Some((g.x, g.y)))?;
+                    }
+                }
                 active_surface = Some(surface.clone());
             }
         }

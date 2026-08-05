@@ -1097,7 +1097,16 @@ fn surface_app_info(surface: &crate::spec::SurfaceSpec) -> AppInfo {
     let id = surface.app.id();
     let (command, window_title) = match surface.app.launch_parts() {
         Some((c, w)) => (Some(c.to_string()), Some(w.to_string())),
-        None => (None, None),
+        // A vision surface's ATTACH title fills THE window-title slot,
+        // stored RAW so a `${VAR}` resolves again at every replay.
+        None => (
+            None,
+            surface
+                .window
+                .as_ref()
+                .and_then(|w| w.title())
+                .map(str::to_string),
+        ),
     };
     AppInfo {
         name: if id.is_empty() {
@@ -1108,6 +1117,7 @@ fn surface_app_info(surface: &crate::spec::SurfaceSpec) -> AppInfo {
         adapter: match id {
             "web" => flowproof_trace::format::Adapter::Web,
             "sap" => flowproof_trace::format::Adapter::SapCom,
+            "vision" => flowproof_trace::format::Adapter::Vision,
             _ => flowproof_trace::format::Adapter::Uia,
         },
         window_title,
@@ -1159,6 +1169,18 @@ pub fn surface_targets(
                         surface.connection.as_deref().unwrap_or_default(),
                     )?,
                     window_name: "SAP".into(),
+                },
+                // Pixels mode attaches to a window by title; validation
+                // required it, so absence here would be a bug, not input.
+                "vision" => flowproof_driver::AppTarget {
+                    command: String::new(),
+                    window_name: flowproof_trace::secret::resolve_refs(
+                        surface
+                            .window
+                            .as_ref()
+                            .and_then(|w| w.title())
+                            .ok_or(RecordError::MissingWindow)?,
+                    )?,
                 },
                 id => match surface.app.launch_parts() {
                     Some((command, window_title)) => flowproof_driver::AppTarget {
@@ -2440,6 +2462,15 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     // each `in:` boundary, stamped into every recorded step, and the app id
     // steps author and record against follows it.
     let mut current_surface: Option<String> = None;
+    // First-visit bookkeeping: a surface's `window:` geometry is applied
+    // ONCE, at its first block, and what was APPLIED is recorded per
+    // surface — a spec that gives only a size still pins the position the
+    // window landed on, exactly the single-surface rule.
+    let mut configured_surfaces: std::collections::BTreeSet<String> = Default::default();
+    let mut surface_geometry: std::collections::BTreeMap<
+        String,
+        flowproof_trace::format::WindowGeometry,
+    > = Default::default();
     let surface_app = |current: &Option<String>| -> String {
         current
             .as_ref()
@@ -2494,6 +2525,26 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             // prose intent.
             crate::spec::SpecStep::InSurface { block } => {
                 driver.activate_surface(&block.surface)?;
+                if configured_surfaces.insert(block.surface.clone()) {
+                    let config = spec
+                        .apps
+                        .get(&block.surface)
+                        .and_then(|s| s.window.as_ref())
+                        .map(crate::spec::WindowSpec::config);
+                    if let Some((w, h)) = config.as_ref().and_then(|c| c.width.zip(c.height)) {
+                        let position = config.as_ref().and_then(|c| c.x.zip(c.y));
+                        let (w, h, x, y) = driver.set_window_geometry(w, h, position)?;
+                        surface_geometry.insert(
+                            block.surface.clone(),
+                            flowproof_trace::format::WindowGeometry {
+                                width: w,
+                                height: h,
+                                x,
+                                y,
+                            },
+                        );
+                    }
+                }
                 current_surface = Some(block.surface.clone());
                 for (i, inner) in block.steps.iter().enumerate() {
                     queue.insert(i, (inner.clone(), 0));
@@ -3425,7 +3476,12 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         header.apps = spec
             .apps
             .iter()
-            .map(|(name, s)| (name.clone(), surface_app_info(s)))
+            .map(|(name, s)| {
+                let mut info = surface_app_info(s);
+                // What was APPLIED at the surface's first activation.
+                info.geometry = surface_geometry.get(name).cloned();
+                (name.clone(), info)
+            })
             .collect();
     }
 

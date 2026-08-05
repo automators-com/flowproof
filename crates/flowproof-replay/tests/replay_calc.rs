@@ -2161,3 +2161,77 @@ fn a_surfaces_browser_config_travels_into_its_header_entry() {
     assert_eq!((vp.width, vp.height), (390, 844));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A surface's `window:` geometry is applied ONCE, at its first
+/// activation, and what was APPLIED travels in the surface's header entry
+/// — including a position the spec never asked for, which upgrades an
+/// unpinned position into a pinned one, exactly the single-surface rule.
+/// Replay reproduces it: a registry whose driver refuses to resize makes
+/// the replay fail, proving the application is real, not decorative.
+#[test]
+fn a_surfaces_window_geometry_pins_at_first_activation_and_replays() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Shaped gui\napps:\n  gui:\n    app: sap\n    window: {width: 1280, height: 800}\nsteps:\n  - in: gui\n    steps:\n      - Press the \"Go\" button\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-window");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+    let factory: SurfaceFactory = Box::new(|_| Ok(Box::new(MockAppDriver::new(&["Go"]))));
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        factory,
+        std::time::Duration::from_millis(50),
+    );
+    record(&spec, &mut registry, &trace).expect("records");
+
+    // The header pins what was APPLIED: the mock "lands" an unasked-for
+    // position (40, 60), and the trace records it.
+    let header: flowproof_trace::Header = serde_json::from_str(
+        std::fs::read_to_string(&trace)
+            .expect("trace readable")
+            .lines()
+            .next()
+            .expect("header"),
+    )
+    .expect("header parses");
+    let g = header.apps["gui"]
+        .geometry
+        .as_ref()
+        .expect("geometry pinned");
+    assert_eq!((g.width, g.height, g.x, g.y), (1280, 800, 40, 60));
+
+    // Replay applies it at first activation: a driver that refuses to
+    // resize fails the replay — the application is real.
+    let refusing: SurfaceFactory = Box::new(|_| {
+        let mut mock = MockAppDriver::new(&["Go"]);
+        mock.fail_geometry = true;
+        Ok(Box::new(mock))
+    });
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        refusing,
+        std::time::Duration::from_millis(50),
+    );
+    let outcome = run_trace(&trace, &mut registry);
+    let msg = match outcome {
+        Ok((report, _)) => format!("passed={} {report:?}", report.passed),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("refuses to resize"),
+        "replay applied the recorded geometry: {msg}"
+    );
+
+    // And a driver that accepts it replays green.
+    let accepting: SurfaceFactory = Box::new(|_| Ok(Box::new(MockAppDriver::new(&["Go"]))));
+    let mut registry =
+        SurfaceRegistry::new(targets, accepting, std::time::Duration::from_millis(50));
+    let (report, _run_dir) = run_trace(&trace, &mut registry).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    std::fs::remove_dir_all(&dir).ok();
+}

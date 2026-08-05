@@ -594,6 +594,18 @@ fn replay_surface_targets(
                     command: resolve(&info.command)?,
                     window_name: resolve(&info.window_title)?,
                 },
+                // Pixels mode re-attaches to the window the header recorded.
+                "vision" => {
+                    if info.window_title.is_none() {
+                        return Err(format!(
+                            "vision surface '{name}' has no window title in the header"
+                        ));
+                    }
+                    flowproof_driver::AppTarget {
+                        command: String::new(),
+                        window_name: resolve(&info.window_title)?,
+                    }
+                }
                 id => flowproof_driver::resolve_app(id)
                     .ok_or_else(|| format!("surface '{name}': unknown app '{id}'"))?,
             };

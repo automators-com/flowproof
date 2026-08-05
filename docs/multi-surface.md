@@ -7,9 +7,10 @@
 > ([authoring.md](authoring.md#multi-surface-flows-apps-and-in-blocks)):
 > `apps:` + `in:` blocks, one surface active at a time, captures crossing
 > blocks, per-step surface attribution, replay from the trace alone with
-> zero LLM calls. Still open from Phase 2: per-surface `window:` config
-> (per-surface `browser:` is shipped), surface-aware `assert_screenshot`
-> baselines, and `heal` on multi-surface flows (re-record instead). Phase 3 remains a proposal.
+> zero LLM calls. Still open from Phase 2: surface-aware `assert_screenshot`
+> baselines, and `heal` on multi-surface flows (re-record instead).
+> Per-surface `browser:` and `window:` are shipped — vision surfaces
+> included. Phase 3 remains a proposal.
 
 ## The problem
 
