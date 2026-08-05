@@ -2254,6 +2254,12 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             local_storage,
         })?;
     }
+    // Who this flow logs in as. Resolved here and again at every replay, so
+    // a `${VAR}` password is never frozen into the recording — and a literal
+    // one stays in the spec file, which is the only place it appears.
+    if let Some(login) = &spec.login {
+        driver.stage_credentials(login.resolved()?)?;
+    }
     if !spec.mock.is_empty() {
         driver.stage_mocks(spec.mock.iter().map(web_mock_from_rule).collect())?;
     }
@@ -3256,6 +3262,10 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     .or_else(|| (!target.command.is_empty()).then(|| target.command.clone())),
                 _ => None,
             },
+            // RAW, like every other header identity: a `${VAR}` stays a
+            // reference so it resolves fresh at replay. The password has no
+            // header field at all — it never leaves the spec.
+            login_user: spec.login.as_ref().map(|login| login.user.clone()),
             version: None,
         },
         // Single-surface recording mints no surface map; the multi-surface

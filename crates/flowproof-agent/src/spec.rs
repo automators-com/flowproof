@@ -42,6 +42,8 @@ pub enum SpecError {
     Exports(String),
     #[error("invalid apps: {0}")]
     Surfaces(String),
+    #[error("invalid login: {0}")]
+    Login(String),
 }
 
 /// `app:` is either a registry id (`web`, `calc`, `notepad`, `sap`,
@@ -114,6 +116,57 @@ pub struct SurfaceSpec {
     /// attach to a logged-in session), as on a single-surface flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
+    /// For sap surfaces: who this surface logs in as, exactly as on a
+    /// single-surface flow. This is the shape a same-system two-user case
+    /// wants — one flow, `clerk` and `approver` surfaces, one identity each —
+    /// and it parses and validates today, but the multi-surface ENGINE has
+    /// not shipped, so `record`/`run` still refuse an `apps:` flow by name
+    /// (docs/multi-surface.md). Until it lands, the same case is a suite of
+    /// single-surface flows chained with `exports:`, one `login:` each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<LoginSpec>,
+}
+
+/// Who a SAP flow logs in as. Every value may carry `${VAR}` references,
+/// resolved at record time and again at every replay — but none of them has
+/// to: a flow may carry its credentials outright and run with no environment
+/// configured anywhere.
+///
+/// What holds regardless: **the password never enters the trace.** It is not
+/// a header field, so there is nothing to redact and nothing to leak into a
+/// committed artifact. Only `user` travels, because a recording that cannot
+/// say which identity produced it is not reviewable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginSpec {
+    pub user: String,
+    pub password: String,
+    /// SAP's client field (`RSYST-MANDT`), when the system needs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    /// SAP's language field (`RSYST-LANGU`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
+impl LoginSpec {
+    /// Resolve every `${VAR}` reference and hand the driver real values —
+    /// the same moment-of-use resolution `session:` cookies get, so an unset
+    /// variable fails closed by name instead of typing `${…}` at SAP.
+    pub fn resolved(
+        &self,
+    ) -> Result<flowproof_driver::LoginCredentials, flowproof_trace::secret::MissingSecret> {
+        use flowproof_trace::secret::{resolve_refs, MissingSecret};
+        let optional = |value: &Option<String>| -> Result<Option<String>, MissingSecret> {
+            value.as_deref().map(resolve_refs).transpose()
+        };
+        Ok(flowproof_driver::LoginCredentials {
+            user: resolve_refs(&self.user)?,
+            password: resolve_refs(&self.password)?,
+            client: optional(&self.client)?,
+            language: optional(&self.language)?,
+        })
+    }
 }
 
 impl From<&str> for AppSpec {
@@ -366,6 +419,16 @@ pub struct FlowSpec {
     /// carry `${VAR}` references, resolved at launch time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
+    /// For `app: sap`: who this flow logs in as. Present = this flow owns its
+    /// identity and needs NO environment at all; absent = the historical
+    /// behaviour, `SAP_USER`/`SAP_PASSWORD` from the process environment.
+    ///
+    /// The point is that credentials are per-FLOW. Environment variables are
+    /// process-global, so a test case that acts as a clerk and then as an
+    /// approver could not name its second user — a suite of flows, each with
+    /// its own `login:`, can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<LoginSpec>,
     /// The window this flow drives: which one, and what shape.
     ///
     /// A bare string is shorthand for `{title: …}` and is vision-only -
@@ -922,6 +985,62 @@ impl FlowSpec {
     /// enforced so a stray uppercase or space is a parse error rather than a
     /// silently-unmatchable id. Per-suite UNIQUENESS is a suite-level
     /// property, enforced at suite load by `check_control_ids`, not here.
+    /// Check `login:` on a flow and on every surface: SAP-only, both halves
+    /// present, and never on an attach-only flow. That last one is the
+    /// interesting rule — `login:` without `connection:` reads like it picks
+    /// an identity, but there is no connection to open and log in on, so it
+    /// could only ever attach to whatever session exists. Naming a user and
+    /// silently getting somebody else's session is the exact failure this
+    /// feature exists to prevent, so it is a parse error rather than a
+    /// surprise at run time.
+    fn validate_login(&self) -> Result<(), SpecError> {
+        let bad = |m: String| Err(SpecError::Login(m));
+        let check = |where_: &str,
+                     id: &str,
+                     login: Option<&LoginSpec>,
+                     connection: Option<&String>|
+         -> Result<(), SpecError> {
+            let Some(login) = login else {
+                return Ok(());
+            };
+            if id != "sap" {
+                return bad(format!(
+                    "`login:`{where_} means nothing for `app: {id}` — it is sap config \
+                     (a web flow starts authenticated with `session:`)"
+                ));
+            }
+            if login.user.trim().is_empty() || login.password.trim().is_empty() {
+                return bad(format!(
+                    "`login:`{where_} needs both `user:` and `password:` — a half-filled \
+                     login would stop at SAP's login screen and time out"
+                ));
+            }
+            if connection.is_none() {
+                return bad(format!(
+                    "`login:`{where_} needs `connection:` — without one the flow attaches \
+                     to whatever SAP session is already open, which may be a different \
+                     user than the one named here"
+                ));
+            }
+            Ok(())
+        };
+        check(
+            "",
+            self.app.id(),
+            self.login.as_ref(),
+            self.connection.as_ref(),
+        )?;
+        for (name, surface) in &self.apps {
+            check(
+                &format!(" on surface `{name}`"),
+                surface.app.id(),
+                surface.login.as_ref(),
+                surface.connection.as_ref(),
+            )?;
+        }
+        Ok(())
+    }
+
     fn validate_control(&self) -> Result<(), SpecError> {
         let Some(control) = &self.control else {
             return Ok(());
@@ -1877,6 +1996,7 @@ impl FlowSpec {
         // spellings before any app-kind check reads the unset sentinel.
         spec.validate_surfaces()?;
         spec.validate_window()?;
+        spec.validate_login()?;
         spec.validate_agent()?;
         spec.validate_clock()?;
         spec.validate_random()?;
@@ -3617,6 +3737,120 @@ steps:
       - Type ${captured.order} into the \"Search\" field
       - assert: page shows ${captured.order}
 ";
+
+    /// The shape the feature exists for: a flow that names its own user and
+    /// needs nothing set in the environment.
+    #[test]
+    fn a_sap_flow_carries_its_own_login() {
+        let flow = spec(
+            "name: n\napp: sap\nconnection: TS3\nlogin:\n  user: obeva\n  \
+             password: ${TS3_PASSWORD}\n  client: '100'\nsteps:\n  - Go to /nVA01\n",
+        )
+        .expect("parses");
+        let login = flow.login.expect("login block");
+        assert_eq!(login.user, "obeva");
+        assert_eq!(login.client.as_deref(), Some("100"));
+        assert_eq!(login.language, None);
+    }
+
+    /// A literal password is allowed on purpose — a flow must be runnable
+    /// with no environment at all — and it stays in the spec: `resolved()`
+    /// is the only thing that ever sees a value.
+    #[test]
+    fn a_login_takes_a_literal_or_a_reference() {
+        std::env::set_var("SPEC_LOGIN_PW", "from-env");
+        let referenced = spec(
+            "name: n\napp: sap\nconnection: TS3\nlogin:\n  user: obeva\n  \
+             password: ${SPEC_LOGIN_PW}\nsteps:\n  - Go to /nVA01\n",
+        )
+        .expect("parses")
+        .login
+        .expect("login")
+        .resolved()
+        .expect("resolves");
+        assert_eq!(referenced.password, "from-env");
+        std::env::remove_var("SPEC_LOGIN_PW");
+
+        let literal = spec(
+            "name: n\napp: sap\nconnection: TS3\nlogin:\n  user: obeva\n  \
+             password: typed-in-the-file\nsteps:\n  - Go to /nVA01\n",
+        )
+        .expect("parses")
+        .login
+        .expect("login")
+        .resolved()
+        .expect("a literal needs no environment");
+        assert_eq!(literal.password, "typed-in-the-file");
+    }
+
+    /// `login:` without `connection:` would attach to whatever session is
+    /// open — which may be a different user than the one named, the exact
+    /// silent-wrong-identity failure this feature prevents.
+    #[test]
+    fn a_login_without_a_connection_is_refused() {
+        let err = spec(
+            "name: n\napp: sap\nlogin:\n  user: obeva\n  password: pw\nsteps:\n  - Go to /nVA01\n",
+        )
+        .expect_err("refused");
+        assert!(
+            err.to_string().contains("connection:") && err.to_string().contains("different user"),
+            "names the missing key and why it matters: {err}"
+        );
+    }
+
+    #[test]
+    fn a_login_on_a_non_sap_flow_is_refused() {
+        let err = spec(
+            "name: n\napp: web\nurl: http://x\nlogin:\n  user: a\n  password: b\nsteps:\n  - Type 1\n",
+        )
+        .expect_err("refused");
+        assert!(
+            err.to_string().contains("sap config") && err.to_string().contains("session:"),
+            "names where a web flow's authentication goes instead: {err}"
+        );
+    }
+
+    #[test]
+    fn half_a_login_is_refused() {
+        let err = spec(
+            "name: n\napp: sap\nconnection: TS3\nlogin:\n  user: obeva\n  password: '  '\n\
+             steps:\n  - Go to /nVA01\n",
+        )
+        .expect_err("refused");
+        assert!(err.to_string().contains("both"), "{err}");
+    }
+
+    /// The vocabulary a same-system two-user case wants. It parses and
+    /// validates today; the multi-surface ENGINE still refuses to run it.
+    #[test]
+    fn a_surface_carries_its_own_login() {
+        let flow = spec(
+            "name: n\napps:\n  clerk: {app: sap, connection: TS3, login: {user: a, password: p}}\n\
+             \x20 approver: {app: sap, connection: TS3, login: {user: b, password: q}}\n\
+             steps:\n  - in: clerk\n    steps: [Go to /nVA01]\n  - in: approver\n    \
+             steps: [Go to /nVA02]\n",
+        )
+        .expect("parses");
+        assert_eq!(flow.apps["clerk"].login.as_ref().expect("login").user, "a");
+        assert_eq!(
+            flow.apps["approver"].login.as_ref().expect("login").user,
+            "b"
+        );
+    }
+
+    #[test]
+    fn a_login_on_a_non_sap_surface_is_refused() {
+        let err = spec(
+            "name: n\napps:\n  gui: {app: sap, connection: TS3}\n  \
+             portal: {app: web, url: 'http://x', login: {user: a, password: p}}\n\
+             steps:\n  - in: gui\n    steps: [Go to /nVA01]\n",
+        )
+        .expect_err("refused");
+        assert!(
+            err.to_string().contains("portal"),
+            "names the surface: {err}"
+        );
+    }
 
     #[test]
     fn a_multi_surface_flow_parses_and_round_trips() {

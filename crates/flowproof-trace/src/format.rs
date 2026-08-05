@@ -250,6 +250,17 @@ pub struct AppInfo {
     /// For `web` traces: the URL the flow was recorded against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// For `sap` traces: the user the recording logged in as, stored RAW
+    /// (a `${VAR}` reference never arrives here resolved).
+    ///
+    /// The identity is part of what a recording MEANS — an order created by
+    /// a clerk and one created by an approver are different evidence — so a
+    /// trace that could not name it would not be reviewable. The PASSWORD is
+    /// deliberately not here and has no field: it is resolved from the spec
+    /// at every launch, so a committed trace has nothing to leak and nothing
+    /// to redact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
@@ -674,6 +685,7 @@ mod control_header_tests {
                 command: None,
                 geometry: None,
                 url: Some("http://x".into()),
+                login_user: None,
                 version: None,
             },
             agent: None,
