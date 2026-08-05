@@ -100,6 +100,9 @@
           "type": "string",
           "description": "For web traces: the URL the flow was recorded against. For sap: the SAP Logon connection description."
         },
+        "browser": {
+          "$ref": "#/$defs/browser_setup"
+        },
         "version": {
           "type": "string"
         }
@@ -186,77 +189,7 @@
           }
         },
         "browser": {
-          "type": "object",
-          "description": "Browser launch/emulation config applied identically at record and replay (web flows).",
-          "additionalProperties": false,
-          "properties": {
-            "viewport": {
-              "type": "object",
-              "required": [
-                "width",
-                "height"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "width": {
-                  "type": "integer"
-                },
-                "height": {
-                  "type": "integer"
-                },
-                "device_scale_factor": {
-                  "type": "number"
-                },
-                "mobile": {
-                  "type": "boolean"
-                },
-                "touch": {
-                  "type": "boolean"
-                }
-              }
-            },
-            "user_agent": {
-              "type": "string"
-            },
-            "args": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "clock": {
-              "type": "object",
-              "description": "A pinned clock (GAP-P): the page reads `at` as 'now', advancing at wall rate, with an optional timezone override. Both literal, applied identically at record and replay.",
-              "required": [
-                "at"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "at": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "timezone": {
-                  "type": "string"
-                }
-              }
-            },
-            "random": {
-              "type": "object",
-              "description": "A seeded Math.random, the clock's sibling: the page draws the same values on every run. The seed is a literal, never a ${VAR} - a seed resolved from the environment would make one trace mean different things on different machines. Applied identically at record and replay.",
-              "required": [
-                "seed"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "seed": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 4294967295
-                }
-              }
-            }
-          }
+          "$ref": "#/$defs/browser_setup"
         },
         "trace_id": {
           "type": "string",
@@ -1072,6 +1005,79 @@
           }
         }
       ]
+    },
+    "browser_setup": {
+      "type": "object",
+      "description": "Browser launch/emulation config applied identically at record and replay (web flows).",
+      "additionalProperties": false,
+      "properties": {
+        "viewport": {
+          "type": "object",
+          "required": [
+            "width",
+            "height"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "width": {
+              "type": "integer"
+            },
+            "height": {
+              "type": "integer"
+            },
+            "device_scale_factor": {
+              "type": "number"
+            },
+            "mobile": {
+              "type": "boolean"
+            },
+            "touch": {
+              "type": "boolean"
+            }
+          }
+        },
+        "user_agent": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clock": {
+          "type": "object",
+          "description": "A pinned clock (GAP-P): the page reads `at` as 'now', advancing at wall rate, with an optional timezone override. Both literal, applied identically at record and replay.",
+          "required": [
+            "at"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "timezone": {
+              "type": "string"
+            }
+          }
+        },
+        "random": {
+          "type": "object",
+          "description": "A seeded Math.random, the clock's sibling: the page draws the same values on every run. The seed is a literal, never a ${VAR} - a seed resolved from the environment would make one trace mean different things on different machines. Applied identically at record and replay.",
+          "required": [
+            "seed"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "seed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          }
+        }
+      }
     }
   }
 }

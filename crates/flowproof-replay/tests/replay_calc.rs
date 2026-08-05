@@ -2117,3 +2117,47 @@ fn a_multi_surface_trace_replays_across_surfaces_with_a_fresh_registry() {
     assert!(msg.contains("one surface"), "refuses by name: {msg}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A web surface's `browser:` travels spec -> header surface entry, as
+/// written — the same journey the single-surface header-level `browser`
+/// makes, one level deeper. (Staging on the built driver is the CLI
+/// factories' job, held by their own test.)
+#[test]
+fn a_surfaces_browser_config_travels_into_its_header_entry() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Shaped portal\napps:\n  portal:\n    app: web\n    url: \"https://portal.test/x\"\n    browser:\n      viewport: {width: 390, height: 844}\n      user_agent: fp-e2e\nsteps:\n  - in: portal\n    steps:\n      - Press the \"Go\" button\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-browser");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+    let factory: SurfaceFactory = Box::new(|_| Ok(Box::new(MockAppDriver::new(&["Go"]))));
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut registry = SurfaceRegistry::new(targets, factory, std::time::Duration::from_millis(50));
+    record(&spec, &mut registry, &trace).expect("records");
+
+    let header = std::fs::read_to_string(&trace)
+        .expect("trace readable")
+        .lines()
+        .next()
+        .map(str::to_string)
+        .expect("header");
+    assert!(
+        header.contains("\"browser\"")
+            && header.contains("\"width\":390")
+            && header.contains("fp-e2e"),
+        "the surface entry carries its browser shape: {header}"
+    );
+    // And the typed model round-trips it, so replay reads what record wrote.
+    let parsed: flowproof_trace::Header = serde_json::from_str(&header).expect("header parses");
+    let vp = parsed.apps["portal"]
+        .browser
+        .as_ref()
+        .and_then(|b| b.viewport.as_ref())
+        .expect("viewport survived");
+    assert_eq!((vp.width, vp.height), (390, 844));
+    std::fs::remove_dir_all(&dir).ok();
+}

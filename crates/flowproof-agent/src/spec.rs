@@ -114,6 +114,12 @@ pub struct SurfaceSpec {
     /// attach to a logged-in session), as on a single-surface flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
+    /// For web surfaces: launch/emulation config (viewport, user-agent,
+    /// clock, seeded random), exactly the single-surface `browser:` block.
+    /// Travels on the surface's header entry, so record and every replay
+    /// launch THIS surface the same shape. Refused on non-web surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<flowproof_trace::format::BrowserSetup>,
 }
 
 impl From<&str> for AppSpec {
@@ -1039,6 +1045,12 @@ impl FlowSpec {
                      is sap surface config"
                 ));
             }
+            if id != "web" && surface.browser.is_some() {
+                return bad(format!(
+                    "`browser:` on surface `{name}` means nothing for `app: {id}` — it \
+                     is web surface config"
+                ));
+            }
         }
         let declared = || {
             self.apps
@@ -1099,7 +1111,7 @@ impl FlowSpec {
                 self.window.is_some(),
             ),
             (
-                "per-surface `browser:` config has not shipped yet",
+                "`browser:` moves into the web surface's entry",
                 self.browser.is_some(),
             ),
             (
@@ -3742,6 +3754,27 @@ steps:
         )
         .expect_err("screenshot in multi");
         assert!(screenshot.to_string().contains("baseline"), "{screenshot}");
+    }
+
+    /// `browser:` is web surface config: it parses on a web surface and is
+    /// refused by kind elsewhere, like `url:` before it.
+    #[test]
+    fn surface_browser_config_sits_on_web_surfaces_only() {
+        let flow = spec(
+            "name: n\napps:\n  portal:\n    app: web\n    url: http://x\n    browser:\n      viewport: {width: 390, height: 844}\nsteps:\n  - in: portal\n    steps: [Press Enter]\n",
+        )
+        .expect("parses on web");
+        let vp = flow.apps["portal"]
+            .browser
+            .as_ref()
+            .and_then(|b| b.viewport.as_ref())
+            .expect("viewport kept");
+        assert_eq!((vp.width, vp.height), (390, 844));
+        let err = spec(
+            "name: n\napps:\n  gui:\n    app: sap\n    browser:\n      user_agent: x\nsteps:\n  - in: gui\n    steps: [Press Enter]\n",
+        )
+        .expect_err("browser on sap");
+        assert!(err.to_string().contains("web surface config"), "{err}");
     }
 
     /// A lone `in:` key (block missing its `steps:`) gets a better error

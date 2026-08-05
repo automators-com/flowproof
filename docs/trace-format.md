@@ -100,7 +100,10 @@ these fields existed) is byte-identical:
   multi-surface fails LOUDLY at load (an unknown adapter) instead of
   replaying every step against whichever surface happened to be first.
   Surface names match `[a-z][a-z0-9_-]*`; each step names its surface
-  (see `surface` below).
+  (see `surface` below). A web surface's entry may carry its own
+  `browser` block (the same shape as the header-level one, which stays
+  the single-surface spelling), applied identically at record and every
+  replay so that surface keeps the shape it was recorded on.
 
 ## Step line
 
