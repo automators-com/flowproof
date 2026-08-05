@@ -15,7 +15,7 @@
 
 use std::time::Duration;
 
-use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector};
+use flowproof_driver::{AppDriver, DriverError, KeyMod, LoginCredentials, PixelRect, UiaSelector};
 
 /// One element of the SAP screen, as the scripting API describes it.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -71,8 +71,15 @@ impl SapElement {
 pub trait SapEngine {
     /// Attach to a logged-in SAP GUI session. `connection` is the SAP Logon
     /// entry to select or open, starting SAP Logon when necessary (empty =
-    /// attach-only).
-    fn connect(&mut self, connection: &str, timeout: Duration) -> Result<(), DriverError>;
+    /// attach-only). `credentials`, when given, name WHICH user this flow
+    /// runs as: another user's session is not a candidate, and the login
+    /// screen is completed from these rather than from the environment.
+    fn connect(
+        &mut self,
+        connection: &str,
+        credentials: Option<&LoginCredentials>,
+        timeout: Duration,
+    ) -> Result<(), DriverError>;
     /// Look an element up by scripting id. `Ok(None)` = not on screen.
     fn find_by_id(&mut self, id: &str) -> Result<Option<SapElement>, DriverError>;
     /// Flattened walk of the visible session tree, top-down.
@@ -89,6 +96,51 @@ pub trait SapEngine {
 
 /// The command field every SAP session has — `Go to /nVA01` types here.
 const OKCODE_FIELD: &str = "wnd[0]/tbar[0]/okcd";
+
+/// Which login to attempt: a staged one outranks the process-global
+/// `SAP_USER`/`SAP_PASSWORD` pair; `Ok(None)` (neither configured) means
+/// attach to a session somebody logged in by hand, as before. HALF an
+/// environment is an error, not a silent wait at a login screen nobody is
+/// watching. Outside the COM module so the precedence is tested everywhere.
+fn login_for(staged: Option<&LoginCredentials>) -> Result<Option<LoginCredentials>, DriverError> {
+    if let Some(credentials) = staged {
+        return Ok(Some(credentials.clone()));
+    }
+    let non_empty = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    match (non_empty("SAP_USER"), non_empty("SAP_PASSWORD")) {
+        (None, None) => Ok(None),
+        (Some(user), Some(password)) => Ok(Some(LoginCredentials {
+            user,
+            password,
+            client: non_empty("SAP_CLIENT"),
+            language: non_empty("SAP_LANGUAGE"),
+        })),
+        _ => Err(DriverError::Uia(
+            "sap-com: auto-login requires both SAP_USER and SAP_PASSWORD (or a `login:` \
+             block in the flow, which needs no environment at all)"
+                .into(),
+        )),
+    }
+}
+
+/// Does this logged-in session belong to the user the flow asked for? With
+/// nothing staged, always yes — a flow takes whatever session is open, as it
+/// always has. With a user named, somebody else's session must NOT be a
+/// candidate: driving it would run the flow as the wrong identity and pass.
+/// SAP reports the user uppercased however it was typed.
+fn session_user_matches(requested: Option<&LoginCredentials>, session_user: &str) -> bool {
+    match requested {
+        None => true,
+        Some(credentials) => session_user
+            .trim()
+            .eq_ignore_ascii_case(credentials.user.trim()),
+    }
+}
 
 /// SAP virtual key for a canonical key chord, per the scripting API's VKey
 /// table: Enter=0, F1–F12=1–12, Shift+Fn=+12, Ctrl+Fn=+24, Ctrl+Shift+Fn=+36.
@@ -134,11 +186,23 @@ const INTERACTABLE_KINDS: &[&str] = &[
 /// a fake in tests.
 pub struct SapAppDriver<E: SapEngine> {
     engine: E,
+    /// Staged before `launch`, like a web flow's session state. `None` =
+    /// the historical behaviour: the environment pair, any open session.
+    credentials: Option<LoginCredentials>,
 }
 
 impl<E: SapEngine> SapAppDriver<E> {
     pub fn with_engine(engine: E) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            credentials: None,
+        }
+    }
+
+    /// The engine this driver drives — how a test outside this crate reads
+    /// what the fake recorded (which user it connected as, what it typed).
+    pub fn engine(&self) -> &E {
+        &self.engine
     }
 
     /// Resolve a recorded selector to a live element: scripting id first
@@ -204,7 +268,13 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
     ) -> Result<(), DriverError> {
         // `command` carries the SAP Logon connection description (may be
         // empty: attach to whatever logged-in session exists).
-        self.engine.connect(command, timeout)
+        self.engine
+            .connect(command, self.credentials.as_ref(), timeout)
+    }
+
+    fn stage_credentials(&mut self, credentials: LoginCredentials) -> Result<(), DriverError> {
+        self.credentials = Some(credentials);
+        Ok(())
     }
 
     fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
@@ -372,6 +442,14 @@ pub mod fake {
         pub on_press: Vec<(String, String, String)>,
         /// Connection description passed to `connect` (None = never called).
         pub connected: Option<String>,
+        /// Who the session is logged in as, before and after `connect` —
+        /// set it to model a system somebody is already on. The password is
+        /// deliberately never kept: a test asserting on one would be a
+        /// template for storing one somewhere real.
+        pub logged_in_as: Option<String>,
+        /// How many times `connect` had to open a NEW connection because the
+        /// session it found belonged to another user.
+        pub connections_opened: u32,
         pub pressed: Vec<String>,
         pub selected: Vec<String>,
         pub focused: Vec<String>,
@@ -393,8 +471,38 @@ pub mod fake {
     }
 
     impl SapEngine for FakeEngine {
-        fn connect(&mut self, connection: &str, _timeout: Duration) -> Result<(), DriverError> {
+        /// Models the real engine's identity rule, so it is exercised on
+        /// every platform and not only where SAP GUI exists: another user's
+        /// session is not taken over, a second connection is opened instead.
+        fn connect(
+            &mut self,
+            connection: &str,
+            credentials: Option<&LoginCredentials>,
+            _timeout: Duration,
+        ) -> Result<(), DriverError> {
             self.connected = Some(connection.to_string());
+            let login = super::login_for(credentials)?;
+            match (&self.logged_in_as, &login) {
+                // Somebody else is on: open our own connection and log in.
+                (Some(current), Some(wanted))
+                    if !super::session_user_matches(Some(wanted), current) =>
+                {
+                    if connection.is_empty() {
+                        return Err(DriverError::Uia(format!(
+                            "sap: the open session is logged in as {current}, this flow runs \
+                             as {}, and an attach-only flow cannot open a second connection",
+                            wanted.user
+                        )));
+                    }
+                    self.connections_opened += 1;
+                    self.logged_in_as = Some(wanted.user.clone());
+                }
+                // Nobody named is on: log in as whoever was configured.
+                (None, Some(wanted)) => self.logged_in_as = Some(wanted.user.clone()),
+                // Already the right user, or nothing staged to disagree
+                // with: take the session as it is, as SAP flows always have.
+                _ => {}
+            }
             Ok(())
         }
 
@@ -476,7 +584,7 @@ pub mod com {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
     use super::{SapElement, SapEngine};
-    use flowproof_driver::DriverError;
+    use flowproof_driver::{DriverError, LoginCredentials};
 
     fn com_err(context: &str, err: windows::core::Error) -> DriverError {
         DriverError::Uia(format!("sap-com: {context}: {err}"))
@@ -716,36 +824,29 @@ pub mod com {
         /// Log in on SAP's own logon screen, using the standard fields every
         /// SAP system ships (client/user/password - the same ones a VBScript
         /// recording of a manual login would drive). Returns `Ok(false)` when
-        /// neither credential is configured. A half-configured login and a
+        /// no login is configured at all. A half-configured environment and a
         /// non-standard login screen are errors instead of a silent timeout.
-        /// Values are read fresh and used only for these property puts - never
-        /// logged, traced, or stored by this function.
-        fn try_auto_login(session: &Disp) -> Result<bool, DriverError> {
-            let user = std::env::var("SAP_USER").ok();
-            let password = std::env::var("SAP_PASSWORD").ok();
-            let (user, password) = match (user, password) {
-                (None, None) => return Ok(false),
-                (Some(user), Some(password)) if !user.is_empty() && !password.is_empty() => {
-                    (user, password)
-                }
-                _ => {
-                    return Err(DriverError::Uia(
-                        "sap-com: auto-login requires both SAP_USER and SAP_PASSWORD".into(),
-                    ))
-                }
+        /// Values are used only for these property puts - never logged,
+        /// traced, or stored by this function.
+        fn try_auto_login(
+            session: &Disp,
+            staged: Option<&LoginCredentials>,
+        ) -> Result<bool, DriverError> {
+            let Some(login) = super::login_for(staged)? else {
+                return Ok(false);
             };
-            eprintln!("sap-com: not logged in - attempting auto-login");
-            if let Some(client) = std::env::var("SAP_CLIENT").ok().filter(|c| !c.is_empty()) {
+            eprintln!(
+                "sap-com: not logged in - attempting auto-login as {}",
+                login.user
+            );
+            if let Some(client) = login.client.as_deref().filter(|c| !c.is_empty()) {
                 if let Some(field) = Self::find_in(session, "wnd[0]/usr/txtRSYST-MANDT") {
-                    field.put("Text", VARIANT::from(BSTR::from(client.as_str())))?;
+                    field.put("Text", VARIANT::from(BSTR::from(client)))?;
                 }
             }
-            if let Some(language) = std::env::var("SAP_LANGUAGE")
-                .ok()
-                .filter(|value| !value.is_empty())
-            {
+            if let Some(language) = login.language.as_deref().filter(|value| !value.is_empty()) {
                 if let Some(field) = Self::find_in(session, "wnd[0]/usr/txtRSYST-LANGU") {
-                    field.put("Text", VARIANT::from(BSTR::from(language.as_str())))?;
+                    field.put("Text", VARIANT::from(BSTR::from(language)))?;
                 }
             }
             let user_field = Self::find_in(session, "wnd[0]/usr/txtRSYST-BNAME").ok_or_else(|| {
@@ -753,14 +854,14 @@ pub mod com {
                     "sap-com: login screen has no standard user field; SSO or a custom login dialog needs an already logged-in session".into(),
                 )
             })?;
-            user_field.put("Text", VARIANT::from(BSTR::from(user.as_str())))?;
+            user_field.put("Text", VARIANT::from(BSTR::from(login.user.as_str())))?;
             let password_field = Self::find_in(session, "wnd[0]/usr/pwdRSYST-BCODE")
                 .ok_or_else(|| {
                     DriverError::Uia(
                         "sap-com: login screen has no standard password field; SSO or a custom login dialog needs an already logged-in session".into(),
                     )
                 })?;
-            password_field.put("Text", VARIANT::from(BSTR::from(password.as_str())))?;
+            password_field.put("Text", VARIANT::from(BSTR::from(login.password.as_str())))?;
             // Submit - Enter on the window, exactly how navigate() confirms
             // any other screen.
             let window = Self::find_in(session, "wnd[0]").ok_or_else(|| {
@@ -855,7 +956,12 @@ pub mod com {
     }
 
     impl SapEngine for ComEngine {
-        fn connect(&mut self, connection: &str, timeout: Duration) -> Result<(), DriverError> {
+        fn connect(
+            &mut self,
+            connection: &str,
+            credentials: Option<&LoginCredentials>,
+            timeout: Duration,
+        ) -> Result<(), DriverError> {
             unsafe {
                 // Per-thread; a prior init with another model just means
                 // COM is already usable here.
@@ -881,6 +987,10 @@ pub mod com {
             let mut login_checked = false;
             let mut auto_login_submitted = false;
             let mut saw_login_screen = false;
+            // Logged in, but as somebody else. Kept for the timeout message:
+            // "TS3 is logged in as OTHER" is a different problem from
+            // "nothing answered", and takes a different fix.
+            let mut wrong_user: Option<String> = None;
             let mut startup_error: Option<DriverError> = None;
             let mut login_error: Option<DriverError> = None;
             let mut last_error: Option<DriverError> = None;
@@ -941,22 +1051,45 @@ pub mod com {
                             // A session object exists as soon as its window
                             // opens, including SAP's login screen. Info.User
                             // is populated only after authentication.
-                            let logged_in = session
+                            let session_user = session
                                 .get_disp("Info")
-                                .map(|info| !info.get_string("User").is_empty())
-                                .unwrap_or(false);
-                            if logged_in {
-                                return Ok(Some(session));
+                                .map(|info| info.get_string("User"))
+                                .unwrap_or_default();
+                            if !session_user.trim().is_empty() {
+                                if super::session_user_matches(credentials, &session_user) {
+                                    return Ok(Some(session));
+                                }
+                                // Logged in, but as somebody else. Driving it
+                                // would run the flow as the wrong identity and
+                                // pass — leave it alone and keep looking.
+                                wrong_user = Some(session_user.trim().to_string());
+                                continue;
                             }
                             saw_login_screen = true;
                             if !login_checked {
                                 login_checked = true;
-                                match Self::try_auto_login(&session) {
+                                match Self::try_auto_login(&session, credentials) {
                                     Ok(submitted) => auto_login_submitted = submitted,
                                     Err(error) => login_error = Some(error),
                                 }
                             }
                         }
+                    }
+                    // Every matching connection belongs to somebody else and
+                    // none is on a login screen we could use. A second user
+                    // needs a second connection: open one so this flow logs
+                    // in beside the other session rather than hijacking it.
+                    if credentials.is_some()
+                        && wrong_user.is_some()
+                        && !saw_login_screen
+                        && !connection.is_empty()
+                        && opened_connection.is_none()
+                    {
+                        let opened = engine.call_disp(
+                            "OpenConnection",
+                            vec![VARIANT::from(BSTR::from(connection)), VARIANT::from(true)],
+                        )?;
+                        opened_connection = Some(opened);
                     }
                     Ok(None)
                 })();
@@ -975,9 +1108,18 @@ pub mod com {
                     } else if let Some(error) = startup_error {
                         error.to_string()
                     } else if saw_login_screen && !auto_login_submitted {
-                        "SAP reached its login screen; set both SAP_USER and SAP_PASSWORD \
-                         (optionally SAP_CLIENT and SAP_LANGUAGE), or log in interactively"
+                        "SAP reached its login screen; give the flow a `login:` block, or set \
+                         both SAP_USER and SAP_PASSWORD (optionally SAP_CLIENT and \
+                         SAP_LANGUAGE), or log in interactively"
                             .to_string()
+                    } else if let Some(other) = wrong_user.filter(|_| credentials.is_some()) {
+                        format!(
+                            "the only session on '{connection}' is logged in as {other}, and \
+                             this flow runs as {}; opening a second connection did not produce \
+                             one (SAP may be refusing a further logon for this user, or the \
+                             multiple-logon dialog is waiting)",
+                            credentials.map(|c| c.user.as_str()).unwrap_or_default()
+                        )
                     } else if saw_login_screen {
                         "SAP credentials were submitted but no logged-in session appeared; \
                          check the client and credentials, and dismiss any multi-login, SSO, \
@@ -1209,6 +1351,127 @@ mod tests {
             .to_string()
             .contains("transaction '/nSESSION_MANAGER'"));
         assert!(error.to_string().contains("This function is not possible"));
+    }
+
+    /// `SAP_USER` and friends are process-global — the very thing this
+    /// feature escapes — so tests that set them must not run side by side.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn credentials(user: &str) -> LoginCredentials {
+        LoginCredentials {
+            user: user.into(),
+            password: "pw".into(),
+            ..Default::default()
+        }
+    }
+
+    /// The flow's own `login:` block outranks the environment — that is the
+    /// whole point: two flows in one process, two users.
+    #[test]
+    fn a_staged_login_wins_over_the_environment() {
+        let _guard = ENV.lock().expect("env lock");
+        std::env::set_var("SAP_USER", "ENVUSER");
+        std::env::set_var("SAP_PASSWORD", "envpw");
+        let chosen = login_for(Some(&credentials("obeva")))
+            .expect("resolves")
+            .expect("some login");
+        assert_eq!(chosen.user, "obeva", "the flow's own user, not the env's");
+        std::env::remove_var("SAP_USER");
+        std::env::remove_var("SAP_PASSWORD");
+    }
+
+    /// With no `login:` block, nothing changes for the specs that exist.
+    #[test]
+    fn the_environment_still_answers_when_no_login_block_is_staged() {
+        let _guard = ENV.lock().expect("env lock");
+        std::env::set_var("SAP_USER", "ENVUSER");
+        std::env::set_var("SAP_PASSWORD", "envpw");
+        std::env::set_var("SAP_CLIENT", "100");
+        let chosen = login_for(None).expect("resolves").expect("some login");
+        assert_eq!(chosen.user, "ENVUSER");
+        assert_eq!(chosen.client.as_deref(), Some("100"));
+        std::env::remove_var("SAP_USER");
+        std::env::remove_var("SAP_PASSWORD");
+        std::env::remove_var("SAP_CLIENT");
+        assert!(
+            login_for(None).expect("resolves").is_none(),
+            "nothing configured is not an error: attach-only flows have always worked"
+        );
+    }
+
+    /// Half an environment is an error, not a silent wait for a human.
+    #[test]
+    fn a_half_configured_environment_is_named() {
+        let _guard = ENV.lock().expect("env lock");
+        std::env::set_var("SAP_USER", "ENVUSER");
+        std::env::remove_var("SAP_PASSWORD");
+        let error = login_for(None).expect_err("refuses");
+        assert!(
+            error.to_string().contains("SAP_PASSWORD") && error.to_string().contains("login:"),
+            "says what is missing and what the alternative is: {error}"
+        );
+        std::env::remove_var("SAP_USER");
+    }
+
+    #[test]
+    fn identity_matching_is_case_insensitive_and_permissive_without_a_login_block() {
+        assert!(
+            session_user_matches(None, "ANYBODY"),
+            "no `login:` block: take whatever session is open, as SAP flows always have"
+        );
+        assert!(
+            session_user_matches(Some(&credentials("obeva")), "OBEVA"),
+            "SAP reports the user uppercased"
+        );
+        assert!(!session_user_matches(Some(&credentials("obeva")), "OTHER"));
+    }
+
+    /// The regression this whole change exists to prevent: a flow that names
+    /// a user must not silently drive somebody else's open session.
+    #[test]
+    fn a_second_user_opens_its_own_connection_instead_of_taking_the_open_one() {
+        let mut driver = SapAppDriver::with_engine(FakeEngine {
+            logged_in_as: Some("CLERK".into()),
+            ..Default::default()
+        });
+        driver
+            .stage_credentials(credentials("approver"))
+            .expect("sap accepts credentials");
+        driver
+            .launch("TS3", "SAP", Duration::from_secs(1))
+            .expect("connects");
+        assert_eq!(
+            driver.engine.connections_opened, 1,
+            "the clerk's session is not ours to drive"
+        );
+        assert_eq!(driver.engine.logged_in_as.as_deref(), Some("approver"));
+    }
+
+    #[test]
+    fn the_same_user_reuses_the_session_that_is_already_open() {
+        let mut driver = SapAppDriver::with_engine(FakeEngine {
+            logged_in_as: Some("OBEVA".into()),
+            ..Default::default()
+        });
+        driver
+            .stage_credentials(credentials("obeva"))
+            .expect("sap accepts credentials");
+        driver
+            .launch("TS3", "SAP", Duration::from_secs(1))
+            .expect("connects");
+        assert_eq!(
+            driver.engine.connections_opened, 0,
+            "already the right identity: opening a second connection would be waste"
+        );
+    }
+
+    /// A password that reaches a log line or an error is a password that
+    /// reaches CI output.
+    #[test]
+    fn the_password_is_not_in_the_debug_rendering() {
+        let rendered = format!("{:?}", credentials("obeva"));
+        assert!(!rendered.contains("pw"), "{rendered}");
+        assert!(rendered.contains("redacted"), "{rendered}");
     }
 
     #[test]
