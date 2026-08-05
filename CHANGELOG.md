@@ -43,6 +43,15 @@ together).
 
 ### Fixed
 
+- **The report attached ten screenshots when eight were captured.** Step
+  time ranges are contiguous — one step ends on the millisecond the next
+  begins — and the report viewer bracketed frames inclusively on both ends,
+  so a frame captured on the shared boundary rendered under BOTH steps. A
+  reviewer counting evidence saw captures that never happened. Each frame
+  now renders under exactly one step, the earliest whose range brackets it,
+  with a test that puts frames on the boundary and counts what the HTML
+  shows.
+
 - **Three flags shipped without ever being written down.** `run --trace`,
   `heal --trace` and `doctor --prompt` existed, worked, and appeared in
   `--help`, but no page a user reads mentioned them. That is a quiet way to
