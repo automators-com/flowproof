@@ -8,6 +8,23 @@ together).
 
 ### Changed
 
+- **A web step spent most of its time asking the page questions the slow
+  way.** Every probe — exists, enabled, stable, would a click reach it —
+  walked an element-handle path costing four to six CDP calls, and the
+  transport pays up to ~100ms per call (its sender serializes behind the
+  reader's blocking socket read). A click cost ~3.9s and a short type ~5.6s
+  with recording OFF — which is why turning video and keyframes off never
+  made runs faster: the time was not in the artifacts. The probes now ask
+  the page once: existence is one `evaluate` for css and text-anchor
+  targets, and the whole actionability gate is one round trip through the
+  new `AppDriver::actionability_gate`, whose default composes the three
+  probes so every other driver behaves as before. Cell, scoped, and framed
+  targets stay on the element-handle path, where their resolution semantics
+  live. Same questions, same order, same answers: a click is ~1.3s, the
+  type ~2.5s, headed and headless alike. What remains is the transport's
+  per-call latency — visible in typing, two calls per character — which is
+  headless_chrome's to fix. `docs/authoring.md` is re-measured to match.
+
 - **The docs on automators.ai were a release behind, and nothing said so.**
   The workflow that republishes them skipped when its deploy-hook secret was
   missing and exited 0, so every run since the workflow was added reported
