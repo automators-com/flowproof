@@ -8,6 +8,17 @@ together).
 
 ### Added
 
+- **The driver layer can now hold several surfaces and drive exactly one.**
+  A `SurfaceRegistry` stands where a single driver otherwise would,
+  routing every call to the ACTIVE surface of a multi-surface flow:
+  launch is lazy, a launched surface is kept alive (a return visit
+  resumes the same browser, the same SAP login), and everything fails
+  closed by name — a call before any activation, an undeclared surface,
+  and the new `activate_surface` trait hook, whose DEFAULT refuses on
+  every ordinary driver so a mis-wired run says it is single-surface
+  instead of silently driving the wrong app. The recorder starts using
+  this in the next slice.
+
 - **The trace format can now say which surface a step ran on.** A
   multi-surface trace (docs/multi-surface.md) carries its named surfaces
   in an additive header `apps` map and attributes each step to one via an
