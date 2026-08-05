@@ -59,6 +59,16 @@ pub struct Header {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spec: Option<SpecRef>,
     pub app: AppInfo,
+    /// The named surfaces of a MULTI-surface trace: `name -> AppInfo`,
+    /// mirroring the spec's `apps:`. When present, `app` carries the
+    /// reserved name `multi` with [`Adapter::Multi`] — deliberately not a
+    /// copy of any one surface, so an engine without multi-surface support
+    /// fails LOUDLY at load (an unknown adapter variant) instead of
+    /// replaying every step against whichever surface happened to be
+    /// first. Absent on single-surface traces, which serialize
+    /// byte-identically to before this field existed.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub apps: std::collections::BTreeMap<String, AppInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentInfo>,
     pub env: EnvInfo,
@@ -265,6 +275,13 @@ pub enum Adapter {
     Vision,
     /// No UI at all: the flow is out-of-band assertions only (SQL / API).
     Api,
+    /// The sentinel adapter of a MULTI-surface header (`header.apps`
+    /// present): per-surface adapters live on the surface entries, and
+    /// this value is deliberately not one of them so an engine predating
+    /// multi-surface fails to parse the trace — a loud "unknown variant"
+    /// at load, never a replay against the wrong surface. Selector
+    /// provenance never uses it.
+    Multi,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -296,6 +313,13 @@ pub struct EnvInfo {
 pub struct Step {
     pub id: String,
     pub intent: String,
+    /// The named surface (a key of `header.apps`) that executed this step —
+    /// how a multi-surface replay knows which driver a step belongs to.
+    /// Absent on single-surface traces (the header's one `app` is the
+    /// surface), which therefore serialize byte-identically to before this
+    /// field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
     pub action: Action,
     pub selectors: Vec<Selector>,
     pub sync: Sync,
@@ -642,6 +666,7 @@ mod control_header_tests {
             trace_id: "t-1".into(),
             recorded_at: "2026-07-24T00:00:00Z".into(),
             spec: None,
+            apps: Default::default(),
             app: AppInfo {
                 name: "web".into(),
                 adapter: Adapter::Web,

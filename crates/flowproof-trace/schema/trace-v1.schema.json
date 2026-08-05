@@ -43,8 +43,67 @@
         "uia",
         "sap-com",
         "web",
-        "vision"
+        "vision",
+        "api",
+        "multi"
       ]
+    },
+    "app_info": {
+      "type": "object",
+      "required": [
+        "name",
+        "adapter"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "adapter": {
+          "$ref": "#/$defs/adapter"
+        },
+        "window_title": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string",
+          "description": "The command line a `windows` flow launched, stored RAW (a ${VAR} resolves again at replay)."
+        },
+        "geometry": {
+          "type": "object",
+          "description": "Window geometry APPLIED before the first step; integers, never ${VAR} references.",
+          "required": [
+            "width",
+            "height",
+            "x",
+            "y"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "x": {
+              "type": "integer"
+            },
+            "y": {
+              "type": "integer"
+            }
+          }
+        },
+        "url": {
+          "type": "string",
+          "description": "For web traces: the URL the flow was recorded against. For sap: the SAP Logon connection description."
+        },
+        "version": {
+          "type": "string"
+        }
+      }
     },
     "recording_ref": {
       "type": "object",
@@ -226,29 +285,16 @@
           }
         },
         "app": {
+          "$ref": "#/$defs/app_info"
+        },
+        "apps": {
           "type": "object",
-          "required": [
-            "name",
-            "adapter"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "adapter": {
-              "$ref": "#/$defs/adapter"
-            },
-            "window_title": {
-              "type": "string"
-            },
-            "url": {
-              "type": "string",
-              "description": "For web traces: the URL the flow was recorded against."
-            },
-            "version": {
-              "type": "string"
-            }
+          "description": "The named surfaces of a MULTI-surface trace, mirroring the spec's `apps:`. When present, `app` carries the reserved name `multi` with adapter `multi` — deliberately not a copy of any one surface, so an engine without multi-surface support fails loudly at load instead of replaying every step against whichever surface happened to be first.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/app_info"
           }
         },
         "agent": {
@@ -345,6 +391,11 @@
         "intent": {
           "type": "string",
           "minLength": 1
+        },
+        "surface": {
+          "type": "string",
+          "description": "The named surface (a key of header `apps`) that executed this step. Absent on single-surface traces, where the header's one `app` is the surface.",
+          "pattern": "^[a-z][a-z0-9_-]*$"
         },
         "action": {
           "$ref": "#/$defs/action"

@@ -62,7 +62,10 @@ these fields existed) is byte-identical:
 - `spec` links the trace to the YAML flow spec it was recorded from; `hash`
   lets replay detect drift between spec and trace.
 - `adapter` is the *primary* perception/adapter mode: `uia`, `sap-com`,
-  `web`, or `vision` (vision = Citrix/RDP mode where only pixels exist).
+  `web`, `vision` (vision = Citrix/RDP mode where only pixels exist), or
+  `api` (no UI at all — the flow is out-of-band assertions only). The
+  reserved value `multi` appears only on a multi-surface header (below),
+  never as selector provenance.
 - `app.url` is how replay reaches the app again: the URL for `web`, the
   SAP Logon connection description for `sap` (absent = attach to the
   running session). Either may be a `${VAR}` reference, stored raw and
@@ -87,6 +90,17 @@ these fields existed) is byte-identical:
   flow against a page that mints random values is deterministic). Both
   travel in the header so record and every replay run the SAME browser
   shape.
+- Optional `apps` is the surface map of a **multi-surface trace**
+  (docs/multi-surface.md): `name -> app object`, each entry the same shape
+  as `app` — `{"gui": {"name": "SAP GUI for Windows", "adapter":
+  "sap-com", "url": "${SAP_CONNECTION}"}, "portal": {"name": "web",
+  "adapter": "web", "url": "${PORTAL_URL}/orders"}}`. When `apps` is
+  present, `app` carries the reserved name `multi` with adapter `multi` —
+  deliberately not a copy of any one surface, so an engine predating
+  multi-surface fails LOUDLY at load (an unknown adapter) instead of
+  replaying every step against whichever surface happened to be first.
+  Surface names match `[a-z][a-z0-9_-]*`; each step names its surface
+  (see `surface` below).
 
 ## Step line
 
@@ -118,6 +132,13 @@ these fields existed) is byte-identical:
 - `id` — unique within the trace, monotonically ordered (`s0001`, `s0002`, …).
 - `intent` — the natural-language step description. Never executed; used for
   review, reporting, and as the prompt seed for `ai_relocation`/healing.
+- `surface` (optional) — the named surface (a key of the header's `apps`)
+  that executed this step: how a multi-surface replay knows which driver a
+  step belongs to. Absent on single-surface traces, where the header's one
+  `app` is the surface — those serialize byte-identically to before the
+  field existed. Optional PER STEP even in a multi-surface trace: an
+  out-of-band assertion (`assert_api`/`assert_sql`) drives no UI and may
+  carry none.
 - `action.type` — one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`,
   `upload`, `capture`, `set_checked`, `wait`, `assert`. `params` is

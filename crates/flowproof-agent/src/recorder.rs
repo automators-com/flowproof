@@ -960,6 +960,8 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
     Step {
         id: format!("s{id:04}"),
         intent: intent.to_string(),
+        // Single-surface recording: the header's one app is the surface.
+        surface: None,
         action: trace_action,
         selectors,
         sync: Sync { pre, post: vec![] },
@@ -3231,6 +3233,9 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             },
             version: None,
         },
+        // Single-surface recording mints no surface map; the multi-surface
+        // record path is its own slice (docs/multi-surface.md).
+        apps: Default::default(),
         agent: (llm_used && client.is_some()).then(|| {
             let (backend, model) = client.as_ref().map(|c| c.identity()).unwrap_or_default();
             flowproof_trace::format::AgentInfo {

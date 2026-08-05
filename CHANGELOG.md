@@ -8,6 +8,24 @@ together).
 
 ### Added
 
+- **The trace format can now say which surface a step ran on.** A
+  multi-surface trace (docs/multi-surface.md) carries its named surfaces
+  in an additive header `apps` map and attributes each step to one via an
+  optional `surface` field — both absent on single-surface traces, which
+  serialize byte-for-byte as before (a conformance test now holds that
+  line). The header's `app` then carries the reserved name `multi` with
+  adapter `multi`, deliberately not a copy of any one surface: an engine
+  predating multi-surface fails loudly at load instead of replaying every
+  step against whichever surface happened to be first.
+
+  Writing the fixture surfaced two places the schema disagreed with the
+  engine it describes: the `app` object refused `command` and `geometry`
+  (so every `windows`-flow header failed validation), and the adapter
+  enum was missing `api` (so an out-of-band flow's header did too). Both
+  had been wrong for as long as no fixture carried one — the same lesson
+  as the action-enum gap before it, and the reason the new fixture
+  exercises a `command`+`geometry` surface explicitly.
+
 - **A test case that crossed technologies had no way to carry a value
   across the seam.** A flow drives exactly one surface — that is by design,
   one driver per flow — but the real-world test case is "SAP GUI creates
