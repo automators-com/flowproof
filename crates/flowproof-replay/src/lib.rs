@@ -2307,6 +2307,15 @@ pub fn run_trace_with_exports<D: AppDriver>(
                 command: String::new(),
                 window_name: String::new(),
             }
+        } else if header.app.name == "multi" {
+            // A multi-surface trace: each surface launches from its own
+            // target at its first activation, so the sentinel has nothing
+            // to launch here. The caller supplied a surface registry (any
+            // other driver's `activate_surface` refuses at the first step).
+            flowproof_driver::AppTarget {
+                command: String::new(),
+                window_name: String::new(),
+            }
         } else {
             resolve_app(&header.app.name)
                 .ok_or_else(|| ReplayError::UnknownApp(header.app.name.clone()))?
@@ -2367,7 +2376,10 @@ pub fn run_trace_with_exports<D: AppDriver>(
         run_dir: run_dir.clone(),
     };
     let started = Instant::now();
-    driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+    let multi = header.app.name == "multi";
+    if !multi {
+        driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+    }
     // Reproduce the recording's window shape before the first step. The
     // header stores what was APPLIED then, including a position the spec
     // never asked for, so replay reproduces it exactly rather than
@@ -2393,10 +2405,31 @@ pub fn run_trace_with_exports<D: AppDriver>(
     let mut secret_corpus: Vec<(String, String)> = Vec::new();
     let scan_secrets = scan.enabled();
     let scan_web = scan_secrets && header.app.name == "web";
+    // The surface the replay is currently driving (multi-surface traces):
+    // each step recorded a surface, and a change of surface is an
+    // activation — the same lazy-launch/re-foreground boundary record
+    // performed, replayed deterministically from the trace alone. A step
+    // with NO surface (an out-of-band assert) keeps the current one.
+    let mut active_surface: Option<String> = None;
+    let mut configured_surfaces: std::collections::BTreeSet<String> = Default::default();
     for step in &steps {
         if failed {
             results.push(StepResult::skipped(step));
             continue;
+        }
+        if let Some(surface) = &step.surface {
+            if active_surface.as_deref() != Some(surface.as_str()) {
+                driver.activate_surface(surface)?;
+                // First visit: reproduce the geometry the recording APPLIED
+                // to this surface, exactly as the single-surface path does
+                // with the header's one `app.geometry`.
+                if configured_surfaces.insert(surface.clone()) {
+                    if let Some(g) = header.apps.get(surface).and_then(|i| i.geometry.as_ref()) {
+                        driver.set_window_geometry(g.width, g.height, Some((g.x, g.y)))?;
+                    }
+                }
+                active_surface = Some(surface.clone());
+            }
         }
         if let Some(rec) = recorder.as_mut() {
             rec.step_started(driver, &step.id);

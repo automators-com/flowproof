@@ -1977,30 +1977,419 @@ fn an_export_naming_an_unremembered_capture_fails_the_run_that_owns_it() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The multi-surface vocabulary parses ahead of its engine; RECORDING a
-/// multi-surface flow refuses by name — before launching anything — rather
-/// than driving the wrong surface or handing an `in:` block to the model
-/// as prose intent.
+/// The multi-surface record path, end to end against mocks: a value
+/// captured on one surface is typed on another. Success itself proves the
+/// routing — "OrderNo" exists only on the gui surface and "Search" only on
+/// the portal, so a step landing on the wrong surface cannot pass. The
+/// trace carries the multi header, the surface map, per-step attribution,
+/// and the capture NAME only.
 #[test]
-fn recording_a_multi_surface_flow_refuses_by_name() {
+fn recording_a_multi_surface_flow_crosses_surfaces_and_attributes_steps() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Order across surfaces\napps:\n  gui: {app: sap}\n  portal: {app: web, url: \"${PORTAL_URL}/orders\"}\nsteps:\n  - in: gui\n    steps:\n      - Remember the \"OrderNo\" as order\n  - in: portal\n    steps:\n      - Type ${captured.order} into the \"Search\" field\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-record");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+
+    std::env::set_var("PORTAL_URL", "https://portal.test");
+    let factory: SurfaceFactory = Box::new(|name| {
+        Ok(Box::new(match name {
+            "gui" => MockAppDriver::new(&["OrderNo"]).with_text("OrderNo", "4711"),
+            _ => MockAppDriver::new(&["Search"]),
+        }))
+    });
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets resolve");
+    assert_eq!(
+        targets[1].1.command, "https://portal.test/orders",
+        "the ${{VAR}} in the portal url resolved for launch"
+    );
+    let mut registry = SurfaceRegistry::new(targets, factory, std::time::Duration::from_millis(50));
+    record(&spec, &mut registry, &trace).expect("multi-surface recording succeeds");
+    std::env::remove_var("PORTAL_URL");
+
+    assert_eq!(registry.launched_surfaces(), vec!["gui", "portal"]);
+    assert_eq!(registry.active_surface(), Some("portal"));
+
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    let header = persisted.lines().next().expect("header line");
+    assert!(
+        header.contains("\"name\":\"multi\"") && header.contains("\"adapter\":\"multi\""),
+        "the sentinel header: {header}"
+    );
+    assert!(
+        header.contains("\"gui\"")
+            && header.contains("\"sap-com\"")
+            && header.contains("${PORTAL_URL}/orders"),
+        "the surface map, config stored as written: {header}"
+    );
+    assert!(
+        persisted.contains("\"surface\":\"gui\"") && persisted.contains("\"surface\":\"portal\""),
+        "steps carry their surface: {persisted}"
+    );
+    assert!(
+        persisted.contains("${captured.order}") && !persisted.contains("4711"),
+        "the capture crosses surfaces as a NAME; the value never lands: {persisted}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// On a single-surface driver the first `in:` block refuses by name — a
+/// multi-surface spec can never silently drive whatever one app is there.
+#[test]
+fn recording_multi_surface_on_a_single_surface_driver_refuses_by_name() {
     let spec = FlowSpec::parse(
         "name: Multi\napps:\n  portal: {app: web, url: \"https://e.test/x\"}\nsteps:\n  - in: portal\n    steps:\n      - Press the \"Go\" button\n",
     )
-    .expect("the vocabulary parses");
-    let dir = std::env::temp_dir().join("flowproof-multi-refusal");
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-single-driver");
     std::fs::create_dir_all(&dir).expect("temp dir");
     let trace = dir.join("multi.trace.jsonl");
     let mut driver = MockAppDriver::new(&["Go"]);
-    let err = record(&spec, &mut driver, &trace).expect_err("engine has not shipped");
-    let msg = err.to_string();
+    let err = record(&spec, &mut driver, &trace).expect_err("wrong driver kind");
     assert!(
-        msg.contains("multi-surface engine has not shipped") && msg.contains("exports:"),
-        "names the gap and the alternative: {msg}"
-    );
-    assert!(
-        driver.launched.is_none(),
-        "refused before launching anything"
+        err.to_string().contains("one surface"),
+        "says what it is: {err}"
     );
     assert!(!trace.exists(), "no trace minted");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The whole point of Phase 2, closed: a multi-surface trace REPLAYS with
+/// zero LLM calls — a fresh registry, fresh drivers, every step dispatched
+/// to its recorded surface, the capture re-read live and typed across the
+/// block boundary. Elements exist on exactly one surface each, so a pass
+/// is itself the proof of routing; the replayed capture is re-read from
+/// THIS run's gui (a different value than record saw), proving the value
+/// crosses surfaces live rather than from the recording.
+#[test]
+fn a_multi_surface_trace_replays_across_surfaces_with_a_fresh_registry() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Order across surfaces\napps:\n  gui: {app: sap}\n  portal: {app: web, url: \"https://portal.test/orders\"}\nsteps:\n  - in: gui\n    steps:\n      - Remember the \"OrderNo\" as order\n  - in: portal\n    steps:\n      - Type ${captured.order} into the \"Search\" field\n      - assert: the \"Search\" shows ${captured.order}\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-replay");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+
+    let mocks = |order: &'static str| -> SurfaceFactory {
+        Box::new(move |name| {
+            Ok(Box::new(match name {
+                "gui" => MockAppDriver::new(&["OrderNo"]).with_text("OrderNo", order),
+                // The mock echoes typed text back from read_text, so the
+                // assertion can read what landed.
+                _ => MockAppDriver::new(&["Search"]),
+            }))
+        })
+    };
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut rec_registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks("4711"),
+        std::time::Duration::from_millis(50),
+    );
+    record(&spec, &mut rec_registry, &trace).expect("records");
+
+    // Replay against a DIFFERENT order number: the capture is re-read from
+    // this run's gui surface and typed into this run's portal.
+    let mut registry =
+        SurfaceRegistry::new(targets, mocks("9042"), std::time::Duration::from_millis(50));
+    let (report, _run_dir) = run_trace(&trace, &mut registry).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    assert_eq!(registry.launched_surfaces(), vec!["gui", "portal"]);
+    assert_eq!(registry.active_surface(), Some("portal"));
+
+    // And a plain single-surface driver still refuses the multi trace by
+    // name at the first attributed step — never a replay on the wrong app.
+    let mut single = MockAppDriver::new(&["OrderNo", "Search"]);
+    let outcome = run_trace(&trace, &mut single);
+    let msg = match outcome {
+        Ok((report, _)) => format!("{report:?}"),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.contains("one surface"), "refuses by name: {msg}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A web surface's `browser:` travels spec -> header surface entry, as
+/// written — the same journey the single-surface header-level `browser`
+/// makes, one level deeper. (Staging on the built driver is the CLI
+/// factories' job, held by their own test.)
+#[test]
+fn a_surfaces_browser_config_travels_into_its_header_entry() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Shaped portal\napps:\n  portal:\n    app: web\n    url: \"https://portal.test/x\"\n    browser:\n      viewport: {width: 390, height: 844}\n      user_agent: fp-e2e\nsteps:\n  - in: portal\n    steps:\n      - Press the \"Go\" button\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-browser");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+    let factory: SurfaceFactory = Box::new(|_| Ok(Box::new(MockAppDriver::new(&["Go"]))));
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut registry = SurfaceRegistry::new(targets, factory, std::time::Duration::from_millis(50));
+    record(&spec, &mut registry, &trace).expect("records");
+
+    let header = std::fs::read_to_string(&trace)
+        .expect("trace readable")
+        .lines()
+        .next()
+        .map(str::to_string)
+        .expect("header");
+    assert!(
+        header.contains("\"browser\"")
+            && header.contains("\"width\":390")
+            && header.contains("fp-e2e"),
+        "the surface entry carries its browser shape: {header}"
+    );
+    // And the typed model round-trips it, so replay reads what record wrote.
+    let parsed: flowproof_trace::Header = serde_json::from_str(&header).expect("header parses");
+    let vp = parsed.apps["portal"]
+        .browser
+        .as_ref()
+        .and_then(|b| b.viewport.as_ref())
+        .expect("viewport survived");
+    assert_eq!((vp.width, vp.height), (390, 844));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A surface's `window:` geometry is applied ONCE, at its first
+/// activation, and what was APPLIED travels in the surface's header entry
+/// — including a position the spec never asked for, which upgrades an
+/// unpinned position into a pinned one, exactly the single-surface rule.
+/// Replay reproduces it: a registry whose driver refuses to resize makes
+/// the replay fail, proving the application is real, not decorative.
+#[test]
+fn a_surfaces_window_geometry_pins_at_first_activation_and_replays() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Shaped gui\napps:\n  gui:\n    app: sap\n    window: {width: 1280, height: 800}\nsteps:\n  - in: gui\n    steps:\n      - Press the \"Go\" button\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-window");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+    let factory: SurfaceFactory = Box::new(|_| Ok(Box::new(MockAppDriver::new(&["Go"]))));
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        factory,
+        std::time::Duration::from_millis(50),
+    );
+    record(&spec, &mut registry, &trace).expect("records");
+
+    // The header pins what was APPLIED: the mock "lands" an unasked-for
+    // position (40, 60), and the trace records it.
+    let header: flowproof_trace::Header = serde_json::from_str(
+        std::fs::read_to_string(&trace)
+            .expect("trace readable")
+            .lines()
+            .next()
+            .expect("header"),
+    )
+    .expect("header parses");
+    let g = header.apps["gui"]
+        .geometry
+        .as_ref()
+        .expect("geometry pinned");
+    assert_eq!((g.width, g.height, g.x, g.y), (1280, 800, 40, 60));
+
+    // Replay applies it at first activation: a driver that refuses to
+    // resize fails the replay — the application is real.
+    let refusing: SurfaceFactory = Box::new(|_| {
+        let mut mock = MockAppDriver::new(&["Go"]);
+        mock.fail_geometry = true;
+        Ok(Box::new(mock))
+    });
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        refusing,
+        std::time::Duration::from_millis(50),
+    );
+    let outcome = run_trace(&trace, &mut registry);
+    let msg = match outcome {
+        Ok((report, _)) => format!("passed={} {report:?}", report.passed),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("refuses to resize"),
+        "replay applied the recorded geometry: {msg}"
+    );
+
+    // And a driver that accepts it replays green.
+    let accepting: SurfaceFactory = Box::new(|_| Ok(Box::new(MockAppDriver::new(&["Go"]))));
+    let mut registry =
+        SurfaceRegistry::new(targets, accepting, std::time::Duration::from_millis(50));
+    let (report, _run_dir) = run_trace(&trace, &mut registry).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Two surfaces may reuse one `assert_screenshot` NAME: the baseline's
+/// stored identity is `<name>@<surface>.png`, so gui's frame and portal's
+/// frame each compare against their own baseline. The frames differ by
+/// construction — if the identity ignored the surface, the second mint
+/// would overwrite the first and one replay compare would fail; both
+/// files existing and the replay passing is the proof.
+#[test]
+fn a_screenshot_baseline_is_qualified_by_its_surface() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Shots\napps:\n  gui: {app: sap}\n  portal: {app: web, url: \"https://portal.test/x\"}\nsteps:\n  - in: gui\n    steps:\n      - assert_screenshot:\n          name: dash\n  - in: portal\n    steps:\n      - assert_screenshot:\n          name: dash\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-screenshot");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+
+    // Distinct frames per surface, identical at record and replay.
+    let mocks = || -> SurfaceFactory {
+        Box::new(|name| {
+            let mut mock = MockAppDriver::new(&[]);
+            mock.frame = Some(image::RgbaImage::from_pixel(
+                8,
+                8,
+                if name == "gui" {
+                    image::Rgba([255, 0, 0, 255])
+                } else {
+                    image::Rgba([0, 0, 255, 255])
+                },
+            ));
+            Ok(Box::new(mock))
+        })
+    };
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks(),
+        std::time::Duration::from_millis(50),
+    );
+    record(&spec, &mut registry, &trace).expect("records");
+
+    let baselines = flowproof_driver::visual::baselines_dir(&trace);
+    assert!(
+        baselines.join("dash@gui.png").exists() && baselines.join("dash@portal.png").exists(),
+        "one baseline per surface, from one spec name"
+    );
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    assert!(
+        persisted.contains("dash@gui.png") && persisted.contains("dash@portal.png"),
+        "the trace carries the qualified identity: {persisted}"
+    );
+
+    let mut registry = SurfaceRegistry::new(targets, mocks(), std::time::Duration::from_millis(50));
+    let (report, _run_dir) = run_trace(&trace, &mut registry).expect("replay runs");
+    assert!(
+        report.passed,
+        "each frame met ITS OWN surface's baseline: {report:#?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `@` is the surface qualifier in a baseline's stored identity, so a
+/// user-chosen name carrying one could collide with another surface's
+/// baseline — refused at record, naming the reservation.
+#[test]
+fn a_screenshot_name_with_the_surface_qualifier_is_refused() {
+    let spec = FlowSpec::parse(
+        "name: n\napp: web\nurl: https://e.test/x\nsteps:\n  - assert_screenshot:\n      name: dash@gui\n",
+    )
+    .expect("parses");
+    let dir = std::env::temp_dir().join("flowproof-screenshot-at");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let mut driver = MockAppDriver::new(&[]);
+    let err = record(&spec, &mut driver, &dir.join("t.trace.jsonl")).expect_err("refused");
+    assert!(
+        err.to_string().contains("reserved for the"),
+        "names the reservation: {err}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Heal is re-record + diff, so a multi-surface flow heals with the same
+/// registry recording uses. An unchanged flow proposes nothing; a spec
+/// that grew a step in one block proposes a trace that keeps the multi
+/// header and per-step surfaces; and a step that MOVED between surfaces
+/// is flagged as a surface change — the same action against another app
+/// is not the same step.
+#[test]
+fn a_multi_surface_flow_heals_with_surface_attribution() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let yaml = |extra: &str| {
+        format!(
+            "name: Healable\napps:\n  gui: {{app: sap}}\n  portal: {{app: web, url: \"https://portal.test/x\"}}\nsteps:\n  - in: gui\n    steps:\n      - Press the \"Go\" button\n  - in: portal\n    steps:\n      - Press the \"Go\" button\n{extra}"
+        )
+    };
+    let mocks =
+        || -> SurfaceFactory { Box::new(|_| Ok(Box::new(MockAppDriver::new(&["Go", "Save"])))) };
+    let dir = std::env::temp_dir().join("flowproof-multi-heal");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+
+    let spec = FlowSpec::parse(&yaml("")).expect("spec parses");
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks(),
+        std::time::Duration::from_millis(50),
+    );
+    record(&spec, &mut registry, &trace).expect("records");
+
+    // Unchanged spec, unchanged app: nothing to propose.
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks(),
+        std::time::Duration::from_millis(50),
+    );
+    let report = flowproof_agent::heal(&spec, &mut registry, &trace).expect("heals");
+    assert!(!report.changed, "no drift proposes nothing: {report:?}");
+
+    // The portal block grew a step: the proposal keeps the multi header
+    // and stamps the new step with ITS surface.
+    let grown = FlowSpec::parse(&yaml("      - Press the \"Save\" button\n")).expect("parses");
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks(),
+        std::time::Duration::from_millis(50),
+    );
+    let report = flowproof_agent::heal(&grown, &mut registry, &trace).expect("heals");
+    assert!(report.changed && report.steps_added == 1, "{report:?}");
+    let proposal = std::fs::read_to_string(report.proposed_path.as_ref().expect("proposal"))
+        .expect("proposal readable");
+    assert!(
+        proposal.contains("\"adapter\":\"multi\"") && proposal.contains("\"surface\":\"portal\""),
+        "the proposal stays a multi-surface trace: {proposal}"
+    );
+
+    // A step that moved between surfaces diffs as a surface change.
+    let moved = std::fs::read_to_string(&trace)
+        .expect("trace readable")
+        .replacen("\"surface\":\"gui\"", "\"surface\":\"portal\"", 1);
+    std::fs::write(&trace, moved).expect("trace rewritten");
+    let mut registry = SurfaceRegistry::new(targets, mocks(), std::time::Duration::from_millis(50));
+    let report = flowproof_agent::heal(&spec, &mut registry, &trace).expect("heals");
+    assert!(report.changed, "{report:?}");
+    assert!(
+        report
+            .steps_changed
+            .iter()
+            .any(|c| c.fields.contains(&"surface".to_string())),
+        "the move is flagged as a surface change: {report:?}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }

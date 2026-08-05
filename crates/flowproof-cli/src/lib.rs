@@ -418,7 +418,7 @@ fn cmd_record(
         return Ok(EXIT_PASS);
     }
 
-    let mut driver = driver_for(spec.app.id())?;
+    let mut driver = record_driver(&spec)?;
     // --reuse: consult the existing trace per step, re-authoring only
     // drift; the old steps come from the trace being replaced.
     let old_steps = if reuse {
@@ -526,21 +526,149 @@ fn discover_specs(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
 /// with a fresh driver each time. Deterministic replay should be stable,
 /// but the infrastructure under it (a dropped CDP frame, a momentarily
 /// slow backend) is not — a flow that passes on a second look should not
-/// The multi-surface vocabulary (`apps:` + `in:` blocks) parses — so the
-/// format is stable and its validation is real — but the engine has not
-/// shipped. Replay refuses by name; `record` refuses inside the recorder
-/// with the same story. One message for both, so the refusal reads the
-/// same wherever it is met.
-fn refuse_multi_surface(spec: &FlowSpec) -> Result<(), String> {
-    if spec.apps.is_empty() {
-        return Ok(());
+/// fail the suite.
+///
+/// The driver a REPLAY gets: the trace's single app's driver, or — for a
+/// `multi` header — a `SurfaceRegistry` rebuilt from the header's own
+/// surface map, so a replay needs the trace and nothing else. Config was
+/// stored as WRITTEN; `${VAR}` urls and connections resolve here, fresh,
+/// at every replay.
+fn replay_driver(header: &flowproof_trace::Header) -> Result<Box<dyn AppDriver>, String> {
+    if header.app.name != "multi" {
+        return driver_for(&header.app.name);
     }
-    Err(
-        "this flow declares `apps:` (multi-surface), and the multi-surface engine has \
-         not shipped yet — split the flow into a suite of single-surface flows chained \
-         with `exports:` (docs/authoring.md) until it lands"
-            .into(),
-    )
+    let targets = replay_surface_targets(header)?;
+    let surfaces: std::collections::BTreeMap<_, _> = header
+        .apps
+        .iter()
+        .map(|(n, info)| (n.clone(), (info.name.clone(), info.browser.clone())))
+        .collect();
+    let factory: flowproof_driver::surface::SurfaceFactory = Box::new(move |name| {
+        let (kind, browser) = surfaces.get(name).ok_or_else(|| {
+            flowproof_driver::DriverError::Uia(format!("surface '{name}' is not in the header"))
+        })?;
+        let mut driver = driver_for(kind).map_err(flowproof_driver::DriverError::Uia)?;
+        stage_surface_browser(driver.as_mut(), browser.as_ref())?;
+        Ok(driver)
+    });
+    Ok(Box::new(flowproof_driver::surface::SurfaceRegistry::new(
+        targets,
+        factory,
+        std::time::Duration::from_secs(15),
+    )))
+}
+
+/// Each recorded surface's launch target, from the header alone —
+/// `${VAR}` refs resolve NOW, so credentials and hosts come from this
+/// run's environment exactly as a single-surface replay resolves its url.
+fn replay_surface_targets(
+    header: &flowproof_trace::Header,
+) -> Result<Vec<(String, flowproof_driver::AppTarget)>, String> {
+    header
+        .apps
+        .iter()
+        .map(|(name, info)| {
+            let resolve = |v: &Option<String>| -> Result<String, String> {
+                match v {
+                    Some(raw) => {
+                        flowproof_trace::secret::resolve_refs(raw).map_err(|e| e.to_string())
+                    }
+                    None => Ok(String::new()),
+                }
+            };
+            let target = match info.name.as_str() {
+                "web" => {
+                    if info.url.is_none() {
+                        return Err(format!("web surface '{name}' has no url in the header"));
+                    }
+                    flowproof_driver::AppTarget {
+                        command: resolve(&info.url)?,
+                        window_name: String::new(),
+                    }
+                }
+                "sap" => flowproof_driver::AppTarget {
+                    command: resolve(&info.url)?,
+                    window_name: "SAP".into(),
+                },
+                "windows" => flowproof_driver::AppTarget {
+                    command: resolve(&info.command)?,
+                    window_name: resolve(&info.window_title)?,
+                },
+                // Pixels mode re-attaches to the window the header recorded.
+                "vision" => {
+                    if info.window_title.is_none() {
+                        return Err(format!(
+                            "vision surface '{name}' has no window title in the header"
+                        ));
+                    }
+                    flowproof_driver::AppTarget {
+                        command: String::new(),
+                        window_name: resolve(&info.window_title)?,
+                    }
+                }
+                id => flowproof_driver::resolve_app(id)
+                    .ok_or_else(|| format!("surface '{name}': unknown app '{id}'"))?,
+            };
+            Ok((name.clone(), target))
+        })
+        .collect()
+}
+
+/// Stage a surface's `browser:` config on its freshly built driver —
+/// called by BOTH factories (record from the spec, replay from the
+/// header), between the driver's construction and the launch its first
+/// activation performs, which is the only window where staging can land.
+fn stage_surface_browser(
+    driver: &mut dyn AppDriver,
+    browser: Option<&flowproof_trace::format::BrowserSetup>,
+) -> Result<(), flowproof_driver::DriverError> {
+    let Some(browser) = browser.filter(|b| !b.is_empty()) else {
+        return Ok(());
+    };
+    driver.stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
+        browser
+            .viewport
+            .as_ref()
+            .map(|v| (v.width, v.height, v.device_scale_factor, v.mobile, v.touch)),
+        browser.user_agent.as_deref(),
+        &browser.args,
+        browser.clock.as_ref().map(|c| flowproof_driver::WebClock {
+            at: c.at.clone(),
+            timezone: c.timezone.clone(),
+        }),
+        browser
+            .random
+            .as_ref()
+            .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
+    ))
+}
+
+/// The driver a RECORDING run gets: the single app's driver, or — for a
+/// multi-surface flow — a `SurfaceRegistry` over `driver_for`, one driver
+/// per surface, launched lazily at each surface's first `in:` block.
+fn record_driver(spec: &FlowSpec) -> Result<Box<dyn AppDriver>, String> {
+    if spec.apps.is_empty() {
+        return driver_for(spec.app.id());
+    }
+    let targets = flowproof_agent::surface_targets(spec).map_err(|e| e.to_string())?;
+    let surfaces: std::collections::BTreeMap<_, _> = spec
+        .apps
+        .iter()
+        .map(|(n, s)| (n.clone(), (s.app.id().to_string(), s.browser.clone())))
+        .collect();
+    let factory: flowproof_driver::surface::SurfaceFactory = Box::new(move |name| {
+        let (kind, browser) = surfaces.get(name).ok_or_else(|| {
+            flowproof_driver::DriverError::Uia(format!("surface '{name}' is not declared"))
+        })?;
+        let mut driver = driver_for(kind).map_err(flowproof_driver::DriverError::Uia)?;
+        stage_surface_browser(driver.as_mut(), browser.as_ref())?;
+        Ok(driver)
+    });
+    Ok(Box::new(flowproof_driver::surface::SurfaceRegistry::new(
+        targets,
+        factory,
+        std::time::Duration::from_secs(15),
+    )))
 }
 
 /// fail the suite. Returns the first passing report, else the last
@@ -548,7 +676,7 @@ fn refuse_multi_surface(spec: &FlowSpec) -> Result<(), String> {
 #[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
 fn replay_with_retries(
     trace_path: &Path,
-    app_name: &str,
+    header: &flowproof_trace::Header,
     retries: u8,
     announce: bool,
     secret_scan: &flowproof_replay::SecretScan,
@@ -567,7 +695,7 @@ fn replay_with_retries(
     let mut attempt = 0u32;
     loop {
         attempt += 1;
-        let mut driver = driver_for(app_name)?;
+        let mut driver = replay_driver(header)?;
         // Credentials are SPEC-driven, like the secret-leak scan: the
         // password is not a header field, so it cannot come from the trace,
         // and every `run` has the spec in hand. `${VAR}`s resolve here, on
@@ -827,7 +955,7 @@ fn record_one(
             flowproof_agent::HttpModelClient::from_env_result(),
             Ok(None)
         );
-    let mut driver = driver_for(spec.app.id())?;
+    let mut driver = record_driver(&spec)?;
     flowproof_agent::record_with_author_and_options(
         &spec,
         &mut driver,
@@ -987,19 +1115,6 @@ fn run_suite_with_author(
             reports.push(report);
             continue;
         }
-        // Multi-surface vocabulary parses; the engine has not shipped. One
-        // errored flow, not a broken suite — the rest still run.
-        if let Err(e) = refuse_multi_surface(&gated_spec) {
-            errored_flow(
-                spec_path,
-                &gated_spec.name,
-                e,
-                json,
-                &mut flows,
-                &mut reports,
-            );
-            continue;
-        }
         let trace_path = default_trace_path(spec_path);
         if !trace_path.exists() {
             match missing {
@@ -1152,7 +1267,7 @@ fn run_suite_with_author(
             .and_then(|(header, _)| {
                 replay_with_retries(
                     &trace_path,
-                    &header.app.name,
+                    &header,
                     retries,
                     !json,
                     &secret_scan,
@@ -1524,7 +1639,6 @@ fn cmd_run(
     // Load the spec for its gate (this also surfaces spec parse errors on
     // single runs, deliberately — a typo'd spec should not replay).
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
-    refuse_multi_surface(&spec)?;
     // Surface a bad `session: <name>` the same way record would: a bare name
     // with no governing suite is a load-time error naming the missing suite.
     dereference_identity(&mut spec, manifest.as_ref())?;
@@ -1660,7 +1774,7 @@ fn cmd_run(
     // invocation: an export that cannot resolve fails the flow either way.
     let replayed = replay_with_retries(
         &trace_path,
-        &header.app.name,
+        &header,
         retries,
         !json,
         &secret_scan,
@@ -1969,7 +2083,9 @@ fn cmd_heal(
             "WARNING: no authoring model is configured; plain steps will try deterministic grammar fallback"
         );
     }
-    let mut driver = driver_for(spec.app.id())?;
+    // Healing re-records the spec against the live app and diffs — so a
+    // multi-surface flow heals with the same registry recording uses.
+    let mut driver = record_driver(&spec)?;
     let mut report =
         match flowproof_agent::heal_with_author(&spec, &mut driver, &trace_path, author.into()) {
             Ok(report) => report,
@@ -2172,25 +2288,57 @@ where
 mod tests {
     use super::*;
 
-    /// The multi-surface vocabulary parses; running it does not fly yet.
-    /// The refusal names the gap AND the shipped alternative, and a
-    /// single-surface flow passes through untouched.
+    /// A surface's `browser:` config stages on its freshly built driver —
+    /// the window between construction and first-activation launch is the
+    /// only place staging can land, and BOTH factories (record and replay)
+    /// go through this one helper, so the two executions stage identically.
     #[test]
-    fn a_multi_surface_spec_is_refused_at_run_naming_the_alternative() {
-        let multi = FlowSpec::parse(
-            "name: m\napps:\n  portal: {app: web, url: \"https://e.test\"}\n\
-             steps:\n  - in: portal\n    steps: [Press Enter]\n",
+    fn a_surfaces_browser_config_stages_before_its_launch() {
+        let setup: flowproof_trace::format::BrowserSetup = serde_yaml::from_str(
+            "viewport:\n  width: 390\n  height: 844\n  mobile: true\n  touch: true\nuser_agent: fp-test\n",
         )
-        .expect("the vocabulary parses");
-        let err = refuse_multi_surface(&multi).expect_err("engine has not shipped");
+        .expect("setup parses");
+        let mut mock = flowproof_driver::mock::MockAppDriver::new(&[]);
+        stage_surface_browser(&mut mock, Some(&setup)).expect("stages");
+        let staged = mock.staged_browser.expect("browser staged");
+        let vp = staged.viewport.expect("viewport staged");
+        assert_eq!((vp.width, vp.height), (390, 844));
+        assert!(vp.mobile && vp.touch);
+        assert_eq!(staged.user_agent.as_deref(), Some("fp-test"));
+        // No config, no call: an empty setup must not disturb the driver.
+        let mut untouched = flowproof_driver::mock::MockAppDriver::new(&[]);
+        stage_surface_browser(&mut untouched, None).expect("no-op");
+        assert!(untouched.staged_browser.is_none());
+    }
+
+    /// A multi-surface replay rebuilds its launch targets from the header
+    /// alone — `${VAR}` config resolves at replay time from THIS run's
+    /// environment, and a header missing what a surface needs errors
+    /// naming the surface, not a bare unwrap.
+    #[test]
+    fn replay_surface_targets_resolve_from_the_header_alone() {
+        let header: flowproof_trace::Header = serde_json::from_str(
+            r#"{"format":"flowproof-trace","version":1,"trace_id":"t","recorded_at":"2026-08-05T00:00:00Z",
+                "app":{"name":"multi","adapter":"multi"},
+                "apps":{"gui":{"name":"sap","adapter":"sap-com","url":"${FP_TEST_SAP_CONN}"},
+                        "portal":{"name":"web","adapter":"web","url":"https://portal.test/orders"}},
+                "env":{"os":"macos","resolution":[1,1]}}"#,
+        )
+        .expect("header parses");
+        std::env::set_var("FP_TEST_SAP_CONN", "S4 DEV");
+        let targets = replay_surface_targets(&header).expect("targets resolve");
+        assert_eq!(targets[0].0, "gui");
+        assert_eq!(targets[0].1.command, "S4 DEV", "the ${{VAR}} resolved NOW");
+        assert_eq!(targets[1].1.command, "https://portal.test/orders");
+
+        let mut broken = header.clone();
+        broken.apps.get_mut("portal").expect("portal").url = None;
+        let err = replay_surface_targets(&broken).expect_err("web needs a url");
+        std::env::remove_var("FP_TEST_SAP_CONN");
         assert!(
-            err.contains("multi-surface engine has not shipped") && err.contains("exports:"),
-            "names the gap and the alternative: {err}"
+            err.contains("portal") && err.contains("no url"),
+            "names the surface and the gap: {err}"
         );
-        let single =
-            FlowSpec::parse("name: s\napp: web\nurl: x\nsteps:\n  - assert: page shows x\n")
-                .expect("parses");
-        assert!(refuse_multi_surface(&single).is_ok());
     }
 
     /// A flow that engages egress records the tier it ACTUALLY ran under.

@@ -101,10 +101,10 @@ impl AppSpec {
 
 /// One named surface of a multi-surface flow. Deliberately narrower than a
 /// flow: `app` (registry id or Windows launch mapping), `url` for a web
-/// surface, `connection` for a SAP GUI surface. Per-surface `window:` and
-/// `browser:` config are OPEN design work (docs/multi-surface.md), so
-/// `deny_unknown_fields` turns them into loud errors today instead of
-/// silently ignored keys that look configured.
+/// surface, `connection` and `login` for a SAP GUI surface, `browser` for a
+/// web one, `window` for a desktop one. Anything else is a loud error rather
+/// than a silently ignored key that looks configured — hence
+/// `deny_unknown_fields`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SurfaceSpec {
@@ -118,13 +118,26 @@ pub struct SurfaceSpec {
     pub connection: Option<String>,
     /// For sap surfaces: who this surface logs in as, exactly as on a
     /// single-surface flow. This is the shape a same-system two-user case
-    /// wants — one flow, `clerk` and `approver` surfaces, one identity each —
-    /// and it parses and validates today, but the multi-surface ENGINE has
-    /// not shipped, so `record`/`run` still refuse an `apps:` flow by name
-    /// (docs/multi-surface.md). Until it lands, the same case is a suite of
-    /// single-surface flows chained with `exports:`, one `login:` each.
+    /// wants — one flow, `clerk` and `approver` surfaces, one identity each.
+    /// It parses and validates today, but the multi-surface driver does not
+    /// log a surface in yet (docs/multi-surface.md), so the same case is a
+    /// suite of single-surface flows chained with `exports:`, one `login:`
+    /// each, until it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login: Option<LoginSpec>,
+    /// For web surfaces: launch/emulation config (viewport, user-agent,
+    /// clock, seeded random), exactly the single-surface `browser:` block.
+    /// Travels on the surface's header entry, so record and every replay
+    /// launch THIS surface the same shape. Refused on non-web surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<flowproof_trace::format::BrowserSetup>,
+    /// The surface's window: `title` is the ATTACH selector a vision
+    /// surface requires (a window flowproof never launched); geometry pins
+    /// the shape any desktop surface gets at its FIRST activation, applied
+    /// then and recorded as applied. Refused on web surfaces — a page is
+    /// sized with `browser: viewport`, not a window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowSpec>,
 }
 
 /// Who a SAP flow logs in as. Every value may carry `${VAR}` references,
@@ -531,18 +544,6 @@ fn find_in_block(steps: &[SpecStep]) -> Option<&str> {
         SpecStep::Repeat { repeat } => find_in_block(&repeat.steps),
         SpecStep::When { when } => find_in_block(&when.steps),
         _ => None,
-    })
-}
-
-/// Whether any step in the tree is an `assert_screenshot` (recursing into
-/// `repeat`/`when` bodies) — refused in multi-surface flows until a
-/// baseline's identity names its surface.
-fn has_screenshot_step(steps: &[SpecStep]) -> bool {
-    steps.iter().any(|step| match step {
-        SpecStep::AssertScreenshot { .. } => true,
-        SpecStep::Repeat { repeat } => has_screenshot_step(&repeat.steps),
-        SpecStep::When { when } => has_screenshot_step(&when.steps),
-        _ => false,
     })
 }
 
@@ -1074,12 +1075,13 @@ impl FlowSpec {
     /// hold at least one step, and never nest (one surface is active at a
     /// time — a switch inside a `repeat`/`when` pass would interleave real
     /// input across surfaces); every step lives inside a block; only UI
-    /// kinds are surfaces (`agent`, `api` and `vision` are refused each
-    /// with its reason); `url:`/`connection:` sit on the surface of their
-    /// kind; flow-level surface config is refused naming where it goes;
-    /// and `assert_screenshot` is refused until a baseline's identity
-    /// names its surface — a `gui` baseline compared against a `portal`
-    /// frame would be a green lie.
+    /// kinds are surfaces (`agent` and `api` are refused each with its
+    /// reason; `vision` requires its `window: {title: …}` attach selector);
+    /// `url:`/`connection:`/`browser:`/`window:` sit on the surface of
+    /// their kind; and flow-level surface config is refused naming where
+    /// it goes. (`assert_screenshot` needs no rule here: the recorder
+    /// qualifies each baseline with its surface, so a `gui` baseline can
+    /// never be compared against a `portal` frame.)
     fn validate_surfaces(&self) -> Result<(), SpecError> {
         let bad = |m: String| Err(SpecError::Surfaces(m));
         let multi = !self.apps.is_empty();
@@ -1134,13 +1136,6 @@ impl FlowSpec {
                          `assert_api` runs fine inside any `in:` block"
                     ))
                 }
-                "vision" => {
-                    return bad(format!(
-                        "surface `{name}`: a vision surface attaches by window title, and \
-                         per-surface `window:` config has not shipped yet \
-                         (docs/multi-surface.md)"
-                    ))
-                }
                 _ => {}
             }
             if id == "web" && surface.url.is_none() {
@@ -1157,6 +1152,48 @@ impl FlowSpec {
                     "`connection:` on surface `{name}` means nothing for `app: {id}` — it \
                      is sap surface config"
                 ));
+            }
+            if id != "web" && surface.browser.is_some() {
+                return bad(format!(
+                    "`browser:` on surface `{name}` means nothing for `app: {id}` — it \
+                     is web surface config"
+                ));
+            }
+            // `window:` — a title is the vision ATTACH selector (required
+            // there, meaningless elsewhere); geometry pins any desktop
+            // surface's shape. A web page is sized with `browser: viewport`.
+            let window = surface.window.as_ref().map(WindowSpec::config);
+            if id == "vision" && window.as_ref().and_then(|w| w.title.clone()).is_none() {
+                return bad(format!(
+                    "vision surface `{name}` needs `window: {{title: …}}` — pixels mode \
+                     attaches to a window it never launched"
+                ));
+            }
+            if let Some(config) = &window {
+                if id == "web" {
+                    return bad(format!(
+                        "`window:` on surface `{name}` means nothing for `app: web` — a \
+                         page is sized with `browser: viewport`"
+                    ));
+                }
+                if id != "vision" && config.title.is_some() {
+                    return bad(format!(
+                        "`window.title` on surface `{name}` is the vision ATTACH selector; \
+                         a launched app's window is named by `app.window_title`"
+                    ));
+                }
+                if config.width.is_some() != config.height.is_some() {
+                    return bad(format!(
+                        "surface `{name}`: `width` and `height` go together"
+                    ));
+                }
+                if (config.x.is_some() || config.y.is_some())
+                    && (config.x.is_none() || config.y.is_none() || config.width.is_none())
+                {
+                    return bad(format!(
+                        "surface `{name}`: `x` and `y` go together and need a size"
+                    ));
+                }
             }
         }
         let declared = || {
@@ -1192,15 +1229,6 @@ impl FlowSpec {
                     block.surface
                 ));
             }
-            if has_screenshot_step(&block.steps) {
-                return bad(
-                    "`assert_screenshot` in a multi-surface flow is not supported yet: a \
-                     baseline's identity does not yet name its surface, and a baseline \
-                     from one surface compared against another's frame would be a green \
-                     lie (docs/multi-surface.md)"
-                        .into(),
-                );
-            }
         }
         // Flow-level config that either belongs to the surface entries or
         // is open per-surface design. Each refusal names where it goes.
@@ -1214,11 +1242,11 @@ impl FlowSpec {
                 self.connection.is_some(),
             ),
             (
-                "per-surface `window:` config has not shipped yet",
+                "`window:` moves into the surface's entry",
                 self.window.is_some(),
             ),
             (
-                "per-surface `browser:` config has not shipped yet",
+                "`browser:` moves into the web surface's entry",
                 self.browser.is_some(),
             ),
             (
@@ -3925,15 +3953,39 @@ steps:
         assert!(empty.to_string().contains("no steps"), "{empty}");
     }
 
+    /// A vision surface is a real surface now: its `window: {title}` attach
+    /// selector is required, geometry composes, and `window:` on a web
+    /// surface names the right spelling instead.
+    #[test]
+    fn surface_window_config_attaches_vision_and_pins_geometry() {
+        let flow = spec(
+            "name: n\napps:\n  citrix:\n    app: vision\n    window: {title: \"Citrix Receiver\", width: 1280, height: 720}\nsteps:\n  - in: citrix\n    steps: [Press Enter]\n",
+        )
+        .expect("vision surface with a title parses");
+        let w = flow.apps["citrix"].window.as_ref().expect("window kept");
+        assert_eq!(w.title(), Some("Citrix Receiver"));
+        let bare = spec(
+            "name: n\napps:\n  citrix: {app: vision}\nsteps:\n  - in: citrix\n    steps: [Press Enter]\n",
+        )
+        .expect_err("vision needs its attach title");
+        assert!(bare.to_string().contains("needs `window:"), "{bare}");
+        let web = spec(
+            "name: n\napps:\n  portal:\n    app: web\n    url: http://x\n    window: {width: 800, height: 600}\nsteps:\n  - in: portal\n    steps: [Press Enter]\n",
+        )
+        .expect_err("window on web");
+        assert!(web.to_string().contains("browser: viewport"), "{web}");
+        let lopsided = spec(
+            "name: n\napps:\n  gui:\n    app: sap\n    window: {width: 800}\nsteps:\n  - in: gui\n    steps: [Press Enter]\n",
+        )
+        .expect_err("width without height");
+        assert!(lopsided.to_string().contains("go together"), "{lopsided}");
+    }
+
     /// Each refused surface kind names its reason and its alternative —
     /// a vocabulary that parses but cannot run would be a trap.
     #[test]
     fn non_ui_surface_kinds_are_refused_by_name() {
-        for (kind, expect) in [
-            ("agent", "model boundary"),
-            ("api", "nothing to drive"),
-            ("vision", "window"),
-        ] {
+        for (kind, expect) in [("agent", "model boundary"), ("api", "nothing to drive")] {
             let err = spec(&format!(
                 "name: n\napps:\n  s: {{app: {kind}}}\nsteps:\n  - in: s\n    steps: [Press Enter]\n"
             ))
@@ -3971,11 +4023,33 @@ steps:
                 .contains("moves into the web surface"),
             "{flow_level}"
         );
-        let screenshot = spec(
+        // `assert_screenshot` PARSES in a multi-surface flow now: the
+        // recorder qualifies each baseline with its surface.
+        spec(
             "name: n\napps:\n  gui: {app: sap}\nsteps:\n  - in: gui\n    steps:\n      - assert_screenshot:\n          name: x\n",
         )
-        .expect_err("screenshot in multi");
-        assert!(screenshot.to_string().contains("baseline"), "{screenshot}");
+        .expect("screenshot in multi parses");
+    }
+
+    /// `browser:` is web surface config: it parses on a web surface and is
+    /// refused by kind elsewhere, like `url:` before it.
+    #[test]
+    fn surface_browser_config_sits_on_web_surfaces_only() {
+        let flow = spec(
+            "name: n\napps:\n  portal:\n    app: web\n    url: http://x\n    browser:\n      viewport: {width: 390, height: 844}\nsteps:\n  - in: portal\n    steps: [Press Enter]\n",
+        )
+        .expect("parses on web");
+        let vp = flow.apps["portal"]
+            .browser
+            .as_ref()
+            .and_then(|b| b.viewport.as_ref())
+            .expect("viewport kept");
+        assert_eq!((vp.width, vp.height), (390, 844));
+        let err = spec(
+            "name: n\napps:\n  gui:\n    app: sap\n    browser:\n      user_agent: x\nsteps:\n  - in: gui\n    steps: [Press Enter]\n",
+        )
+        .expect_err("browser on sap");
+        assert!(err.to_string().contains("web surface config"), "{err}");
     }
 
     /// A lone `in:` key (block missing its `steps:`) gets a better error

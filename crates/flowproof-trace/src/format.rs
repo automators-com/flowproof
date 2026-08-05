@@ -261,6 +261,14 @@ pub struct AppInfo {
     /// to redact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login_user: Option<String>,
+    /// For a web SURFACE of a multi-surface trace: this surface's browser
+    /// launch/emulation config, the per-surface counterpart of the
+    /// header-level `browser` (which stays the single-surface spelling).
+    /// Applied identically at record and every replay, so THIS surface
+    /// keeps the shape it was recorded on. Additive optional: absent
+    /// everywhere it is unused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<BrowserSetup>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
@@ -683,6 +691,7 @@ mod control_header_tests {
                 adapter: Adapter::Web,
                 window_title: None,
                 command: None,
+                browser: None,
                 geometry: None,
                 url: Some("http://x".into()),
                 login_user: None,

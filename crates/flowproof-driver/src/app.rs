@@ -545,6 +545,16 @@ pub trait AppDriver {
         Err(DriverError::UnsupportedPlatform)
     }
 
+    /// Switch the ACTIVE surface of a multi-surface run — the `in: <name>`
+    /// block boundary. Only [`crate::surface::SurfaceRegistry`] implements
+    /// it; a single-surface driver says so, because "the switch did
+    /// nothing" must never read as "the switch happened".
+    fn activate_surface(&mut self, name: &str) -> Result<(), DriverError> {
+        Err(DriverError::Uia(format!(
+            "this driver drives one surface; `in: {name}` needs a multi-surface run"
+        )))
+    }
+
     /// Launch (or attach to) the target application and wait until a window
     /// whose name contains `window_name` exists.
     fn launch(
@@ -1688,6 +1698,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn probe_frame(&mut self, query: &FrameQuery) -> Result<FrameProbe, DriverError> {
         (**self).probe_frame(query)
+    }
+
+    fn activate_surface(&mut self, name: &str) -> Result<(), DriverError> {
+        (**self).activate_surface(name)
     }
 
     fn launch(
