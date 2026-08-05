@@ -2227,6 +2227,34 @@ pub fn run_trace_with_secret_scan_and_options<D: AppDriver>(
     scan: &SecretScan,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<(RunReport, std::path::PathBuf), ReplayError> {
+    run_trace_with_exports(path, driver, scan, recording, &Default::default())
+        .map(|(report, run_dir, _)| (report, run_dir))
+}
+
+/// `NAME -> value` pairs an exporting replay resolved, in name order.
+/// Empty unless the run passed and the spec declared `exports:`.
+pub type ResolvedExports = Vec<(String, String)>;
+
+/// Replay, additionally resolving the spec's `exports:` — the values this
+/// flow hands to the flows that run after it in a suite. Each template
+/// resolves its `${captured.<name>}` references from THIS run's captures
+/// once every step has passed, then plain `${VAR}` refs from the
+/// environment (the same resolution suite `env` gets). The resolved pairs
+/// are RETURNED, never persisted: like a capture, an exported order number
+/// or balance lives only in the memory of the run — the suite runner turns
+/// the pairs into env vars for the remaining flows. An export that cannot
+/// resolve fails this run with its own result entry (the same shape the
+/// secret-leak scan uses), because a flow whose contract to its successors
+/// cannot be met has not passed — and the alternative is a downstream flow
+/// failing over a variable nobody visibly set. A failed or leaking flow
+/// exports nothing.
+pub fn run_trace_with_exports<D: AppDriver>(
+    path: &Path,
+    driver: &mut D,
+    scan: &SecretScan,
+    recording: flowproof_driver::RecordingOptions,
+    exports: &std::collections::BTreeMap<String, String>,
+) -> Result<(RunReport, std::path::PathBuf, ResolvedExports), ReplayError> {
     let (header, steps) = load_trace(path)?;
 
     let base = path
@@ -2474,6 +2502,42 @@ pub fn run_trace_with_secret_scan_and_options<D: AppDriver>(
         }
     }
 
+    // `exports:` resolve last, and only from a run that passed: a failed
+    // flow has no contract to hand on. Resolution reads the same in-memory
+    // captures the steps populated; an export that cannot resolve is its
+    // own failed result (mirroring the secret-leak scan), because "the
+    // flow passed but downstream flows hold a variable nobody set" is the
+    // confusing failure this ordering exists to prevent. The error text is
+    // value-free — it names the capture and what was in scope, never what
+    // any capture held.
+    let mut resolved_exports: ResolvedExports = Vec::new();
+    if !exports.is_empty() && !failed {
+        for (export_name, template) in exports {
+            let resolved = flowproof_trace::captures::substitute(template, &captures)
+                .and_then(|v| flowproof_trace::secret::resolve_refs(&v).map_err(|e| e.to_string()));
+            match resolved {
+                Ok(value) => resolved_exports.push((export_name.clone(), value)),
+                Err(why) => {
+                    failed = true;
+                    results.push(StepResult {
+                        id: "exports".to_string(),
+                        intent: format!("export {export_name}"),
+                        status: StepStatus::Failed,
+                        detail: Some(why),
+                        started_ms: started.elapsed().as_millis() as u64,
+                        duration_ms: 0,
+                        selector_tier: None,
+                        degraded: false,
+                    });
+                }
+            }
+        }
+        if failed {
+            // No partial contract: either every export resolves or none ship.
+            resolved_exports.clear();
+        }
+    }
+
     let degraded = results.iter().any(|s| s.degraded);
     let duration_ms = started.elapsed().as_millis() as u64;
     let recording = recorder.and_then(|recorder| recorder.finish_with_driver(driver));
@@ -2486,7 +2550,7 @@ pub fn run_trace_with_secret_scan_and_options<D: AppDriver>(
         duration_ms,
         recording,
     };
-    Ok((report, run_dir))
+    Ok((report, run_dir, resolved_exports))
 }
 
 #[cfg(test)]
