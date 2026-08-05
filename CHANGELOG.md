@@ -8,6 +8,22 @@ together).
 
 ### Added
 
+- **A multi-surface flow RECORDS.** The recorder meets an `in:` block by
+  activating its surface on the registry — lazy launch on the first
+  visit, re-foreground after — and every recorded step carries the
+  surface that ran it, authored against that surface's own grammar (what
+  a SAP adapter performs differs from what a browser does). Captures
+  cross blocks with no new machinery: the namespace was always
+  flow-scoped, only the surfaces changed underneath it — an order number
+  remembered on SAP GUI types into the portal as `${captured.order}`,
+  and the trace stores the NAME, never the value, exactly as before. The
+  header is the `multi` sentinel plus the surface map with config stored
+  as written, so a `${VAR}` connection resolves fresh at every replay.
+  What remains is replay itself: `run` and `heal` refuse a multi-surface
+  flow naming exactly that (recording works, replay is the next slice),
+  and `assert_no_secret_leak` on one is refused until its corpus is
+  defined rather than scanned vacuously.
+
 - **The driver layer can now hold several surfaces and drive exactly one.**
   A `SurfaceRegistry` stands where a single driver otherwise would,
   routing every call to the ACTIVE surface of a multi-surface flow:

@@ -1977,29 +1977,83 @@ fn an_export_naming_an_unremembered_capture_fails_the_run_that_owns_it() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The multi-surface vocabulary parses ahead of its engine; RECORDING a
-/// multi-surface flow refuses by name — before launching anything — rather
-/// than driving the wrong surface or handing an `in:` block to the model
-/// as prose intent.
+/// The multi-surface record path, end to end against mocks: a value
+/// captured on one surface is typed on another. Success itself proves the
+/// routing — "OrderNo" exists only on the gui surface and "Search" only on
+/// the portal, so a step landing on the wrong surface cannot pass. The
+/// trace carries the multi header, the surface map, per-step attribution,
+/// and the capture NAME only.
 #[test]
-fn recording_a_multi_surface_flow_refuses_by_name() {
+fn recording_a_multi_surface_flow_crosses_surfaces_and_attributes_steps() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let spec = FlowSpec::parse(
+        "name: Order across surfaces\napps:\n  gui: {app: sap}\n  portal: {app: web, url: \"${PORTAL_URL}/orders\"}\nsteps:\n  - in: gui\n    steps:\n      - Remember the \"OrderNo\" as order\n  - in: portal\n    steps:\n      - Type ${captured.order} into the \"Search\" field\n",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-record");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+
+    std::env::set_var("PORTAL_URL", "https://portal.test");
+    let factory: SurfaceFactory = Box::new(|name| {
+        Ok(Box::new(match name {
+            "gui" => MockAppDriver::new(&["OrderNo"]).with_text("OrderNo", "4711"),
+            _ => MockAppDriver::new(&["Search"]),
+        }))
+    });
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets resolve");
+    assert_eq!(
+        targets[1].1.command, "https://portal.test/orders",
+        "the ${{VAR}} in the portal url resolved for launch"
+    );
+    let mut registry = SurfaceRegistry::new(targets, factory, std::time::Duration::from_millis(50));
+    record(&spec, &mut registry, &trace).expect("multi-surface recording succeeds");
+    std::env::remove_var("PORTAL_URL");
+
+    assert_eq!(registry.launched_surfaces(), vec!["gui", "portal"]);
+    assert_eq!(registry.active_surface(), Some("portal"));
+
+    let persisted = std::fs::read_to_string(&trace).expect("trace readable");
+    let header = persisted.lines().next().expect("header line");
+    assert!(
+        header.contains("\"name\":\"multi\"") && header.contains("\"adapter\":\"multi\""),
+        "the sentinel header: {header}"
+    );
+    assert!(
+        header.contains("\"gui\"")
+            && header.contains("\"sap-com\"")
+            && header.contains("${PORTAL_URL}/orders"),
+        "the surface map, config stored as written: {header}"
+    );
+    assert!(
+        persisted.contains("\"surface\":\"gui\"") && persisted.contains("\"surface\":\"portal\""),
+        "steps carry their surface: {persisted}"
+    );
+    assert!(
+        persisted.contains("${captured.order}") && !persisted.contains("4711"),
+        "the capture crosses surfaces as a NAME; the value never lands: {persisted}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// On a single-surface driver the first `in:` block refuses by name — a
+/// multi-surface spec can never silently drive whatever one app is there.
+#[test]
+fn recording_multi_surface_on_a_single_surface_driver_refuses_by_name() {
     let spec = FlowSpec::parse(
         "name: Multi\napps:\n  portal: {app: web, url: \"https://e.test/x\"}\nsteps:\n  - in: portal\n    steps:\n      - Press the \"Go\" button\n",
     )
-    .expect("the vocabulary parses");
-    let dir = std::env::temp_dir().join("flowproof-multi-refusal");
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-multi-single-driver");
     std::fs::create_dir_all(&dir).expect("temp dir");
     let trace = dir.join("multi.trace.jsonl");
     let mut driver = MockAppDriver::new(&["Go"]);
-    let err = record(&spec, &mut driver, &trace).expect_err("engine has not shipped");
-    let msg = err.to_string();
+    let err = record(&spec, &mut driver, &trace).expect_err("wrong driver kind");
     assert!(
-        msg.contains("multi-surface engine has not shipped") && msg.contains("exports:"),
-        "names the gap and the alternative: {msg}"
-    );
-    assert!(
-        driver.launched.is_none(),
-        "refused before launching anything"
+        err.to_string().contains("one surface"),
+        "says what it is: {err}"
     );
     assert!(!trace.exists(), "no trace minted");
     std::fs::remove_dir_all(&dir).ok();
