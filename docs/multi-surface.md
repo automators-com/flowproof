@@ -2,9 +2,10 @@
 
 > Status: `exports:` (Phase 1) is shipped and documented in
 > [authoring.md](authoring.md#handing-a-value-to-the-next-flow-exports).
-> Phases 2 and 3 are **proposals** — nothing below the Phase 1 section
-> describes shipped behaviour, and the YAML shapes there are illustrations,
-> not vocabulary the parser accepts.
+> Of Phase 2, the **vocabulary is shipped**: `apps:` and `in:` blocks parse
+> and validate exactly as shown below, so specs can be written and reviewed
+> — but the engine has not, so `record` and `run` refuse a multi-surface
+> flow by name until it lands. Phase 3 remains a proposal.
 
 ## The problem
 
@@ -44,7 +45,7 @@ system A, prove in system B* — with one driver per flow and no new trace
 format. When a case genuinely ping-pongs between surfaces mid-flow, Phase 2
 is the answer.
 
-## Phase 2 — multi-surface flows (proposal)
+## Phase 2 — multi-surface flows (vocabulary shipped, engine pending)
 
 One flow file, one trace, several named surfaces, exactly one active at a
 time:
