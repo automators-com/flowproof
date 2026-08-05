@@ -115,15 +115,94 @@ Delivery is several small PRs (the ratchets refuse large ones): spec
 parsing and refusals first, trace format with schema and docs second, the
 record path third, the replay path fourth — each with its tests.
 
-## Phase 3 — agent segments in a multi-surface flow (deliberately deferred)
+## Phase 3 — agent segments in a multi-surface flow (design, not yet code)
 
-`app: agent` records a different boundary: a model cassette, not UI steps.
-Embedding an agent block inside a UI flow means composing two trace kinds
-in one file while keeping "replay makes zero LLM calls" true across the
-seam. Until Phase 2 has settled, an agent flow chains as a *consumer* via
-Phase 1 — its spec references `${ORDER_NO}` like any other flow. What an
-agent flow could itself export (a conclusion, a tool result) is part of
-this phase's design, not Phase 1's.
+> Status: **proposal.** Everything below is design for discussion; the
+> parser accepts none of it. Today an agent flow chains through a suite
+> via `exports:` — its spec consumes `${ORDER_NO}` like any other flow —
+> which covers "UI produces, agent consumes" without any of this.
+
+What Phase 2 cannot express: an agent acting IN THE MIDDLE of a UI flow,
+on values captured moments earlier, with the flow continuing on what the
+agent did. The shape:
+
+```yaml
+name: Order triage across surfaces
+apps:
+  gui: {app: sap, connection: "${SAP_CONNECTION}"}
+  assistant:
+    app: agent
+    agent: {command: "python support_agent.py"}
+    tools: [...]
+steps:
+  - in: gui
+    steps:
+      - Remember the "id:wnd[0]/sbar" matching /\d+/ as order
+  - in: assistant
+    steps:
+      - prompt: Investigate order ${captured.order} and set its priority.
+      - assert_tool_call: set_priority with order ${captured.order}
+  - in: gui
+    steps:
+      - Press F5
+      - assert: page shows Priority updated
+```
+
+### The four design decisions
+
+**1. An agent surface is a surface entry, not a flow field.** The
+`agent:`/`tools:`/`mcp:`/`strict:` blocks (today refused on multi-surface
+flows) move INTO the surface entry, exactly as `url:` and `browser:` did.
+The `agent` kind-refusal lifts only when the entry carries its `agent:`
+block; the surface's steps are the agent step forms (`prompt:`,
+`assert_tool_call:`, `assert_no_tool_call:`, `assert_no_egress`) and
+NOTHING else — a UI step inside an agent block is a parse error naming
+the two grammars.
+
+**2. The cassette is a sidecar, referenced from one step.** An agent
+trace is a single JSON document; a multi-surface trace is JSON-lines. Do
+not merge the shapes: the agent block records as ONE step in the step log
+— `action: {type: "agent_run", params: {cassette: "<stem>.cassettes/
+assistant-1.json", sha256: …}}` — whose cassette lives in a sibling
+directory, exactly the relocatable-bundle pattern baselines already use.
+The step log stays diffable line-by-line; the cassette stays reviewable
+as the document it is; the trace directory stays self-contained. An
+engine predating `agent_run` fails loudly on the unknown action type.
+
+**3. Captures cross INTO the seam; what crosses back is named.**
+`prompt:` text interpolates `${captured.<name>}` — resolved at execution
+on record and every replay, stored raw, the discipline everything else
+follows. The reverse direction gets ONE new step form:
+
+```yaml
+- remember_answer: {matching: "/ticket (\\d+)/", as: ticket}
+```
+
+reading the agent's FINAL answer (a value the cassette already stores),
+so later UI blocks can type `${captured.ticket}`. Tool results and
+intermediate turns are deliberately not capturable in v1 — the final
+answer is the agent's contract; mining its internals would couple flows
+to trajectory details healing is allowed to change.
+
+**4. Replay stays zero-LLM by construction; containment scopes to the
+block.** Replaying an `agent_run` step replays its cassette — the same
+executor `app: agent` flows use, fed from the sidecar — while UI steps
+replay as today. Egress containment (where enforced) arms when the block
+starts and disarms when it ends; `assert_no_egress` and the tool-call
+asserts judge THAT block's cassette only. `assert_no_secret_leak`
+remains refused on multi-surface flows until its corpus question is
+answered for mixed lanes.
+
+### Slices, when this leaves proposal
+
+1. Vocabulary: agent surface entries + agent-step grammar inside their
+   blocks + `remember_answer` (parse + validation + refusals, engine
+   refuses at record like Phase 2's slice 1 did).
+2. Trace: the `agent_run` action + cassette sidecar in schema and docs,
+   same commit.
+3. Record: the recorder runs the agent segment through the existing
+   agent runner, writes the sidecar, stamps the step.
+4. Replay: cassette replay behind the step, captures rejoined.
 
 The arbitrary-Windows-app case needs no phase of its own: `app:
 {command, window_title}` is one more entry in the Phase 2 `apps:` map.
