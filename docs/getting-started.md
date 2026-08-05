@@ -148,6 +148,23 @@ verifies the assertion against the live display, and writes
 Recorded 'Add two numbers': 5 steps -> calc.trace.jsonl
 ```
 
+That filename is a convention, not a lookup: `record` derives
+`<name>.trace.jsonl` from the spec, and `run` and `heal` derive the same one
+when you do not say otherwise. Override it when a trace should not sit next
+to its spec — `--out` chooses where `record` writes, `--trace` tells `run`
+and `heal` where to read:
+
+```powershell
+flowproof record calc.flow.yaml --out traces/calc.trace.jsonl
+flowproof run   calc.flow.yaml --trace traces/calc.trace.jsonl
+flowproof heal  calc.flow.yaml --trace traces/calc.trace.jsonl
+```
+
+Keep the pair together unless you have a reason not to. A suite run resolves
+every spec's trace by the convention and **ignores `--trace`**, so a
+relocated trace reads to `run <dir>` as a flow that was never recorded —
+skipped by default, or a hard error under `--strict`.
+
 ## 3. Replay
 
 ```powershell
