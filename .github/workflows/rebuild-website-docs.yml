@@ -3,11 +3,19 @@ name: Rebuild website docs
 # automators.ai renders /flowproof/docs at BUILD time from this repo's
 # docs/ folder. When docs change on main, poke the website's deploy hook
 # so the site rebuilds with the latest content.
+#
+# Only `docs/**` triggers this, because `docs/` is the whole published set:
+# README.md is not rendered by the site and does not appear in the
+# llms-full.txt bundle either, so a README-only change has nothing to publish.
 on:
   push:
     branches: [main]
     paths:
       - "docs/**"
+  # So a human can republish without an empty docs commit — after setting the
+  # secret, or when the website was rebuilt from an older commit for its own
+  # reasons.
+  workflow_dispatch:
 
 jobs:
   trigger:
@@ -17,8 +25,26 @@ jobs:
         env:
           HOOK_URL: ${{ secrets.WEBSITE_DEPLOY_HOOK_URL }}
         run: |
+          # This step used to `exit 0` when the secret was missing. Every run
+          # since the workflow was added therefore reported success while
+          # publishing nothing, and the docs on automators.ai fell a release
+          # behind without anything going red: the live getting-started page
+          # still promised automatic GIF recording after `--video` had made it
+          # opt-in. A deploy that did not happen must not look like one that
+          # did, so a missing secret now fails the job.
           if [ -z "$HOOK_URL" ]; then
-            echo "WEBSITE_DEPLOY_HOOK_URL secret not set; skipping."
-            exit 0
+            echo "::error::WEBSITE_DEPLOY_HOOK_URL is not set, so the published docs were NOT rebuilt."
+            echo "The value is a Vercel deploy hook for the automators.ai project:"
+            echo "  Vercel -> the automators.ai project -> Settings -> Git -> Deploy Hooks"
+            echo "Then, from a checkout of this repository:"
+            echo "  gh secret set WEBSITE_DEPLOY_HOOK_URL"
+            exit 1
           fi
-          curl -fsSL -X POST "$HOOK_URL"
+          # -f turns a non-2xx into a failure; without it curl prints the error
+          # body and still exits 0, which is the same silence in a new costume.
+          # The retries cover a blip between GitHub and the hook, not a hook
+          # that is rejecting us.
+          status="$(curl -fsS -X POST "$HOOK_URL" \
+                      --retry 3 --retry-connrefused --retry-delay 5 \
+                      -o /dev/null -w '%{http_code}')"
+          echo "deploy hook accepted the rebuild request (HTTP $status)"

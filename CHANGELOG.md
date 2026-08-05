@@ -8,6 +8,20 @@ together).
 
 ### Changed
 
+- **The docs on automators.ai were a release behind, and nothing said so.**
+  The workflow that republishes them skipped when its deploy-hook secret was
+  missing and exited 0, so every run since the workflow was added reported
+  success while publishing nothing. The secret had never been set. The visible
+  result was a getting-started page still promising an automatic
+  `recording.gif` after `--video` had made it opt-in — documentation that
+  contradicted the tool, with a green tick next to it.
+
+  A missing secret now fails the job with the two commands needed to fix it,
+  and a rejected hook fails it too rather than printing an error body and
+  exiting 0. `workflow_dispatch` was added so a human can republish without
+  an empty docs commit. The deploy that does not happen no longer looks like
+  the deploy that did.
+
 - **The recording page answered a question nobody was asking.** `/docs/recording`
   opened as a design specification — status line, numbered sections, scope
   notes — so someone arriving to find out how to turn the video off met §1's
