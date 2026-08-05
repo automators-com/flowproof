@@ -8,6 +8,15 @@ together).
 
 ### Added
 
+- **`flowproof heal` works on multi-surface flows — Phase 2's list is
+  empty.** Healing was refused on the belief it needed multi-surface
+  replay; it never did. Heal is re-record-plus-diff, and multi-surface
+  recording already ships — so heal now runs on the same surface
+  registry, proposes a trace that keeps the multi header and per-step
+  surface attribution, and flags a step that MOVED between surfaces as a
+  `surface` change, because the same action against another app is not
+  the same step. An unchanged flow still proposes nothing.
+
 - **`assert_screenshot` works in multi-surface flows: a baseline's
   identity names its surface.** It was refused because the identity did
   not — two blocks reusing one name would have overwritten each other's

@@ -2318,3 +2318,78 @@ fn a_screenshot_name_with_the_surface_qualifier_is_refused() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Heal is re-record + diff, so a multi-surface flow heals with the same
+/// registry recording uses. An unchanged flow proposes nothing; a spec
+/// that grew a step in one block proposes a trace that keeps the multi
+/// header and per-step surfaces; and a step that MOVED between surfaces
+/// is flagged as a surface change — the same action against another app
+/// is not the same step.
+#[test]
+fn a_multi_surface_flow_heals_with_surface_attribution() {
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+
+    let yaml = |extra: &str| {
+        format!(
+            "name: Healable\napps:\n  gui: {{app: sap}}\n  portal: {{app: web, url: \"https://portal.test/x\"}}\nsteps:\n  - in: gui\n    steps:\n      - Press the \"Go\" button\n  - in: portal\n    steps:\n      - Press the \"Go\" button\n{extra}"
+        )
+    };
+    let mocks =
+        || -> SurfaceFactory { Box::new(|_| Ok(Box::new(MockAppDriver::new(&["Go", "Save"])))) };
+    let dir = std::env::temp_dir().join("flowproof-multi-heal");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = dir.join("multi.trace.jsonl");
+
+    let spec = FlowSpec::parse(&yaml("")).expect("spec parses");
+    let targets = flowproof_agent::surface_targets(&spec).expect("targets");
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks(),
+        std::time::Duration::from_millis(50),
+    );
+    record(&spec, &mut registry, &trace).expect("records");
+
+    // Unchanged spec, unchanged app: nothing to propose.
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks(),
+        std::time::Duration::from_millis(50),
+    );
+    let report = flowproof_agent::heal(&spec, &mut registry, &trace).expect("heals");
+    assert!(!report.changed, "no drift proposes nothing: {report:?}");
+
+    // The portal block grew a step: the proposal keeps the multi header
+    // and stamps the new step with ITS surface.
+    let grown = FlowSpec::parse(&yaml("      - Press the \"Save\" button\n")).expect("parses");
+    let mut registry = SurfaceRegistry::new(
+        targets.clone(),
+        mocks(),
+        std::time::Duration::from_millis(50),
+    );
+    let report = flowproof_agent::heal(&grown, &mut registry, &trace).expect("heals");
+    assert!(report.changed && report.steps_added == 1, "{report:?}");
+    let proposal = std::fs::read_to_string(report.proposed_path.as_ref().expect("proposal"))
+        .expect("proposal readable");
+    assert!(
+        proposal.contains("\"adapter\":\"multi\"") && proposal.contains("\"surface\":\"portal\""),
+        "the proposal stays a multi-surface trace: {proposal}"
+    );
+
+    // A step that moved between surfaces diffs as a surface change.
+    let moved = std::fs::read_to_string(&trace)
+        .expect("trace readable")
+        .replacen("\"surface\":\"gui\"", "\"surface\":\"portal\"", 1);
+    std::fs::write(&trace, moved).expect("trace rewritten");
+    let mut registry = SurfaceRegistry::new(targets, mocks(), std::time::Duration::from_millis(50));
+    let report = flowproof_agent::heal(&spec, &mut registry, &trace).expect("heals");
+    assert!(report.changed, "{report:?}");
+    assert!(
+        report
+            .steps_changed
+            .iter()
+            .any(|c| c.fields.contains(&"surface".to_string())),
+        "the move is flagged as a surface change: {report:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

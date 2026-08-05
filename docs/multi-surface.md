@@ -7,10 +7,10 @@
 > ([authoring.md](authoring.md#multi-surface-flows-apps-and-in-blocks)):
 > `apps:` + `in:` blocks, one surface active at a time, captures crossing
 > blocks, per-step surface attribution, replay from the trace alone with
-> zero LLM calls. Still open from Phase 2: `heal` on multi-surface flows
-> (re-record instead). Per-surface `browser:` and `window:` are shipped —
-> vision surfaces included — and `assert_screenshot` baselines are
-> surface-qualified (`<name>@<surface>.png`). Phase 3 remains a proposal.
+> zero LLM calls. Per-surface `browser:` and `window:` are shipped —
+> vision surfaces included — `assert_screenshot` baselines are
+> surface-qualified (`<name>@<surface>.png`), and `heal` runs on the same
+> surface registry recording uses. **Nothing from Phase 2 remains open.** Phase 3 remains a proposal.
 
 ## The problem
 
@@ -104,8 +104,9 @@ driver registry holding one driver per named app.
 Open questions Phase 2 must answer before it ships:
 
 - `window:` geometry and `browser:` config become per-surface.
-- `flowproof heal` must know which surface a failed step belonged to (the
-  selector ladder itself is per-adapter already and needs no change).
+- `flowproof heal` heals multi-surface flows: healing is re-record-plus-
+  diff, so the registry does the surface work, and a step that moved
+  between surfaces diffs as a `surface` change. Shipped.
 - `assert_screenshot` baselines carry the surface in their identity
   (`<name>@<surface>.png`), so a `gui` baseline can never be compared
   against a `portal` frame. Shipped.
