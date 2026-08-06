@@ -51,8 +51,19 @@ fn records_and_replays_a_browser_flow() {
     drop(driver);
 
     let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
-    let (report, run_dir) =
-        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    // GIF assembly is opt-in since it became a `--video` flag; the default is
+    // keyframes only. This test asserts the whole-run GIF renders, so it has
+    // to ask for one — running with defaults made it expect an artifact
+    // nothing had been told to produce.
+    let (report, run_dir) = flowproof_replay::run_trace_with_options(
+        &trace_path,
+        &mut driver,
+        flowproof_driver::RecordingOptions {
+            video: true,
+            ..Default::default()
+        },
+    )
+    .expect("replay runs");
     for step in &report.steps {
         eprintln!("{:?} {} {}", step.status, step.id, step.intent);
     }
