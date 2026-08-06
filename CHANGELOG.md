@@ -8,6 +8,18 @@ together).
 
 ### Fixed
 
+- **A high-severity advisory sat in the Python SDK's lock file.**
+  `cryptography` was pinned at 49.0.0, which GHSA-g6cj-pr64-35w5 names
+  (fixed in 50.0.0). It arrives transitively — `mcp` pulls `pyjwt[crypto]`
+  pulls `cryptography` — and `mcp` is in the `dev` dependency-group, so it
+  never reached the published wheel and no user was exposed. A locked
+  vulnerable version is still a locked vulnerable version: it is what every
+  contributor and every CI run installs, and "not shipped" is a reason to fix
+  it calmly rather than a reason to leave it. Now 50.0.0; ruff and the 25
+  pytest tests pass unchanged.
+
+### Fixed
+
 - **The published wheel carried two known PyO3 advisories.** `flowproof-python`
   was pinned to PyO3 0.26, which RUSTSEC-2026-0176 (out-of-bounds read in
   `nth` / `nth_back` for `PyList` and `PyTuple` iterators) and RUSTSEC-2026-0177
