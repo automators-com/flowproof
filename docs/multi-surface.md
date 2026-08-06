@@ -159,7 +159,10 @@ apps:
 steps:
   - in: gui
     steps:
-      - Remember the "id:wnd[0]/sbar" matching /\d+/ as order
+      # ... create and save the order, then read the number from its own
+      # field rather than out of the status bar's sentence ...
+      - Go to /nVA02
+      - Remember the "id:wnd[0]/usr/ctxtVBAK-VBELN" as order
   - in: assistant
     steps:
       - prompt: Investigate order ${captured.order} and set its priority.
