@@ -5650,6 +5650,87 @@ mod framed_target_tests {
         assert!(err.to_string().contains("at least two options"), "{err}");
     }
 
+    /// Every step the DOCS show must not be a shape the grammar refuses.
+    ///
+    /// `documented_grammar_examples_all_resolve` is a hand-kept list of
+    /// strings, so nothing read the prose pages themselves — which is how
+    /// `Remember the "…" matching /\\d+/ as order` survived in the `exports:`
+    /// walkthrough and the multi-surface Phase 2 example while nine pages
+    /// earlier the same document listed that exact form as refused. A reader
+    /// following it got a refusal from the tool that had just taught them the
+    /// step.
+    ///
+    /// This reads the pages. It deliberately asserts only that a documented
+    /// step is not a DECLINED shape, not that it resolves: a plain step in a
+    /// yaml block is natural-language intent for the model author by design,
+    /// so demanding it parse under the rules grammar would fail on examples
+    /// that are perfectly correct. `declined_shape` fires only on the six
+    /// forms the grammar recognises in order to reject, which is exactly the
+    /// contradiction worth catching.
+    #[test]
+    fn no_documented_example_shows_a_shape_the_grammar_refuses() {
+        const PAGES: &[(&str, &str)] = &[
+            (
+                "docs/authoring.md",
+                include_str!("../../../docs/authoring.md"),
+            ),
+            (
+                "docs/multi-surface.md",
+                include_str!("../../../docs/multi-surface.md"),
+            ),
+            (
+                "docs/getting-started.md",
+                include_str!("../../../docs/getting-started.md"),
+            ),
+        ];
+        let mut checked = 0usize;
+        let mut offenders = Vec::new();
+        for (page, text) in PAGES {
+            let mut in_yaml = false;
+            for (line_no, raw) in text.lines().enumerate() {
+                let trimmed = raw.trim_start();
+                if trimmed.starts_with("```") {
+                    // Opening fence carries the language; closing one does not.
+                    in_yaml = trimmed.starts_with("```yaml") || trimmed.starts_with("```yml");
+                    continue;
+                }
+                if !in_yaml {
+                    continue;
+                }
+                let Some(step) = trimmed.strip_prefix("- ") else {
+                    continue;
+                };
+                // `rules:` marks the deterministic route; the step is what
+                // follows it. A trailing `#` comment is prose about the
+                // example, not part of it — split on two-or-more spaces
+                // before the `#` so a `css:#id` selector survives.
+                let step = step.strip_prefix("rules: ").unwrap_or(step);
+                let step = match step.find("  #") {
+                    Some(at) => &step[..at],
+                    None => step,
+                };
+                let step = step.trim();
+                if step.is_empty() {
+                    continue;
+                }
+                checked += 1;
+                if let Some(reason) = declined_shape(step) {
+                    offenders.push(format!("{page}:{}: `{step}` — {reason}", line_no + 1));
+                }
+            }
+        }
+        assert!(
+            checked > 50,
+            "extraction found only {checked} documented steps, so it has stopped reading the \
+             pages and would pass no matter what they say"
+        );
+        assert!(
+            offenders.is_empty(),
+            "documented steps the grammar refuses:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
     #[test]
     fn declined_shapes_are_refused_and_name_the_alternative() {
         let cases: &[(&str, &str, &str)] = &[
