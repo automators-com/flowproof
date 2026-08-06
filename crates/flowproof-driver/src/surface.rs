@@ -171,6 +171,8 @@ impl AppDriver for SurfaceRegistry {
         fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError>;
         fn scene(&mut self) -> Result<Option<String>, DriverError>;
         fn element_receives_events(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError>;
+        fn today(&mut self) -> Result<Option<String>, DriverError>;
+        fn occluding_element(&mut self, selector: &UiaSelector) -> Result<Option<String>, DriverError>;
         fn stage_mocks(&mut self, rules: Vec<WebMock>) -> Result<(), DriverError>;
         fn set_files(&mut self, selector: &UiaSelector, paths: &[String]) -> Result<(), DriverError>;
         fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError>;
