@@ -69,15 +69,23 @@ fn translation_system_prompt() -> String {
 Describe the action(s) the Description implies, each on its own line \
 prefixed `STEP: `, using ONLY these forms. {STEP_GRAMMAR_RULES}
 
-If the Description states no discrete UI action (purely informational, \
-or describes something outside the app under test), respond with \
+If the Description states no discrete action at all (purely informational, \
+e.g. a note or a pass/fail observation with nothing to do), respond with \
 exactly: STEP: NO_ACTION
 
-If the Description implies SOME action but you cannot map it to any of \
-the forms above, or it names more than one plausible target with no way \
-to tell which was meant, do NOT guess. Respond with exactly one line: \
-`UNEXPLAINED: ` followed by a short factual restatement of what the \
-Description asks for.
+If the Description describes a real action but that action targets a \
+different app or tool than the one under test (e.g. opening a downloaded \
+file in a spreadsheet program, sending an email, checking a filesystem) — \
+not ambiguity about which UI element to use, but the action clearly \
+happening somewhere else entirely — do NOT drop it and do NOT force it \
+into the forms above. Respond with exactly one line: `OUT_OF_SCOPE: ` \
+followed by a short factual restatement of what the Description asks for.
+
+If the Description implies SOME action within the app under test but you \
+cannot map it to any of the forms above, or it names more than one \
+plausible target with no way to tell which was meant, do NOT guess. \
+Respond with exactly one line: `UNEXPLAINED: ` followed by a short \
+factual restatement of what the Description asks for.
 
 Then, on its own line, translate the Expected outcome into flowproof's \
 assert prose, prefixed `ASSERT: ` (e.g. `ASSERT: page shows Widgets \
@@ -128,6 +136,8 @@ pub fn translate_record(
             lines.push(DraftLine::Action(step.to_string()));
         } else if let Some(observed) = line.strip_prefix("UNEXPLAINED:") {
             lines.push(DraftLine::Flagged(observed.trim().to_string()));
+        } else if let Some(observed) = line.strip_prefix("OUT_OF_SCOPE:") {
+            lines.push(DraftLine::OutOfScope(observed.trim().to_string()));
         } else if let Some(assert) = line.strip_prefix("ASSERT:") {
             let assert = assert.trim();
             if assert.is_empty() || assert == "NONE" {
@@ -247,6 +257,39 @@ mod tests {
         .expect("translates");
         assert_eq!(lines.len(), 1);
         assert!(matches!(&lines[0], DraftLine::Flagged(_)));
+    }
+
+    /// Regression: a real UAT document had a step ("open the exported
+    /// file to review it") that the model correctly recognized wasn't an
+    /// in-app action, but the old two-way NO_ACTION/UNEXPLAINED split had
+    /// nowhere honest to put it — it silently vanished as NO_ACTION,
+    /// indistinguishable from a step with no action at all. OUT_OF_SCOPE
+    /// gives it a distinct, visible outcome instead.
+    #[test]
+    fn translate_record_flags_cross_app_steps_as_out_of_scope_not_no_action() {
+        let mut client = ScriptedModel {
+            replies: [
+                "OUT_OF_SCOPE: open the exported file in a spreadsheet program to review it\n\
+                 ASSERT: the exported data is available for review",
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let lines = translate_record(
+            &record(
+                "Open the exported file to review and analyze the data.",
+                "The data is available for review and analysis.",
+            ),
+            &mut client,
+        )
+        .expect("translates");
+        assert_eq!(lines.len(), 2);
+        assert!(matches!(&lines[0], DraftLine::OutOfScope(_)));
+        assert!(
+            !matches!(&lines[0], DraftLine::Flagged(_)),
+            "cross-app steps must not be indistinguishable from in-app ambiguity"
+        );
+        assert!(matches!(&lines[1], DraftLine::Assert(_)));
     }
 
     #[test]

@@ -46,6 +46,14 @@ pub enum DraftLine {
     /// already stripped of the marker — renders as a `# TODO` comment
     /// plus a real freeform step.
     Flagged(String),
+    /// A real action the source clearly describes, but one that targets
+    /// a different app/tool than the one under test (e.g. "open the
+    /// exported file in Excel") — distinct from [`Self::Flagged`], which
+    /// is for ambiguity *within* the app under test. Collapsing this into
+    /// "no action" would drop a real step silently; collapsing it into
+    /// `Flagged` would tell the live authoring agent to hunt for it on a
+    /// screen it will never find it on. Renders as its own `# TODO`.
+    OutOfScope(String),
 }
 
 /// Double-quoted YAML scalar, safe for arbitrary model-generated text.
@@ -91,6 +99,22 @@ pub fn assemble(
                     ))
                 ));
             }
+            DraftLine::OutOfScope(observed) => {
+                yaml.push_str(
+                    "  # TODO: out-of-scope step here — this action targets a\n  \
+                     # different app/tool than the one under test, so flowproof\n  \
+                     # cannot automate it here. Flagged rather than dropped\n  \
+                     # silently; handle it manually, or move it to a separate\n  \
+                     # flow targeting that app.\n",
+                );
+                yaml.push_str(&format!(
+                    "  - {}\n",
+                    yaml_quote(&format!(
+                        "manual step — outside the app under test, flowproof cannot \
+                         automate this here. Observed: {observed}"
+                    ))
+                ));
+            }
         }
     }
     FlowSpec::parse(&yaml)?;
@@ -122,6 +146,32 @@ mod tests {
             .steps
             .iter()
             .any(|s| matches!(s, crate::spec::SpecStep::Assert { .. })));
+    }
+
+    /// An out-of-scope step must be visibly flagged, distinct from an
+    /// in-app [`DraftLine::Flagged`] step — collapsing the two would tell
+    /// the live authoring agent to hunt on a screen the action never
+    /// appears on.
+    #[test]
+    fn assemble_renders_out_of_scope_steps_distinctly_from_flagged() {
+        let lines = vec![DraftLine::OutOfScope(
+            "open the exported file in Excel and review it".to_string(),
+        )];
+        let yaml = assemble("# DRAFT", "n", "sap", &lines).expect("assembles");
+        assert!(
+            yaml.contains("out-of-scope"),
+            "must be distinguishable from an in-app flagged step: {yaml}"
+        );
+        assert!(
+            yaml.contains("TODO"),
+            "out-of-scope step must be visibly marked"
+        );
+        assert!(
+            !yaml.contains("resolve the action needed here against the live screen"),
+            "must not use the in-app-flagged wording, which implies the action is \
+             findable on the screen under test: {yaml}"
+        );
+        FlowSpec::parse(&yaml).expect("draft parses");
     }
 
     #[test]
