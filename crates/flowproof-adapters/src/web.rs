@@ -627,6 +627,70 @@ fn wait_until_closed(mut is_open: impl FnMut() -> bool, mut pause: impl FnMut())
     }
 }
 
+/// One reading of the page's inventory, with the load state that says whether
+/// it is worth believing yet.
+struct SceneSample {
+    ready: bool,
+    entries: Vec<serde_json::Value>,
+}
+
+/// How many settling rounds before the inventory is captured regardless. A
+/// page with a ticker, a carousel, or a spinner never truly stops changing,
+/// so settling is best-effort with a bound: past this, the newest reading is
+/// used and the step proceeds rather than hanging on a page that will never
+/// go quiet.
+const SCENE_SETTLE_ROUNDS: usize = 20;
+
+/// Gap between readings. Long enough for a framework's show/hide pass to land
+/// between two of them, short enough that an already-settled page pays one
+/// extra round trip rather than a pause a person would notice.
+const SCENE_SETTLE_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The target tokens a reading offers — what an authoring model may ground
+/// against, and the only part of the scene whose churn matters here. A clock,
+/// a character counter, or a field the user is typing into changes text and
+/// values on every reading without changing which elements exist, and waiting
+/// for those to hold still would mean waiting forever.
+fn scene_shape(entries: &[serde_json::Value]) -> Vec<&str> {
+    entries
+        .iter()
+        .filter_map(|entry| entry["target"].as_str())
+        .collect()
+}
+
+/// Read the inventory only once the page has stopped rearranging it.
+///
+/// The scene is the grounding set an authoring model must choose from, so it
+/// has to describe the page the chosen actions will actually run on. A step
+/// that navigates leaves the next step's scene racing the new page: a server
+/// that renders every variant of a form and hides the irrelevant ones in
+/// script briefly presents *all* of them as rendered. A model handed that
+/// union grounds faithfully onto a control that is about to disappear, and
+/// the recorder then fails to find an element the model was entitled to
+/// choose — blaming the model for the scene's mistake.
+///
+/// Two readings agreeing on their shape, with the document loaded, is the
+/// signal that the rearranging is done.
+fn settled_scene(
+    mut sample: impl FnMut() -> Result<SceneSample, DriverError>,
+    mut pause: impl FnMut(),
+    rounds: usize,
+) -> Result<Vec<serde_json::Value>, DriverError> {
+    let mut previous = sample()?;
+    for _ in 0..rounds {
+        pause();
+        let current = sample()?;
+        if previous.ready
+            && current.ready
+            && scene_shape(&previous.entries) == scene_shape(&current.entries)
+        {
+            return Ok(current.entries);
+        }
+        previous = current;
+    }
+    Ok(previous.entries)
+}
+
 /// Launch a fresh Chromium (`CHROME` env var overrides the binary), optionally
 /// with extra command-line flags. Headless unless `FLOWPROOF_HEADED` is set.
 fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
@@ -3584,17 +3648,35 @@ impl AppDriver for WebAppDriver {
                   });
                 }
               }
-              return JSON.stringify(entries);
+              return JSON.stringify({
+                ready: document.readyState === 'complete',
+                entries,
+              });
             })()
         "#;
-        let value = self
-            .tab()?
-            .evaluate(SCENE_JS, false)
-            .map_err(|e| web_err("evaluating scene script", e))?;
-        let json = value
-            .value
-            .and_then(|v| v.as_str().map(str::to_string))
-            .ok_or_else(|| DriverError::Browser("scene script returned no value".into()))?;
+        let sample = || {
+            let value = self
+                .tab()?
+                .evaluate(SCENE_JS, false)
+                .map_err(|e| web_err("evaluating scene script", e))?;
+            let raw = value
+                .value
+                .and_then(|v| v.as_str().map(str::to_string))
+                .ok_or_else(|| DriverError::Browser("scene script returned no value".into()))?;
+            let parsed: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| DriverError::Browser(format!("scene script returned no JSON: {e}")))?;
+            Ok(SceneSample {
+                ready: parsed["ready"].as_bool().unwrap_or(true),
+                entries: parsed["entries"].as_array().cloned().unwrap_or_default(),
+            })
+        };
+        let entries = settled_scene(
+            sample,
+            || std::thread::sleep(SCENE_SETTLE_INTERVAL),
+            SCENE_SETTLE_ROUNDS,
+        )?;
+        let json = serde_json::to_string(&entries)
+            .map_err(|e| DriverError::Browser(format!("re-serialising scene: {e}")))?;
         Ok(Some(json))
     }
 
@@ -3640,6 +3722,111 @@ mod tests {
             self.calls.borrow_mut().push("foreground");
             Ok(())
         }
+    }
+
+    fn sample(ready: bool, targets: &[&str]) -> super::SceneSample {
+        super::SceneSample {
+            ready,
+            entries: targets
+                .iter()
+                .map(|target| serde_json::json!({ "target": target, "actionable": true }))
+                .collect(),
+        }
+    }
+
+    fn targets_of(entries: &[serde_json::Value]) -> Vec<String> {
+        super::scene_shape(entries)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The Tricentis failure this exists to prevent. `#get_truck` navigates to
+    /// a page that renders every vehicle form and hides the irrelevant ones in
+    /// script. Read too early, the inventory is the union — a motorcycle
+    /// `#model` beside the truck's `#payload` — and a model that grounds on
+    /// `#model` is then blamed for choosing a control that was genuinely
+    /// listed. The scene must be the settled form, not the union.
+    #[test]
+    fn union_of_forms_mid_transition_is_never_returned() {
+        let readings = RefCell::new(vec![
+            sample(false, &["css:#make", "css:#model", "css:#payload"]),
+            sample(true, &["css:#make", "css:#model", "css:#payload"]),
+            sample(true, &["css:#make", "css:#payload"]),
+            sample(true, &["css:#make", "css:#payload"]),
+        ]);
+        let mut pauses = 0;
+        let entries =
+            super::settled_scene(|| Ok(readings.borrow_mut().remove(0)), || pauses += 1, 20)
+                .expect("settles");
+        assert_eq!(targets_of(&entries), vec!["css:#make", "css:#payload"]);
+    }
+
+    /// Two readings that agree while the document is still loading prove
+    /// nothing — that is exactly the window in which the pre-script union
+    /// looks stable.
+    #[test]
+    fn agreement_before_load_completes_does_not_count_as_settled() {
+        let readings = RefCell::new(vec![
+            sample(false, &["css:#model"]),
+            sample(false, &["css:#model"]),
+            sample(true, &["css:#payload"]),
+            sample(true, &["css:#payload"]),
+        ]);
+        let entries = super::settled_scene(|| Ok(readings.borrow_mut().remove(0)), || {}, 20)
+            .expect("settles");
+        assert_eq!(targets_of(&entries), vec!["css:#payload"]);
+    }
+
+    /// A page that never goes quiet must still yield a scene. Recording it is
+    /// better than hanging on a carousel that will rotate forever.
+    #[test]
+    fn a_page_that_never_settles_returns_its_newest_reading_within_the_bound() {
+        let round = std::cell::Cell::new(0usize);
+        let mut pauses = 0;
+        let entries = super::settled_scene(
+            || {
+                let n = round.get();
+                round.set(n + 1);
+                // A carousel: one slide's target replaced on every reading, so
+                // no two consecutive shapes ever agree.
+                Ok(super::SceneSample {
+                    ready: true,
+                    entries: vec![
+                        serde_json::json!({"target": "css:#make"}),
+                        serde_json::json!({"target": format!("css:#slide{n}")}),
+                    ],
+                })
+            },
+            || pauses += 1,
+            3,
+        )
+        .expect("gives up cleanly");
+        assert_eq!(pauses, 3, "bounded by the round count, not by the page");
+        assert_eq!(targets_of(&entries), vec!["css:#make", "css:#slide3"]);
+    }
+
+    /// Text and values churn on a live page without changing which elements
+    /// exist. Waiting for those to hold still would wait forever, so the
+    /// shape deliberately ignores them.
+    #[test]
+    fn churning_text_does_not_prevent_settling() {
+        let readings = RefCell::new(vec![
+            super::SceneSample {
+                ready: true,
+                entries: vec![serde_json::json!({"target": "css:#clock", "text": "12:00:01"})],
+            },
+            super::SceneSample {
+                ready: true,
+                entries: vec![serde_json::json!({"target": "css:#clock", "text": "12:00:02"})],
+            },
+        ]);
+        let mut pauses = 0;
+        let entries =
+            super::settled_scene(|| Ok(readings.borrow_mut().remove(0)), || pauses += 1, 20)
+                .expect("settles");
+        assert_eq!(pauses, 1, "settles on the first comparison");
+        assert_eq!(entries[0]["text"], "12:00:02");
     }
 
     /// The single-round-trip probes exist because the CDP transport pays a
