@@ -6,6 +6,23 @@ together).
 
 ## Unreleased
 
+### Fixed
+
+- **The two E2E jobs had been red on `main` for a day, and nothing on a pull
+  request could see it.** `web E2E` and `windows build + E2E` are off the PR
+  path, so they run only on push to main — every PR involved went green, and
+  main went red on merge, repeatedly, for two unrelated reasons.
+
+  `notepad_author_e2e` builds a `FlowSpec` literally and the struct had grown
+  three fields it did not list (`apps`, `exports`, `login`). The file is
+  `#![cfg(windows)]`, so no amount of `cargo clippy --all-targets` on Linux or
+  macOS ever compiled it.
+
+  `web_e2e` asserted the whole-run GIF renders, but GIF assembly became opt-in
+  when `--video` landed and the test kept running with defaults — it expected
+  an artifact nothing had been told to produce. It now asks for one, so the
+  assertion tests what it claims to.
+
 ## 0.15.0
 
 A maintenance release with one theme: the things that were true in writing but
