@@ -8,6 +8,34 @@ together).
 
 ### Fixed
 
+- **A high-severity advisory sat in the Python SDK's lock file.**
+  `cryptography` was pinned at 49.0.0, which GHSA-g6cj-pr64-35w5 names
+  (fixed in 50.0.0). It arrives transitively — `mcp` pulls `pyjwt[crypto]`
+  pulls `cryptography` — and `mcp` is in the `dev` dependency-group, so it
+  never reached the published wheel and no user was exposed. A locked
+  vulnerable version is still a locked vulnerable version: it is what every
+  contributor and every CI run installs, and "not shipped" is a reason to fix
+  it calmly rather than a reason to leave it. Now 50.0.0; ruff and the 25
+  pytest tests pass unchanged.
+
+- **The docs still demonstrated a step the grammar refuses, in two more
+  places.** An earlier pass fixed the `exports:` walkthrough and one
+  multi-surface example; it missed the same
+  `Remember the "…" matching /\d+/ as order` in authoring.md's Phase 2 block
+  and in multi-surface.md's agent-seam block, because the fix was by hand and
+  by hand is how the first two got there. A reader following either one got a
+  refusal from the tool that had just taught them the step.
+
+  Both now read the number from the field that holds it. More to the point,
+  a test reads the prose pages now: every step in every fenced yaml block of
+  authoring.md, multi-surface.md and getting-started.md is checked against
+  the set of shapes the grammar recognises in order to reject. It asserts
+  only that — not that each step resolves — because a plain step is
+  natural-language intent for the model author by design, and demanding it
+  parse deterministically would fail on examples that are perfectly correct.
+  The extraction also fails if it stops finding steps, so it cannot quietly
+  degrade into a test that passes by reading nothing.
+
 - **The published wheel carried two known PyO3 advisories.** `flowproof-python`
   was pinned to PyO3 0.26, which RUSTSEC-2026-0176 (out-of-bounds read in
   `nth` / `nth_back` for `PyList` and `PyTuple` iterators) and RUSTSEC-2026-0177
