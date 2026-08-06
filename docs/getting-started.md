@@ -216,6 +216,26 @@ found, the failure detail suggests the nearest visible text anchors:
 `element … not found — did you mean 'Save changes'?` — usually the whole
 diagnosis for drifted labels, with `flowproof heal` as the fix.
 
+**Verify the recording reproduces itself.** A recording is a claim that
+the flow can be performed again from the trace alone, and nothing checks
+that claim: authoring succeeds when the live app happens to cooperate, so
+a target that was merely reachable at that moment — a button under a
+rotating carousel, a field beneath a datepicker that hadn't opened yet —
+gets written down as though it always would be. The first person to learn
+otherwise is whoever runs the suite.
+
+```bash
+flowproof record shop.flow.yaml --verify
+```
+
+`--verify` replays the new trace once, immediately, and refuses the
+recording if it cannot reproduce itself: the trace is kept as evidence for
+`flowproof heal`, and the command exits non-zero saying so. It is opt-in
+rather than the default because it **performs the flow a second time**
+against the live application, repeating whatever that flow does — orders,
+e-mails, payments. Turn it on for a flow whose steps are safe to repeat,
+and leave it off for one that isn't.
+
 **Incremental re-record.** When the app changes, don't re-record the
 flow — re-record the step: `flowproof record calc.flow.yaml --reuse`
 walks the spec against the existing trace and reuses every old step
