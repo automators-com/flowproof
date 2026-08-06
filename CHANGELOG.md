@@ -8,6 +8,32 @@ together).
 
 ### Fixed
 
+- **The fix for "a step naming a whole form authored one field" could make it
+  author none.** That fix let one step answer with a sequence, and grounded the
+  sequence as a unit: if any single action failed, all of them were refused, so
+  a half-filled form could never reach the trace. That part was right and
+  stands. What was wrong was the correction. A refused sequence went back to
+  the model as the original question with the failure appended and a closing
+  instruction to reply with "ONLY the corrected JSON object" — singular. A
+  model that complies returns one action. So a step meaning a whole form was
+  answered with a sequence, refused over one bad target, and then re-answered
+  with a single field: fewer fields than the one-action-per-step behaviour the
+  sequence was introduced to replace, and on a form long enough, none at all.
+
+  The odds were the mechanism. Each action grounds or does not roughly
+  independently, so a one-action step landed at some rate and a twelve-action
+  step landed at that rate to the twelfth — and the one retry had to win the
+  same throw again, from scratch, having been told to come back with less. The
+  longer the form, the likelier the step authored nothing, which is why this
+  showed up on forms rather than on clicks.
+
+  The retry is now a correction rather than a fresh question: it names which
+  action was refused and why, states how many actions before it had already
+  grounded and asks for those back unchanged, and asks for an array. Nothing
+  about what is *accepted* moved — a sequence still lands whole or not at all.
+
+### Added
+
 - **A high-severity advisory sat in the Python SDK's lock file.**
   `cryptography` was pinned at 49.0.0, which GHSA-g6cj-pr64-35w5 names
   (fixed in 50.0.0). It arrives transitively — `mcp` pulls `pyjwt[crypto]`

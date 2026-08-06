@@ -227,6 +227,15 @@ fn has_capture_pronoun(intent: &str) -> bool {
 #[derive(Debug)]
 enum GroundingError {
     Rejected(String),
+    /// A sequence rejected at one action, carrying how far it got. A step
+    /// meaning a whole form authors a dozen actions, and re-authoring all of
+    /// them from scratch is a coin flip the model has to win twice; knowing
+    /// the prefix was accepted turns the retry into a correction.
+    Sequence {
+        reason: String,
+        grounded: usize,
+        total: usize,
+    },
     CaptureAmbiguity(CaptureAmbiguity),
 }
 
@@ -246,6 +255,7 @@ impl std::fmt::Display for GroundingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rejected(reason) => f.write_str(reason),
+            Self::Sequence { reason, .. } => f.write_str(reason),
             Self::CaptureAmbiguity(ambiguity) => f.write_str(&ambiguity.reason()),
         }
     }
@@ -502,10 +512,11 @@ fn parse_and_ground(
     for (index, item) in authored.into_iter().enumerate() {
         let mut actions =
             ground_one(item, targets, scene, app, intent, &scope).map_err(|error| match error {
-                GroundingError::Rejected(reason) if total > 1 => GroundingError::Rejected(format!(
-                    "action {} of {total} was rejected: {reason}",
-                    index + 1
-                )),
+                GroundingError::Rejected(reason) if total > 1 => GroundingError::Sequence {
+                    reason: format!("action {} of {total} was rejected: {reason}", index + 1),
+                    grounded: index,
+                    total,
+                },
                 other => other,
             })?;
         for action in &actions {
@@ -799,9 +810,21 @@ pub fn author_steps<C: ModelClient>(
     }
     let prompt = user_prompt(ctx);
     let mut last_error = String::new();
+    // How much of the last rejected sequence had already grounded. `None` for
+    // a single action, or for a sequence whose very first action was wrong:
+    // in neither case is there a correct prefix to stand on.
+    let mut kept: Option<(usize, usize)> = None;
     for attempt in 0..2 {
         let user = if attempt == 0 {
             prompt.clone()
+        } else if let Some((grounded, total)) = kept {
+            format!(
+                "{prompt}\n\nYour previous reply was rejected: {last_error}. \
+                 The first {grounded} of those {total} actions were correct — repeat them \
+                 unchanged, then correct the rest. Every action in the sequence has to ground \
+                 or the whole step is refused, so do not drop the remaining ones. \
+                 Reply again with ONLY the corrected JSON array."
+            )
         } else {
             format!("{prompt}\n\nYour previous reply was rejected: {last_error}. Reply again with ONLY the corrected JSON object.")
         };
@@ -821,7 +844,18 @@ pub fn author_steps<C: ModelClient>(
                     reason: ambiguity.reason(),
                 })
             }
-            Err(reason) => last_error = reason.to_string(),
+            Err(GroundingError::Sequence {
+                reason,
+                grounded,
+                total,
+            }) => {
+                last_error = reason;
+                kept = (grounded > 0).then_some((grounded, total));
+            }
+            Err(reason) => {
+                last_error = reason.to_string();
+                kept = None;
+            }
         }
     }
     Err(AgentError::Authoring {
@@ -1047,6 +1081,112 @@ mod tests {
             reason.contains("not one of the listed elements"),
             "{reason}"
         );
+    }
+
+    /// A client that keeps what it was asked, so a test can assert on the
+    /// correction rather than only on the outcome.
+    struct Recording {
+        replies: Vec<String>,
+        prompts: Vec<String>,
+    }
+
+    impl ModelClient for Recording {
+        fn complete(&mut self, _system: &str, user: &str) -> Result<String, AgentError> {
+            let reply = self
+                .replies
+                .get(self.prompts.len())
+                .cloned()
+                .unwrap_or_default();
+            self.prompts.push(user.to_string());
+            Ok(reply)
+        }
+
+        fn identity(&self) -> (String, String) {
+            ("recording".into(), "test".into())
+        }
+    }
+
+    #[test]
+    fn a_rejected_sequence_is_corrected_rather_than_re_authored_from_scratch() {
+        // The regression this guards. A step naming a whole form authors a
+        // long sequence, and one ungrounded action refuses all of it — so the
+        // retry has to re-author every action correctly to land anything at
+        // all. On a real form that is a coin flip the model must win twice,
+        // and losing it fills FEWER fields than the one-action-per-step
+        // behaviour this replaced: not some of the form, none of it.
+        //
+        // The all-or-nothing accept stands — half a form and a trace that
+        // looks authored is still the worst outcome. What changes is that the
+        // correction stands on the prefix that already grounded.
+        let bad = r##"[
+            {"action":"select_option","target":"css:#make","text":"BMW"},
+            {"action":"select_option","target":"css:#seats","text":"2"},
+            {"action":"type_text","target":"css:#invented","text":"W-12345"}
+        ]"##;
+        let good = r##"[
+            {"action":"select_option","target":"css:#make","text":"BMW"},
+            {"action":"select_option","target":"css:#seats","text":"2"},
+            {"action":"type_text","target":"css:#plate","text":"W-12345"},
+            {"action":"click","target":"css:#next"}
+        ]"##;
+        let mut client = Recording {
+            replies: vec![bad.into(), good.into()],
+            prompts: Vec::new(),
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                intent: "Fill out all the vehicle data and click next",
+                scene: FORM_SCENE,
+                ..ctx()
+            },
+        )
+        .expect("the corrected sequence grounds");
+        assert_eq!(actions.len(), 4, "the whole form lands, not a prefix of it");
+
+        let retry = &client.prompts[1];
+        assert!(retry.contains("action 3 of 3"), "{retry}");
+        assert!(
+            retry.contains("The first 2 of those 3 actions were correct"),
+            "the correction has to name the prefix it can stand on: {retry}"
+        );
+        assert!(
+            retry.contains("do not drop the remaining ones"),
+            "a shorter reply is the failure mode being guarded: {retry}"
+        );
+        // The sharpest edge of the regression: a sequence was refused and the
+        // correction then asked for ONE JSON *object*. A model that complies
+        // authors a single action, so a step meaning a whole form came back
+        // filling one field — or none.
+        assert!(
+            !retry.contains("JSON object"),
+            "a rejected sequence must not be asked to come back as one action: {retry}"
+        );
+    }
+
+    #[test]
+    fn a_sequence_wrong_from_its_first_action_claims_no_correct_prefix() {
+        // Nothing grounded, so there is no prefix to repeat. Telling the model
+        // "the first 0 actions were correct" would be noise at best.
+        let bad = r##"[
+            {"action":"type_text","target":"css:#invented","text":"W-12345"},
+            {"action":"click","target":"css:#next"}
+        ]"##;
+        let mut client = Recording {
+            replies: vec![bad.into(), bad.into()],
+            prompts: Vec::new(),
+        };
+        author_steps(
+            &mut client,
+            &AuthorContext {
+                intent: "Fill out all the vehicle data",
+                scene: FORM_SCENE,
+                ..ctx()
+            },
+        )
+        .expect_err("nothing grounds");
+        let retry = &client.prompts[1];
+        assert!(!retry.contains("were correct"), "{retry}");
     }
 
     #[test]

@@ -62,7 +62,12 @@ data and click next` is one step, and the model answers it with the whole
 sequence of grounded actions it takes — one per field, plus the button — in a
 single call. Every action in that sequence is grounded against the same listed
 inventory and rejected as a whole if any one of them is not, so a half-filled
-form never reaches the trace. The inventory also reports what each field
+form never reaches the trace. A rejected sequence is put back to the model as a
+correction rather than as a fresh question: the reply names which action failed
+and how many before it were already grounded, and asks for the corrected
+sequence. Re-authoring a dozen actions from scratch to fix one of them is a
+throw the model has to win twice, and a step naming a whole form is exactly
+where losing it costs the most. The inventory also reports what each field
 currently holds, which the page marks required, which boxes are ticked, and a
 dropdown's exact options, so a `<select>` is given a name it really has rather
 than a plausible guess. Values of password fields are never reported.
