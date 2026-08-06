@@ -38,6 +38,51 @@ const STEP_TIMEOUT_MS: u64 = 5000;
 /// Poll cadence while an auto-waiting assertion is pending.
 const ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How many `ASSERT_POLL_INTERVAL` rounds recording waits for an occluder to
+/// clear before refusing the click.
+///
+/// Not a constant, because the budget it must match is not one. Recording
+/// bakes `step_timeout_ms()` into every targeted step's existence
+/// precondition, and replay waits exactly that recorded value on the same
+/// gate (`actionable_timeout`). Deriving both from the one number — including
+/// its `FLOWPROOF_STEP_TIMEOUT_MS` override — is what makes them agree.
+///
+/// The direction matters more than the number. Recording must never accept a
+/// click replay would reject, so out-waiting replay is the one error that
+/// cannot be tolerated: it mints a trace whose very first replay fails. Being
+/// equal is correct; being *shorter* would merely be pessimistic.
+fn occlusion_wait_rounds() -> usize {
+    let poll = ASSERT_POLL_INTERVAL.as_millis().max(1);
+    usize::try_from(u128::from(step_timeout_ms()) / poll).unwrap_or(1)
+}
+
+/// Wait for a transient occluder to clear.
+///
+/// A carousel mid-rotation, a toast on its way out, and a modal backdrop
+/// fading all report the same thing the instant they are asked: something
+/// else would receive this click. Replay polls that gate to a deadline
+/// (`wait_actionable`); recording used to ask once and abort, so a page whose
+/// overlay cleared 200ms later could not be recorded at all — while the trace
+/// it refused to write would have replayed perfectly.
+///
+/// `None` from the probe means the driver cannot tell, which satisfies the
+/// gate exactly as it does at replay: unknown is not an accusation.
+fn wait_until_receives_events(
+    mut probe: impl FnMut() -> Result<Option<bool>, flowproof_driver::DriverError>,
+    mut pause: impl FnMut(),
+    rounds: usize,
+) -> Result<bool, flowproof_driver::DriverError> {
+    for round in 0..=rounds {
+        if probe()? != Some(false) {
+            return Ok(true);
+        }
+        if round < rounds {
+            pause();
+        }
+    }
+    Ok(false)
+}
+
 /// The precondition wait baked into every targeted step at record time.
 /// `STEP_TIMEOUT_MS` stays the default for everyone - override only when
 /// recording somewhere with real reason to expect more latency (e.g. a
@@ -2698,11 +2743,16 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     // landed on the occluder, the page did not react, and
                     // the step was written into the trace as a success - a
                     // recording that cannot replay, made by the tool whose
-                    // job is to notice exactly that. Same predicate as
-                    // replay's actionability gate, so the two agree by
-                    // construction; `None` means the surface cannot tell,
-                    // which is satisfied.
-                    if driver.element_receives_events(targeted())? == Some(false) {
+                    // job is to notice exactly that. Same predicate AND the
+                    // same waiting as replay's actionability gate, so the two
+                    // agree by construction; `None` means the surface cannot
+                    // tell, which is satisfied.
+                    let clear = wait_until_receives_events(
+                        || driver.element_receives_events(targeted()),
+                        || std::thread::sleep(ASSERT_POLL_INTERVAL),
+                        occlusion_wait_rounds(),
+                    )?;
+                    if !clear {
                         return Err(RecordError::AssertMismatch {
                             intent: spec_step.intent().to_string(),
                             expected: "the click to reach the element".to_string(),
@@ -3572,6 +3622,75 @@ mod tests {
 
     use super::*;
     use crate::spec::FlowSpec;
+
+    /// A carousel mid-rotation: covered for the first few probes, then not.
+    /// Recording must wait it out rather than refuse a page that is merely
+    /// mid-animation — the trace it used to refuse would have replayed.
+    #[test]
+    fn a_transient_occluder_is_waited_out_rather_than_refused() {
+        let answers =
+            std::cell::RefCell::new(vec![Some(false), Some(false), Some(false), Some(true)]);
+        let mut pauses = 0;
+        let clear = super::wait_until_receives_events(
+            || Ok(answers.borrow_mut().remove(0)),
+            || pauses += 1,
+            super::occlusion_wait_rounds(),
+        )
+        .expect("probe succeeds");
+        assert!(clear, "the occluder cleared, so the click is recordable");
+        assert_eq!(pauses, 3, "waited exactly as long as it had to");
+    }
+
+    /// A datepicker that never goes away is a real refusal, and it must
+    /// still be one — bounded, so recording cannot hang on it.
+    #[test]
+    fn a_persistent_occluder_is_still_refused_within_the_bound() {
+        let mut probes = 0;
+        let mut pauses = 0;
+        let clear = super::wait_until_receives_events(
+            || {
+                probes += 1;
+                Ok(Some(false))
+            },
+            || pauses += 1,
+            4,
+        )
+        .expect("probe succeeds");
+        assert!(!clear, "a cover that never clears is refused");
+        assert_eq!(probes, 5, "one probe per round, plus the first");
+        assert_eq!(pauses, 4, "bounded by the rounds, not by the page");
+    }
+
+    /// `None` is "this driver cannot tell", not "this is covered". Every
+    /// non-web adapter answers `None`, and recording on them must not pay the
+    /// whole wait to learn nothing.
+    #[test]
+    fn a_driver_that_cannot_tell_does_not_wait() {
+        let mut pauses = 0;
+        let clear = super::wait_until_receives_events(
+            || Ok(None),
+            || pauses += 1,
+            super::occlusion_wait_rounds(),
+        )
+        .expect("probe succeeds");
+        assert!(clear);
+        assert_eq!(pauses, 0, "unknown is satisfied immediately");
+    }
+
+    /// The invariant that sets the budget: recording must never accept a
+    /// click replay would reject. Waiting *longer* than replay would mint a
+    /// trace whose very first replay fails, so the two budgets are equal by
+    /// construction — 40 rounds of 250ms against replay's 10_000ms default.
+    #[test]
+    fn recording_does_not_out_wait_replay() {
+        let rounds = u32::try_from(occlusion_wait_rounds()).expect("round count fits a u32");
+        let record_budget = ASSERT_POLL_INTERVAL * rounds;
+        assert_eq!(
+            u64::try_from(record_budget.as_millis()).expect("budget fits a u64"),
+            step_timeout_ms(),
+            "record waits exactly the budget it writes into the trace for replay"
+        );
+    }
 
     const CALC_SPEC: &str = "\
 name: Add two numbers
