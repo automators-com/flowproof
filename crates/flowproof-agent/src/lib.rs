@@ -7,6 +7,9 @@
 pub mod agent_steps;
 pub mod author;
 pub mod clarify;
+pub mod doc_author;
+pub mod doc_formats;
+pub mod draft_assembly;
 pub mod heal;
 pub mod llm;
 pub mod recorder;

@@ -245,6 +245,21 @@ enum Command {
         #[arg(long, default_value = "Say hello.")]
         prompt: String,
     },
+    /// EXPERIMENTAL: draft a `.flow.yaml` from a requirement/test-case
+    /// document (PDF export from a test-management tool). DRAFT only —
+    /// still needs a live `record` pass to resolve any flagged steps.
+    AuthorFromDoc {
+        /// Path to the test-case document (PDF).
+        doc: PathBuf,
+        /// Target app id (e.g. sap, web, calc).
+        #[arg(long)]
+        app: String,
+        /// Flow name, written into the draft's `name:` field.
+        #[arg(long)]
+        name: String,
+        #[arg(short, long)]
+        out: PathBuf,
+    },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
     Heal {
@@ -2063,6 +2078,32 @@ fn cmd_audit(
     Ok(if any_failed { EXIT_FAIL } else { EXIT_PASS })
 }
 
+fn cmd_author_from_doc(
+    doc: PathBuf,
+    app: String,
+    name: String,
+    out: PathBuf,
+) -> Result<u8, String> {
+    let opts = flowproof_agent::doc_author::DocAuthorOptions {
+        doc,
+        app,
+        name,
+        out,
+    };
+    match flowproof_agent::doc_author::author_from_doc(&opts) {
+        Ok(path) => {
+            println!(
+                "draft spec written to {} — DRAFT; review every step (a flagged one needs \
+                 the live app to resolve it, an assert is a light translation of the \
+                 document's own wording), then `flowproof record`",
+                path.display()
+            );
+            Ok(EXIT_PASS)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn cmd_heal(
     spec_path: &Path,
     trace: Option<PathBuf>,
@@ -2261,6 +2302,12 @@ where
             timeout,
             prompt,
         } => agent_flow::cmd_doctor(&agent, timeout, &prompt),
+        Command::AuthorFromDoc {
+            doc,
+            app,
+            name,
+            out,
+        } => cmd_author_from_doc(doc, app, name, out),
         Command::Heal {
             spec,
             trace,
