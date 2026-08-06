@@ -6,6 +6,34 @@ together).
 
 ## Unreleased
 
+### Changed
+
+- **A keystroke cost 213 milliseconds, and almost none of it was work.** The
+  CDP transport gives the socket reader thread and every sender one shared
+  mutex, and the reader holds it across a blocking read — so a send did not
+  race the reader, it waited out a read already in progress. Profiling a form
+  flow found the reader holding that lock for 94% of the run's wall-clock,
+  sends waiting a mean of 10.7ms each, and the writes themselves costing
+  0.07ms. Typing is two calls per character, so a form paid for it by the
+  letter: 38.8 seconds for a seven-step, 78-character flow.
+
+  A second cost sat on top. Responses were awaited by polling a channel every
+  5ms rather than blocking on it, and every tab-level call paid that poll
+  twice — once for the `Target.sendMessageToTarget` ack, once for the real
+  response. The ack wait was 5.25ms while the response it was waiting behind
+  had already arrived, at 0.03ms.
+
+  The workspace now pins a patched `headless_chrome`: the reader's read
+  timeout drops from 100ms to 1ms, and responses block on the channel instead
+  of polling it. The same flow runs in about 5 seconds, typing at roughly
+  20ms per character and a click at 0.2s. A git patch is viable because
+  nothing here goes to crates.io — the wheel and the npm package are built
+  from this workspace.
+
+  This is a mitigation and the code says so. Reads and writes still share one
+  lock, so a send still queues behind a read; the constant only bounds how
+  long. The fix is to split the transport's halves, which belongs upstream.
+
 ### Fixed
 
 - **The fix for "a step naming a whole form authored one field" could make it
