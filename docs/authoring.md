@@ -62,7 +62,12 @@ data and click next` is one step, and the model answers it with the whole
 sequence of grounded actions it takes — one per field, plus the button — in a
 single call. Every action in that sequence is grounded against the same listed
 inventory and rejected as a whole if any one of them is not, so a half-filled
-form never reaches the trace. The inventory also reports what each field
+form never reaches the trace. A rejected sequence is put back to the model as a
+correction rather than as a fresh question: the reply names which action failed
+and how many before it were already grounded, and asks for the corrected
+sequence. Re-authoring a dozen actions from scratch to fix one of them is a
+throw the model has to win twice, and a step naming a whole form is exactly
+where losing it costs the most. The inventory also reports what each field
 currently holds, which the page marks required, which boxes are ticked, and a
 dropdown's exact options, so a `<select>` is given a name it really has rather
 than a plausible guess. Values of password fields are never reported.
@@ -374,15 +379,24 @@ the "Transaction" containing …`, where "Transaction" is a noun, not a
 container).
 
 **Steps are not instant, and some apps care.** A click step costs roughly
-**1.3 seconds** between the action landing and the next one reaching the
-page, and typing adds about **0.2s per character** — measured on a local
-fixture with no network. The cost is CDP round trips: the transport
-underneath pays a fixed latency of up to ~100ms per call (the sender
-serializes behind the reader's blocking socket read), and a keystroke is
-two calls. The probes that only need an answer — does the target exist, is
-it actionable — each ask the page in a single round trip for css and
+**0.2 seconds** between the action landing and the next one reaching the
+page, and typing adds about **20ms per character** — measured on a local
+fixture with no network. The cost is CDP round trips, and a keystroke is
+two of them. The probes that only need an answer — does the target exist,
+is it actionable — each ask the page in a single round trip for css and
 text-anchor targets; earlier engines walked an element-handle path that
 cost four to six calls per question, which put a step at 3.1-3.2s.
+
+Those numbers assume the patched transport this workspace pins (see the
+`[patch.crates-io]` block in the root `Cargo.toml`). The published
+`headless_chrome` transport shares one mutex between the socket reader and
+every sender, and the reader holds it across a blocking read — so a send
+waits out a read rather than proceeding. Profiling found the reader holding
+that lock for 94% of a run's wall-clock while the writes themselves cost
+0.07ms each. Unpatched, a click costs ~1.4s and a character ~213ms, which
+is where the "0.2s per character" figure in older notes comes from. The
+patch shortens the read timeout and stops polling for responses; it does not
+remove the shared lock, so a send still queues behind a read.
 
 A deadline-bearing interaction — a value that stays valid for two seconds,
 a token that expires, a confirmation that auto-dismisses — may still be

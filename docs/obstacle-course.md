@@ -50,9 +50,10 @@ has no way to say so. **Not a flowproof limitation.**
 
 87912 accepts a generated value for 2 seconds. 16384 deletes its record
 after 5. A step cost ~3.2s when this was measured; the single-round-trip
-probes have since brought a click to ~1.3s (see `docs/authoring.md`), so
-both are worth re-trying — typing speed is still ~0.2s per character, which
-may keep 87912 out of reach.
+probes brought a click to ~1.3s, and the patched CDP transport has since
+brought it to ~0.2s with typing at ~20ms per character (see
+`docs/authoring.md`). Both are worth re-trying: a short value now fits
+inside 87912's two-second window with room to spare.
 
 The failure is at least loud — the page's own complaint surfaces as a failed
 step, and flowproof's dialog safety net catches the alert — but neither is

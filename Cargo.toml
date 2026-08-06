@@ -60,3 +60,15 @@ unwrap_used = "warn"
 
 [profile.release]
 lto = "thin"
+
+# The published headless_chrome transport costs a CDP send up to 100ms waiting
+# for the socket mutex the reader thread holds, which made typing a character
+# cost 213ms (see docs/authoring.md). This pins a patched 1.0.22: the reader's
+# read timeout drops to 1ms and responses are awaited by blocking on the channel
+# rather than polling it. A git patch is viable because nothing in this
+# workspace goes to crates.io — publish.yml builds the wheel and the npm package
+# from here. The rev lives on an orphan branch of this repository, carries no
+# flowproof code, and is not built by CI. Drop all of this once the upstream fix
+# lands; the real fix is splitting the transport's read and write halves.
+[patch.crates-io]
+headless_chrome = { git = "https://github.com/automators-com/flowproof", rev = "eed7bc1873f6f2beac147d66f0df7a946329e6fe" }

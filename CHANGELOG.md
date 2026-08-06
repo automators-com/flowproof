@@ -6,7 +6,61 @@ together).
 
 ## Unreleased
 
+### Changed
+
+- **A keystroke cost 213 milliseconds, and almost none of it was work.** The
+  CDP transport gives the socket reader thread and every sender one shared
+  mutex, and the reader holds it across a blocking read — so a send did not
+  race the reader, it waited out a read already in progress. Profiling a form
+  flow found the reader holding that lock for 94% of the run's wall-clock,
+  sends waiting a mean of 10.7ms each, and the writes themselves costing
+  0.07ms. Typing is two calls per character, so a form paid for it by the
+  letter: 38.8 seconds for a seven-step, 78-character flow.
+
+  A second cost sat on top. Responses were awaited by polling a channel every
+  5ms rather than blocking on it, and every tab-level call paid that poll
+  twice — once for the `Target.sendMessageToTarget` ack, once for the real
+  response. The ack wait was 5.25ms while the response it was waiting behind
+  had already arrived, at 0.03ms.
+
+  The workspace now pins a patched `headless_chrome`: the reader's read
+  timeout drops from 100ms to 1ms, and responses block on the channel instead
+  of polling it. The same flow runs in about 5 seconds, typing at roughly
+  20ms per character and a click at 0.2s. A git patch is viable because
+  nothing here goes to crates.io — the wheel and the npm package are built
+  from this workspace.
+
+  This is a mitigation and the code says so. Reads and writes still share one
+  lock, so a send still queues behind a read; the constant only bounds how
+  long. The fix is to split the transport's halves, which belongs upstream.
+
 ### Fixed
+
+- **The fix for "a step naming a whole form authored one field" could make it
+  author none.** That fix let one step answer with a sequence, and grounded the
+  sequence as a unit: if any single action failed, all of them were refused, so
+  a half-filled form could never reach the trace. That part was right and
+  stands. What was wrong was the correction. A refused sequence went back to
+  the model as the original question with the failure appended and a closing
+  instruction to reply with "ONLY the corrected JSON object" — singular. A
+  model that complies returns one action. So a step meaning a whole form was
+  answered with a sequence, refused over one bad target, and then re-answered
+  with a single field: fewer fields than the one-action-per-step behaviour the
+  sequence was introduced to replace, and on a form long enough, none at all.
+
+  The odds were the mechanism. Each action grounds or does not roughly
+  independently, so a one-action step landed at some rate and a twelve-action
+  step landed at that rate to the twelfth — and the one retry had to win the
+  same throw again, from scratch, having been told to come back with less. The
+  longer the form, the likelier the step authored nothing, which is why this
+  showed up on forms rather than on clicks.
+
+  The retry is now a correction rather than a fresh question: it names which
+  action was refused and why, states how many actions before it had already
+  grounded and asks for those back unchanged, and asks for an array. Nothing
+  about what is *accepted* moved — a sequence still lands whole or not at all.
+
+### Added
 
 - **A high-severity advisory sat in the Python SDK's lock file.**
   `cryptography` was pinned at 49.0.0, which GHSA-g6cj-pr64-35w5 names
