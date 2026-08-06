@@ -6,6 +6,25 @@ together).
 
 ## Unreleased
 
+## 0.15.0
+
+A maintenance release with one theme: the things that were true in writing but
+not in the code.
+
+A SAP flow's `login:` block, which 0.14.0 shipped, was documented alongside
+examples the grammar refuses — `Remember the "…" matching /\d+/ as order`
+appeared in two more places while the same document listed that exact form
+under "Refused on purpose". The examples are fixed, and a test now reads the
+prose pages so the next drift fails a test rather than a reader's first
+recording. `documented_grammar_examples_all_resolve` was a hand-kept list of
+strings; nothing had ever read the docs.
+
+Two advisories left the tree: PyO3 to 0.29, and `cryptography` to 50.0.0 in the
+Python SDK's lock file. Neither reached a user — the second is dev-only — but
+the lock file is what every contributor and every CI run installs.
+
+And a keystroke stopped costing 213 milliseconds.
+
 ### Changed
 
 - **A keystroke cost 213 milliseconds, and almost none of it was work.** The
@@ -59,8 +78,6 @@ together).
   action was refused and why, states how many actions before it had already
   grounded and asks for those back unchanged, and asks for an array. Nothing
   about what is *accepted* moved — a sequence still lands whole or not at all.
-
-### Added
 
 - **A high-severity advisory sat in the Python SDK's lock file.**
   `cryptography` was pinned at 49.0.0, which GHSA-g6cj-pr64-35w5 names
