@@ -4,6 +4,12 @@ name: Publish to PyPI
 # the `pypi` environment — no stored tokens.
 on:
   workflow_dispatch:
+  # A tag publishes. The pattern is exact rather than `v*` so a stray or
+  # experimental tag cannot ship a release by accident, and the guard below
+  # refuses a tag that names a version different from the one it would build.
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
   # Fail in seconds, not after a 7-minute wheel matrix: PyPI versions are
@@ -15,6 +21,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: The tag must name the version it builds
+        # Only meaningful on a tag push; a manual dispatch has no tag to check.
+        #
+        # This exists because it already happened: a `v0.14.0` tag was created
+        # on the commit that bumps to 0.15.0. Nothing consumed tags then, so it
+        # was merely wrong in the history. Once a tag publishes, the same
+        # mistake ships 0.15.0 to the world labelled 0.14.0 — and registry
+        # versions are immutable, so there is no taking it back.
+        if: github.event_name == 'push'
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag '$GITHUB_REF_NAME' would publish version '$version' — they must agree (tag v$version, or bump to ${GITHUB_REF_NAME#v})"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches version $version"
+
       - name: Fail fast if this version is already published
         run: |
           version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)

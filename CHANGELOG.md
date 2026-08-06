@@ -6,6 +6,21 @@ together).
 
 ## Unreleased
 
+### Changed
+
+- **A version tag now publishes.** Both publish workflows were
+  `workflow_dispatch` only, so pushing `v0.15.0` did nothing and the release
+  still had to be triggered by hand — a step easy to forget after tagging, and
+  easy to mistake for having released.
+
+  They now also fire on a tag matching `v[0-9]+.[0-9]+.[0-9]+`. The pattern is
+  exact rather than `v*` so an experimental tag cannot ship a release, and a
+  new guard refuses a tag whose name disagrees with the version it would
+  build. That guard is not hypothetical: a `v0.14.0` tag was created on the
+  commit that bumps to 0.15.0. While nothing consumed tags it was merely wrong
+  in the history; with tags publishing, the same slip would ship 0.15.0
+  labelled 0.14.0, and registry versions are immutable.
+
 ### Fixed
 
 - **The two E2E jobs had been red on `main` for a day, and nothing on a pull
