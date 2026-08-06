@@ -10,9 +10,15 @@ use crate::{AgentError, BackendConfig, BackendKind};
 // Sonnet 5 can spend more than 1K tokens reasoning before it emits the small
 // structured answer authoring needs. With a 1,024-token ceiling the API can
 // therefore return a perfectly valid message containing only a signed
-// `thinking` block and `stop_reason: "max_tokens"`. 8K leaves room for that
-// reasoning and the answer while remaining a bounded per-step request.
-const ANTHROPIC_MAX_TOKENS: u32 = 8192;
+// `thinking` block and `stop_reason: "max_tokens"`.
+//
+// 8K was chosen when a step's answer was small. It is not enough any more: a
+// step meaning a whole form answers with a dozen-odd grounded actions, and the
+// scene it reasons over now carries each field's value, validity and options.
+// The Tricentis vehicle form exhausted 8K on the authoring call and failed the
+// record outright — a ceiling that turns a workable step into an error is the
+// wrong ceiling. 16K keeps the request bounded with room for both.
+const ANTHROPIC_MAX_TOKENS: u32 = 16_384;
 const OPENAI_COMPATIBLE_MAX_TOKENS: u32 = 1024;
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-5";
 
@@ -51,6 +57,14 @@ impl HttpModelClient {
                     .build(),
             )
             .proxy(ureq::Proxy::try_from_env())
+            // Without this the agent has NO timeout, and a model request that
+            // never answers hangs the recording forever - not slowly, but
+            // permanently, holding a browser open with no output and nothing
+            // to interrupt. A recording that fails is recoverable; one that
+            // hangs is not, and it looks like a slow app rather than a stuck
+            // tool. Generous enough for a large reply with reasoning ahead of
+            // it, far short of "never".
+            .timeout_global(Some(std::time::Duration::from_secs(180)))
             // A non-2xx must reach us as a RESPONSE, not as an opaque error:
             // the provider explains itself in the body, and that explanation
             // is the whole diagnostic. See `json_or_error`.
