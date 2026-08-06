@@ -890,6 +890,32 @@ pub trait AppDriver {
         Ok(None)
     }
 
+    /// The date the application itself believes it is, `YYYY-MM-DD`.
+    ///
+    /// Not the recorder's clock: a flow may pin the browser's, and a form
+    /// that wants a start date in the future means the future *the page*
+    /// sees. Without this an authoring model invents a plausible date from
+    /// its own sense of now, the page rejects it as past, and the wizard
+    /// silently refuses to advance. `None` if the driver cannot tell.
+    fn today(&mut self) -> Result<Option<String>, DriverError> {
+        Ok(None)
+    }
+
+    /// What would receive this element's click instead of it, described well
+    /// enough to act on ("a `div.modal-backdrop`"). `Ok(None)` = nothing is
+    /// in the way, or this driver cannot tell.
+    ///
+    /// Only ever called to explain a refusal. Recording asks the question at
+    /// the moment the click is refused, about the one element it cares about
+    /// — annotating every scene entry with its occluder would cost a hit-test
+    /// per entry and still be stale by the time an action ran.
+    fn occluding_element(
+        &mut self,
+        _selector: &UiaSelector,
+    ) -> Result<Option<String>, DriverError> {
+        Ok(None)
+    }
+
     /// One actionability pass — enabled → stable → receives-events:
     /// `None` = actionable, `Some(gate)` names the first gate that failed.
     /// Unknown answers (the driver can't tell) satisfy the gate; the name
@@ -1879,6 +1905,14 @@ impl AppDriver for Box<dyn AppDriver> {
         selector: &UiaSelector,
     ) -> Result<Option<bool>, DriverError> {
         (**self).element_receives_events(selector)
+    }
+
+    fn today(&mut self) -> Result<Option<String>, DriverError> {
+        (**self).today()
+    }
+
+    fn occluding_element(&mut self, selector: &UiaSelector) -> Result<Option<String>, DriverError> {
+        (**self).occluding_element(selector)
     }
 
     fn stage_mocks(&mut self, rules: Vec<WebMock>) -> Result<(), DriverError> {
