@@ -20,7 +20,7 @@ flowproof-agent = { workspace = true }
 flowproof-cli = { workspace = true }
 flowproof-driver = { workspace = true }
 flowproof-replay = { workspace = true }
-pyo3 = { version = "0.26", features = ["abi3-py39", "extension-module"] }
+pyo3 = { version = "0.29", features = ["abi3-py39", "extension-module"] }
 serde_json = { workspace = true }
 
 [lints]
