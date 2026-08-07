@@ -6,6 +6,41 @@ together).
 
 ## Unreleased
 
+## 0.17.0
+
+### Added
+
+- **A refused value re-authors the rest of its step.** A person handed "fill
+  out all the vehicle data" types a truck-plausible payload, watches the form
+  go red, reads "must be a number between 1 and 1000", types a smaller number
+  and carries on. flowproof could not, and a recording died on a form a person
+  would have finished.
+
+  Two things stopped it, and the spec was not one of them.
+
+  The guard that catches a rejected form before the click that leaves keyed
+  its one-correction-per-problem rule on the FIELD, so a second attempt read
+  as a repeat of the first however different the value — one try, where a
+  person gets as many as it takes. The value was in the scene and unused. It
+  is in the key now: a different value earns another look, the same value
+  twice still reads as a decision.
+
+  And nothing weighed the rule at the moment of choosing. A value outside a
+  plainly stated range is now CHALLENGED before a keystroke reaches the
+  browser, which is cheaper than a rejected form and leaves the guard's
+  correction for a problem it has not already been warned about.
+
+  Challenged, not refused. The rule is scraped from copy written for a person:
+  "between 3 and 20 characters" is the same six words as a value range, a
+  wrapper can lend one field's message to its neighbour, and a step may MEAN
+  to enter something the page refuses to see what it says. A model that
+  repeats its value after being asked is taken at its word, and the
+  application decides. Being wrong costs a question, never a recording.
+
+  Recorded against an unchanged spec, the trace now reads 5000, then 800,
+  then 500 — the sequence a person would have produced.
+
+
 ## 0.16.1
 
 ### Fixed
