@@ -32,8 +32,11 @@ really is one action. Never do part of a step and leave the rest to a later repl
 there is no later reply for this step.
 - When a step asks for a whole form, group or screen, cover EVERY field it names, \
 including ones the user did not enumerate. Each scene entry tells you what a field \
-holds now (`value`, `checked`), whether the page demands it (`required`), and, for a \
-dropdown, its exact `options` - choose an option verbatim from that list. Invent \
+holds now (`value`, `checked`), whether the page demands it (`required`), the \
+constraint the page states in its own words (`rule` - obey it, it is what the \
+application will enforce), whether the page has already REJECTED what it holds \
+(`invalid` - correct every one of those), and, for a dropdown, its exact `options` - \
+choose an option verbatim from that list. Invent \
 plausible, valid data for fields the step leaves unspecified, and leave a field alone \
 when it already holds a value the step does not contradict.
 - If the step's goal cannot be reached without data the screen requires first - a \
@@ -149,6 +152,16 @@ pub struct AuthorContext<'a> {
     pub scene: &'a str,
     /// Safe names of flow-scoped captures already available to this step.
     pub captures: &'a [String],
+    /// The date the application believes it is, `YYYY-MM-DD`, when the driver
+    /// can tell. A flow may pin the browser clock, so a date the model
+    /// invents from its own sense of now can be rejected as past — and the
+    /// page then refuses to move on for a reason nothing else can see.
+    pub today: Option<&'a str>,
+    /// What the screen currently reads, whitespace-collapsed and bounded. A
+    /// form can accept every keystroke and still be flagging the section it
+    /// left behind, with no mark on any element to find; it usually says so
+    /// in words.
+    pub page_text: Option<&'a str>,
 }
 
 fn user_prompt(ctx: &AuthorContext<'_>) -> String {
@@ -159,12 +172,24 @@ fn user_prompt(ctx: &AuthorContext<'_>) -> String {
     };
     let captures = serde_json::to_string(ctx.captures).expect("capture names serialize");
     format!(
-        "Flow: {name}\nApp: {app}{url}\nSteps already performed: {prior}\n\
+        "Flow: {name}\nApp: {app}{url}{today}\nSteps already performed: {prior}\n\
          Remembered captures in scope: {captures}\n\
-         Current step to perform: {intent}\n\nInteractable elements:\n{scene}",
+         Current step to perform: {intent}{page}\n\nInteractable elements:\n{scene}",
         name = ctx.flow_name,
         app = ctx.app,
         url = ctx.url.map(|u| format!(" ({u})")).unwrap_or_default(),
+        today = ctx
+            .today
+            .map(|d| format!(
+                "\nToday, as the application sees it, is {d}. Any date you invent must make \
+                 sense relative to THAT date, not to your own sense of now - a start date in \
+                 its past is rejected and the page will refuse to move on."
+            ))
+            .unwrap_or_default(),
+        page = ctx
+            .page_text
+            .map(|t| format!("\n\nWhat the screen reads right now:\n\"{t}\""))
+            .unwrap_or_default(),
         prior = prior,
         captures = captures,
         intent = ctx.intent,
@@ -955,6 +980,8 @@ mod tests {
 
     fn ctx<'a>() -> AuthorContext<'a> {
         AuthorContext {
+            today: None,
+            page_text: None,
             flow_name: "Greet",
             app: "web",
             url: Some("file:///greeter.html"),
@@ -979,6 +1006,8 @@ mod tests {
             "name = Ada please",
         ] {
             let prompt = user_prompt(&AuthorContext {
+                today: None,
+                page_text: None,
                 intent: instruction,
                 ..ctx()
             });
@@ -1022,6 +1051,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Fill out all the vehicle data and click next",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1069,6 +1100,8 @@ mod tests {
         let error = author_steps(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Fill out all the vehicle data",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1136,6 +1169,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Fill out all the vehicle data and click next",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1179,6 +1214,8 @@ mod tests {
         author_steps(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Fill out all the vehicle data",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1198,6 +1235,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Continue",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1227,6 +1266,8 @@ mod tests {
             let error = author_steps(
                 &mut client,
                 &AuthorContext {
+                    today: None,
+                    page_text: None,
                     intent: "Fill out all the vehicle data",
                     scene: FORM_SCENE,
                     ..ctx()
@@ -1250,6 +1291,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Remember the greeting as the greeting, then put it in the name box",
                 ..ctx()
             },
@@ -1269,6 +1312,47 @@ mod tests {
         assert!(
             SYSTEM_PROMPT.contains("`options`"),
             "the model is told a dropdown's options are authoritative"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("`rule`") && SYSTEM_PROMPT.contains("`invalid`"),
+            "the model is told what the page states and what it has already refused"
+        );
+    }
+
+    /// A flow may pin the browser clock, so the model's own sense of now is
+    /// not the application's. Without the date in front of it, an invented
+    /// start date lands in the app's past, the form refuses it, and the
+    /// wizard stops moving for a reason no element carries a mark for.
+    #[test]
+    fn the_prompt_carries_the_date_the_application_believes_it_is() {
+        let dated = user_prompt(&AuthorContext {
+            today: Some("2026-08-04"),
+            ..ctx()
+        });
+        assert!(
+            dated.contains("2026-08-04") && dated.contains("not to your own sense of now"),
+            "the authoring prompt states the application's own date: {dated}"
+        );
+        assert!(
+            !user_prompt(&ctx()).contains("Today, as the application sees it"),
+            "a driver that cannot tell contributes nothing rather than guessing"
+        );
+    }
+
+    /// The elements say what exists; only the words say why the page refused.
+    #[test]
+    fn the_prompt_carries_what_the_screen_reads() {
+        let spoken = user_prompt(&AuthorContext {
+            page_text: Some("Please, select a price option to send the quote."),
+            ..ctx()
+        });
+        assert!(
+            spoken.contains("Please, select a price option"),
+            "the page's own words reach the model: {spoken}"
+        );
+        assert!(
+            !user_prompt(&ctx()).contains("What the screen reads right now"),
+            "a page that said nothing adds nothing"
         );
     }
 
@@ -1298,6 +1382,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 app: "notepad",
                 url: None,
                 scene: UIA_SCENE,
@@ -1320,6 +1406,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 app: "notepad",
                 url: None,
                 scene: UIA_SCENE,
@@ -1349,6 +1437,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 scene: legacy_scene,
                 ..ctx()
             },
@@ -1448,6 +1538,8 @@ mod tests {
     fn prompt_lists_capture_names_without_values() {
         let captures = vec!["order_number".into(), "customer_id".into()];
         let prompt = user_prompt(&AuthorContext {
+            today: None,
+            page_text: None,
             captures: &captures,
             ..ctx()
         });
@@ -1465,6 +1557,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Remember the greeting as greeting",
                 ..ctx()
             },
@@ -1493,6 +1587,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Remember the value beside \"order id\" as the order ID",
                 scene: SCOPED_SCENE,
                 ..ctx()
@@ -1610,6 +1706,8 @@ mod tests {
             let action = author_step(
                 &mut client,
                 &AuthorContext {
+                    today: None,
+                    page_text: None,
                     intent,
                     scene: HUMAN_PRIMITIVE_SCENE,
                     ..ctx()
@@ -1631,6 +1729,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Empty the name field",
                 ..ctx()
             },
@@ -1666,6 +1766,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Open settings",
                 scene: "[]",
                 ..ctx()
@@ -1689,6 +1791,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 flow_name: "Create an order",
                 app: "sap",
                 url: None,
@@ -1732,6 +1836,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1757,6 +1863,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Type the literal word it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1781,6 +1889,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1801,6 +1911,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Remember the customer number",
                 captures: &captures,
                 ..ctx()
@@ -1823,6 +1935,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1856,6 +1970,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1882,6 +1998,8 @@ mod tests {
             let error = author_step(
                 &mut client,
                 &AuthorContext {
+                    today: None,
+                    page_text: None,
                     flow_name: "f",
                     app: "web",
                     url: None,
@@ -1908,6 +2026,8 @@ mod tests {
         let error = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 flow_name: "f",
                 app: "web",
                 url: None,
@@ -1933,6 +2053,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 flow_name: "f",
                 app: "web",
                 url: None,
@@ -1960,6 +2082,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Enter it in the confirmation field",
                 captures: &captures,
                 ..ctx()
@@ -1987,6 +2111,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                today: None,
+                page_text: None,
                 intent: "Enter the order number in the name field",
                 captures: &captures,
                 ..ctx()

@@ -51,6 +51,15 @@ pub struct SceneElement {
     /// Input type (`text`, `password`, …), when applicable.
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
+    /// The constraint the page states in its own words ("Must be a number
+    /// between 1 and 2000"). Whoever rewrites the step needs the rule the
+    /// application will enforce, not only the field's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
+    /// The page has REJECTED what this field currently holds. Omitted rather
+    /// than `false` so a clean inventory stays quiet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalid: Option<bool>,
 }
 
 /// The full clarification payload. Text fields keep `${VAR}` references
@@ -114,6 +123,8 @@ pub fn scene_inventory(scene: &str) -> Vec<SceneElement> {
                 label: field("label"),
                 text: field("text"),
                 input_type: field("type"),
+                rule: field("rule"),
+                invalid: e["invalid"].as_bool().unwrap_or(false).then_some(true),
             })
         })
         .collect()
@@ -165,6 +176,8 @@ mod tests {
             rules_error: Some("no rule matches".into()),
             completed_steps: vec!["Press the \"Edit\" button".into()],
             scene: vec![SceneElement {
+                rule: None,
+                invalid: None,
                 target: "css:#price".into(),
                 tag: Some("input".into()),
                 label: Some("Net Price".into()),

@@ -2151,6 +2151,22 @@ struct AuthoredActions {
     warning: Option<String>,
 }
 
+/// What the screen reads, collapsed and bounded, for the authoring prompt.
+///
+/// A form can accept every keystroke and still refuse to move on, saying so
+/// in words no element carries a mark for. Best-effort: a driver that cannot
+/// answer contributes nothing, and the bound keeps a long page from crowding
+/// out the element inventory, which is still what a target must be grounded
+/// against.
+fn surface_words<D: AppDriver>(driver: &mut D) -> Option<String> {
+    let text = driver.surface_text().ok()?;
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(collapsed.chars().take(1500).collect())
+}
+
 /// Resolve one spec step into actions per the authoring mode.
 #[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
 fn author_actions<D: AppDriver, C: ModelClient>(
@@ -2252,7 +2268,11 @@ fn author_actions<D: AppDriver, C: ModelClient>(
         let scene = driver
             .scene()?
             .ok_or_else(|| RecordError::NoScene(app_id.to_string()))?;
+        let today = driver.today()?;
+        let page_text = surface_words(driver);
         let ctx = AuthorContext {
+            today: today.as_deref(),
+            page_text: page_text.as_deref(),
             flow_name: &spec.name,
             app: app_id,
             url: spec.url.as_deref(),
