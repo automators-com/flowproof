@@ -24,7 +24,7 @@ from flowproof.flow import (
     run,
 )
 
-__version__ = "0.16.1"
+__version__ = "0.17.0"
 
 __all__ = [
     "ClarificationNeeded",
