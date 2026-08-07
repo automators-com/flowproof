@@ -2693,13 +2693,103 @@ impl AppDriver for WebAppDriver {
                         if (r.width === 0 || r.height === 0) { return false; }
                         const t = document.elementFromPoint(
                             r.x + r.width / 2, r.y + r.height / 2);
-                        return !!(t && (t === this || this.contains(t) || t.contains(this)));
+                        if (!t) { return false; }
+                        if (t === this || this.contains(t) || t.contains(this)) { return true; }
+                        // A custom-styled checkbox or radio: the real input is
+                        // visually replaced by a sibling inside its own label,
+                        // so the hit is neither ancestor nor descendant. The
+                        // browser forwards a click anywhere in the label to the
+                        // input, which is exactly how a person ticks the box -
+                        // and how the hand-written spec for this same form does
+                        // it, by targeting the label instead. Refusing here
+                        // makes every styled control unrecordable.
+                        //
+                        // Forwarded on the BROWSER's terms, not on the mere
+                        // presence of a label, because a click the label does
+                        // not forward is a click that does nothing - and
+                        // recording it as a success is the false green this
+                        // gate exists to prevent. Two shapes look identical
+                        // from the element and behave nothing alike:
+                        //
+                        //  - a label labels ONE control (the `for` target,
+                        //    else its first labelable descendant), so a label
+                        //    wrapping several cannot lend its area to the
+                        //    others. `labels` is that relation read from this
+                        //    end, which is why it is asked instead of walking
+                        //    up to the nearest `<label>`;
+                        //  - interactive content inside a label keeps the
+                        //    activation for itself. A hit on a link, a button
+                        //    or the OTHER input in there follows its own
+                        //    behaviour and leaves this control untouched.
+                        const label = t.closest('label');
+                        const labels = this.labels ? Array.from(this.labels) : [];
+                        if (!label || !labels.includes(label)) { return false; }
+                        // `area[href]` is interactive content too - it extends
+                        // HTMLAnchorElement - and `img[usemap]` never catches it:
+                        // elementFromPoint returns the AREA, whose ancestors run
+                        // map -> label, so the image is a sibling never visited.
+                        const INTERACTIVE = 'a[href], area[href], button, details, \
+                            embed, iframe, select, textarea, audio[controls], \
+                            video[controls], img[usemap], input:not([type=hidden])';
+                        for (let node = t; node && node !== label;
+                             node = node.parentElement) {
+                            if (node.matches(INTERACTIVE)) { return false; }
+                        }
+                        return true;
                     }"#,
                     vec![],
                     false,
                 )
             })?;
         Ok(value.value.and_then(|v| v.as_bool()))
+    }
+
+    fn today(&mut self) -> Result<Option<String>, DriverError> {
+        let value = self
+            .tab()?
+            // Built from local parts rather than `toISOString`: a pinned or
+            // faked clock is free to leave that unimplemented, and it would
+            // answer in UTC for a page whose own day has already turned.
+            .evaluate(
+                r#"(() => {
+                    const d = new Date();
+                    const p = n => String(n).padStart(2, '0');
+                    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+                })()"#,
+                false,
+            )
+            .map_err(|e| web_err("reading the page's current date", e))?;
+        Ok(value.value.and_then(|v| v.as_str().map(str::to_string)))
+    }
+
+    fn occluding_element(&mut self, selector: &UiaSelector) -> Result<Option<String>, DriverError> {
+        if selector.frame.is_some() {
+            return Ok(None);
+        }
+        let locator = Self::locator(selector)?;
+        let value = self.with_element(
+            &locator,
+            &format!("naming what covers [{selector}]"),
+            |element| {
+                element.call_js_fn(
+                    r#"function() {
+                        const r = this.getBoundingClientRect();
+                        const t = document.elementFromPoint(
+                            r.x + r.width / 2, r.y + r.height / 2);
+                        if (!t || t === this) { return null; }
+                        const tag = t.tagName.toLowerCase();
+                        if (t.id) { return tag + '#' + t.id; }
+                        const cls = Array.from(t.classList).slice(0, 2).join('.');
+                        const text = (t.textContent || '').trim().slice(0, 40);
+                        return cls ? tag + '.' + cls
+                            : (text ? tag + ' reading "' + text + '"' : tag);
+                    }"#,
+                    vec![],
+                    false,
+                )
+            },
+        )?;
+        Ok(value.value.and_then(|v| v.as_str().map(str::to_string)))
     }
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
@@ -3478,10 +3568,81 @@ impl AppDriver for WebAppDriver {
               const styledLeaf = el => el.children.length === 0 &&
                 ['DIV', 'SPAN'].includes(el.tagName) &&
                 /(?:background|color)\s*:/i.test(el.getAttribute('style') || '');
+              // What the PAGE says about a field, in its own words.
+              //
+              // Validation frameworks mark the WRAPPER, not the control - the
+              // control's own class stays empty - so looking only at the
+              // element finds nothing and reports a rejected form as a clean
+              // one. They also publish the rule they enforced ("Must be a
+              // number between 1 and 2000"), which is worth more than the
+              // boolean: it lets a value be chosen correctly the first time
+              // rather than guessed at after a refusal.
+              const MARKED_BAD = /(^|\s)(invalid|error|has-error|is-invalid)(\s|$)/;
+              const invalidity = el => {
+                let host = el;
+                for (let depth = 0; host && depth < 4; depth++) {
+                  if (MARKED_BAD.test(host.className || '')) { return true; }
+                  host = host.parentElement;
+                }
+                return false;
+              };
+              const fieldRule = el => {
+                const wrap = el.closest('.field') || el.parentElement;
+                if (!wrap) { return null; }
+                const msg = wrap.querySelector('.error, .hint, .help, .invalid-feedback');
+                if (!msg) { return null; }
+                const text = (msg.textContent || '').trim();
+                return text ? text.slice(0, 100) : null;
+              };
+              const isRendered = el => {
+                const s = getComputedStyle(el);
+                const r = el.getBoundingClientRect();
+                return s.display !== 'none' && s.visibility !== 'hidden' &&
+                  Number(s.opacity) > 0 && r.width > 0 && r.height > 0;
+              };
+              // A control the page has hidden and replaced with styling -
+              // a custom checkbox, radio, or a price option drawn as a table
+              // cell. The control itself is zero-sized, so it never reaches
+              // this inventory, and neither does its label when the label is
+              // only a wrapper around the same styling. The option then
+              // cannot be chosen at all: a model asked to "pick one of the
+              // price options" is offered nothing that is one, and reaches
+              // for whatever else carries that name.
+              //
+              // What a person clicks is the nearest thing that IS rendered -
+              // the label, else the cell or wrapper around it - and the
+              // browser forwards the click to the control. That element
+              // stands in for the one that cannot be seen.
+              // Interactive content keeps a click for itself, so a host
+              // containing any of it cannot speak for the control behind it.
+              const CONSUMES_CLICK = 'a[href], area[href], button, details, embed, \
+                  iframe, audio[controls], video[controls], img[usemap]';
+              const standInHosts = new Set();
+              for (const control of document.querySelectorAll('input, select, textarea')) {
+                if (control.type === 'hidden' || isRendered(control)) { continue; }
+                // A disabled control has NO activation behaviour, so forwarding
+                // is a no-op: the click lands, nothing changes, and the step is
+                // written down as a success. An out-of-stock option in a styled
+                // radio group is exactly this shape.
+                if (control.disabled || control.closest('fieldset[disabled]')) { continue; }
+                // Only a LABEL forwards a click to its control. A cell or a
+                // wrapper div forwards nothing unless the page happens to have
+                // its own handler, and recording a click that does nothing is
+                // the failure this inventory exists to avoid.
+                const host = control.closest('label');
+                if (!host || !isRendered(host)) { continue; }
+                const labels = control.labels ? Array.from(control.labels) : [];
+                if (!labels.includes(host)) { continue; }
+                // More than one control under the same label, and activation
+                // goes to the first - not necessarily this one.
+                if (host.querySelectorAll('input, select, textarea').length !== 1) { continue; }
+                if (host.querySelector(CONSUMES_CLICK)) { continue; }
+                standInHosts.add(host);
+              }
               const interactive = el => el.matches(
                 'input, button, a, select, textarea, [role=button], [role=checkbox], [role=radio], [role=menuitem], [draggable], [ondrop], .draggable-row, .droparea'
               ) || (!!el.id && el.children.length === 0 && ['DIV', 'SPAN'].includes(el.tagName)) ||
-                styledLeaf(el);
+                styledLeaf(el) || standInHosts.has(el);
               const readableLeaf = el => {
                 if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(el.tagName)) return false;
                 const text = (el.textContent || '').trim();
@@ -3538,6 +3699,8 @@ impl AppDriver for WebAppDriver {
                     value: fieldValue(el),
                     checked: ticks ? el.checked : undefined,
                     required: el.required || undefined,
+                    invalid: invalidity(el) || undefined,
+                    rule: fieldRule(el) || undefined,
                     options: el.tagName === 'SELECT'
                       ? Array.from(el.options)
                           .map(option => (option.textContent || '').trim())
