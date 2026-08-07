@@ -2693,13 +2693,76 @@ impl AppDriver for WebAppDriver {
                         if (r.width === 0 || r.height === 0) { return false; }
                         const t = document.elementFromPoint(
                             r.x + r.width / 2, r.y + r.height / 2);
-                        return !!(t && (t === this || this.contains(t) || t.contains(this)));
+                        if (!t) { return false; }
+                        if (t === this || this.contains(t) || t.contains(this)) { return true; }
+                        // A custom-styled checkbox or radio: the real input is
+                        // visually replaced by a sibling inside its own label,
+                        // so the hit is neither ancestor nor descendant. The
+                        // browser forwards a click anywhere in the label to the
+                        // input, which is exactly how a person ticks the box -
+                        // and how the hand-written spec for this same form does
+                        // it, by targeting the label instead. Refusing here
+                        // makes every styled control unrecordable.
+                        const label = this.closest('label');
+                        if (label && label.contains(t)) { return true; }
+                        const forLabel = this.id
+                            ? document.querySelector('label[for="' + CSS.escape(this.id) + '"]')
+                            : null;
+                        return !!(forLabel && forLabel.contains(t));
                     }"#,
                     vec![],
                     false,
                 )
             })?;
         Ok(value.value.and_then(|v| v.as_bool()))
+    }
+
+    fn today(&mut self) -> Result<Option<String>, DriverError> {
+        let value = self
+            .tab()?
+            // Built from local parts rather than `toISOString`: a pinned or
+            // faked clock is free to leave that unimplemented, and it would
+            // answer in UTC for a page whose own day has already turned.
+            .evaluate(
+                r#"(() => {
+                    const d = new Date();
+                    const p = n => String(n).padStart(2, '0');
+                    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+                })()"#,
+                false,
+            )
+            .map_err(|e| web_err("reading the page's current date", e))?;
+        Ok(value.value.and_then(|v| v.as_str().map(str::to_string)))
+    }
+
+    fn occluding_element(&mut self, selector: &UiaSelector) -> Result<Option<String>, DriverError> {
+        if selector.frame.is_some() {
+            return Ok(None);
+        }
+        let locator = Self::locator(selector)?;
+        let value = self.with_element(
+            &locator,
+            &format!("naming what covers [{selector}]"),
+            |element| {
+                element.call_js_fn(
+                    r#"function() {
+                        const r = this.getBoundingClientRect();
+                        const t = document.elementFromPoint(
+                            r.x + r.width / 2, r.y + r.height / 2);
+                        if (!t || t === this) { return null; }
+                        const tag = t.tagName.toLowerCase();
+                        if (t.id) { return tag + '#' + t.id; }
+                        const cls = Array.from(t.classList).slice(0, 2).join('.');
+                        const text = (t.textContent || '').trim().slice(0, 40);
+                        return cls ? tag + '.' + cls
+                            : (text ? tag + ' reading "' + text + '"' : tag);
+                    }"#,
+                    vec![],
+                    false,
+                )
+            },
+        )?;
+        Ok(value.value.and_then(|v| v.as_str().map(str::to_string)))
     }
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
@@ -3478,10 +3541,67 @@ impl AppDriver for WebAppDriver {
               const styledLeaf = el => el.children.length === 0 &&
                 ['DIV', 'SPAN'].includes(el.tagName) &&
                 /(?:background|color)\s*:/i.test(el.getAttribute('style') || '');
+              // What the PAGE says about a field, in its own words.
+              //
+              // Validation frameworks mark the WRAPPER, not the control - the
+              // control's own class stays empty - so looking only at the
+              // element finds nothing and reports a rejected form as a clean
+              // one. They also publish the rule they enforced ("Must be a
+              // number between 1 and 2000"), which is worth more than the
+              // boolean: it lets a value be chosen correctly the first time
+              // rather than guessed at after a refusal.
+              const MARKED_BAD = /(^|\s)(invalid|error|has-error|is-invalid)(\s|$)/;
+              const invalidity = el => {
+                let host = el;
+                for (let depth = 0; host && depth < 4; depth++) {
+                  if (MARKED_BAD.test(host.className || '')) { return true; }
+                  host = host.parentElement;
+                }
+                return false;
+              };
+              const fieldRule = el => {
+                const wrap = el.closest('.field') || el.parentElement;
+                if (!wrap) { return null; }
+                const msg = wrap.querySelector('.error, .hint, .help, .invalid-feedback');
+                if (!msg) { return null; }
+                const text = (msg.textContent || '').trim();
+                return text ? text.slice(0, 100) : null;
+              };
+              const isRendered = el => {
+                const s = getComputedStyle(el);
+                const r = el.getBoundingClientRect();
+                return s.display !== 'none' && s.visibility !== 'hidden' &&
+                  Number(s.opacity) > 0 && r.width > 0 && r.height > 0;
+              };
+              // A control the page has hidden and replaced with styling -
+              // a custom checkbox, radio, or a price option drawn as a table
+              // cell. The control itself is zero-sized, so it never reaches
+              // this inventory, and neither does its label when the label is
+              // only a wrapper around the same styling. The option then
+              // cannot be chosen at all: a model asked to "pick one of the
+              // price options" is offered nothing that is one, and reaches
+              // for whatever else carries that name.
+              //
+              // What a person clicks is the nearest thing that IS rendered -
+              // the label, else the cell or wrapper around it - and the
+              // browser forwards the click to the control. That element
+              // stands in for the one that cannot be seen.
+              const standInHosts = new Set();
+              for (const control of document.querySelectorAll('input, select, textarea')) {
+                if (control.type === 'hidden' || isRendered(control)) { continue; }
+                let host = control.closest('label');
+                if (!host || !isRendered(host)) {
+                  host = control.parentElement;
+                  while (host && host !== document.body && !isRendered(host)) {
+                    host = host.parentElement;
+                  }
+                }
+                if (host && host !== document.body) { standInHosts.add(host); }
+              }
               const interactive = el => el.matches(
                 'input, button, a, select, textarea, [role=button], [role=checkbox], [role=radio], [role=menuitem], [draggable], [ondrop], .draggable-row, .droparea'
               ) || (!!el.id && el.children.length === 0 && ['DIV', 'SPAN'].includes(el.tagName)) ||
-                styledLeaf(el);
+                styledLeaf(el) || standInHosts.has(el);
               const readableLeaf = el => {
                 if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(el.tagName)) return false;
                 const text = (el.textContent || '').trim();
@@ -3538,6 +3658,8 @@ impl AppDriver for WebAppDriver {
                     value: fieldValue(el),
                     checked: ticks ? el.checked : undefined,
                     required: el.required || undefined,
+                    invalid: invalidity(el) || undefined,
+                    rule: fieldRule(el) || undefined,
                     options: el.tagName === 'SELECT'
                       ? Array.from(el.options)
                           .map(option => (option.textContent || '').trim())
