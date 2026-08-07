@@ -2783,3 +2783,108 @@ fn suite_run_hands_a_passing_flows_exports_to_the_flows_after_it() {
     std::env::remove_var("HANDOFF_ORDER_NO");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Three controls the page has drawn for itself, all hit-tested at a point
+/// that lands on something else inside their own `<label>`.
+///
+/// `#agree` is the ordinary custom checkbox: a span painted over an input
+/// the stylesheet made invisible. `#news` is the same shape with a LINK as
+/// the face. `#pair` wraps two inputs, so the label labels `#first` and
+/// nothing else.
+const LABEL_FORWARDING_HTML: &str = r##"<!doctype html>
+<html><head><meta charset="utf-8"><title>Styled controls</title>
+<style>
+  label { position: relative; display: block; width: 160px; height: 28px;
+          margin: 24px; }
+  label input { position: absolute; left: 0; top: 0;
+                width: 160px; height: 28px; margin: 0; opacity: 0; }
+  .face { position: absolute; left: 0; top: 0; width: 160px; height: 28px;
+          line-height: 28px; background: #cfe; }
+</style></head>
+<body>
+  <label id="styled">
+    <input type="checkbox" id="agree">
+    <span class="face">I agree</span>
+  </label>
+
+  <label id="linked">
+    <input type="checkbox" id="news">
+    <a class="face" href="#read">Read the terms</a>
+  </label>
+
+  <label id="pair">
+    <input type="checkbox" id="first">
+    <input type="checkbox" id="second">
+    <span class="face">Both</span>
+  </label>
+</body></html>
+"##;
+
+/// Label forwarding, both ways round — the half that must keep working and
+/// the half that never worked at all.
+///
+/// A styled control has to stay recordable: the click lands on the span the
+/// page painted over the input, the browser forwards it, and refusing that
+/// would make every custom checkbox on the web unrecordable.
+///
+/// But the browser forwards on its own terms, and two shapes it refuses were
+/// being recorded as clean clicks. A link inside the label keeps the
+/// activation for itself — the click follows the href and the box never
+/// ticks. A label wrapping two controls labels the FIRST one, so the second
+/// was borrowing an area no click of its own can reach. Both minted a trace
+/// asserting a page state nothing had produced, which is the false green
+/// this gate exists to prevent.
+#[test]
+fn a_label_forwards_a_click_only_where_the_browser_does() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping label-forwarding E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-label-forwarding-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("styled-controls.html");
+    std::fs::write(&page, LABEL_FORWARDING_HTML).expect("page written");
+    let url = format!("file://{}", page.display());
+
+    let spec = |target: &str| {
+        flowproof_agent::FlowSpec::parse(&format!(
+            "name: Styled controls\napp: web\nurl: {url}\nsteps:\n  \
+             - Click the \"css:{target}\"\n"
+        ))
+        .expect("spec parses")
+    };
+
+    // The label really does forward these: the input is the control the
+    // label names, and the face over it is inert decoration.
+    for target in ["#agree", "#first"] {
+        let trace = dir.join(format!("{}.trace.jsonl", target.trim_start_matches('#')));
+        let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+        flowproof_agent::record(&spec(target), &mut driver, &trace).unwrap_or_else(|e| {
+            panic!("a page-styled control must stay recordable ({target}): {e}")
+        });
+        drop(driver);
+    }
+
+    // ...and does not forward these. `#news` is covered by a link, `#second`
+    // by a face belonging to the control beside it.
+    for target in ["#news", "#second"] {
+        let trace = dir.join("refused.trace.jsonl");
+        let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+        let err = flowproof_agent::record(&spec(target), &mut driver, &trace)
+            .expect_err(&format!("the browser forwards no click to {target}"));
+        let message = err.to_string();
+        assert!(
+            message.contains("another element would receive it"),
+            "the refusal must name the occlusion for {target}: {message}"
+        );
+        drop(driver);
+        assert!(
+            !trace.exists(),
+            "a click the page never received must not reach the trace ({target})"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
