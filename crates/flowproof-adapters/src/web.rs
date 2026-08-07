@@ -2703,12 +2703,35 @@ impl AppDriver for WebAppDriver {
                         // and how the hand-written spec for this same form does
                         // it, by targeting the label instead. Refusing here
                         // makes every styled control unrecordable.
-                        const label = this.closest('label');
-                        if (label && label.contains(t)) { return true; }
-                        const forLabel = this.id
-                            ? document.querySelector('label[for="' + CSS.escape(this.id) + '"]')
-                            : null;
-                        return !!(forLabel && forLabel.contains(t));
+                        //
+                        // Forwarded on the BROWSER's terms, not on the mere
+                        // presence of a label, because a click the label does
+                        // not forward is a click that does nothing - and
+                        // recording it as a success is the false green this
+                        // gate exists to prevent. Two shapes look identical
+                        // from the element and behave nothing alike:
+                        //
+                        //  - a label labels ONE control (the `for` target,
+                        //    else its first labelable descendant), so a label
+                        //    wrapping several cannot lend its area to the
+                        //    others. `labels` is that relation read from this
+                        //    end, which is why it is asked instead of walking
+                        //    up to the nearest `<label>`;
+                        //  - interactive content inside a label keeps the
+                        //    activation for itself. A hit on a link, a button
+                        //    or the OTHER input in there follows its own
+                        //    behaviour and leaves this control untouched.
+                        const label = t.closest('label');
+                        const labels = this.labels ? Array.from(this.labels) : [];
+                        if (!label || !labels.includes(label)) { return false; }
+                        const INTERACTIVE = 'a[href], button, details, embed, iframe, \
+                            select, textarea, audio[controls], video[controls], \
+                            img[usemap], input:not([type=hidden])';
+                        for (let node = t; node && node !== label;
+                             node = node.parentElement) {
+                            if (node.matches(INTERACTIVE)) { return false; }
+                        }
+                        return true;
                     }"#,
                     vec![],
                     false,
