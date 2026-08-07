@@ -2350,6 +2350,103 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     }
 }
 
+/// How many times one spec step may be re-authored against a changed page.
+///
+/// A legitimate step spans two or three screens at most — a form that
+/// reveals a section, an overlay that must be dismissed first. A step still
+/// arguing with the page after that is one the tool should refuse rather
+/// than keep paying for, and the refusal names what it kept failing on.
+const MAX_STEP_REPLANS: u32 = 3;
+
+/// One line describing an action already performed, for the continuation
+/// prompt. Typed values are included because "typed BMW into make" is what
+/// stops a model re-typing it; a captured or environment reference is
+/// elided, exactly as it is everywhere else the recorder renders an action.
+fn action_summary(action: &ResolvedAction) -> String {
+    let where_ = |target: &Target| format!("{target:?}");
+    match action {
+        ResolvedAction::TypeText { target, text } => {
+            let shown = if text.contains("${") {
+                "<reference>"
+            } else {
+                text
+            };
+            format!("typed \"{shown}\" into {}", where_(target))
+        }
+        ResolvedAction::SelectOptions { target, values, .. } => {
+            format!("selected {values:?} in {}", where_(target))
+        }
+        ResolvedAction::SetChecked {
+            target, checked, ..
+        } => {
+            format!("set {} to checked={checked}", where_(target))
+        }
+        ResolvedAction::Press { target, .. } => format!("clicked {}", where_(target)),
+        ResolvedAction::Capture { target, name, .. } => {
+            format!("remembered {} as {name}", where_(target))
+        }
+        other => format!("performed {other:?}"),
+    }
+}
+
+/// Re-author what is left of a step, against the page as it now is.
+///
+/// This is the difference between a planner that must be right first time
+/// and one that can look again. The trace is unaffected: it records the
+/// actions that ran, never the deliberation that chose them, so a step
+/// authored in two installments replays exactly like one authored in a
+/// single reply.
+#[allow(clippy::too_many_arguments)] // internal plumbing fn, same shape as author_actions
+fn replan_remainder<D: AppDriver, C: ModelClient>(
+    spec: &FlowSpec,
+    app_id: &str,
+    driver: &mut D,
+    client: &mut Option<&mut C>,
+    prior: &[String],
+    captures: &[String],
+    intent: &str,
+    executed: &[String],
+    refusal: &str,
+) -> Result<Option<(Vec<ResolvedAction>, bool)>, RecordError> {
+    let Some(client) = client.as_mut() else {
+        return Ok(None);
+    };
+    let scene = driver
+        .scene()?
+        .ok_or_else(|| RecordError::NoScene(app_id.to_string()))?;
+    let today = driver.today()?;
+    let page_text = surface_words(driver);
+    let ctx = AuthorContext {
+        today: today.as_deref(),
+        page_text: page_text.as_deref(),
+        flow_name: &spec.name,
+        app: app_id,
+        url: spec.url.as_deref(),
+        prior_steps: prior,
+        captures,
+        intent,
+        scene: &scene,
+    };
+    // What the page is SAYING, not just what it contains. A wizard that
+    // refuses to advance prints the reason - "Please, select a price option"
+    // - and a verifier that cannot read it has no evidence to weigh and
+    // rubber-stamps whatever it is asked about. This is the same text the
+    // spec's own assertions read.
+    let page_text = driver.surface_text().unwrap_or_default();
+    let page_text: String = page_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let page_text = page_text.chars().take(1500).collect::<String>();
+    let progress = crate::author::StepProgress {
+        executed,
+        refusal,
+        page_text: &page_text,
+    };
+    let outcome = crate::author::author_remainder(*client, &ctx, &progress);
+    match outcome? {
+        crate::author::Remainder::Complete => Ok(None),
+        crate::author::Remainder::Actions(actions, continues) => Ok(Some((actions, continues))),
+    }
+}
+
 /// Record with an injected model client (used by tests; `record` and
 /// `record_with_author` build one from the environment).
 pub fn record_with_client<D: AppDriver, C: ModelClient>(
@@ -2676,7 +2773,20 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             warning: authored.warning,
         });
         prior_intents.push(intent);
-        for action in authored.actions {
+        // A plan, not a list: when the page changes under it, the remainder
+        // is re-authored against the screen as it now is. Rules-authored and
+        // reused steps keep the old straight-line behaviour, which is what
+        // their existing tests pin.
+        let closed_loop = authored.route == StepAuthoringRoute::Llm && client.is_some();
+        // `intent` is moved into `prior_intents` above; the cursor needs its
+        // own copy to name the step in a continuation prompt.
+        let step_intent = spec_step.intent().to_string();
+        let mut plan: std::collections::VecDeque<ResolvedAction> = authored.actions.into();
+        let mut executed_summaries: Vec<String> = Vec::new();
+        let mut replans = 0u32;
+        let mut refused_keys: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        while let Some(action) = plan.pop_front() {
             // A multi-surface baseline's IDENTITY names its surface —
             // stored and compared as `<name>@<surface>.png` — so two
             // blocks may reuse a spec name and a `gui` baseline can never
@@ -2727,6 +2837,32 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             if !is_assert && !is_counting_capture {
                 if let Some(selector) = &selector {
                     if !driver.element_exists(selector)? {
+                        let refusal = format!(
+                            "click on {selector} - that element is not on the current screen"
+                        );
+                        if closed_loop
+                            && replans < MAX_STEP_REPLANS
+                            && refused_keys.insert(format!("missing:{selector}"))
+                        {
+                            replans += 1;
+                            match replan_remainder(
+                                spec,
+                                &step_app,
+                                driver,
+                                &mut client,
+                                &prior_intents,
+                                &capture_names,
+                                &step_intent,
+                                &executed_summaries,
+                                &refusal,
+                            )? {
+                                None => break,
+                                Some((rest, _continues)) => {
+                                    plan = rest.into();
+                                    continue;
+                                }
+                            }
+                        }
                         return Err(RecordError::ElementNotFound {
                             intent: spec_step.intent().to_string(),
                             selector: selector.to_string(),
@@ -2777,6 +2913,43 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                         occlusion_budget(),
                     )?;
                     if !clear {
+                        let selector = targeted().to_string();
+                        // Name what is in the way. Without it a model can only
+                        // guess "an overlay - press Escape and retry", which is
+                        // the same refused click again.
+                        let refusal = match driver.occluding_element(targeted())? {
+                            Some(occluder) => format!(
+                                "click on {selector} - a {occluder} would receive that click \
+                                 instead, and it stayed that way for the whole wait"
+                            ),
+                            None => format!(
+                                "click on {selector} - another element would receive that click, \
+                                 and it stayed that way for the whole wait"
+                            ),
+                        };
+                        if closed_loop
+                            && replans < MAX_STEP_REPLANS
+                            && refused_keys.insert(format!("occluded:{selector}"))
+                        {
+                            replans += 1;
+                            match replan_remainder(
+                                spec,
+                                &step_app,
+                                driver,
+                                &mut client,
+                                &prior_intents,
+                                &capture_names,
+                                &step_intent,
+                                &executed_summaries,
+                                &refusal,
+                            )? {
+                                None => break,
+                                Some((rest, _continues)) => {
+                                    plan = rest.into();
+                                    continue;
+                                }
+                            }
+                        }
                         return Err(RecordError::AssertMismatch {
                             intent: spec_step.intent().to_string(),
                             expected: "the click to reach the element".to_string(),
@@ -3418,6 +3591,20 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             if let Some(rec) = recorder.as_mut() {
                 rec.step_finished(driver);
             }
+            // What a continuation reply must not repeat, recorded from the
+            // action that actually RAN rather than the one that was planned.
+            executed_summaries.push(action_summary(&action));
+            if executed_summaries.len() > crate::author::MAX_STEP_ACTIONS {
+                return Err(RecordError::AssertMismatch {
+                    intent: spec_step.intent().to_string(),
+                    expected: format!(
+                        "one step to finish within {} actions",
+                        crate::author::MAX_STEP_ACTIONS
+                    ),
+                    actual: "it kept authoring more; a step this long is a model looping"
+                        .to_string(),
+                });
+            }
             let mut step = step_for(steps.len() + 1, &spec_step.intent(), &step_app, &action);
             // Which surface ran it — how a multi-surface replay knows the
             // driver a step belongs to. None on single-surface flows.
@@ -3735,6 +3922,173 @@ mod tests {
             Duration::from_millis(step_timeout_ms())
         );
     }
+
+    /// An inventory that was true when it was read and false by the time it
+    /// was acted on.
+    ///
+    /// The scene is captured before the step runs, so a control the page
+    /// swaps out mid-step is named in good faith and then is not there.
+    /// Aborting was the old answer, and it threw away a recording the very
+    /// next look would have completed.
+    #[test]
+    fn an_element_named_too_early_is_re_authored_against_what_the_screen_became() {
+        let spec = FlowSpec::parse(ADDRESS_SPEC).expect("spec parses");
+        // `#billing-next` is in the inventory but not on the page — the
+        // shape of a scene that has gone stale under the step using it.
+        let stale = r##"[{"target":"css:#expand","tag":"button","text":"Add billing address"},
+             {"target":"css:#billing-next","tag":"button","text":"Continue"}]"##;
+        let current = r##"[{"target":"css:#billing","tag":"button","text":"Billing"}]"##;
+        let mut driver = MockAppDriver::new(&["#expand"])
+            .with_scene_sequence(&[stale, current])
+            .revealing("#expand", &["#billing"]);
+        driver.scene = Some(current.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#expand"},
+                 {"action":"click","target":"css:#billing-next"}]"##,
+            r##"[{"action":"click","target":"css:#billing"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-named-too-early.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the step recovers against the screen as it now is");
+
+        assert_eq!(
+            driver.invoked,
+            vec!["#expand", "#billing"],
+            "the control that was really there was clicked; the stale one never was"
+        );
+        assert_eq!(client.prompts.len(), 2);
+        assert!(
+            client.prompts[1].contains("not on the current screen")
+                && client.prompts[1].contains("css=#billing-next"),
+            "the correction names what was missing: {}",
+            client.prompts[1]
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The budget, spent on distinct refusals until it is gone.
+    ///
+    /// Each new refusal earns a look; `MAX_STEP_REPLANS` caps how many. A
+    /// step still arguing with the page after that is one flowproof should
+    /// refuse rather than keep paying for, and the refusal is the ordinary
+    /// one for the last thing it could not find.
+    #[test]
+    fn the_replan_budget_bounds_a_step_that_keeps_naming_ghosts() {
+        let spec = FlowSpec::parse(ADDRESS_SPEC).expect("spec parses");
+        let scene = r##"[{"target":"css:#ghost1","tag":"button","text":"One"},
+             {"target":"css:#ghost2","tag":"button","text":"Two"},
+             {"target":"css:#ghost3","tag":"button","text":"Three"},
+             {"target":"css:#ghost4","tag":"button","text":"Four"}]"##;
+        let mut driver = MockAppDriver::new(&["#anchor"]);
+        driver.scene = Some(scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#ghost1"}]"##,
+            r##"[{"action":"click","target":"css:#ghost2"}]"##,
+            r##"[{"action":"click","target":"css:#ghost3"}]"##,
+            r##"[{"action":"click","target":"css:#ghost4"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-replan-budget.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("a step that never grounds is refused");
+
+        assert_eq!(
+            err.to_string(),
+            "element for step 'Fill in the delivery address and continue' not found: \
+             [css=#ghost4]"
+        );
+        assert_eq!(
+            client.prompts.len(),
+            usize::try_from(MAX_STEP_REPLANS).expect("the budget fits a usize") + 1,
+            "the first authoring plus the whole budget, and then it stops"
+        );
+        assert!(driver.invoked.is_empty());
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// it authored after the page refused those values.
+    struct ScriptedClient {
+        replies: std::collections::VecDeque<String>,
+        prompts: Vec<String>,
+    }
+
+    impl ScriptedClient {
+        fn new(replies: &[&str]) -> Self {
+            Self {
+                replies: replies.iter().map(|r| (*r).to_string()).collect(),
+                prompts: Vec::new(),
+            }
+        }
+    }
+
+    impl crate::ModelClient for ScriptedClient {
+        fn complete(&mut self, _system: &str, user: &str) -> Result<String, crate::AgentError> {
+            self.prompts.push(user.to_string());
+            self.replies
+                .pop_front()
+                .ok_or_else(|| crate::AgentError::Authoring {
+                    step: "scripted".into(),
+                    reason: "the recorder asked for more replies than the test scripted".into(),
+                })
+        }
+
+        fn identity(&self) -> (String, String) {
+            ("openai-compatible".into(), "test-model".into())
+        }
+    }
+
+    /// The refusal that names the overlay is worth paying for only if the
+    /// name reaches somewhere that can act on it.
+    ///
+    /// Recording refuses a click another element would receive, because a
+    /// trace of a click the page never saw cannot replay. The refusal names
+    /// the occluder; the loop hands that name to the model, which dismisses
+    /// the thing by name rather than guessing at Escape.
+    #[test]
+    fn an_overlay_is_named_dismissed_and_the_click_then_lands() {
+        let spec = FlowSpec::parse(
+            "name: Submit\napp: web\nurl: https://shop.test/submit\nsteps:\n  \
+             - Submit the order\n",
+        )
+        .expect("spec parses");
+        let scene = r##"[{"target":"css:#submit","tag":"button","text":"Submit"},
+             {"target":"css:#close-toast","tag":"button","text":"Dismiss"}]"##;
+        let mut driver = MockAppDriver::new(&["#submit", "#close-toast"])
+            .with_occluder("a `div.toast`", &["#submit"])
+            .dismissing("#close-toast", &["#submit"]);
+        driver.scene = Some(scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#submit"}]"##,
+            r##"[{"action":"click","target":"css:#close-toast"},
+                 {"action":"click","target":"css:#submit"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-overlay-dismissed.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the overlay is dismissed and the click records");
+
+        assert_eq!(
+            driver.invoked,
+            vec!["#close-toast", "#submit"],
+            "dismissed first, then the click the page could finally receive"
+        );
+        assert_eq!(client.prompts.len(), 2);
+        assert!(
+            client.prompts[1].contains("a `div.toast` would receive that click"),
+            "the correction names the occluder, not just that one exists: {}",
+            client.prompts[1]
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    const ADDRESS_SPEC: &str = "\
+name: Checkout
+app: web
+url: https://shop.test/checkout
+steps:
+  - Fill in the delivery address and continue
+";
 
     const CALC_SPEC: &str = "\
 name: Add two numbers
