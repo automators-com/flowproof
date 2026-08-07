@@ -12,7 +12,7 @@ use flowproof_trace::format::{
 };
 use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 
-use crate::author::{author_steps, AuthorContext};
+use crate::author::AuthorContext;
 use crate::llm::{HttpModelClient, ModelClient};
 use crate::rules::{
     resolve_step, AttrCheck, ResolvedAction, ScrollTo, Target, TextMatch, NOTEPAD_EDITOR_ID,
@@ -2145,6 +2145,9 @@ pub fn record_incremental_with_options<D: AppDriver>(
 
 struct AuthoredActions {
     actions: Vec<ResolvedAction>,
+    /// The model said this screen had no more of the step on it. The rest is
+    /// authored once the actions here have changed the page.
+    continues: bool,
     route: StepAuthoringRoute,
     warning: Option<String>,
 }
@@ -2178,6 +2181,7 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             if let Some(actions) = cursor.take_matching(driver, intent)? {
                 return Ok(AuthoredActions {
                     actions,
+                    continues: false,
                     route: StepAuthoringRoute::Reused,
                     warning: None,
                 });
@@ -2250,7 +2254,11 @@ fn author_actions<D: AppDriver, C: ModelClient>(
         let scene = driver
             .scene()?
             .ok_or_else(|| RecordError::NoScene(app_id.to_string()))?;
+        let today = driver.today()?;
+        let page_text = surface_words(driver);
         let ctx = AuthorContext {
+            today: today.as_deref(),
+            page_text: page_text.as_deref(),
             flow_name: &spec.name,
             app: app_id,
             url: spec.url.as_deref(),
@@ -2259,11 +2267,12 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             intent,
             scene: &scene,
         };
-        return match author_steps(*client, &ctx) {
-            Ok(actions) => {
+        return match crate::author::author_steps_continuable(*client, &ctx) {
+            Ok((actions, continues)) => {
                 *llm_used = true;
                 Ok(AuthoredActions {
                     actions,
+                    continues,
                     route: StepAuthoringRoute::Llm,
                     warning: None,
                 })
@@ -2286,6 +2295,7 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             let fallback = plain_auto;
             Ok(AuthoredActions {
                 actions,
+                continues: false,
                 route: if fallback {
                     StepAuthoringRoute::Fallback
                 } else {
@@ -2325,6 +2335,143 @@ fn author_actions<D: AppDriver, C: ModelClient>(
                 inventory,
             ))
         }
+    }
+}
+
+/// How many times one spec step may be re-authored against a changed page.
+///
+/// A legitimate step spans two or three screens at most — a form that
+/// reveals a section, an overlay that must be dismissed first. A step still
+/// arguing with the page after that is one the tool should refuse rather
+/// than keep paying for, and the refusal names what it kept failing on.
+const MAX_STEP_REPLANS: u32 = 3;
+
+/// One line describing an action already performed, for the continuation
+/// prompt. Typed values are included because "typed BMW into make" is what
+/// stops a model re-typing it; a captured or environment reference is
+/// elided, exactly as it is everywhere else the recorder renders an action.
+fn action_summary(action: &ResolvedAction) -> String {
+    let where_ = |target: &Target| format!("{target:?}");
+    match action {
+        ResolvedAction::TypeText { target, text } => {
+            let shown = if text.contains("${") {
+                "<reference>"
+            } else {
+                text
+            };
+            format!("typed \"{shown}\" into {}", where_(target))
+        }
+        ResolvedAction::SelectOptions { target, values, .. } => {
+            format!("selected {values:?} in {}", where_(target))
+        }
+        ResolvedAction::SetChecked {
+            target, checked, ..
+        } => {
+            format!("set {} to checked={checked}", where_(target))
+        }
+        ResolvedAction::Press { target, .. } => format!("clicked {}", where_(target)),
+        ResolvedAction::Capture { target, name, .. } => {
+            format!("remembered {} as {name}", where_(target))
+        }
+        other => format!("performed {other:?}"),
+    }
+}
+
+/// What the screen reads, collapsed and bounded, for the authoring prompt.
+///
+/// Best-effort: a driver that cannot answer simply contributes nothing. The
+/// bound keeps a long page from crowding out the element inventory, which is
+/// still the part the model must ground against.
+fn surface_words<D: AppDriver>(driver: &mut D) -> Option<String> {
+    let text = driver.surface_text().ok()?;
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(collapsed.chars().take(1500).collect())
+}
+
+/// Fields the page has REJECTED, with the rule it stated for each.
+///
+/// Read from a freshly-captured scene, so it reflects what validation made
+/// of the values just typed - which nothing else can see. The authoring
+/// scene is captured BEFORE a step runs, when no value has been entered and
+/// so nothing is red yet.
+fn rejected_fields<D: AppDriver>(driver: &mut D) -> Result<Vec<String>, RecordError> {
+    let Some(scene) = driver.scene()? else {
+        return Ok(Vec::new());
+    };
+    let Ok(elements) = serde_json::from_str::<Vec<serde_json::Value>>(&scene) else {
+        return Ok(Vec::new());
+    };
+    Ok(elements
+        .iter()
+        .filter(|e| e["invalid"].as_bool().unwrap_or(false))
+        .filter_map(|e| {
+            let target = e["target"].as_str()?;
+            Some(match e["rule"].as_str() {
+                Some(rule) => format!("{target} ({rule})"),
+                None => target.to_string(),
+            })
+        })
+        .collect())
+}
+
+/// Re-author what is left of a step, against the page as it now is.
+///
+/// This is the difference between a planner that must be right first time
+/// and one that can look again. The trace is unaffected: it records the
+/// actions that ran, never the deliberation that chose them, so a step
+/// authored in two installments replays exactly like one authored in a
+/// single reply.
+#[allow(clippy::too_many_arguments)] // internal plumbing fn, same shape as author_actions
+fn replan_remainder<D: AppDriver, C: ModelClient>(
+    spec: &FlowSpec,
+    app_id: &str,
+    driver: &mut D,
+    client: &mut Option<&mut C>,
+    prior: &[String],
+    captures: &[String],
+    intent: &str,
+    executed: &[String],
+    refusal: &str,
+) -> Result<Option<Vec<ResolvedAction>>, RecordError> {
+    let Some(client) = client.as_mut() else {
+        return Ok(None);
+    };
+    let scene = driver
+        .scene()?
+        .ok_or_else(|| RecordError::NoScene(app_id.to_string()))?;
+    let today = driver.today()?;
+    let page_text = surface_words(driver);
+    let ctx = AuthorContext {
+        today: today.as_deref(),
+        page_text: page_text.as_deref(),
+        flow_name: &spec.name,
+        app: app_id,
+        url: spec.url.as_deref(),
+        prior_steps: prior,
+        captures,
+        intent,
+        scene: &scene,
+    };
+    // What the page is SAYING, not just what it contains. A wizard that
+    // refuses to advance prints the reason - "Please, select a price option"
+    // - and a verifier that cannot read it has no evidence to weigh and
+    // rubber-stamps whatever it is asked about. This is the same text the
+    // spec's own assertions read.
+    let page_text = driver.surface_text().unwrap_or_default();
+    let page_text: String = page_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let page_text = page_text.chars().take(1500).collect::<String>();
+    let progress = crate::author::StepProgress {
+        executed,
+        refusal,
+        page_text: &page_text,
+    };
+    let outcome = crate::author::author_remainder(*client, &ctx, &progress);
+    match outcome? {
+        crate::author::Remainder::Complete => Ok(None),
+        crate::author::Remainder::Actions(actions) => Ok(Some(actions)),
     }
 }
 
@@ -2654,7 +2801,56 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             warning: authored.warning,
         });
         prior_intents.push(intent);
-        for action in authored.actions {
+        // A plan, not a list: when the page changes under it, the remainder
+        // is re-authored against the screen as it now is. `Reused` and
+        // rules-authored steps keep the old straight-line behaviour, which
+        // is what their existing tests pin.
+        let closed_loop = authored.route == StepAuthoringRoute::Llm && client.is_some();
+        // `intent` is moved into `prior_intents` above; the plan cursor needs
+        // its own copy to name the step in a continuation prompt.
+        let step_intent = spec_step.intent().to_string();
+        let mut plan: std::collections::VecDeque<ResolvedAction> = authored.actions.into();
+        let mut executed_summaries: Vec<String> = Vec::new();
+        let mut replans = 0u32;
+        // The model said the rest of this step lives on a screen that did not
+        // exist yet when it was authored.
+        let mut pending_continuation = authored.continues;
+        let mut refused_keys: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        // The plan ends when it runs out. Whether it ACHIEVED the step is a
+        // different question and is not answerable here: the page may have
+        // accepted every field and still be flagging the section behind it,
+        // with no mark on any element to find. It is answered by the NEXT
+        // A step whose remainder lives on a later screen is authored in
+        // installments: perform what could be grounded here, let the page
+        // change, then ask for the rest against what it became. Bounded by
+        // the same budget as any other replan.
+        loop {
+            let Some(action) = plan.pop_front() else {
+                if !pending_continuation || replans >= MAX_STEP_REPLANS {
+                    break;
+                }
+                pending_continuation = false;
+                replans += 1;
+                match replan_remainder(
+                    spec,
+                    &step_app,
+                    driver,
+                    &mut client,
+                    &prior_intents,
+                    &capture_names,
+                    &step_intent,
+                    &executed_summaries,
+                    "those actions ran and the screen has changed. Author the rest of \
+                     the step against it, or reply step_complete if nothing remains",
+                )? {
+                    None => break,
+                    Some(rest) => {
+                        plan = rest.into();
+                        continue;
+                    }
+                }
+            };
             // A multi-surface baseline's IDENTITY names its surface —
             // stored and compared as `<name>@<surface>.png` — so two
             // blocks may reuse a spec name and a `gui` baseline can never
@@ -2705,10 +2901,76 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             if !is_assert && !is_counting_capture {
                 if let Some(selector) = &selector {
                     if !driver.element_exists(selector)? {
+                        let refusal = format!(
+                            "click on {selector} - that element is not on the current screen"
+                        );
+                        if closed_loop
+                            && replans < MAX_STEP_REPLANS
+                            && refused_keys.insert(format!("missing:{selector}"))
+                        {
+                            replans += 1;
+                            match replan_remainder(
+                                spec,
+                                &step_app,
+                                driver,
+                                &mut client,
+                                &prior_intents,
+                                &capture_names,
+                                &step_intent,
+                                &executed_summaries,
+                                &refusal,
+                            )? {
+                                None => break,
+                                Some(rest) => {
+                                    plan = rest.into();
+                                    continue;
+                                }
+                            }
+                        }
                         return Err(RecordError::ElementNotFound {
                             intent: spec_step.intent().to_string(),
                             selector: selector.to_string(),
                         });
+                    }
+                }
+            }
+            // Do not walk away from a form the page has just rejected.
+            //
+            // The authoring scene was captured BEFORE this step typed
+            // anything, so it could not know which values validation would
+            // refuse. It knows now, and only until the click lands: the
+            // wizard advances regardless, leaving the section flagged behind
+            // it and the offending field on a screen nothing will inventory
+            // again. This is the last moment it is repairable.
+            if closed_loop && matches!(action, ResolvedAction::Press { .. }) {
+                let rejected = rejected_fields(driver)?;
+                if !rejected.is_empty()
+                    && replans < MAX_STEP_REPLANS
+                    && refused_keys.insert(format!("rejected:{}", rejected.join(",")))
+                {
+                    replans += 1;
+                    plan.push_front(action);
+                    match replan_remainder(
+                        spec,
+                        &step_app,
+                        driver,
+                        &mut client,
+                        &prior_intents,
+                        &capture_names,
+                        &step_intent,
+                        &executed_summaries,
+                        &format!(
+                            "the page REJECTED these values, each with the rule it \
+                             enforced: {}. Correct them - obeying those rules - and then \
+                             repeat the action that leaves this screen",
+                            rejected.join("; ")
+                        ),
+                    )? {
+                        None => break,
+                        Some(rest) => {
+                            plan = rest.into();
+                            continue;
+                        }
                     }
                 }
             }
@@ -2753,6 +3015,43 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                         occlusion_wait_rounds(),
                     )?;
                     if !clear {
+                        let selector = targeted().to_string();
+                        // Name what is in the way. Without it a model can only
+                        // guess "an overlay - press Escape and retry", which is
+                        // the same refused click again.
+                        let refusal = match driver.occluding_element(targeted())? {
+                            Some(occluder) => format!(
+                                "click on {selector} - a {occluder} would receive that click \
+                                 instead, and it stayed that way for the whole wait"
+                            ),
+                            None => format!(
+                                "click on {selector} - another element would receive that click, \
+                                 and it stayed that way for the whole wait"
+                            ),
+                        };
+                        if closed_loop
+                            && replans < MAX_STEP_REPLANS
+                            && refused_keys.insert(format!("occluded:{selector}"))
+                        {
+                            replans += 1;
+                            match replan_remainder(
+                                spec,
+                                &step_app,
+                                driver,
+                                &mut client,
+                                &prior_intents,
+                                &capture_names,
+                                &step_intent,
+                                &executed_summaries,
+                                &refusal,
+                            )? {
+                                None => break,
+                                Some(rest) => {
+                                    plan = rest.into();
+                                    continue;
+                                }
+                            }
+                        }
                         return Err(RecordError::AssertMismatch {
                             intent: spec_step.intent().to_string(),
                             expected: "the click to reach the element".to_string(),
@@ -3393,6 +3692,20 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             }
             if let Some(rec) = recorder.as_mut() {
                 rec.step_finished(driver);
+            }
+            // What a continuation reply must not repeat, recorded from the
+            // action that actually ran rather than the one that was planned.
+            executed_summaries.push(action_summary(&action));
+            if executed_summaries.len() > crate::author::MAX_STEP_ACTIONS {
+                return Err(RecordError::AssertMismatch {
+                    intent: spec_step.intent().to_string(),
+                    expected: format!(
+                        "one step to finish within {} actions",
+                        crate::author::MAX_STEP_ACTIONS
+                    ),
+                    actual: "it kept authoring more; a step this long is a model looping"
+                        .to_string(),
+                });
             }
             let mut step = step_for(steps.len() + 1, &spec_step.intent(), &step_app, &action);
             // Which surface ran it — how a multi-surface replay knows the

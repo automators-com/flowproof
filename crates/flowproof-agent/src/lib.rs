@@ -32,6 +32,13 @@ pub enum AgentError {
     Config(String),
     #[error("authoring failed for step '{step}': {reason}")]
     Authoring { step: String, reason: String },
+    /// The screen disputes the step BEFORE this one. Raised while authoring
+    /// `step`, but `step` is the witness, not the culprit — the failure is
+    /// reported here because this is the earliest point it was detectable.
+    #[error(
+        "cannot record '{step}': the previous step left a problem behind — the page reports: {evidence}"
+    )]
+    PreviousStepIncomplete { step: String, evidence: String },
 }
 
 /// Which model backend drives the authoring loop.

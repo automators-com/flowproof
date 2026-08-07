@@ -28,12 +28,37 @@ persist its deterministic target. Never invent a selector from the user's wordin
 \"fill in the vehicle data and continue\" is one step covering every field on that \
 form plus the button. CARRY OUT THE WHOLE STEP: reply with a JSON ARRAY of action \
 objects, in the order they must happen. Reply with a bare object only when the step \
-really is one action. Never do part of a step and leave the rest to a later reply: \
-there is no later reply for this step.
+really is one action. Author the whole step in one reply: plan it as a whole, in \
+order, rather than leaving the rest for later. If the step plainly needs elements \
+that are NOT on this screen yet - a later wizard page, a section one of your own \
+actions will reveal - author every action you can ground here, then end the array \
+with {\"action\":\"step_continues\"}. flowproof will perform them, read the screen \
+again and ask you for the rest. Never guess a target for something you cannot see.
+- Before authoring, read what the screen says. A wizard will happily move on \
+from a section it is still flagging - a heading carrying a count of outstanding \
+problems, a message naming a field it would not accept - and that is the PREVIOUS \
+step failing, not this one. When you see it, author nothing: reply with exactly \
+{\"action\":\"previous_step_incomplete\",\"evidence\":\"<the page's own words>\"}. \
+A page that moved on is not proof that it accepted anything.
+- You may be asked to CONTINUE a step that is partway done, because the page \
+changed under the plan - a control vanished, or something covered it. That message \
+lists the actions already performed, which you must NEVER repeat, and says why the \
+next one was refused. The elements it lists are the screen as it is NOW, read again \
+after those actions ran. Reply with only the actions still needed. If the step's \
+intent is already satisfied, reply with exactly [{\"action\":\"step_complete\"}] - a \
+reply valid ONLY when you were asked to continue, never in a first reply.
+- When an action was refused because another element would receive the click, do \
+what a person would: if something is covering the control, dismiss it (its close \
+control, or press_key Escape) and continue. If the control simply cannot be reached, \
+choose a DIFFERENT listed target that serves the same intent - a navigation link \
+rather than a banner button, say - rather than retrying the one that was refused.
 - When a step asks for a whole form, group or screen, cover EVERY field it names, \
 including ones the user did not enumerate. Each scene entry tells you what a field \
-holds now (`value`, `checked`), whether the page demands it (`required`), and, for a \
-dropdown, its exact `options` - choose an option verbatim from that list. Invent \
+holds now (`value`, `checked`), whether the page demands it (`required`), the \
+constraint the page states in its own words (`rule` - obey it, it is what the \
+application will enforce), whether the page has already REJECTED what it holds \
+(`invalid` - correct every one of those before moving on), and, for a dropdown, its \
+exact `options` - choose an option verbatim from that list. Invent \
 plausible, valid data for fields the step leaves unspecified, and leave a field alone \
 when it already holds a value the step does not contradict.
 - If the step's goal cannot be reached without data the screen requires first - a \
@@ -109,6 +134,10 @@ impl CaptureAmbiguity {
 #[derive(Debug, Deserialize)]
 struct AuthoredAction {
     action: String,
+    /// Only for `previous_step_incomplete`: the page's own words, quoted
+    /// back as the evidence a person needs to judge the report.
+    #[serde(default)]
+    evidence: Option<String>,
     #[serde(default, alias = "target_css")]
     target: String,
     #[serde(default)]
@@ -149,6 +178,14 @@ pub struct AuthorContext<'a> {
     pub scene: &'a str,
     /// Safe names of flow-scoped captures already available to this step.
     pub captures: &'a [String],
+    /// The date the application believes it is, `YYYY-MM-DD`, when the
+    /// driver can tell. A flow may pin the browser clock, so a date the
+    /// model invents from its own sense of now can be rejected as past.
+    pub today: Option<&'a str>,
+    /// What the screen currently reads, whitespace-collapsed and bounded.
+    /// The step before this one may have left a problem behind that no
+    /// element carries a mark for; the page usually says so in words.
+    pub page_text: Option<&'a str>,
 }
 
 fn user_prompt(ctx: &AuthorContext<'_>) -> String {
@@ -159,15 +196,27 @@ fn user_prompt(ctx: &AuthorContext<'_>) -> String {
     };
     let captures = serde_json::to_string(ctx.captures).expect("capture names serialize");
     format!(
-        "Flow: {name}\nApp: {app}{url}\nSteps already performed: {prior}\n\
+        "Flow: {name}\nApp: {app}{url}{today}\nSteps already performed: {prior}\n\
          Remembered captures in scope: {captures}\n\
-         Current step to perform: {intent}\n\nInteractable elements:\n{scene}",
+         Current step to perform: {intent}{page}\n\nInteractable elements:\n{scene}",
         name = ctx.flow_name,
         app = ctx.app,
         url = ctx.url.map(|u| format!(" ({u})")).unwrap_or_default(),
+        today = ctx
+            .today
+            .map(|d| format!(
+                "\nToday, as the application sees it, is {d}. Any date you invent must make \
+                 sense relative to THAT date, not to your own sense of now - a policy start \
+                 date in its past is rejected and the page will refuse to move on."
+            ))
+            .unwrap_or_default(),
         prior = prior,
         captures = captures,
         intent = ctx.intent,
+        page = ctx
+            .page_text
+            .map(|t| format!("\n\nWhat the screen reads right now:\n\"{t}\""))
+            .unwrap_or_default(),
         scene = ctx.scene,
     )
 }
@@ -237,6 +286,10 @@ enum GroundingError {
         total: usize,
     },
     CaptureAmbiguity(CaptureAmbiguity),
+    /// Not a grounding failure at all: the model read the screen and found
+    /// the PREVIOUS step's work disputed by the page. Carries the page's own
+    /// words, which are the evidence a person needs to judge it.
+    PreviousStepIncomplete(String),
 }
 
 impl From<&str> for GroundingError {
@@ -257,6 +310,10 @@ impl std::fmt::Display for GroundingError {
             Self::Rejected(reason) => f.write_str(reason),
             Self::Sequence { reason, .. } => f.write_str(reason),
             Self::CaptureAmbiguity(ambiguity) => f.write_str(&ambiguity.reason()),
+            Self::PreviousStepIncomplete(evidence) => write!(
+                f,
+                "the previous step left a problem behind; the page reports: {evidence}"
+            ),
         }
     }
 }
@@ -454,7 +511,7 @@ fn validate_rule_action(
 /// form legitimately runs to a couple of dozen; a reply an order of magnitude
 /// past that is a model that has started looping, and a bound says so at the
 /// point of authoring rather than after the run has clicked sixty times.
-const MAX_STEP_ACTIONS: usize = 60;
+pub(crate) const MAX_STEP_ACTIONS: usize = 60;
 
 fn parse_and_ground(
     reply: &str,
@@ -541,6 +598,19 @@ fn ground_one(
 ) -> Result<Vec<ResolvedAction>, GroundingError> {
     let authored: AuthoredAction = serde_json::from_value(item)
         .map_err(|e| GroundingError::Rejected(format!("reply is not a valid action: {e}")))?;
+
+    // Answered BEFORE any target is resolved: this is a report about the
+    // previous step, not an action, and it names no element. Resolving a
+    // target first would reject it as an empty selector and lose the very
+    // evidence it was sent to deliver.
+    if authored.action == "previous_step_incomplete" {
+        return Err(GroundingError::PreviousStepIncomplete(
+            authored
+                .evidence
+                .clone()
+                .unwrap_or_else(|| "the page reports an outstanding problem".to_string()),
+        ));
+    }
 
     if authored.action == "capture_ambiguity" {
         if captures.len() < 2 {
@@ -788,10 +858,178 @@ fn ground_one(
                 timeout_ms: crate::rules::ASSERT_TIMEOUT_MS,
             }])
         }
+        // Named rather than lumped in with typos: a model that reaches for
+        // the continuation sentinel in a first reply has understood the
+        // vocabulary and mistaken the moment, and the retry should say so.
+        "step_complete" => Err(GroundingError::Rejected(
+            "step_complete is valid only when you are asked to CONTINUE a step that is \
+             partway done; a first reply must author the actions the step needs"
+                .into(),
+        )),
         other => Err(GroundingError::Rejected(format!(
             "unknown action '{other}'"
         ))),
     }
+}
+
+/// What the recorder has already done for a step, and why it stopped.
+pub struct StepProgress<'a> {
+    /// One line per action already performed, in order.
+    pub executed: &'a [String],
+    /// Why the next planned action was refused.
+    pub refusal: &'a str,
+    /// What the page currently reads, whitespace-collapsed. A form that
+    /// refuses to move on says why, and a verifier that cannot read that
+    /// has nothing to weigh.
+    pub page_text: &'a str,
+}
+
+/// The answer to "what is left of this step?".
+pub enum Remainder {
+    /// The step's intent is already satisfied; author nothing more.
+    Complete,
+    /// The actions still needed, grounded against the fresh scene.
+    Actions(Vec<ResolvedAction>),
+}
+
+/// Tolerate models that wrap JSON in a code fence despite instructions.
+fn strip_code_fence(reply: &str) -> &str {
+    reply
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim()
+}
+
+/// `[{"action":"step_complete"}]` — the one reply that means "nothing left".
+/// Recognised before grounding, because `step_complete` names no target and
+/// would otherwise be refused as an unknown action.
+fn is_step_complete(reply: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(strip_code_fence(reply)) else {
+        return false;
+    };
+    let items = match value {
+        serde_json::Value::Array(items) => items,
+        object @ serde_json::Value::Object(_) => vec![object],
+        _ => return false,
+    };
+    items.len() == 1 && items[0]["action"].as_str() == Some("step_complete")
+}
+
+fn remainder_prompt(ctx: &AuthorContext<'_>, progress: &StepProgress<'_>) -> String {
+    let done = if progress.executed.is_empty() {
+        "  (nothing yet)".to_string()
+    } else {
+        progress
+            .executed
+            .iter()
+            .enumerate()
+            .map(|(i, line)| format!("  {}. {line}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "{}\n\nThis step is PARTWAY DONE. Already performed - never repeat these:\n{done}\n\
+         The next planned action was refused: {}\n\
+         The elements listed above are the screen as it is NOW, read again after those \
+         actions ran.\nWhat the page currently reads:\n\"{}\"\n\
+         Weigh that text before answering. The step is NOT satisfied - and you must \
+         author the actions that fix it - if the text names a missing choice, an \
+         invalid value or a field still wanted, or if a section heading carries a \
+         count of outstanding problems. A page that \
+         moved on is not proof: a wizard can advance and still mark the section it \
+         left behind. Otherwise author only the actions still needed, or \
+         reply with exactly [{{\"action\":\"step_complete\"}}].",
+        user_prompt(ctx),
+        progress.refusal,
+        progress.page_text
+    )
+}
+
+/// Author what is left of a step after the page changed under its plan.
+///
+/// The recorder calls this with a FRESH scene, so the model chooses from the
+/// screen as it is now rather than the one its plan was built against. This
+/// is the whole difference between a planner that must be right first time
+/// and one that can look again — the trace it produces is identical either
+/// way, because the trace records executed actions, not the deliberation.
+pub fn author_remainder<C: ModelClient>(
+    client: &mut C,
+    ctx: &AuthorContext<'_>,
+    progress: &StepProgress<'_>,
+) -> Result<Remainder, AgentError> {
+    let targets = scene_targets(ctx.scene);
+    let prompt = remainder_prompt(ctx, progress);
+    let mut last_error = String::new();
+    for attempt in 0..2 {
+        let user = if attempt == 0 {
+            prompt.clone()
+        } else {
+            format!(
+                "{prompt}\n\nYour previous reply was rejected: {last_error}. \
+                 Reply again with ONLY the corrected JSON array."
+            )
+        };
+        let reply = client.complete(SYSTEM_PROMPT, &user)?;
+        if is_step_complete(&reply) {
+            return Ok(Remainder::Complete);
+        }
+        match parse_and_ground(
+            &reply,
+            &targets,
+            ctx.scene,
+            ctx.app,
+            ctx.intent,
+            ctx.captures,
+        ) {
+            Ok(actions) => return Ok(Remainder::Actions(actions)),
+            Err(GroundingError::CaptureAmbiguity(ambiguity)) => {
+                return Err(AgentError::Authoring {
+                    step: ctx.intent.to_string(),
+                    reason: ambiguity.reason(),
+                })
+            }
+            Err(reason) => last_error = reason.to_string(),
+        }
+    }
+    Err(AgentError::Authoring {
+        step: ctx.intent.to_string(),
+        reason: last_error,
+    })
+}
+
+/// Split a trailing `step_continues` off a reply, if present.
+///
+/// The sentinel is not an action and never grounds; it is the model saying
+/// "this screen had no more of the step on it". Legal only as the LAST
+/// element, so it cannot be used to skip work in the middle of a sequence.
+fn split_continuation(reply: &str) -> (String, bool) {
+    let trimmed = strip_code_fence(reply);
+    let Ok(serde_json::Value::Array(mut items)) = serde_json::from_str(trimmed) else {
+        return (reply.to_string(), false);
+    };
+    let continues = items
+        .last()
+        .and_then(|item| item["action"].as_str())
+        .is_some_and(|action| action == "step_continues");
+    if !continues {
+        return (reply.to_string(), false);
+    }
+    items.pop();
+    (
+        serde_json::to_string(&items).unwrap_or_else(|_| reply.to_string()),
+        true,
+    )
+}
+
+/// Author one step, reporting whether the model says it has more to do once
+/// the screen changes. [`author_steps`] is the same thing without the flag.
+pub fn author_steps_continuable<C: ModelClient>(
+    client: &mut C,
+    ctx: &AuthorContext<'_>,
+) -> Result<(Vec<ResolvedAction>, bool), AgentError> {
+    author_steps_inner(client, ctx)
 }
 
 /// Author one step. One retry with the failure appended, then a clear error.
@@ -799,6 +1037,13 @@ pub fn author_steps<C: ModelClient>(
     client: &mut C,
     ctx: &AuthorContext<'_>,
 ) -> Result<Vec<ResolvedAction>, AgentError> {
+    author_steps_inner(client, ctx).map(|(actions, _)| actions)
+}
+
+fn author_steps_inner<C: ModelClient>(
+    client: &mut C,
+    ctx: &AuthorContext<'_>,
+) -> Result<(Vec<ResolvedAction>, bool), AgentError> {
     let targets = scene_targets(ctx.scene);
     if let Some(name) = ctx.captures.iter().find(|name| !valid_capture_name(name)) {
         return Err(AgentError::Authoring {
@@ -829,6 +1074,7 @@ pub fn author_steps<C: ModelClient>(
             format!("{prompt}\n\nYour previous reply was rejected: {last_error}. Reply again with ONLY the corrected JSON object.")
         };
         let reply = client.complete(SYSTEM_PROMPT, &user)?;
+        let (reply, continues) = split_continuation(&reply);
         match parse_and_ground(
             &reply,
             &targets,
@@ -837,11 +1083,20 @@ pub fn author_steps<C: ModelClient>(
             ctx.intent,
             ctx.captures,
         ) {
-            Ok(actions) => return Ok(actions),
+            Ok(actions) => return Ok((actions, continues)),
             Err(GroundingError::CaptureAmbiguity(ambiguity)) => {
                 return Err(AgentError::Authoring {
                     step: ctx.intent.to_string(),
                     reason: ambiguity.reason(),
+                })
+            }
+            // Retrying would only ask the same question of the same screen.
+            // This is a report about the step BEFORE this one, and the
+            // recorder has to hear it intact.
+            Err(GroundingError::PreviousStepIncomplete(evidence)) => {
+                return Err(AgentError::PreviousStepIncomplete {
+                    step: ctx.intent.to_string(),
+                    evidence,
                 })
             }
             Err(GroundingError::Sequence {
@@ -955,6 +1210,8 @@ mod tests {
 
     fn ctx<'a>() -> AuthorContext<'a> {
         AuthorContext {
+            page_text: None,
+            today: None,
             flow_name: "Greet",
             app: "web",
             url: Some("file:///greeter.html"),
@@ -979,6 +1236,8 @@ mod tests {
             "name = Ada please",
         ] {
             let prompt = user_prompt(&AuthorContext {
+                page_text: None,
+                today: None,
                 intent: instruction,
                 ..ctx()
             });
@@ -1022,6 +1281,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Fill out all the vehicle data and click next",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1069,6 +1330,8 @@ mod tests {
         let error = author_steps(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Fill out all the vehicle data",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1136,6 +1399,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Fill out all the vehicle data and click next",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1179,6 +1444,8 @@ mod tests {
         author_steps(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Fill out all the vehicle data",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1198,6 +1465,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Continue",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1227,6 +1496,8 @@ mod tests {
             let error = author_steps(
                 &mut client,
                 &AuthorContext {
+                    page_text: None,
+                    today: None,
                     intent: "Fill out all the vehicle data",
                     scene: FORM_SCENE,
                     ..ctx()
@@ -1250,6 +1521,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Remember the greeting as the greeting, then put it in the name box",
                 ..ctx()
             },
@@ -1298,6 +1571,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 app: "notepad",
                 url: None,
                 scene: UIA_SCENE,
@@ -1320,6 +1595,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 app: "notepad",
                 url: None,
                 scene: UIA_SCENE,
@@ -1349,6 +1626,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 scene: legacy_scene,
                 ..ctx()
             },
@@ -1448,6 +1727,8 @@ mod tests {
     fn prompt_lists_capture_names_without_values() {
         let captures = vec!["order_number".into(), "customer_id".into()];
         let prompt = user_prompt(&AuthorContext {
+            page_text: None,
+            today: None,
             captures: &captures,
             ..ctx()
         });
@@ -1465,6 +1746,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Remember the greeting as greeting",
                 ..ctx()
             },
@@ -1493,6 +1776,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Remember the value beside \"order id\" as the order ID",
                 scene: SCOPED_SCENE,
                 ..ctx()
@@ -1610,6 +1895,8 @@ mod tests {
             let action = author_step(
                 &mut client,
                 &AuthorContext {
+                    page_text: None,
+                    today: None,
                     intent,
                     scene: HUMAN_PRIMITIVE_SCENE,
                     ..ctx()
@@ -1631,6 +1918,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Empty the name field",
                 ..ctx()
             },
@@ -1666,6 +1955,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Open settings",
                 scene: "[]",
                 ..ctx()
@@ -1689,6 +1980,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 flow_name: "Create an order",
                 app: "sap",
                 url: None,
@@ -1732,6 +2025,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1757,6 +2052,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Type the literal word it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1781,6 +2078,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1801,6 +2100,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Remember the customer number",
                 captures: &captures,
                 ..ctx()
@@ -1823,6 +2124,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1856,6 +2159,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -1882,6 +2187,8 @@ mod tests {
             let error = author_step(
                 &mut client,
                 &AuthorContext {
+                    page_text: None,
+                    today: None,
                     flow_name: "f",
                     app: "web",
                     url: None,
@@ -1908,6 +2215,8 @@ mod tests {
         let error = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 flow_name: "f",
                 app: "web",
                 url: None,
@@ -1933,6 +2242,8 @@ mod tests {
         let actions = author_steps(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 flow_name: "f",
                 app: "web",
                 url: None,
@@ -1960,6 +2271,8 @@ mod tests {
         let err = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Enter it in the confirmation field",
                 captures: &captures,
                 ..ctx()
@@ -1987,6 +2300,8 @@ mod tests {
         let action = author_step(
             &mut client,
             &AuthorContext {
+                page_text: None,
+                today: None,
                 intent: "Enter the order number in the name field",
                 captures: &captures,
                 ..ctx()
