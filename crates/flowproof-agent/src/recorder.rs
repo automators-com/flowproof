@@ -2413,9 +2413,20 @@ fn rejected_fields<D: AppDriver>(driver: &mut D) -> Result<Vec<String>, RecordEr
         .filter(|e| e["invalid"].as_bool().unwrap_or(false))
         .filter_map(|e| {
             let target = e["target"].as_str()?;
-            Some(match e["rule"].as_str() {
-                Some(rule) => format!("{target} ({rule})"),
-                None => target.to_string(),
+            // The VALUE belongs in this line, and not only so the model can
+            // see what it typed. The caller keys its one-correction-per-
+            // problem rule on this string, and a rejection that names only
+            // the field reads identically however many different values are
+            // tried - so the second attempt was refused as a repeat of the
+            // first. A person given a form that says "between 1 and 1000"
+            // types another number; this is what lets the recorder do the
+            // same, while a value tried twice still reads as a decision.
+            let held = e["value"].as_str().unwrap_or_default();
+            Some(match (held.is_empty(), e["rule"].as_str()) {
+                (false, Some(rule)) => format!("{target} holds \"{held}\" ({rule})"),
+                (false, None) => format!("{target} holds \"{held}\""),
+                (true, Some(rule)) => format!("{target} ({rule})"),
+                (true, None) => target.to_string(),
             })
         })
         .collect())
