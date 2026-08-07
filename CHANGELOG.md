@@ -6,6 +6,29 @@ together).
 
 ## Unreleased
 
+## 0.16.1
+
+### Fixed
+
+- **One rejected field was reported as three, two of them unfixable.** A
+  validation framework sets its marker on the WRAPPER, not the control, so
+  the check for it walks up from the element. Asked of every scene entry,
+  that flagged the label and the error message inside the wrapper as well as
+  the field: one bad value named three times, two of them things nothing can
+  type into.
+
+  A recording died on it. The page refused a payload, the guard caught it
+  before the click that leaves the screen and re-authored the step quoting
+  the rule back — and the correction it asked for listed `#payload` beside a
+  `label.main` and a `span.error` carrying the same sentence. A model gets
+  one correction before the same rejection is treated as a decision rather
+  than a hiccup, and that one can be spent on a span.
+
+  Only a control can be rejected, and only a control can be corrected, so
+  only a control is asked. The rule the page states is read the same way: a
+  label repeating a constraint is not a field that has one.
+
+
 ## 0.16.0
 
 Recording could not finish a flow written the way a tester talks. This
