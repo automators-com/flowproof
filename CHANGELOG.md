@@ -33,7 +33,10 @@ together).
   later. Recording refused pages it could have recorded, and the trace it
   declined to write would have replayed.
 
-  Recording now polls the same gate for the same budget. Not a new constant:
+  Recording now polls the same gate for the same budget, measured as wall
+  clock exactly as replay measures it — a count of polls would omit the probe
+  round-trips between them and let recording out-wait replay on a slow
+  transport. Not a new constant:
   recording bakes `step_timeout_ms()` into every targeted step's existence
   precondition and replay waits exactly that recorded value, so both are
   derived from the one number and follow its `FLOWPROOF_STEP_TIMEOUT_MS`
@@ -43,30 +46,6 @@ together).
 
   An occluder that outlasts the budget is still refused, with the message it
   always had. This buys the transient cases only, which is all a wait can buy.
-
-- **The authoring scene could describe a page that no longer existed, and the
-  model took the blame.** The inventory was read the instant the previous step
-  finished. A step that navigates leaves the next step's scene racing the new
-  page, and a server that renders every variant of a form and hides the
-  irrelevant ones in script briefly presents *all* of them as rendered.
-
-  On the Tricentis sample app this was reliable rather than rare. `Open the
-  truck insurance quote` was authored correctly, and the scene captured
-  immediately after was the union of two forms: a motorcycle `#model` —
-  actionable, with its own options list — beside the truck's `#payload`. The
-  model grounded faithfully onto `#model`, exactly as instructed, and the
-  recorder then refused the step because no such element existed by the time
-  it ran. The failure read as a model inventing a selector. It was the scene
-  that lied; the model had copied a target it was entitled to copy.
-
-  The web scene is now read only once the page has stopped rearranging it:
-  two readings that agree on which targets exist, with the document loaded.
-  Agreement *before* load completes does not count, because that is precisely
-  the window the pre-script union looks stable in. Only the set of targets has
-  to hold still — a clock, a character counter, or a field mid-edit changes
-  text on every reading without changing which elements exist, and waiting on
-  those would wait forever. A page that never goes quiet is captured anyway
-  after a bounded wait: recording a carousel is better than hanging on one.
 
 - **The two E2E jobs had been red on `main` for a day, and nothing on a pull
   request could see it.** `web E2E` and `windows build + E2E` are off the PR

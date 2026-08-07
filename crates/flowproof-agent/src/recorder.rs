@@ -38,8 +38,7 @@ const STEP_TIMEOUT_MS: u64 = 5000;
 /// Poll cadence while an auto-waiting assertion is pending.
 const ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// How many `ASSERT_POLL_INTERVAL` rounds recording waits for an occluder to
-/// clear before refusing the click.
+/// How long recording waits for an occluder to clear.
 ///
 /// Not a constant, because the budget it must match is not one. Recording
 /// bakes `step_timeout_ms()` into every targeted step's existence
@@ -47,13 +46,15 @@ const ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// gate (`actionable_timeout`). Deriving both from the one number — including
 /// its `FLOWPROOF_STEP_TIMEOUT_MS` override — is what makes them agree.
 ///
-/// The direction matters more than the number. Recording must never accept a
-/// click replay would reject, so out-waiting replay is the one error that
-/// cannot be tolerated: it mints a trace whose very first replay fails. Being
-/// equal is correct; being *shorter* would merely be pessimistic.
-fn occlusion_wait_rounds() -> usize {
-    let poll = ASSERT_POLL_INTERVAL.as_millis().max(1);
-    usize::try_from(u128::from(step_timeout_ms()) / poll).unwrap_or(1)
+/// Measured as WALL CLOCK, because that is how replay measures it. A count of
+/// polls silently omits the probe round-trips between them: on a slow
+/// transport, twenty pauses plus twenty-one probes runs well past replay's
+/// five seconds, and an occluder clearing in the difference is accepted here
+/// and refused on the very first replay. Recording must never accept a click
+/// replay would reject — out-waiting replay is the one error that cannot be
+/// tolerated. Being equal is correct; being shorter is merely pessimistic.
+fn occlusion_budget() -> Duration {
+    Duration::from_millis(step_timeout_ms())
 }
 
 /// Wait for a transient occluder to clear.
@@ -70,17 +71,18 @@ fn occlusion_wait_rounds() -> usize {
 fn wait_until_receives_events(
     mut probe: impl FnMut() -> Result<Option<bool>, flowproof_driver::DriverError>,
     mut pause: impl FnMut(),
-    rounds: usize,
+    mut elapsed: impl FnMut() -> Duration,
+    budget: Duration,
 ) -> Result<bool, flowproof_driver::DriverError> {
-    for round in 0..=rounds {
+    loop {
         if probe()? != Some(false) {
             return Ok(true);
         }
-        if round < rounds {
-            pause();
+        if elapsed() >= budget {
+            return Ok(false);
         }
+        pause();
     }
-    Ok(false)
 }
 
 /// The precondition wait baked into every targeted step at record time.
@@ -2747,10 +2749,12 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     // same waiting as replay's actionability gate, so the two
                     // agree by construction; `None` means the surface cannot
                     // tell, which is satisfied.
+                    let started = std::time::Instant::now();
                     let clear = wait_until_receives_events(
                         || driver.element_receives_events(targeted()),
                         || std::thread::sleep(ASSERT_POLL_INTERVAL),
-                        occlusion_wait_rounds(),
+                        || started.elapsed(),
+                        occlusion_budget(),
                     )?;
                     if !clear {
                         return Err(RecordError::AssertMismatch {
@@ -3634,31 +3638,54 @@ mod tests {
         let clear = super::wait_until_receives_events(
             || Ok(answers.borrow_mut().remove(0)),
             || pauses += 1,
-            super::occlusion_wait_rounds(),
+            || Duration::ZERO,
+            Duration::from_secs(5),
         )
         .expect("probe succeeds");
         assert!(clear, "the occluder cleared, so the click is recordable");
         assert_eq!(pauses, 3, "waited exactly as long as it had to");
     }
 
-    /// A datepicker that never goes away is a real refusal, and it must
-    /// still be one — bounded, so recording cannot hang on it.
+    /// A datepicker that never goes away is a real refusal, and it must still
+    /// be one — bounded, so recording cannot hang on it.
     #[test]
-    fn a_persistent_occluder_is_still_refused_within_the_bound() {
-        let mut probes = 0;
+    fn a_persistent_occluder_is_still_refused_within_the_budget() {
+        let spent = std::cell::Cell::new(Duration::ZERO);
         let mut pauses = 0;
         let clear = super::wait_until_receives_events(
+            || Ok(Some(false)),
             || {
-                probes += 1;
-                Ok(Some(false))
+                pauses += 1;
+                spent.set(spent.get() + Duration::from_millis(250));
             },
-            || pauses += 1,
-            4,
+            || spent.get(),
+            Duration::from_secs(1),
         )
         .expect("probe succeeds");
         assert!(!clear, "a cover that never clears is refused");
-        assert_eq!(probes, 5, "one probe per round, plus the first");
-        assert_eq!(pauses, 4, "bounded by the rounds, not by the page");
+        assert_eq!(pauses, 4, "bounded by the budget, not by the page");
+    }
+
+    /// The bound is WALL CLOCK. Counting polls omits the probe round-trips
+    /// between them, and on a slow transport recording would out-wait replay
+    /// — accepting a click replay then refuses, which mints a trace whose
+    /// very first replay fails.
+    #[test]
+    fn a_slow_probe_spends_the_budget_it_actually_consumed() {
+        let spent = std::cell::Cell::new(Duration::ZERO);
+        let mut pauses = 0;
+        let clear = super::wait_until_receives_events(
+            || {
+                spent.set(spent.get() + Duration::from_millis(900));
+                Ok(Some(false))
+            },
+            || pauses += 1,
+            || spent.get(),
+            Duration::from_secs(1),
+        )
+        .expect("probe succeeds");
+        assert!(!clear);
+        assert_eq!(pauses, 1, "gives up on elapsed time, not on a poll count");
     }
 
     /// `None` is "this driver cannot tell", not "this is covered". Every
@@ -3670,25 +3697,22 @@ mod tests {
         let clear = super::wait_until_receives_events(
             || Ok(None),
             || pauses += 1,
-            super::occlusion_wait_rounds(),
+            || Duration::ZERO,
+            Duration::from_secs(5),
         )
         .expect("probe succeeds");
         assert!(clear);
         assert_eq!(pauses, 0, "unknown is satisfied immediately");
     }
 
-    /// The invariant that sets the budget: recording must never accept a
-    /// click replay would reject. Waiting *longer* than replay would mint a
-    /// trace whose very first replay fails, so the two budgets are equal by
-    /// construction — 40 rounds of 250ms against replay's 10_000ms default.
+    /// The invariant that sets the budget: recording waits exactly what it
+    /// writes into the trace for replay to wait, so the two agree by
+    /// construction rather than by a constant someone must keep in step.
     #[test]
-    fn recording_does_not_out_wait_replay() {
-        let rounds = u32::try_from(occlusion_wait_rounds()).expect("round count fits a u32");
-        let record_budget = ASSERT_POLL_INTERVAL * rounds;
+    fn recording_waits_exactly_what_it_writes_for_replay() {
         assert_eq!(
-            u64::try_from(record_budget.as_millis()).expect("budget fits a u64"),
-            step_timeout_ms(),
-            "record waits exactly the budget it writes into the trace for replay"
+            super::occlusion_budget(),
+            Duration::from_millis(step_timeout_ms())
         );
     }
 
