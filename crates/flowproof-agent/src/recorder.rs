@@ -6339,4 +6339,123 @@ steps:
         assert!(!out.exists());
         std::fs::remove_file(&out).ok();
     }
+
+    /// The step whose intent rules could resolve on their own, so the
+    /// question is which answer wins. A model that reports the PREVIOUS step
+    /// left a problem behind has read something rules cannot see, and its
+    /// report must end the recording — not be reclassified as "the model
+    /// could not author this" and quietly handed to the deterministic path,
+    /// which would happily click Next on a form the page is still flagging.
+    /// That is a false green: a trace claiming a step the page refused.
+    #[test]
+    fn a_previous_step_report_is_not_swallowed_by_the_rules_fallback() {
+        let spec = FlowSpec::parse(
+            "name: Quote\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Click \"Next\"\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["Next"]);
+        driver.scene = Some(r##"[{"target":"text:Next","tag":"button","text":"Next"}]"##.into());
+        driver.texts.insert(
+            MockAppDriver::SURFACE.to_string(),
+            "Vehicle data: 2 outstanding problems".into(),
+        );
+        let mut client = ScriptedClient::new(&[r##"{"action":"previous_step_incomplete",
+                 "evidence":"Vehicle data: 2 outstanding problems"}"##]);
+        let out = std::env::temp_dir().join("flowproof-previous-step-incomplete.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("a step standing on an unfinished one is not recordable");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("Vehicle data: 2 outstanding problems"),
+            "the page's own words are the evidence and must reach the operator: {message}"
+        );
+        assert!(
+            message.contains("previous step"),
+            "and it must say which step is actually at fault: {message}"
+        );
+        assert!(
+            driver.invoked.is_empty(),
+            "rules must not click through a report the model made: {:?}",
+            driver.invoked
+        );
+        assert!(
+            !out.exists(),
+            "and no trace is left behind claiming the step succeeded"
+        );
+        assert_eq!(
+            client.prompts.len(),
+            1,
+            "the report is believed once, not re-asked of the same screen"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The counterpart, so the refusal above cannot be satisfied by refusing
+    /// every step: the same spec, the same rules-resolvable intent, and a
+    /// model that authors normally still records.
+    #[test]
+    fn a_step_the_model_authors_normally_still_records() {
+        let spec = FlowSpec::parse(
+            "name: Quote\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Click \"Next\"\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["Next"]);
+        driver.scene = Some(r##"[{"target":"text:Next","tag":"button","text":"Next"}]"##.into());
+        let mut client = ScriptedClient::new(&[r##"[{"action":"click","target":"text:Next"}]"##]);
+        let out = std::env::temp_dir().join("flowproof-previous-step-control.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("an ordinary step records");
+        assert_eq!(driver.invoked, vec!["Next"]);
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The screen's words go into the authoring prompt beside the element
+    /// inventory, and the inventory is the part the model must ground
+    /// against. Raw page text arrives full of layout whitespace and can run
+    /// to tens of thousands of characters, so it is collapsed and bounded —
+    /// otherwise a long page crowds out the elements and the model starts
+    /// inventing targets.
+    #[test]
+    fn the_screen_text_reaches_the_prompt_collapsed_and_bounded() {
+        let mut driver = MockAppDriver::new(&["#next"])
+            .with_surface_text("  Vehicle data\n\n\t2 outstanding   problems  ");
+        assert_eq!(
+            surface_words(&mut driver).as_deref(),
+            Some("Vehicle data 2 outstanding problems"),
+            "every run of layout whitespace becomes one space"
+        );
+
+        let long = "word ".repeat(2_000);
+        let mut driver = MockAppDriver::new(&["#next"]).with_surface_text(&long);
+        let words = surface_words(&mut driver).expect("a long page still contributes");
+        assert_eq!(
+            words.chars().count(),
+            1_500,
+            "bounded, so the element inventory is never crowded out"
+        );
+        assert!(
+            long.starts_with(&words),
+            "and bounded by truncation, not by summarizing"
+        );
+    }
+
+    /// Best-effort: a driver that cannot answer contributes nothing, and a
+    /// blank screen is nothing rather than an empty quotation in the prompt.
+    #[test]
+    fn a_screen_that_cannot_be_read_contributes_no_text() {
+        let mut driver = MockAppDriver::new(&["#next"]).with_surface_faults(u32::MAX);
+        assert_eq!(surface_words(&mut driver), None, "a failed read is silent");
+
+        let mut driver = MockAppDriver::new(&["#next"]).with_surface_text("   \n\t  ");
+        assert_eq!(
+            surface_words(&mut driver),
+            None,
+            "and so is a screen with no words on it"
+        );
+    }
 }

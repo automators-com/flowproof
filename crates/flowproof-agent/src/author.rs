@@ -2324,4 +2324,242 @@ mod tests {
             ResolvedAction::TypeText { ref text, .. } if text == "${captured.order_number}"
         ));
     }
+
+    /// A wizard that advanced while still flagging the section behind it is
+    /// the PREVIOUS step failing. That report is not a grounding failure and
+    /// must not be laundered into one: the recorder has to hear the page's
+    /// own words, because they are the only evidence of which step actually
+    /// went wrong. Reported as "the model authored something ungroundable"
+    /// it names this step, and the real defect is a screen back.
+    #[test]
+    fn a_previous_step_report_surfaces_with_the_pages_own_words() {
+        let mut client = Recording {
+            replies: vec![r##"{"action":"previous_step_incomplete",
+                     "evidence":"Vehicle data: 2 outstanding problems"}"##
+                .into()],
+            prompts: Vec::new(),
+        };
+        let err = author_steps(
+            &mut client,
+            &AuthorContext {
+                page_text: Some("Vehicle data: 2 outstanding problems"),
+                today: None,
+                intent: "Choose the payment method",
+                ..ctx()
+            },
+        )
+        .expect_err("a page still flagging the step before is not authorable");
+
+        let AgentError::PreviousStepIncomplete { step, evidence } = err else {
+            panic!("the report must arrive as itself, not as an authoring failure: {err:?}");
+        };
+        assert_eq!(
+            evidence, "Vehicle data: 2 outstanding problems",
+            "the page's own words are the evidence, carried verbatim"
+        );
+        assert_eq!(
+            step, "Choose the payment method",
+            "and the step named is the one that could not be authored"
+        );
+    }
+
+    /// The retry budget exists to correct a model that got the screen wrong.
+    /// This model got the screen RIGHT, so spending the retry asks the same
+    /// question of the same page - one wasted call per stuck step, and a
+    /// second chance to invent an action on a screen that must not be
+    /// touched.
+    #[test]
+    fn a_previous_step_report_does_not_burn_the_retry() {
+        let report = r##"[{"action":"previous_step_incomplete","evidence":"Enter a start date"}]"##;
+        let mut client = Recording {
+            replies: vec![report.into(), report.into()],
+            prompts: Vec::new(),
+        };
+        author_steps(
+            &mut client,
+            &AuthorContext {
+                page_text: Some("Enter a start date"),
+                today: None,
+                intent: "Continue to the summary",
+                ..ctx()
+            },
+        )
+        .expect_err("the report stops authoring");
+        assert_eq!(
+            client.prompts.len(),
+            1,
+            "asked once and believed; a retry would only ask the same screen again"
+        );
+    }
+
+    /// The evidence field is what makes the report actionable, but a model
+    /// that omits it must still stop the step rather than have its reply
+    /// rejected as an action with no target.
+    #[test]
+    fn a_previous_step_report_without_evidence_still_stops_the_step() {
+        let mut client = Recording {
+            replies: vec![r##"{"action":"previous_step_incomplete"}"##.into()],
+            prompts: Vec::new(),
+        };
+        let err = author_steps(
+            &mut client,
+            &AuthorContext {
+                page_text: None,
+                today: None,
+                intent: "Continue to the summary",
+                ..ctx()
+            },
+        )
+        .expect_err("the report stops authoring even unevidenced");
+        let AgentError::PreviousStepIncomplete { evidence, .. } = err else {
+            panic!("an empty-handed report is still a report: {err:?}");
+        };
+        assert!(
+            !evidence.is_empty(),
+            "and it still says something rather than nothing"
+        );
+    }
+
+    #[test]
+    fn a_trailing_continuation_marker_is_split_off_the_actions() {
+        let (reply, continues) = split_continuation(
+            r##"[{"action":"type_text","target":"css:#name","text":"Ada"},
+                 {"action":"step_continues"}]"##,
+        );
+        assert!(continues, "the model said the rest is on a later screen");
+        let items: Vec<serde_json::Value> =
+            serde_json::from_str(&reply).expect("what is left is still an array");
+        assert_eq!(items.len(), 1, "only the marker was removed: {reply}");
+        assert_eq!(items[0]["action"], "type_text");
+    }
+
+    /// The marker means "this screen had no more of the step on it", so it
+    /// is only ever the last element. Accepted mid-array it would become a
+    /// way to skip the actions after it - a step that silently does less
+    /// than it says, which is the false green this tool exists to catch.
+    #[test]
+    fn a_continuation_marker_that_is_not_last_is_left_for_grounding_to_refuse() {
+        let mid = r##"[{"action":"type_text","target":"css:#name","text":"Ada"},
+             {"action":"step_continues"},
+             {"action":"click","target":"css:#greet"}]"##;
+        let (reply, continues) = split_continuation(mid);
+        assert!(
+            !continues,
+            "a marker in the middle does not continue a step"
+        );
+        assert_eq!(reply, mid, "and nothing is quietly dropped from the reply");
+        let err = parse_and_ground(
+            &reply,
+            &scene_targets(SCENE),
+            SCENE,
+            "web",
+            "Greet Ada",
+            &[],
+        )
+        .expect_err("a marker that is not last is refused rather than obeyed");
+        // Refused at position 2, which is where the marker sat: the whole
+        // step goes, so the click behind it cannot be skipped by putting a
+        // marker in front of it.
+        assert!(
+            err.to_string().contains("action 2 of 3 was rejected"),
+            "and the refusal names where it went wrong: {err}"
+        );
+    }
+
+    #[test]
+    fn a_fenced_reply_can_still_continue() {
+        let (reply, continues) = split_continuation(
+            "```json\n[{\"action\":\"click\",\"target\":\"css:#greet\"},\
+             {\"action\":\"step_continues\"}]\n```",
+        );
+        assert!(continues, "a code fence does not hide the marker");
+        let actions = parse_and_ground(
+            &reply,
+            &scene_targets(SCENE),
+            SCENE,
+            "web",
+            "Greet Ada",
+            &[],
+        )
+        .expect("and what is left grounds");
+        assert_eq!(actions.len(), 1);
+    }
+
+    /// "Nothing here yet, ask me after the page changes" is not sayable: a
+    /// step must do something on the screen it was given, or the recorder
+    /// would replan against a page nothing has touched.
+    #[test]
+    fn a_reply_that_is_only_a_continuation_marker_authors_nothing() {
+        let (reply, continues) = split_continuation(r##"[{"action":"step_continues"}]"##);
+        assert!(continues);
+        let err = parse_and_ground(
+            &reply,
+            &scene_targets(SCENE),
+            SCENE,
+            "web",
+            "Greet Ada",
+            &[],
+        )
+        .expect_err("an empty plan is refused however it was reached");
+        assert!(
+            err.to_string().contains("authored no action"),
+            "and says so plainly: {err}"
+        );
+    }
+
+    #[test]
+    fn step_complete_is_recognised_in_both_shapes_and_nothing_else_is() {
+        assert!(
+            is_step_complete(r##"[{"action":"step_complete"}]"##),
+            "the documented array form"
+        );
+        assert!(
+            is_step_complete(r##"{"action":"step_complete"}"##),
+            "and the bare object a model reaches for unprompted"
+        );
+        assert!(
+            is_step_complete("```json\n[{\"action\":\"step_complete\"}]\n```"),
+            "a code fence does not hide it either"
+        );
+
+        for not_complete in [
+            r##"[{"action":"click","target":"css:#greet"}]"##,
+            // Buried among real actions it is not a verdict about the step.
+            r##"[{"action":"click","target":"css:#greet"},{"action":"step_complete"}]"##,
+            r##"[{"action":"step_continues"}]"##,
+            "step_complete",
+            "",
+        ] {
+            assert!(
+                !is_step_complete(not_complete),
+                "must not read as a finished step: {not_complete}"
+            );
+        }
+    }
+
+    /// A flow may pin the application's clock. A date the model invents from
+    /// its own sense of now is then in the page's past and gets refused, so
+    /// the date the driver reports has to reach the prompt - and has to say
+    /// which clock it is, or the model has no reason to prefer it.
+    #[test]
+    fn the_prompt_carries_the_date_the_application_believes_it_is() {
+        let dated = user_prompt(&AuthorContext {
+            today: Some("2019-03-04"),
+            ..ctx()
+        });
+        assert!(
+            dated.contains("2019-03-04"),
+            "the application's date reaches the model: {dated}"
+        );
+        assert!(
+            dated.contains("as the application sees it"),
+            "named as the app's clock, not as today: {dated}"
+        );
+
+        let undated = user_prompt(&ctx());
+        assert!(
+            !undated.contains("as the application sees it"),
+            "a driver that cannot tell invents no date: {undated}"
+        );
+    }
 }
