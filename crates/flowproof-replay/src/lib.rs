@@ -380,20 +380,59 @@ fn wait_for_condition<D: AppDriver>(
 /// debuggable instead of mysterious. The pass itself is the driver's
 /// [`AppDriver::actionability_gate`], so a driver that answers all three
 /// questions in one round trip can.
+/// How long replay will wait for something that is merely IN THE WAY.
+///
+/// Longer than the step's own budget, and deliberately so. A page clears an
+/// occluder on its own schedule, not on ours: a carousel returns to the slide
+/// carrying the button once a cycle, a toast expires, a backdrop fades. Five
+/// seconds is a fraction of a rotation, so replay gave up mid-cycle on a
+/// button the page would have handed back.
+///
+/// Waiting LONGER here than recording did is the safe direction. Recording
+/// refuses at its own budget, so a step only exists in a trace because the
+/// click landed; replay being more patient can therefore accept things
+/// recording accepted, and never accept anything recording refused. The
+/// invariant that matters — recording must not accept what replay rejects —
+/// is untouched, because it is the other direction.
+const OCCLUSION_PATIENCE_MS: u64 = 30_000;
+
 fn wait_actionable<D: AppDriver>(
     driver: &mut D,
     target: &UiaSelector,
     timeout_ms: u64,
 ) -> Result<Result<(), String>, ReplayError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    // The occluder gate gets its own, longer deadline.
+    //
+    // Only spending it on an occluder observed to MOVE was the obvious
+    // refinement, and it was measured and thrown away: a carousel's occluder
+    // keeps the same identity for longer than the short deadline, so the
+    // "is it moving?" question cannot be answered before the moment it would
+    // have saved. Five replays went from 5/5 green to 1/5. The cost of the
+    // simple rule is that a step blocked by something permanent takes the
+    // long deadline to fail, which is a price paid once per genuinely broken
+    // step - against a suite that flakes, that is the better trade.
+    let obscured_deadline =
+        Instant::now() + Duration::from_millis(timeout_ms.max(OCCLUSION_PATIENCE_MS));
     loop {
         let gate = driver.actionability_gate(target)?;
         match gate {
             None => return Ok(Ok(())),
             Some(name) => {
-                if Instant::now() >= deadline {
+                let obscured = name.starts_with("obscured");
+                let due = if obscured {
+                    obscured_deadline
+                } else {
+                    deadline
+                };
+                if Instant::now() >= due {
                     return Ok(Err(format!(
-                        "element exists but is {name} after {timeout_ms}ms{covered}",
+                        "element exists but is {name} after {waited}ms{covered}",
+                        waited = if obscured {
+                            timeout_ms.max(OCCLUSION_PATIENCE_MS)
+                        } else {
+                            timeout_ms
+                        },
                         covered = driver
                             .occluding_element(target)
                             .ok()
