@@ -5878,4 +5878,465 @@ steps:
         std::fs::remove_file(&looked_again).ok();
         std::fs::remove_file(&first_time).ok();
     }
+
+    // ---- the plan cursor: a step that may look at the page again ----
+    //
+    // Everything below drives the closed loop end to end through
+    // `record_with_client`, against a mock whose world changes under it.
+    // The deterministic routes are exercised alongside, because the property
+    // that matters is not only that the loop works — it is that a recording
+    // which never asks a model behaves exactly as it did before the loop
+    // existed.
+
+    const ADDRESS_SPEC: &str = "\
+name: Checkout
+app: web
+url: https://shop.test/checkout
+steps:
+  - Fill in the delivery address and continue
+";
+
+    /// A step whose remainder is on a screen that does not exist yet.
+    ///
+    /// The model can only ground against the inventory it was given, so a
+    /// step spanning two screens used to be unauthorable: name the second
+    /// screen's controls and the reply is refused as ungrounded, omit them
+    /// and the step is silently half done. It now ends its reply with
+    /// `step_continues`, flowproof performs what was grounded, reads the
+    /// screen those actions produced, and asks for the rest against that.
+    ///
+    /// The trace is unaffected — it records the actions that ran, never the
+    /// deliberation — so this replays exactly like a single-reply step.
+    #[test]
+    fn a_step_that_spans_two_screens_is_authored_in_two_installments() {
+        let spec = FlowSpec::parse(ADDRESS_SPEC).expect("spec parses");
+        let first_screen = r##"[{"target":"css:#street","tag":"input","label":"Street"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let second_screen = r##"[{"target":"css:#city","tag":"input","label":"City"},
+             {"target":"css:#finish","tag":"button","text":"Finish"}]"##;
+        // Read once to author, once by the rejected-form guard ahead of the
+        // click, and a third time by the replan — which is the first read
+        // that can see what that click produced.
+        let mut driver = MockAppDriver::new(&["#street", "#next"])
+            .with_scene_sequence(&[first_screen, first_screen, second_screen])
+            .revealing("#next", &["#city", "#finish"]);
+        driver.scene = Some(second_screen.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#street","text":"1 Main"},
+                 {"action":"click","target":"css:#next"},
+                 {"action":"step_continues"}]"##,
+            r##"[{"action":"type_text","target":"css:#city","text":"Vienna"},
+                 {"action":"click","target":"css:#finish"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-two-installments.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("a step spanning two screens records");
+
+        assert_eq!(
+            driver.typed,
+            vec![
+                ("#street".to_string(), "1 Main".to_string()),
+                ("#city".to_string(), "Vienna".to_string()),
+            ],
+            "both screens were filled in, in the order the page offered them"
+        );
+        assert_eq!(driver.invoked, vec!["#next", "#finish"]);
+        assert_eq!(
+            summary.steps, 4,
+            "one spec step, four trace actions — the installments are an authoring \
+             detail and leave no seam in the trace"
+        );
+        assert_eq!(
+            summary.routing.len(),
+            1,
+            "and still exactly one routing decision, on the Llm route"
+        );
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Llm);
+        assert_eq!(client.prompts.len(), 2, "authored, then asked for the rest");
+        assert!(
+            client.prompts[1].contains("PARTWAY DONE")
+                && client.prompts[1].contains("typed \"1 Main\""),
+            "the second prompt names what already ran so it is not repeated: {}",
+            client.prompts[1]
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// An inventory that was true when it was read and false by the time it
+    /// was acted on.
+    ///
+    /// The scene is captured before the step runs, so a control the page
+    /// swaps out mid-step is named in good faith and then is not there.
+    /// Aborting was the old answer, and it threw away a recording the very
+    /// next look would have completed.
+    #[test]
+    fn an_element_named_too_early_is_re_authored_against_what_the_screen_became() {
+        let spec = FlowSpec::parse(ADDRESS_SPEC).expect("spec parses");
+        // `#billing-next` is in the inventory but not on the page — the
+        // shape of a scene that has gone stale under the step using it.
+        let stale = r##"[{"target":"css:#expand","tag":"button","text":"Add billing address"},
+             {"target":"css:#billing-next","tag":"button","text":"Continue"}]"##;
+        let current = r##"[{"target":"css:#billing","tag":"button","text":"Billing"}]"##;
+        let mut driver = MockAppDriver::new(&["#expand"])
+            .with_scene_sequence(&[stale, stale, current])
+            .revealing("#expand", &["#billing"]);
+        driver.scene = Some(current.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#expand"},
+                 {"action":"click","target":"css:#billing-next"}]"##,
+            r##"[{"action":"click","target":"css:#billing"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-named-too-early.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the step recovers against the screen as it now is");
+
+        assert_eq!(
+            driver.invoked,
+            vec!["#expand", "#billing"],
+            "the control that was really there was clicked; the stale one never was"
+        );
+        assert_eq!(client.prompts.len(), 2);
+        assert!(
+            client.prompts[1].contains("not on the current screen")
+                && client.prompts[1].contains("css=#billing-next"),
+            "the correction names what was missing: {}",
+            client.prompts[1]
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// Looking again is not the same as looking forever.
+    ///
+    /// A model that answers a missing element with the same missing element
+    /// has told flowproof nothing new, and the second refusal must be the
+    /// refusal — carrying the message this failure has always carried, so a
+    /// user who hit it before the loop existed reads the same sentence.
+    #[test]
+    fn the_same_element_missing_twice_refuses_with_the_unchanged_message() {
+        let spec = FlowSpec::parse(ADDRESS_SPEC).expect("spec parses");
+        let scene = r##"[{"target":"css:#ghost","tag":"button","text":"Ghost"}]"##;
+        let mut driver = MockAppDriver::new(&["#anchor"]);
+        driver.scene = Some(scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#ghost"}]"##,
+            r##"[{"action":"click","target":"css:#ghost"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-missing-twice.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("an element that is still not there is not recordable");
+
+        assert!(matches!(err, RecordError::ElementNotFound { .. }));
+        assert_eq!(
+            err.to_string(),
+            "element for step 'Fill in the delivery address and continue' not found: \
+             [css=#ghost]",
+            "the closed loop must not have reworded a failure that predates it"
+        );
+        assert_eq!(
+            client.prompts.len(),
+            2,
+            "exactly one correction was asked for — a second would mean the \
+             one-shot key stopped working"
+        );
+        assert!(driver.invoked.is_empty());
+        assert!(!out.exists(), "and no trace claims the step succeeded");
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The refusal that names the overlay is worth paying for only if the
+    /// name reaches somewhere that can act on it.
+    ///
+    /// Recording refuses a click another element would receive, because a
+    /// trace of a click the page never saw cannot replay. The refusal names
+    /// the occluder; the loop hands that name to the model, which dismisses
+    /// the thing by name rather than guessing at Escape.
+    #[test]
+    fn an_overlay_is_named_dismissed_and_the_click_then_lands() {
+        let spec = FlowSpec::parse(
+            "name: Submit\napp: web\nurl: https://shop.test/submit\nsteps:\n  \
+             - Submit the order\n",
+        )
+        .expect("spec parses");
+        let scene = r##"[{"target":"css:#submit","tag":"button","text":"Submit"},
+             {"target":"css:#close-toast","tag":"button","text":"Dismiss"}]"##;
+        let mut driver = MockAppDriver::new(&["#submit", "#close-toast"])
+            .with_occluder("a `div.toast`", &["#submit"])
+            .dismissing("#close-toast", &["#submit"]);
+        driver.scene = Some(scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#submit"}]"##,
+            r##"[{"action":"click","target":"css:#close-toast"},
+                 {"action":"click","target":"css:#submit"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-overlay-dismissed.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the overlay is dismissed and the click records");
+
+        assert_eq!(
+            driver.invoked,
+            vec!["#close-toast", "#submit"],
+            "dismissed first, then the click the page could finally receive"
+        );
+        assert_eq!(client.prompts.len(), 2);
+        assert!(
+            client.prompts[1].contains("a `div.toast` would receive that click"),
+            "the correction names the occluder, not just that one exists: {}",
+            client.prompts[1]
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The budget, spent on distinct refusals until it is gone.
+    ///
+    /// Each new refusal earns a look; `MAX_STEP_REPLANS` caps how many. A
+    /// step still arguing with the page after that is one flowproof should
+    /// refuse rather than keep paying for, and the refusal is the ordinary
+    /// one for the last thing it could not find.
+    #[test]
+    fn the_replan_budget_bounds_a_step_that_keeps_naming_ghosts() {
+        let spec = FlowSpec::parse(ADDRESS_SPEC).expect("spec parses");
+        let scene = r##"[{"target":"css:#ghost1","tag":"button","text":"One"},
+             {"target":"css:#ghost2","tag":"button","text":"Two"},
+             {"target":"css:#ghost3","tag":"button","text":"Three"},
+             {"target":"css:#ghost4","tag":"button","text":"Four"}]"##;
+        let mut driver = MockAppDriver::new(&["#anchor"]);
+        driver.scene = Some(scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#ghost1"}]"##,
+            r##"[{"action":"click","target":"css:#ghost2"}]"##,
+            r##"[{"action":"click","target":"css:#ghost3"}]"##,
+            r##"[{"action":"click","target":"css:#ghost4"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-replan-budget.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("a step that never grounds is refused");
+
+        assert_eq!(
+            err.to_string(),
+            "element for step 'Fill in the delivery address and continue' not found: \
+             [css=#ghost4]"
+        );
+        assert_eq!(
+            client.prompts.len(),
+            usize::try_from(MAX_STEP_REPLANS).expect("the budget fits a usize") + 1,
+            "the first authoring plus the whole budget, and then it stops"
+        );
+        assert!(driver.invoked.is_empty());
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// A page that disputes the step BEFORE this one.
+    ///
+    /// The wizard advanced, so nothing on this screen is red — but the page
+    /// says in words that something is outstanding. Authoring the next step
+    /// on top of that records a flow whose replay asserts a state the
+    /// application never reached. It is raised here because here is the
+    /// earliest it is detectable, and it names the previous step as the
+    /// culprit rather than the step that witnessed it.
+    #[test]
+    fn a_page_disputing_the_previous_step_names_it_and_stops() {
+        let spec = FlowSpec::parse(
+            "name: Order\napp: web\nurl: https://shop.test/order\nsteps:\n  \
+             - Save the order\n  - Continue to payment\n",
+        )
+        .expect("spec parses");
+        let scene = r##"[{"target":"css:#save","tag":"button","text":"Save"},
+             {"target":"css:#pay","tag":"button","text":"Pay"}]"##;
+        let mut driver = MockAppDriver::new(&["#save", "#pay"])
+            .with_surface_text("Your order  1 problem remains: choose a price option");
+        driver.scene = Some(scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#save"}]"##,
+            r##"{"action":"previous_step_incomplete",
+                 "evidence":"1 problem remains: choose a price option"}"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-previous-incomplete.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("a disputed previous step is not recordable");
+
+        assert_eq!(
+            err.to_string(),
+            "cannot record 'Continue to payment': the previous step left a problem \
+             behind — the page reports: 1 problem remains: choose a price option",
+            "the message blames the step that failed and quotes the page's own words"
+        );
+        assert_eq!(
+            client.prompts.len(),
+            2,
+            "no retry: asking the same question of the same screen buys nothing"
+        );
+        assert_eq!(driver.invoked, vec!["#save"]);
+        assert!(!out.exists());
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The control for all of the above: a recording that never asks a model
+    /// must behave exactly as it did before any of this existed.
+    ///
+    /// Both deterministic routes reach the same guard, and both must still
+    /// produce the same sentence — byte for byte, and without a model call
+    /// even when one is configured and would gladly answer.
+    #[test]
+    fn the_deterministic_routes_refuse_verbatim_and_never_reach_the_model() {
+        let spec = FlowSpec::parse(
+            "name: Greet\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Press the greet button\n",
+        )
+        .expect("spec parses");
+        const EXPECTED: &str =
+            "element for step 'Press the greet button' not found: [automation_id=greet]";
+
+        let mut driver = MockAppDriver::new(&["other"]);
+        driver.scene = Some(r##"[{"target":"css:#other","tag":"button"}]"##.into());
+        let mut client = ScriptedClient::new(&[r##"[{"action":"click","target":"css:#other"}]"##]);
+        let out = std::env::temp_dir().join("flowproof-rules-route-verbatim.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let rules_err =
+            record_with_client(&spec, &mut driver, &out, Author::Rules, Some(&mut client))
+                .expect_err("the rules route still refuses a missing element");
+        assert_eq!(rules_err.to_string(), EXPECTED);
+        assert!(
+            client.prompts.is_empty(),
+            "a deterministic route does not consult a model, before or after the loop"
+        );
+        assert!(driver.invoked.is_empty());
+
+        // The same step with no backend at all: the visible fallback.
+        let mut driver = MockAppDriver::new(&["other"]);
+        let out = std::env::temp_dir().join("flowproof-fallback-route-verbatim.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let fallback_err = record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Auto,
+            Option::<&mut ScriptedClient>::None,
+        )
+        .expect_err("the fallback route still refuses a missing element");
+        assert_eq!(fallback_err.to_string(), EXPECTED);
+        assert!(driver.invoked.is_empty());
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The rejected-form guard is scoped to model authoring, and stays that
+    /// way.
+    ///
+    /// It exists because the authoring scene is captured before the step
+    /// types anything, so only a plan the model is still holding can be
+    /// corrected by what validation then said. A REUSED step carries a
+    /// decision a human already reviewed in a trace; second-guessing it
+    /// would make an incremental re-record start refusing pages it recorded
+    /// yesterday.
+    #[test]
+    fn a_reused_step_is_not_second_guessed_by_the_rejected_form_guard() {
+        let spec = FlowSpec::parse(
+            "name: Signup\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Fill in the email and continue\n",
+        )
+        .expect("spec parses");
+        let accepted = r##"[{"target":"css:#email","tag":"input","label":"Email"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let rejected = r##"[{"target":"css:#email","tag":"input","label":"Email",
+             "invalid":true,"rule":"must be a work address"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let dir = std::env::temp_dir().join("flowproof-reused-not-second-guessed");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("signup.trace.jsonl");
+
+        let mut driver = MockAppDriver::new(&["#email", "#next"]);
+        driver.scene = Some(accepted.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+        ]);
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the original records");
+        let (_, old_steps) = load_steps(&out);
+
+        // Re-record against a page that is now flagging the field. The
+        // reused plan runs unchanged and nothing is asked of the model.
+        let mut driver = MockAppDriver::new(&["#email", "#next"]);
+        driver.scene = Some(rejected.into());
+        let mut client =
+            ScriptedClient::new(&[r##"[{"action":"click","target":"css:#WRONG-IF-CALLED"}]"##]);
+        let summary = record_with_reuse(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Auto,
+            Some(&mut client),
+            Some(&old_steps),
+        )
+        .expect("the reused step records");
+
+        assert!(
+            client.prompts.is_empty(),
+            "a reused step consults nothing — the loop must not have given it a reason to"
+        );
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Reused);
+        assert_eq!(summary.reused_steps, 2);
+        assert_eq!(driver.invoked, vec!["#next"]);
+        assert_eq!(
+            driver.typed,
+            vec![("#email".to_string(), "me@work.example".to_string())]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The runaway bound survives being authored in pieces.
+    ///
+    /// A per-reply cap cannot see a step assembled across installments, so
+    /// the bound that matters is the one counting what actually RAN. Without
+    /// it the closed loop is a way to spend a whole budget one reply at a
+    /// time.
+    #[test]
+    fn the_runaway_bound_still_bites_when_a_step_is_authored_in_installments() {
+        let spec = FlowSpec::parse(
+            "name: Notes\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Write the note\n",
+        )
+        .expect("spec parses");
+        let scene = r##"[{"target":"css:#note","tag":"input","label":"Note"}]"##;
+        let mut driver = MockAppDriver::new(&["#note"]);
+        driver.scene = Some(scene.into());
+
+        // Exactly the per-reply maximum, then one more in the remainder.
+        let mut lines: Vec<String> = (0..crate::author::MAX_STEP_ACTIONS)
+            .map(|i| {
+                format!(r##"{{"action":"type_text","target":"css:#note","text":"line {i}"}}"##)
+            })
+            .collect();
+        lines.push(r##"{"action":"step_continues"}"##.to_string());
+        let first = format!("[{}]", lines.join(","));
+        let mut client = ScriptedClient::new(&[
+            first.as_str(),
+            r##"[{"action":"type_text","target":"css:#note","text":"one too many"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-installment-runaway.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("a step that never ends is refused");
+
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!(
+                "one step to finish within {} actions",
+                crate::author::MAX_STEP_ACTIONS
+            )) && message.contains("a model looping"),
+            "the bound names itself: {message}"
+        );
+        assert_eq!(
+            driver.typed.len(),
+            crate::author::MAX_STEP_ACTIONS + 1,
+            "it stops on the action that crosses the bound, not a moment later"
+        );
+        assert!(!out.exists());
+        std::fs::remove_file(&out).ok();
+    }
 }
