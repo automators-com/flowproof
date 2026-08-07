@@ -36,6 +36,29 @@ pub struct MockAppDriver {
     pub fail_element_rect: bool,
     /// Scene JSON returned by `scene` (None = authoring unavailable).
     pub scene: Option<String>,
+    /// Scripted scenes: each `scene` call pops the next entry, falling back
+    /// to `scene` when drained — the same shape as `text_sequence`, for the
+    /// same reason. A recorder that reads the screen again after acting is
+    /// asking whether the world moved; against a single fixed scene the
+    /// answer is always "no", so the loop under test cannot be observed.
+    pub scene_sequence: std::collections::VecDeque<String>,
+    /// The date the app believes it is, returned by `today` (None = this
+    /// driver cannot tell, the trait's default).
+    pub today: Option<String>,
+    /// What `occluding_element` names as standing in the way. Only ever
+    /// asked about a refused click, so one answer covers the screen. It is
+    /// cleared automatically once nothing is obscured any more — the two
+    /// answers must not contradict each other.
+    pub occluder: Option<String>,
+    /// Element keys invoking `key` brings onto the screen — a click that
+    /// expands a section or opens the next page of a wizard.
+    pub reveals: HashMap<String, Vec<String>>,
+    /// Element keys invoking `key` takes off the screen — a click that
+    /// submits a form and leaves it behind.
+    pub hides: HashMap<String, Vec<String>>,
+    /// Element keys invoking `key` un-obscures — a click that dismisses the
+    /// overlay sitting on top of them.
+    pub dismisses: HashMap<String, Vec<String>>,
     /// Failure-time diagnostics returned by `debug_bundle` (None = the
     /// trait default: driver has nothing to add).
     pub debug: Option<crate::DebugBundle>,
@@ -167,6 +190,59 @@ impl MockAppDriver {
         self
     }
 
+    /// Script the scenes `scene` hands out, in order. Once they run out the
+    /// static `scene` answers, exactly as a drained `text_sequence` falls
+    /// back to `texts`.
+    pub fn with_scene_sequence(mut self, scenes: &[&str]) -> Self {
+        self.scene_sequence = scenes.iter().map(|s| (*s).to_string()).collect();
+        self
+    }
+
+    /// The date the application itself reports, `YYYY-MM-DD`.
+    pub fn with_today(mut self, date: &str) -> Self {
+        self.today = Some(date.into());
+        self
+    }
+
+    /// Put something in the way, described the way the real driver would
+    /// describe it ("a `div.modal-backdrop`"). Obscures `over` as well, so
+    /// the element that cannot be clicked and the thing blocking it are one
+    /// fact rather than two a test could set inconsistently.
+    pub fn with_occluder(mut self, description: &str, over: &[&str]) -> Self {
+        self.occluder = Some(description.into());
+        for key in over {
+            self.obscured.push((*key).to_string());
+        }
+        self
+    }
+
+    /// Invoking `key` brings `keys` onto the screen.
+    pub fn revealing(mut self, key: &str, keys: &[&str]) -> Self {
+        self.reveals
+            .entry(key.into())
+            .or_default()
+            .extend(keys.iter().map(|k| (*k).to_string()));
+        self
+    }
+
+    /// Invoking `key` takes `keys` off the screen.
+    pub fn hiding(mut self, key: &str, keys: &[&str]) -> Self {
+        self.hides
+            .entry(key.into())
+            .or_default()
+            .extend(keys.iter().map(|k| (*k).to_string()));
+        self
+    }
+
+    /// Invoking `key` un-obscures `keys` — the dismiss button on an overlay.
+    pub fn dismissing(mut self, key: &str, keys: &[&str]) -> Self {
+        self.dismisses
+            .entry(key.into())
+            .or_default()
+            .extend(keys.iter().map(|k| (*k).to_string()));
+        self
+    }
+
     /// Fail the next `count` surface reads with a transport fault. Models
     /// the field case behind GAP-A: the socket dies mid-flow while the app
     /// itself is fine, so a poll learns nothing and must not fail the step.
@@ -247,11 +323,29 @@ impl AppDriver for MockAppDriver {
     }
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
-        let id = Self::id_of(selector)?;
-        if !self.elements.iter().any(|e| e == id) {
+        let id = Self::id_of(selector)?.to_string();
+        if !self.elements.contains(&id) {
             return Err(DriverError::Uia(format!("mock element '{id}' not found")));
         }
-        self.invoked.push(id.to_string());
+        self.invoked.push(id.clone());
+        // The click lands, THEN the screen changes — an element this click
+        // hides is still the element that was clicked.
+        for key in self.reveals.get(&id).cloned().unwrap_or_default() {
+            if !self.elements.contains(&key) {
+                self.elements.push(key);
+            }
+        }
+        for key in self.hides.get(&id).cloned().unwrap_or_default() {
+            self.elements.retain(|e| *e != key);
+        }
+        for key in self.dismisses.get(&id).cloned().unwrap_or_default() {
+            self.obscured.retain(|k| *k != key);
+        }
+        // Nothing obscured means nothing is in the way; leaving the occluder
+        // behind would let the mock name a blocker that no longer blocks.
+        if self.obscured.is_empty() {
+            self.occluder = None;
+        }
         Ok(())
     }
 
@@ -454,7 +548,21 @@ impl AppDriver for MockAppDriver {
     }
 
     fn scene(&mut self) -> Result<Option<String>, DriverError> {
+        if let Some(next) = self.scene_sequence.pop_front() {
+            return Ok(Some(next));
+        }
         Ok(self.scene.clone())
+    }
+
+    fn today(&mut self) -> Result<Option<String>, DriverError> {
+        Ok(self.today.clone())
+    }
+
+    fn occluding_element(
+        &mut self,
+        _selector: &UiaSelector,
+    ) -> Result<Option<String>, DriverError> {
+        Ok(self.occluder.clone())
     }
 
     fn debug_bundle(&mut self) -> Result<Option<crate::DebugBundle>, DriverError> {
@@ -551,6 +659,125 @@ mod tests {
         assert_eq!(
             driver.element_attribute(&sel, "target").expect("read"),
             None
+        );
+    }
+
+    #[test]
+    fn scene_sequence_pops_once_per_read_then_falls_back() {
+        // Same contract as `text_sequence`: the queue answers first, and a
+        // drained queue is indistinguishable from one that was never set.
+        let mut driver = MockAppDriver::new(&["#next"]).with_scene_sequence(&["[{\"a\":1}]"]);
+        driver.scene = Some("[{\"settled\":true}]".into());
+        assert_eq!(driver.scene().expect("scene"), Some("[{\"a\":1}]".into()));
+        assert_eq!(
+            driver.scene().expect("scene"),
+            Some("[{\"settled\":true}]".into())
+        );
+        assert_eq!(
+            driver.scene().expect("scene"),
+            Some("[{\"settled\":true}]".into())
+        );
+
+        // No sequence, no scene: authoring is simply unavailable here.
+        assert_eq!(MockAppDriver::new(&["#next"]).scene().expect("scene"), None);
+    }
+
+    #[test]
+    fn today_and_occluder_are_unknown_until_a_test_says_otherwise() {
+        // Both default to the trait's "cannot tell", so a test that does not
+        // care about them gets the same answer a real driver without the
+        // capability gives, rather than a fabricated one.
+        let mut plain = MockAppDriver::new(&["#start"]);
+        assert_eq!(plain.today().expect("today"), None);
+        assert_eq!(
+            plain
+                .occluding_element(&UiaSelector::css("#start"))
+                .expect("occluder"),
+            None
+        );
+
+        let mut dated = MockAppDriver::new(&["#start"]).with_today("2026-08-07");
+        assert_eq!(dated.today().expect("today"), Some("2026-08-07".into()));
+    }
+
+    #[test]
+    fn a_click_reveals_what_it_opens_and_hides_what_it_leaves() {
+        let mut driver = MockAppDriver::new(&["#expand", "#address"])
+            .revealing("#expand", &["#billing"])
+            .hiding("#expand", &["#address"]);
+        let billing = UiaSelector::css("#billing");
+        let address = UiaSelector::css("#address");
+        assert!(!driver.element_exists(&billing).expect("exists"));
+        assert!(driver.element_exists(&address).expect("exists"));
+
+        driver.invoke(&UiaSelector::css("#expand")).expect("invoke");
+
+        assert!(driver.element_exists(&billing).expect("exists"));
+        assert!(!driver.element_exists(&address).expect("exists"));
+        // The click itself is still recorded even when it hides something.
+        assert_eq!(driver.invoked, vec!["#expand"]);
+    }
+
+    #[test]
+    fn a_click_can_dismiss_the_overlay_that_refused_it() {
+        // The shape a recording loop must be able to rehearse: a click is
+        // refused, the overlay is dismissed, the same click now lands.
+        let mut driver = MockAppDriver::new(&["#submit", "#close-toast"])
+            .with_occluder("a `div.toast`", &["#submit"])
+            .dismissing("#close-toast", &["#submit"]);
+        let submit = UiaSelector::css("#submit");
+
+        assert_eq!(
+            driver.element_receives_events(&submit).expect("hit test"),
+            Some(false)
+        );
+        assert_eq!(
+            driver.occluding_element(&submit).expect("occluder"),
+            Some("a `div.toast`".into())
+        );
+
+        driver
+            .invoke(&UiaSelector::css("#close-toast"))
+            .expect("invoke");
+
+        assert_eq!(
+            driver.element_receives_events(&submit).expect("hit test"),
+            Some(true)
+        );
+        // Nothing is in the way any more, so nothing may be named as being
+        // in the way — the refusal message would otherwise cite a ghost.
+        assert_eq!(driver.occluding_element(&submit).expect("occluder"), None);
+
+        driver.invoke(&submit).expect("invoke");
+        assert_eq!(driver.invoked, vec!["#close-toast", "#submit"]);
+    }
+
+    #[test]
+    fn one_overlay_lifting_does_not_clear_another() {
+        let mut driver = MockAppDriver::new(&["#a", "#b", "#close"])
+            .with_occluder("a `div.modal-backdrop`", &["#a", "#b"])
+            .dismissing("#close", &["#a"]);
+
+        driver.invoke(&UiaSelector::css("#close")).expect("invoke");
+
+        assert_eq!(
+            driver
+                .element_receives_events(&UiaSelector::css("#a"))
+                .expect("hit test"),
+            Some(true)
+        );
+        assert_eq!(
+            driver
+                .element_receives_events(&UiaSelector::css("#b"))
+                .expect("hit test"),
+            Some(false)
+        );
+        // `#b` is still covered, so the backdrop is still the answer.
+        assert_eq!(
+            driver
+                .occluding_element(&UiaSelector::css("#b"))
+                .expect("occluder"),
+            Some("a `div.modal-backdrop`".into())
         );
     }
 
