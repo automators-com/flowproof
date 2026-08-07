@@ -1525,3 +1525,43 @@ Whichever route authors a step, recording persists grounded selectors and
 actions in the trace. `flowproof run` executes those deterministic artifacts
 directly and makes zero authoring-model calls. See
 [getting-started](getting-started.md#authoring-with-a-model-arbitrary-steps).
+
+## Drafting a spec from a requirement document (`author-from-doc`)
+
+QA teams already write test cases in a test-management tool and export them
+as a document (today: an HP ALM/Quality Center PDF, with `Step Name` /
+`Description` / `Expected` / `Actual` fields per step). `flowproof
+author-from-doc` reads that PDF and drafts a `.flow.yaml` spec from it,
+instead of hand-translating the same steps twice:
+
+```bash
+flowproof author-from-doc uat-export.pdf --app sap --name "Manage purchasing info records" --out draft.flow.yaml
+```
+
+- `--app` — the target app id the draft's `app:` field is written with
+  (`sap`, `web`, …).
+- `--name` — the flow name written into the draft's `name:` field.
+- `--out` — where the draft `.flow.yaml` is written.
+
+The PDF's text is extracted and segmented into per-step records, then each
+`Description`/`Expected` pair is translated into this page's grammar by a
+model call — the same "flag, don't guess" discipline as live authoring
+above, extended to three distinct outcomes instead of a binary
+action-or-not:
+
+- A `Description` that maps cleanly becomes a real step in the grammar
+  above, and its `Expected` becomes a real `assert:` — something a video
+  recording never has, since a document already states a belief about
+  correctness.
+- A `Description` that implies an action *within* the app under test, but
+  too ambiguously to map with confidence, is flagged as a `# TODO` plus a
+  freeform step for the next live `flowproof record` pass to resolve
+  against the real screen — never a forced guess.
+- A `Description` whose action clearly targets a *different* app or tool
+  entirely (e.g. reviewing a downloaded export in a spreadsheet program) is
+  flagged as its own distinct `# TODO` rather than silently dropped or
+  confused with in-app ambiguity — it isn't automatable here at all, and
+  needs a human decision, not a screen to search.
+
+The output is a **draft**: review every step, then run `flowproof record`
+to resolve any flagged ones against the live app before trusting it.
