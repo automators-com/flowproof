@@ -6,6 +6,22 @@ together).
 
 ## Unreleased
 
+## 0.16.0
+
+Recording could not finish a flow written the way a tester talks. This
+release is the seven-defect chain that stopped it, found by recording one
+insurance quote against a live application until it worked.
+
+Every one of them was a fault in what the recorder could PERCEIVE, and
+every one of them read, at first, as the authoring model being wrong. It
+never was. The scene described a page that had moved on, or omitted a
+control the page had drawn for itself, or reported a rejected form as a
+clean one — and the model reasoned correctly from what it was handed.
+
+The flow this was found on now records end to end and replays
+deterministically, six consecutive runs, zero model calls.
+
+
 ### Changed
 
 - **A version tag now publishes.** Both publish workflows were
