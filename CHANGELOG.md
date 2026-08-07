@@ -23,6 +23,30 @@ together).
 
 ### Fixed
 
+- **Recording refused a click replay would have waited for.** The occlusion
+  probe's own comment said it used "the same predicate as replay's
+  actionability gate, so the two agree by construction". The predicate was the
+  same. The waiting was not: replay polls the gate to the step's deadline,
+  recording asked once and aborted. A toast on its way out, a modal backdrop
+  mid-fade, a carousel between slides — each reports "something else would
+  receive this click" the instant it is asked, and each is gone a moment
+  later. Recording refused pages it could have recorded, and the trace it
+  declined to write would have replayed.
+
+  Recording now polls the same gate for the same budget, measured as wall
+  clock exactly as replay measures it — a count of polls would omit the probe
+  round-trips between them and let recording out-wait replay on a slow
+  transport. Not a new constant:
+  recording bakes `step_timeout_ms()` into every targeted step's existence
+  precondition and replay waits exactly that recorded value, so both are
+  derived from the one number and follow its `FLOWPROOF_STEP_TIMEOUT_MS`
+  override together. The direction is the part that matters — recording must
+  never accept a click replay would reject, so out-waiting replay is the one
+  error that cannot be tolerated: it mints a trace whose first replay fails.
+
+  An occluder that outlasts the budget is still refused, with the message it
+  always had. This buys the transient cases only, which is all a wait can buy.
+
 - **The two E2E jobs had been red on `main` for a day, and nothing on a pull
   request could see it.** `web E2E` and `windows build + E2E` are off the PR
   path, so they run only on push to main — every PR involved went green, and

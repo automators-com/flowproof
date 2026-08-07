@@ -116,6 +116,12 @@ enum Command {
         /// resolves; re-author only what drifted (needs an existing trace).
         #[arg(long)]
         reuse: bool,
+        /// Replay the trace once, immediately, and refuse the recording if it
+        /// cannot reproduce itself. PERFORMS THE FLOW A SECOND TIME against
+        /// the live app, repeating whatever it does - orders, e-mails,
+        /// payments - so it is opt-in rather than the default.
+        #[arg(long)]
+        verify: bool,
         /// Show Chromium and keep it open after the flow finishes. Close the
         /// flow window to let Flowproof exit.
         #[arg(long, conflicts_with = "json")]
@@ -363,6 +369,7 @@ fn cmd_record(
     json: bool,
     author: AuthorArg,
     reuse: bool,
+    verify: bool,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<u8, String> {
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
@@ -511,7 +518,58 @@ fn cmd_record(
             summary.trace_path.display()
         );
     }
+    if verify {
+        return verify_recording(spec_path, &summary.trace_path, json, recording);
+    }
     Ok(EXIT_PASS)
+}
+
+/// Replay a just-written trace once, and refuse the recording if it cannot
+/// reproduce itself.
+///
+/// A recording is a claim that the flow can be performed again from the
+/// trace alone. Nothing checked that claim: authoring succeeded when the
+/// live app happened to cooperate, and a target that was merely reachable
+/// at that moment — a button under a rotating carousel, a field beneath a
+/// datepicker that had not opened yet — was written down as though it always
+/// would be. The first person to learn otherwise was whoever ran the suite.
+///
+/// The trace is KEPT when the replay fails. It is the evidence for `heal`,
+/// and deleting the artifact that explains the failure helps nobody; the
+/// exit code and the message carry the verdict instead.
+fn verify_recording(
+    spec_path: &Path,
+    trace_path: &Path,
+    json: bool,
+    recording: flowproof_driver::RecordingOptions,
+) -> Result<u8, String> {
+    if !json {
+        println!("Verifying the recording by replaying it once...");
+    }
+    let replayed = cmd_run(
+        spec_path,
+        Some(trace_path.to_path_buf()),
+        json,
+        0,
+        MissingTrace::Error,
+        AuthorArg::Rules,
+        recording,
+    )?;
+    if replayed == EXIT_PASS {
+        if !json {
+            println!("Verified: the recording reproduces itself.");
+        }
+        return Ok(EXIT_PASS);
+    }
+    if !json {
+        eprintln!(
+            "RECORDING NOT REPRODUCIBLE: the flow was performed, but replaying its own trace \
+             failed. The trace at {} is kept as evidence - inspect the run report above, then \
+             `flowproof heal` it or re-record. A trace that cannot replay is not a recording.",
+            trace_path.display()
+        );
+    }
+    Ok(EXIT_ERROR)
 }
 
 /// Every `*.flow.yaml` under `dir`, recursively, in stable (sorted) order.
@@ -2237,6 +2295,7 @@ where
             json,
             author,
             reuse,
+            verify,
             keep_open,
             recording_detail,
             video,
@@ -2248,6 +2307,7 @@ where
                 json,
                 author,
                 reuse,
+                verify,
                 recording_options(recording_detail, video, highlight_cursor),
             )
         }),

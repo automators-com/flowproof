@@ -38,6 +38,53 @@ const STEP_TIMEOUT_MS: u64 = 5000;
 /// Poll cadence while an auto-waiting assertion is pending.
 const ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How long recording waits for an occluder to clear.
+///
+/// Not a constant, because the budget it must match is not one. Recording
+/// bakes `step_timeout_ms()` into every targeted step's existence
+/// precondition, and replay waits exactly that recorded value on the same
+/// gate (`actionable_timeout`). Deriving both from the one number — including
+/// its `FLOWPROOF_STEP_TIMEOUT_MS` override — is what makes them agree.
+///
+/// Measured as WALL CLOCK, because that is how replay measures it. A count of
+/// polls silently omits the probe round-trips between them: on a slow
+/// transport, twenty pauses plus twenty-one probes runs well past replay's
+/// five seconds, and an occluder clearing in the difference is accepted here
+/// and refused on the very first replay. Recording must never accept a click
+/// replay would reject — out-waiting replay is the one error that cannot be
+/// tolerated. Being equal is correct; being shorter is merely pessimistic.
+fn occlusion_budget() -> Duration {
+    Duration::from_millis(step_timeout_ms())
+}
+
+/// Wait for a transient occluder to clear.
+///
+/// A carousel mid-rotation, a toast on its way out, and a modal backdrop
+/// fading all report the same thing the instant they are asked: something
+/// else would receive this click. Replay polls that gate to a deadline
+/// (`wait_actionable`); recording used to ask once and abort, so a page whose
+/// overlay cleared 200ms later could not be recorded at all — while the trace
+/// it refused to write would have replayed perfectly.
+///
+/// `None` from the probe means the driver cannot tell, which satisfies the
+/// gate exactly as it does at replay: unknown is not an accusation.
+fn wait_until_receives_events(
+    mut probe: impl FnMut() -> Result<Option<bool>, flowproof_driver::DriverError>,
+    mut pause: impl FnMut(),
+    mut elapsed: impl FnMut() -> Duration,
+    budget: Duration,
+) -> Result<bool, flowproof_driver::DriverError> {
+    loop {
+        if probe()? != Some(false) {
+            return Ok(true);
+        }
+        if elapsed() >= budget {
+            return Ok(false);
+        }
+        pause();
+    }
+}
+
 /// The precondition wait baked into every targeted step at record time.
 /// `STEP_TIMEOUT_MS` stays the default for everyone - override only when
 /// recording somewhere with real reason to expect more latency (e.g. a
@@ -2698,11 +2745,18 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     // landed on the occluder, the page did not react, and
                     // the step was written into the trace as a success - a
                     // recording that cannot replay, made by the tool whose
-                    // job is to notice exactly that. Same predicate as
-                    // replay's actionability gate, so the two agree by
-                    // construction; `None` means the surface cannot tell,
-                    // which is satisfied.
-                    if driver.element_receives_events(targeted())? == Some(false) {
+                    // job is to notice exactly that. Same predicate AND the
+                    // same waiting as replay's actionability gate, so the two
+                    // agree by construction; `None` means the surface cannot
+                    // tell, which is satisfied.
+                    let started = std::time::Instant::now();
+                    let clear = wait_until_receives_events(
+                        || driver.element_receives_events(targeted()),
+                        || std::thread::sleep(ASSERT_POLL_INTERVAL),
+                        || started.elapsed(),
+                        occlusion_budget(),
+                    )?;
+                    if !clear {
                         return Err(RecordError::AssertMismatch {
                             intent: spec_step.intent().to_string(),
                             expected: "the click to reach the element".to_string(),
@@ -3572,6 +3626,95 @@ mod tests {
 
     use super::*;
     use crate::spec::FlowSpec;
+
+    /// A carousel mid-rotation: covered for the first few probes, then not.
+    /// Recording must wait it out rather than refuse a page that is merely
+    /// mid-animation — the trace it used to refuse would have replayed.
+    #[test]
+    fn a_transient_occluder_is_waited_out_rather_than_refused() {
+        let answers =
+            std::cell::RefCell::new(vec![Some(false), Some(false), Some(false), Some(true)]);
+        let mut pauses = 0;
+        let clear = super::wait_until_receives_events(
+            || Ok(answers.borrow_mut().remove(0)),
+            || pauses += 1,
+            || Duration::ZERO,
+            Duration::from_secs(5),
+        )
+        .expect("probe succeeds");
+        assert!(clear, "the occluder cleared, so the click is recordable");
+        assert_eq!(pauses, 3, "waited exactly as long as it had to");
+    }
+
+    /// A datepicker that never goes away is a real refusal, and it must still
+    /// be one — bounded, so recording cannot hang on it.
+    #[test]
+    fn a_persistent_occluder_is_still_refused_within_the_budget() {
+        let spent = std::cell::Cell::new(Duration::ZERO);
+        let mut pauses = 0;
+        let clear = super::wait_until_receives_events(
+            || Ok(Some(false)),
+            || {
+                pauses += 1;
+                spent.set(spent.get() + Duration::from_millis(250));
+            },
+            || spent.get(),
+            Duration::from_secs(1),
+        )
+        .expect("probe succeeds");
+        assert!(!clear, "a cover that never clears is refused");
+        assert_eq!(pauses, 4, "bounded by the budget, not by the page");
+    }
+
+    /// The bound is WALL CLOCK. Counting polls omits the probe round-trips
+    /// between them, and on a slow transport recording would out-wait replay
+    /// — accepting a click replay then refuses, which mints a trace whose
+    /// very first replay fails.
+    #[test]
+    fn a_slow_probe_spends_the_budget_it_actually_consumed() {
+        let spent = std::cell::Cell::new(Duration::ZERO);
+        let mut pauses = 0;
+        let clear = super::wait_until_receives_events(
+            || {
+                spent.set(spent.get() + Duration::from_millis(900));
+                Ok(Some(false))
+            },
+            || pauses += 1,
+            || spent.get(),
+            Duration::from_secs(1),
+        )
+        .expect("probe succeeds");
+        assert!(!clear);
+        assert_eq!(pauses, 1, "gives up on elapsed time, not on a poll count");
+    }
+
+    /// `None` is "this driver cannot tell", not "this is covered". Every
+    /// non-web adapter answers `None`, and recording on them must not pay the
+    /// whole wait to learn nothing.
+    #[test]
+    fn a_driver_that_cannot_tell_does_not_wait() {
+        let mut pauses = 0;
+        let clear = super::wait_until_receives_events(
+            || Ok(None),
+            || pauses += 1,
+            || Duration::ZERO,
+            Duration::from_secs(5),
+        )
+        .expect("probe succeeds");
+        assert!(clear);
+        assert_eq!(pauses, 0, "unknown is satisfied immediately");
+    }
+
+    /// The invariant that sets the budget: recording waits exactly what it
+    /// writes into the trace for replay to wait, so the two agree by
+    /// construction rather than by a constant someone must keep in step.
+    #[test]
+    fn recording_waits_exactly_what_it_writes_for_replay() {
+        assert_eq!(
+            super::occlusion_budget(),
+            Duration::from_millis(step_timeout_ms())
+        );
+    }
 
     const CALC_SPEC: &str = "\
 name: Add two numbers

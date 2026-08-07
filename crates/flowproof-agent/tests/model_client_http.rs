@@ -79,7 +79,7 @@ fn a_thinking_only_max_tokens_response_names_token_exhaustion() {
         .expect_err("a response without a text answer must fail");
     let text = err.to_string();
     assert!(
-        text.contains("exhausted its 8192-token output budget"),
+        text.contains("exhausted its 16384-token output budget"),
         "the actual failure and configured budget are named: {text}"
     );
     assert!(
@@ -90,7 +90,7 @@ fn a_thinking_only_max_tokens_response_names_token_exhaustion() {
     let sent: serde_json::Value =
         serde_json::from_str(&rx.recv().expect("request captured")).expect("request is JSON");
     assert_eq!(
-        sent["max_tokens"], 8192,
+        sent["max_tokens"], 16384,
         "Anthropic gets enough headroom to reason and still answer"
     );
 }
