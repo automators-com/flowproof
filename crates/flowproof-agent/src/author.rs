@@ -612,6 +612,22 @@ fn ground_one(
         ));
     }
 
+    // Answered here for the same reason, and it has to be: `step_complete`
+    // names no element either, so the target resolution below reached it
+    // first and refused it as "target '' is not one of the listed elements".
+    // That tells a model which has just used the vocabulary correctly that
+    // the word does not exist, so the retry reaches for something else
+    // instead of authoring the step. Named rather than lumped in with typos:
+    // reaching for the sentinel in a first reply is having understood the
+    // vocabulary and mistaken the moment, and the retry must say which.
+    if authored.action == "step_complete" {
+        return Err(GroundingError::Rejected(
+            "step_complete is valid only when you are asked to CONTINUE a step that is \
+             partway done; a first reply must author the actions the step needs"
+                .into(),
+        ));
+    }
+
     if authored.action == "capture_ambiguity" {
         if captures.len() < 2 {
             return Err(GroundingError::Rejected(
@@ -858,14 +874,9 @@ fn ground_one(
                 timeout_ms: crate::rules::ASSERT_TIMEOUT_MS,
             }])
         }
-        // Named rather than lumped in with typos: a model that reaches for
-        // the continuation sentinel in a first reply has understood the
-        // vocabulary and mistaken the moment, and the retry should say so.
-        "step_complete" => Err(GroundingError::Rejected(
-            "step_complete is valid only when you are asked to CONTINUE a step that is \
-             partway done; a first reply must author the actions the step needs"
-                .into(),
-        )),
+        // `step_complete` never arrives here: it names no target, so it is
+        // answered above, before target resolution could refuse it as an
+        // empty selector.
         other => Err(GroundingError::Rejected(format!(
             "unknown action '{other}'"
         ))),
