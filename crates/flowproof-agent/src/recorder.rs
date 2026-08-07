@@ -2389,6 +2389,32 @@ fn action_summary(action: &ResolvedAction) -> String {
     }
 }
 
+/// Fields the page has REJECTED, with the rule it stated for each.
+///
+/// Read from a freshly-captured scene, so it reflects what validation made
+/// of the values just typed - which nothing else can see. The authoring
+/// scene is captured BEFORE a step runs, when no value has been entered and
+/// so nothing is red yet.
+fn rejected_fields<D: AppDriver>(driver: &mut D) -> Result<Vec<String>, RecordError> {
+    let Some(scene) = driver.scene()? else {
+        return Ok(Vec::new());
+    };
+    let Ok(elements) = serde_json::from_str::<Vec<serde_json::Value>>(&scene) else {
+        return Ok(Vec::new());
+    };
+    Ok(elements
+        .iter()
+        .filter(|e| e["invalid"].as_bool().unwrap_or(false))
+        .filter_map(|e| {
+            let target = e["target"].as_str()?;
+            Some(match e["rule"].as_str() {
+                Some(rule) => format!("{target} ({rule})"),
+                None => target.to_string(),
+            })
+        })
+        .collect())
+}
+
 /// Re-author what is left of a step, against the page as it now is.
 ///
 /// This is the difference between a planner that must be right first time
@@ -2868,6 +2894,71 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                             selector: selector.to_string(),
                         });
                     }
+                }
+            }
+            // Do not walk away from a form the page has just rejected.
+            //
+            // The authoring scene was captured BEFORE this step typed
+            // anything, so it could not know which values validation would
+            // refuse. It knows now, and only until the click lands: the
+            // wizard advances regardless, leaving the section flagged behind
+            // it and the offending field on a screen nothing will inventory
+            // again. This is the last moment it is repairable.
+            if closed_loop && matches!(action, ResolvedAction::Press { .. }) {
+                let rejected = rejected_fields(driver)?;
+                if !rejected.is_empty() {
+                    // One correction per distinct set of rejected fields. The
+                    // click is not held back here: the refusal asks for it to
+                    // be re-authored, so the remainder carries it back, and a
+                    // copy kept locally would either be discarded by that
+                    // remainder or performed twice on top of it.
+                    if replans < MAX_STEP_REPLANS
+                        && refused_keys.insert(format!("rejected:{}", rejected.join(",")))
+                    {
+                        replans += 1;
+                        match replan_remainder(
+                            spec,
+                            &step_app,
+                            driver,
+                            &mut client,
+                            &prior_intents,
+                            &capture_names,
+                            &step_intent,
+                            &executed_summaries,
+                            &format!(
+                                "the page REJECTED these values, each with the rule it \
+                                 enforced: {}. Correct them - obeying those rules - and then \
+                                 repeat the action that leaves this screen",
+                                rejected.join("; ")
+                            ),
+                        )? {
+                            None => break,
+                            Some((rest, _continues)) => {
+                                plan = rest.into();
+                                continue;
+                            }
+                        }
+                    }
+                    // The correction did not take, or the budget is gone.
+                    // Clicking now is the single outcome this guard exists to
+                    // prevent, and reaching it this way is worse than never
+                    // having looked: the recorder SAW the rejection, asked for
+                    // a correction, watched the same fields come back red, and
+                    // would then write the click into the trace as a success
+                    // the page refused to give. So it refuses instead, and
+                    // names the fields that stayed wrong.
+                    return Err(RecordError::AssertMismatch {
+                        intent: spec_step.intent().to_string(),
+                        expected: "the page to accept these values before the step leaves \
+                                   this screen"
+                            .to_string(),
+                        actual: format!(
+                            "it still rejects {}. The click was not recorded, because a \
+                             click that walks away from a rejected form records a success \
+                             the page refused to give",
+                            rejected.join("; ")
+                        ),
+                    });
                 }
             }
             let targeted = || selector.as_ref().expect("targeted action has a selector");
@@ -4089,6 +4180,185 @@ url: https://shop.test/checkout
 steps:
   - Fill in the delivery address and continue
 ";
+
+    /// A form the page rejects, offered a correction the page rejects the
+    /// same way.
+    ///
+    /// The guard used to dedupe the whole recovery on the set of rejected
+    /// fields, so the second identical rejection failed to claim the key,
+    /// fell out of the `if`, and clicked — recording the wizard walking away
+    /// from a red form as a success. That is a false green, priority 1: the
+    /// only defect class that destroys the product's value. It must be a
+    /// refusal, and the refusal must name the fields that stayed wrong.
+    #[test]
+    fn a_second_identical_rejection_refuses_instead_of_clicking_through() {
+        let spec = FlowSpec::parse(
+            "name: Signup\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Fill in the email and continue\n",
+        )
+        .expect("spec parses");
+        let rejected_scene = r##"[{"target":"css:#email","tag":"input","label":"Email",
+             "invalid":true,"rule":"must be a work address"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let mut driver = MockAppDriver::new(&["#email", "#next"]);
+        driver.scene = Some(rejected_scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#email","text":"me@home.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"type_text","target":"css:#email","text":"me@else.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-rejected-twice.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("a form the page still rejects is not recordable");
+
+        assert!(
+            driver.invoked.is_empty(),
+            "the click must never land on a rejected form, but it did: {:?}",
+            driver.invoked
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("css:#email") && message.contains("must be a work address"),
+            "the refusal names the field and the rule it kept breaking: {message}"
+        );
+        assert!(
+            message.contains("was not recorded"),
+            "and says the click was not written to the trace: {message}"
+        );
+        assert!(
+            !out.exists(),
+            "and no trace is left behind claiming the step succeeded"
+        );
+        // Exactly one correction was asked for: the first reply, then the
+        // remainder. A third would mean the dedupe key stopped working.
+        assert_eq!(client.prompts.len(), 2);
+        assert!(
+            client.prompts[1].contains("REJECTED"),
+            "the second prompt is the correction request: {}",
+            client.prompts[1]
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The other half, so the refusal above cannot be satisfied by refusing
+    /// everything: when the correction DOES take, the click still leaves the
+    /// screen and the step records normally.
+    #[test]
+    fn a_rejection_the_correction_fixes_still_leaves_the_screen() {
+        let spec = FlowSpec::parse(
+            "name: Signup\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Fill in the email and continue\n",
+        )
+        .expect("spec parses");
+        let rejected_scene = r##"[{"target":"css:#email","tag":"input","label":"Email",
+             "invalid":true,"rule":"must be a work address"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let accepted_scene = r##"[{"target":"css:#email","tag":"input","label":"Email"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        // Three reads happen while the page is still refusing: authoring,
+        // the guard that catches it, and the re-authoring against it. The
+        // fourth is the guard looking again after the correction was typed,
+        // and by then the page has accepted it.
+        let mut driver = MockAppDriver::new(&["#email", "#next"]).with_scene_sequence(&[
+            rejected_scene,
+            rejected_scene,
+            rejected_scene,
+        ]);
+        driver.scene = Some(accepted_scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#email","text":"me@home.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-rejected-then-fixed.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the corrected form records");
+
+        assert_eq!(
+            driver.invoked,
+            vec!["#next"],
+            "the click lands exactly once — the corrected plan carries it, so nothing \
+             is held back and replayed on top"
+        );
+        assert_eq!(
+            driver.typed,
+            vec![
+                ("#email".to_string(), "me@home.example".to_string()),
+                ("#email".to_string(), "me@work.example".to_string()),
+            ],
+            "the refused value, then the one the page accepted"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The rejected-form guard is scoped to model authoring, and stays that
+    /// way.
+    ///
+    /// It exists because the authoring scene is captured before the step
+    /// types anything, so only a plan the model is still holding can be
+    /// corrected by what validation then said. A REUSED step carries a
+    /// decision a human already reviewed in a trace; second-guessing it
+    /// would make an incremental re-record start refusing pages it recorded
+    /// yesterday.
+    #[test]
+    fn a_reused_step_is_not_second_guessed_by_the_rejected_form_guard() {
+        let spec = FlowSpec::parse(
+            "name: Signup\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Fill in the email and continue\n",
+        )
+        .expect("spec parses");
+        let accepted = r##"[{"target":"css:#email","tag":"input","label":"Email"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let rejected = r##"[{"target":"css:#email","tag":"input","label":"Email",
+             "invalid":true,"rule":"must be a work address"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let dir = std::env::temp_dir().join("flowproof-reused-not-second-guessed");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("signup.trace.jsonl");
+
+        let mut driver = MockAppDriver::new(&["#email", "#next"]);
+        driver.scene = Some(accepted.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+        ]);
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the original records");
+        let (_, old_steps) = load_steps(&out);
+
+        // Re-record against a page that is now flagging the field. The
+        // reused plan runs unchanged and nothing is asked of the model.
+        let mut driver = MockAppDriver::new(&["#email", "#next"]);
+        driver.scene = Some(rejected.into());
+        let mut client =
+            ScriptedClient::new(&[r##"[{"action":"click","target":"css:#WRONG-IF-CALLED"}]"##]);
+        let summary = record_with_reuse(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Auto,
+            Some(&mut client),
+            Some(&old_steps),
+        )
+        .expect("the reused step records");
+
+        assert!(
+            client.prompts.is_empty(),
+            "a reused step consults nothing — the loop must not have given it a reason to"
+        );
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Reused);
+        assert_eq!(summary.reused_steps, 2);
+        assert_eq!(driver.invoked, vec!["#next"]);
+        assert_eq!(
+            driver.typed,
+            vec![("#email".to_string(), "me@work.example".to_string())]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     const CALC_SPEC: &str = "\
 name: Add two numbers
