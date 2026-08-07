@@ -6,6 +6,37 @@ together).
 
 ## Unreleased
 
+## 0.18.0
+
+### Changed
+
+- **Targeted typing means fill, on every adapter.** Typing into a NAMED
+  field now states what the field should read: whatever it held is replaced,
+  the way every mainstream tool works. Appending was never a designed
+  contract - it was an accident of the web keystroke path, and not even a
+  uniform one, since framed typing, the select branch and SAP fields always
+  replaced.
+
+  What the accident cost was found the expensive way. A correction typed
+  800 - the right value - into a payload field still holding the refused
+  9000, and the page saw 9000800. The recording survived only because the
+  model noticed the tool's own behaviour in the scene, cleared the field and
+  retyped.
+
+  Each adapter keeps the contract in its own idiom: web selects the content
+  and sends the same trusted keystrokes (a keydown-filtering app still sees
+  real keys), Windows UIA selects-all with its own chord and gains the
+  `clear_text` the Replace grammar always erred on there, vision composes
+  the chord its clear already used, SAP was already fill. Focused typing -
+  `Type <text>` with no target - stays raw keystrokes and APPENDS: it is
+  the step for dropdown filters, pre-focused rename boxes, and adding to
+  what is there.
+
+  A spec that relied on targeted typing appending would change meaning. No
+  committed flow does, and the docs never promised it - but that is the
+  reason this is 0.18.0 and not 0.17.1.
+
+
 ## 0.17.0
 
 ### Added
