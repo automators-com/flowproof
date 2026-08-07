@@ -3726,6 +3726,7 @@ impl AppDriver for WebAppDriver {
                 const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
                     : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
                 const ticks = el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.type);
+                const isField = ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName);
                 const entry = {
                     target: scoped ? scoped.token : 'css:' + css,
                     css,
@@ -3737,8 +3738,14 @@ impl AppDriver for WebAppDriver {
                     value: fieldValue(el),
                     checked: ticks ? el.checked : undefined,
                     required: el.required || undefined,
-                    invalid: invalidity(el) || undefined,
-                    rule: fieldRule(el) || undefined,
+                    // Only a CONTROL can be rejected, and only a control can
+                    // be corrected. The marker sits on a wrapper, so asking
+                    // this of every element also flags the label and the error
+                    // message inside it - naming one bad field three times,
+                    // two of them things nothing can type into. A model handed
+                    // that list spends its one correction on a <span>.
+                    invalid: (isField ? invalidity(el) : false) || undefined,
+                    rule: (isField ? fieldRule(el) : null) || undefined,
                     options: el.tagName === 'SELECT'
                       ? Array.from(el.options)
                           .map(option => (option.textContent || '').trim())
