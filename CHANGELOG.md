@@ -22,6 +22,33 @@ together).
   labelled 0.14.0, and registry versions are immutable.
 
 ### Fixed
+- **The authoring scene could describe a page that no longer existed, and the
+  model took the blame.** The inventory was read the instant the previous step
+  finished. A step that navigates leaves the next step's scene racing the new
+  page, and a server that renders every variant of a form and hides the
+  irrelevant ones in script briefly presents *all* of them as rendered.
+
+  On the Tricentis sample app this was reliable rather than rare. `Open the
+  truck insurance quote` was authored correctly, and the scene captured
+  immediately after was the union of two forms: a motorcycle `#model` —
+  actionable, with its own options list — beside the truck's `#payload`. The
+  model grounded faithfully onto `#model`, exactly as instructed, and the
+  recorder then refused the step because no such element existed by the time
+  it ran. The failure read as a model inventing a selector. It was the scene
+  that lied; the model had copied a target it was entitled to copy.
+
+  The web scene is now read only once two readings agree on which targets
+  exist, with the document loaded. That narrows the window rather than
+  closing it — a navigation that has not begun still presents a settled old
+  page, and a single-page app never leaves `readyState complete` at all — but
+  it removes the case this was losing recordings to.
+  Agreement *before* load completes does not count, because that is precisely
+  the window the pre-script union looks stable in. Only the set of targets has
+  to hold still — a clock, a character counter, or a field mid-edit changes
+  text on every reading without changing which elements exist, and waiting on
+  those would wait forever. A page that never goes quiet is captured anyway
+  after a bounded wait: recording a carousel is better than hanging on one.
+
 
 - **Recording refused a click replay would have waited for.** The occlusion
   probe's own comment said it used "the same predicate as replay's
