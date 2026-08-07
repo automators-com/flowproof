@@ -323,6 +323,41 @@ impl std::fmt::Display for GroundingError {
 /// The grounding set: one TARGET TOKEN per scene element. Modern drivers
 /// emit a `target` token directly (`css:…`, `id:…`, `text:…`); a legacy
 /// web scene that only carries a `css` key is lifted into `css:<sel>`.
+/// The range a page states in its own words, when it states one plainly.
+///
+/// Deliberately the narrowest reading that is still useful: an anchored
+/// "between X and Y", both bounds whole numbers, inclusive. Everything else
+/// is someone's copy, and guessing at it is how a tool starts manufacturing
+/// refusals the application never made.
+///
+/// "Must be between 3 and 20 characters" parses here too, and would be a
+/// length rule read as a value rule - which is exactly why the caller
+/// CHALLENGES rather than refuses. Being wrong costs a question, not a
+/// recording.
+fn stated_range(rule: &str) -> Option<(f64, f64)> {
+    let lower = rule.to_ascii_lowercase();
+    let rest = lower.split_once("between ")?.1;
+    let (low, rest) = rest.split_once(" and ")?;
+    let min: f64 = low.trim().parse().ok()?;
+    let high = rest.split_whitespace().next()?;
+    let max: f64 = high.trim_end_matches(['.', ',', ';']).parse().ok()?;
+    (min <= max).then_some((min, max))
+}
+
+/// The constraint the page states for a listed target, if it states one.
+fn scene_rule(scene: &str, token: &str) -> Option<String> {
+    serde_json::from_str::<Vec<serde_json::Value>>(scene)
+        .ok()?
+        .iter()
+        .find(|element| {
+            element["target"].as_str() == Some(token)
+                || element["css"]
+                    .as_str()
+                    .is_some_and(|css| format!("css:{css}") == token)
+        })
+        .and_then(|element| element["rule"].as_str().map(str::to_string))
+}
+
 fn scene_targets(scene: &str) -> Vec<String> {
     serde_json::from_str::<Vec<serde_json::Value>>(scene)
         .unwrap_or_default()
@@ -522,6 +557,7 @@ fn parse_and_ground(
     app: &str,
     intent: &str,
     captures: &[String],
+    challenged: &mut std::collections::BTreeSet<(String, String)>,
 ) -> Result<Vec<ResolvedAction>, GroundingError> {
     // Tolerate models that wrap JSON in a code fence despite instructions.
     let trimmed = reply
@@ -569,8 +605,8 @@ fn parse_and_ground(
     let mut scope = captures.to_vec();
     let mut resolved = Vec::new();
     for (index, item) in authored.into_iter().enumerate() {
-        let mut actions =
-            ground_one(item, targets, scene, app, intent, &scope).map_err(|error| match error {
+        let mut actions = ground_one(item, targets, scene, app, intent, &scope, challenged)
+            .map_err(|error| match error {
                 GroundingError::Rejected(reason) if total > 1 => GroundingError::Sequence {
                     reason: format!("action {} of {total} was rejected: {reason}", index + 1),
                     grounded: index,
@@ -597,6 +633,7 @@ fn ground_one(
     app: &str,
     intent: &str,
     captures: &[String],
+    challenged: &mut std::collections::BTreeSet<(String, String)>,
 ) -> Result<Vec<ResolvedAction>, GroundingError> {
     let authored: AuthoredAction = serde_json::from_value(item)
         .map_err(|e| GroundingError::Rejected(format!("reply is not a valid action: {e}")))?;
@@ -760,6 +797,36 @@ fn ground_one(
             }
             if !scene_token_is_actionable(scene, token) {
                 return Err("type_text target is readable but not actionable".into());
+            }
+            // The page states what it will take. A value outside that is
+            // CHALLENGED once - before a keystroke reaches the browser, and
+            // before the recorder spends its one correction on the same
+            // problem - and then yielded on.
+            //
+            // Yielded on because this reading is a prediction, not a verdict.
+            // The rule is scraped from copy written for a person: it may
+            // describe a length rather than a value, or belong to the field
+            // next door, or be advice the form does not enforce. And a step
+            // may MEAN to enter something the page refuses, to check what it
+            // says. The application's own answer decides all of that, and the
+            // recorder already refuses to walk away from a form it rejected.
+            // Being wrong here must cost a question, never a recording.
+            let pair = (token.to_string(), text.clone());
+            if !challenged.contains(&pair) {
+                if let Some((min, max)) = scene_rule(scene, token).as_deref().and_then(stated_range)
+                {
+                    if let Ok(value) = text.trim().parse::<f64>() {
+                        if value < min || value > max {
+                            challenged.insert(pair);
+                            return Err(GroundingError::Rejected(format!(
+                                "the page says of {token}: {}. '{text}' is outside that - \
+                                 choose a value it will accept, or repeat this one if you \
+                                 mean it",
+                                scene_rule(scene, token).unwrap_or_default()
+                            )));
+                        }
+                    }
+                }
             }
             Ok(vec![ResolvedAction::TypeText { target, text }])
         }
@@ -967,6 +1034,10 @@ pub fn author_remainder<C: ModelClient>(
 ) -> Result<Remainder, AgentError> {
     let targets = scene_targets(ctx.scene);
     let prompt = remainder_prompt(ctx, progress);
+    // Survives the retry: a value the model stands by after being
+    // challenged is grounded, not challenged again.
+    let mut challenged: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
     let mut last_error = String::new();
     for attempt in 0..2 {
         let user = if attempt == 0 {
@@ -998,6 +1069,7 @@ pub fn author_remainder<C: ModelClient>(
             ctx.app,
             ctx.intent,
             ctx.captures,
+            &mut challenged,
         ) {
             Ok(actions) => return Ok(Remainder::Actions(actions, continues)),
             Err(GroundingError::CaptureAmbiguity(ambiguity)) => {
@@ -1070,6 +1142,10 @@ fn author_steps_inner<C: ModelClient>(
         });
     }
     let prompt = user_prompt(ctx);
+    // Survives the retry: a value the model stands by after being
+    // challenged is grounded, not challenged again.
+    let mut challenged: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
     let mut last_error = String::new();
     // How much of the last rejected sequence had already grounded. `None` for
     // a single action, or for a sequence whose very first action was wrong:
@@ -1098,6 +1174,7 @@ fn author_steps_inner<C: ModelClient>(
             ctx.app,
             ctx.intent,
             ctx.captures,
+            &mut challenged,
         ) {
             Ok(actions) => return Ok((actions, continues)),
             Err(GroundingError::CaptureAmbiguity(ambiguity)) => {
@@ -1631,6 +1708,139 @@ mod tests {
             client.calls, 1,
             "a report is not a grounding failure, so it does not burn the retry"
         );
+    }
+
+    /// The narrowest reading that is still useful. Everything else is
+    /// someone's prose, and guessing at it is how a tool starts inventing
+    /// refusals the application never made.
+    #[test]
+    fn only_a_plainly_stated_range_is_read() {
+        assert_eq!(
+            stated_range("Must be a number between 1 and 1000"),
+            Some((1.0, 1000.0))
+        );
+        assert_eq!(stated_range("Must be a valid date"), None);
+        assert_eq!(stated_range("Required"), None);
+        assert_eq!(stated_range("between one and ten"), None);
+        assert_eq!(stated_range("between 90 and 10"), None, "backwards bounds");
+    }
+
+    /// A value the page says it will not take is questioned BEFORE a
+    /// keystroke reaches the browser - cheaper than a rejected form, and it
+    /// leaves the recorder's one correction for a problem it has not already
+    /// been warned about.
+    #[test]
+    fn a_value_outside_the_stated_range_is_challenged() {
+        let scene = r##"[{"target":"css:#payload","tag":"input","label":"Payload",
+             "actionable":true,"rule":"Must be a number between 1 and 1000"}]"##;
+        let mut client = Scripted {
+            replies: vec![
+                r##"[{"action":"type_text","target":"css:#payload","text":"5000"}]"##.into(),
+                r##"[{"action":"type_text","target":"css:#payload","text":"800"}]"##.into(),
+            ],
+            calls: 0,
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                scene,
+                intent: "Fill out all the vehicle data",
+                ..ctx()
+            },
+        )
+        .expect("the corrected value grounds");
+        assert!(
+            matches!(&actions[0], ResolvedAction::TypeText { text, .. } if text == "800"),
+            "the value the page will accept is the one recorded: {actions:?}"
+        );
+        assert_eq!(client.calls, 2, "one challenge, then the correction");
+    }
+
+    /// And it YIELDS. The rule is scraped from copy written for a person: it
+    /// may describe a length rather than a value, or belong to the field next
+    /// door, or be advice the form does not enforce - and a step may mean to
+    /// enter something the page refuses, to see what it says. A model that
+    /// repeats its value after being asked is taken at its word, and the
+    /// page decides. Being wrong here costs a question, never a recording.
+    #[test]
+    fn a_value_repeated_after_the_challenge_is_grounded() {
+        let scene = r##"[{"target":"css:#payload","tag":"input","label":"Payload",
+             "actionable":true,"rule":"Must be a number between 1 and 1000"}]"##;
+        let mut client = Scripted {
+            replies: vec![
+                r##"[{"action":"type_text","target":"css:#payload","text":"5000"}]"##.into(),
+                r##"[{"action":"type_text","target":"css:#payload","text":"5000"}]"##.into(),
+            ],
+            calls: 0,
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                scene,
+                intent: "Enter a payload the form will refuse",
+                ..ctx()
+            },
+        )
+        .expect("a value the model stands by is grounded");
+        assert!(
+            matches!(&actions[0], ResolvedAction::TypeText { text, .. } if text == "5000"),
+            "the page, not this reading, is the authority: {actions:?}"
+        );
+    }
+
+    /// A value that is not a number is left entirely to the page - which is
+    /// what keeps thousands separators, units in the field, and decimal
+    /// commas from ever being questioned.
+    #[test]
+    fn a_value_that_is_not_a_number_challenges_nothing() {
+        let scene = r##"[{"target":"css:#price","tag":"input","label":"Price",
+             "actionable":true,"rule":"Must be a number between 1 and 1000"}]"##;
+        let mut client = Scripted {
+            replies: vec![
+                r##"[{"action":"type_text","target":"css:#price","text":"1.500,00"}]"##.into(),
+            ],
+            calls: 0,
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                scene,
+                intent: "Type the price",
+                ..ctx()
+            },
+        )
+        .expect("a value this reading cannot judge is not judged");
+        assert!(matches!(&actions[0], ResolvedAction::TypeText { text, .. } if text == "1.500,00"));
+        assert_eq!(client.calls, 1, "no challenge was spent");
+    }
+
+    /// A LENGTH rule reads as a value rule - "between 3 and 20 characters"
+    /// is the same six words - and this is the cost of that: one question.
+    /// Blocklisting the nouns would mean modelling someone else's copy, and
+    /// the yield is what makes being wrong affordable. Pinned so the price
+    /// stays visible: a challenge, never a refusal.
+    #[test]
+    fn a_length_rule_misread_as_a_value_rule_costs_one_question() {
+        let scene = r##"[{"target":"css:#plate","tag":"input","label":"Plate",
+             "actionable":true,"rule":"Must be between 3 and 20 characters"}]"##;
+        let mut client = Scripted {
+            replies: vec![
+                r##"[{"action":"type_text","target":"css:#plate","text":"25"}]"##.into(),
+                r##"[{"action":"type_text","target":"css:#plate","text":"25"}]"##.into(),
+            ],
+            calls: 0,
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                scene,
+                intent: "Type the plate",
+                ..ctx()
+            },
+        )
+        .expect("the value still records");
+        assert!(matches!(&actions[0], ResolvedAction::TypeText { text, .. } if text == "25"));
+        assert_eq!(client.calls, 2, "one question, then it yields");
     }
 
     #[test]
