@@ -899,8 +899,9 @@ pub struct StepProgress<'a> {
 pub enum Remainder {
     /// The step's intent is already satisfied; author nothing more.
     Complete,
-    /// The actions still needed, grounded against the fresh scene.
-    Actions(Vec<ResolvedAction>),
+    /// The actions still needed, grounded against the fresh scene, and
+    /// whether the model says a further screen still holds part of the step.
+    Actions(Vec<ResolvedAction>, bool),
 }
 
 /// Tolerate models that wrap JSON in a code fence despite instructions.
@@ -986,6 +987,16 @@ pub fn author_remainder<C: ModelClient>(
         if is_step_complete(&reply) {
             return Ok(Remainder::Complete);
         }
+        // A continuation may itself run out of screen. The same sentence the
+        // system prompt teaches for a first reply has to mean the same thing
+        // here, or a step spanning three screens fails on its second - after
+        // the model followed the instruction it was given.
+        //
+        // What does NOT carry over is the floor. `parse_and_ground` still
+        // refuses a reply that authored nothing, so a lone sentinel is
+        // rejected in both positions. Lifting that for the sentinel's sake is
+        // how a step comes to record zero actions and report success.
+        let (reply, continues) = split_continuation(&reply);
         match parse_and_ground(
             &reply,
             &targets,
@@ -994,7 +1005,7 @@ pub fn author_remainder<C: ModelClient>(
             ctx.intent,
             ctx.captures,
         ) {
-            Ok(actions) => return Ok(Remainder::Actions(actions)),
+            Ok(actions) => return Ok(Remainder::Actions(actions, continues)),
             Err(GroundingError::CaptureAmbiguity(ambiguity)) => {
                 return Err(AgentError::Authoring {
                     step: ctx.intent.to_string(),

@@ -2435,7 +2435,7 @@ fn replan_remainder<D: AppDriver, C: ModelClient>(
     intent: &str,
     executed: &[String],
     refusal: &str,
-) -> Result<Option<Vec<ResolvedAction>>, RecordError> {
+) -> Result<Option<(Vec<ResolvedAction>, bool)>, RecordError> {
     let Some(client) = client.as_mut() else {
         return Ok(None);
     };
@@ -2471,7 +2471,7 @@ fn replan_remainder<D: AppDriver, C: ModelClient>(
     let outcome = crate::author::author_remainder(*client, &ctx, &progress);
     match outcome? {
         crate::author::Remainder::Complete => Ok(None),
-        crate::author::Remainder::Actions(actions) => Ok(Some(actions)),
+        crate::author::Remainder::Actions(actions, continues) => Ok(Some((actions, continues))),
     }
 }
 
@@ -2827,10 +2827,28 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         // the same budget as any other replan.
         loop {
             let Some(action) = plan.pop_front() else {
-                if !pending_continuation || replans >= MAX_STEP_REPLANS {
+                if !pending_continuation {
                     break;
                 }
-                pending_continuation = false;
+                // The model said the rest of this step lives on a screen it
+                // could not see yet, and the budget for looking is spent.
+                // Recording the step as complete here would write down a step
+                // the model itself said was unfinished, and a trace short of
+                // actions replays green for ever while asserting less than it
+                // claims to. Refuse, and name what was promised.
+                if replans >= MAX_STEP_REPLANS {
+                    return Err(RecordError::AssertMismatch {
+                        intent: spec_step.intent().to_string(),
+                        expected: "the step to finish within                                    its continuations"
+                            .to_string(),
+                        actual: format!(
+                            "it still had more to do after {MAX_STEP_REPLANS} of them;                              the last reply asked for another screen"
+                        ),
+                    });
+                }
+                // Not cleared here: the reply this replan returns says
+                // whether a screen after this one still holds part of the
+                // step, and every call site sets it from that answer.
                 replans += 1;
                 match replan_remainder(
                     spec,
@@ -2845,7 +2863,8 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                      the step against it, or reply step_complete if nothing remains",
                 )? {
                     None => break,
-                    Some(rest) => {
+                    Some((rest, continues)) => {
+                        pending_continuation = continues;
                         plan = rest.into();
                         continue;
                     }
@@ -2921,7 +2940,8 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                                 &refusal,
                             )? {
                                 None => break,
-                                Some(rest) => {
+                                Some((rest, continues)) => {
+                                    pending_continuation = continues;
                                     plan = rest.into();
                                     continue;
                                 }
@@ -2971,7 +2991,8 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                             ),
                         )? {
                             None => break,
-                            Some(rest) => {
+                            Some((rest, continues)) => {
+                                pending_continuation = continues;
                                 plan = rest.into();
                                 continue;
                             }
@@ -3071,7 +3092,8 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                                 &refusal,
                             )? {
                                 None => break,
-                                Some(rest) => {
+                                Some((rest, continues)) => {
+                                    pending_continuation = continues;
                                     plan = rest.into();
                                     continue;
                                 }
@@ -6411,6 +6433,105 @@ steps:
         record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
             .expect("an ordinary step records");
         assert_eq!(driver.invoked, vec!["Next"]);
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// A step can span more than two screens. The sentence the system prompt
+    /// teaches for a first reply has to mean the same thing in a
+    /// continuation, or the second installment fails as an unknown action -
+    /// after the model followed the instruction it was given.
+    #[test]
+    fn a_step_may_be_authored_across_three_screens() {
+        let spec = FlowSpec::parse(
+            "name: Quote\napp: web\nurl: https://example.test\nsteps:\n               - Fill in what sending the quote needs and send it\n",
+        )
+        .expect("spec parses");
+        let one = r##"[{"target":"css:#a","tag":"button","text":"A"}]"##;
+        let two = r##"[{"target":"css:#b","tag":"button","text":"B"}]"##;
+        let three = r##"[{"target":"css:#c","tag":"button","text":"C"}]"##;
+        // Two reads per screen: the authoring (or re-authoring) call, and the
+        // guard that looks for rejected fields before the click that leaves.
+        let mut driver = MockAppDriver::new(&["#a", "#b", "#c"])
+            .with_scene_sequence(&[one, one, two, two, three, three]);
+        driver.scene = Some(three.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#a"},{"action":"step_continues"}]"##,
+            r##"[{"action":"click","target":"css:#b"},{"action":"step_continues"}]"##,
+            r##"[{"action":"click","target":"css:#c"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-three-screens.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("a three-screen step records");
+        assert_eq!(
+            driver.invoked,
+            vec!["#a", "#b", "#c"],
+            "every installment ran, in order"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// A step the model never stops continuing is REFUSED, not quietly
+    /// recorded as finished. Breaking here would write down a step the model
+    /// itself said was unfinished, and a trace short of actions replays green
+    /// for ever while asserting less than it claims to.
+    #[test]
+    fn a_step_that_never_stops_continuing_is_refused_by_name() {
+        let spec = FlowSpec::parse(
+            "name: Quote\napp: web\nurl: https://example.test\nsteps:\n               - Fill in what sending the quote needs and send it\n",
+        )
+        .expect("spec parses");
+        let scene = r##"[{"target":"css:#a","tag":"button","text":"A"}]"##;
+        let mut driver = MockAppDriver::new(&["#a"]);
+        driver.scene = Some(scene.into());
+        let forever = r##"[{"action":"click","target":"css:#a"},{"action":"step_continues"}]"##;
+        let mut client = ScriptedClient::new(&[forever, forever, forever, forever, forever]);
+        let out = std::env::temp_dir().join("flowproof-never-stops.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("a step that never finishes is refused");
+        let message = err.to_string();
+        assert!(
+            message.contains("still had more to do"),
+            "the refusal names the promise that was left outstanding: {message}"
+        );
+        assert!(
+            !out.exists(),
+            "a step the model left unfinished writes no trace"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The floor stays where it is. `step_continues` alone is not an answer
+    /// in a FIRST reply: a step must do something, and lifting that for the
+    /// sentinel's sake is exactly how a step comes to record zero actions and
+    /// report success - a trace that replays green having asserted nothing.
+    #[test]
+    fn a_lone_continuation_sentinel_cannot_start_a_step() {
+        let spec = FlowSpec::parse(
+            "name: Quote\napp: web\nurl: https://example.test\nsteps:\n               - Fill in the applicant name\n",
+        )
+        .expect("spec parses");
+        let scene = r##"[{"target":"css:#a","tag":"button","text":"A"}]"##;
+        let mut driver = MockAppDriver::new(&["#a"]);
+        driver.scene = Some(scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"step_continues"}]"##,
+            r##"[{"action":"step_complete"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-lone-sentinel.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("a step that authors nothing is refused");
+        assert!(
+            driver.invoked.is_empty(),
+            "nothing was performed, so nothing may be recorded: {:?}",
+            driver.invoked
+        );
+        assert!(
+            !out.exists(),
+            "a step that did nothing writes no trace: {err}"
+        );
         std::fs::remove_file(&out).ok();
     }
 
