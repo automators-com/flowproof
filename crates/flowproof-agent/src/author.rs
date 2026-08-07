@@ -28,8 +28,30 @@ persist its deterministic target. Never invent a selector from the user's wordin
 \"fill in the vehicle data and continue\" is one step covering every field on that \
 form plus the button. CARRY OUT THE WHOLE STEP: reply with a JSON ARRAY of action \
 objects, in the order they must happen. Reply with a bare object only when the step \
-really is one action. Never do part of a step and leave the rest to a later reply: \
-there is no later reply for this step.
+really is one action. Author the whole step in one reply: plan it as a whole, in \
+order, rather than leaving the rest for later. If the step plainly needs elements \
+that are NOT on this screen yet - a later wizard page, a section one of your own \
+actions will reveal - author every action you can ground here, then end the array \
+with {\"action\":\"step_continues\"}. flowproof will perform them, read the screen \
+again and ask you for the rest. Never guess a target for something you cannot see.
+- Before authoring, read what the screen says. A wizard will happily move on from a \
+section it is still flagging - a heading carrying a count of outstanding problems, a \
+message naming a field it would not accept - and that is the PREVIOUS step failing, \
+not this one. When you see it, author nothing: reply with exactly \
+{\"action\":\"previous_step_incomplete\",\"evidence\":\"<the page's own words>\"}. \
+A page that moved on is not proof that it accepted anything.
+- You may be asked to CONTINUE a step that is partway done, because the page changed \
+under the plan - a control vanished, or something covered it. That message lists the \
+actions already performed, which you must NEVER repeat, and says why the next one was \
+refused. The elements it lists are the screen as it is NOW, read again after those \
+actions ran. Reply with only the actions still needed. If the step's intent is already \
+satisfied, reply with exactly [{\"action\":\"step_complete\"}] - a reply valid ONLY \
+when you were asked to continue, never in a first reply.
+- When an action was refused because another element would receive the click, do what \
+a person would: if something is covering the control, dismiss it (its close control, \
+or press_key Escape) and continue. If the control simply cannot be reached, choose a \
+DIFFERENT listed target that serves the same intent - a navigation link rather than a \
+banner button, say - rather than retrying the one that was refused.
 - When a step asks for a whole form, group or screen, cover EVERY field it names, \
 including ones the user did not enumerate. Each scene entry tells you what a field \
 holds now (`value`, `checked`), whether the page demands it (`required`), the \
@@ -112,6 +134,10 @@ impl CaptureAmbiguity {
 #[derive(Debug, Deserialize)]
 struct AuthoredAction {
     action: String,
+    /// Only for `previous_step_incomplete`: the page's own words, quoted back
+    /// as the evidence a person needs to judge the report.
+    #[serde(default)]
+    evidence: Option<String>,
     #[serde(default, alias = "target_css")]
     target: String,
     #[serde(default)]
@@ -262,6 +288,10 @@ enum GroundingError {
         total: usize,
     },
     CaptureAmbiguity(CaptureAmbiguity),
+    /// Not a grounding failure at all: the model read the screen and found
+    /// the PREVIOUS step's work disputed by the page. Carries the page's own
+    /// words, which are the evidence a person needs to judge it.
+    PreviousStepIncomplete(String),
 }
 
 impl From<&str> for GroundingError {
@@ -282,6 +312,10 @@ impl std::fmt::Display for GroundingError {
             Self::Rejected(reason) => f.write_str(reason),
             Self::Sequence { reason, .. } => f.write_str(reason),
             Self::CaptureAmbiguity(ambiguity) => f.write_str(&ambiguity.reason()),
+            Self::PreviousStepIncomplete(evidence) => write!(
+                f,
+                "the previous step left a problem behind; the page reports: {evidence}"
+            ),
         }
     }
 }
@@ -479,7 +513,7 @@ fn validate_rule_action(
 /// form legitimately runs to a couple of dozen; a reply an order of magnitude
 /// past that is a model that has started looping, and a bound says so at the
 /// point of authoring rather than after the run has clicked sixty times.
-const MAX_STEP_ACTIONS: usize = 60;
+pub(crate) const MAX_STEP_ACTIONS: usize = 60;
 
 fn parse_and_ground(
     reply: &str,
@@ -566,6 +600,30 @@ fn ground_one(
 ) -> Result<Vec<ResolvedAction>, GroundingError> {
     let authored: AuthoredAction = serde_json::from_value(item)
         .map_err(|e| GroundingError::Rejected(format!("reply is not a valid action: {e}")))?;
+
+    // Answered BEFORE any target is resolved: this is a report about the
+    // previous step, not an action, and it names no element. Resolving a
+    // target first would reject it as an empty selector and lose the very
+    // evidence it was sent to deliver.
+    if authored.action == "previous_step_incomplete" {
+        return Err(GroundingError::PreviousStepIncomplete(
+            authored
+                .evidence
+                .clone()
+                .unwrap_or_else(|| "the page reports an outstanding problem".to_string()),
+        ));
+    }
+
+    // Same reason as the report above: it names no element, so resolving a
+    // target first rejects it as an empty selector and the message about
+    // WHICH moment it mistook never reaches the model.
+    if authored.action == "step_complete" {
+        return Err(GroundingError::Rejected(
+            "step_complete is valid only when you are asked to CONTINUE a step that is \
+             partway done; a first reply must author the actions the step needs"
+                .into(),
+        ));
+    }
 
     if authored.action == "capture_ambiguity" {
         if captures.len() < 2 {
@@ -819,11 +877,189 @@ fn ground_one(
     }
 }
 
+/// What the recorder has already done for a step, and why it stopped.
+pub struct StepProgress<'a> {
+    /// One line per action already performed, in order.
+    pub executed: &'a [String],
+    /// Why the next planned action was refused.
+    pub refusal: &'a str,
+    /// What the page currently reads, whitespace-collapsed. A form that
+    /// refuses to move on says why, and a verifier that cannot read that
+    /// has nothing to weigh.
+    pub page_text: &'a str,
+}
+
+/// The answer to "what is left of this step?".
+pub enum Remainder {
+    /// The step's intent is already satisfied; author nothing more.
+    Complete,
+    /// The actions still needed, grounded against the fresh scene, and
+    /// whether the model says a further screen still holds part of the step.
+    Actions(Vec<ResolvedAction>, bool),
+}
+
+/// Tolerate models that wrap JSON in a code fence despite instructions.
+fn strip_code_fence(reply: &str) -> &str {
+    reply
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim()
+}
+
+/// `[{"action":"step_complete"}]` — the one reply that means "nothing left".
+/// Recognised before grounding, because `step_complete` names no target and
+/// would otherwise be refused as an unknown action.
+fn is_step_complete(reply: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(strip_code_fence(reply)) else {
+        return false;
+    };
+    let items = match value {
+        serde_json::Value::Array(items) => items,
+        object @ serde_json::Value::Object(_) => vec![object],
+        _ => return false,
+    };
+    items.len() == 1 && items[0]["action"].as_str() == Some("step_complete")
+}
+
+fn remainder_prompt(ctx: &AuthorContext<'_>, progress: &StepProgress<'_>) -> String {
+    let done = if progress.executed.is_empty() {
+        "  (nothing yet)".to_string()
+    } else {
+        progress
+            .executed
+            .iter()
+            .enumerate()
+            .map(|(i, line)| format!("  {}. {line}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "{}\n\nThis step is PARTWAY DONE. Already performed - never repeat these:\n{done}\n\
+         The next planned action was refused: {}\n\
+         The elements listed above are the screen as it is NOW, read again after those \
+         actions ran.\nWhat the page currently reads:\n\"{}\"\n\
+         Weigh that text before answering. The step is NOT satisfied - and you must \
+         author the actions that fix it - if the text names a missing choice, an \
+         invalid value or a field still wanted, or if a section heading carries a \
+         count of outstanding problems. A page that \
+         moved on is not proof: a wizard can advance and still mark the section it \
+         left behind. Otherwise author only the actions still needed, or \
+         reply with exactly [{{\"action\":\"step_complete\"}}].",
+        user_prompt(ctx),
+        progress.refusal,
+        progress.page_text
+    )
+}
+
+/// Author what is left of a step after the page changed under its plan.
+///
+/// The recorder calls this with a FRESH scene, so the model chooses from the
+/// screen as it is now rather than the one its plan was built against. This
+/// is the whole difference between a planner that must be right first time
+/// and one that can look again — the trace it produces is identical either
+/// way, because the trace records executed actions, not the deliberation.
+pub fn author_remainder<C: ModelClient>(
+    client: &mut C,
+    ctx: &AuthorContext<'_>,
+    progress: &StepProgress<'_>,
+) -> Result<Remainder, AgentError> {
+    let targets = scene_targets(ctx.scene);
+    let prompt = remainder_prompt(ctx, progress);
+    let mut last_error = String::new();
+    for attempt in 0..2 {
+        let user = if attempt == 0 {
+            prompt.clone()
+        } else {
+            format!(
+                "{prompt}\n\nYour previous reply was rejected: {last_error}. \
+                 Reply again with ONLY the corrected JSON array."
+            )
+        };
+        let reply = client.complete(SYSTEM_PROMPT, &user)?;
+        if is_step_complete(&reply) {
+            return Ok(Remainder::Complete);
+        }
+        // A continuation may itself run out of screen. The same sentence the
+        // system prompt teaches for a first reply has to mean the same thing
+        // here, or a step spanning three screens fails on its second - after
+        // the model followed the instruction it was given.
+        //
+        // What does NOT carry over is the floor. `parse_and_ground` still
+        // refuses a reply that authored nothing, so a lone sentinel is
+        // rejected in both positions. Lifting that for the sentinel's sake is
+        // how a step comes to record zero actions and report success.
+        let (reply, continues) = split_continuation(&reply);
+        match parse_and_ground(
+            &reply,
+            &targets,
+            ctx.scene,
+            ctx.app,
+            ctx.intent,
+            ctx.captures,
+        ) {
+            Ok(actions) => return Ok(Remainder::Actions(actions, continues)),
+            Err(GroundingError::CaptureAmbiguity(ambiguity)) => {
+                return Err(AgentError::Authoring {
+                    step: ctx.intent.to_string(),
+                    reason: ambiguity.reason(),
+                })
+            }
+            Err(reason) => last_error = reason.to_string(),
+        }
+    }
+    Err(AgentError::Authoring {
+        step: ctx.intent.to_string(),
+        reason: last_error,
+    })
+}
+
+/// Split a trailing `step_continues` off a reply, if present.
+///
+/// The sentinel is not an action and never grounds; it is the model saying
+/// "this screen had no more of the step on it". Legal only as the LAST
+/// element, so it cannot be used to skip work in the middle of a sequence.
+fn split_continuation(reply: &str) -> (String, bool) {
+    let trimmed = strip_code_fence(reply);
+    let Ok(serde_json::Value::Array(mut items)) = serde_json::from_str(trimmed) else {
+        return (reply.to_string(), false);
+    };
+    let continues = items
+        .last()
+        .and_then(|item| item["action"].as_str())
+        .is_some_and(|action| action == "step_continues");
+    if !continues {
+        return (reply.to_string(), false);
+    }
+    items.pop();
+    (
+        serde_json::to_string(&items).unwrap_or_else(|_| reply.to_string()),
+        true,
+    )
+}
+
 /// Author one step. One retry with the failure appended, then a clear error.
 pub fn author_steps<C: ModelClient>(
     client: &mut C,
     ctx: &AuthorContext<'_>,
 ) -> Result<Vec<ResolvedAction>, AgentError> {
+    author_steps_inner(client, ctx).map(|(actions, _)| actions)
+}
+
+/// Author one step, reporting whether the model says it has more to do once
+/// the screen changes. [`author_steps`] is the same thing without the flag.
+pub fn author_steps_continuable<C: ModelClient>(
+    client: &mut C,
+    ctx: &AuthorContext<'_>,
+) -> Result<(Vec<ResolvedAction>, bool), AgentError> {
+    author_steps_inner(client, ctx)
+}
+
+fn author_steps_inner<C: ModelClient>(
+    client: &mut C,
+    ctx: &AuthorContext<'_>,
+) -> Result<(Vec<ResolvedAction>, bool), AgentError> {
     let targets = scene_targets(ctx.scene);
     if let Some(name) = ctx.captures.iter().find(|name| !valid_capture_name(name)) {
         return Err(AgentError::Authoring {
@@ -854,6 +1090,7 @@ pub fn author_steps<C: ModelClient>(
             format!("{prompt}\n\nYour previous reply was rejected: {last_error}. Reply again with ONLY the corrected JSON object.")
         };
         let reply = client.complete(SYSTEM_PROMPT, &user)?;
+        let (reply, continues) = split_continuation(&reply);
         match parse_and_ground(
             &reply,
             &targets,
@@ -862,11 +1099,20 @@ pub fn author_steps<C: ModelClient>(
             ctx.intent,
             ctx.captures,
         ) {
-            Ok(actions) => return Ok(actions),
+            Ok(actions) => return Ok((actions, continues)),
             Err(GroundingError::CaptureAmbiguity(ambiguity)) => {
                 return Err(AgentError::Authoring {
                     step: ctx.intent.to_string(),
                     reason: ambiguity.reason(),
+                })
+            }
+            // Retrying would only ask the same question of the same screen.
+            // This is a report about the step BEFORE this one, and the
+            // recorder has to hear it intact.
+            Err(GroundingError::PreviousStepIncomplete(evidence)) => {
+                return Err(AgentError::PreviousStepIncomplete {
+                    step: ctx.intent.to_string(),
+                    evidence,
                 })
             }
             Err(GroundingError::Sequence {
@@ -1302,6 +1548,89 @@ mod tests {
             actions[1],
             ResolvedAction::TypeText { ref text, .. } if text == "${captured.greeting}"
         ));
+    }
+
+    /// The sentinel is not an action, so it never grounds — it is the model
+    /// saying "this screen had no more of the step on it". Legal only as the
+    /// LAST element, so it cannot be used to skip work in the middle.
+    #[test]
+    fn a_trailing_continuation_sentinel_is_split_off_not_grounded() {
+        let (body, continues) = split_continuation(
+            r#"[{"action":"click","target":"css:#next"},{"action":"step_continues"}]"#,
+        );
+        assert!(continues, "the model asked to be shown the next screen");
+        assert!(
+            !body.contains("step_continues"),
+            "the sentinel never reaches grounding"
+        );
+        assert!(
+            body.contains("css:#next"),
+            "the real action survives: {body}"
+        );
+
+        let (plain, none) = split_continuation(r#"[{"action":"click","target":"css:#next"}]"#);
+        assert!(!none, "a reply that did not ask for more does not get more");
+        assert!(plain.contains("css:#next"));
+
+        // Mid-array it is not a continuation at all, and stays where it is to
+        // be refused by grounding as the unknown action it is in that place.
+        let (mid, still_none) = split_continuation(
+            r#"[{"action":"step_continues"},{"action":"click","target":"css:#next"}]"#,
+        );
+        assert!(!still_none);
+        assert!(mid.contains("step_continues"));
+    }
+
+    /// A code fence is stripped before the sentinel is looked for, so a model
+    /// that wraps its JSON despite instructions is still understood.
+    #[test]
+    fn a_fenced_reply_still_reports_its_continuation() {
+        let (body, continues) = split_continuation(
+            "```json\n[{\"action\":\"click\",\"target\":\"css:#next\"},{\"action\":\"step_continues\"}]\n```",
+        );
+        assert!(continues);
+        assert!(body.contains("css:#next") && !body.contains("step_continues"));
+    }
+
+    /// `step_complete` answers a CONTINUATION. In a first reply it is the
+    /// model declining to start, and the refusal says which moment it
+    /// mistook rather than calling it a typo.
+    #[test]
+    fn step_complete_is_refused_in_a_first_reply_by_name() {
+        let mut client = Scripted {
+            replies: vec![r#"[{"action":"step_complete"}]"#.into(); 2],
+            calls: 0,
+        };
+        let err = author_steps(&mut client, &ctx()).expect_err("a first reply must author");
+        let message = err.to_string();
+        assert!(
+            message.contains("only when you are asked to CONTINUE"),
+            "the refusal names the moment, not the vocabulary: {message}"
+        );
+    }
+
+    /// The report about the previous step carries the page's own words out
+    /// intact. It names no target by design, so answering it before any
+    /// target is resolved is what keeps it from being rejected as an empty
+    /// selector — losing the evidence it was sent to deliver.
+    #[test]
+    fn a_previous_step_report_survives_with_its_evidence() {
+        let mut client = Scripted {
+            replies: vec![
+                r#"{"action":"previous_step_incomplete","evidence":"Enter Vehicle Data1"}"#.into(),
+            ],
+            calls: 0,
+        };
+        let err = author_steps(&mut client, &ctx()).expect_err("the report ends the recording");
+        assert!(
+            matches!(&err, AgentError::PreviousStepIncomplete { evidence, .. }
+                if evidence == "Enter Vehicle Data1"),
+            "the page's words reach the caller: {err}"
+        );
+        assert_eq!(
+            client.calls, 1,
+            "a report is not a grounding failure, so it does not burn the retry"
+        );
     }
 
     #[test]
