@@ -2031,8 +2031,13 @@ fn recording_a_multi_surface_flow_crosses_surfaces_and_attributes_steps() {
         persisted.contains("\"surface\":\"gui\"") && persisted.contains("\"surface\":\"portal\""),
         "steps carry their surface: {persisted}"
     );
+    // Searched in the STEPS, not the whole file: the header carries a random
+    // `trace_id`, and a uuid that happened to contain the captured digits
+    // failed this on CI while the trace was perfectly correct. The claim is
+    // about what a step records, so it is the steps that must be read.
+    let steps_only = persisted.lines().skip(1).collect::<Vec<_>>().join("\n");
     assert!(
-        persisted.contains("${captured.order}") && !persisted.contains("4711"),
+        persisted.contains("${captured.order}") && !steps_only.contains("4711"),
         "the capture crosses surfaces as a NAME; the value never lands: {persisted}"
     );
     std::fs::remove_dir_all(&dir).ok();
