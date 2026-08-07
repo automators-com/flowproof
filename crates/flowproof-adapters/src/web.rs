@@ -2724,9 +2724,13 @@ impl AppDriver for WebAppDriver {
                         const label = t.closest('label');
                         const labels = this.labels ? Array.from(this.labels) : [];
                         if (!label || !labels.includes(label)) { return false; }
-                        const INTERACTIVE = 'a[href], button, details, embed, iframe, \
-                            select, textarea, audio[controls], video[controls], \
-                            img[usemap], input:not([type=hidden])';
+                        // `area[href]` is interactive content too - it extends
+                        // HTMLAnchorElement - and `img[usemap]` never catches it:
+                        // elementFromPoint returns the AREA, whose ancestors run
+                        // map -> label, so the image is a sibling never visited.
+                        const INTERACTIVE = 'a[href], area[href], button, details, \
+                            embed, iframe, select, textarea, audio[controls], \
+                            video[controls], img[usemap], input:not([type=hidden])';
                         for (let node = t; node && node !== label;
                              node = node.parentElement) {
                             if (node.matches(INTERACTIVE)) { return false; }
@@ -3609,17 +3613,31 @@ impl AppDriver for WebAppDriver {
               // the label, else the cell or wrapper around it - and the
               // browser forwards the click to the control. That element
               // stands in for the one that cannot be seen.
+              // Interactive content keeps a click for itself, so a host
+              // containing any of it cannot speak for the control behind it.
+              const CONSUMES_CLICK = 'a[href], area[href], button, details, embed, \
+                  iframe, audio[controls], video[controls], img[usemap]';
               const standInHosts = new Set();
               for (const control of document.querySelectorAll('input, select, textarea')) {
                 if (control.type === 'hidden' || isRendered(control)) { continue; }
-                let host = control.closest('label');
-                if (!host || !isRendered(host)) {
-                  host = control.parentElement;
-                  while (host && host !== document.body && !isRendered(host)) {
-                    host = host.parentElement;
-                  }
-                }
-                if (host && host !== document.body) { standInHosts.add(host); }
+                // A disabled control has NO activation behaviour, so forwarding
+                // is a no-op: the click lands, nothing changes, and the step is
+                // written down as a success. An out-of-stock option in a styled
+                // radio group is exactly this shape.
+                if (control.disabled || control.closest('fieldset[disabled]')) { continue; }
+                // Only a LABEL forwards a click to its control. A cell or a
+                // wrapper div forwards nothing unless the page happens to have
+                // its own handler, and recording a click that does nothing is
+                // the failure this inventory exists to avoid.
+                const host = control.closest('label');
+                if (!host || !isRendered(host)) { continue; }
+                const labels = control.labels ? Array.from(control.labels) : [];
+                if (!labels.includes(host)) { continue; }
+                // More than one control under the same label, and activation
+                // goes to the first - not necessarily this one.
+                if (host.querySelectorAll('input, select, textarea').length !== 1) { continue; }
+                if (host.querySelector(CONSUMES_CLICK)) { continue; }
+                standInHosts.add(host);
               }
               const interactive = el => el.matches(
                 'input, button, a, select, textarea, [role=button], [role=checkbox], [role=radio], [role=menuitem], [draggable], [ondrop], .draggable-row, .droparea'

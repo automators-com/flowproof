@@ -2817,6 +2817,18 @@ const LABEL_FORWARDING_HTML: &str = r##"<!doctype html>
     <input type="checkbox" id="second">
     <span class="face">Both</span>
   </label>
+
+  <label id="mapped">
+    <input type="checkbox" id="mapbox">
+    <img class="face" usemap="#m"
+      src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+    <map name="m"><area shape="rect" coords="0,0,160,28" href="#gone"></map>
+  </label>
+
+  <label id="off">
+    <input type="checkbox" id="disabled-box" disabled>
+    <span class="face">Out of stock</span>
+  </label>
 </body></html>
 "##;
 
@@ -2869,7 +2881,11 @@ fn a_label_forwards_a_click_only_where_the_browser_does() {
 
     // ...and does not forward these. `#news` is covered by a link, `#second`
     // by a face belonging to the control beside it.
-    for target in ["#news", "#second"] {
+    // `#mapbox` is faced by an image map. The hit is the `<area>`, which
+    // extends HTMLAnchorElement and keeps the activation for itself — and
+    // `img[usemap]` never catches it, because the image is a SIBLING of the
+    // area, never on its ancestor chain.
+    for target in ["#news", "#second", "#mapbox"] {
         let trace = dir.join("refused.trace.jsonl");
         let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
         let err = flowproof_agent::record(&spec(target), &mut driver, &trace)
