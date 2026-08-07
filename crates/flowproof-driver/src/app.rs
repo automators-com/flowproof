@@ -575,7 +575,18 @@ pub trait AppDriver {
     /// pattern when available, element Name otherwise).
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError>;
 
-    /// Type `text` into the element matching `selector` (focus + keystrokes).
+    /// Type `text` into the element matching `selector`, REPLACING whatever
+    /// it holds - the field ends up reading `text`, exactly.
+    ///
+    /// Fill semantics, deliberately, and the same choice every mainstream
+    /// tool has made. Appending was never a designed contract here - it was
+    /// an accident of the keystroke path, and not even a uniform one: framed
+    /// web typing and SAP fields always replaced. What the accident cost was
+    /// found the expensive way: a correction typed 800 - the right value -
+    /// into a field still holding the refused 9000, and the page saw
+    /// 9000800. Targeted typing states what the field should read; typing
+    /// that MEANS "add to what has focus" is `type_focused`, which stays raw
+    /// keystrokes for dropdown filters and pre-focused rename boxes.
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError>;
 
     /// Clear the current value of the input matching `selector`.
@@ -2318,10 +2329,29 @@ mod windows_impl {
             element
                 .set_focus()
                 .map_err(|e| uia_err(&format!("focusing [{selector}]"), e))?;
+            // Select what the field holds before the keystrokes land - the
+            // trait's fill contract. Typing over a selection replaces, so a
+            // prefilled date, a defaulted "0", or a value a correction is
+            // overwriting all end up reading exactly `text` - instead of the
+            // keystrokes landing AFTER what was there. An empty field selects
+            // nothing, and the chord is a no-op.
+            self.press_key("A", &[crate::KeyMod::Ctrl])?;
             // 10ms between keystrokes keeps slow Win32 message pumps reliable.
             element
                 .send_text(text, 10)
                 .map_err(|e| uia_err(&format!("typing into [{selector}]"), e))
+        }
+
+        fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+            let element = self.find(selector, 3000)?;
+            element
+                .set_focus()
+                .map_err(|e| uia_err(&format!("focusing [{selector}]"), e))?;
+            // Select-all then Delete: the same recipe the vision driver
+            // uses, driven through UIA focus. Closes the standing hole where
+            // the Replace/Clear grammar simply erred on this driver.
+            self.press_key("A", &[crate::KeyMod::Ctrl])?;
+            self.press_key("Delete", &[])
         }
 
         fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {

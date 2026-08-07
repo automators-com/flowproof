@@ -114,10 +114,10 @@ before migrating a suite's setup helpers step by step.
 
 | Step | Notes |
 |---|---|
-| `Type <text> into the [2nd ]"<label>" field` | text anchor / `css:` / `id:` |
-| `Type <text> into the <id> field` | bare native id |
-| `Type <text>` | types into the FOCUSED element |
-| `Replace the [2nd ]"<label>" field with <text>` | clear + type, one step |
+| `Type <text> into the [2nd ]"<label>" field` | text anchor / `css:` / `id:`. FILL semantics: the field ends up reading `<text>` exactly, whatever it held - the choice every mainstream tool makes. The keys are still real keystrokes (typed over a select-all), so keydown-filtering apps behave as with a person typing |
+| `Type <text> into the <id> field` | bare native id. Fill semantics, as above |
+| `Type <text>` | types into the FOCUSED element - raw keystrokes, APPENDING. The step for dropdown filters, pre-focused rename boxes, and adding to what is there |
+| `Replace the [2nd ]"<label>" field with <text>` | clear + type, one step. Same result as `Type into` now states; kept for specs that say it explicitly |
 | `Replace the <id> field with <text>` | |
 | `Clear the [2nd ]"<label>" field` / `Clear the <id> field` | fill-with-empty semantics |
 | `Remember the [2nd ]"<target>" as <name>` | read the target's text into a flow-scoped name (`[a-z][a-z0-9_]*`) for a later assertion to compare against. The VALUE is read at execution time on record and on every replay, so it never enters the trace - the same indirection `${VAR}` secrets use. Re-using a name overwrites it |
@@ -652,8 +652,10 @@ Limits in v1, each for a reason rather than for later:
   refused until a trusted mechanism exists.
 
   **A framed `Type` is not the main-document `Type`.** In the main document
-  it is real keystrokes; inside a frame it is a value assignment plus
-  `input`/`change`. An application that filters on `keydown` will not see it.
+  it is real keystrokes typed over a select-all (fill semantics - the field
+  ends up reading the text exactly); inside a frame it is a value assignment
+  plus `input`/`change`. Both replace, but an application that filters on
+  `keydown` sees the main-document keys and not the framed assignment.
   Two guards keep that honest rather than silent: the target must not be
   `disabled` or read-only (a value assignment succeeds on a disabled control
   where typing would be ignored - so it is refused by name), and the value
