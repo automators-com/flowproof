@@ -5679,4 +5679,203 @@ steps:
         );
         std::fs::remove_file(&out).ok();
     }
+
+    /// One screen, one spec step, and a click the page moved out from under
+    /// the plan: accepting the cookie notice re-renders the form, taking
+    /// `#continue` away and putting `#next` in its place.
+    ///
+    /// The scene is deliberately held still while the ELEMENTS change. Both
+    /// tests below turn on which actions ran, not on what the model could
+    /// see, and a scene that also moved would make the two recordings ground
+    /// against different inventories for reasons unrelated to the claim.
+    const COOKIE_SCENE: &str = r##"[{"target":"css:#accept-cookies","tag":"button","text":"Accept"},
+         {"target":"css:#email","tag":"input","label":"Email"},
+         {"target":"css:#continue","tag":"button","text":"Continue"},
+         {"target":"css:#next","tag":"button","text":"Next"}]"##;
+
+    fn cookie_spec() -> FlowSpec {
+        FlowSpec::parse(
+            "name: Signup\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Accept the cookie notice, enter the email and continue\n",
+        )
+        .expect("spec parses")
+    }
+
+    /// The page as it behaves in both recordings: accepting the notice
+    /// swaps the button, so `#continue` is gone by the time a plan built
+    /// against it gets there.
+    fn cookie_page() -> MockAppDriver {
+        let mut driver = MockAppDriver::new(&["#accept-cookies", "#email", "#continue"])
+            .with_surface_text("Accept cookies to continue. Email. Next.")
+            .revealing("#accept-cookies", &["#next"])
+            .hiding("#accept-cookies", &["#continue"]);
+        driver.scene = Some(COOKIE_SCENE.into());
+        driver
+    }
+
+    /// The "Already performed" block of a continuation prompt, verbatim.
+    ///
+    /// Read as a block rather than by searching the whole prompt: the prompt
+    /// also carries the refusal and the element inventory, so every selector
+    /// in the flow appears in it somewhere. Only this block claims anything
+    /// HAPPENED.
+    fn already_performed(prompt: &str) -> Vec<String> {
+        let head = "Already performed - never repeat these:\n";
+        let start = prompt.find(head).expect("the prompt is a continuation") + head.len();
+        let rest = &prompt[start..];
+        let end = rest
+            .find("\nThe next planned action was refused:")
+            .expect("the block is closed by the refusal");
+        rest[..end]
+            .lines()
+            .map(|line| line.trim().to_string())
+            .collect()
+    }
+
+    /// A step is re-authored from where it actually got to, not from where
+    /// its plan got to.
+    ///
+    /// The two are different the moment an action is refused: the click on
+    /// `#continue` was planned, was rejected before it reached the driver,
+    /// and never happened. Listing it as "already performed" would tell the
+    /// model the step is further along than it is - so it would author the
+    /// remainder AFTER a click that never landed, and the recording would
+    /// silently lose the action that leaves the screen. The prompt therefore
+    /// lists exactly the two actions that ran, in order, and nothing else.
+    #[test]
+    fn a_continuation_prompt_lists_only_the_actions_that_ran() {
+        let spec = cookie_spec();
+        let mut driver = cookie_page();
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#accept-cookies"},
+                 {"action":"type_text","target":"css:#email","text":"ada@example.test"},
+                 {"action":"click","target":"css:#continue"}]"##,
+            r##"[{"action":"click","target":"css:#next"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-continuation-prompt.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the re-authored step records");
+
+        assert_eq!(
+            client.prompts.len(),
+            2,
+            "one authoring call and one continuation, no more"
+        );
+        let performed = already_performed(&client.prompts[1]);
+        assert_eq!(
+            performed,
+            vec![
+                "1. clicked Css(\"#accept-cookies\")".to_string(),
+                "2. typed \"ada@example.test\" into Css(\"#email\")".to_string(),
+            ],
+            "only what ran, in the order it ran: {performed:?}"
+        );
+        assert!(
+            !performed.iter().any(|line| line.contains("#continue")),
+            "the refused click never ran and must not be reported as done: {performed:?}"
+        );
+        // The other half of the same fact, seen from the driver: the plan
+        // named three actions and the page took two.
+        assert_eq!(driver.invoked, vec!["#accept-cookies", "#next"]);
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// Blank the two header fields a second run cannot reproduce - the
+    /// minted id and the wall clock - and leave every other byte alone.
+    fn without_run_identity(path: &Path) -> String {
+        let mut text = std::fs::read_to_string(path).expect("the trace is readable");
+        for field in ["trace_id", "recorded_at"] {
+            let key = format!("\"{field}\":\"");
+            assert_eq!(
+                text.matches(&key).count(),
+                1,
+                "{field} is a header field, minted once"
+            );
+            let start = text.find(&key).expect("checked above") + key.len();
+            let end = start + text[start..].find('"').expect("the value is closed");
+            text.replace_range(start..end, "<per-run>");
+        }
+        text
+    }
+
+    /// `replan_remainder`'s doc comment claims the trace is unaffected: it
+    /// records the actions that ran, never the deliberation that chose them,
+    /// "so a step authored in two installments replays exactly like one
+    /// authored in a single reply." That is the whole reason the closed loop
+    /// is safe to add - a recording nobody can tell apart from a
+    /// straight-line one cannot have changed what replay asserts.
+    ///
+    /// It is claimed in prose and nowhere checked, so it is pinned here
+    /// against the strongest reading: the same page, driven to the same end
+    /// state, once by a model that had to look again and once by a model
+    /// that got it right first time, produces the same bytes.
+    #[test]
+    fn a_reauthored_step_records_the_trace_a_straight_line_one_would_have() {
+        let looked_again = std::env::temp_dir().join("flowproof-installments.trace.jsonl");
+        let first_time = std::env::temp_dir().join("flowproof-straight-line.trace.jsonl");
+        std::fs::remove_file(&looked_again).ok();
+        std::fs::remove_file(&first_time).ok();
+
+        // A plan built against the button the notice was about to take away,
+        // then the remainder authored against what replaced it.
+        let mut two_installments = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#accept-cookies"},
+                 {"action":"type_text","target":"css:#email","text":"ada@example.test"},
+                 {"action":"click","target":"css:#continue"}]"##,
+            r##"[{"action":"click","target":"css:#next"}]"##,
+        ]);
+        let mut refused = cookie_page();
+        record_with_client(
+            &cookie_spec(),
+            &mut refused,
+            &looked_again,
+            Author::Auto,
+            Some(&mut two_installments),
+        )
+        .expect("the re-authored step records");
+
+        // The same three actions, authored in one reply because this model
+        // happened to know what the notice would do.
+        let mut one_reply =
+            ScriptedClient::new(&[r##"[{"action":"click","target":"css:#accept-cookies"},
+                 {"action":"type_text","target":"css:#email","text":"ada@example.test"},
+                 {"action":"click","target":"css:#next"}]"##]);
+        let mut straight = cookie_page();
+        record_with_client(
+            &cookie_spec(),
+            &mut straight,
+            &first_time,
+            Author::Auto,
+            Some(&mut one_reply),
+        )
+        .expect("the straight-line step records");
+
+        // The deliberation differed - two model calls against one - and the
+        // page did not notice.
+        assert_eq!(two_installments.prompts.len(), 2);
+        assert_eq!(one_reply.prompts.len(), 1);
+        assert_eq!(refused.invoked, straight.invoked);
+        assert_eq!(refused.typed, straight.typed);
+
+        let recorded = without_run_identity(&looked_again);
+        // Non-vacuity: two empty traces are also equal. This one has a
+        // header and the three actions the page took, and no trace of the
+        // click that was refused.
+        assert_eq!(recorded.lines().count(), 4, "header plus three actions");
+        assert!(recorded.contains("#accept-cookies") && recorded.contains("#next"));
+        assert!(
+            !recorded.contains("#continue"),
+            "the refused click is deliberation, not a recorded action: {recorded}"
+        );
+        assert_eq!(
+            recorded,
+            without_run_identity(&first_time),
+            "a step authored in two installments must record byte-identically to \
+             one authored in a single reply - the trace records what ran, not how \
+             it was decided"
+        );
+        std::fs::remove_file(&looked_again).ok();
+        std::fs::remove_file(&first_time).ok();
+    }
 }
