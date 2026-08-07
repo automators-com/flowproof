@@ -972,6 +972,82 @@ fn select_own_text_anchors_and_state_asserts_work() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Targeted typing means FILL: the field ends up reading the text exactly,
+/// whatever it held. Focused typing stays raw keystrokes and appends.
+///
+/// The distinction was learned the expensive way. A correction typed 800 -
+/// the right value - into a payload field still holding the refused 9000,
+/// and the page saw 9000800. The value was right and the field was wrong,
+/// which is a bad way to lose a recording. The page echoes the field's
+/// value in brackets, so the assertions are exact: under append the log
+/// would read `[draftreplacement]`, and `page shows notes: [replacement]`
+/// fails.
+#[test]
+fn targeted_typing_fills_and_focused_typing_appends() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web fill-semantics E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    const PAGE: &str = r##"<!DOCTYPE html>
+<html><body>
+  <input id="notes" value="draft" />
+  <div id="log">notes: [draft]</div>
+  <script>
+    document.getElementById('notes').addEventListener('input', (e) => {
+      document.getElementById('log').textContent = 'notes: [' + e.target.value + ']';
+    });
+  </script>
+</body></html>"##;
+
+    let dir = std::env::temp_dir().join("flowproof-web-fill-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("fill.html");
+    std::fs::write(&page, PAGE).expect("page written");
+    let trace_path = dir.join("fill.trace.jsonl");
+
+    let spec = flowproof_agent::FlowSpec {
+        name: "Fill semantics".into(),
+        app: "web".into(),
+        url: Some(format!("file://{}", page.display())),
+        redact: vec![],
+        connection: None,
+        login: None,
+        window: None,
+        session: None,
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        agent: None,
+        tools: Vec::new(),
+        mcp: Vec::new(),
+        strict: false,
+        control: None,
+        exports: Default::default(),
+        apps: Default::default(),
+        steps: FlowSpec::parse(
+            "name: x\napp: web\nurl: x\nsteps:\n\
+             - Type replacement into the notes field\n\
+             - assert: \"page shows notes: [replacement]\"\n\
+             - Type !\n\
+             - assert: \"page shows notes: [replacement!]\"\n",
+        )
+        .expect("spec parses")
+        .steps,
+    };
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "fill-semantics flow must pass: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Network mocking against real Chromium: the page fetches an absolute URL
 /// on a host that does not exist — only CDP interception can answer it.
 /// The mocked body renders into the DOM at record AND replay, proving the

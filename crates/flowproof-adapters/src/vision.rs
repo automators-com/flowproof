@@ -306,6 +306,12 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         let line = self.require(selector)?;
         let (x, y) = Self::action_point(&line, selector, "right_of");
         self.screen.click(x, y)?;
+        // Select what the field holds before the keystrokes land - the
+        // trait's fill contract, by the same chord clear_text below already
+        // uses. Pixels give no way to read the field first, which is exactly
+        // why the recipe must not depend on knowing: select-all over an
+        // empty field is a no-op, over a filled one it is the replace.
+        self.screen.press_key("a", &[KeyMod::Ctrl])?;
         self.screen.type_text(text)
     }
 

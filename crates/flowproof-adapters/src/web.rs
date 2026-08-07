@@ -3205,7 +3205,31 @@ impl AppDriver for WebAppDriver {
             )));
         }
         self.with_element(&locator, &format!("typing into [{selector}]"), |element| {
-            element.click()?.type_into(text).map(|_| ())
+            // Select what the field holds before the keystrokes land: typing
+            // over a selection replaces, so the field ends up reading `text`
+            // exactly - the trait's fill contract - while the keys stay REAL.
+            // An app filtering on keydown sees the same trusted events it
+            // always did; setting `.value` directly would not fire them.
+            //
+            // `select()` exists on input and textarea and throws on nothing
+            // else here; contenteditable and other exotics fall through and
+            // keep keystroke-append, which is the old behaviour, not a new
+            // wrong one.
+            // click -> select -> keystrokes, in that order and WITHOUT
+            // `type_into`, which clicks again and would collapse the
+            // selection back to a caret - the keystrokes would append, which
+            // is the accident this contract removes.
+            element.click()?;
+            element
+                .call_js_fn(
+                    r#"function() {
+                        if (typeof this.select === 'function') { this.select(); }
+                    }"#,
+                    vec![],
+                    false,
+                )
+                .map(|_| ())?;
+            element.parent.type_str(text).map(|_| ())
         })
     }
 
