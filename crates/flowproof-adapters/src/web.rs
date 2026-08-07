@@ -1707,6 +1707,44 @@ impl WebAppDriver {
     }
 }
 
+/// Would a click at `el`'s centre reach `el`?
+///
+/// Shared verbatim by the two callers that ask it, because they are supposed
+/// to agree and did not: recording asks through `element_receives_events`,
+/// replay through the single-round-trip `actionability_gate`, and the gate
+/// kept an older copy of the rule. A styled radio was therefore recordable
+/// and unreplayable — the record accepted the click, the replay refused it,
+/// and the trace was correct all along.
+///
+/// `el` is the element; `hit` is what `elementFromPoint` returned for its
+/// centre. Written as a JS expression body over those two names.
+const FORWARDS_CLICK_JS: &str = r#"
+    (() => {
+        if (!hit) { return false; }
+        if (hit === el || el.contains(hit) || hit.contains(el)) { return true; }
+        // A custom-styled checkbox or radio: the real input is visually
+        // replaced by a sibling inside its own label, so the hit is neither
+        // ancestor nor descendant. The browser forwards a click anywhere in
+        // the label to the input - which is how a person ticks the box.
+        //
+        // On the BROWSER's terms, not on the mere presence of a label. A
+        // label labels ONE control, so a label wrapping several cannot lend
+        // its area to the others; and interactive content inside a label
+        // keeps the activation for itself, so a hit on a link or a button
+        // there leaves this control untouched.
+        const label = hit.closest('label');
+        const labels = el.labels ? Array.from(el.labels) : [];
+        if (!label || !labels.includes(label)) { return false; }
+        const INTERACTIVE = 'a[href], area[href], button, details, embed, iframe, \
+            select, textarea, audio[controls], video[controls], img[usemap], \
+            input:not([type=hidden])';
+        for (let node = hit; node && node !== label; node = node.parentElement) {
+            if (node.matches(INTERACTIVE)) { return false; }
+        }
+        return true;
+    })()
+"#;
+
 impl AppDriver for WebAppDriver {
     fn cell_hints(
         &mut self,
@@ -2323,10 +2361,10 @@ impl AppDriver for WebAppDriver {
                 const r = el.getBoundingClientRect();
                 if (r.width === 0 || r.height === 0) {{ return 'obscured'; }}
                 const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-                return (hit && (hit === el || el.contains(hit) || hit.contains(el)))
-                    ? 'ok' : 'obscured';
+                return ({forwards}) ? 'ok' : 'obscured';
             }})({resolver})",
             interval = flowproof_driver::STABILITY_INTERVAL.as_millis(),
+            forwards = FORWARDS_CLICK_JS,
         );
         let value = self
             .tab()?

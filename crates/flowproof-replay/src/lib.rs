@@ -393,7 +393,13 @@ fn wait_actionable<D: AppDriver>(
             Some(name) => {
                 if Instant::now() >= deadline {
                     return Ok(Err(format!(
-                        "element exists but is {name} after {timeout_ms}ms"
+                        "element exists but is {name} after {timeout_ms}ms{covered}",
+                        covered = driver
+                            .occluding_element(target)
+                            .ok()
+                            .flatten()
+                            .map(|what| format!(" — a {what} would receive the click"))
+                            .unwrap_or_default()
                     )));
                 }
                 std::thread::sleep(POLL_INTERVAL);
