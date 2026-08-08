@@ -6,6 +6,38 @@ together).
 
 ## Unreleased
 
+## 0.19.0
+
+### Added
+
+- **A refused value stays out of the trace.** A recorded correction used to
+  memorialize its own fumble: type 1200, type 800 (appended into 1200800 by
+  the pre-0.18 typing), clear, type 500 - four steps where one is the truth,
+  and every replay re-performed the lot, driving the app through its error
+  state on purpose, for ever.
+
+  The repo already had the principle, applied everywhere except here. An
+  occluded click is not recorded, because it records a success the page never
+  saw. A walk-away from a rejected form is not recorded, because it records a
+  success the page refused to give. But a VALUE the page rejected - same
+  verdict, from the same page - was recorded, and then replayed.
+
+  When the rejected-form guard fires and the correction sticks, the writes
+  that produced the red fields are now dropped before the trace is minted and
+  the survivors renumbered. The trace reads as the one line a person would
+  have left: the value that stuck. The live run is unchanged; only the
+  fumble's memorial goes.
+
+  Three guards keep the drop honest. The recording spans join BEFORE the
+  prune, so heal's before/after frames keep pointing at the moment they
+  filmed. An observer between fumble and correction - a capture, an assert, a
+  click - blocks the prune, because it read the page WITH the fumble in it
+  and a trace without it would replay a different observation than the one
+  recording verified. And positional selector paths are never pruned, since
+  the same string can name different elements across a DOM mutation.
+  Everything unprovable fails open to the journal.
+
+
 ## 0.18.0
 
 ### Changed
