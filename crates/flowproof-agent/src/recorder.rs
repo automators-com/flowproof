@@ -2401,7 +2401,14 @@ fn action_summary(action: &ResolvedAction) -> String {
 /// of the values just typed - which nothing else can see. The authoring
 /// scene is captured BEFORE a step runs, when no value has been entered and
 /// so nothing is red yet.
-fn rejected_fields<D: AppDriver>(driver: &mut D) -> Result<Vec<String>, RecordError> {
+/// A field the page currently rejects: its target TOKEN (for matching the
+/// writes that produced it) and a human descriptor (for the key and prompt).
+struct RejectedField {
+    token: String,
+    descriptor: String,
+}
+
+fn rejected_fields<D: AppDriver>(driver: &mut D) -> Result<Vec<RejectedField>, RecordError> {
     let Some(scene) = driver.scene()? else {
         return Ok(Vec::new());
     };
@@ -2413,23 +2420,44 @@ fn rejected_fields<D: AppDriver>(driver: &mut D) -> Result<Vec<String>, RecordEr
         .filter(|e| e["invalid"].as_bool().unwrap_or(false))
         .filter_map(|e| {
             let target = e["target"].as_str()?;
-            // The VALUE belongs in this line, and not only so the model can
-            // see what it typed. The caller keys its one-correction-per-
-            // problem rule on this string, and a rejection that names only
-            // the field reads identically however many different values are
-            // tried - so the second attempt was refused as a repeat of the
-            // first. A person given a form that says "between 1 and 1000"
-            // types another number; this is what lets the recorder do the
-            // same, while a value tried twice still reads as a decision.
+            // The VALUE belongs in the descriptor, and not only so the model
+            // can see what it typed. The caller keys its one-correction-per-
+            // problem rule on this string, and a rejection that named only the
+            // field read identically however many different values were tried
+            // - so the second attempt was refused as a repeat of the first. A
+            // person given a form that says "between 1 and 1000" types another
+            // number; this is what lets the recorder do the same, while a value
+            // tried twice still reads as a decision.
             let held = e["value"].as_str().unwrap_or_default();
-            Some(match (held.is_empty(), e["rule"].as_str()) {
+            let descriptor = match (held.is_empty(), e["rule"].as_str()) {
                 (false, Some(rule)) => format!("{target} holds \"{held}\" ({rule})"),
                 (false, None) => format!("{target} holds \"{held}\""),
                 (true, Some(rule)) => format!("{target} ({rule})"),
                 (true, None) => target.to_string(),
+            };
+            Some(RejectedField {
+                token: target.to_string(),
+                descriptor,
             })
         })
         .collect())
+}
+
+/// The scene TOKEN a targeted write names, in the form the scene emits it
+/// (`css:#payload`, `id:foo`). `None` for shapes the rejected-field scan does
+/// not report the same way, which are then simply never pruned - the safe
+/// direction: an unmatched write stays in the trace exactly as today.
+fn write_token(action: &ResolvedAction) -> Option<String> {
+    let target = match action {
+        ResolvedAction::TypeText { target, .. } => target,
+        ResolvedAction::Clear { target } => target,
+        _ => return None,
+    };
+    match target {
+        Target::Css(css) => Some(format!("css:{css}")),
+        Target::AutomationId(id) => Some(format!("id:{id}")),
+        _ => None,
+    }
 }
 
 /// Re-author what is left of a step, against the page as it now is.
@@ -2675,6 +2703,11 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     // assert is checked against the live display, so a trace is only ever
     // written for a flow that actually worked.
     let mut steps = Vec::new();
+    // Indices into `steps` whose write the page refused and a later write
+    // superseded. Dropped, then the survivors renumbered, just before the
+    // trace is written - so a corrected value reaches the trace as the one
+    // line a person would have left, not the fumble that got there.
+    let mut superseded_steps: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     // Flow-scoped captures. Values live only for this run: they are read at
     // execution time and never written to the trace, exactly like a
     // `${VAR}` secret's resolved value.
@@ -2832,6 +2865,21 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         let mut pending_continuation = authored.continues;
         let mut refused_keys: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
+        // A targeted write's (index into `steps`, target token), so a value
+        // the page later refuses can be traced back to the step that typed it.
+        let mut typed_at: Vec<(usize, String)> = Vec::new();
+        // Indices of actions that could have OBSERVED a field's intermediate
+        // value: captures and asserts read the page at record time, and a
+        // click can run any script and land anywhere. A refused write is only
+        // pruned when none of these sit between it and the value that stuck -
+        // otherwise what the observer saw depended on the fumble, and a trace
+        // without the fumble would replay a different observation than the
+        // one recording verified. Targeted writes to OTHER fields are not
+        // observers: they state their own field's value and read nothing.
+        let mut observers: Vec<usize> = Vec::new();
+        // Field tokens the rejected-form guard saw refused this step. The
+        // superseded writes to them are dropped before the trace is minted.
+        let mut superseded: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         // A step whose remainder lives on a later screen is authored in
         // installments: perform what could be grounded here, let the page
         // change, then ask for the rest against what it became. Bounded by
@@ -2976,14 +3024,27 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             if closed_loop && matches!(action, ResolvedAction::Press { .. }) {
                 let rejected = rejected_fields(driver)?;
                 if !rejected.is_empty() {
+                    let descriptors: Vec<&str> =
+                        rejected.iter().map(|f| f.descriptor.as_str()).collect();
                     // One correction per distinct set of rejected fields. The
                     // click is not held back here: the refusal asks for it to
                     // be re-authored, so the remainder carries it back, and a
                     // copy kept locally would either be discarded by that
                     // remainder or performed twice on top of it.
                     if replans < MAX_STEP_REPLANS
-                        && refused_keys.insert(format!("rejected:{}", rejected.join(",")))
+                        && refused_keys.insert(format!("rejected:{}", descriptors.join(",")))
                     {
+                        // The writes that produced these red fields are already
+                        // in `steps`, and the correction is about to overwrite
+                        // them on the page. A trace records what the page
+                        // ACCEPTED, not the journey to it - the same reason an
+                        // occluded click or a walk-away from a rejected form is
+                        // never written. Mark these fields so the superseded
+                        // writes to them are dropped before the trace is
+                        // minted, leaving only the value that stuck.
+                        for field in &rejected {
+                            superseded.insert(field.token.clone());
+                        }
                         replans += 1;
                         match replan_remainder(
                             spec,
@@ -2998,7 +3059,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                                 "the page REJECTED these values, each with the rule it \
                                  enforced: {}. Correct them - obeying those rules - and then \
                                  repeat the action that leaves this screen",
-                                rejected.join("; ")
+                                descriptors.join("; ")
                             ),
                         )? {
                             None => break,
@@ -3026,7 +3087,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                             "it still rejects {}. The click was not recorded, because a \
                              click that walks away from a rejected form records a success \
                              the page refused to give",
-                            rejected.join("; ")
+                            descriptors.join("; ")
                         ),
                     });
                 }
@@ -3771,6 +3832,17 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             // Which surface ran it — how a multi-surface replay knows the
             // driver a step belongs to. None on single-surface flows.
             step.surface = current_surface.clone();
+            match write_token(&action) {
+                Some(token) => typed_at.push((steps.len(), token)),
+                None => {
+                    if !matches!(
+                        action,
+                        ResolvedAction::SelectOptions { .. } | ResolvedAction::SetChecked { .. }
+                    ) {
+                        observers.push(steps.len());
+                    }
+                }
+            }
             steps.push(step);
             // Harvest record-time hints for a cell target (#58): the
             // column's field and the row's id, so replay can fall back to
@@ -3793,6 +3865,40 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 }
             }
         }
+        // The step is done; settle which of its writes the trace should keep.
+        // For every field the guard saw refused, the corrected value is the
+        // LAST write to that field this step - the page accepted it, nothing
+        // superseded it. Every earlier write to that field (the refused value,
+        // and the clear that preceded the retype) is what the page rejected,
+        // and belongs no more in the trace than an occluded click does. Drop
+        // them; keep the one that stuck. Scoped per spec step, so a field
+        // legitimately typed again in a LATER step is untouched.
+        for token in &superseded {
+            // A positional token (`nth-of-type` paths) can name DIFFERENT
+            // elements before and after a DOM mutation in the same step, and
+            // last-write-wins on the string would then drop an accepted write
+            // to a different element. Only stable tokens are pruned; the rest
+            // keep their journal, which is the fail-open direction throughout.
+            if token.contains("nth-of-type") {
+                continue;
+            }
+            let mut writes: Vec<usize> = typed_at
+                .iter()
+                .filter(|(_, t)| t == token)
+                .map(|(index, _)| *index)
+                .collect();
+            if let Some(kept) = writes.pop() {
+                for dropped in writes {
+                    if dropped != kept
+                        && !observers
+                            .iter()
+                            .any(|&observer| dropped < observer && observer < kept)
+                    {
+                        superseded_steps.insert(dropped);
+                    }
+                }
+            }
+        }
         // Step boundary: sample the web surface text (the same text `page
         // shows` reads, not the page source). Per-step, not continuous: a
         // secret that flashes into the DOM between boundaries is invisible to
@@ -3805,15 +3911,12 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         }
     }
 
-    // STORE-GUARD: scan the in-memory corpus BEFORE any trace is minted, by
-    // the SAME mechanism replay uses. A leak (or a too-short secret, or a
-    // corpus-less kind) fails the run here, so the leaked value never reaches
-    // disk and no trace is written.
-    if scan_secrets {
-        flowproof_trace::secret_scan::scan_corpus(&leak_assertions, &secret_corpus)
-            .map_err(RecordError::SecretLeak)?;
-    }
-
+    // The recording spans join FIRST, by the ids both sides minted while the
+    // actions ran - and only then are steps dropped and renumbered. The other
+    // order re-reads the join by the NEW ids, so every survivor after the
+    // first drop inherits the time window of a different executed action, and
+    // heal's before/after frames show the wrong moment. A dropped step takes
+    // its span with it; its frames stay in the bundle, referenced by nothing.
     let recording = recorder.and_then(|recorder| recorder.finish_with_driver(driver));
     if let Some(recording) = &recording {
         for step in &mut steps {
@@ -3824,6 +3927,34 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 });
             }
         }
+    }
+
+    // Drop the superseded writes and renumber what remains, so the trace reads
+    // as the sequence that WORKED - not the fumble on the way. The step ids
+    // are positional (`s0001`…), so a removal from the middle has to renumber
+    // or the ids gap; replay does not depend on the ids, but a person reading
+    // the trace does. Nothing here changes what ran against the live app: the
+    // corrected value was typed, and only the record of the refused keystrokes
+    // is removed.
+    if !superseded_steps.is_empty() {
+        let mut kept = Vec::with_capacity(steps.len());
+        for (index, mut step) in steps.into_iter().enumerate() {
+            if superseded_steps.contains(&index) {
+                continue;
+            }
+            step.id = format!("s{:04}", kept.len() + 1);
+            kept.push(step);
+        }
+        steps = kept;
+    }
+
+    // STORE-GUARD: scan the in-memory corpus BEFORE any trace is minted, by
+    // the SAME mechanism replay uses. A leak (or a too-short secret, or a
+    // corpus-less kind) fails the run here, so the leaked value never reaches
+    // disk and no trace is written.
+    if scan_secrets {
+        flowproof_trace::secret_scan::scan_corpus(&leak_assertions, &secret_corpus)
+            .map_err(RecordError::SecretLeak)?;
     }
 
     let mut header = Header {
@@ -4363,6 +4494,163 @@ steps:
             ],
             "the refused value, then the one the page accepted"
         );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// A write the guard never saw refused is untouched, however many times
+    /// its neighbour fumbled - and the click that leaves the screen is
+    /// recorded exactly once, not once per attempt.
+    #[test]
+    fn an_unrefused_neighbour_survives_the_prune_and_the_click_lands_once() {
+        let spec = FlowSpec::parse(
+            "name: Signup\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Fill in the form and continue\n",
+        )
+        .expect("spec parses");
+        let rejected = r##"[{"target":"css:#name","tag":"input","label":"Name","value":"Ada"},
+             {"target":"css:#email","tag":"input","label":"Email",
+              "value":"me@home.example","invalid":true,"rule":"must be a work address"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let accepted = r##"[{"target":"css:#name","tag":"input","label":"Name","value":"Ada"},
+             {"target":"css:#email","tag":"input","label":"Email","value":"me@work.example"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let mut driver = MockAppDriver::new(&["#name", "#email", "#next"])
+            .with_scene_sequence(&[rejected, rejected, rejected]);
+        driver.scene = Some(accepted.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#name","text":"Ada"},
+                 {"action":"type_text","target":"css:#email","text":"me@home.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-neighbour-survives.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the corrected form records");
+        let trace = std::fs::read_to_string(&out).expect("trace readable");
+        assert_eq!(
+            trace.matches(r#""text":"Ada""#).count(),
+            1,
+            "the write nobody refused stays exactly where it was:\n{trace}"
+        );
+        assert!(!trace.contains("me@home.example"));
+        assert_eq!(
+            trace.matches(r#""type":"click""#).count(),
+            1,
+            "the click that leaves the screen is recorded once:\n{trace}"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// A capture between the refused write and the correction read the page
+    /// WITH the fumble in it. A trace without the fumble would replay a
+    /// different observation than the one recording verified - so the prune
+    /// stands down and the journal is kept, refused value and all.
+    #[test]
+    fn an_observer_between_fumble_and_correction_blocks_the_prune() {
+        let spec = FlowSpec::parse(
+            "name: Signup\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Fill in the email, remember the preview, and continue\n",
+        )
+        .expect("spec parses");
+        let rejected = r##"[{"target":"css:#email","tag":"input","label":"Email",
+             "value":"me@home.example","invalid":true,"rule":"must be a work address"},
+             {"target":"css:#preview","tag":"div","text":"me@home.example"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let accepted = r##"[{"target":"css:#email","tag":"input","label":"Email",
+             "value":"me@work.example"},
+             {"target":"css:#preview","tag":"div","text":"me@work.example"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let mut driver = MockAppDriver::new(&["#email", "#preview", "#next"])
+            .with_scene_sequence(&[rejected, rejected, rejected]);
+        driver.scene = Some(accepted.into());
+        driver
+            .texts
+            .insert("#preview".into(), "me@home.example".into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#email","text":"me@home.example"},
+                 {"action":"capture_text","target":"css:#preview","name":"preview"},
+                 {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-observer-blocks-prune.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the corrected form records");
+        let trace = std::fs::read_to_string(&out).expect("trace readable");
+        assert!(
+            trace.contains("me@home.example"),
+            "the capture saw the fumbled page, so the fumble stays in the record:\n{trace}"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// A value the page refused does not reach the trace. The correction
+    /// still ran against the live app - the fumble happened - but the record
+    /// reads as the one line a person would have left: the value that stuck.
+    ///
+    /// The rejection here is a non-numeric rule, so the grounding-time range
+    /// challenge does not pre-empt it - the page is the one that says no, and
+    /// this is the path that drops what the page refused from the trace.
+    #[test]
+    fn a_refused_value_is_dropped_and_only_the_accepted_one_is_recorded() {
+        let spec = FlowSpec::parse(
+            "name: Signup\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Fill in the email and continue\n",
+        )
+        .expect("spec parses");
+        let rejected = r##"[{"target":"css:#email","tag":"input","label":"Email",
+             "value":"me@home.example","invalid":true,"rule":"must be a work address"},
+             {"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let accepted = r##"[{"target":"css:#email","tag":"input","label":"Email",
+             "value":"me@work.example"},{"target":"css:#next","tag":"button","text":"Next"}]"##;
+        let mut driver = MockAppDriver::new(&["#email", "#next"])
+            .with_scene_sequence(&[rejected, rejected, rejected]);
+        driver.scene = Some(accepted.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#email","text":"me@home.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-refused-value-dropped.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the corrected form records");
+
+        // The live app saw the fumble: both values were typed.
+        assert_eq!(
+            driver.typed,
+            vec![
+                ("#email".to_string(), "me@home.example".to_string()),
+                ("#email".to_string(), "me@work.example".to_string()),
+            ],
+            "the correction ran against the app - the refused value, then the accepted one"
+        );
+
+        // The trace did not.
+        let trace = std::fs::read_to_string(&out).expect("trace readable");
+        assert!(
+            !trace.contains("me@home.example"),
+            "the value the page refused is not in the trace:\n{trace}"
+        );
+        assert_eq!(
+            trace.matches(r#""text":"me@work.example""#).count(),
+            1,
+            "the accepted value is recorded exactly once:\n{trace}"
+        );
+        // And the ids that survived are contiguous - a middle removal
+        // renumbered, so no gap.
+        let ids: Vec<String> = trace
+            .lines()
+            .skip(1)
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| v["id"].as_str().map(str::to_string))
+            .collect();
+        let expected: Vec<String> = (1..=ids.len()).map(|n| format!("s{n:04}")).collect();
+        assert_eq!(ids, expected, "step ids stay contiguous after the drop");
         std::fs::remove_file(&out).ok();
     }
 
