@@ -6,6 +6,24 @@ together).
 
 ## Unreleased
 
+### Changed
+
+- **An element that never appears now says what appeared instead.** The
+  nightly real-GUI SAP suite failed nine nights running on the same three
+  lines: element did not appear within 20000ms. Which element was never the
+  question. The question was what the screen was showing instead, and
+  nothing on the failure path could answer it: the "did you mean" hint
+  needs a text anchor to fuzzy-match and a SAP scripting id carries none,
+  the debug bundle is a web capability, and the run records stay on a
+  runner nobody logs into.
+
+  An element miss now reads the driver's surface — the same text
+  `page shows` asserts against — and carries the answer with the failure: a
+  one-line excerpt in the reason itself, because a CI log line is often all
+  a reader gets, and the full text in the run bundle under
+  `debug/surface.txt`. The next timeout names the dialog, the login screen,
+  or whatever else actually filled the window.
+
 ## 0.18.0
 
 ### Changed

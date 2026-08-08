@@ -510,6 +510,40 @@ fn failure_writes_debug_bundle_and_suggests_nearest_anchor() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// An element miss with no text anchor to fuzzy-match (a scripting id, an
+/// automation id) used to fail saying nothing but the timeout — a real-GUI
+/// suite timed out identically for nine nights without once naming the
+/// screen it was actually looking at. The failure now answers the reader's
+/// next question itself: what the surface showed, in the reason and in the
+/// run bundle.
+#[test]
+fn element_miss_names_what_the_screen_shows() {
+    let dir = std::env::temp_dir().join("flowproof-replay-surface-on-miss");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_press_trace(&dir, "Save", 400);
+
+    // Replay against an app sitting on a different screen entirely.
+    let mut driver = MockAppDriver::new(&["other"])
+        .with_surface_text("License Information for Multiple Logon\n\n  Continue?  \n");
+    let (report, run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.clone().unwrap_or_default();
+    assert!(
+        detail.contains("the screen shows: \"License Information for Multiple Logon | Continue?\""),
+        "surface excerpt present: {detail}"
+    );
+    assert!(
+        detail.contains("debug/surface.txt"),
+        "capture note present: {detail}"
+    );
+    let surface =
+        std::fs::read_to_string(run_dir.join("debug/surface.txt")).expect("surface written");
+    assert!(surface.contains("License Information for Multiple Logon"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 const NOTEPAD_SPEC: &str = "\
 name: Write a note
 app: notepad

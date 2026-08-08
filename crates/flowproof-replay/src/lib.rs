@@ -201,7 +201,8 @@ fn augment_failure<D: AppDriver>(
 ) -> String {
     // Both element-miss phrasings: direct resolution failure ("not
     // found") and the sync precondition timing out ("did not appear").
-    if reason.contains("not found") || reason.contains("did not appear") {
+    let element_miss = reason.contains("not found") || reason.contains("did not appear");
+    if element_miss {
         let wanted = step.selectors.iter().find_map(|s| {
             (s.tier == SelectorTier::TextAnchor)
                 .then(|| s.payload.get("text").or_else(|| s.payload.get("name")))
@@ -244,10 +245,30 @@ fn augment_failure<D: AppDriver>(
         }
         break;
     }
+    let debug_dir = run_dir.join("debug");
+    let mut wrote = Vec::new();
+    // "Did you mean" needs a text anchor to fuzzy-match, and a step
+    // addressed by scripting id or ordinal has none — a missing element
+    // can time out night after night saying nothing but the timeout. For
+    // an element miss, answer the reader's next question — then what WAS
+    // on the screen? — from the driver's surface: a one-line excerpt in
+    // the reason itself (often all a CI log keeps), the full text in the
+    // run bundle.
+    if element_miss {
+        if let Ok(surface) = driver.surface_text() {
+            let excerpt = surface_excerpt(&surface);
+            if !excerpt.is_empty() {
+                reason.push_str(&format!(" — the screen shows: \"{excerpt}\""));
+                if std::fs::create_dir_all(&debug_dir).is_ok()
+                    && std::fs::write(debug_dir.join("surface.txt"), &surface).is_ok()
+                {
+                    wrote.push("debug/surface.txt");
+                }
+            }
+        }
+    }
     if let Ok(Some(bundle)) = driver.debug_bundle() {
-        let debug_dir = run_dir.join("debug");
         if std::fs::create_dir_all(&debug_dir).is_ok() {
-            let mut wrote = Vec::new();
             if let Some(dom) = &bundle.dom_html {
                 if std::fs::write(debug_dir.join("dom.html"), dom).is_ok() {
                     wrote.push("debug/dom.html");
@@ -259,12 +280,30 @@ fn augment_failure<D: AppDriver>(
                     wrote.push("debug/console.log");
                 }
             }
-            if !wrote.is_empty() {
-                reason.push_str(&format!(" (captured: {})", wrote.join(", ")));
-            }
         }
     }
+    if !wrote.is_empty() {
+        reason.push_str(&format!(" (captured: {})", wrote.join(", ")));
+    }
     reason
+}
+
+/// Surface text condensed to one log line: blank lines dropped, the rest
+/// joined with " | ", capped — a failure reason should stay a sentence,
+/// not become a page dump. The uncondensed text goes to the run bundle.
+fn surface_excerpt(surface: &str) -> String {
+    const MAX_CHARS: usize = 200;
+    let joined = surface
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let mut excerpt: String = joined.chars().take(MAX_CHARS).collect();
+    if joined.chars().count() > MAX_CHARS {
+        excerpt.push('…');
+    }
+    excerpt
 }
 
 /// The closest visible text anchors to `wanted`, from the driver's scene:
@@ -2614,6 +2653,20 @@ mod failure_hint_tests {
         assert_eq!(edit_distance("save", "safes"), 2);
         assert_eq!(edit_distance("", "abc"), 3);
         assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn surface_excerpt_condenses_lines_and_caps_length() {
+        assert_eq!(
+            surface_excerpt("License Information for Multiple Logon\n\n  Continue?  \n"),
+            "License Information for Multiple Logon | Continue?"
+        );
+        assert_eq!(surface_excerpt("  \n\n"), "");
+        // Capped on a char boundary, ellipsis marks the cut.
+        let long = "ä".repeat(300);
+        let capped = surface_excerpt(&long);
+        assert_eq!(capped.chars().count(), 201);
+        assert!(capped.ends_with('…'));
     }
 
     #[test]
