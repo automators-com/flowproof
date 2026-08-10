@@ -1152,7 +1152,8 @@ philosophy as the `page.evaluate` rejection in
 trustworthy.
 
 A *third* problem is neither of these two, and is proposed separately in
-[explore-mode.md](explore-mode.md): not "is the answer good?" but "can a
+[explore-mode.md](https://github.com/automators-com/flowproof/blob/main/docs/explore-mode.md):
+not "is the answer good?" but "can a
 control this suite already declares be violated by an input the recording
 never saw?" Its verdict is existential rather than statistical — one
 violation is a finding, and the finding converts into an ordinary
