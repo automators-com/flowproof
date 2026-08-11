@@ -6,6 +6,21 @@ together).
 
 ## Unreleased
 
+### Added
+
+- **What an agent destroys is now evidence, and evidence you can assert
+  on.** A run that deleted a customer file printed the fact to stderr and
+  passed every check there was: the destruction lived in a channel nobody
+  reviews, no diff records, and no assertion could reach. An observed run
+  now records a `side_effects` lane - workspace-relative names only,
+  everything doubtful hash-redacted, scanned by the secret store-guard
+  before the trace is minted - and `assert_no_side_effect` turns it into a
+  verdict with the egress honesty rules: where observation cannot run it
+  fails "cannot certify" rather than passing vacuously, a blind supervisor
+  cannot certify either, and a violating record mints no trace. Observation
+  is still not containment: a run supervised only to watch reports its own
+  tier and never claims `enforced` for a policy nobody declared.
+
 ## 0.19.0
 
 ### Added
