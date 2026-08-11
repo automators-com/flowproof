@@ -914,13 +914,17 @@ warning is what it is, and the assertion is what makes it a control.
 
 ## Filesystem observation
 
-**This is not a control.** It asserts nothing, fails nothing, and has no
-spec surface at all - there is no step to add and no key to declare. It is a
-report, and it exists because a `command:` agent is a black-box process that
-can delete a file without asking anyone.
+**The observation itself is not a control.** It prevents nothing, and it
+began with no spec surface at all. Since #465 the observations can carry a
+verdict - `assert_no_side_effect` is the step that turns them into one -
+but without that step this remains what it always was: a report,
+existing because a `command:` agent is a black-box process that can delete
+a file without asking anyone.
 
 Any flow that already engages containment gets it for free, because it is the
-same seccomp filter. On Linux the report prints to stderr when, and only
+same seccomp filter; a flow carrying only `assert_no_side_effect` engages the
+same filter in its observation-only form, under an allow-all policy that
+contains nothing. On Linux the report prints to stderr when, and only
 when, a run destroyed something:
 
 ```
@@ -977,7 +981,8 @@ was not there reads exactly like one that removed a tree. `open(path,
 O_WRONLY)` without `O_TRUNC` followed by a write at offset 0 corrupts a file
 and fires nothing; catching it needs a trap on every `write`, which would put
 a supervisor round-trip on every log line. Nothing is observed on macOS or
-Windows, or on a flow that engages no containment. The recorded lane
+Windows, or on a flow that engages neither egress containment nor
+side-effect observation. The recorded lane
 inherits every one of these limits plus one of its own: a kept `./` target
 is the NAME the syscall used, never a resolution claim - a symlinked
 component can carry the actual victim elsewhere.
@@ -1079,7 +1084,7 @@ Built and tested, each independently:
 | `assert_tool_call` grammar | the prose form |
 | `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
 | egress containment | `allow_egress` / `assert_no_egress`, enforced by a Linux seccomp supervisor (proven by the Linux CI E2E); "not contained" and honestly reported on macOS/Windows and for `url:` flows |
-| filesystem observation | the same seccomp filter also traps the destructive filesystem syscalls, REPORTS them to stderr, and - since #465 - records them into the trace's `side_effects` lane, workspace-relative or hash-redacted, asserting nothing: no spec surface, no step, no verdict. Linux only, and only where containment is already engaged |
+| filesystem observation | the same seccomp filter also traps the destructive filesystem syscalls, REPORTS them to stderr, and - since #465 - records them into the trace's `side_effects` lane, workspace-relative or hash-redacted. `assert_no_side_effect` turns the record into a verdict; without that step the lane asserts nothing. Linux only, and only where egress containment or side-effect observation is engaged |
 | MCP tool boundary | stdio (v3.1) and streamable-HTTP (v3.2): flowproof stands in as the server, records the JSON-RPC traffic once and replays it with no server running. A tool with a `result:` here is answered by the stand-in and never forwarded, in either phase - the one boundary that stops a tool executing |
 | Anthropic Messages | built and covered end to end, record leg included: a flow records against a Messages-dialect upstream and replays it with no model at all |
 | Streaming | built and covered end to end in both dialects, record leg included: a `stream: true` agent is served SSE at record and at replay, and the test asserts the FRAME BOUNDARIES, not the assembled text - a replay that collapsed the stream into one buffered body would still produce the same reply |
