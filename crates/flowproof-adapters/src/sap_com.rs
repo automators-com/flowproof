@@ -182,6 +182,21 @@ const INTERACTABLE_KINDS: &[&str] = &[
     "GuiOkCodeField",
 ];
 
+/// SAP keeps the main window in the session tree while a modal is open. Only
+/// the highest numbered `wnd[n]` is the active surface; including background
+/// windows lets assertions pass on text the user cannot currently act on.
+fn window_index(id: &str) -> Option<u32> {
+    let rest = id.strip_prefix("wnd[")?;
+    rest.split_once(']')?.0.parse().ok()
+}
+
+fn active_window(elements: &[SapElement]) -> Option<u32> {
+    elements
+        .iter()
+        .filter_map(|element| window_index(&element.id))
+        .max()
+}
+
 /// `AppDriver` over a [`SapEngine`]. `E` is the COM bridge in production,
 /// a fake in tests.
 pub struct SapAppDriver<E: SapEngine> {
@@ -336,8 +351,19 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
         // The desktop reading of "the surface": every visible text and
         // tooltip in the session tree, top-down — same contract as UIA
         // and the browser page text.
+        let elements = self.engine.walk()?;
+        let active_window = active_window(&elements);
         let mut parts: Vec<String> = Vec::new();
-        for element in self.engine.walk()? {
+        for element in elements {
+            if active_window.is_some_and(|active| window_index(&element.id) != Some(active)) {
+                continue;
+            }
+            // SAP exposes the complete menu hierarchy even while every menu
+            // is closed. Those labels are not visible page text and must not
+            // satisfy a `page shows` assertion.
+            if element.kind == "GuiMenu" {
+                continue;
+            }
             if !element.text.trim().is_empty() {
                 parts.push(element.text.trim().to_string());
             }
@@ -399,8 +425,19 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
     fn scene(&mut self) -> Result<Option<String>, DriverError> {
         // The grounding set for LLM authoring: interactable elements with
         // their `id:` TARGET TOKENS — same neutral contract as web/UIA.
+        // SAP exposes the entire menu hierarchy in the session tree even
+        // while those menus are closed. On a normal Easy Access window that
+        // hierarchy can exhaust the scene cap before the first field is
+        // reached. Preserve tree order within each group, but ground the
+        // ordinary screen controls before background menu items.
+        let mut elements = self.engine.walk()?;
+        let active_window = active_window(&elements);
+        if let Some(active) = active_window {
+            elements.retain(|element| window_index(&element.id) == Some(active));
+        }
+        elements.sort_by_key(|element| element.kind == "GuiMenu");
         let mut entries: Vec<serde_json::Value> = Vec::new();
-        for element in self.engine.walk()? {
+        for element in elements {
             if entries.len() >= 100 {
                 break;
             }
@@ -1498,5 +1535,120 @@ mod tests {
         assert!(targets.contains(&"id:wnd[0]/tbar[1]/btn[8]"));
         // The status bar is not interactable — grounding must not offer it.
         assert!(!scene.contains("sbar"));
+    }
+
+    #[test]
+    fn scene_prioritizes_screen_controls_over_the_closed_menu_hierarchy() {
+        let mut elements = Vec::new();
+        for index in 0..100 {
+            elements.push(SapElement {
+                id: format!("wnd[0]/mbar/menu[{index}]"),
+                kind: "GuiMenu".into(),
+                name: format!("menu[{index}]"),
+                text: format!("Menu {index}"),
+                ..Default::default()
+            });
+        }
+        elements.push(SapElement {
+            id: "wnd[0]/usr/ctxtVBAK-VBELN".into(),
+            kind: "GuiCTextField".into(),
+            name: "VBAK-VBELN".into(),
+            tooltip: "Order".into(),
+            changeable: true,
+            ..Default::default()
+        });
+        let mut d = SapAppDriver::with_engine(FakeEngine::with_elements(elements));
+
+        let scene = d.scene().expect("scene").expect("json");
+
+        assert!(
+            scene.contains("id:wnd[0]/usr/ctxtVBAK-VBELN"),
+            "a screen control must not be crowded out by closed menu items: {scene}"
+        );
+    }
+
+    #[test]
+    fn surface_text_excludes_labels_from_closed_menus() {
+        let mut d = SapAppDriver::with_engine(FakeEngine::with_elements(vec![
+            SapElement {
+                id: "wnd[0]".into(),
+                kind: "GuiMainWindow".into(),
+                text: "SAP Easy Access".into(),
+                ..Default::default()
+            },
+            SapElement {
+                id: "wnd[0]/mbar/menu[4]/menu[2]/menu[3]".into(),
+                kind: "GuiMenu".into(),
+                text: "User Profile".into(),
+                tooltip: "User Profile".into(),
+                ..Default::default()
+            },
+        ]));
+
+        let surface = d.surface_text().expect("surface");
+
+        assert!(surface.contains("SAP Easy Access"));
+        assert!(
+            !surface.contains("User Profile"),
+            "a closed menu label is not visible page text: {surface}"
+        );
+    }
+
+    #[test]
+    fn surface_text_reads_the_modal_instead_of_the_background_window() {
+        let mut d = SapAppDriver::with_engine(FakeEngine::with_elements(vec![
+            SapElement {
+                id: "wnd[0]".into(),
+                kind: "GuiMainWindow".into(),
+                text: "SAP Easy Access".into(),
+                ..Default::default()
+            },
+            SapElement {
+                id: "wnd[1]".into(),
+                kind: "GuiModalWindow".into(),
+                text: "Information".into(),
+                ..Default::default()
+            },
+            SapElement {
+                id: "wnd[1]/usr/txtMESSTXT1".into(),
+                kind: "GuiTextField".into(),
+                text: "Cannot start transaction SMEN".into(),
+                ..Default::default()
+            },
+        ]));
+
+        let surface = d.surface_text().expect("surface");
+
+        assert!(surface.contains("Cannot start transaction SMEN"));
+        assert!(
+            !surface.contains("SAP Easy Access"),
+            "background text must not satisfy an assertion while a modal is active: {surface}"
+        );
+    }
+
+    #[test]
+    fn scene_offers_modal_controls_instead_of_background_controls() {
+        let mut d = SapAppDriver::with_engine(FakeEngine::with_elements(vec![
+            SapElement {
+                id: "wnd[0]/tbar[0]/btn[11]".into(),
+                kind: "GuiButton".into(),
+                text: "Save".into(),
+                ..Default::default()
+            },
+            SapElement {
+                id: "wnd[1]/tbar[0]/btn[0]".into(),
+                kind: "GuiButton".into(),
+                text: "Continue".into(),
+                ..Default::default()
+            },
+        ]));
+
+        let scene = d.scene().expect("scene").expect("json");
+
+        assert!(scene.contains("id:wnd[1]/tbar[0]/btn[0]"));
+        assert!(
+            !scene.contains("id:wnd[0]/tbar[0]/btn[11]"),
+            "background controls must not be actionable through an active modal: {scene}"
+        );
     }
 }
