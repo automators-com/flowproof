@@ -56,6 +56,16 @@ impl Containment {
         )
     }
 
+    /// The tier for a run supervised for side-effect OBSERVATION only: an
+    /// allow-all policy nobody declared contains nothing.
+    pub fn observation_only() -> Self {
+        Containment::NotContained(
+            "flow engages side-effect observation only; no egress policy declared, \
+             nothing contained"
+                .to_string(),
+        )
+    }
+
     /// The tier for a `url:` flow: a service flowproof did not start cannot
     /// be contained.
     pub fn url_flow() -> Self {
@@ -124,6 +134,11 @@ impl Containment {
 pub struct EgressLog {
     /// Every denied attempt, in order - retries included.
     pub blocked: Vec<EgressEvent>,
+    /// Every ALLOWED non-loopback destination the supervisor performed a
+    /// connect/send to, in order - the `http_request` half of the side-effect
+    /// lane. Never folded into `blocked`: that list's emptiness is half the
+    /// `assert_no_egress` predicate.
+    pub observed: Vec<EgressEvent>,
     /// Every supervisor FAULT, in order. A fault is not a policy denial: it
     /// is a trapped syscall the supervisor could not adjudicate at all,
     /// because the mechanism it needs was refused (`process_vm_readv` or
@@ -190,6 +205,9 @@ pub struct AllowSet {
     /// Host entries are pre-resolved into `Ip` entries; only `Ip`/`Cidr`
     /// remain, each keeping its own optional port constraint.
     entries: Vec<AllowEntry>,
+    /// The spec spelling each entry came from, index-parallel with `entries`,
+    /// so [`AllowSet::allowed_as`] can name a destination by the spec's text.
+    spellings: Vec<String>,
 }
 
 impl AllowSet {
@@ -199,22 +217,43 @@ impl AllowSet {
     /// exempt). A name that does not resolve contributes no IPs, so its
     /// traffic is denied - the safe default.
     pub fn resolve(entries: &[String]) -> Result<Self, String> {
-        let mut out = Vec::new();
-        for raw in entries {
+        // The entry text is its own spelling when no unresolved form exists.
+        let pairs: Vec<(&str, &str)> = entries.iter().map(|e| (e.as_str(), e.as_str())).collect();
+        Self::resolve_spelled(&pairs)
+    }
+
+    /// `resolve`, from `(spelling, resolved)` pairs: the resolved text is
+    /// parsed and enforced; the spelling - the spec's own, possibly `${VAR}`,
+    /// text - is retained, so a destination such an entry admits can be
+    /// recorded by spelling rather than by the value it held.
+    pub fn resolve_spelled(pairs: &[(&str, &str)]) -> Result<Self, String> {
+        let mut set = Self::default();
+        for (spelling, raw) in pairs {
             let parsed = egress::parse_allow_entry(raw)?;
             match parsed.host {
                 HostMatch::Host(name) => {
                     for ip in resolve_host(&name) {
-                        out.push(AllowEntry {
+                        set.entries.push(AllowEntry {
                             host: HostMatch::Ip(ip),
                             port: parsed.port,
                         });
                     }
                 }
-                HostMatch::Ip(_) | HostMatch::Cidr(_, _) => out.push(parsed),
+                HostMatch::Ip(_) | HostMatch::Cidr(_, _) => set.entries.push(parsed),
             }
+            // One spelling per entry the pair contributed.
+            set.spellings
+                .resize(set.entries.len(), spelling.to_string());
         }
-        Ok(Self { entries: out })
+        Ok(set)
+    }
+
+    /// The observation-only policy: wildcard v4 + v6 CIDRs, so the POLICY
+    /// path admits every parseable inet destination. (The structural
+    /// refusals are independent of any set.)
+    pub fn allow_all() -> Self {
+        let all = ["0.0.0.0/0".to_string(), "::/0".to_string()];
+        Self::resolve(&all).expect("the wildcard CIDRs parse")
     }
 
     /// Is `(ip, port)` allowed? Loopback is allowed wholesale, independent of
@@ -227,6 +266,22 @@ impl AllowSet {
         self.entries
             .iter()
             .any(|entry| entry.port_ok(port) && host_matches(&entry.host, ip))
+    }
+
+    /// The spec spelling under which `(ip, port)` is admitted, `None` when no
+    /// entry matches (loopback is exempt without consulting any entry). When
+    /// SEVERAL admit it, a `${VAR}` spelling wins over a concrete one.
+    pub fn allowed_as(&self, ip: IpAddr, port: u16) -> Option<&str> {
+        let mut concrete = None;
+        for (entry, spelling) in self.entries.iter().zip(&self.spellings) {
+            if entry.port_ok(port) && host_matches(&entry.host, ip) {
+                if spelling.contains("${") {
+                    return Some(spelling);
+                }
+                concrete.get_or_insert(spelling.as_str());
+            }
+        }
+        concrete
     }
 
     /// No declared destinations: a contained run with an empty allow-set
@@ -336,6 +391,7 @@ mod tests {
     fn undeclared_destinations_dedupe_by_destination() {
         let log = EgressLog {
             faults: Vec::new(),
+            observed: Vec::new(),
             blocked: vec![
                 EgressEvent {
                     destination: "198.51.100.9:443".into(),
@@ -367,6 +423,7 @@ mod tests {
     fn a_faulted_log_is_not_clean_even_with_nothing_blocked() {
         let log = EgressLog {
             blocked: Vec::new(),
+            observed: Vec::new(),
             faults: vec!["connect: process_vm_readv: Operation not permitted".into()],
         };
         // The old predicate - "nothing was blocked" - still reads as empty.
@@ -379,6 +436,7 @@ mod tests {
     fn repeated_faults_dedupe_but_keep_first_seen_order() {
         let log = EgressLog {
             blocked: Vec::new(),
+            observed: Vec::new(),
             faults: vec![
                 "connect: process_vm_readv: EPERM".into(),
                 "sendto: pidfd_getfd: EPERM".into(),
