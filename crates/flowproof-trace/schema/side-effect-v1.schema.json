@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/automators-com/flowproof/blob/main/crates/flowproof-trace/schema/side-effect-v1.schema.json",
+  "title": "flowproof agent-trace side-effect lane v1",
+  "description": "The `side_effects` lane an `app: agent` trace document may carry, and the records inside it. Deliberately describes the lane only, not the whole agent-trace document.",
+  "oneOf": [
+    { "$ref": "#/$defs/side_effects_lane" },
+    { "$ref": "#/$defs/side_effect" }
+  ],
+  "$defs": {
+    "side_effect": {
+      "type": "object",
+      "description": "One observed side-effect ATTEMPT, never an outcome claim: the fs observation replies CONTINUE before the kernel runs the call.",
+      "required": ["kind", "at_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "fs_write and http_request are capturable; db_change and sap_transaction are RESERVED - documented, never emitted in Phase A.",
+          "enum": ["fs_write", "http_request", "db_change", "sap_transaction"]
+        },
+        "target": {
+          "type": "string",
+          "description": "fs: the hygiene-processed workspace-relative path (`./`-prefixed; a rename renders `src -> dst`). http: `ip:port`, or an unresolved `${VAR}` allow-entry spelling."
+        },
+        "target_note": {
+          "type": "string",
+          "description": "Why target is absent or weakened, e.g. `outside workspace (sha256:...)`."
+        },
+        "op": { "type": "string", "description": "fs: the syscall name. http: the transport (tcp/udp)." },
+        "flags": { "type": "string", "description": "fs only: the closed flag renderings, e.g. `O_WRONLY|O_TRUNC`." },
+        "at_ms": { "type": "integer", "minimum": 0, "description": "Monotonic ms since agent spawn, never wall clock." },
+        "before": { "type": "string", "description": "RESERVED, never emitted in Phase A." },
+        "after": { "type": "string", "description": "RESERVED, never emitted in Phase A." },
+        "diff": { "type": "string", "description": "RESERVED, never emitted in Phase A." }
+      }
+    },
+    "side_effects_lane": {
+      "type": "object",
+      "required": ["observation"],
+      "additionalProperties": false,
+      "properties": {
+        "observation": {
+          "type": "string",
+          "description": "The observation tag the recording ran under, e.g. `observed (linux seccomp)`. Observation vocabulary only - never `enforced`."
+        },
+        "effects": {
+          "type": "array",
+          "description": "The observed effects, ordered by at_ms. Absent when empty.",
+          "items": { "$ref": "#/$defs/side_effect" }
+        },
+        "faults": {
+          "type": "array",
+          "description": "Supervisor adjudication failures: an empty effects list under one is silence, not evidence.",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}
