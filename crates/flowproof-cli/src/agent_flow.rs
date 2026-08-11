@@ -23,10 +23,11 @@ use flowproof_adapters::agent_runner::{run_against, run_against_contained, run_h
 use flowproof_adapters::egress::{AllowSet, Containment};
 use flowproof_adapters::mcp_http::McpHttpServer;
 use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan, McpServerEvent};
+use flowproof_adapters::FsEvent;
 use flowproof_agent::{FlowSpec, SpecStep};
 use flowproof_trace::cassette::Cassette;
 use flowproof_trace::egress::EgressEvent;
-use flowproof_trace::side_effect::SideEffect;
+use flowproof_trace::side_effect::{SideEffect, KIND_FS_WRITE};
 use flowproof_trace::substitution::Mocks;
 use flowproof_trace::toolcalls::{self, ToolCallExpectation};
 
@@ -974,6 +975,116 @@ fn report_fs(run: &AgentRun) {
     }
 }
 
+/// The first 12 hex of sha256 over the raw captured path: stable, so "the
+/// same file every run" correlates without literal disclosure.
+fn short_hash(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(raw.as_bytes());
+    digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
+}
+
+/// TOTAL over any capture-side subject: `(target fragment, note)`, the one
+/// constructor of a trace-side fs target. Property-tested POSTCONDITION: a
+/// `Some` target is `./`-prefixed, `..`-free, never absolute, byte-for-byte
+/// the captured path minus workspace prefix and `.` components; every
+/// other input redacts.
+fn hygiene(
+    raw: Option<&str>,
+    capture_note: Option<&str>,
+    workspace: &Path,
+) -> (Option<String>, Option<String>) {
+    use std::path::Component;
+    // No path at all: the trap proved the syscall; there is no claim to clean.
+    let Some(raw) = raw else {
+        return (None, capture_note.map(str::to_string));
+    };
+    let path = Path::new(raw);
+    // Not absolute (the unreadable-cwd fallback): neither provably inside
+    // nor outside the workspace, so never kept.
+    if !path.is_absolute() {
+        let hash = short_hash(raw);
+        let extra = capture_note.map(|n| format!("; {n}")).unwrap_or_default();
+        let note = format!("unanchored relative path (sha256:{hash}){extra}");
+        return (None, Some(note));
+    }
+    // REDACT on traversal, never normalize-and-keep: popping `a/..` is only
+    // valid when `a` is not a symlink, which lexical processing cannot know
+    // (`.` components, dropped by `components()` below, are lexically safe).
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        let note = format!("traversal path (sha256:{})", short_hash(raw));
+        return (None, Some(note));
+    }
+    // Component-wise strip, never a string prefix, so `/ws-evil` cannot
+    // match `/ws`; a non-absolute root (unreadable cwd) vouches for nothing.
+    let cleaned: PathBuf = path.components().collect();
+    match cleaned.strip_prefix(workspace) {
+        Ok(rel) if workspace.is_absolute() => (
+            Some(format!("./{}", rel.display())),
+            capture_note.map(str::to_string),
+        ),
+        _ => {
+            let note = format!("outside workspace (sha256:{})", short_hash(raw));
+            (None, Some(note))
+        }
+    }
+}
+
+/// One captured [`FsEvent`] as the trace record, every path through
+/// [`hygiene`]. A rename runs it per side and joins only the OUTPUTS - a
+/// redacted side renders `[redacted]`, both redacted leaves no target.
+fn fs_effect(event: &FsEvent, workspace: &Path) -> SideEffect {
+    let (target, target_note) = if event.op.starts_with("rename") {
+        let (src, src_note) = hygiene(event.path.as_deref(), None, workspace);
+        let (dst, dst_note) = hygiene(event.path2.as_deref(), None, workspace);
+        let target = (src.is_some() || dst.is_some()).then(|| {
+            format!(
+                "{} -> {}",
+                src.as_deref().unwrap_or("[redacted]"),
+                dst.as_deref().unwrap_or("[redacted]")
+            )
+        });
+        let notes: Vec<String> = (event.path_note.clone().into_iter())
+            .chain(src_note.map(|n| format!("src: {n}")))
+            .chain(dst_note.map(|n| format!("dst: {n}")))
+            .collect();
+        (target, (!notes.is_empty()).then(|| notes.join("; ")))
+    } else {
+        hygiene(event.path.as_deref(), event.path_note.as_deref(), workspace)
+    };
+    SideEffect {
+        kind: KIND_FS_WRITE.into(),
+        target,
+        target_note,
+        op: Some(event.op.clone()),
+        flags: event.flags.clone(),
+        at_ms: event.at_ms,
+        before: None,
+        after: None,
+        diff: None,
+    }
+}
+
+/// The trace's side-effect lane, or `None` when the observation mechanism
+/// never ran - absence keeps meaning "not observed", and a present lane
+/// with no effects stays positive evidence: observed, and clean.
+fn side_effects_lane(run: &AgentRun, workspace: &Path) -> Option<SideEffectsTrace> {
+    if !run.observed {
+        return None;
+    }
+    // Canonicalized once, so a symlinked cwd still prefix-matches the
+    // `/proc`-resolved absolutes; a chdir'd-away agent's paths redact.
+    let root = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    Some(SideEffectsTrace {
+        observation: "observed (linux seccomp)".into(),
+        effects: (run.fs.destructive.iter())
+            .map(|e| fs_effect(e, &root))
+            .collect(),
+        faults: run.fs.distinct_faults(),
+    })
+}
+
 /// The short containment tag stored in the trace lane (the parenthetical of
 /// the report line): `enforced (linux seccomp)` or `not contained (<reason>)`.
 /// The run record stores the SAME string, so the trace and the artifact an
@@ -1009,6 +1120,7 @@ fn egress_failure_message(undeclared: &[EgressEvent]) -> String {
 fn secret_corpus(
     cassette: &Cassette,
     mcp: &BTreeMap<String, McpServerTrace>,
+    side_effects: Option<&SideEffectsTrace>,
 ) -> Vec<(String, String)> {
     let mut corpus = Vec::new();
     // The cassette element is always present on an agent flow (a run with an
@@ -1025,6 +1137,13 @@ fn secret_corpus(
             serde_json::to_string(lane).unwrap_or_default(),
         ));
     }
+    // And the side-effect lane, when the run minted one.
+    if let Some(lane) = side_effects {
+        corpus.push((
+            "the side-effects lane".to_string(),
+            serde_json::to_string(lane).unwrap_or_default(),
+        ));
+    }
     corpus
 }
 
@@ -1038,11 +1157,12 @@ fn check_secret_leak(
     plan: &Plan,
     cassette: &Cassette,
     mcp: &BTreeMap<String, McpServerTrace>,
+    side_effects: Option<&SideEffectsTrace>,
 ) -> Result<(), String> {
     if plan.secret_leaks.is_empty() {
         return Ok(());
     }
-    let corpus = secret_corpus(cassette, mcp);
+    let corpus = secret_corpus(cassette, mcp, side_effects);
     flowproof_trace::secret_scan::scan_corpus(&plan.secret_leaks, &corpus)
 }
 
@@ -1403,10 +1523,11 @@ fn record_inner(
     report_fs(&run);
     *achieved = Some(achieved_tier(&run, &tier));
     let egress = check_egress(&plan, &run, &tier)?;
-    // The secret-leak scan runs BEFORE the trace is minted: a leak fails the
-    // run so NO trace is written. That doubles as a store-guard - a secret
-    // leaked into a cassette body never reaches disk.
-    check_secret_leak(&plan, &cassette, &mcp_trace)?;
+    // The side-effect lane, built whenever the run was observed (the
+    // workspace root is the agent's spawn cwd) and scanned WITH the
+    // cassette below, BEFORE the trace is minted - the same store-guard.
+    let side_effects = side_effects_lane(&run, &std::env::current_dir().unwrap_or_default());
+    check_secret_leak(&plan, &cassette, &mcp_trace, side_effects.as_ref())?;
 
     let trace = AgentTrace {
         app: "agent".into(),
@@ -1414,9 +1535,7 @@ fn record_inner(
         cassette,
         mcp: mcp_trace,
         egress,
-        // Nothing populates the lane yet: capture lands with the fs and http
-        // hooks, so every trace this version writes omits the key.
-        side_effects: None,
+        side_effects,
     };
     let json = serde_json::to_string_pretty(&trace).map_err(|e| e.to_string())?;
     std::fs::write(out, json).map_err(|e| format!("writing {}: {e}", out.display()))?;
@@ -1488,8 +1607,14 @@ fn replay_inner(
     check_egress(&plan, &run, &tier)?;
     // Re-scan the recorded corpus for declared secrets by the SAME mechanism
     // as record, so an unchanged system replays the same verdict. The corpus
-    // is the recorded cassette + MCP lanes (the proxy consumed the live one).
-    check_secret_leak(&plan, &trace.cassette, &trace.mcp)?;
+    // is the recorded cassette + MCP lanes + side-effect lane (the proxy
+    // consumed the live cassette, and the recorded lane is the one on disk).
+    check_secret_leak(
+        &plan,
+        &trace.cassette,
+        &trace.mcp,
+        trace.side_effects.as_ref(),
+    )?;
     Ok(())
 }
 
@@ -1908,6 +2033,120 @@ mod tests {
         );
     }
 
+    // ---- path hygiene and the side-effect lane (unix-gated: capture is
+    // a Linux mechanism, so every input is a Unix path) ----
+
+    #[cfg(unix)]
+    fn ws() -> &'static Path {
+        Path::new("/ws")
+    }
+
+    /// The kept form is `./`-prefixed, byte-for-byte the captured name
+    /// minus the workspace prefix and `.` components - the kernel's
+    /// ` (deleted)` marker included, anywhere it sits - and the workspace
+    /// root itself is `./` (pinned: "empty target" and "no target" must not
+    /// blur). Everything doubtful redacts to a hash of the RAW string,
+    /// saying why - `/ws/a/../b` is NEVER normalized to a kept `./b`.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_names_are_kept_and_everything_doubtful_redacts() {
+        for (raw, kept) in [
+            ("/ws/./exports/./2025.csv", "./exports/2025.csv"),
+            ("/ws", "./"),
+            ("/ws/tmp.csv (deleted)", "./tmp.csv (deleted)"),
+            ("/ws/dir (deleted)/f.csv", "./dir (deleted)/f.csv"),
+        ] {
+            assert_eq!(hygiene(Some(raw), None, ws()), (Some(kept.into()), None));
+        }
+        // A capture-side note travels with a kept target untouched.
+        assert_eq!(
+            hygiene(Some("/ws/a"), Some("weak evidence"), ws()),
+            (Some("./a".into()), Some("weak evidence".into()))
+        );
+        for (raw, why) in [
+            ("/home/alice/tokens.csv", "outside workspace (sha256:"),
+            ("/ws/a/../b", "traversal path (sha256:"),
+            ("gone.txt", "unanchored relative path (sha256:"),
+        ] {
+            let (target, note) = hygiene(Some(raw), None, ws());
+            assert_eq!(target, None, "{raw}");
+            assert!(note.expect("says why").starts_with(why), "{raw}");
+        }
+    }
+
+    /// The postconditions over generated inputs: ANY `..` input yields no
+    /// target; a kept target is `./`-prefixed, never absolute, `..`-free,
+    /// and rejoins to the captured path modulo dropped `.` components.
+    #[cfg(unix)]
+    #[test]
+    fn hygiene_postconditions_hold_over_generated_paths() {
+        use std::path::Component;
+        const PARTS: [&str; 7] = ["ws", "a", "..", ".", "exports", "x (deleted)", "ws-evil"];
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move |bound: usize| {
+            state = state.wrapping_mul(0x5851_F42D_4C95_7F2D).wrapping_add(1);
+            (state >> 33) as usize % bound
+        };
+        for _ in 0..4000 {
+            let parts: Vec<&str> = (0..next(6)).map(|_| PARTS[next(7)]).collect();
+            let raw = format!("{}{}", ["", "/"][usize::from(next(4) > 0)], parts.join("/"));
+            let Some(target) = hygiene(Some(&raw), None, ws()).0 else {
+                continue;
+            };
+            assert!(!parts.contains(&".."), "`..` in {raw:?} must redact");
+            let rel = target
+                .strip_prefix("./")
+                .expect("a kept target is ./-prefixed");
+            let clean = !rel.starts_with('/')
+                && !Path::new(rel)
+                    .components()
+                    .any(|c| matches!(c, Component::ParentDir));
+            assert!(clean, "{target:?} from {raw:?}");
+            let cleaned: PathBuf = Path::new(&raw).components().collect();
+            assert_eq!(ws().join(rel), cleaned, "{target:?} rejoins to {raw:?}");
+        }
+    }
+
+    /// The lane: absent unobserved (silence, never laundered into "clean"),
+    /// faults deduped, every path in it a hygiene OUTPUT - a rename joining
+    /// the two outputs, `[redacted]` standing in for a redacted side.
+    #[cfg(unix)]
+    #[test]
+    fn the_lane_records_hygiene_outputs_never_raw_paths() {
+        let mut run = egress_run(vec![]);
+        assert!(side_effects_lane(&run, ws()).is_none(), "not observed");
+
+        run.observed = true;
+        run.fs.faults = vec!["openat2: EPERM".into(), "openat2: EPERM".into()];
+        let event = |op: &str, path: &str, path2: Option<&str>| flowproof_adapters::FsEvent {
+            op: op.into(),
+            path: Some(path.into()),
+            path2: path2.map(Into::into),
+            path_note: None,
+            flags: None,
+            at_ms: 412,
+        };
+        run.fs.destructive = vec![
+            event("unlinkat", "/ws/gone.csv", None),
+            event("renameat2", "/ws/a", Some("/home/u/b.csv")),
+            event("rename", "/home/u/a", Some("/home/u/b")),
+        ];
+        let lane = side_effects_lane(&run, ws()).expect("observed mints the lane");
+        assert_eq!(lane.observation, "observed (linux seccomp)");
+        assert_eq!(lane.faults.len(), 1, "one mechanism, one finding");
+        assert_eq!(lane.effects[0].target.as_deref(), Some("./gone.csv"));
+        assert_eq!(lane.effects[1].target.as_deref(), Some("./a -> [redacted]"));
+        assert_eq!(lane.effects[2].target, None, "both sides redacted");
+        let note = lane.effects[1].target_note.as_deref().expect("says why");
+        assert!(note.starts_with("dst: outside workspace"), "{note}");
+        let json = serde_json::to_string(&lane).expect("serialize");
+        assert!(!json.contains("/home"), "no raw path in the lane: {json}");
+
+        // The store-guard scans the lane, as a named corpus element.
+        let corpus = secret_corpus(&neutral_cassette("hi", "x"), &BTreeMap::new(), Some(&lane));
+        assert!(corpus.iter().any(|(n, _)| n == "the side-effects lane"));
+    }
+
     // ---- egress containment verdict (cross-platform) ----
 
     /// A minimal `command:` Plan for exercising `check_egress` directly.
@@ -1947,6 +2186,7 @@ mod tests {
             upstream_error: None,
             egress: flowproof_adapters::egress::EgressLog { blocked, faults },
             fs: flowproof_adapters::FsLog::default(),
+            observed: false,
             containment: None,
         }
     }
@@ -1964,6 +2204,7 @@ mod tests {
         run.fs.destructive.push(flowproof_adapters::FsEvent {
             op: "unlinkat".into(),
             path: Some("/home/u/prod.db".into()),
+            path2: None,
             path_note: None,
             flags: None,
             at_ms: 12,
@@ -2273,6 +2514,7 @@ mod tests {
             upstream_error: None,
             egress: Default::default(),
             fs: Default::default(),
+            observed: false,
             divergence: None,
             timed_out: false,
             containment: None,

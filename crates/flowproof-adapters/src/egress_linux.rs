@@ -1175,17 +1175,21 @@ fn observe(
     let (a, pid) = (req.data.args, req.pid);
     // Where each call keeps the thing it destroys. Wrong indices make a wrong
     // REPORT, never a wrong verdict - the trap already happened.
-    let (subject, flags) = match op {
-        "unlink" | "rmdir" | "truncate" | "creat" => (at(pid, None, a[0]), None),
-        "open" => (at(pid, None, a[0]), open_flags(a[1])),
-        "openat" => (at(pid, Some(a[0]), a[1]), open_flags(a[2])),
-        "unlinkat" => (at(pid, Some(a[0]), a[1]), at_flags(a[2])),
-        "rename" => (pair(at(pid, None, a[0]), at(pid, None, a[1])), None),
+    let (subject, subject2, flags) = match op {
+        "unlink" | "rmdir" | "truncate" | "creat" => (at(pid, None, a[0]), None, None),
+        "open" => (at(pid, None, a[0]), None, open_flags(a[1])),
+        "openat" => (at(pid, Some(a[0]), a[1]), None, open_flags(a[2])),
+        "unlinkat" => (at(pid, Some(a[0]), a[1]), None, at_flags(a[2])),
+        // The rename family keeps its two subjects STRUCTURED (`path2`):
+        // ` -> ` is a legal filename substring nothing could split back
+        // safely; `FsEvent::line` joins for the report.
+        "rename" => (at(pid, None, a[0]), Some(at(pid, None, a[1])), None),
         "renameat" | "renameat2" => (
-            pair(at(pid, Some(a[0]), a[1]), at(pid, Some(a[2]), a[3])),
+            at(pid, Some(a[0]), a[1]),
+            Some(at(pid, Some(a[2]), a[3])),
             None,
         ),
-        "ftruncate" => (fd_subject(pid, a[0] as RawFd), None),
+        "ftruncate" => (fd_subject(pid, a[0] as RawFd), None, None),
         // `openat2` hides its flags in a pointed-to `open_how` that cBPF
         // cannot see, so the filter trapped it unconditionally and the
         // destructiveness test lands here. An unreadable struct is the one
@@ -1193,7 +1197,7 @@ fn observe(
         // what a FAULT means; a bad pointer from the child is not, because the
         // syscall was going to fail anyway.
         "openat2" => match open_how_flags(pid, a[2], a[3] as usize) {
-            Ok(Some(flags)) => (at(pid, Some(a[0]), a[1]), Some(flags)),
+            Ok(Some(flags)) => (at(pid, Some(a[0]), a[1]), None, Some(flags)),
             Ok(None) => return continue_resp(),
             Err(e) if !is_supervisor_fault(&e) => return continue_resp(),
             Err(e) => return fs_fault(fs, &format!("openat2: could not read open_how: {e}")),
@@ -1203,13 +1207,24 @@ fn observe(
         // reads as a clean run - which is what makes it a fault.
         _ => return fs_fault(fs, &format!("no handler for trapped syscall {op}")),
     };
-    let (path, path_note) = subject;
+    let (path, note) = subject;
+    let (path2, path_note) = match subject2 {
+        // A rename's one note field carries both sides, attributed by prefix.
+        Some((path2, note2)) => {
+            let src = note.map(|n| format!("src: {n}"));
+            let dst = note2.map(|n| format!("dst: {n}"));
+            let merged: Vec<String> = src.into_iter().chain(dst).collect();
+            (path2, (!merged.is_empty()).then(|| merged.join("; ")))
+        }
+        None => (None, note),
+    };
     fs.lock()
         .unwrap_or_else(|e| e.into_inner())
         .destructive
         .push(FsEvent {
             op: op.to_string(),
             path,
+            path2,
             path_note,
             flags,
             at_ms: spawn.elapsed().as_millis() as u64,
@@ -1247,13 +1262,6 @@ fn fd_subject(pid: u32, fd: RawFd) -> Subject {
         Ok(path) => (Some(path.display().to_string()), None),
         Err(e) => (None, Some(format!("unresolved: {link}: {e}"))),
     }
-}
-
-/// The rename family clobbers its DESTINATION and moves its source: name both.
-fn pair(from: Subject, to: Subject) -> Subject {
-    let note = from.1.clone().or_else(|| to.1.clone());
-    let show = |s: &Subject| s.0.clone().unwrap_or_else(|| "?".to_string());
-    (Some(format!("{} -> {}", show(&from), show(&to))), note)
 }
 
 /// The `O_*` bits worth naming, or `None` when `O_TRUNC` is absent - which is
