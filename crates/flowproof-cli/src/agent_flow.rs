@@ -26,6 +26,7 @@ use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan, McpServerEvent};
 use flowproof_agent::{FlowSpec, SpecStep};
 use flowproof_trace::cassette::Cassette;
 use flowproof_trace::egress::EgressEvent;
+use flowproof_trace::side_effect::SideEffect;
 use flowproof_trace::substitution::Mocks;
 use flowproof_trace::toolcalls::{self, ToolCallExpectation};
 
@@ -94,6 +95,12 @@ struct AgentTrace {
     /// authority: enforcement always uses the CURRENT spec's set).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     egress: Option<EgressTrace>,
+    /// The side-effect audit lane, written at record when the run was
+    /// observed. ADDITIVE and OMITTED when the mechanism never ran, so an
+    /// unsupervised flow serializes BYTE-IDENTICAL to today; absence means
+    /// "no observation mechanism", never "nothing happened".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    side_effects: Option<SideEffectsTrace>,
 }
 
 /// The trace's egress lane: the containment tier the recording ran under, the
@@ -109,6 +116,21 @@ struct EgressTrace {
     /// Undeclared destinations the agent attempted and containment denied.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     blocked: Vec<EgressEvent>,
+}
+
+/// The trace's side-effect lane. The tag speaks OBSERVATION vocabulary
+/// (`observed`, never `enforced`) - nothing here was prevented. `faults`
+/// is kept beside `effects` because an empty effects list under a blind
+/// supervisor is silence, not evidence, and the lane must not launder one
+/// into the other.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct SideEffectsTrace {
+    /// The observation tag, e.g. `observed (linux seccomp)`.
+    observation: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    effects: Vec<SideEffect>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    faults: Vec<String>,
 }
 
 /// One MCP server's recorded lane: its mocks, snapshotted (travel-in-trace,
@@ -1392,6 +1414,9 @@ fn record_inner(
         cassette,
         mcp: mcp_trace,
         egress,
+        // Nothing populates the lane yet: capture lands with the fs and http
+        // hooks, so every trace this version writes omits the key.
+        side_effects: None,
     };
     let json = serde_json::to_string_pretty(&trace).map_err(|e| e.to_string())?;
     std::fs::write(out, json).map_err(|e| format!("writing {}: {e}", out.display()))?;
@@ -1599,6 +1624,7 @@ mod tests {
             cassette,
             mcp: BTreeMap::new(),
             egress: None,
+            side_effects: None,
         };
         std::fs::write(
             &path,
@@ -1761,6 +1787,7 @@ mod tests {
             cassette: neutral_cassette("hi", "there"),
             mcp: BTreeMap::new(),
             egress: None,
+            side_effects: None,
         };
         let json = serde_json::to_string_pretty(&trace).expect("serialize");
         // The `mcp` and `egress` keys are skipped when empty, so the bytes
@@ -1800,6 +1827,7 @@ mod tests {
                     at_ms: 42,
                 }],
             }),
+            side_effects: None,
         };
         let json = serde_json::to_string(&trace).expect("serialize");
         assert!(json.contains("\"egress\""), "egress present: {json}");
@@ -1810,6 +1838,74 @@ mod tests {
         assert_eq!(lane.allowed.len(), 2);
         assert_eq!(lane.blocked[0].destination, "198.51.100.9:443");
         assert_eq!(lane.blocked[0].protocol, "tcp");
+    }
+
+    /// The side-effect lane round-trips, and unset record fields (the
+    /// reserved ones in particular) leave no key.
+    #[test]
+    fn a_side_effect_lane_survives_the_round_trip() {
+        let trace = AgentTrace {
+            app: "agent".into(),
+            mocks: BTreeMap::new(),
+            cassette: neutral_cassette("hi", "there"),
+            mcp: BTreeMap::new(),
+            egress: None,
+            side_effects: Some(SideEffectsTrace {
+                observation: "observed (linux seccomp)".into(),
+                effects: vec![SideEffect {
+                    kind: flowproof_trace::side_effect::KIND_FS_WRITE.into(),
+                    target: None,
+                    target_note: Some("outside workspace (sha256:9f1c22ab04e1)".into()),
+                    op: Some("openat".into()),
+                    flags: Some("O_WRONLY|O_TRUNC".into()),
+                    at_ms: 412,
+                    before: None,
+                    after: None,
+                    diff: None,
+                }],
+                faults: vec!["openat2: could not read open_how: EPERM".into()],
+            }),
+        };
+        let json = serde_json::to_string(&trace).expect("serialize");
+        assert!(json.contains("\"side_effects\""), "lane present: {json}");
+        for absent in ["\"target\"", "\"before\"", "\"after\"", "\"diff\""] {
+            assert!(!json.contains(absent), "no `{absent}` key: {json}");
+        }
+        let back: AgentTrace = serde_json::from_str(&json).expect("deserialize");
+        let lane = back.side_effects.expect("lane present");
+        assert_eq!(lane.observation, "observed (linux seccomp)");
+        assert_eq!(lane.effects.len(), 1);
+        assert_eq!(lane.effects[0].op.as_deref(), Some("openat"));
+        assert_eq!(lane.faults.len(), 1);
+    }
+
+    /// A side-effect-free trace serializes WITHOUT the key, and a trace
+    /// written before the lane existed still deserializes. A NEW sibling
+    /// of the existing byte-identity test rather than an edit to it.
+    #[test]
+    fn a_side_effect_free_trace_serializes_without_the_key() {
+        let trace = AgentTrace {
+            app: "agent".into(),
+            mocks: BTreeMap::new(),
+            cassette: neutral_cassette("hi", "there"),
+            mcp: BTreeMap::new(),
+            egress: None,
+            side_effects: None,
+        };
+        let json = serde_json::to_string_pretty(&trace).expect("serialize");
+        assert!(
+            !json.contains("side_effects"),
+            "no side_effects key on an unobserved trace: {json}"
+        );
+
+        // A hand-built pre-lane trace (no `side_effects` field at all)
+        // deserializes, the field defaulting to None.
+        let old = r#"{"app":"agent","mocks":{},"cassette":{"turns":[]}}"#;
+        let back: AgentTrace = serde_json::from_str(old).expect("pre-lane trace deserializes");
+        assert!(
+            back.side_effects.is_none(),
+            "absent side_effects defaults to None"
+        );
     }
 
     // ---- egress containment verdict (cross-platform) ----
@@ -2357,6 +2453,7 @@ mod tests {
             cassette: neutral_cassette("hi", "there"),
             mcp,
             egress: None,
+            side_effects: None,
         };
         let json = serde_json::to_string(&trace).expect("serialize");
         assert!(json.contains("\"mcp\""), "mcp present: {json}");
@@ -3063,6 +3160,7 @@ mod tests {
             cassette: neutral_cassette("hi", "there"),
             mcp,
             egress: None,
+            side_effects: None,
         };
         let json = serde_json::to_string_pretty(&trace).expect("serialize");
         assert!(
