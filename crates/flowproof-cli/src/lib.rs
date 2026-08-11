@@ -6,6 +6,10 @@ mod capture;
 pub mod config;
 mod doctor;
 
+// The falsifiability harness feeds committed fixture records through the
+// SAME reader and verdict record and replay execute, so they are public.
+pub use agent_flow::{side_effect_verdict, side_effects_of};
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

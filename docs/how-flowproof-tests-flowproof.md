@@ -44,6 +44,7 @@ check and is exactly the defect worth catching.
 | `assert: reply contains` | [`reply-missing-text.json`](../tests/falsifiability/fixtures/reply-missing-text.json) | the same shape of hole in the assertion that has already hosted one false green: every existing use asserts text the model was always going to produce, so none of them would notice the assertion ceasing to work |
 | cassette call-order tolerance | [`two-call-agent.py`](../tests/falsifiability/fixtures/two-call-agent.py) | a tolerance that quietly became "the request is never checked". Reordering two INDEPENDENT calls must not diverge; changing what one of them SENDS still must |
 | `assert_tool_call` argument matchers | [`tool-call-wrong-argument.json`](../tests/falsifiability/fixtures/tool-call-wrong-argument.json) | a matcher vocabulary that cannot fail. The tool-NAME layer is proven; every `where` clause in the suite asserts an argument the model was always going to produce. One guilty call violates both a value matcher (`equals`) and a presence matcher (`is absent`) |
+| `assert_no_side_effect` | [`side-effect-violation.trace.jsonl`](../tests/falsifiability/fixtures/side-effect-violation.trace.jsonl) | a side-effect record that can be written but never read in anger — a lane nothing can convict from is reporting, not evidence; the capability direction, so "we could not observe" never reads as "nothing happened"; and verdict-class injection, so a target named after a capability keyword cannot relabel a violation |
 
 ### A note on gates specifically
 
