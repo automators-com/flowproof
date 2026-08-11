@@ -12,16 +12,27 @@
 use std::collections::BTreeSet;
 
 /// One destructive filesystem syscall the supervisor watched go past.
+///
+/// CAPTURE CONTRACT: `path` and `path2` carry only the bare path string;
+/// every qualifier goes to `path_note`. One named kernel exception: a
+/// subject readlinked out of `/proc/<pid>/...` carries the kernel's
+/// ` (deleted)` suffix - trailing for an unlinked target, MID-path under
+/// an unlinked cwd. NOT stripped: the same bytes are a legal filename
+/// ending, and munging a real name would break "the name the syscall used".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FsEvent {
     /// The syscall by name: `unlinkat`, `truncate`, `openat`.
     pub op: String,
-    /// What it acted on, absolute where the supervisor could resolve one. The
-    /// rename family names both, `source -> destination`.
+    /// What it acted on, absolute where the supervisor could resolve one.
+    /// For the rename family, the SOURCE.
     pub path: Option<String>,
-    /// Why `path` is missing or unresolved. Weaker evidence, labelled as
-    /// such: the TRAP is what proves the syscall happened, and traps fire on
-    /// syscall number, which nothing can race.
+    /// The rename family's destination; `None` for every non-rename op.
+    /// Structured, never pre-joined: ` -> ` is a legal filename substring.
+    pub path2: Option<String>,
+    /// Why `path` (or `path2`, prefixed `src:`/`dst:` for a rename) is
+    /// missing or unresolved. Weaker evidence, labelled as such: the TRAP is
+    /// what proves the syscall happened, and traps fire on syscall number,
+    /// which nothing can race.
     pub path_note: Option<String>,
     /// The flags worth naming, for the calls that carry them:
     /// `O_WRONLY|O_TRUNC`, `AT_REMOVEDIR`.
@@ -30,7 +41,8 @@ pub struct FsEvent {
 }
 
 impl FsEvent {
-    /// The one-line rendering used in the report.
+    /// The one-line rendering used in the report; the rename family's
+    /// `source -> destination` join happens HERE, unchanged on stderr.
     pub fn line(&self) -> String {
         let flags = match &self.flags {
             Some(f) => format!(" [{f}]"),
@@ -40,7 +52,15 @@ impl FsEvent {
             Some(n) => format!(" ({n})"),
             None => String::new(),
         };
-        let path = self.path.as_deref().unwrap_or("<path unknown>");
+        let path = if self.op.starts_with("rename") {
+            format!(
+                "{} -> {}",
+                self.path.as_deref().unwrap_or("?"),
+                self.path2.as_deref().unwrap_or("?")
+            )
+        } else {
+            self.path.as_deref().unwrap_or("<path unknown>").to_string()
+        };
         format!("{}{flags} {path}{note} at {}ms", self.op, self.at_ms)
     }
 }
@@ -124,10 +144,19 @@ mod tests {
         FsEvent {
             op: op.into(),
             path: path.map(Into::into),
+            path2: None,
             path_note: None,
             flags: None,
             at_ms: 412,
         }
+    }
+
+    /// The stderr rendering must not have moved when the rename join did.
+    #[test]
+    fn a_rename_renders_its_two_subjects_joined() {
+        let mut e = event("renameat2", Some("/x/a"));
+        e.path2 = Some("/x/b".into());
+        assert_eq!(e.line(), "renameat2 /x/a -> /x/b at 412ms");
     }
 
     #[test]

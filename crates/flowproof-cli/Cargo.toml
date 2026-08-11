@@ -31,6 +31,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The `audit` report renders as YAML (default) or JSON.
 serde_yaml = { workspace = true }
+# Side-effect path redaction hashes what it will not store. Already in the
+# build graph via pdf-extract, so no new crate compiles.
+sha2 = "0.10"
 
 [lints]
 workspace = true

@@ -151,6 +151,12 @@ pub struct AgentRun {
     /// mechanism, which is everywhere the egress log is empty for the same
     /// reason: the traps are installed together or not at all.
     pub fs: FsLog,
+    /// Whether the seccomp observation mechanism ran: true only on the
+    /// Linux contained path. Distinct from `containment` - observing side
+    /// effects is not containing egress - and load-bearing for the trace's
+    /// side-effect lane, ABSENT when this is false: an unobserved run's
+    /// empty `fs` is silence, not evidence.
+    pub observed: bool,
     /// The containment tier this RUN achieved, when the run itself is what
     /// decides it.
     ///
@@ -385,6 +391,7 @@ pub fn run_http(
         upstream_error: log.upstream_error.clone(),
         egress: EgressLog::default(),
         fs: FsLog::default(),
+        observed: false,
         containment: None,
     };
     drop(log);
@@ -647,6 +654,7 @@ pub fn run_against(
         upstream_error: log.upstream_error.clone(),
         egress: EgressLog::default(),
         fs: FsLog::default(),
+        observed: false,
         containment: None,
     };
     drop(log);
@@ -711,6 +719,9 @@ pub fn run_against_contained(
         upstream_error: log.upstream_error.clone(),
         egress,
         fs,
+        // The filter that enforced is the filter that watched, so `fs`
+        // above is evidence here and silence everywhere else.
+        observed: true,
         // Reaching here means the filter installed: it goes in via `pre_exec`
         // and a failure aborts the spawn, so there is no path to a finished
         // run with no filter behind it.
@@ -766,6 +777,7 @@ pub fn run_against_contained(
         },
         // Filesystem observation is a seccomp mechanism; Windows has none.
         fs: FsLog::default(),
+        observed: false,
         containment: Some(match outcome.not_contained {
             None => Containment::Enforced,
             Some(why) => Containment::NotContained(why),
