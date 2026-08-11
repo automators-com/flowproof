@@ -2005,6 +2005,7 @@ fn secret_scan_corpus_report(app: &str) -> (Vec<String>, Vec<String>) {
             vec![
                 "model-boundary trajectory (cassette request and response bodies)".to_string(),
                 "MCP lanes".to_string(),
+                "the side-effects lane, when the run was observed".to_string(),
             ],
             vec!["channels the engine never observed (server logs, third-party sinks)".to_string()],
         ),

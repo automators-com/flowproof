@@ -950,14 +950,26 @@ dropped, since the trap already proved the syscall happened. Only a syscall
 whose *destructiveness* could not be adjudicated - an `openat2` whose
 `open_how` was unreadable - is a fault.
 
-**It prints, and it is not recorded.** There is no `fs` lane in the trace,
-by decision rather than by omission: the report goes to stderr and nothing
-survives the run. A lane was designed and declined, because a trace is a
-COMMITTED artifact and these paths are absolute - `/home/alice/exports/
-acme-corp-2025.csv` would be baked into a file that is reviewed and diffed
-forever. That is the same argument that keeps `execve` out of the trap set
-for its argv. So this answers "what did that run destroy", never "what has
-this flow destroyed since March".
+**It prints, and - since issue #465 - it is also recorded, redacted.** A
+lane was designed once before and declined, and the objection deserves
+keeping in its original words: a trace is a COMMITTED artifact and these
+paths are absolute - `/home/alice/exports/acme-corp-2025.csv` would be
+baked into a file that is reviewed and diffed forever. That is the same
+argument that keeps `execve` out of the trap set for its argv. Issue #465
+is the human act that reversed the decline - the lane's availability, not
+the judgment about paths, which still holds: an absolute path never enters
+a trace. An observed run now writes a `side_effects` lane whose records
+keep a path only when it is workspace-relative by construction -
+`./`-prefixed, the name the syscall used minus the workspace prefix and
+any bare `.` components, no component rewritten - and redact everything
+else (traversal forms included, never normalized-and-kept) to a
+`sha256:` fragment of the captured path; the exact rules and the
+confirmation-oracle residual are in
+[trace-format.md](trace-format.md#side-effect-lane-app-agent). The lane is
+scanned by the `assert_no_secret_leak` store-guard before the trace is
+minted, and the stderr report above keeps full absolute-path fidelity
+either way. So "what has this flow destroyed since March" finally has an
+answer: names inside the workspace, hashes outside it.
 
 **Punts, and they are real.** These are ATTEMPTS, not outcomes: the reply
 goes out before the kernel runs the call, so an `rmdir` of a directory that
@@ -965,7 +977,10 @@ was not there reads exactly like one that removed a tree. `open(path,
 O_WRONLY)` without `O_TRUNC` followed by a write at offset 0 corrupts a file
 and fires nothing; catching it needs a trap on every `write`, which would put
 a supervisor round-trip on every log line. Nothing is observed on macOS or
-Windows, or on a flow that engages no containment.
+Windows, or on a flow that engages no containment. The recorded lane
+inherits every one of these limits plus one of its own: a kept `./` target
+is the NAME the syscall used, never a resolution claim - a symlinked
+component can carry the actual victim elsewhere.
 
 ## Secret-leak control (`assert_no_secret_leak`)
 
@@ -1064,7 +1079,7 @@ Built and tested, each independently:
 | `assert_tool_call` grammar | the prose form |
 | `app: agent` | the spec surface, process runner, record/replay orchestration and CLI dispatch, exercised end to end |
 | egress containment | `allow_egress` / `assert_no_egress`, enforced by a Linux seccomp supervisor (proven by the Linux CI E2E); "not contained" and honestly reported on macOS/Windows and for `url:` flows |
-| filesystem observation | the same seccomp filter also traps the destructive filesystem syscalls and REPORTS them, asserting nothing - no spec surface, no step, no verdict. Linux only, and only where containment is already engaged |
+| filesystem observation | the same seccomp filter also traps the destructive filesystem syscalls, REPORTS them to stderr, and - since #465 - records them into the trace's `side_effects` lane, workspace-relative or hash-redacted, asserting nothing: no spec surface, no step, no verdict. Linux only, and only where containment is already engaged |
 | MCP tool boundary | stdio (v3.1) and streamable-HTTP (v3.2): flowproof stands in as the server, records the JSON-RPC traffic once and replays it with no server running. A tool with a `result:` here is answered by the stand-in and never forwarded, in either phase - the one boundary that stops a tool executing |
 | Anthropic Messages | built and covered end to end, record leg included: a flow records against a Messages-dialect upstream and replays it with no model at all |
 | Streaming | built and covered end to end in both dialects, record leg included: a `stream: true` agent is served SSE at record and at replay, and the test asserts the FRAME BOUNDARIES, not the assembled text - a replay that collapsed the stream into one buffered body would still produce the same reply |
