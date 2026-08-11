@@ -1281,6 +1281,15 @@ fn check_side_effects(
     Ok(lane)
 }
 
+/// The recorded side-effect lane's records and faults, read off any agent
+/// trace - the `egress_blocked` precedent, and the REAL serde path the
+/// falsifiability harness feeds back through [`side_effect_verdict`].
+pub fn side_effects_of(trace_path: &Path) -> Option<(Vec<SideEffect>, Vec<String>)> {
+    let raw = std::fs::read_to_string(trace_path).ok()?;
+    let trace: AgentTrace = serde_json::from_str(&raw).ok()?;
+    trace.side_effects.map(|lane| (lane.effects, lane.faults))
+}
+
 /// The short containment tag stored in the trace lane (the parenthetical of
 /// the report line): `enforced (linux seccomp)` or `not contained (<reason>)`.
 /// The run record stores the SAME string, so the trace and the artifact an
