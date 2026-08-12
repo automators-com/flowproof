@@ -1,0 +1,95 @@
+# A long write lifecycle for the reference TS3 sandbox. Unlike a sales order,
+# an SO10 standard text can be genuinely deleted. suite.yaml repeats deletion
+# unconditionally, so an interrupted or failed run cannot strand test data.
+# Cleanup refuses names outside the unique ZFP-* namespace.
+name: Create revise and delete standard text
+app: sap
+steps:
+  - Go to /nSO10
+  - assert: page shows Standard Text: Request
+  - assert: page shows Text Name
+  - assert: the wnd[0]/usr/ctxtRSSCE-TDID field contains ST
+  - assert: the wnd[0]/usr/ctxtRSSCE-TDSPRAS field contains EN
+  - Type ${SO10_TEXT_NAME} into the "id:wnd[0]/usr/ctxtRSSCE-TDNAME" field
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT001" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: page shows SYSTEM
+  - Type FLOWPROOF SANDBOX OPERATIONS RUNBOOK into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1]" field
+  - 'Type Owner: Quality Engineering into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,2]" field'
+  - 'Type Purpose: deterministic write lifecycle into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,3]" field'
+  - 'Type Scope: TS3 client 100 sandbox into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,4]" field'
+  - 'Type Phase 1: create the tagged standard text into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,5]" field'
+  - 'Type Phase 2: verify every persisted line into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,6]" field'
+  - 'Type Phase 3: revise controlled content into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,7]" field'
+  - 'Type Phase 4: save and reopen the revision into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,8]" field'
+  - 'Type Phase 5: delete the complete object into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,9]" field'
+  - 'Type Control: unique ZFP namespace only into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,10]" field'
+  - 'Type Recovery: suite cleanup is unconditional into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,11]" field'
+  - 'Type Result: no tagged data remains into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,12]" field'
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains FLOWPROOF SANDBOX OPERATIONS RUNBOOK
+  - assert: "the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,2] field contains Owner: Quality Engineering"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,3] field contains deterministic write lifecycle
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,4] field contains TS3 client 100 sandbox
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,5] field contains create the tagged standard text
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,6] field contains verify every persisted line
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,7] field contains revise controlled content
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,8] field contains save and reopen the revision
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,9] field contains delete the complete object
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,10] field contains unique ZFP namespace only
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,11] field contains suite cleanup is unconditional
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,12] field contains no tagged data remains
+  - Press the "id:wnd[0]/tbar[0]/btn[11]" button
+  - assert: page shows Text ${SO10_TEXT_NAME} language EN was saved
+  - Press F3
+  - assert: page shows Standard Text: Request
+  - assert: the wnd[0]/usr/ctxtRSSCE-TDNAME field contains ${SO10_TEXT_NAME}
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: "page shows Display Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains FLOWPROOF SANDBOX OPERATIONS RUNBOOK
+  - assert: "the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,2] field contains Owner: Quality Engineering"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,3] field contains deterministic write lifecycle
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,4] field contains TS3 client 100 sandbox
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,5] field contains create the tagged standard text
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,6] field contains verify every persisted line
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,7] field contains revise controlled content
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,8] field contains save and reopen the revision
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,9] field contains delete the complete object
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,10] field contains unique ZFP namespace only
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,11] field contains suite cleanup is unconditional
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,12] field contains no tagged data remains
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT003" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - 'Replace the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,3]" field with Purpose: verified create revise delete lifecycle'
+  - 'Replace the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,7]" field with Phase 3: revision applied and checked'
+  - 'Replace the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,8]" field with Phase 4: persisted revision reopened'
+  - 'Replace the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,12]" field with Result: revision ready for deletion'
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,3] field contains verified create revise delete lifecycle
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,7] field contains revision applied and checked
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,8] field contains persisted revision reopened
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,12] field contains revision ready for deletion
+  - Press the "id:wnd[0]/tbar[0]/btn[11]" button
+  - assert: page shows Text ${SO10_TEXT_NAME} language EN was saved
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: "page shows Display Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains FLOWPROOF SANDBOX OPERATIONS RUNBOOK
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,3] field contains verified create revise delete lifecycle
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,7] field contains revision applied and checked
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,8] field contains persisted revision reopened
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,9] field contains delete the complete object
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,10] field contains unique ZFP namespace only
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,11] field contains suite cleanup is unconditional
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,12] field contains revision ready for deletion
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT003" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - Click "id:wnd[0]/mbar/menu[0]/menu[9]"
+  - assert: page shows Delete Text
+  - Press the "id:wnd[1]/usr/btnSPOP-OPTION1" button
+  - Go to /nSO10
+  - Type ${SO10_TEXT_NAME} into the "id:wnd[0]/usr/ctxtRSSCE-TDNAME" field
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: page shows Text ${SO10_TEXT_NAME} ID ST language EN not found
+  - Press F3
+  - assert: page shows SAP Easy Access

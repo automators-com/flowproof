@@ -1,0 +1,4 @@
+# Each run receives its own customer-namespace SO10 text name. Cleanup runs
+# after success, assertion failure, or driver error and proves it is gone.
+env_from: powershell.exe -NoProfile -ExecutionPolicy Bypass -File examples/sap/standard-text/mint-test-data.ps1
+after_each: cscript.exe //nologo examples/sap/standard-text/cleanup-standard-text.vbs
