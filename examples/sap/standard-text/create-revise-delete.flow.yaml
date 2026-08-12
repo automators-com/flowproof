@@ -1,6 +1,6 @@
 # A deliberately long write lifecycle for the reference TS3 sandbox. SO10
-# standard texts can be genuinely deleted, and suite.yaml repeats deletion
-# unconditionally if any step fails.
+# standard texts can be genuinely deleted, so the flow cleans up the record it
+# creates and verifies that it no longer exists.
 #
 # SAP's classic text editor recycles visible row IDs during the pauses needed
 # to record actions. The first line is its stable writable unit, so complexity
