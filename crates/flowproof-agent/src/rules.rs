@@ -6641,3 +6641,50 @@ mod dialog_suffix_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod capture_download_tests {
+    use super::*;
+
+    #[test]
+    fn wait_until_the_download_completes_captures_with_the_default_timeout() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain("Wait until the download completes as pir_export".into()),
+        )
+        .expect("resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::CaptureDownload {
+                name: "pir_export".into(),
+                timeout_ms: WAIT_STEP_TIMEOUT_MS,
+            }]
+        );
+    }
+
+    #[test]
+    fn wait_until_the_download_completes_honors_an_explicit_timeout() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain("Wait until the download completes as export within 90s".into()),
+        )
+        .expect("resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::CaptureDownload {
+                name: "export".into(),
+                timeout_ms: 90_000,
+            }]
+        );
+    }
+
+    #[test]
+    fn wait_until_the_download_completes_with_no_name_is_a_spec_error() {
+        let err = resolve_step(
+            "web",
+            &SpecStep::Plain("Wait until the download completes as ".into()),
+        )
+        .expect_err("a nameless capture is unresolvable");
+        assert!(err.to_string().contains("name"), "{err}");
+    }
+}
