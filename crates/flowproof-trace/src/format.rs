@@ -366,6 +366,13 @@ pub enum Action {
     /// The VALUE is never stored - only the name - so a captured balance or
     /// order number stays out of the reviewable artifact.
     Capture(Params),
+    /// Wait for a browser download to land and complete, capturing its
+    /// resolved path into a flow-scoped name: `{"name": "<name>"}`, an
+    /// optional `{"timeout_ms": …}`. No selectors - there is no UI target,
+    /// like `TypeFocused`. The path is stored in `captures` at execution,
+    /// never in the trace, the same indirection `Capture` uses - it is not
+    /// secret, but it is a value only this run's filesystem can produce.
+    CaptureDownload(Params),
     /// Drive a checkbox-like control to a state: `{"checked": bool}`.
     /// Set-state rather than toggle, so replaying it is idempotent.
     SetChecked(Params),
@@ -455,6 +462,14 @@ pub struct BrowserSetup {
     /// deterministic. Web-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub random: Option<RandomSetup>,
+    /// Where downloaded files land, applied at launch (record and every
+    /// replay) so `Wait until the download completes as <name>` has a
+    /// fixed place to look. Stored RAW - a `${VAR}` reference resolves at
+    /// launch, never here. `None` = the driver creates its own per-launch
+    /// temp directory, which is enough determinism for a wait that only
+    /// needs "nothing else writes here," not a specific path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloads_dir: Option<String>,
 }
 
 /// The seed for the pinned PRNG. A literal, never a `${VAR}` - a seed
@@ -472,6 +487,7 @@ impl BrowserSetup {
             && self.user_agent.is_none()
             && self.args.is_empty()
             && self.clock.is_none()
+            && self.downloads_dir.is_none()
     }
 }
 

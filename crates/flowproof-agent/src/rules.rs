@@ -239,6 +239,12 @@ pub enum ResolvedAction {
         name: String,
         count: bool,
     },
+    /// `Wait until the download completes as <name> [within Ns]` — no
+    /// target, like `TypeFocused`: a download belongs to the surface, not
+    /// to an element on screen. Captures the resolved file path under
+    /// `name`, read at execution time on record and every replay exactly
+    /// like `Capture`.
+    CaptureDownload { name: String, timeout_ms: u64 },
     /// Drive a checkbox-like control to a STATE (`Check`/`Uncheck`).
     /// Set-state rather than toggle, so the step means the same thing
     /// however the environment arrives: idempotent by design.
@@ -2598,6 +2604,29 @@ mod web {
         // `Reload the page`.
         if trimmed.eq_ignore_ascii_case("reload the page") {
             return Ok(vec![ResolvedAction::Reload]);
+        }
+
+        // `Wait until the download completes as <name> [within <N>s]` →
+        // no target (a download belongs to the surface, not an element),
+        // parsed before the generic `wait until …` form below so it is
+        // never mistaken for a page-text wait. Checked BEFORE the
+        // space-terminated prefix below: the outer `trimmed` has already
+        // lost its own trailing whitespace, so a bare "...as" with nothing
+        // after it never matches a prefix ending in a literal space, and
+        // would otherwise fall through to the unrelated generic error.
+        if trimmed.eq_ignore_ascii_case("wait until the download completes as") {
+            return Err(unresolvable(trimmed, "no name to capture the download as"));
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "wait until the download completes as ") {
+            let (name, timeout) = split_within(rest.trim());
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(unresolvable(trimmed, "no name to capture the download as"));
+            }
+            return Ok(vec![ResolvedAction::CaptureDownload {
+                name: name.to_string(),
+                timeout_ms: timeout.unwrap_or(WAIT_STEP_TIMEOUT_MS),
+            }]);
         }
 
         // `Wait until page shows <text> [within <N>s]` → an auto-waiting

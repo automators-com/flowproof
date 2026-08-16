@@ -145,6 +145,7 @@ before migrating a suite's setup helpers step by step.
 | `Reload the page` | web |
 | `<trigger>, accepting the "<message>" dialog` / `, dismissing [the "<message>"] dialog` / `, answering the prompt with "<text>"` | a **dialog suffix** on any trigger (`Click`, `Press the … button`, `Right-click`, `Double-click`, `Hover`) that opens a native `alert`/`confirm`/`prompt`/`beforeunload`. See [Native dialogs](#native-dialogs) below. Web only |
 | `Wait until page shows <text> [within <N>s]` | long-bound auto-waiting assert (default 60s) |
+| `Wait until the download completes as <name> [within <N>s]` | web only; no target, like `Press <Key>` — a download belongs to the surface, not an element. Waits for exactly one browser download to land and finish writing, then captures its RESOLVED PATH into `${captured.<name>}` — read at execution time on record and every replay, so only the name travels in the trace, the same indirection every `Remember … as` capture uses. Pairs with a `browser: {downloads_dir: …}` block to pin where downloads land (optional — the driver creates its own per-launch temp directory otherwise), and with `assert_spreadsheet` or a later surface's launch command (`EXCEL.EXE ${captured.<name>}`, see [Multi-surface flows](#multi-surface-flows-apps-and-in-blocks)) to act on the file it names |
 
 There is deliberately **no `Blur` step**. Blur is not something a user does;
 it is a DOM event that a user action causes. `Press Tab` is that action, it
@@ -914,7 +915,10 @@ What holds, and why:
 
   It travels on the surface's header entry, so record and every replay
   launch that surface the same shape. On a non-web surface it is a parse
-  error naming whose config it is.
+  error naming whose config it is. `browser:` also takes `downloads_dir`
+  (where downloaded files land — absent means the surface creates its own
+  per-launch temp directory), the field `Wait until the download completes
+  as <name>` reads back.
 - **A surface launched with a Windows `command`/`window_title` may
   reference `${captured.x}`** — a value an EARLIER block captured, resolved
   at THIS surface's actual activation rather than before any step has run

@@ -783,6 +783,14 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             }
             (selectors_for(app, target, None), Action::Capture(params))
         }
+        // No target — a download belongs to the surface, not an element,
+        // exactly like `TypeFocused`'s empty selector list.
+        ResolvedAction::CaptureDownload { name, timeout_ms } => {
+            let mut params = serde_json::Map::new();
+            params.insert("name".into(), name.clone().into());
+            params.insert("timeout_ms".into(), (*timeout_ms).into());
+            (Vec::new(), Action::CaptureDownload(params))
+        }
         ResolvedAction::AssertCaptured {
             target,
             name,
@@ -1142,7 +1150,8 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::Reload
         | ResolvedAction::AssertSql { .. }
         | ResolvedAction::AssertApi { .. }
-        | ResolvedAction::AssertScreenshot { .. } => return None,
+        | ResolvedAction::AssertScreenshot { .. }
+        | ResolvedAction::CaptureDownload { .. } => return None,
     };
     target_selector(target)
 }
@@ -1757,10 +1766,22 @@ fn mint_baseline<D: AppDriver>(
 
 /// Trace browser setup → the driver's fully-resolved form (defaults live
 /// in `WebBrowserConfig::from_setup_parts`, shared with replay).
+///
+/// `downloads_dir` is the one field here that resolves `${VAR}` (a runner's
+/// temp/download path is exactly the kind of thing that differs per
+/// environment) — every sibling field is a literal by design (geometry,
+/// a pinned clock/seed, raw Chrome flags), so this is the one seam that
+/// needs it.
 fn web_browser_from_setup(
     setup: &flowproof_trace::format::BrowserSetup,
-) -> flowproof_driver::WebBrowserConfig {
-    flowproof_driver::WebBrowserConfig::from_setup_parts(
+) -> Result<flowproof_driver::WebBrowserConfig, RecordError> {
+    let downloads_dir = setup
+        .downloads_dir
+        .as_deref()
+        .map(flowproof_trace::secret::resolve_refs)
+        .transpose()?
+        .map(std::path::PathBuf::from);
+    Ok(flowproof_driver::WebBrowserConfig::from_setup_parts(
         setup
             .viewport
             .as_ref()
@@ -1775,7 +1796,8 @@ fn web_browser_from_setup(
             .random
             .as_ref()
             .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
-    )
+        downloads_dir,
+    ))
 }
 
 /// Poll an out-of-band probe until it holds or the bound elapses — the row
@@ -2653,7 +2675,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     }
     if let Some(browser) = &spec.browser {
         if !browser.is_empty() {
-            driver.stage_browser(web_browser_from_setup(browser))?;
+            driver.stage_browser(web_browser_from_setup(browser)?)?;
         }
     }
     if multi {
@@ -3256,6 +3278,13 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                         driver.read_text(targeted())?
                     };
                     captures.insert(name.clone(), value);
+                }
+                // No `targeted()` call — a download has no on-screen
+                // selector to wait actionable, exactly like `Reload`/
+                // `Navigate` above.
+                ResolvedAction::CaptureDownload { name, timeout_ms } => {
+                    let path = driver.wait_for_download(Duration::from_millis(*timeout_ms))?;
+                    captures.insert(name.clone(), path.display().to_string());
                 }
                 ResolvedAction::AssertCaptured {
                     name,

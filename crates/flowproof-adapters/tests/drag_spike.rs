@@ -105,6 +105,7 @@ fn the_drag_dispatch_lands_every_time() {
                 args: vec![],
                 clock: None,
                 random: None,
+                downloads_dir: None,
             })
             .expect("viewport staged");
         driver

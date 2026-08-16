@@ -482,7 +482,8 @@ fn action_targets(action: &ResolvedAction) -> Vec<&Target> {
         | ResolvedAction::Reload
         | ResolvedAction::Scroll { target: None, .. }
         | ResolvedAction::AssertSql { .. }
-        | ResolvedAction::AssertApi { .. } => vec![],
+        | ResolvedAction::AssertApi { .. }
+        | ResolvedAction::CaptureDownload { .. } => vec![],
     }
 }
 

@@ -96,9 +96,11 @@ these fields existed) is byte-identical:
   `clock` (`{at, timezone}`: a pinned `Date` offset plus a CDP timezone
   override, so a date-dependent flow replays deterministically), and
   `random` (`{seed}`: a seeded `Math.random`, the clock's sibling, so a
-  flow against a page that mints random values is deterministic). Both
-  travel in the header so record and every replay run the SAME browser
-  shape.
+  flow against a page that mints random values is deterministic), and
+  `downloads_dir` (where downloaded files land, applied via CDP at launch so
+  `capture_download` has a fixed place to look; absent means the driver
+  creates its own per-launch temp directory). All travel in the header so
+  record and every replay run the SAME browser shape.
 - Optional `apps` is the surface map of a **multi-surface trace**
   (docs/multi-surface.md): `name -> app object`, each entry the same shape
   as `app` — `{"gui": {"name": "SAP GUI for Windows", "adapter":
@@ -153,8 +155,8 @@ these fields existed) is byte-identical:
   carry none.
 - `action.type` — one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`,
-  `upload`, `capture`, `set_checked`, `wait`, `assert`. `params` is
-  action-specific (see schema `$defs`).
+  `upload`, `capture`, `capture_download`, `set_checked`, `wait`, `assert`.
+  `params` is action-specific (see schema `$defs`).
   Text params (`type_text` text, assert expectations) may contain `${VAR}`
   **secret references**: the engine resolves them from the environment at
   execution time — recording and every replay — and the trace only ever
@@ -179,6 +181,13 @@ these fields existed) is byte-identical:
   capture of **zero** fails rather than remembering `0` — a selector typo
   matches nothing and so does an empty table, and the step that means zero
   is an `assert` with `element_count: 0`.
+
+  A `capture_download` step carries `{"name": "<name>"}` and an optional
+  `{"timeout_ms": …}`, and has no selectors — a download belongs to the
+  surface, not an element on screen, the same reasoning `press_key` uses for
+  the focused element. Like `capture`, only the name is stored: the
+  download's resolved path is read at execution time on record and on every
+  replay and lives only in that run's captures, never in the trace.
 
   A `kind: "cell"` payload may carry `row_anchor_also: [...]`, and a
   `kind: "scoped"` payload `anchor_also: [...]` — the ADDITIONAL anchors

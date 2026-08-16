@@ -1861,6 +1861,28 @@ fn execute_step<D: AppDriver>(
                 StepMatch::default(),
             ),
         },
+        // No target — a download belongs to the surface, not an element,
+        // read the same way on replay as on record: at execution time,
+        // never from the trace.
+        Action::CaptureDownload(params) => {
+            let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
+                return Ok((
+                    Err("capture-download step has no name".into()),
+                    StepMatch::default(),
+                ));
+            };
+            let timeout_ms = params
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(60_000);
+            match driver.wait_for_download(std::time::Duration::from_millis(timeout_ms)) {
+                Ok(path) => {
+                    captures.insert(name.to_string(), path.display().to_string());
+                    (Ok(()), StepMatch::default())
+                }
+                Err(e) => (Err(e.to_string()), StepMatch::default()),
+            }
+        }
         Action::SetChecked(params) => match resolve_target(driver, &step.selectors)? {
             Some((target, rung)) => {
                 let matched = StepMatch::from_rung(&step.selectors, Some(rung), 0);
@@ -2398,6 +2420,15 @@ pub fn run_trace_with_exports<D: AppDriver>(
     // emulated phone viewport must not replay on a desktop one.
     if let Some(browser) = &header.browser {
         if !browser.is_empty() {
+            // `downloads_dir` is the one field here resolved from `${VAR}`;
+            // every sibling is a literal by design (geometry, a pinned
+            // clock/seed, raw Chrome flags).
+            let downloads_dir = browser
+                .downloads_dir
+                .as_deref()
+                .map(flowproof_trace::secret::resolve_refs)
+                .transpose()?
+                .map(std::path::PathBuf::from);
             driver.stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
                 browser
                     .viewport
@@ -2413,6 +2444,7 @@ pub fn run_trace_with_exports<D: AppDriver>(
                     .random
                     .as_ref()
                     .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
+                downloads_dir,
             ))?;
         }
     }

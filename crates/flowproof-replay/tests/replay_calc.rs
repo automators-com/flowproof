@@ -248,6 +248,7 @@ fn browser_config_travels_from_spec_through_trace_to_replay_staging() {
             &[],
             None,
             None,
+            None,
         )
     );
     std::fs::remove_dir_all(&dir).ok();
