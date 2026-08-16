@@ -151,8 +151,8 @@ these fields existed) is byte-identical:
   step belongs to. Absent on single-surface traces, where the header's one
   `app` is the surface — those serialize byte-identically to before the
   field existed. Optional PER STEP even in a multi-surface trace: an
-  out-of-band assertion (`assert_api`/`assert_sql`) drives no UI and may
-  carry none.
+  out-of-band assertion (`assert_api`/`assert_sql`/`assert_spreadsheet`)
+  drives no UI and may carry none.
 - `action.type` — one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`,
   `upload`, `capture`, `capture_download`, `set_checked`, `wait`, `assert`.
@@ -369,6 +369,19 @@ these fields existed) is byte-identical:
   at execution and never persist. `body` is any JSON, sent for
   POST/PUT/PATCH with an auto `application/json` content-type unless a
   user `content-type` header is present.
+- `spreadsheet` — out-of-band file probe: `path` (may carry
+  `${captured.x}`/`${VAR}` references — the export this checks is often
+  itself a captured download path — resolved at probe time), optional
+  `sheet` (the workbook's first sheet when absent), and a cell addressed
+  EITHER by `at` (an absolute `A1` reference, e.g. `"B2"`) OR by
+  `column`+`row_contains` (a header/anchor pair resolved against the sheet
+  like a table cell on a live page: `column` matched exact-after-trim then
+  unique-contains against the first row, `row_contains` the unique row where
+  any cell contains it) — exactly one form, a parse-time error otherwise.
+  `expect` (`equals`, `contains`, `timeout_ms`): with neither set, resolving
+  the cell is the whole assertion, mirroring `sql`'s bare row-exists check.
+  Read via `calamine` directly against the file on disk, not through UI
+  Automation over Excel's grid — untested and known-flaky there.
 
 ## Versioning
 

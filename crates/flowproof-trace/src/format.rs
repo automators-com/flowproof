@@ -608,6 +608,28 @@ pub enum Assertion {
         #[serde(skip_serializing_if = "Option::is_none")]
         expect: Option<Value>,
     },
+    /// Out-of-band spreadsheet probe: reads a workbook on disk directly
+    /// (`calamine`), not through UI Automation over Excel's patchy grid
+    /// support. `path` may carry `${captured.x}`/`${VAR}` references — the
+    /// download this checks was itself captured by an earlier step — both
+    /// resolved at probe time, never stored. The cell is addressed by
+    /// EITHER `at` (an absolute `A1` reference) OR `column`+`row_contains`
+    /// (a header/anchor pair, resolved like a table cell on a live page) —
+    /// exactly one, enforced at parse time, not here. `expect` carries
+    /// `equals`/`contains`/`timeout_ms`, same shape as `Sql`/`Api`.
+    Spreadsheet {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sheet: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        at: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        column: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        row_contains: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expect: Option<Value>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

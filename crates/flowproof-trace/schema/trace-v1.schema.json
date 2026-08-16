@@ -679,7 +679,8 @@
             "ocr_text",
             "visual_diff",
             "sql",
-            "api"
+            "api",
+            "spreadsheet"
           ]
         }
       },
@@ -826,6 +827,42 @@
               },
               "status": {
                 "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "spreadsheet"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Workbook path; may carry ${captured.x}/${VAR} references, resolved at probe time."
+              },
+              "sheet": {
+                "type": "string",
+                "description": "Sheet name; the workbook's first sheet when absent."
+              },
+              "at": {
+                "type": "string",
+                "description": "An A1-style cell reference (e.g. 'B2'). Mutually exclusive with column/row_contains."
+              },
+              "column": {
+                "type": "string",
+                "description": "Header text identifying the column, matched against the sheet's first row. Requires row_contains."
+              },
+              "row_contains": {
+                "type": "string",
+                "description": "Anchor text identifying the row (any cell containing it). Requires column."
               }
             }
           }
