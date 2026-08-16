@@ -112,6 +112,20 @@ Design decisions, each with its reason:
 - **Lazy launch, kept alive.** A named app launches at its first block and
   stays up, so returning to `gui` in a later block resumes the same
   session.
+- **A `windows`-mapping surface's `command`/`window_title` may reference a
+  capture minted by an earlier block** — `${captured.download_path}` types
+  into a launch command the same way it types into a field, resolved at
+  the surface's actual activation rather than before any step has run
+  (a value that does not exist yet cannot resolve). This is what lets a
+  block that downloads a file hand its path to a later block that opens it
+  in a different application: `Wait until the download completes as
+  export`, then an `excel:` surface launched with
+  `EXCEL.EXE ${captured.export}`. An unresolved capture at activation time
+  (the minting block never ran, or ran on the wrong surface) fails the run
+  closed, naming what was missing — never a launch against the literal
+  `${captured.x}` text. `web`/`sap`/`vision` surfaces resolve the same way
+  but arrive already fully resolved in practice, since nothing downstream
+  of Fiori/SAP GUI login needs a value a flow only learns mid-run.
 - **Backward compatible.** A bare `app: web` remains the single-surface
   flow it always was — the multi-surface form is additive vocabulary.
 

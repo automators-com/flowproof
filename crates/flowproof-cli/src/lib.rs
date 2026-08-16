@@ -663,9 +663,15 @@ fn replay_surface_targets(
                     command: resolve(&info.url)?,
                     window_name: "SAP".into(),
                 },
+                // Left RAW, unlike every other arm here: the header stores
+                // `command`/`window_title` exactly as written (comment on
+                // `AppInfo::command`), and a `${captured.x}` inside can only
+                // resolve once the block that captures it has replayed —
+                // `SurfaceRegistry::activate` resolves it, and any `${VAR}`
+                // alongside it, fresh at the surface's actual activation.
                 "windows" => flowproof_driver::AppTarget {
-                    command: resolve(&info.command)?,
-                    window_name: resolve(&info.window_title)?,
+                    command: info.command.clone().unwrap_or_default(),
+                    window_name: info.window_title.clone().unwrap_or_default(),
                 },
                 // Pixels mode re-attaches to the window the header recorded.
                 "vision" => {

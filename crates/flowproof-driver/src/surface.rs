@@ -21,9 +21,33 @@ use crate::DriverError;
 pub type SurfaceFactory = Box<dyn FnMut(&str) -> Result<Box<dyn AppDriver>, DriverError>>;
 
 struct SurfaceSlot {
+    /// The RAW launch target: `command`/`window_name` may still carry
+    /// `${VAR}` and `${captured.x}` references. A `web`/`sap`/`vision`
+    /// surface arrives here already resolved (nothing left to substitute,
+    /// so resolving again is a no-op); a `windows`-mapping surface arrives
+    /// raw, because a captured value cannot resolve before the block that
+    /// captures it has run. Resolved fresh at EVERY `activate()`, not just
+    /// the first — cheap, and it means a surface can be launched more than
+    /// once against different captures without special-casing the first
+    /// visit.
     target: AppTarget,
     /// `None` until the surface's first activation launches it.
     driver: Option<Box<dyn AppDriver>>,
+}
+
+/// Resolve `${captured.x}` from THIS run's captures, then `${VAR}` from the
+/// environment — the identical two-step ladder `TypeText` resolves with
+/// (`crates/flowproof-replay/src/lib.rs`), so a surface's launch command
+/// means the same thing a step's typed text does. `Err` names whichever
+/// side failed: an unresolved capture (the block that mints it never ran,
+/// or ran on a later surface) or a missing environment variable.
+fn resolve_launch_template(
+    text: &str,
+    captures: &std::collections::HashMap<String, String>,
+) -> Result<String, DriverError> {
+    let substituted =
+        flowproof_trace::captures::substitute(text, captures).map_err(DriverError::Uia)?;
+    flowproof_trace::secret::resolve_refs(&substituted).map_err(|e| DriverError::Uia(e.to_string()))
 }
 
 pub struct SurfaceRegistry {
@@ -60,7 +84,18 @@ impl SurfaceRegistry {
     /// activation, RE-launch (launch-or-attach is [`AppDriver::launch`]'s
     /// contract) on return visits so its window is foreground again. The
     /// parked surface needs no call: foregrounding the next parks it.
-    pub fn activate(&mut self, name: &str) -> Result<(), DriverError> {
+    ///
+    /// `captures` resolves any `${captured.x}` in the surface's `command`/
+    /// `window_title` — the value an earlier `in:` block captured. Resolved
+    /// fresh on every call, so a surface whose launch target depends on a
+    /// capture can only be activated AFTER the block that mints it; an
+    /// earlier or missing capture fails closed, naming what was missing,
+    /// rather than launching against a blank command.
+    pub fn activate(
+        &mut self,
+        name: &str,
+        captures: &std::collections::HashMap<String, String>,
+    ) -> Result<(), DriverError> {
         let Some(slot) = self.surfaces.get_mut(name) else {
             let declared: Vec<&str> = self.surfaces.keys().map(String::as_str).collect();
             return Err(DriverError::Uia(format!(
@@ -71,12 +106,10 @@ impl SurfaceRegistry {
         if slot.driver.is_none() {
             slot.driver = Some((self.factory)(name)?);
         }
+        let command = resolve_launch_template(&slot.target.command, captures)?;
+        let window_name = resolve_launch_template(&slot.target.window_name, captures)?;
         let driver = slot.driver.as_mut().expect("just ensured");
-        driver.launch(
-            &slot.target.command,
-            &slot.target.window_name,
-            self.launch_timeout,
-        )?;
+        driver.launch(&command, &window_name, self.launch_timeout)?;
         self.active = Some(name.to_string());
         Ok(())
     }
@@ -195,8 +228,12 @@ impl AppDriver for SurfaceRegistry {
         ))
     }
 
-    fn activate_surface(&mut self, name: &str) -> Result<(), DriverError> {
-        self.activate(name)
+    fn activate_surface(
+        &mut self,
+        name: &str,
+        captures: &std::collections::HashMap<String, String>,
+    ) -> Result<(), DriverError> {
+        self.activate(name, captures)
     }
 
     // Not `Result`-shaped, so not routable by the macro: with no active
@@ -249,6 +286,10 @@ mod tests {
         UiaSelector::automation_id(id)
     }
 
+    fn no_captures() -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+
     /// Launch is lazy and routing follows activation: nothing launches at
     /// construction, each surface launches at its FIRST activation, and
     /// every routed call answers from the surface that is active NOW.
@@ -258,11 +299,12 @@ mod tests {
         assert!(reg.launched_surfaces().is_empty(), "nothing launched yet");
         assert!(reg.active_surface().is_none());
 
-        reg.activate("gui").expect("gui activates");
+        reg.activate("gui", &no_captures()).expect("gui activates");
         assert_eq!(reg.launched_surfaces(), vec!["gui"], "portal still cold");
         assert_eq!(reg.read_text(&sel("OrderNo")).expect("gui"), "4711");
 
-        reg.activate("portal").expect("portal activates");
+        reg.activate("portal", &no_captures())
+            .expect("portal activates");
         assert_eq!(reg.launched_surfaces(), vec!["gui", "portal"]);
         assert_eq!(
             reg.read_text(&sel("Search")).expect("portal"),
@@ -289,15 +331,71 @@ mod tests {
             factory,
             Duration::from_millis(10),
         );
-        reg.activate("gui").expect("gui activates");
-        reg.activate("portal").expect("portal activates");
-        reg.activate("gui").expect("gui re-activates");
+        reg.activate("gui", &no_captures()).expect("gui activates");
+        reg.activate("portal", &no_captures())
+            .expect("portal activates");
+        reg.activate("gui", &no_captures())
+            .expect("gui re-activates");
         assert_eq!(
             *builds.borrow(),
             vec!["gui".to_string(), "portal".to_string()],
             "the return visit built NO new driver: same driver, same session"
         );
         assert_eq!(reg.active_surface(), Some("gui"));
+    }
+
+    /// A surface's launch command may reference a value an EARLIER block
+    /// captured — the whole point of resolving lazily at activation rather
+    /// than once at construction. Seeding `captures` before `activate`
+    /// mimics what an executor does after an `InSurface` block ran a
+    /// `Remember … as` step.
+    #[test]
+    fn activation_resolves_captured_values_in_the_launch_command() {
+        let factory: SurfaceFactory = Box::new(|_| Ok(Box::new(MockAppDriver::new(&[]))));
+        let mut reg = SurfaceRegistry::new(
+            [(
+                "excel".to_string(),
+                AppTarget {
+                    command: "EXCEL.EXE ${captured.download_path}".into(),
+                    window_name: "${captured.download_name} - Excel".into(),
+                },
+            )],
+            factory,
+            Duration::from_millis(10),
+        );
+        let mut captures = std::collections::HashMap::new();
+        captures.insert("download_path".to_string(), "C:\\out\\pir.xlsx".to_string());
+        captures.insert("download_name".to_string(), "pir".to_string());
+        reg.activate("excel", &captures)
+            .expect("resolves and launches");
+        assert_eq!(reg.active_surface(), Some("excel"));
+    }
+
+    /// The mirror case: a capture that was never remembered (the block that
+    /// mints it never ran, or ran on a different surface) fails CLOSED and
+    /// names the missing capture — never launches against the literal
+    /// `${captured.x}` text.
+    #[test]
+    fn activation_fails_closed_on_a_missing_capture() {
+        let factory: SurfaceFactory = Box::new(|_| Ok(Box::new(MockAppDriver::new(&[]))));
+        let mut reg = SurfaceRegistry::new(
+            [(
+                "excel".to_string(),
+                AppTarget {
+                    command: "EXCEL.EXE ${captured.download_path}".into(),
+                    window_name: String::new(),
+                },
+            )],
+            factory,
+            Duration::from_millis(10),
+        );
+        let err = reg
+            .activate("excel", &no_captures())
+            .expect_err("download_path was never captured");
+        assert!(
+            err.to_string().contains("download_path"),
+            "names the missing capture: {err}"
+        );
     }
 
     /// Every routed call before a first activation fails CLOSED — an
@@ -312,7 +410,9 @@ mod tests {
             err.to_string().contains("no surface is active"),
             "says why: {err}"
         );
-        let err = reg.activate("mainframe").expect_err("undeclared");
+        let err = reg
+            .activate("mainframe", &no_captures())
+            .expect_err("undeclared");
         assert!(
             err.to_string().contains("mainframe") && err.to_string().contains("gui, portal"),
             "names the stranger and the declared: {err}"
@@ -330,10 +430,10 @@ mod tests {
     #[test]
     fn the_trait_hook_activates_on_the_registry_and_refuses_elsewhere() {
         let mut reg = registry();
-        AppDriver::activate_surface(&mut reg, "gui").expect("hook activates");
+        AppDriver::activate_surface(&mut reg, "gui", &no_captures()).expect("hook activates");
         assert_eq!(reg.active_surface(), Some("gui"));
         let err = MockAppDriver::new(&[])
-            .activate_surface("portal")
+            .activate_surface("portal", &no_captures())
             .expect_err("single-surface driver refuses");
         assert!(err.to_string().contains("one surface"), "{err}");
     }
@@ -363,7 +463,7 @@ mod tests {
             factory,
             Duration::from_millis(10),
         );
-        reg.activate("gui").expect("activates");
+        reg.activate("gui", &no_captures()).expect("activates");
         let bundle = reg
             .debug_bundle()
             .expect("routes")

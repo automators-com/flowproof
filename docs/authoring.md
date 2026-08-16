@@ -915,6 +915,30 @@ What holds, and why:
   It travels on the surface's header entry, so record and every replay
   launch that surface the same shape. On a non-web surface it is a parse
   error naming whose config it is.
+- **A surface launched with a Windows `command`/`window_title` may
+  reference `${captured.x}`** — a value an EARLIER block captured, resolved
+  at THIS surface's actual activation rather than before any step has run
+  (a value that does not exist yet cannot resolve). This is the seam that
+  lets one block download a file and a later block, in a different
+  application, open it:
+
+  ```yaml
+  apps:
+    fiori: {app: web, url: "${FIORI_BASE_URL}/ui#Shell-home"}
+    excel: {app: {command: "EXCEL.EXE ${captured.pir_export}", window_title: "Excel"}}
+  steps:
+    - in: fiori
+      steps:
+        - Press the "Export" button
+        - Wait until the download completes as pir_export
+    - in: excel
+      steps:
+        - assert: page shows Net Price
+  ```
+
+  An unresolved capture at activation time (the minting block never ran, or
+  ran on the wrong surface) fails the run closed, naming what was missing —
+  never a launch against the literal `${captured.x}` text.
 - **A desktop surface carries its own `window:`** — for `vision`, the
   `title:` names the window pixels mode attaches to (required there, and
   what finally makes a Citrix/RDP-published app a surface); for `sap` and

@@ -17,6 +17,12 @@ image = { version = "0.25.10", default-features = false, features = ["png", "gif
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# `captures::substitute` (`${captured.x}`) and `secret::resolve_refs`
+# (`${VAR}`) — a surface's launch command is resolved lazily, at
+# activation, with both these applied identically to the resolution
+# `TypeText` already gets. flowproof-trace has no crate deps of its own, so
+# this cannot create a cycle.
+flowproof-trace = { workspace = true }
 ureq = { version = "3", features = ["platform-verifier", "json"], optional = true }
 postgres = { version = "0.19", optional = true }
 

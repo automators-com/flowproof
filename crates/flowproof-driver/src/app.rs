@@ -549,7 +549,19 @@ pub trait AppDriver {
     /// block boundary. Only [`crate::surface::SurfaceRegistry`] implements
     /// it; a single-surface driver says so, because "the switch did
     /// nothing" must never read as "the switch happened".
-    fn activate_surface(&mut self, name: &str) -> Result<(), DriverError> {
+    ///
+    /// `captures` is THIS run's flow-scoped capture map, read (never
+    /// written) so a surface launching for the first time can resolve a
+    /// `${captured.x}` in its own `command`/`window_title` — the value an
+    /// EARLIER block captured, typed the same way `TypeText` types it.
+    /// Ignored by every driver but the registry, which is the only one that
+    /// ever has a surface left to launch.
+    fn activate_surface(
+        &mut self,
+        name: &str,
+        captures: &std::collections::HashMap<String, String>,
+    ) -> Result<(), DriverError> {
+        let _ = captures;
         Err(DriverError::Uia(format!(
             "this driver drives one surface; `in: {name}` needs a multi-surface run"
         )))
@@ -1737,8 +1749,12 @@ impl AppDriver for Box<dyn AppDriver> {
         (**self).probe_frame(query)
     }
 
-    fn activate_surface(&mut self, name: &str) -> Result<(), DriverError> {
-        (**self).activate_surface(name)
+    fn activate_surface(
+        &mut self,
+        name: &str,
+        captures: &std::collections::HashMap<String, String>,
+    ) -> Result<(), DriverError> {
+        (**self).activate_surface(name, captures)
     }
 
     fn launch(

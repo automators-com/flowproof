@@ -1255,10 +1255,16 @@ pub fn surface_targets(
                             .ok_or(RecordError::MissingWindow)?,
                     )?,
                 },
+                // Left RAW, unlike every other arm here: a `${captured.x}`
+                // in a windows-mapping surface's command can only resolve
+                // once the block that captures it has run, so
+                // `SurfaceRegistry::activate` resolves it (and any `${VAR}`
+                // alongside it) at the surface's actual activation instead
+                // of here, before any step has run.
                 id => match surface.app.launch_parts() {
                     Some((command, window_title)) => flowproof_driver::AppTarget {
-                        command: flowproof_trace::secret::resolve_refs(command)?,
-                        window_name: flowproof_trace::secret::resolve_refs(window_title)?,
+                        command: command.to_string(),
+                        window_name: window_title.to_string(),
                     },
                     None => flowproof_driver::resolve_app(id)
                         .ok_or_else(|| RecordError::UnknownApp(id.to_string()))?,
@@ -2622,6 +2628,10 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     } else {
         launch_target(spec)?
     };
+    // Flow-scoped captures, declared here (rather than beside `steps`
+    // below) because the FIRST surface's pre-activation a few lines down
+    // needs it too — empty at that point, same as before any step has run.
+    let mut captures: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // The session is an inline mapping by now: a `session: <name>` ref is
     // dereferenced to its identity's inline setup at flow load, so record
     // never sees an unresolved name.
@@ -2651,7 +2661,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         // activating it here (its block re-activates, an attach) gives env
         // resolution below a real screen to read.
         if let Some(crate::spec::SpecStep::InSurface { block }) = spec.steps.first() {
-            driver.activate_surface(&block.surface)?;
+            driver.activate_surface(&block.surface, &captures)?;
         }
     } else {
         driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
@@ -2708,10 +2718,6 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     // trace is written - so a corrected value reaches the trace as the one
     // line a person would have left, not the fumble that got there.
     let mut superseded_steps: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    // Flow-scoped captures. Values live only for this run: they are read at
-    // execution time and never written to the trace, exactly like a
-    // `${VAR}` secret's resolved value.
-    let mut captures: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut prior_intents: Vec<String> = Vec::new();
     let mut llm_used = false;
     let mut routing = Vec::new();
@@ -2796,7 +2802,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             // by name — a smuggled block can never reach the model as
             // prose intent.
             crate::spec::SpecStep::InSurface { block } => {
-                driver.activate_surface(&block.surface)?;
+                driver.activate_surface(&block.surface, &captures)?;
                 if configured_surfaces.insert(block.surface.clone()) {
                     let config = spec
                         .apps

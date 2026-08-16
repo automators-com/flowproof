@@ -2464,7 +2464,7 @@ pub fn run_trace_with_exports<D: AppDriver>(
         }
         if let Some(surface) = &step.surface {
             if active_surface.as_deref() != Some(surface.as_str()) {
-                driver.activate_surface(surface)?;
+                driver.activate_surface(surface, &captures)?;
                 // First visit: reproduce the geometry the recording APPLIED
                 // to this surface, exactly as the single-surface path does
                 // with the header's one `app.geometry`.
