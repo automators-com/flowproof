@@ -1551,6 +1551,43 @@ fn check_assertion<D: AppDriver>(
             }
             Ok((verdict, rung))
         }
+        Assertion::Spreadsheet {
+            path,
+            sheet,
+            at,
+            column,
+            row_contains,
+            expect,
+        } => {
+            // The trace stores references, never values: `${captured.x}`
+            // (the export this checks is often itself a captured download
+            // path) resolves from this run's captures, then `${VAR}` from
+            // the environment — the same two-step ladder `TypeText` uses.
+            let substituted = match flowproof_trace::captures::substitute(path, captures) {
+                Ok(text) => text,
+                Err(reason) => return Ok((Err(reason), None)),
+            };
+            let path = flowproof_trace::secret::resolve_refs(&substituted)?;
+            let probe = flowproof_driver::oob::OobProbe::Spreadsheet {
+                path,
+                sheet: sheet.clone(),
+                at: at.clone(),
+                column: column.clone(),
+                row_contains: row_contains.clone(),
+                equals: expect
+                    .as_ref()
+                    .and_then(|e| e.get("equals"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                contains: expect
+                    .as_ref()
+                    .and_then(|e| e.get("contains"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            let (verdict, rung, _) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
+            Ok((verdict, rung))
+        }
         other => Ok((
             Err(format!(
                 "assertion kind not supported in this slice: {other:?}"

@@ -208,6 +208,7 @@ impl AppDriver for SurfaceRegistry {
         fn occluding_element(&mut self, selector: &UiaSelector) -> Result<Option<String>, DriverError>;
         fn stage_mocks(&mut self, rules: Vec<WebMock>) -> Result<(), DriverError>;
         fn set_files(&mut self, selector: &UiaSelector, paths: &[String]) -> Result<(), DriverError>;
+        fn wait_for_download(&mut self, timeout: Duration) -> Result<std::path::PathBuf, DriverError>;
         fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError>;
         fn double_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError>;
         fn hover(&mut self, selector: &UiaSelector) -> Result<(), DriverError>;

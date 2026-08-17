@@ -1008,6 +1008,36 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 }),
             )
         }
+        ResolvedAction::AssertSpreadsheet {
+            path,
+            sheet,
+            at,
+            column,
+            row_contains,
+            equals,
+            contains,
+            timeout_ms,
+        } => {
+            let mut expect = serde_json::Map::new();
+            if let Some(value) = equals {
+                expect.insert("equals".into(), value.as_str().into());
+            }
+            if let Some(needle) = contains {
+                expect.insert("contains".into(), needle.as_str().into());
+            }
+            expect.insert("timeout_ms".into(), (*timeout_ms).into());
+            (
+                Vec::new(),
+                Action::Assert(Assertion::Spreadsheet {
+                    path: path.clone(),
+                    sheet: sheet.clone(),
+                    at: at.clone(),
+                    column: column.clone(),
+                    row_contains: row_contains.clone(),
+                    expect: Some(serde_json::Value::Object(expect)),
+                }),
+            )
+        }
     };
     if app == "vision" {
         stamp_vision_relation(&mut selectors, action);
@@ -1150,6 +1180,7 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::Reload
         | ResolvedAction::AssertSql { .. }
         | ResolvedAction::AssertApi { .. }
+        | ResolvedAction::AssertSpreadsheet { .. }
         | ResolvedAction::AssertScreenshot { .. }
         | ResolvedAction::CaptureDownload { .. } => return None,
     };
@@ -1705,6 +1736,7 @@ impl ReuseCursor {
                     | ResolvedAction::AssertCaptured { .. }
                     | ResolvedAction::AssertSql { .. }
                     | ResolvedAction::AssertApi { .. }
+                    | ResolvedAction::AssertSpreadsheet { .. }
             );
             if !is_assert {
                 if let Some(selector) = action_selector(&action) {
@@ -3465,6 +3497,38 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                             secret_corpus.push(("an assert_api response body".to_string(), text));
                         }
                     }
+                }
+                ResolvedAction::AssertSpreadsheet {
+                    path,
+                    sheet,
+                    at,
+                    column,
+                    row_contains,
+                    equals,
+                    contains,
+                    timeout_ms,
+                } => {
+                    // The trace stores references, never values: a
+                    // `${captured.x}` (the downloaded export's own path is
+                    // the common case) resolves from this run's captures,
+                    // then a `${VAR}` from the environment — the same
+                    // two-step ladder `TypeText` resolves with.
+                    let substituted = flowproof_trace::captures::substitute(path, &captures)
+                        .map_err(|reason| RecordError::AssertMismatch {
+                            intent: spec_step.intent().to_string(),
+                            expected: "a remembered capture in the spreadsheet path".to_string(),
+                            actual: reason,
+                        })?;
+                    let probe = flowproof_driver::oob::OobProbe::Spreadsheet {
+                        path: flowproof_trace::secret::resolve_refs(&substituted)?,
+                        sheet: sheet.clone(),
+                        at: at.clone(),
+                        column: column.clone(),
+                        row_contains: row_contains.clone(),
+                        equals: equals.clone(),
+                        contains: contains.clone(),
+                    };
+                    poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
                 }
                 ResolvedAction::PressKey { key, modifiers } => {
                     let mods: Vec<flowproof_driver::KeyMod> =
