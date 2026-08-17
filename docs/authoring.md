@@ -899,7 +899,8 @@ What holds, and why:
   as always.
 - **Steps author against their surface's own grammar** (what SAP performs
   differs from what a browser does), and out-of-band asserts
-  (`assert_api`, `assert_sql`) run fine inside any block.
+  (`assert_api`, `assert_sql`, `assert_spreadsheet`) run fine inside any
+  block.
 - **A web surface carries its own `browser:`** — viewport/device
   emulation, user-agent, pinned clock, seeded random, exactly the
   single-surface block, one level deeper:
@@ -1085,6 +1086,46 @@ actually there: "path 'page' is an object, count requires an array (status
 200)". A wrong count reports both sides: "path 'results' has 3 elements,
 expected exactly 9 (status 200)". Both are soft failures, so on a `GET` they
 auto-wait: "poll until the collection has N rows" is a real pattern.
+
+### assert_spreadsheet: an exported file, read directly
+
+```yaml
+- assert_spreadsheet:
+    path: ${captured.pir_export}   # may carry ${captured.x} / ${VAR} refs
+    sheet: Sheet1                  # optional; the workbook's first sheet if absent
+    at: B2                         # an absolute A1 reference ...
+- assert_spreadsheet:
+    path: ${captured.pir_export}
+    column: Net Price              # ... OR a header + row anchor, not both
+    row_contains: "100-100"
+    equals: "12.50"
+```
+
+Reads the file directly (`calamine`) rather than through UI Automation over
+Excel's own grid — the manual test's own second check ("open the file and
+review it") is a screen a person can look at, but its GRID support over UIA
+is untested and known-flaky, so the out-of-band read is the one that must
+hold. `path` resolves `${captured.x}` then `${VAR}`, exactly like a typed
+field — the common case is a path a `Wait until the download completes as
+<name>` step captured moments earlier in another surface.
+
+The cell is addressed EITHER by `at` (an absolute `A1` reference) OR by
+`column`+`row_contains` together — never both, and never neither, both
+parse-time errors. `column` resolves against the sheet's first row the same
+two-rung ladder a web table cell uses: exact match after trim, then a
+unique substring match; an ambiguous or missing header is a parse-time-shaped
+failure naming what was asked for. `row_contains` is the unique data row
+(excluding the header) where ANY cell's text contains it — ambiguous or
+absent is reported the same way.
+
+`equals`/`contains` compare the cell's text (its canonical rendering — a
+number reads as `"12.5"`, not `"12.50000"`); at most one may be set, a
+parse-time error otherwise. With neither, resolving the cell is the whole
+assertion — mirroring `assert_sql`, where omitting `equals` means a row
+merely has to exist. Like `assert_sql`, this is always a READ: a
+just-landed download may still be mid-write when the first poll fires, so
+the auto-wait loop keeps re-opening the file until it resolves or the bound
+(`timeout_seconds`, default 10s) elapses.
 
 ### Retries: reads are polled, writes are sent once
 
