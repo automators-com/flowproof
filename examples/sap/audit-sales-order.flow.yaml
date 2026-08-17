@@ -1,0 +1,91 @@
+# A deliberately long, read-only SAP GUI scenario for the reference TS3
+# system. Order 314 is the same sample order used by view-order.flow.yaml.
+#
+# Safety boundary: VA03 display screens only. The flow enters an order number
+# on the selection screen, opens Display Document Flow and Status Overview,
+# selects read-only overview tabs, and returns to Easy Access. It never invokes
+# Change, Create, Delete, Save, configuration, profile, or administration UI.
+name: Audit sales order lifecycle
+app: sap
+steps:
+  - Go to /nVA03
+  - Type 314 into the "id:wnd[0]/usr/ctxtVBAK-VBELN" field
+  - Press Enter
+  - assert: "page shows Display Standard Order 314: Overview"
+  - assert: the wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/ctxtVBAK-VBELN field contains 314
+  - assert: the wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/txtVBAK-NETWR field contains 2,200.00
+  - assert: the wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/ctxtVBAK-WAERK field contains USD
+  - assert: the wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/txtVBKD-BSTKD field contains 4500055022
+  - assert: page shows Sold-to Party
+  - assert: page shows Ship-to Party
+  - assert: the wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/subPART-SUB:SAPMV45A:4701/ctxtKUAGV-KUNNR field contains USCU_S11
+  - assert: the wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/subPART-SUB:SAPMV45A:4701/txtKUAGV-TXTPA field contains Company Bike World
+  - assert: the wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/subPART-SUB:SAPMV45A:4701/ctxtKUWEV-KUNNR field contains USCU_S11
+  - assert: page shows Net Due in 30 Days
+  - assert: page shows Cost & Freight
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/ssubHEADER_FRAME:SAPMV45A:4440/ctxtRV45A-KETDAT field contains 03/12/2018
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/ssubHEADER_FRAME:SAPMV45A:4440/txtRV45A-BTGEW field contains 75
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/ssubHEADER_FRAME:SAPMV45A:4440/txtRV45A-GEWEI field contains KG
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/ssubHEADER_FRAME:SAPMV45A:4440/ctxtVBKD-ZTERM field contains NT30
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/ssubHEADER_FRAME:SAPMV45A:4440/ctxtVBKD-INCO1 field contains CFR
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/ssubHEADER_FRAME:SAPMV45A:4440/ctxtVBAK-VKORG field contains 1710
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/subSUBSCREEN_TC:SAPMV45A:4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG/txtVBAP-POSNR[0,0] field contains 10
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/subSUBSCREEN_TC:SAPMV45A:4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG/ctxtRV45A-MABNR[1,0] field contains MZ-FG-C900
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/subSUBSCREEN_TC:SAPMV45A:4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG/txtRV45A-KWMENG[3,0] field contains 5
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/subSUBSCREEN_TC:SAPMV45A:4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG/ctxtVBAP-VRKME[4,0] field contains PC
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/subSUBSCREEN_TC:SAPMV45A:4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG/txtVBAP-ARKTX[6,0] field contains C900 BIKE
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/subSUBSCREEN_TC:SAPMV45A:4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG/txtKOMV-KBETR[15,0] field contains 440.00
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/subSUBSCREEN_TC:SAPMV45A:4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG/ctxtVBAP-PRCTR[23,0] field contains US10_PLC
+  - assert: the wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV45A:4400/subSUBSCREEN_TC:SAPMV45A:4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG/txtVBSTT-GBSTA_BEZ[24,0] field contains Completed
+  - Press the "id:wnd[0]/tbar[1]/btn[5]" button
+  - assert: page shows Document Flow
+  - assert: page shows Display Document
+  - assert: page shows Service Documents
+  - Press F3
+  - assert: "page shows Display Standard Order 314: Overview"
+  - Press the "id:wnd[0]/tbar[1]/btn[36]" button
+  - assert: "page shows Sales order: Status Overview"
+  - assert: page shows Standard Order
+  - assert: page shows 314
+  - assert: page shows USCU_S11
+  - assert: page shows Bike World
+  - assert: page shows Current Hdr Status
+  - assert: page shows Current Item Status
+  - assert: page shows Completed
+  - assert: page shows Nothing Rejected
+  - Press F3
+  - assert: "page shows Display Standard Order 314: Overview"
+  - Click "id:wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\02"
+  - assert: page shows Requested Deliv.Date
+  - assert: page shows Delivering Plant
+  - assert: page shows MZ-FG-C900
+  - assert: page shows C900 BIKE
+  - assert: page shows 440.00
+  - assert: page shows US10_PLC
+  - assert: page shows Completed
+  - Click "id:wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\06"
+  - assert: page shows Overall Status
+  - assert: page shows Delivery Status
+  - assert: page shows Fully Delivered
+  - assert: page shows Not Blocked
+  - assert: page shows Total Weight
+  - assert: page shows 75
+  - assert: page shows KG
+  - Click "id:wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\08"
+  - assert: page shows Reason for rejection
+  - assert: page shows Order Reason
+  - assert: page shows MZ-FG-C900
+  - assert: page shows C900 BIKE
+  - assert: page shows 2,200.00
+  - Click "id:wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01"
+  - assert: page shows Pyt Terms
+  - assert: page shows Net Due in 30 Days
+  - assert: page shows Incoterms
+  - assert: page shows CFR
+  - assert: page shows Cost & Freight
+  - assert: page shows Dom. Sales Org US, Direct Sales, Product Division 00
+  - Press F3
+  - assert: page shows Display Sales Documents
+  - assert: the wnd[0]/usr/ctxtVBAK-VBELN field contains 314
+  - Press F3
+  - assert: page shows SAP Easy Access
