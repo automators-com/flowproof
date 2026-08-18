@@ -783,6 +783,14 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             }
             (selectors_for(app, target, None), Action::Capture(params))
         }
+        // No target — a download belongs to the surface, not an element,
+        // exactly like `TypeFocused`'s empty selector list.
+        ResolvedAction::CaptureDownload { name, timeout_ms } => {
+            let mut params = serde_json::Map::new();
+            params.insert("name".into(), name.clone().into());
+            params.insert("timeout_ms".into(), (*timeout_ms).into());
+            (Vec::new(), Action::CaptureDownload(params))
+        }
         ResolvedAction::AssertCaptured {
             target,
             name,
@@ -1000,6 +1008,36 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
                 }),
             )
         }
+        ResolvedAction::AssertSpreadsheet {
+            path,
+            sheet,
+            at,
+            column,
+            row_contains,
+            equals,
+            contains,
+            timeout_ms,
+        } => {
+            let mut expect = serde_json::Map::new();
+            if let Some(value) = equals {
+                expect.insert("equals".into(), value.as_str().into());
+            }
+            if let Some(needle) = contains {
+                expect.insert("contains".into(), needle.as_str().into());
+            }
+            expect.insert("timeout_ms".into(), (*timeout_ms).into());
+            (
+                Vec::new(),
+                Action::Assert(Assertion::Spreadsheet {
+                    path: path.clone(),
+                    sheet: sheet.clone(),
+                    at: at.clone(),
+                    column: column.clone(),
+                    row_contains: row_contains.clone(),
+                    expect: Some(serde_json::Value::Object(expect)),
+                }),
+            )
+        }
     };
     if app == "vision" {
         stamp_vision_relation(&mut selectors, action);
@@ -1142,7 +1180,9 @@ fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
         | ResolvedAction::Reload
         | ResolvedAction::AssertSql { .. }
         | ResolvedAction::AssertApi { .. }
-        | ResolvedAction::AssertScreenshot { .. } => return None,
+        | ResolvedAction::AssertSpreadsheet { .. }
+        | ResolvedAction::AssertScreenshot { .. }
+        | ResolvedAction::CaptureDownload { .. } => return None,
     };
     target_selector(target)
 }
@@ -1255,10 +1295,16 @@ pub fn surface_targets(
                             .ok_or(RecordError::MissingWindow)?,
                     )?,
                 },
+                // Left RAW, unlike every other arm here: a `${captured.x}`
+                // in a windows-mapping surface's command can only resolve
+                // once the block that captures it has run, so
+                // `SurfaceRegistry::activate` resolves it (and any `${VAR}`
+                // alongside it) at the surface's actual activation instead
+                // of here, before any step has run.
                 id => match surface.app.launch_parts() {
                     Some((command, window_title)) => flowproof_driver::AppTarget {
-                        command: flowproof_trace::secret::resolve_refs(command)?,
-                        window_name: flowproof_trace::secret::resolve_refs(window_title)?,
+                        command: command.to_string(),
+                        window_name: window_title.to_string(),
                     },
                     None => flowproof_driver::resolve_app(id)
                         .ok_or_else(|| RecordError::UnknownApp(id.to_string()))?,
@@ -1690,6 +1736,7 @@ impl ReuseCursor {
                     | ResolvedAction::AssertCaptured { .. }
                     | ResolvedAction::AssertSql { .. }
                     | ResolvedAction::AssertApi { .. }
+                    | ResolvedAction::AssertSpreadsheet { .. }
             );
             if !is_assert {
                 if let Some(selector) = action_selector(&action) {
@@ -1751,10 +1798,22 @@ fn mint_baseline<D: AppDriver>(
 
 /// Trace browser setup → the driver's fully-resolved form (defaults live
 /// in `WebBrowserConfig::from_setup_parts`, shared with replay).
+///
+/// `downloads_dir` is the one field here that resolves `${VAR}` (a runner's
+/// temp/download path is exactly the kind of thing that differs per
+/// environment) — every sibling field is a literal by design (geometry,
+/// a pinned clock/seed, raw Chrome flags), so this is the one seam that
+/// needs it.
 fn web_browser_from_setup(
     setup: &flowproof_trace::format::BrowserSetup,
-) -> flowproof_driver::WebBrowserConfig {
-    flowproof_driver::WebBrowserConfig::from_setup_parts(
+) -> Result<flowproof_driver::WebBrowserConfig, RecordError> {
+    let downloads_dir = setup
+        .downloads_dir
+        .as_deref()
+        .map(flowproof_trace::secret::resolve_refs)
+        .transpose()?
+        .map(std::path::PathBuf::from);
+    Ok(flowproof_driver::WebBrowserConfig::from_setup_parts(
         setup
             .viewport
             .as_ref()
@@ -1769,7 +1828,8 @@ fn web_browser_from_setup(
             .random
             .as_ref()
             .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
-    )
+        downloads_dir,
+    ))
 }
 
 /// Poll an out-of-band probe until it holds or the bound elapses — the row
@@ -2622,6 +2682,10 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     } else {
         launch_target(spec)?
     };
+    // Flow-scoped captures, declared here (rather than beside `steps`
+    // below) because the FIRST surface's pre-activation a few lines down
+    // needs it too — empty at that point, same as before any step has run.
+    let mut captures: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // The session is an inline mapping by now: a `session: <name>` ref is
     // dereferenced to its identity's inline setup at flow load, so record
     // never sees an unresolved name.
@@ -2643,7 +2707,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     }
     if let Some(browser) = &spec.browser {
         if !browser.is_empty() {
-            driver.stage_browser(web_browser_from_setup(browser))?;
+            driver.stage_browser(web_browser_from_setup(browser)?)?;
         }
     }
     if multi {
@@ -2651,7 +2715,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         // activating it here (its block re-activates, an attach) gives env
         // resolution below a real screen to read.
         if let Some(crate::spec::SpecStep::InSurface { block }) = spec.steps.first() {
-            driver.activate_surface(&block.surface)?;
+            driver.activate_surface(&block.surface, &captures)?;
         }
     } else {
         driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
@@ -2708,10 +2772,6 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     // trace is written - so a corrected value reaches the trace as the one
     // line a person would have left, not the fumble that got there.
     let mut superseded_steps: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    // Flow-scoped captures. Values live only for this run: they are read at
-    // execution time and never written to the trace, exactly like a
-    // `${VAR}` secret's resolved value.
-    let mut captures: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut prior_intents: Vec<String> = Vec::new();
     let mut llm_used = false;
     let mut routing = Vec::new();
@@ -2796,7 +2856,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             // by name — a smuggled block can never reach the model as
             // prose intent.
             crate::spec::SpecStep::InSurface { block } => {
-                driver.activate_surface(&block.surface)?;
+                driver.activate_surface(&block.surface, &captures)?;
                 if configured_surfaces.insert(block.surface.clone()) {
                     let config = spec
                         .apps
@@ -3251,6 +3311,13 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     };
                     captures.insert(name.clone(), value);
                 }
+                // No `targeted()` call — a download has no on-screen
+                // selector to wait actionable, exactly like `Reload`/
+                // `Navigate` above.
+                ResolvedAction::CaptureDownload { name, timeout_ms } => {
+                    let path = driver.wait_for_download(Duration::from_millis(*timeout_ms))?;
+                    captures.insert(name.clone(), path.display().to_string());
+                }
                 ResolvedAction::AssertCaptured {
                     name,
                     offset,
@@ -3430,6 +3497,38 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                             secret_corpus.push(("an assert_api response body".to_string(), text));
                         }
                     }
+                }
+                ResolvedAction::AssertSpreadsheet {
+                    path,
+                    sheet,
+                    at,
+                    column,
+                    row_contains,
+                    equals,
+                    contains,
+                    timeout_ms,
+                } => {
+                    // The trace stores references, never values: a
+                    // `${captured.x}` (the downloaded export's own path is
+                    // the common case) resolves from this run's captures,
+                    // then a `${VAR}` from the environment — the same
+                    // two-step ladder `TypeText` resolves with.
+                    let substituted = flowproof_trace::captures::substitute(path, &captures)
+                        .map_err(|reason| RecordError::AssertMismatch {
+                            intent: spec_step.intent().to_string(),
+                            expected: "a remembered capture in the spreadsheet path".to_string(),
+                            actual: reason,
+                        })?;
+                    let probe = flowproof_driver::oob::OobProbe::Spreadsheet {
+                        path: flowproof_trace::secret::resolve_refs(&substituted)?,
+                        sheet: sheet.clone(),
+                        at: at.clone(),
+                        column: column.clone(),
+                        row_contains: row_contains.clone(),
+                        equals: equals.clone(),
+                        contains: contains.clone(),
+                    };
+                    poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
                 }
                 ResolvedAction::PressKey { key, modifiers } => {
                     let mods: Vec<flowproof_driver::KeyMod> =

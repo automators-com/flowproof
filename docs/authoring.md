@@ -145,6 +145,7 @@ before migrating a suite's setup helpers step by step.
 | `Reload the page` | web |
 | `<trigger>, accepting the "<message>" dialog` / `, dismissing [the "<message>"] dialog` / `, answering the prompt with "<text>"` | a **dialog suffix** on any trigger (`Click`, `Press the … button`, `Right-click`, `Double-click`, `Hover`) that opens a native `alert`/`confirm`/`prompt`/`beforeunload`. See [Native dialogs](#native-dialogs) below. Web only |
 | `Wait until page shows <text> [within <N>s]` | long-bound auto-waiting assert (default 60s) |
+| `Wait until the download completes as <name> [within <N>s]` | web only; no target, like `Press <Key>` — a download belongs to the surface, not an element. Waits for exactly one browser download to land and finish writing, then captures its RESOLVED PATH into `${captured.<name>}` — read at execution time on record and every replay, so only the name travels in the trace, the same indirection every `Remember … as` capture uses. Pairs with a `browser: {downloads_dir: …}` block to pin where downloads land (optional — the driver creates its own per-launch temp directory otherwise), and with `assert_spreadsheet` or a later surface's launch command (`EXCEL.EXE ${captured.<name>}`, see [Multi-surface flows](#multi-surface-flows-apps-and-in-blocks)) to act on the file it names |
 
 There is deliberately **no `Blur` step**. Blur is not something a user does;
 it is a DOM event that a user action causes. `Press Tab` is that action, it
@@ -898,7 +899,8 @@ What holds, and why:
   as always.
 - **Steps author against their surface's own grammar** (what SAP performs
   differs from what a browser does), and out-of-band asserts
-  (`assert_api`, `assert_sql`) run fine inside any block.
+  (`assert_api`, `assert_sql`, `assert_spreadsheet`) run fine inside any
+  block.
 - **A web surface carries its own `browser:`** — viewport/device
   emulation, user-agent, pinned clock, seeded random, exactly the
   single-surface block, one level deeper:
@@ -914,7 +916,34 @@ What holds, and why:
 
   It travels on the surface's header entry, so record and every replay
   launch that surface the same shape. On a non-web surface it is a parse
-  error naming whose config it is.
+  error naming whose config it is. `browser:` also takes `downloads_dir`
+  (where downloaded files land — absent means the surface creates its own
+  per-launch temp directory), the field `Wait until the download completes
+  as <name>` reads back.
+- **A surface launched with a Windows `command`/`window_title` may
+  reference `${captured.x}`** — a value an EARLIER block captured, resolved
+  at THIS surface's actual activation rather than before any step has run
+  (a value that does not exist yet cannot resolve). This is the seam that
+  lets one block download a file and a later block, in a different
+  application, open it:
+
+  ```yaml
+  apps:
+    fiori: {app: web, url: "${FIORI_BASE_URL}/ui#Shell-home"}
+    excel: {app: {command: "EXCEL.EXE ${captured.pir_export}", window_title: "Excel"}}
+  steps:
+    - in: fiori
+      steps:
+        - Press the "Export" button
+        - Wait until the download completes as pir_export
+    - in: excel
+      steps:
+        - assert: page shows Net Price
+  ```
+
+  An unresolved capture at activation time (the minting block never ran, or
+  ran on the wrong surface) fails the run closed, naming what was missing —
+  never a launch against the literal `${captured.x}` text.
 - **A desktop surface carries its own `window:`** — for `vision`, the
   `title:` names the window pixels mode attaches to (required there, and
   what finally makes a Citrix/RDP-published app a surface); for `sap` and
@@ -1057,6 +1086,46 @@ actually there: "path 'page' is an object, count requires an array (status
 200)". A wrong count reports both sides: "path 'results' has 3 elements,
 expected exactly 9 (status 200)". Both are soft failures, so on a `GET` they
 auto-wait: "poll until the collection has N rows" is a real pattern.
+
+### assert_spreadsheet: an exported file, read directly
+
+```yaml
+- assert_spreadsheet:
+    path: ${captured.pir_export}   # may carry ${captured.x} / ${VAR} refs
+    sheet: Sheet1                  # optional; the workbook's first sheet if absent
+    at: B2                         # an absolute A1 reference ...
+- assert_spreadsheet:
+    path: ${captured.pir_export}
+    column: Net Price              # ... OR a header + row anchor, not both
+    row_contains: "100-100"
+    equals: "12.50"
+```
+
+Reads the file directly (`calamine`) rather than through UI Automation over
+Excel's own grid — the manual test's own second check ("open the file and
+review it") is a screen a person can look at, but its GRID support over UIA
+is untested and known-flaky, so the out-of-band read is the one that must
+hold. `path` resolves `${captured.x}` then `${VAR}`, exactly like a typed
+field — the common case is a path a `Wait until the download completes as
+<name>` step captured moments earlier in another surface.
+
+The cell is addressed EITHER by `at` (an absolute `A1` reference) OR by
+`column`+`row_contains` together — never both, and never neither, both
+parse-time errors. `column` resolves against the sheet's first row the same
+two-rung ladder a web table cell uses: exact match after trim, then a
+unique substring match; an ambiguous or missing header is a parse-time-shaped
+failure naming what was asked for. `row_contains` is the unique data row
+(excluding the header) where ANY cell's text contains it — ambiguous or
+absent is reported the same way.
+
+`equals`/`contains` compare the cell's text (its canonical rendering — a
+number reads as `"12.5"`, not `"12.50000"`); at most one may be set, a
+parse-time error otherwise. With neither, resolving the cell is the whole
+assertion — mirroring `assert_sql`, where omitting `equals` means a row
+merely has to exist. Like `assert_sql`, this is always a READ: a
+just-landed download may still be mid-write when the first poll fires, so
+the auto-wait loop keeps re-opening the file until it resolves or the bound
+(`timeout_seconds`, default 10s) elapses.
 
 ### Retries: reads are polled, writes are sent once
 

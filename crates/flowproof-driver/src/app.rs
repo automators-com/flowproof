@@ -549,7 +549,19 @@ pub trait AppDriver {
     /// block boundary. Only [`crate::surface::SurfaceRegistry`] implements
     /// it; a single-surface driver says so, because "the switch did
     /// nothing" must never read as "the switch happened".
-    fn activate_surface(&mut self, name: &str) -> Result<(), DriverError> {
+    ///
+    /// `captures` is THIS run's flow-scoped capture map, read (never
+    /// written) so a surface launching for the first time can resolve a
+    /// `${captured.x}` in its own `command`/`window_title` — the value an
+    /// EARLIER block captured, typed the same way `TypeText` types it.
+    /// Ignored by every driver but the registry, which is the only one that
+    /// ever has a surface left to launch.
+    fn activate_surface(
+        &mut self,
+        name: &str,
+        captures: &std::collections::HashMap<String, String>,
+    ) -> Result<(), DriverError> {
+        let _ = captures;
         Err(DriverError::Uia(format!(
             "this driver drives one surface; `in: {name}` needs a multi-surface run"
         )))
@@ -962,6 +974,18 @@ pub trait AppDriver {
         )))
     }
 
+    /// Wait for exactly one browser download to land in the surface's
+    /// configured (or auto-created per-launch temp) downloads directory and
+    /// finish writing, returning its path. Web-only: the default refuses by
+    /// name, matching `set_files`'s style — a driver with no downloads
+    /// directory has nothing to wait on, and answering `Ok` with an
+    /// invented path would let a step that downloaded nothing pass anyway.
+    fn wait_for_download(&mut self, _timeout: Duration) -> Result<std::path::PathBuf, DriverError> {
+        Err(DriverError::Uia(
+            "waiting for a download is not supported by this driver (web flows only)".into(),
+        ))
+    }
+
     /// Right-click an element (open its context menu).
     fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         Err(DriverError::Uia(format!(
@@ -1040,6 +1064,13 @@ pub struct WebBrowserConfig {
     /// A pinned clock, applied before navigation (GAP-P).
     pub clock: Option<WebClock>,
     pub random: Option<WebRandom>,
+    /// Where downloaded files land, applied at launch via CDP so
+    /// `wait_for_download` has a fixed, known place to look. `None` = the
+    /// driver creates its own per-launch temp directory — deterministic
+    /// enough for `wait_for_download` (which never needs the path spelled
+    /// out, only that nothing else writes there), without forcing every
+    /// flow that downloads something to name a directory up front.
+    pub downloads_dir: Option<std::path::PathBuf>,
 }
 
 /// A pinned browser clock: the literal instant the page reads as "now" and
@@ -1073,12 +1104,14 @@ impl WebBrowserConfig {
     /// for record AND replay: device scale 1.0, desktop, no touch.
     /// `viewport` is `(width, height, device_scale_factor, mobile, touch)`.
     #[allow(clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
     pub fn from_setup_parts(
         viewport: Option<(u32, u32, Option<f64>, Option<bool>, Option<bool>)>,
         user_agent: Option<&str>,
         args: &[String],
         clock: Option<WebClock>,
         random: Option<WebRandom>,
+        downloads_dir: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             viewport: viewport.map(|(width, height, dsf, mobile, touch)| WebViewport {
@@ -1092,6 +1125,7 @@ impl WebBrowserConfig {
             random,
             args: args.to_vec(),
             clock,
+            downloads_dir,
         }
     }
 }
@@ -1737,8 +1771,12 @@ impl AppDriver for Box<dyn AppDriver> {
         (**self).probe_frame(query)
     }
 
-    fn activate_surface(&mut self, name: &str) -> Result<(), DriverError> {
-        (**self).activate_surface(name)
+    fn activate_surface(
+        &mut self,
+        name: &str,
+        captures: &std::collections::HashMap<String, String>,
+    ) -> Result<(), DriverError> {
+        (**self).activate_surface(name, captures)
     }
 
     fn launch(
@@ -1932,6 +1970,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn set_files(&mut self, selector: &UiaSelector, paths: &[String]) -> Result<(), DriverError> {
         (**self).set_files(selector, paths)
+    }
+
+    fn wait_for_download(&mut self, timeout: Duration) -> Result<std::path::PathBuf, DriverError> {
+        (**self).wait_for_download(timeout)
     }
 
     fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {

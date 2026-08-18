@@ -663,9 +663,15 @@ fn replay_surface_targets(
                     command: resolve(&info.url)?,
                     window_name: "SAP".into(),
                 },
+                // Left RAW, unlike every other arm here: the header stores
+                // `command`/`window_title` exactly as written (comment on
+                // `AppInfo::command`), and a `${captured.x}` inside can only
+                // resolve once the block that captures it has replayed —
+                // `SurfaceRegistry::activate` resolves it, and any `${VAR}`
+                // alongside it, fresh at the surface's actual activation.
                 "windows" => flowproof_driver::AppTarget {
-                    command: resolve(&info.command)?,
-                    window_name: resolve(&info.window_title)?,
+                    command: info.command.clone().unwrap_or_default(),
+                    window_name: info.window_title.clone().unwrap_or_default(),
                 },
                 // Pixels mode re-attaches to the window the header recorded.
                 "vision" => {
@@ -698,6 +704,17 @@ fn stage_surface_browser(
     let Some(browser) = browser.filter(|b| !b.is_empty()) else {
         return Ok(());
     };
+    // `downloads_dir` is the one field here resolved from `${VAR}` — see
+    // `web_browser_from_setup` in `flowproof-agent/src/recorder.rs`, the
+    // record-path sibling of this replay-path function; every other field
+    // is a literal by design.
+    let downloads_dir = browser
+        .downloads_dir
+        .as_deref()
+        .map(flowproof_trace::secret::resolve_refs)
+        .transpose()
+        .map_err(|e| flowproof_driver::DriverError::Uia(e.to_string()))?
+        .map(std::path::PathBuf::from);
     driver.stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
         browser
             .viewport
@@ -713,6 +730,7 @@ fn stage_surface_browser(
             .random
             .as_ref()
             .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
+        downloads_dir,
     ))
 }
 

@@ -1,0 +1,93 @@
+# SAP Fiori + Excel: run and export a purchasing info records report, then
+# review the export in Excel — P-190-040-080-2 from the UAT test case PDF
+# (HP ALM/QC export). Unlike manage-info-records.flow.yaml (P-190-040-070-2,
+# editing one record), this case never stays inside the browser: it exports
+# to a spreadsheet and finishes the assertion in a second, unrelated Windows
+# application. That is exactly the multi-surface shape docs/multi-surface.md
+# describes (`apps:` + `in:` blocks) combined with the download/spreadsheet
+# primitives it names as the missing pieces.
+#
+# Every value that is test DATA travels as a ${VAR} reference, minted by the
+# sibling suite.yaml's env_from (DataMaker), same as manage-info-records.flow.yaml.
+#
+# Two steps below are left as flagged TODOs rather than guessed: the source
+# PDF itself records the tester choosing between three near-identical tile
+# options with "no clear single target... given", and separately extracting
+# "the complete purchase info record from the search results" with "no
+# specific element or button identified" — the same ambiguity the manual
+# script's own author hit. `flowproof record` resolves these against the
+# live screen; guessing selector text here would record a lie, not a step.
+name: Purchase info-records report
+apps:
+  fiori:
+    app: web
+    url: ${FIORI_BASE_URL}/ui#Shell-home
+    # No `browser: {downloads_dir: ...}` needed — downloads are enabled by
+    # default at every launch, into a per-launch temp directory the driver
+    # creates and owns, so `wait until the download completes` always has
+    # somewhere to look.
+  excel:
+    # A generic Windows-mapping surface (docs/multi-surface.md) — Excel
+    # needs no bespoke app kind. `${captured.pir_export}` resolves at THIS
+    # surface's own activation (after the fiori block has captured it),
+    # never before, so the download must have already landed.
+    app:
+      command: EXCEL.EXE ${captured.pir_export}
+      window_title: Excel
+steps:
+  - in: fiori
+    steps:
+      # -- Log in on the launchpad's login screen ------------------------
+      - Type ${SAP_USER} into the "User" field
+      - Type ${SAP_PASSWORD} into the "Password" field
+      - Press the "Log On" button
+      - Wait until page shows Home within 60s
+
+      # -- Navigate: module tile, then the report app --------------------
+      - Click "PTP Process Area BU Apps"
+      # TODO: the PDF's Step 3 names three near-identical options with no
+      # single clear target ("Manage Info Records" / "Display purchasing
+      # info records by Supplier" / "Display purchasing info records by
+      # material") — resolve against the live tile catalog at record time.
+      # This is a best-effort guess at the tile's visible text, not a
+      # confirmed label.
+      - Click "Display Purchasing Info Record"
+      - assert: page shows Info Record
+
+      # -- Search the standard info record by the minted test data -------
+      - Type ${SUPPLIER} into the "Supplier" field
+      - Type ${MATERIAL} into the "Material" field
+      - Type ${PLANT} into the "Plant" field
+      - Press the "Go" button
+      - assert: page shows ${MATERIAL}
+
+      # TODO: unexplained step — the PDF's Step 5 ("Extract the complete
+      # purchase info record from the search results") names no specific
+      # element or button, and its own "Actual" note records the tester
+      # hitting this exact ambiguity mid-run ("Report extracted but not
+      # usable... updated to ALV grid view"). Resolve against the live
+      # screen at record time — a "select all" header checkbox before
+      # export is one live possibility.
+      - resolve the action needed here against the live screen — a keyboard-only action like Enter may be the cause. Observed - "Extract the complete purchase info record from the search results", with no specific element or button identified.
+
+      # -- Export, and hand the download to the excel surface ------------
+      - Press the "Export" button
+      - Wait until the download completes as pir_export within 60s
+
+  - in: excel
+    steps:
+      # Visual/manual-test parity: the same "open it and look" check the
+      # manual script's Step 7 performed by eye.
+      - assert: page shows Net Price
+
+      # Out-of-band truth: the exported file itself, not the pixels Excel
+      # renders (Excel's grid UIA support is untested and known-flaky).
+      # column/row_contains resolve against the report's actual header row
+      # and data rows, verified live at the first `flowproof record` pass —
+      # the export's exact layout (a summary block above the real table,
+      # per the PDF's own screenshots) isn't knowable from the document
+      # alone.
+      - assert_spreadsheet:
+          path: ${captured.pir_export}
+          column: Net Price
+          row_contains: ${MATERIAL}

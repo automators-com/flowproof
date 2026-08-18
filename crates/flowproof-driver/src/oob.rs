@@ -7,6 +7,8 @@
 //! connection string / base configuration resolves from the local
 //! environment at run time (`FLOWPROOF_SQL_<NAME>`).
 
+use calamine::Reader as _;
+
 use crate::DriverError;
 
 /// One out-of-band check, with every `${VAR}` reference already resolved
@@ -75,6 +77,36 @@ pub enum OobProbe {
         /// `Some(false)` sends a read exactly once.
         retry: Option<bool>,
     },
+    /// Out-of-band spreadsheet probe: the exported file on disk, not the
+    /// pixel Excel happens to render. A read like `Sql`, so it is always
+    /// retryable — a just-finished download may still be mid-write when the
+    /// first poll fires.
+    Spreadsheet {
+        /// Resolved path to the workbook. Format is auto-detected from the
+        /// extension (xlsx/xlsm/xlsb/xls/ods — whatever `calamine` reads).
+        path: String,
+        /// Sheet name; the workbook's first sheet when unset.
+        sheet: Option<String>,
+        /// An `A1`-style cell reference (`"B2"`), absolute within the
+        /// sheet. Mutually exclusive with `column`/`row_contains` (the
+        /// caller enforces this at parse time, same as `assert_api`'s
+        /// cross-field rules).
+        at: Option<String>,
+        /// Header text identifying the column: matched exact-after-trim,
+        /// then unique-contains, against the sheet's first row — the same
+        /// two-rung ladder the web adapter's `CellQuery` uses, for a static
+        /// file instead of a live DOM.
+        column: Option<String>,
+        /// Anchor text identifying the row: the row (excluding the header)
+        /// where ANY cell's text contains it must be unique.
+        row_contains: Option<String>,
+        /// The cell's text (via its `Display` rendering) must equal this.
+        equals: Option<String>,
+        /// The cell's text must contain this substring. At most one of
+        /// `equals`/`contains` is set (enforced at parse time); with
+        /// neither, resolving the cell is the whole assertion.
+        contains: Option<String>,
+    },
 }
 
 /// How many elements the array at `body_json` must hold. One value rather
@@ -121,6 +153,9 @@ pub fn is_retryable(probe: &OobProbe) -> bool {
         OobProbe::Api { method, retry, .. } => {
             retry.unwrap_or_else(|| matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD"))
         }
+        // A spreadsheet read, like a query: the file may still be mid-write
+        // right after a download lands, and polling never resends anything.
+        OobProbe::Spreadsheet { .. } => true,
     }
 }
 
@@ -350,6 +385,172 @@ pub fn check(probe: &OobProbe) -> Result<Result<Option<String>, String>, DriverE
             // `${VAR}` expectations.
             Ok(Ok(Some(text)))
         }
+        OobProbe::Spreadsheet {
+            path,
+            sheet,
+            at,
+            column,
+            row_contains,
+            equals,
+            contains,
+        } => {
+            let mut workbook = match calamine::open_workbook_auto(path) {
+                Ok(workbook) => workbook,
+                // A file that has not landed yet (a download still writing)
+                // is the common case here: a MISS the caller may poll past,
+                // not a configuration error.
+                Err(e) => return Ok(Err(format!("opening '{path}': {e}"))),
+            };
+            let sheet_name = match sheet {
+                Some(name) => name.clone(),
+                None => {
+                    let Some(first) = workbook.sheet_names().into_iter().next() else {
+                        return Err(DriverError::Uia(format!("'{path}' has no sheets")));
+                    };
+                    first
+                }
+            };
+            let range = match workbook.worksheet_range(&sheet_name) {
+                Ok(range) => range,
+                Err(e) => return Ok(Err(format!("reading sheet '{sheet_name}': {e}"))),
+            };
+            let cell = match at {
+                Some(reference) => {
+                    let Some((row, col)) = parse_a1_cell(reference) else {
+                        return Err(DriverError::Uia(format!(
+                            "'{reference}' is not a valid cell reference (e.g. 'B2')"
+                        )));
+                    };
+                    let (start_row, start_col) = range.start().unwrap_or((0, 0));
+                    let (Some(row), Some(col)) = (
+                        row.checked_sub(start_row as usize),
+                        col.checked_sub(start_col as usize),
+                    ) else {
+                        return Ok(Err(format!(
+                            "'{reference}' is outside sheet '{sheet_name}''s used range"
+                        )));
+                    };
+                    range.get((row, col))
+                }
+                None => {
+                    // Parse-time validation (mirroring `assert_api`'s
+                    // cross-field rules) guarantees exactly one of `at` or
+                    // this pair is set by the time a probe reaches here.
+                    let (Some(column), Some(anchor)) = (column, row_contains) else {
+                        return Err(DriverError::Uia(
+                            "assert_spreadsheet needs either `at` or both `column` and \
+                             `row_contains`"
+                                .into(),
+                        ));
+                    };
+                    let col = match find_spreadsheet_column(&range, column) {
+                        Ok(col) => col,
+                        Err(reason) => return Ok(Err(reason)),
+                    };
+                    let row = match find_spreadsheet_row(&range, anchor) {
+                        Ok(row) => row,
+                        Err(reason) => return Ok(Err(reason)),
+                    };
+                    range.get((row, col))
+                }
+            };
+            let actual = cell.map(ToString::to_string).unwrap_or_default();
+            if let Some(expected) = equals {
+                if &actual != expected {
+                    return Ok(Err(format!("expected cell '{expected}', got '{actual}'")));
+                }
+            } else if let Some(needle) = contains {
+                if !actual.contains(needle.as_str()) {
+                    return Ok(Err(format!(
+                        "expected cell to contain '{needle}', got '{actual}'"
+                    )));
+                }
+            }
+            Ok(Ok(None))
+        }
+    }
+}
+
+/// Parse an absolute `A1`-style reference (`"B2"`) into a zero-indexed
+/// `(row, col)` pair. Column letters are base-26 (`A`=1 … `Z`=26, `AA`=27,
+/// …), matching spreadsheet convention; anything that isn't
+/// `[A-Za-z]+[0-9]+` is not a cell reference.
+fn parse_a1_cell(reference: &str) -> Option<(usize, usize)> {
+    let reference = reference.trim();
+    let split = reference.find(|c: char| !c.is_ascii_alphabetic())?;
+    let (col_part, row_part) = reference.split_at(split);
+    if col_part.is_empty() || row_part.is_empty() || !row_part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut col = 0usize;
+    for c in col_part.chars() {
+        col = col * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1);
+    }
+    let row: usize = row_part.parse().ok()?;
+    Some((row.checked_sub(1)?, col.checked_sub(1)?))
+}
+
+/// Find `column`'s index in the sheet's first row: exact-after-trim, then
+/// unique-contains — the same two-rung ladder the web adapter's `CellQuery`
+/// uses for a live DOM table, applied here to a static header row.
+fn find_spreadsheet_column(
+    range: &calamine::Range<calamine::Data>,
+    column: &str,
+) -> Result<usize, String> {
+    let Some(header) = range.rows().next() else {
+        return Err("sheet has no header row".to_string());
+    };
+    let want = column.trim();
+    let mut exact = Vec::new();
+    let mut partial = Vec::new();
+    for (i, cell) in header.iter().enumerate() {
+        let text = cell.to_string();
+        let trimmed = text.trim();
+        if trimmed == want {
+            exact.push(i);
+        } else if trimmed.contains(want) {
+            partial.push(i);
+        }
+    }
+    match exact.as_slice() {
+        [i] => Ok(*i),
+        [] => match partial.as_slice() {
+            [i] => Ok(*i),
+            [] => Err(format!("no column header matches '{column}'")),
+            many => Err(format!(
+                "column header '{column}' matches {} headers - use a more specific header text",
+                many.len()
+            )),
+        },
+        many => Err(format!(
+            "column header '{column}' is not unique ({} exact matches)",
+            many.len()
+        )),
+    }
+}
+
+/// Find the unique data row (excluding the header) where ANY cell's text
+/// contains `anchor`. Every anchor rung elsewhere in flowproof (the web
+/// adapter's cell/scope resolvers) uses the same "contains, must be unique"
+/// rule; a static sheet gets the identical contract.
+fn find_spreadsheet_row(
+    range: &calamine::Range<calamine::Data>,
+    anchor: &str,
+) -> Result<usize, String> {
+    let matches: Vec<usize> = range
+        .rows()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, row)| row.iter().any(|cell| cell.to_string().contains(anchor)))
+        .map(|(i, _)| i)
+        .collect();
+    match matches.as_slice() {
+        [i] => Ok(*i),
+        [] => Err(format!("no row contains '{anchor}'")),
+        many => Err(format!(
+            "row anchor '{anchor}' matches {} rows - use a more specific anchor",
+            many.len()
+        )),
     }
 }
 
@@ -740,5 +941,127 @@ mod tests {
             err,
             "header 'Content-Type' is 'application/json', expected contains 'xml' (status 200)"
         );
+    }
+
+    #[test]
+    fn spreadsheet_is_always_retried() {
+        let probe = OobProbe::Spreadsheet {
+            path: "x.xlsx".into(),
+            sheet: None,
+            at: Some("A1".into()),
+            column: None,
+            row_contains: None,
+            equals: None,
+            contains: None,
+        };
+        assert!(is_retryable(&probe));
+    }
+
+    #[test]
+    fn a1_references_parse_to_zero_indexed_row_col() {
+        assert_eq!(parse_a1_cell("A1"), Some((0, 0)));
+        assert_eq!(parse_a1_cell("B2"), Some((1, 1)));
+        assert_eq!(parse_a1_cell("aa10"), Some((9, 26)));
+        assert_eq!(parse_a1_cell(" C5 "), Some((4, 2)));
+    }
+
+    #[test]
+    fn malformed_a1_references_are_rejected() {
+        assert_eq!(parse_a1_cell("2B"), None);
+        assert_eq!(parse_a1_cell("B0"), None, "spreadsheet rows are 1-based");
+        assert_eq!(parse_a1_cell("B"), None);
+        assert_eq!(parse_a1_cell("2"), None);
+        assert_eq!(parse_a1_cell(""), None);
+    }
+
+    #[test]
+    fn a_missing_workbook_is_a_pollable_miss_not_a_hard_error() {
+        // A download the polling loop hasn't seen land yet reads as a MISS
+        // (Ok(Err(..))), so the caller's auto-wait can retry it - not a
+        // config error that aborts immediately.
+        let probe = OobProbe::Spreadsheet {
+            path: "/definitely/does/not/exist.xlsx".into(),
+            sheet: None,
+            at: Some("A1".into()),
+            column: None,
+            row_contains: None,
+            equals: None,
+            contains: None,
+        };
+        let outcome = check(&probe).expect("a missing file is a soft miss, not Err");
+        assert!(outcome.is_err(), "the cell cannot resolve yet");
+    }
+
+    fn sheet_with_header_and_rows() -> calamine::Range<calamine::Data> {
+        use calamine::{Cell, Data, Range};
+        let cells = vec![
+            Cell::new((0, 0), Data::String("Order Type".to_string())),
+            Cell::new((0, 1), Data::String("Net Price".to_string())),
+            Cell::new((0, 2), Data::String("Price Currency".to_string())),
+            Cell::new((1, 0), Data::String("ZOR - 100-100".to_string())),
+            Cell::new((1, 1), Data::Float(12.5)),
+            Cell::new((1, 2), Data::String("USD".to_string())),
+            Cell::new((2, 0), Data::String("ZOR - 100-200".to_string())),
+            Cell::new((2, 1), Data::Float(30.0)),
+            Cell::new((2, 2), Data::String("USD".to_string())),
+        ];
+        Range::from_sparse(cells)
+    }
+
+    #[test]
+    fn column_resolves_by_exact_header_match() {
+        let sheet = sheet_with_header_and_rows();
+        assert_eq!(find_spreadsheet_column(&sheet, "Net Price"), Ok(1));
+    }
+
+    #[test]
+    fn column_falls_back_to_unique_contains() {
+        // No header is exactly "Order", but "Order Type" is the only one
+        // that contains it, so this rung resolves unambiguously.
+        let sheet = sheet_with_header_and_rows();
+        assert_eq!(find_spreadsheet_column(&sheet, "Order"), Ok(0));
+    }
+
+    #[test]
+    fn column_contains_ambiguity_is_an_error() {
+        let sheet = sheet_with_header_and_rows();
+        let err = find_spreadsheet_column(&sheet, "Price").expect_err("ambiguous");
+        assert!(err.contains("Price") && err.contains('2'), "{err}");
+    }
+
+    #[test]
+    fn column_not_found_names_what_was_asked_for() {
+        let sheet = sheet_with_header_and_rows();
+        let err = find_spreadsheet_column(&sheet, "Nope").expect_err("no such header");
+        assert!(err.contains("Nope"), "{err}");
+    }
+
+    #[test]
+    fn row_resolves_by_unique_anchor_across_any_cell() {
+        let sheet = sheet_with_header_and_rows();
+        assert_eq!(find_spreadsheet_row(&sheet, "100-200"), Ok(2));
+    }
+
+    #[test]
+    fn row_anchor_matching_every_row_is_ambiguous() {
+        let sheet = sheet_with_header_and_rows();
+        let err = find_spreadsheet_row(&sheet, "ZOR").expect_err("matches both data rows");
+        assert!(err.contains("ZOR") && err.contains('2'), "{err}");
+    }
+
+    #[test]
+    fn row_anchor_with_no_match_names_it() {
+        let sheet = sheet_with_header_and_rows();
+        let err = find_spreadsheet_row(&sheet, "999-999").expect_err("no such row");
+        assert!(err.contains("999-999"), "{err}");
+    }
+
+    #[test]
+    fn resolved_cell_reads_via_column_and_row_contains() {
+        let sheet = sheet_with_header_and_rows();
+        let col = find_spreadsheet_column(&sheet, "Net Price").expect("column");
+        let row = find_spreadsheet_row(&sheet, "100-200").expect("row");
+        let cell = sheet.get((row, col)).expect("in range");
+        assert_eq!(cell.to_string(), "30");
     }
 }

@@ -96,9 +96,11 @@ these fields existed) is byte-identical:
   `clock` (`{at, timezone}`: a pinned `Date` offset plus a CDP timezone
   override, so a date-dependent flow replays deterministically), and
   `random` (`{seed}`: a seeded `Math.random`, the clock's sibling, so a
-  flow against a page that mints random values is deterministic). Both
-  travel in the header so record and every replay run the SAME browser
-  shape.
+  flow against a page that mints random values is deterministic), and
+  `downloads_dir` (where downloaded files land, applied via CDP at launch so
+  `capture_download` has a fixed place to look; absent means the driver
+  creates its own per-launch temp directory). All travel in the header so
+  record and every replay run the SAME browser shape.
 - Optional `apps` is the surface map of a **multi-surface trace**
   (docs/multi-surface.md): `name -> app object`, each entry the same shape
   as `app` — `{"gui": {"name": "SAP GUI for Windows", "adapter":
@@ -149,12 +151,12 @@ these fields existed) is byte-identical:
   step belongs to. Absent on single-surface traces, where the header's one
   `app` is the surface — those serialize byte-identically to before the
   field existed. Optional PER STEP even in a multi-surface trace: an
-  out-of-band assertion (`assert_api`/`assert_sql`) drives no UI and may
-  carry none.
+  out-of-band assertion (`assert_api`/`assert_sql`/`assert_spreadsheet`)
+  drives no UI and may carry none.
 - `action.type` — one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`,
-  `upload`, `capture`, `set_checked`, `wait`, `assert`. `params` is
-  action-specific (see schema `$defs`).
+  `upload`, `capture`, `capture_download`, `set_checked`, `wait`, `assert`.
+  `params` is action-specific (see schema `$defs`).
   Text params (`type_text` text, assert expectations) may contain `${VAR}`
   **secret references**: the engine resolves them from the environment at
   execution time — recording and every replay — and the trace only ever
@@ -179,6 +181,13 @@ these fields existed) is byte-identical:
   capture of **zero** fails rather than remembering `0` — a selector typo
   matches nothing and so does an empty table, and the step that means zero
   is an `assert` with `element_count: 0`.
+
+  A `capture_download` step carries `{"name": "<name>"}` and an optional
+  `{"timeout_ms": …}`, and has no selectors — a download belongs to the
+  surface, not an element on screen, the same reasoning `press_key` uses for
+  the focused element. Like `capture`, only the name is stored: the
+  download's resolved path is read at execution time on record and on every
+  replay and lives only in that run's captures, never in the trace.
 
   A `kind: "cell"` payload may carry `row_anchor_also: [...]`, and a
   `kind: "scoped"` payload `anchor_also: [...]` — the ADDITIONAL anchors
@@ -360,6 +369,19 @@ these fields existed) is byte-identical:
   at execution and never persist. `body` is any JSON, sent for
   POST/PUT/PATCH with an auto `application/json` content-type unless a
   user `content-type` header is present.
+- `spreadsheet` — out-of-band file probe: `path` (may carry
+  `${captured.x}`/`${VAR}` references — the export this checks is often
+  itself a captured download path — resolved at probe time), optional
+  `sheet` (the workbook's first sheet when absent), and a cell addressed
+  EITHER by `at` (an absolute `A1` reference, e.g. `"B2"`) OR by
+  `column`+`row_contains` (a header/anchor pair resolved against the sheet
+  like a table cell on a live page: `column` matched exact-after-trim then
+  unique-contains against the first row, `row_contains` the unique row where
+  any cell contains it) — exactly one form, a parse-time error otherwise.
+  `expect` (`equals`, `contains`, `timeout_ms`): with neither set, resolving
+  the cell is the whole assertion, mirroring `sql`'s bare row-exists check.
+  Read via `calamine` directly against the file on disk, not through UI
+  Automation over Excel's grid — untested and known-flaky there.
 
 ## Versioning
 
