@@ -461,6 +461,35 @@ fn random_shim(seed: u32) -> String {
     )
 }
 
+/// Entries in `dir` that are not still downloading. Chrome writes an
+/// in-progress download under a `.crdownload` suffix and renames it to its
+/// final name only on completion, so that suffix is the one signal needed
+/// to tell "downloading" from "done" — this fork's `Browser` handle exposes
+/// no listener for the CDP download-progress events, so the filesystem is
+/// the only channel available.
+fn list_finished_downloads(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, DriverError> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| web_err("reading the downloads directory", e))?;
+    Ok(entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) != Some("crdownload"))
+        .collect())
+}
+
+/// Two size reads, a beat apart, agreeing — the local signal that a file
+/// already past the `.crdownload` rename has actually finished being
+/// written to disk, not just renamed early.
+fn is_size_stable(path: &std::path::Path) -> bool {
+    let Ok(before) = std::fs::metadata(path).map(|m| m.len()) else {
+        return false;
+    };
+    std::thread::sleep(Duration::from_millis(100));
+    std::fs::metadata(path)
+        .map(|m| m.len() == before)
+        .unwrap_or(false)
+}
+
 fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
     let message = format!("{context}: {err}");
     if is_transport_fault(&message) {
@@ -701,6 +730,16 @@ fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
         .map_err(|e| AdapterError::Web(launch_failure_message(&e.to_string(), headed)))
 }
 
+/// A private per-launch downloads directory when the flow didn't pin one via
+/// `browser.downloads_dir`. Unique per launch (pid + a monotonic counter) so
+/// two flows sharing the same shared-browser process never race over the
+/// same directory.
+fn fresh_downloads_dir() -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("flowproof-downloads-{}-{n}", std::process::id()))
+}
+
 /// One Chromium process for the whole run, reused across flows. Each flow
 /// gets an isolated incognito CONTEXT (its own cookies/cache), so reuse is
 /// invisible to specs but the ~seconds-long cold start is paid ONCE per
@@ -763,6 +802,12 @@ pub struct WebAppDriver {
     /// dialog the instant it opens - a main-path CDP call would block behind
     /// the open dialog.
     dialogs: Arc<Mutex<DialogState>>,
+    /// Where THIS launch's downloads land — `config.downloads_dir` if
+    /// staged, otherwise a fresh directory this driver created and owns.
+    /// Set once, at `launch`, from `Page.setDownloadBehavior`; read by
+    /// `wait_for_download`. `None` until a `launch` with downloads enabled
+    /// has run.
+    downloads_dir: Option<std::path::PathBuf>,
 }
 
 /// Shared state between the driver and the flow-wide dialog listener.
@@ -953,6 +998,7 @@ impl WebAppDriver {
                 staged_mocks: Vec::new(),
                 staged_browser: None,
                 dialogs: Default::default(),
+                downloads_dir: None,
             });
         }
         let browser = shared_browser()?;
@@ -970,6 +1016,7 @@ impl WebAppDriver {
             staged_mocks: Vec::new(),
             staged_browser: None,
             dialogs: Default::default(),
+            downloads_dir: None,
         })
     }
 
@@ -2115,6 +2162,25 @@ impl AppDriver for WebAppDriver {
             };
             tab.add_event_listener(Arc::new(listener)).ok();
         }
+        // Downloads: enabled on every launch, regardless of whether
+        // `browser:` was declared — `Wait until the download completes as
+        // <name>` is a step grammar, not gated behind browser setup.
+        // `config.downloads_dir` if staged, else a fresh per-launch temp
+        // directory this driver owns; either way `Page.setDownloadBehavior`
+        // is what makes headless Chrome write the file at all instead of
+        // silently discarding it.
+        let downloads_dir = staged_browser
+            .as_ref()
+            .and_then(|config| config.downloads_dir.clone())
+            .unwrap_or_else(fresh_downloads_dir);
+        std::fs::create_dir_all(&downloads_dir)
+            .map_err(|e| web_err("creating the downloads directory", e))?;
+        tab.call_method(Page::SetDownloadBehavior {
+            behavior: Page::SetDownloadBehaviorBehaviorOption::Allow,
+            download_path: Some(downloads_dir.display().to_string()),
+        })
+        .map_err(|e| web_err("enabling downloads", e))?;
+        self.downloads_dir = Some(downloads_dir);
         tab.navigate_to(command)
             .map_err(|e| web_err(&format!("navigating to {command}"), e))?;
         tab.wait_until_navigated()
@@ -2856,6 +2922,44 @@ impl AppDriver for WebAppDriver {
                 element.set_input_files(&refs).map(|_| ())
             },
         )
+    }
+
+    /// Wait for exactly one NEW file to land in this launch's downloads
+    /// directory and finish writing. A snapshot taken at call time is the
+    /// baseline — a file already sitting in the directory (a prior
+    /// download, in a pinned `downloads_dir` reused across launches) is not
+    /// this call's answer, so a flow with two downloads in sequence gets
+    /// the second one on the second call rather than the first one twice.
+    fn wait_for_download(&mut self, timeout: Duration) -> Result<std::path::PathBuf, DriverError> {
+        let dir = self
+            .downloads_dir
+            .clone()
+            .ok_or_else(|| DriverError::Browser("no page open: call launch first".into()))?;
+        let baseline = list_finished_downloads(&dir)?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let fresh: Vec<_> = list_finished_downloads(&dir)?
+                .into_iter()
+                .filter(|p| !baseline.contains(p))
+                .collect();
+            match fresh.as_slice() {
+                [one] if is_size_stable(one) => return Ok(one.clone()),
+                [_, _, ..] => {
+                    return Err(DriverError::Browser(format!(
+                        "wait for download: {} files landed at once - only one download was expected",
+                        fresh.len()
+                    )));
+                }
+                _ => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(DriverError::Browser(format!(
+                    "wait for download: no download landed in {} within {timeout:?}",
+                    dir.display()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {

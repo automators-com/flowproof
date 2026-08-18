@@ -578,6 +578,7 @@ fn validate_drags_are_asserted(steps: &[SpecStep]) -> Result<(), SpecError> {
             Some(SpecStep::Assert { .. })
                 | Some(SpecStep::AssertSql { .. })
                 | Some(SpecStep::AssertApi { .. })
+                | Some(SpecStep::AssertSpreadsheet { .. })
                 | Some(SpecStep::AssertScreenshot { .. })
         );
         if !asserted {
@@ -1440,6 +1441,9 @@ pub enum SpecStep {
     AssertApi {
         assert_api: ApiAssertSpec,
     },
+    AssertSpreadsheet {
+        assert_spreadsheet: SpreadsheetAssertSpec,
+    },
     AssertScreenshot {
         assert_screenshot: ScreenshotAssertSpec,
     },
@@ -1567,7 +1571,8 @@ fn parse_secret_selector(selector: &str) -> Result<String, String> {
 
 impl SpecStep {
     const FORMS: &'static str = "a plain string, `rules: <text>`, `assert: <text>`, \
-         `assert_sql: {...}`, `assert_api: {...}`, `assert_screenshot: {...}`, \
+         `assert_sql: {...}`, `assert_api: {...}`, `assert_spreadsheet: {...}`, \
+         `assert_screenshot: {...}`, \
          `prompt: <text>`, `assert_tool_call: <text>`, \
          `assert_no_tool_call: <text>`, `assert_no_egress`, \
          `assert_no_secret_leak: ${VAR}`, `repeat: {...}`, `when: <cond>` with `steps:`, \
@@ -1686,6 +1691,11 @@ impl SpecStep {
                     Some("assert_api") => serde_yaml::from_value(inner)
                         .map(|assert_api| SpecStep::AssertApi { assert_api })
                         .map_err(|e| format!("in `assert_api` step: {e}")),
+                    Some("assert_spreadsheet") => serde_yaml::from_value(inner)
+                        .map(|assert_spreadsheet| SpecStep::AssertSpreadsheet {
+                            assert_spreadsheet,
+                        })
+                        .map_err(|e| format!("in `assert_spreadsheet` step: {e}")),
                     Some("assert_screenshot") => serde_yaml::from_value(inner)
                         .map(|assert_screenshot| SpecStep::AssertScreenshot { assert_screenshot })
                         .map_err(|e| format!("in `assert_screenshot` step: {e}")),
@@ -1799,6 +1809,9 @@ impl Serialize for SpecStep {
             } => single(serializer, "assert_no_tool_call", assert_no_tool_call),
             SpecStep::AssertSql { assert_sql } => single(serializer, "assert_sql", assert_sql),
             SpecStep::AssertApi { assert_api } => single(serializer, "assert_api", assert_api),
+            SpecStep::AssertSpreadsheet { assert_spreadsheet } => {
+                single(serializer, "assert_spreadsheet", assert_spreadsheet)
+            }
             SpecStep::AssertScreenshot { assert_screenshot } => {
                 single(serializer, "assert_screenshot", assert_screenshot)
             }
@@ -1938,6 +1951,41 @@ pub struct ApiAssertSpec {
     pub retry: Option<bool>,
 }
 
+/// ```yaml
+/// - assert_spreadsheet:
+///     path: ${captured.pir_export}     # may carry ${captured.x} / ${VAR}
+///     sheet: Sheet1                    # optional; first sheet if absent
+///     at: B2                           # OR column + row_contains, not both
+///     column: Net Price                # header text (first row)
+///     row_contains: "100-100"          # anchor: unique row containing it
+///     equals: "12.50"                  # optional; cell text, exact
+/// ```
+/// Reads the file directly (`calamine`) — not through UI Automation over
+/// Excel's grid, which is untested and known-flaky. The cell is addressed
+/// EITHER by `at` alone OR by `column`+`row_contains` together; mixing the
+/// two, or setting neither, is a parse-time error (see `resolve_step_inner`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpreadsheetAssertSpec {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equals: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contains: Option<String>,
+    /// Auto-wait bound override (default 10s) — a just-finished download
+    /// may still be mid-write when the first poll fires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+}
+
 impl SpecStep {
     /// The deterministic action text when this step explicitly opted into
     /// rule authoring. `None` means routing was not forced by a per-step
@@ -1965,6 +2013,9 @@ impl SpecStep {
                 format!("sql {}: {}", assert_sql.connection, assert_sql.query)
             }
             SpecStep::AssertApi { assert_api } => format!("api {}", assert_api.request),
+            SpecStep::AssertSpreadsheet { assert_spreadsheet } => {
+                format!("spreadsheet {}", assert_spreadsheet.path)
+            }
             SpecStep::AssertScreenshot { assert_screenshot } => {
                 format!("screenshot matches {}", assert_screenshot.name)
             }
@@ -2612,6 +2663,41 @@ steps:
         let msg = err.to_string();
         assert!(msg.contains("statuss"), "names the field: {msg}");
         assert!(msg.contains("assert_api"), "names the step kind: {msg}");
+    }
+
+    #[test]
+    fn typoed_assert_spreadsheet_field_error_names_field_and_step_kind() {
+        let err = FlowSpec::parse(
+            "name: x\napp: web\nsteps:\n  - assert_spreadsheet:\n      path: out.xlsx\n      \
+             at: B2\n      equalz: '1'\n",
+        )
+        .expect_err("typo'd inner field must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("equalz"), "names the field: {msg}");
+        assert!(
+            msg.contains("assert_spreadsheet"),
+            "names the step kind: {msg}"
+        );
+    }
+
+    #[test]
+    fn assert_spreadsheet_round_trips_through_yaml() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nsteps:\n  - assert_spreadsheet:\n      path: out.xlsx\n      \
+             column: Net Price\n      row_contains: \"100-100\"\n      equals: \"12.50\"\n",
+        )
+        .expect("parses");
+        let SpecStep::AssertSpreadsheet {
+            assert_spreadsheet, ..
+        } = &spec.steps[0]
+        else {
+            panic!("expected AssertSpreadsheet");
+        };
+        assert_eq!(assert_spreadsheet.path, "out.xlsx");
+        assert_eq!(assert_spreadsheet.column.as_deref(), Some("Net Price"));
+        let text = serde_yaml::to_string(&spec.steps[0]).expect("serializes");
+        let reparsed: SpecStep = serde_yaml::from_str(&text).expect("reparses");
+        assert_eq!(reparsed, spec.steps[0]);
     }
 
     #[test]

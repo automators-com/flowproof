@@ -420,6 +420,7 @@
             "press_key",
             "upload",
             "capture",
+            "capture_download",
             "set_checked",
             "wait",
             "assert"
@@ -452,6 +453,34 @@
                   "count": {
                     "type": "boolean",
                     "description": "The counted reading - how many elements match, rather than one element's text. Absent means the text reading."
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "capture_download"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Flow-scoped capture name. Only the NAME is stored: the download's resolved path is read at execution time on record and every replay and lives only in that run's in-memory captures, exactly like a `capture` step's text."
+                  },
+                  "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 0
                   }
                 }
               }
@@ -650,7 +679,8 @@
             "ocr_text",
             "visual_diff",
             "sql",
-            "api"
+            "api",
+            "spreadsheet"
           ]
         }
       },
@@ -797,6 +827,42 @@
               },
               "status": {
                 "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "spreadsheet"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Workbook path; may carry ${captured.x}/${VAR} references, resolved at probe time."
+              },
+              "sheet": {
+                "type": "string",
+                "description": "Sheet name; the workbook's first sheet when absent."
+              },
+              "at": {
+                "type": "string",
+                "description": "An A1-style cell reference (e.g. 'B2'). Mutually exclusive with column/row_contains."
+              },
+              "column": {
+                "type": "string",
+                "description": "Header text identifying the column, matched against the sheet's first row. Requires row_contains."
+              },
+              "row_contains": {
+                "type": "string",
+                "description": "Anchor text identifying the row (any cell containing it). Requires column."
               }
             }
           }
@@ -1080,6 +1146,10 @@
               "maximum": 4294967295
             }
           }
+        },
+        "downloads_dir": {
+          "type": "string",
+          "description": "Where downloaded files land, applied at launch (record and every replay) so a `capture_download` step has a fixed place to look. Stored RAW - a ${VAR} reference resolves at launch, never here. Absent means the driver creates its own per-launch temp directory."
         }
       }
     }

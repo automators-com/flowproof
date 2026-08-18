@@ -239,6 +239,12 @@ pub enum ResolvedAction {
         name: String,
         count: bool,
     },
+    /// `Wait until the download completes as <name> [within Ns]` — no
+    /// target, like `TypeFocused`: a download belongs to the surface, not
+    /// to an element on screen. Captures the resolved file path under
+    /// `name`, read at execution time on record and every replay exactly
+    /// like `Capture`.
+    CaptureDownload { name: String, timeout_ms: u64 },
     /// Drive a checkbox-like control to a STATE (`Check`/`Uncheck`).
     /// Set-state rather than toggle, so the step means the same thing
     /// however the environment arrives: idempotent by design.
@@ -362,6 +368,17 @@ pub enum ResolvedAction {
         count_at_least: Option<u64>,
         /// Override the method-derived retry policy (see `oob::is_retryable`).
         retry: Option<bool>,
+        timeout_ms: u64,
+    },
+    /// Out-of-band spreadsheet assertion: the exported file on disk.
+    AssertSpreadsheet {
+        path: String,
+        sheet: Option<String>,
+        at: Option<String>,
+        column: Option<String>,
+        row_contains: Option<String>,
+        equals: Option<String>,
+        contains: Option<String>,
         timeout_ms: u64,
     },
 }
@@ -996,6 +1013,54 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                 count_at_least: assert_api.count_at_least,
                 retry: assert_api.retry,
                 timeout_ms: assert_api
+                    .timeout_seconds
+                    .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
+            }]);
+        }
+        SpecStep::AssertSpreadsheet { assert_spreadsheet } => {
+            // Exactly one cell address: `at` alone, or `column` and
+            // `row_contains` together — mirrors `assert_api`'s cross-field
+            // rules (a config mistake fails here, before anything records,
+            // not with a probe-time surprise).
+            let has_at = assert_spreadsheet.at.is_some();
+            let has_anchor =
+                assert_spreadsheet.column.is_some() || assert_spreadsheet.row_contains.is_some();
+            if has_at && has_anchor {
+                return Err(unresolvable(
+                    &assert_spreadsheet.path,
+                    "assert_spreadsheet sets `at` OR `column`+`row_contains`, not both",
+                ));
+            }
+            if !has_at && !has_anchor {
+                return Err(unresolvable(
+                    &assert_spreadsheet.path,
+                    "assert_spreadsheet needs either `at` or both `column` and `row_contains`",
+                ));
+            }
+            if has_anchor
+                && (assert_spreadsheet.column.is_none()
+                    || assert_spreadsheet.row_contains.is_none())
+            {
+                return Err(unresolvable(
+                    &assert_spreadsheet.path,
+                    "assert_spreadsheet's `column` and `row_contains` must be set together",
+                ));
+            }
+            if assert_spreadsheet.equals.is_some() && assert_spreadsheet.contains.is_some() {
+                return Err(unresolvable(
+                    &assert_spreadsheet.path,
+                    "assert_spreadsheet sets at most one of equals/contains",
+                ));
+            }
+            return Ok(vec![ResolvedAction::AssertSpreadsheet {
+                path: assert_spreadsheet.path.clone(),
+                sheet: assert_spreadsheet.sheet.clone(),
+                at: assert_spreadsheet.at.clone(),
+                column: assert_spreadsheet.column.clone(),
+                row_contains: assert_spreadsheet.row_contains.clone(),
+                equals: assert_spreadsheet.equals.clone(),
+                contains: assert_spreadsheet.contains.clone(),
+                timeout_ms: assert_spreadsheet
                     .timeout_seconds
                     .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
             }]);
@@ -2598,6 +2663,29 @@ mod web {
         // `Reload the page`.
         if trimmed.eq_ignore_ascii_case("reload the page") {
             return Ok(vec![ResolvedAction::Reload]);
+        }
+
+        // `Wait until the download completes as <name> [within <N>s]` →
+        // no target (a download belongs to the surface, not an element),
+        // parsed before the generic `wait until …` form below so it is
+        // never mistaken for a page-text wait. Checked BEFORE the
+        // space-terminated prefix below: the outer `trimmed` has already
+        // lost its own trailing whitespace, so a bare "...as" with nothing
+        // after it never matches a prefix ending in a literal space, and
+        // would otherwise fall through to the unrelated generic error.
+        if trimmed.eq_ignore_ascii_case("wait until the download completes as") {
+            return Err(unresolvable(trimmed, "no name to capture the download as"));
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "wait until the download completes as ") {
+            let (name, timeout) = split_within(rest.trim());
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(unresolvable(trimmed, "no name to capture the download as"));
+            }
+            return Ok(vec![ResolvedAction::CaptureDownload {
+                name: name.to_string(),
+                timeout_ms: timeout.unwrap_or(WAIT_STEP_TIMEOUT_MS),
+            }]);
         }
 
         // `Wait until page shows <text> [within <N>s]` → an auto-waiting
@@ -6610,5 +6698,181 @@ mod dialog_suffix_tests {
             action_dialog(&plain(r#"Click "Delete""#).expect("parses")[0]),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod spreadsheet_assertion_tests {
+    use super::*;
+
+    #[test]
+    fn assert_spreadsheet_by_at_threads_through() {
+        let spec: crate::spec::SpreadsheetAssertSpec = serde_yaml::from_str(
+            "path: ${captured.pir_export}\nsheet: Sheet1\nat: B2\nequals: \"12.50\"\n",
+        )
+        .expect("spec parses");
+        let step = SpecStep::AssertSpreadsheet {
+            assert_spreadsheet: spec,
+        };
+        let actions = resolve_step("web", &step).expect("resolves");
+        let ResolvedAction::AssertSpreadsheet {
+            path,
+            sheet,
+            at,
+            column,
+            row_contains,
+            equals,
+            ..
+        } = &actions[0]
+        else {
+            panic!("expected AssertSpreadsheet");
+        };
+        // A raw ref passes through untouched — resolution is probe-time only.
+        assert_eq!(path, "${captured.pir_export}");
+        assert_eq!(sheet.as_deref(), Some("Sheet1"));
+        assert_eq!(at.as_deref(), Some("B2"));
+        assert_eq!(column, &None);
+        assert_eq!(row_contains, &None);
+        assert_eq!(equals.as_deref(), Some("12.50"));
+    }
+
+    #[test]
+    fn assert_spreadsheet_by_column_and_row_contains_threads_through() {
+        let spec: crate::spec::SpreadsheetAssertSpec = serde_yaml::from_str(
+            "path: pir.xlsx\ncolumn: Net Price\nrow_contains: \"100-100\"\ncontains: \"12\"\n",
+        )
+        .expect("spec parses");
+        let actions = resolve_step(
+            "web",
+            &SpecStep::AssertSpreadsheet {
+                assert_spreadsheet: spec,
+            },
+        )
+        .expect("resolves");
+        let ResolvedAction::AssertSpreadsheet {
+            at,
+            column,
+            row_contains,
+            contains,
+            ..
+        } = &actions[0]
+        else {
+            panic!("expected AssertSpreadsheet");
+        };
+        assert_eq!(at, &None);
+        assert_eq!(column.as_deref(), Some("Net Price"));
+        assert_eq!(row_contains.as_deref(), Some("100-100"));
+        assert_eq!(contains.as_deref(), Some("12"));
+    }
+
+    #[test]
+    fn assert_spreadsheet_neither_at_nor_anchor_is_a_spec_error() {
+        let spec: crate::spec::SpreadsheetAssertSpec =
+            serde_yaml::from_str("path: pir.xlsx\n").expect("parses");
+        let err = resolve_step(
+            "web",
+            &SpecStep::AssertSpreadsheet {
+                assert_spreadsheet: spec,
+            },
+        )
+        .expect_err("no cell address at all must fail early");
+        assert!(
+            err.to_string().contains("`at`") && err.to_string().contains("row_contains"),
+            "names both forms: {err}"
+        );
+    }
+
+    #[test]
+    fn assert_spreadsheet_both_at_and_anchor_is_a_spec_error() {
+        let spec: crate::spec::SpreadsheetAssertSpec =
+            serde_yaml::from_str("path: pir.xlsx\nat: B2\ncolumn: Net Price\nrow_contains: x\n")
+                .expect("parses");
+        let err = resolve_step(
+            "web",
+            &SpecStep::AssertSpreadsheet {
+                assert_spreadsheet: spec,
+            },
+        )
+        .expect_err("at and column/row_contains together is a contradiction");
+        assert!(err.to_string().contains("not both"), "{err}");
+    }
+
+    #[test]
+    fn assert_spreadsheet_column_without_row_contains_is_a_spec_error() {
+        let spec: crate::spec::SpreadsheetAssertSpec =
+            serde_yaml::from_str("path: pir.xlsx\ncolumn: Net Price\n").expect("parses");
+        let err = resolve_step(
+            "web",
+            &SpecStep::AssertSpreadsheet {
+                assert_spreadsheet: spec,
+            },
+        )
+        .expect_err("a header alone cannot name a row");
+        assert!(err.to_string().contains("together"), "{err}");
+    }
+
+    #[test]
+    fn assert_spreadsheet_both_equals_and_contains_is_a_spec_error() {
+        let spec: crate::spec::SpreadsheetAssertSpec =
+            serde_yaml::from_str("path: pir.xlsx\nat: A1\nequals: x\ncontains: y\n")
+                .expect("parses");
+        let err = resolve_step(
+            "web",
+            &SpecStep::AssertSpreadsheet {
+                assert_spreadsheet: spec,
+            },
+        )
+        .expect_err("one question, two spellings");
+        assert!(
+            err.to_string().contains("at most one of equals/contains"),
+            "{err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod capture_download_tests {
+    use super::*;
+
+    #[test]
+    fn wait_until_the_download_completes_captures_with_the_default_timeout() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain("Wait until the download completes as pir_export".into()),
+        )
+        .expect("resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::CaptureDownload {
+                name: "pir_export".into(),
+                timeout_ms: WAIT_STEP_TIMEOUT_MS,
+            }]
+        );
+    }
+
+    #[test]
+    fn wait_until_the_download_completes_honors_an_explicit_timeout() {
+        let actions = resolve_step(
+            "web",
+            &SpecStep::Plain("Wait until the download completes as export within 90s".into()),
+        )
+        .expect("resolves");
+        assert_eq!(
+            actions,
+            vec![ResolvedAction::CaptureDownload {
+                name: "export".into(),
+                timeout_ms: 90_000,
+            }]
+        );
+    }
+
+    #[test]
+    fn wait_until_the_download_completes_with_no_name_is_a_spec_error() {
+        let err = resolve_step(
+            "web",
+            &SpecStep::Plain("Wait until the download completes as ".into()),
+        )
+        .expect_err("a nameless capture is unresolvable");
+        assert!(err.to_string().contains("name"), "{err}");
     }
 }
