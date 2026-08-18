@@ -68,6 +68,21 @@ jobs:
           SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
           SAP_CLIENT: ${{ secrets.SAP_CLIENT }}
 
+      # `flowproof run` already writes per-step PNG frames and report.html
+      # into the suite's run dir on every invocation (recording-detail
+      # defaults to full) — the only thing missing was keeping that bundle
+      # past the job. `if: always()` so a failure is exactly the case that
+      # gets captured. Short retention: these frames are real screens off
+      # the reference SAP system and may show live order/material data.
+      - name: upload SAP flow diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sap-e2e-run-${{ github.run_id }}
+          path: examples/sap/.flowproof/runs/
+          retention-days: 14
+          if-no-files-found: ignore
+
       # Leave the session clean for whichever run is next, whether that's
       # tonight's schedule or a manual dispatch during the working day.
       - name: session reset

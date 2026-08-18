@@ -1,0 +1,104 @@
+# A deliberately long write lifecycle for the reference TS3 sandbox. SO10
+# standard texts can be genuinely deleted, so the flow cleans up the record it
+# creates and verifies that it no longer exists.
+#
+# SAP's classic text editor recycles visible row IDs during the pauses needed
+# to record actions. The first line is its stable writable unit, so complexity
+# comes from five persisted save/display/change cycles rather than scrolling.
+name: Create revise and delete standard text
+app: sap
+steps:
+  - Go to /nSO10
+  - assert: "page shows Standard Text: Request"
+  - assert: the wnd[0]/usr/ctxtRSSCE-TDID field contains ST
+  - assert: the wnd[0]/usr/ctxtRSSCE-TDSPRAS field contains EN
+  - Type ${SO10_TEXT_NAME} into the "id:wnd[0]/usr/ctxtRSSCE-TDNAME" field
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT001" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: page shows SYSTEM
+  - Type VERSION ONE into the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1]" field
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION ONE
+  - Press the "id:wnd[0]/tbar[0]/btn[11]" button
+  - assert: page shows Text ${SO10_TEXT_NAME} language EN was saved
+
+  - Press F3
+  - assert: "page shows Standard Text: Request"
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: "page shows Display Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION ONE
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT003" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - Replace the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1]" field with VERSION TWO
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION TWO
+  - Press the "id:wnd[0]/tbar[0]/btn[11]" button
+  - assert: page shows Text ${SO10_TEXT_NAME} language EN was saved
+
+  - Press F3
+  - assert: "page shows Standard Text: Request"
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: "page shows Display Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION TWO
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT003" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - Replace the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1]" field with VERSION THREE
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION THREE
+  - Press the "id:wnd[0]/tbar[0]/btn[11]" button
+  - assert: page shows Text ${SO10_TEXT_NAME} language EN was saved
+
+  - Press F3
+  - assert: "page shows Standard Text: Request"
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: "page shows Display Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION THREE
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT003" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - Replace the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1]" field with VERSION FOUR
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION FOUR
+  - Press the "id:wnd[0]/tbar[0]/btn[11]" button
+  - assert: page shows Text ${SO10_TEXT_NAME} language EN was saved
+
+  - Press F3
+  - assert: "page shows Standard Text: Request"
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: "page shows Display Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION FOUR
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT003" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - Replace the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1]" field with VERSION FIVE
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION FIVE
+  - Press the "id:wnd[0]/tbar[0]/btn[11]" button
+  - assert: page shows Text ${SO10_TEXT_NAME} language EN was saved
+
+  - Press F3
+  - assert: "page shows Standard Text: Request"
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: "page shows Display Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION FIVE
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT003" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - Replace the "id:wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1]" field with VERSION SIX
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION SIX
+  - Press the "id:wnd[0]/tbar[0]/btn[11]" button
+  - assert: page shows Text ${SO10_TEXT_NAME} language EN was saved
+
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: "page shows Display Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - assert: the wnd[0]/usr/tblSAPLSTXXEDITAREA/txtRSTXT-TXLINE[2,1] field contains VERSION SIX
+  - Press F3
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT003" button
+  - assert: "page shows Change Standard Text: ${SO10_TEXT_NAME} Language EN"
+  - Click "id:wnd[0]/mbar/menu[0]/menu[9]"
+  - assert: page shows Delete Text
+  - Press the "id:wnd[1]/usr/btnSPOP-OPTION1" button
+  - Go to /nSO10
+  - Type ${SO10_TEXT_NAME} into the "id:wnd[0]/usr/ctxtRSSCE-TDNAME" field
+  - Press the "id:wnd[0]/usr/btn%#AUTOTEXT002" button
+  - assert: page shows Text ${SO10_TEXT_NAME} ID ST language EN not found
+  - Press F3
+  - assert: page shows SAP Easy Access
