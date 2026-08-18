@@ -490,6 +490,17 @@ fn is_size_stable(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Entries in `current` not yet in `claimed` — the poll-time diff
+/// `wait_for_download` uses to decide what's new. Pure and directory-free
+/// so the baseline-vs-poll comparison (including the "second call gets the
+/// second file" sequencing) can be unit tested without a browser.
+fn unclaimed_downloads<'a>(
+    current: &'a [std::path::PathBuf],
+    claimed: &std::collections::HashSet<std::path::PathBuf>,
+) -> Vec<&'a std::path::PathBuf> {
+    current.iter().filter(|p| !claimed.contains(*p)).collect()
+}
+
 fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
     let message = format!("{context}: {err}");
     if is_transport_fault(&message) {
@@ -808,6 +819,14 @@ pub struct WebAppDriver {
     /// `wait_for_download`. `None` until a `launch` with downloads enabled
     /// has run.
     downloads_dir: Option<std::path::PathBuf>,
+    /// Finished downloads already accounted for — either present in
+    /// `downloads_dir` before this launch (a pinned, reused directory) or
+    /// matched by an earlier `wait_for_download` call. Snapshotted at
+    /// `launch`, not re-diffed at call time, so a file that finishes
+    /// between the step that triggers it and the later `wait_for_download`
+    /// call is still correctly seen as new (see #489: a call-time baseline
+    /// snapshot loses that race for fast downloads).
+    claimed_downloads: std::collections::HashSet<std::path::PathBuf>,
 }
 
 /// Shared state between the driver and the flow-wide dialog listener.
@@ -999,6 +1018,7 @@ impl WebAppDriver {
                 staged_browser: None,
                 dialogs: Default::default(),
                 downloads_dir: None,
+                claimed_downloads: Default::default(),
             });
         }
         let browser = shared_browser()?;
@@ -1017,6 +1037,7 @@ impl WebAppDriver {
             staged_browser: None,
             dialogs: Default::default(),
             downloads_dir: None,
+            claimed_downloads: Default::default(),
         })
     }
 
@@ -2180,6 +2201,17 @@ impl AppDriver for WebAppDriver {
             download_path: Some(downloads_dir.display().to_string()),
         })
         .map_err(|e| web_err("enabling downloads", e))?;
+        // Snapshot what's already finished in this directory BEFORE the
+        // flow's triggering step ever runs. This is what closes the #489
+        // race: a download that finishes between the trigger step and the
+        // later `wait_for_download` call was never in this snapshot, so it
+        // correctly reads as new instead of being lost to a call-time
+        // re-diff. For a pinned/reused `downloads_dir` it also preserves
+        // the original intent of excluding files left over from an earlier
+        // launch.
+        self.claimed_downloads = list_finished_downloads(&downloads_dir)?
+            .into_iter()
+            .collect();
         self.downloads_dir = Some(downloads_dir);
         tab.navigate_to(command)
             .map_err(|e| web_err(&format!("navigating to {command}"), e))?;
@@ -2925,25 +2957,27 @@ impl AppDriver for WebAppDriver {
     }
 
     /// Wait for exactly one NEW file to land in this launch's downloads
-    /// directory and finish writing. A snapshot taken at call time is the
-    /// baseline — a file already sitting in the directory (a prior
-    /// download, in a pinned `downloads_dir` reused across launches) is not
-    /// this call's answer, so a flow with two downloads in sequence gets
-    /// the second one on the second call rather than the first one twice.
+    /// directory and finish writing. "New" is judged against
+    /// `self.claimed_downloads`, a baseline snapshotted once at `launch`
+    /// (not re-diffed here at call time — see #489) and grown by one entry
+    /// each time this call succeeds, so a flow with two downloads in
+    /// sequence gets the second one on the second call rather than the
+    /// first one twice.
     fn wait_for_download(&mut self, timeout: Duration) -> Result<std::path::PathBuf, DriverError> {
         let dir = self
             .downloads_dir
             .clone()
             .ok_or_else(|| DriverError::Browser("no page open: call launch first".into()))?;
-        let baseline = list_finished_downloads(&dir)?;
         let deadline = std::time::Instant::now() + timeout;
         loop {
-            let fresh: Vec<_> = list_finished_downloads(&dir)?
-                .into_iter()
-                .filter(|p| !baseline.contains(p))
-                .collect();
+            let current = list_finished_downloads(&dir)?;
+            let fresh = unclaimed_downloads(&current, &self.claimed_downloads);
             match fresh.as_slice() {
-                [one] if is_size_stable(one) => return Ok(one.clone()),
+                [one] if is_size_stable(one) => {
+                    let path = (*one).clone();
+                    self.claimed_downloads.insert(path.clone());
+                    return Ok(path);
+                }
                 [_, _, ..] => {
                     return Err(DriverError::Browser(format!(
                         "wait for download: {} files landed at once - only one download was expected",
@@ -4428,5 +4462,73 @@ mod tests {
         }
         // Binary-safe (high bytes map into +/ territory).
         assert_eq!(super::base64_encode(&[0xfb, 0xff, 0xfe]), "+//+");
+    }
+
+    /// The #489 bug: a file that finished (and lost its `.crdownload`
+    /// suffix) before anything was ever claimed must show up as new. This
+    /// is the fast-download race — the file is on disk by the time
+    /// `current` is sampled, but the claimed set is still empty because
+    /// nothing has matched yet.
+    #[test]
+    fn file_present_but_never_claimed_is_new() {
+        let current = vec![std::path::PathBuf::from("/downloads/report.xlsx")];
+        let claimed = std::collections::HashSet::new();
+        assert_eq!(
+            super::unclaimed_downloads(&current, &claimed),
+            vec![&std::path::PathBuf::from("/downloads/report.xlsx")]
+        );
+    }
+
+    /// A file already matched by an earlier `wait_for_download` call must
+    /// not be re-offered — this is what keeps a single download from being
+    /// reported twice once it has been claimed.
+    #[test]
+    fn already_claimed_file_is_excluded() {
+        let path = std::path::PathBuf::from("/downloads/report.xlsx");
+        let current = vec![path.clone()];
+        let claimed = std::collections::HashSet::from([path]);
+        assert_eq!(
+            super::unclaimed_downloads(&current, &claimed),
+            Vec::<&std::path::PathBuf>::new()
+        );
+    }
+
+    /// The #483 sequential-download contract, re-proven under the new
+    /// persistent-state model: once A has been claimed, a directory
+    /// containing both A and B yields only B as new — the second call
+    /// gets the second file, not the first file again.
+    #[test]
+    fn sequential_downloads_yield_only_the_second_file_after_the_first_is_claimed() {
+        let a = std::path::PathBuf::from("/downloads/a.xlsx");
+        let b = std::path::PathBuf::from("/downloads/b.xlsx");
+        let current = vec![a.clone(), b.clone()];
+        let claimed = std::collections::HashSet::from([a]);
+        assert_eq!(super::unclaimed_downloads(&current, &claimed), vec![&b]);
+    }
+
+    /// No files in the directory yet: nothing to report, and no error.
+    #[test]
+    fn empty_current_yields_empty_result() {
+        let current: Vec<std::path::PathBuf> = Vec::new();
+        let claimed = std::collections::HashSet::new();
+        assert_eq!(
+            super::unclaimed_downloads(&current, &claimed),
+            Vec::<&std::path::PathBuf>::new()
+        );
+    }
+
+    /// Two unclaimed files landing at once is not this function's problem
+    /// to reject — `wait_for_download` treats more than one result as an
+    /// error, but the comparison function itself must report both so that
+    /// caller can see the ambiguity.
+    #[test]
+    fn multiple_unclaimed_files_are_all_returned() {
+        let a = std::path::PathBuf::from("/downloads/a.xlsx");
+        let b = std::path::PathBuf::from("/downloads/b.xlsx");
+        let current = vec![a.clone(), b.clone()];
+        let claimed = std::collections::HashSet::new();
+        let mut got = super::unclaimed_downloads(&current, &claimed);
+        got.sort();
+        assert_eq!(got, vec![&a, &b]);
     }
 }
