@@ -13,6 +13,7 @@ pub mod egress;
 pub mod format;
 pub mod secret;
 pub mod secret_scan;
+pub mod side_effect;
 pub mod substitution;
 pub mod toolcalls;
 

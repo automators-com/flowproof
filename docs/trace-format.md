@@ -47,6 +47,77 @@ these fields existed) is byte-identical:
   (Two further fields, `id` and `answer`, are reserved for the v3.4
   server-initiated REQUEST slice and stay absent until then.)
 
+### Side-effect lane (`app: agent`)
+
+A run the seccomp observation mechanism ran for (Linux, `command:` driver,
+supervision engaged) records one more additive key, `side_effects` - schema:
+[`crates/flowproof-trace/schema/side-effect-v1.schema.json`](../crates/flowproof-trace/schema/side-effect-v1.schema.json):
+
+```json
+"side_effects": {
+  "observation": "observed (linux seccomp)",
+  "effects": [
+    {"kind": "fs_write", "target": "./exports/2025.csv", "op": "unlinkat", "at_ms": 412},
+    {"kind": "http_request", "target": "198.51.100.9:443", "op": "tcp", "at_ms": 610}
+  ],
+  "faults": ["openat2: could not read open_how: EPERM"]
+}
+```
+
+- `observation` (required) is the tag the recording ran under, in
+  observation's vocabulary, never containment's: `observed`, never
+  `enforced` - nothing here was prevented (see
+  [agent-testing.md](agent-testing.md#filesystem-observation)).
+- `effects` (skipped when empty), ordered by `at_ms`. Each record carries
+  `kind` (`fs_write` or `http_request`; `db_change`/`sap_transaction` are
+  RESERVED - in the schema's enum, never emitted), optional `target` and
+  `target_note` (why the target is absent or weakened), optional `op` (the
+  syscall name for fs, `tcp`/`udp` for http), optional fs-only `flags`
+  (the closed renderings, e.g. `O_WRONLY|O_TRUNC`), and `at_ms` -
+  monotonic ms since agent spawn, never wall clock, so a re-record does
+  not churn on timing alone. Three further fields - `before`, `after`,
+  `diff` - are reserved and stay absent: capturing an image of a change
+  would be prevention, not observation.
+- `faults` (skipped when empty) are the supervisor's adjudication
+  failures - an empty `effects` under one is silence, not evidence.
+
+**A record is an observed attempt, never an outcome claim.** An `fs_write`
+record means the supervisor saw the syscall and replied CONTINUE before
+the kernel ran it, so an `unlinkat` of a file that was not there reads
+identically to one that destroyed data. A kept `target` is the NAME the
+syscall used, workspace-relative - never a resolution claim: a symlinked
+intermediate component can carry the actual victim elsewhere. An
+`http_request` record is a connect/send the supervisor itself performed
+for the child - stronger evidence, but still the destination, not the
+bytes.
+
+**Absence means "no observation mechanism", never "nothing happened".**
+A `url:` flow, a non-Linux host, or an unengaged flow serializes
+byte-identical to before the lane existed; a present lane with no
+`effects` is positive evidence - observed, and clean. One asymmetry is
+intended: on macOS an engaged `allow_egress` flow still gets an `egress`
+lane (not-enforced containment tag) but no `side_effects` lane, because
+observation never ran there - the rule, not a defect.
+
+**Path hygiene.** A raw absolute path never enters the lane. An fs
+`target` is kept only when it is workspace-relative by construction: the
+captured path minus the workspace prefix and any bare `.` components,
+`./`-prefixed, no component ever rewritten. Everything else - outside the
+workspace, `..`-bearing traversal forms, unanchored relative paths -
+redacts: `target` stays absent, `target_note` carries `sha256:` plus 12
+hex of the captured path string, stable per identical input so "the same
+file every run" still correlates. The residual is named, not hidden: the
+unkeyed hash is a **confirmation oracle** - a reader who can already
+guess a candidate path can confirm it against the hash. Not literal
+disclosure - and a keyed hash would need a stable key that is itself a
+new secret-management surface. The full path still prints to
+stderr at run time - the ephemeral channel keeps full fidelity, the
+committed artifact does not. An http `target` is `ip:port`, or the
+UNRESOLVED `${VAR}` spelling when the destination was admitted by a
+`${VAR}`-bearing allow entry - recording the resolved address would leak
+what the variable pointed at, the rule the egress lane's `allowed`
+already follows.
+
 ## Header line
 
 ```json
