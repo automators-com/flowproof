@@ -705,16 +705,9 @@ fn stage_surface_browser(
         return Ok(());
     };
     // `downloads_dir` is the one field here resolved from `${VAR}` — see
-    // `web_browser_from_setup` in `flowproof-agent/src/recorder.rs`, the
-    // record-path sibling of this replay-path function; every other field
-    // is a literal by design.
-    let downloads_dir = browser
-        .downloads_dir
-        .as_deref()
-        .map(flowproof_trace::secret::resolve_refs)
-        .transpose()
-        .map_err(|e| flowproof_driver::DriverError::Uia(e.to_string()))?
-        .map(std::path::PathBuf::from);
+    // `secret::resolve_downloads_dir`.
+    let downloads_dir = flowproof_trace::secret::resolve_downloads_dir(&browser.downloads_dir)
+        .map_err(|e| flowproof_driver::DriverError::Uia(e.to_string()))?;
     driver.stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
         browser
             .viewport

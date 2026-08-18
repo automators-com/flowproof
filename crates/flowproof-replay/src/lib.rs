@@ -2457,15 +2457,10 @@ pub fn run_trace_with_exports<D: AppDriver>(
     // emulated phone viewport must not replay on a desktop one.
     if let Some(browser) = &header.browser {
         if !browser.is_empty() {
-            // `downloads_dir` is the one field here resolved from `${VAR}`;
-            // every sibling is a literal by design (geometry, a pinned
-            // clock/seed, raw Chrome flags).
-            let downloads_dir = browser
-                .downloads_dir
-                .as_deref()
-                .map(flowproof_trace::secret::resolve_refs)
-                .transpose()?
-                .map(std::path::PathBuf::from);
+            // `downloads_dir` is the one field here resolved from `${VAR}` —
+            // see `secret::resolve_downloads_dir`.
+            let downloads_dir =
+                flowproof_trace::secret::resolve_downloads_dir(&browser.downloads_dir)?;
             driver.stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
                 browser
                     .viewport
