@@ -52,6 +52,20 @@ jobs:
           SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
           SAP_CLIENT: ${{ secrets.SAP_CLIENT }}
 
+      # The cargo test step above proves the session is logged in - but the
+      # dev build that follows recompiles the whole workspace again with no
+      # shared incremental cache (~2 more minutes), and nothing touches SAP
+      # GUI while that happens. That idle gap is enough on this system to
+      # trip a server-side "maximum user idle time exceeded" logout (#495),
+      # which appears as a native dialog outside SAP's scripting model - it
+      # blocks every FindById call until something closes it. Bootstrap
+      # again right before the suite runs, not just once at job start.
+      - name: session bootstrap (pre-replay)
+        shell: powershell
+        run: ./scripts/sap-session-bootstrap.ps1
+        env:
+          SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
       # Broader coverage than the one hardcoded correctness check above:
       # replays every committed example flow as a suite (zero AI, each
       # trace already recorded against this same reference SAP system).

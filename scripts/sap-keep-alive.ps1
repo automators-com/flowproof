@@ -13,11 +13,14 @@
   before the next real flow needs the session - so this script bootstraps
   the session and then runs the existing "nothing to get wrong" ping flow.
 
-  Intended to be registered as a Windows Scheduled Task, e.g. every 5-10
-  minutes (comfortably inside whatever the SAP profile's idle timeout is).
-  The task's action must supply SAP_CONNECTION/SAP_USER/SAP_PASSWORD (and
-  optionally SAP_CLIENT) as environment variables - this script does not
-  read or store them itself beyond passing them through.
+  Intended to be registered as a Windows Scheduled Task - see
+  sap-keep-alive-register.ps1, which registers it correctly. Observed idle
+  timeout on the reference system is closer to ~2 minutes than the 5-10
+  originally assumed here (#495), so the interval has to comfortably clear
+  that, not a round "every few minutes" number. The task's action must
+  supply SAP_CONNECTION/SAP_USER/SAP_PASSWORD (and optionally SAP_CLIENT)
+  as environment variables - this script does not read or store them
+  itself beyond passing them through.
 
   Exits non-zero on failure (visible in Task Scheduler's own history) and
   appends one timestamped line per run to the log below, so "when did this

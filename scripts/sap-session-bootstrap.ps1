@@ -5,26 +5,40 @@
   prompt or a license-information notice left open stalls FindById forever
   otherwise - and makes sure SAP Logon itself is running.
 
+  Also closes the idle/connection-lost notice ("TS3: auto logout (maximum
+  user idle time exceeded)", see #495) SAP GUI raises when the backend
+  session it was attached to has already timed out server-side. That one is
+  a plain Win32 message box the GUI process pops up itself, not a
+  GuiModalWindow the scripting object model exposes - FindById can't see it
+  and connect()'s login-screen recovery never gets a chance to run while
+  it's sitting open. Dismissing it (Alt+N, not the default "Yes", which
+  would only open a second "detailed description" window needing its own
+  dismissal) reveals whatever is actually underneath - usually SAP's login
+  screen, which the existing auto-login path already knows how to handle.
+
   Best-effort: the dialog titles below are the common English ones seen in
   practice, not an exhaustive list. If a future dialog isn't covered, add
-  its title here rather than reworking the loop.
+  it here rather than reworking the loop. The idle-notice title carries the
+  SAP GUI version ("SAP GUI for Windows 760"); a different client version
+  will need its own entry.
 #>
 
 $ErrorActionPreference = 'Stop'
 
-$blockingTitles = @(
-    'License Information for Multiple Logon',
-    'Information'
+$blockingDialogs = @(
+    @{ Title = 'License Information for Multiple Logon'; Keys = '~' }
+    @{ Title = 'Information'; Keys = '~' }
+    @{ Title = 'SAP GUI for Windows 760'; Keys = '%n' }
 )
 
 $shell = New-Object -ComObject WScript.Shell
 
-foreach ($title in $blockingTitles) {
-    Get-Process | Where-Object { $_.MainWindowTitle -eq $title } | ForEach-Object {
+foreach ($dialog in $blockingDialogs) {
+    Get-Process | Where-Object { $_.MainWindowTitle -eq $dialog.Title } | ForEach-Object {
         if ($shell.AppActivate($_.Id)) {
             Start-Sleep -Milliseconds 300
-            $shell.SendKeys('~')  # Enter - accept the dialog's default button
-            Write-Host "Dismissed blocking dialog: $title"
+            $shell.SendKeys($dialog.Keys)
+            Write-Host "Dismissed blocking dialog: $($dialog.Title)"
         }
     }
 }
