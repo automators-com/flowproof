@@ -22,6 +22,22 @@ The screen is a small VA01-ish layout; pressing the Continue button posts
 "Order 4711 saved" to the status bar so recorded flows have an observable
 effect to assert.
 
+It models three SAP screen SHAPES, not one, because a fixture with a single
+flat window cannot fail when window scoping or nesting breaks:
+
+  * the ordinary ``wnd[0]`` screen — flat fields under ``usr``;
+  * a ``GuiTableControl`` whose cells are CHILDREN of the table and carry
+    real SAP cell ids (``.../ctxtVBAP-MATNR[0,1]``), so the walk has to
+    recurse past depth two and FindById has to survive brackets and commas;
+  * a ``wnd[1]`` GuiModalWindow, opened by Back and closed by either of its
+    buttons. While it is open the session tree holds BOTH windows, exactly
+    as real SAP does, and the two windows carry deliberately disjoint text
+    so a caller can tell which one it is reading.
+
+The shapes are the extension points for the remaining SAP surfaces: an ALV
+grid is another nested container under ``usr``, and an F4 search help is
+another ``wnd[1]`` modal. Neither is modelled here yet.
+
 Usage: python sap_simulator.py  (prints READY when attachable; exits on
 its own after WATCHDOG_SECONDS as an orphan guard, or on Ctrl+C).
 """
@@ -36,6 +52,8 @@ from win32com.server.exception import COMException
 # The ROT item-moniker name real SAP GUI publishes itself under.
 ROT_NAME = "SAPGUI"
 SESSION_PREFIX = "/app/con[0]/ses[0]/"
+# The classic VA01 item table control, named as the real screen names it.
+ITEM_TABLE = "wnd[0]/usr/tblSAPMV45ATCTRL_U_ERF_AUFTRAG"
 # Hard orphan guard only - generous enough that a slow CI runner's
 # record + replay never outlives it (the test kills the process when
 # it finishes; this exists for the case where it could not).
@@ -177,16 +195,12 @@ class Screen:
     def __init__(self, user="FLOWPROOF", title="Create Standard Order", order_screen=True):
         self.vkeys = []
         self.by_id = {}
+        self.modal = None
         self.session = Session(self, user=user, system="SIM" if order_screen else "OTHER")
         self.window = Window(self, "wnd[0]", "GuiMainWindow", "wnd[0]", text=title)
         self.session.add(self.window)
         self._register("wnd[0]", self.window)
-
-        def field(rel_id, kind, name, tooltip, changeable=True, text=""):
-            component = Component(self, rel_id, kind, name, text, tooltip, changeable)
-            self.window.add(component)
-            self._register(rel_id, component)
-            return component
+        field = self.add_field
 
         field("wnd[0]/tbar[0]/okcd", "GuiOkCodeField", "okcd", "Command field")
         # Standard SAP login controls. The desired simulated connection starts
@@ -224,7 +238,50 @@ class Screen:
                 changeable=False,
                 text="Continue",
             )
+            field(
+                "wnd[0]/tbar[0]/btn[3]",
+                "GuiButton",
+                "btn[3]",
+                "Back (F3)",
+                changeable=False,
+            )
+            # The classic item table. Cells hang off the TABLE, not off the
+            # window, and their ids carry SAP's `[column,row]` suffix - the
+            # two things a flat fixture never made anyone get right.
+            table = field(
+                ITEM_TABLE,
+                "GuiTableControl",
+                "SAPMV45ATCTRL_U_ERF_AUFTRAG",
+                "Item overview",
+                changeable=False,
+            )
+            for row in (0, 1):
+                field(
+                    "%s/ctxtVBAP-MATNR[0,%d]" % (ITEM_TABLE, row),
+                    "GuiCTextField",
+                    "VBAP-MATNR",
+                    "Material",
+                    parent=table,
+                )
+                field(
+                    "%s/txtVBAP-KWMENG[1,%d]" % (ITEM_TABLE, row),
+                    "GuiTextField",
+                    "VBAP-KWMENG",
+                    "Order Quantity",
+                    parent=table,
+                )
         self.sbar = field("wnd[0]/sbar", "GuiStatusbar", "sbar", "", changeable=False)
+
+    def add_field(
+        self, rel_id, kind, name, tooltip, changeable=True, text="", parent=None
+    ):
+        """Register one control. `parent` defaults to `wnd[0]`; passing a
+        container (a table, a modal) is what makes the tree deeper than
+        one level, which is the shape an ALV grid would reuse."""
+        component = Component(self, rel_id, kind, name, text, tooltip, changeable)
+        (parent or self.window).add(component)
+        self._register(rel_id, component)
+        return component
 
     def _register(self, rel_id, component):
         # FindById accepts both session-relative and absolute ids.
@@ -232,9 +289,65 @@ class Screen:
         self.by_id[rel_id] = wrapped
         self.by_id[SESSION_PREFIX + rel_id] = wrapped
 
+    def open_modal(self):
+        """Put a `wnd[1]` popup over the main screen, the way SAP asks
+        whether to save on Back.
+
+        The main window STAYS in the session tree while this is open -
+        that is the whole point. Its text ("Create Standard Order", the
+        field labels) is text the user cannot act on until the popup goes
+        away, so anything that reads the session flat will read it anyway.
+        """
+        if self.modal is not None:
+            return
+        modal = Window(
+            self, "wnd[1]", "GuiModalWindow", "wnd[1]", text="Exit Processing"
+        )
+        self.session.add(modal)
+        self._register("wnd[1]", modal)
+        self.modal = modal
+        self.add_field(
+            "wnd[1]/usr/txtMESSTXT1",
+            "GuiTextField",
+            "MESSTXT1",
+            "",
+            changeable=False,
+            text="Do you want to save your data?",
+            parent=modal,
+        )
+        for suffix, caption in (("1", "Yes"), ("2", "No")):
+            self.add_field(
+                "wnd[1]/usr/btnSPOP-OPTION" + suffix,
+                "GuiButton",
+                "SPOP-OPTION" + suffix,
+                "",
+                changeable=False,
+                text=caption,
+                parent=modal,
+            )
+
+    def close_modal(self):
+        """Dismiss the popup: `wnd[1]` and everything under it leaves the
+        session tree, which is what makes the main window reachable again."""
+        if self.modal is None:
+            return
+        self.session._children.pop()  # wnd[1] is the last child added
+        for key in [k for k in self.by_id if "wnd[1]" in k]:
+            del self.by_id[key]
+        self.modal = None
+
     def on_press(self, rel_id):
         if rel_id == "wnd[0]/tbar[1]/btn[8]":
             self.sbar.Text = "Order 4711 saved"
+        elif rel_id == "wnd[0]/tbar[0]/btn[3]":
+            self.open_modal()
+        elif rel_id.startswith("wnd[1]/usr/btnSPOP-OPTION"):
+            self.sbar.Text = (
+                "Document 4711 saved"
+                if rel_id.endswith("1")
+                else "Processing was ended"
+            )
+            self.close_modal()
 
     def on_vkey(self, vkey):
         if (
