@@ -49,9 +49,7 @@ steps:
       # single clear target ("Manage Info Records" / "Display purchasing
       # info records by Supplier" / "Display purchasing info records by
       # material") — resolve against the live tile catalog at record time.
-      # This is a best-effort guess at the tile's visible text, not a
-      # confirmed label.
-      - Click "Display Purchasing Info Record"
+      - resolve the tile to click against the live catalog — no single clear target is named. Observed - the PDF's Step 3 lists three near-identical options — "Manage Info Records", "Display purchasing info records by Supplier", "Display purchasing info records by material".
       - assert: page shows Info Record
 
       # -- Search the standard info record by the minted test data -------

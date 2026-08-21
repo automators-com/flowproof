@@ -6,6 +6,8 @@
 use flowproof_agent::{FlowSpec, SuiteManifest};
 
 const FIORI_SPEC: &str = include_str!("../../../examples/fiori/manage-info-records.flow.yaml");
+const PURCHASE_INFO_RECORDS_SPEC: &str =
+    include_str!("../../../examples/fiori/purchase-info-records-report.flow.yaml");
 const FIORI_SUITE: &str = include_str!("../../../examples/fiori/suite.yaml");
 const CONN_TEST_SPEC: &str = include_str!("../../../examples/api/connection-test.flow.yaml");
 /// The npm-path agent quickstart. It is the first example a reader coming
@@ -63,6 +65,21 @@ fn fiori_example_resolves_entirely_via_rules() {
             step.intent()
         );
     }
+}
+
+/// Unlike `fiori_example_resolves_entirely_via_rules`, this example's header
+/// deliberately promises two flagged TODOs left unresolved for `flowproof
+/// record` to fill in against the live screen, not guessed here — so this
+/// test only proves the file parses, and does not run every step through
+/// `rules::resolve_step` (the two TODO steps are plain prose by design and
+/// are not expected to resolve).
+#[test]
+fn purchase_info_records_example_parses_as_a_multi_surface_flow() {
+    let spec = FlowSpec::parse(PURCHASE_INFO_RECORDS_SPEC).expect("example parses");
+    assert!(
+        spec.apps.contains_key("fiori") && spec.apps.contains_key("excel"),
+        "flow declares both the fiori and excel surfaces"
+    );
 }
 
 #[test]
