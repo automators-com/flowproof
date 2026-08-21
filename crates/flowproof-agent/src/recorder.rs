@@ -1801,18 +1801,11 @@ fn mint_baseline<D: AppDriver>(
 ///
 /// `downloads_dir` is the one field here that resolves `${VAR}` (a runner's
 /// temp/download path is exactly the kind of thing that differs per
-/// environment) — every sibling field is a literal by design (geometry,
-/// a pinned clock/seed, raw Chrome flags), so this is the one seam that
-/// needs it.
+/// environment) — see `secret::resolve_downloads_dir`.
 fn web_browser_from_setup(
     setup: &flowproof_trace::format::BrowserSetup,
 ) -> Result<flowproof_driver::WebBrowserConfig, RecordError> {
-    let downloads_dir = setup
-        .downloads_dir
-        .as_deref()
-        .map(flowproof_trace::secret::resolve_refs)
-        .transpose()?
-        .map(std::path::PathBuf::from);
+    let downloads_dir = flowproof_trace::secret::resolve_downloads_dir(&setup.downloads_dir)?;
     Ok(flowproof_driver::WebBrowserConfig::from_setup_parts(
         setup
             .viewport

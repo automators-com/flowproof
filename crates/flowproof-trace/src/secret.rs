@@ -92,9 +92,54 @@ pub fn resolve_refs_in_json(value: &serde_json::Value) -> Result<serde_json::Val
     })
 }
 
+/// Resolve a `downloads_dir` field: `${VAR}` references resolve from the
+/// environment (see [`resolve_refs`]), `None` stays `None`. This is the one
+/// browser-setup field that resolves refs — every sibling is a literal by
+/// design — so this composes [`resolve_refs`] into the shape each call site
+/// (record, replay, and the CLI's staging path) needs.
+pub fn resolve_downloads_dir(
+    raw: &Option<String>,
+) -> Result<Option<std::path::PathBuf>, MissingSecret> {
+    raw.as_deref()
+        .map(resolve_refs)
+        .transpose()
+        .map(|opt| opt.map(std::path::PathBuf::from))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloads_dir_none_resolves_to_none() {
+        assert_eq!(resolve_downloads_dir(&None).expect("resolves"), None);
+    }
+
+    #[test]
+    fn downloads_dir_literal_path_resolves_unchanged() {
+        let raw = Some("/tmp/flowproof-downloads".to_string());
+        assert_eq!(
+            resolve_downloads_dir(&raw).expect("resolves"),
+            Some(std::path::PathBuf::from("/tmp/flowproof-downloads"))
+        );
+    }
+
+    #[test]
+    fn downloads_dir_ref_resolves_from_the_environment() {
+        std::env::set_var("FLOWPROOF_TEST_DOWNLOADS_DIR", "/runner/downloads");
+        let raw = Some("${FLOWPROOF_TEST_DOWNLOADS_DIR}".to_string());
+        assert_eq!(
+            resolve_downloads_dir(&raw).expect("resolves"),
+            Some(std::path::PathBuf::from("/runner/downloads"))
+        );
+    }
+
+    #[test]
+    fn downloads_dir_missing_ref_is_a_hard_error() {
+        let raw = Some("${FLOWPROOF_TEST_DOWNLOADS_DIR_UNSET_XYZ}".to_string());
+        let err = resolve_downloads_dir(&raw).expect_err("must fail");
+        assert_eq!(err.var, "FLOWPROOF_TEST_DOWNLOADS_DIR_UNSET_XYZ");
+    }
 
     #[test]
     fn plain_text_passes_through_untouched() {
