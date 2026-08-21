@@ -2530,9 +2530,10 @@ mod tests {
     fn bare_pronouns_do_not_disambiguate_from_destination_words() {
         for pronoun in ["that", "this", "them"] {
             let mut client = Scripted {
-                replies: vec![format!(
-                    r##"{{"action":"type_captured","target":"css:#name","capture":"name"}}"##
-                )],
+                replies: vec![
+                    r##"{"action":"type_captured","target":"css:#name","capture":"name"}"##
+                        .to_string(),
+                ],
                 calls: 0,
             };
             let captures = vec!["name".into(), "order_number".into()];
