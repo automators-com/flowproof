@@ -6,6 +6,24 @@ together).
 
 ## Unreleased
 
+### Added
+
+- **The SAP test simulator models more than one screen shape.** Every
+  automated SAP check ran against the same flat VA01 window - one `wnd[0]`,
+  every field hanging straight off it. A fixture like that cannot fail.
+  Window scoping could break, nesting could break, and nothing short of a
+  person sitting at the one real SAP machine the team has would notice.
+
+  The simulator now serves two more shapes. A classic `GuiTableControl`
+  carries its cells as CHILDREN, under SAP's real `[column,row]` ids, so the
+  tree walk has to recurse past depth two and `FindById` has to survive an id
+  with brackets and a comma in it. Back opens a `wnd[1]` modal that sits in
+  the session tree beside `wnd[0]` and leaves it again when dismissed - and
+  the two windows deliberately share no text, so which window a reader is
+  reading is a question with an answer.
+
+  `sap_sim_e2e` drives both through the production COM engine.
+
 ### Fixed
 
 - **The nightly SAP suite was failing on the same field, every night, for a
