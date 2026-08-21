@@ -24,6 +24,38 @@ together).
 
   `sap_sim_e2e` drives both through the production COM engine.
 
+### Fixed
+
+- **The nightly SAP suite was failing on the same field, every night, for a
+  reason nobody had looked for.** Every scheduled `sap-e2e` run since early
+  August had failed on the first field of every flow that types into one —
+  while the one flow that never touches a field kept passing. The heartbeat
+  script written to keep an idle SAP session alive (#453) had nothing to do
+  with it: it isn't invoked from the workflow at all, and even where it was
+  separately registered on the runner, its scheduled task had no
+  `-Principal`, so it silently stopped reaching the interactive desktop the
+  moment that session's RDP connection went from active to disconnected.
+
+  The actual failure was inside the job itself. `sap-session-bootstrap.ps1`
+  logs the session in once, at job start; the login is genuinely fine at
+  that point, confirmed by `cargo test sap_e2e` passing cleanly a few
+  minutes later. But two full `cargo build`s follow with no shared
+  incremental cache — around seven minutes of pure compilation, untouched
+  by any SAP activity — and by the time the flow suite starts, the
+  application server has logged the session out for sitting idle. The
+  client raises its own "maximum user idle time exceeded" notice, a native
+  Win32 dialog outside SAP's scripting object model — invisible to
+  `FindById`, so nothing already in the driver could see or close it, and
+  every field lookup after it just timed out waiting for a screen that was
+  never going to render.
+
+  `sap-session-bootstrap.ps1` now recognizes that dialog and dismisses it
+  (declining, not accepting — the default button opens a second window
+  that would need dismissing too), and `sap-e2e.yml` runs bootstrap a
+  second time immediately before the flow suite, not only once at job
+  start, closing the actual idle window instead of one that had already
+  passed.
+
 ## 0.19.0
 
 ### Added
