@@ -156,6 +156,16 @@ $blockingDialogs = @(
     @{ Title = 'SAP GUI for Windows 760'; Keys = '~' }
 )
 
+# SAP Logon's own connection-picker/launcher window - confirmed live (run
+# 32731263838) to legitimately stay open ALONGSIDE a session that
+# OpenConnection has already opened, not a transient popup: same Win32
+# dialog class (#32770) as a real blocking dialog, so class alone can't
+# tell them apart, but its title is stable across sessions/screens (unlike
+# a session frame's, which changes with every navigation) and its child
+# controls ("Log On", "Variable Logon", "Connections", ...) are nothing
+# like either known dialog's. Never a candidate for dismissal or failure.
+$exemptWindowTitles = @('SAP Logon 760')
+
 $shell = New-Object -ComObject WScript.Shell
 
 # Dismiss every known blocking dialog, looping because closing one can
@@ -163,18 +173,21 @@ $shell = New-Object -ComObject WScript.Shell
 # idle-notice case) a second screen sharing the same title. The main SAP
 # frame is identified as the largest window this process owns, rather than
 # hardcoding a main-window title that varies by locale/screen/version -
-# everything else this process owns is a dialog candidate. Anything left
-# that isn't in $blockingDialogs is now a loud, diagnosable failure
-# (captured title, class, every child control's text, and a screenshot
-# under sap-bootstrap-diagnostics/) instead of a silent no-op, so the next
-# unknown dialog is a five-minute fix instead of a multi-day investigation.
+# everything else this process owns (other than $exemptWindowTitles above)
+# is a dialog candidate. Anything left that isn't in $blockingDialogs is now
+# a loud, diagnosable failure (captured title, class, every child control's
+# text, and a screenshot under sap-bootstrap-diagnostics/) instead of a
+# silent no-op, so the next unknown dialog is a five-minute fix instead of a
+# multi-day investigation.
 $maxRounds = 5
 for ($round = 1; $round -le $maxRounds; $round++) {
     $windows = Get-TopLevelWindows -ProcessNames @('saplogon')
     if (-not $windows -or $windows.Count -eq 0) { break }
 
     $mainFrame = $windows | Sort-Object Area -Descending | Select-Object -First 1
-    $dialogCandidates = $windows | Where-Object { $_.Handle -ne $mainFrame.Handle }
+    $dialogCandidates = $windows | Where-Object {
+        $_.Handle -ne $mainFrame.Handle -and $exemptWindowTitles -notcontains $_.Title
+    }
     if (-not $dialogCandidates -or $dialogCandidates.Count -eq 0) { break }
 
     $anyDismissed = $false
