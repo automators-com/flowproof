@@ -27,6 +27,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The self-hosted runner also runs flowproof-sap-keep-alive (#453/#495)
+      # as a Windows Scheduled Task, firing every minute to keep an
+      # interactive session logged in between manual runs. It has no
+      # awareness of this job: while active, it repeatedly brings SAP GUI to
+      # the foreground and drives a SEPARATE flowproof process against the
+      # same live session, concurrently with whatever this job is doing.
+      # Confirmed live (#501): watching the runner mid-job showed the
+      # heartbeat's PowerShell window opening and closing on its own
+      # schedule, and the "replay" step hanging with zero output for the
+      # job's full timeout right after - two independent processes issuing
+      # COM calls against the same single-threaded SAP GUI server contend
+      # with each other rather than either one cleanly timing out. Pause it
+      # for the duration of this job; resume unconditionally at the end so a
+      # human's interactive session between runs still self-heals as
+      # designed. Stop, not just disable, in case it's already mid-run.
+      - name: pause the keep-alive heartbeat for this job
+        shell: powershell
+        run: |
+          Stop-ScheduledTask -TaskName 'flowproof-sap-keep-alive' -ErrorAction SilentlyContinue
+          Disable-ScheduledTask -TaskName 'flowproof-sap-keep-alive' -ErrorAction SilentlyContinue
+
       # Warm target/ before any SAP-touching step, so the later `cargo run`
       # in "replay SAP example flows" starts near-instantly instead of
       # spending ~2.5 minutes recompiling the flowproof CLI binary at
@@ -149,3 +170,11 @@ jobs:
           path: sap-bootstrap-diagnostics/
           retention-days: 14
           if-no-files-found: ignore
+
+      # Unconditional: a human's interactive session between runs still
+      # relies on this to self-heal (#438), so it must resume even if this
+      # job itself failed.
+      - name: resume the keep-alive heartbeat
+        if: always()
+        shell: powershell
+        run: Enable-ScheduledTask -TaskName 'flowproof-sap-keep-alive' -ErrorAction SilentlyContinue
