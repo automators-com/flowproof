@@ -8,7 +8,12 @@ name: SAP E2E (real GUI)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"
+    # TEMPORARY (revert before merging anything else): overnight reliability
+    # soak test for the #499/#501 fixes - every 2 hours instead of once
+    # nightly, so failures show up by morning instead of one at a time over
+    # many days. concurrency below queues rather than overlaps if a run is
+    # still going when the next trigger fires. Revert to "0 3 * * *".
+    - cron: "0 */2 * * *"
 
 # Only one physical SAP GUI session exists on the runner; a second run
 # stepping on it mid-navigation is worse than making the next one wait.
