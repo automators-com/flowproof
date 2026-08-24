@@ -123,6 +123,10 @@ jobs:
           SAP_USER: ${{ secrets.SAP_USER }}
           SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
           SAP_CLIENT: ${{ secrets.SAP_CLIENT }}
+          # standard-text/create-revise-delete.flow.yaml both creates and
+          # deletes this record as part of its own lifecycle - not
+          # sensitive, so a plain literal rather than a GitHub secret.
+          SO10_TEXT_NAME: FLOWPROOFCI
 
       # `flowproof run` already writes per-step PNG frames and report.html
       # into the suite's run dir on every invocation (recording-detail
