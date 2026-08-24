@@ -233,10 +233,15 @@ if (-not (Get-Process -Name saplogon -ErrorAction SilentlyContinue)) {
 # currently has focus). If we still can't get foreground after that, fail
 # loudly now rather than let the replay step run for 20 minutes against a
 # window that will never finish rendering.
+#
+# 10 attempts / ~5s total, not 5 / 2.5s: live evidence (run 32730737479)
+# showed 5 attempts over 2.5s fail, then the exact same call succeed on the
+# very next invocation about 5s later - the lock is real but short-lived,
+# and the old budget was cutting it close rather than genuinely stuck.
 $sapProcess = Get-Process -Name saplogon -ErrorAction SilentlyContinue
 if ($sapProcess -and $sapProcess.MainWindowHandle -ne 0) {
     $activated = $false
-    for ($attempt = 1; $attempt -le 5; $attempt++) {
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
         if ($shell.AppActivate($sapProcess.Id)) {
             $activated = $true
             break
@@ -247,7 +252,7 @@ if ($sapProcess -and $sapProcess.MainWindowHandle -ne 0) {
     if ($activated) {
         Write-Host "Brought SAP GUI to the foreground (attempt $attempt)."
     } else {
-        Write-Error 'Could not bring SAP GUI to the foreground after 5 attempts (AppActivate kept returning false). Failing now instead of running the suite against a window that will never finish rendering.'
+        Write-Error 'Could not bring SAP GUI to the foreground after 10 attempts (AppActivate kept returning false). Failing now instead of running the suite against a window that will never finish rendering.'
     }
 }
 
