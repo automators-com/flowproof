@@ -55,14 +55,35 @@ if (-not (Get-Process -Name saplogon -ErrorAction SilentlyContinue)) {
 # COM automation doesn't need window focus to fire actions, but Windows can
 # defer actual client-side rendering for a background window - complex
 # screens (many fields) may never finish laying out if SAP GUI isn't the
-# foreground window. Bring it forward once, here; nothing else should steal
-# focus back during an unattended run.
+# foreground window. Bring it forward here; nothing else should steal focus
+# back during an unattended run.
+#
+# AppActivate can return false for reasons that have nothing to do with SAP
+# GUI: right after the preceding cargo step exits, Windows' foreground-lock
+# timeout briefly refuses to let an unrelated automation process steal focus
+# from the console that just had it (see #499 - this is what silently
+# poisoned every field wait in the replay step that follows). A single
+# best-effort attempt isn't enough - retry, releasing the lock between
+# attempts with a throwaway Alt keystroke (the standard workaround: it resets
+# Windows' "user is providing input" state without doing anything to whatever
+# currently has focus). If we still can't get foreground after that, fail
+# loudly now rather than let the replay step run for 20 minutes against a
+# window that will never finish rendering.
 $sapProcess = Get-Process -Name saplogon -ErrorAction SilentlyContinue
 if ($sapProcess -and $sapProcess.MainWindowHandle -ne 0) {
-    if ($shell.AppActivate($sapProcess.Id)) {
-        Write-Host 'Brought SAP GUI to the foreground.'
+    $activated = $false
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        if ($shell.AppActivate($sapProcess.Id)) {
+            $activated = $true
+            break
+        }
+        $shell.SendKeys('%')
+        Start-Sleep -Milliseconds 500
+    }
+    if ($activated) {
+        Write-Host "Brought SAP GUI to the foreground (attempt $attempt)."
     } else {
-        Write-Host 'Could not bring SAP GUI to the foreground (AppActivate returned false).'
+        Write-Error 'Could not bring SAP GUI to the foreground after 5 attempts (AppActivate kept returning false). Failing now instead of running the suite against a window that will never finish rendering.'
     }
 }
 
