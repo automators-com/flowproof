@@ -11,36 +11,213 @@
   a plain Win32 message box the GUI process pops up itself, not a
   GuiModalWindow the scripting object model exposes - FindById can't see it
   and connect()'s login-screen recovery never gets a chance to run while
-  it's sitting open. Dismissing it (Alt+N, not the default "Yes", which
-  would only open a second "detailed description" window needing its own
-  dismissal) reveals whatever is actually underneath - usually SAP's login
-  screen, which the existing auto-login path already knows how to handle.
+  it's sitting open. It appears as TWO dialogs in a row sharing the exact
+  same title ("SAP GUI for Windows 760") - a Yes/No prompt ("do you want to
+  see the detailed error description?"), and if Yes is pressed, a second
+  screen with structured error detail and a single OK button (confirmed
+  live, see #499). "Yes" and "OK" are each the default button on their
+  screen, so Enter clears both without needing to tell them apart.
+  Dismissing the chain closes the dead session entirely and lands on the
+  bare SAP Logon connection picker, not an in-place login screen -
+  connect()'s existing OpenConnection() call in sap_com.rs is the COM
+  equivalent of clicking "Log On" there, so nothing further is needed here.
+
+  Dialogs can be STACKED or repeated - the two idle-timeout screens above
+  are exactly that. `Get-Process().MainWindowTitle` reports exactly one
+  window per process, and SAP GUI hosts its main session frame AND every
+  modal dialog under one `saplogon.exe` process - so that lookup can only
+  ever see one of several open windows, no matter how many times it's
+  called. Detection below instead enumerates every top-level window the
+  process owns and loops until none of the known ones remain.
 
   Best-effort: the dialog titles below are the common English ones seen in
-  practice, not an exhaustive list. If a future dialog isn't covered, add
-  it here rather than reworking the loop. The idle-notice title carries the
-  SAP GUI version ("SAP GUI for Windows 760"); a different client version
-  will need its own entry.
+  practice, not an exhaustive list. If a future dialog isn't covered, this
+  script now fails loudly with its captured title/class/child-control text
+  and a screenshot (see `sap-bootstrap-diagnostics/`) instead of silently
+  doing nothing - add it here once its real text is known, rather than
+  guessing.
 #>
 
 $ErrorActionPreference = 'Stop'
 
+Add-Type -Namespace SapBootstrap -Name NativeMethods -MemberDefinition @'
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+'@
+
+function Get-Win32WindowText([IntPtr]$Handle) {
+    $sb = New-Object System.Text.StringBuilder 512
+    [SapBootstrap.NativeMethods]::GetWindowText($Handle, $sb, $sb.Capacity) | Out-Null
+    return $sb.ToString()
+}
+
+function Get-Win32ClassName([IntPtr]$Handle) {
+    $sb = New-Object System.Text.StringBuilder 256
+    [SapBootstrap.NativeMethods]::GetClassName($Handle, $sb, $sb.Capacity) | Out-Null
+    return $sb.ToString()
+}
+
+function Get-Win32WindowArea([IntPtr]$Handle) {
+    $rect = New-Object SapBootstrap.NativeMethods+RECT
+    if ([SapBootstrap.NativeMethods]::GetWindowRect($Handle, [ref]$rect)) {
+        return ([math]::Max(0, $rect.Right - $rect.Left)) * ([math]::Max(0, $rect.Bottom - $rect.Top))
+    }
+    return 0
+}
+
+# Every visible top-level window owned by any process with the given
+# name(s) - see the file header for why this replaces a
+# Get-Process().MainWindowTitle lookup.
+function Get-TopLevelWindows([string[]]$ProcessNames) {
+    $ownerPids = @()
+    foreach ($name in $ProcessNames) {
+        Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object { $ownerPids += $_.Id }
+    }
+    if (-not $ownerPids) { return @() }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    [SapBootstrap.NativeMethods+EnumWindowsProc]$callback = {
+        param([IntPtr]$hWnd, [IntPtr]$lParam)
+        if ([SapBootstrap.NativeMethods]::IsWindowVisible($hWnd)) {
+            $windowPid = [uint32]0
+            [SapBootstrap.NativeMethods]::GetWindowThreadProcessId($hWnd, [ref]$windowPid) | Out-Null
+            if ($ownerPids -contains [int]$windowPid) {
+                $title = Get-Win32WindowText $hWnd
+                if ($title) {
+                    $results.Add([PSCustomObject]@{
+                        Handle    = $hWnd
+                        Title     = $title
+                        ClassName = Get-Win32ClassName $hWnd
+                        Area      = Get-Win32WindowArea $hWnd
+                    }) | Out-Null
+                }
+            }
+        }
+        return $true
+    }
+    [SapBootstrap.NativeMethods]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
+    return $results
+}
+
+function Get-ChildControlTexts([IntPtr]$Handle) {
+    $texts = New-Object System.Collections.Generic.List[string]
+    [SapBootstrap.NativeMethods+EnumWindowsProc]$callback = {
+        param([IntPtr]$childHwnd, [IntPtr]$lParam)
+        $text = Get-Win32WindowText $childHwnd
+        if ($text) { $texts.Add($text) | Out-Null }
+        return $true
+    }
+    [SapBootstrap.NativeMethods]::EnumChildWindows($Handle, $callback, [IntPtr]::Zero) | Out-Null
+    return $texts
+}
+
+function Save-DiagnosticScreenshot([string]$Path) {
+    Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+    $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+        $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
+# The idle-notice title covers TWO screens in a row (see file header) -
+# "Yes" and "OK" are each the default button on their respective screen, so
+# Enter (~) clears both without needing to distinguish them.
 $blockingDialogs = @(
-    @{ Title = 'License Information for Multiple Logon'; Keys = '~' }
+    @{ Title = 'License Information for Multiple Logons'; Keys = '~' }
     @{ Title = 'Information'; Keys = '~' }
-    @{ Title = 'SAP GUI for Windows 760'; Keys = '%n' }
+    @{ Title = 'SAP GUI for Windows 760'; Keys = '~' }
 )
+
+# SAP Logon's own connection-picker/launcher window - confirmed live (run
+# 32731263838) to legitimately stay open ALONGSIDE a session that
+# OpenConnection has already opened, not a transient popup: same Win32
+# dialog class (#32770) as a real blocking dialog, so class alone can't
+# tell them apart, but its title is stable across sessions/screens (unlike
+# a session frame's, which changes with every navigation) and its child
+# controls ("Log On", "Variable Logon", "Connections", ...) are nothing
+# like either known dialog's. Never a candidate for dismissal or failure.
+$exemptWindowTitles = @('SAP Logon 760')
 
 $shell = New-Object -ComObject WScript.Shell
 
-foreach ($dialog in $blockingDialogs) {
-    Get-Process | Where-Object { $_.MainWindowTitle -eq $dialog.Title } | ForEach-Object {
-        if ($shell.AppActivate($_.Id)) {
-            Start-Sleep -Milliseconds 300
-            $shell.SendKeys($dialog.Keys)
-            Write-Host "Dismissed blocking dialog: $($dialog.Title)"
+# Dismiss every known blocking dialog, looping because closing one can
+# reveal another - either a different dialog stacked underneath, or (the
+# idle-notice case) a second screen sharing the same title. The main SAP
+# frame is identified as the largest window this process owns, rather than
+# hardcoding a main-window title that varies by locale/screen/version -
+# everything else this process owns (other than $exemptWindowTitles above)
+# is a dialog candidate. Anything left that isn't in $blockingDialogs is now
+# a loud, diagnosable failure (captured title, class, every child control's
+# text, and a screenshot under sap-bootstrap-diagnostics/) instead of a
+# silent no-op, so the next unknown dialog is a five-minute fix instead of a
+# multi-day investigation.
+$maxRounds = 5
+for ($round = 1; $round -le $maxRounds; $round++) {
+    $windows = Get-TopLevelWindows -ProcessNames @('saplogon')
+    if (-not $windows -or $windows.Count -eq 0) { break }
+
+    $mainFrame = $windows | Sort-Object Area -Descending | Select-Object -First 1
+    $dialogCandidates = $windows | Where-Object {
+        $_.Handle -ne $mainFrame.Handle -and $exemptWindowTitles -notcontains $_.Title
+    }
+    if (-not $dialogCandidates -or $dialogCandidates.Count -eq 0) { break }
+
+    $anyDismissed = $false
+    foreach ($window in $dialogCandidates) {
+        $known = $blockingDialogs | Where-Object { $_.Title -eq $window.Title } | Select-Object -First 1
+        if ($known) {
+            if ($shell.AppActivate($window.Title)) {
+                Start-Sleep -Milliseconds 300
+                $shell.SendKeys($known.Keys)
+                Write-Host "Dismissed blocking dialog: $($window.Title)"
+                $anyDismissed = $true
+            }
+        } else {
+            $childTexts = Get-ChildControlTexts $window.Handle
+            $diagDir = Join-Path $PSScriptRoot '..\sap-bootstrap-diagnostics'
+            New-Item -ItemType Directory -Force -Path $diagDir | Out-Null
+            $stamp = Get-Date -Format 'yyyyMMddTHHmmssZ'
+            $screenshotPath = Join-Path $diagDir "$stamp-unrecognized-dialog.png"
+            try {
+                Save-DiagnosticScreenshot $screenshotPath
+            } catch {
+                Write-Host "Could not save diagnostic screenshot: $_"
+            }
+            Write-Error ("An unrecognized blocking window is on screen and this script does not know how to dismiss it. " + `
+                "Title: '$($window.Title)' | Class: '$($window.ClassName)' | " + `
+                "Child control text: $($childTexts -join ' | ') | Screenshot: $screenshotPath")
         }
     }
+    if (-not $anyDismissed) { break }
+    Start-Sleep -Milliseconds 500
 }
 
 if (-not (Get-Process -Name saplogon -ErrorAction SilentlyContinue)) {
@@ -55,14 +232,45 @@ if (-not (Get-Process -Name saplogon -ErrorAction SilentlyContinue)) {
 # COM automation doesn't need window focus to fire actions, but Windows can
 # defer actual client-side rendering for a background window - complex
 # screens (many fields) may never finish laying out if SAP GUI isn't the
-# foreground window. Bring it forward once, here; nothing else should steal
-# focus back during an unattended run.
-$sapProcess = Get-Process -Name saplogon -ErrorAction SilentlyContinue
-if ($sapProcess -and $sapProcess.MainWindowHandle -ne 0) {
-    if ($shell.AppActivate($sapProcess.Id)) {
-        Write-Host 'Brought SAP GUI to the foreground.'
+# foreground window. Bring it forward here; nothing else should steal focus
+# back during an unattended run.
+#
+# AppActivate can return false for reasons that have nothing to do with SAP
+# GUI: right after the preceding cargo step exits, Windows' foreground-lock
+# timeout briefly refuses to let an unrelated automation process steal focus
+# from the console that just had it (see #499 - this is what silently
+# poisoned every field wait in the replay step that follows). A single
+# best-effort attempt isn't enough - retry, releasing the lock between
+# attempts with a throwaway Alt keystroke (the standard workaround: it resets
+# Windows' "user is providing input" state without doing anything to whatever
+# currently has focus). If we still can't get foreground after that, fail
+# loudly now rather than let the replay step run for 20 minutes against a
+# window that will never finish rendering.
+#
+# Activate by TITLE, using the same EnumWindows-based enumeration as the
+# dialog loop above, not AppActivate(processId) against Get-Process's own
+# window pick. Live evidence: even a widened 10-attempt/~5s budget on
+# AppActivate($sapProcess.Id) still failed consistently (run 32731001325),
+# where the EnumWindows detection above has been reliably finding the same
+# windows with zero false positives across every run so far - the process-id
+# lookup is a different internal Windows Script Host code path with its own
+# window-matching rules, evidently less reliable here than a direct title
+# match against a window we've already confirmed exists.
+$mainWindow = Get-TopLevelWindows -ProcessNames @('saplogon') | Sort-Object Area -Descending | Select-Object -First 1
+if ($mainWindow) {
+    $activated = $false
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        if ($shell.AppActivate($mainWindow.Title)) {
+            $activated = $true
+            break
+        }
+        $shell.SendKeys('%')
+        Start-Sleep -Milliseconds 500
+    }
+    if ($activated) {
+        Write-Host "Brought SAP GUI to the foreground (attempt $attempt): '$($mainWindow.Title)'"
     } else {
-        Write-Host 'Could not bring SAP GUI to the foreground (AppActivate returned false).'
+        Write-Error "Could not bring SAP GUI to the foreground after 10 attempts (AppActivate kept returning false) for window '$($mainWindow.Title)'. Failing now instead of running the suite against a window that will never finish rendering."
     }
 }
 

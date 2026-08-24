@@ -23,9 +23,28 @@ jobs:
   sap-e2e:
     name: sap_e2e (real SAP GUI)
     runs-on: [self-hosted, sap]
-    timeout-minutes: 20
+    # 20 was never enough for the real workload once measured (#501):
+    # audit-sales-order.flow.yaml alone (91 steps, deeply nested field
+    # assertions) took ~12-13 minutes in isolation against the live system,
+    # on top of ~7-8 minutes of compile/bootstrap/cargo-test overhead before
+    # the replay step even starts - let alone the other 5 flows and
+    # --retries 2. This was never a hang; the job just never had enough
+    # wall-clock time to finish legitimate work.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      # Warm target/ before any SAP-touching step, so the later `cargo run`
+      # in "replay SAP example flows" starts near-instantly instead of
+      # spending ~2.5 minutes recompiling the flowproof CLI binary at
+      # invocation time. That gap happens AFTER cargo test has already
+      # logged the session in - long enough on this system to trip the
+      # ~2-minute idle-timeout (#495) with nobody there to notice. Once
+      # that happens mid-flow, FindById blocks indefinitely instead of
+      # failing fast, and the whole step hangs to the job timeout with zero
+      # output (#501). No SAP interaction here, so it's safe to run first.
+      - name: pre-build flowproof CLI
+        run: cargo build -p flowproof-cli --bin flowproof
 
       # Nightly runs have nobody at the keyboard: make sure SAP Logon is up
       # and clear the handful of modal dialogs known to block scripting
@@ -35,6 +54,22 @@ jobs:
         run: ./scripts/sap-session-bootstrap.ps1
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      # An unrecognized blocking dialog fails this step with its captured
+      # title/class/child-text inline in the log, plus a screenshot written
+      # to sap-bootstrap-diagnostics/ (see sap-session-bootstrap.ps1) - this
+      # is the only step that would ever produce that directory, so upload
+      # it here rather than relying on the later "upload SAP flow
+      # diagnostics" step, which only fires from `flowproof run` and would
+      # never catch a bootstrap-stage failure.
+      - name: upload bootstrap diagnostics (initial)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sap-bootstrap-diagnostics-initial-${{ github.run_id }}
+          path: sap-bootstrap-diagnostics/
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: cargo test sap_e2e (real COM engine, live SAP GUI)
         run: cargo test -p flowproof-cli --test sap_e2e -- --nocapture
@@ -52,19 +87,26 @@ jobs:
           SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
           SAP_CLIENT: ${{ secrets.SAP_CLIENT }}
 
-      # The cargo test step above proves the session is logged in - but the
-      # dev build that follows recompiles the whole workspace again with no
-      # shared incremental cache (~2 more minutes), and nothing touches SAP
-      # GUI while that happens. That idle gap is enough on this system to
-      # trip a server-side "maximum user idle time exceeded" logout (#495),
-      # which appears as a native dialog outside SAP's scripting model - it
-      # blocks every FindById call until something closes it. Bootstrap
-      # again right before the suite runs, not just once at job start.
+      # The cargo test step above proves the session is logged in, and the
+      # pre-build step means the flowproof binary itself no longer needs a
+      # multi-minute recompile right before the replay step (#501) - but
+      # cargo test's own ~5 minute compile happens before login, and other
+      # gaps can still open up. Bootstrap again right before the suite runs,
+      # not just once at job start, rather than assume nothing changed.
       - name: session bootstrap (pre-replay)
         shell: powershell
         run: ./scripts/sap-session-bootstrap.ps1
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      - name: upload bootstrap diagnostics (pre-replay)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sap-bootstrap-diagnostics-prereplay-${{ github.run_id }}
+          path: sap-bootstrap-diagnostics/
+          retention-days: 14
+          if-no-files-found: ignore
 
       # Broader coverage than the one hardcoded correctness check above:
       # replays every committed example flow as a suite (zero AI, each
@@ -81,6 +123,10 @@ jobs:
           SAP_USER: ${{ secrets.SAP_USER }}
           SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
           SAP_CLIENT: ${{ secrets.SAP_CLIENT }}
+          # standard-text/create-revise-delete.flow.yaml both creates and
+          # deletes this record as part of its own lifecycle - not
+          # sensitive, so a plain literal rather than a GitHub secret.
+          SO10_TEXT_NAME: FLOWPROOFCI
 
       # `flowproof run` already writes per-step PNG frames and report.html
       # into the suite's run dir on every invocation (recording-detail
@@ -105,3 +151,12 @@ jobs:
         run: ./scripts/sap-session-bootstrap.ps1
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      - name: upload bootstrap diagnostics (reset)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sap-bootstrap-diagnostics-reset-${{ github.run_id }}
+          path: sap-bootstrap-diagnostics/
+          retention-days: 14
+          if-no-files-found: ignore

@@ -16,12 +16,21 @@ use flowproof_agent::FlowSpec;
 /// unattended nightly run open one instead, should the runner ever come up
 /// without one — the value is carried as `${VAR}` and resolved at launch
 /// time, so it never reaches the trace.
+///
+/// A prior CI run can leave the session mid-transaction (a cancelled job,
+/// or simply the last replayed flow not returning to Easy Access) — from
+/// some of those screens SAP refuses `/nSMEN` outright ("Cannot start
+/// transaction SMEN"), confirmed live and reproduced 4/4 times whenever the
+/// session wasn't already sitting on a clean screen. `/n` alone is SAP's
+/// unconditional "cancel out of whatever's active" command, unlike `/nSMEN`
+/// which names a specific target - lead with it so this test doesn't depend
+/// on what the previous run left behind.
 fn spec_yaml() -> String {
     let mut spec = String::from("name: Navigate to session status\napp: sap\n");
     if std::env::var("SAP_CONNECTION").is_ok() {
         spec.push_str("connection: ${SAP_CONNECTION}\n");
     }
-    spec.push_str("steps:\n  - Go to SMEN\n  - assert: page shows SAP Easy Access\n");
+    spec.push_str("steps:\n  - Go to /n\n  - Go to SMEN\n  - assert: page shows SAP Easy Access\n");
     spec
 }
 
