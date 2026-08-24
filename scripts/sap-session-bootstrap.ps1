@@ -234,15 +234,20 @@ if (-not (Get-Process -Name saplogon -ErrorAction SilentlyContinue)) {
 # loudly now rather than let the replay step run for 20 minutes against a
 # window that will never finish rendering.
 #
-# 10 attempts / ~5s total, not 5 / 2.5s: live evidence (run 32730737479)
-# showed 5 attempts over 2.5s fail, then the exact same call succeed on the
-# very next invocation about 5s later - the lock is real but short-lived,
-# and the old budget was cutting it close rather than genuinely stuck.
-$sapProcess = Get-Process -Name saplogon -ErrorAction SilentlyContinue
-if ($sapProcess -and $sapProcess.MainWindowHandle -ne 0) {
+# Activate by TITLE, using the same EnumWindows-based enumeration as the
+# dialog loop above, not AppActivate(processId) against Get-Process's own
+# window pick. Live evidence: even a widened 10-attempt/~5s budget on
+# AppActivate($sapProcess.Id) still failed consistently (run 32731001325),
+# where the EnumWindows detection above has been reliably finding the same
+# windows with zero false positives across every run so far - the process-id
+# lookup is a different internal Windows Script Host code path with its own
+# window-matching rules, evidently less reliable here than a direct title
+# match against a window we've already confirmed exists.
+$mainWindow = Get-TopLevelWindows -ProcessNames @('saplogon') | Sort-Object Area -Descending | Select-Object -First 1
+if ($mainWindow) {
     $activated = $false
     for ($attempt = 1; $attempt -le 10; $attempt++) {
-        if ($shell.AppActivate($sapProcess.Id)) {
+        if ($shell.AppActivate($mainWindow.Title)) {
             $activated = $true
             break
         }
@@ -250,9 +255,9 @@ if ($sapProcess -and $sapProcess.MainWindowHandle -ne 0) {
         Start-Sleep -Milliseconds 500
     }
     if ($activated) {
-        Write-Host "Brought SAP GUI to the foreground (attempt $attempt)."
+        Write-Host "Brought SAP GUI to the foreground (attempt $attempt): '$($mainWindow.Title)'"
     } else {
-        Write-Error 'Could not bring SAP GUI to the foreground after 10 attempts (AppActivate kept returning false). Failing now instead of running the suite against a window that will never finish rendering.'
+        Write-Error "Could not bring SAP GUI to the foreground after 10 attempts (AppActivate kept returning false) for window '$($mainWindow.Title)'. Failing now instead of running the suite against a window that will never finish rendering."
     }
 }
 
