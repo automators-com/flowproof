@@ -36,6 +36,22 @@ jobs:
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
 
+      # An unrecognized blocking dialog fails this step with its captured
+      # title/class/child-text inline in the log, plus a screenshot written
+      # to sap-bootstrap-diagnostics/ (see sap-session-bootstrap.ps1) - this
+      # is the only step that would ever produce that directory, so upload
+      # it here rather than relying on the later "upload SAP flow
+      # diagnostics" step, which only fires from `flowproof run` and would
+      # never catch a bootstrap-stage failure.
+      - name: upload bootstrap diagnostics (initial)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sap-bootstrap-diagnostics-initial-${{ github.run_id }}
+          path: sap-bootstrap-diagnostics/
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: cargo test sap_e2e (real COM engine, live SAP GUI)
         run: cargo test -p flowproof-cli --test sap_e2e -- --nocapture
         env:
@@ -65,6 +81,15 @@ jobs:
         run: ./scripts/sap-session-bootstrap.ps1
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      - name: upload bootstrap diagnostics (pre-replay)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sap-bootstrap-diagnostics-prereplay-${{ github.run_id }}
+          path: sap-bootstrap-diagnostics/
+          retention-days: 14
+          if-no-files-found: ignore
 
       # Broader coverage than the one hardcoded correctness check above:
       # replays every committed example flow as a suite (zero AI, each
@@ -105,3 +130,12 @@ jobs:
         run: ./scripts/sap-session-bootstrap.ps1
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
+
+      - name: upload bootstrap diagnostics (reset)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sap-bootstrap-diagnostics-reset-${{ github.run_id }}
+          path: sap-bootstrap-diagnostics/
+          retention-days: 14
+          if-no-files-found: ignore
