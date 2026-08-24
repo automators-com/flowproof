@@ -23,7 +23,14 @@ jobs:
   sap-e2e:
     name: sap_e2e (real SAP GUI)
     runs-on: [self-hosted, sap]
-    timeout-minutes: 20
+    # 20 was never enough for the real workload once measured (#501):
+    # audit-sales-order.flow.yaml alone (91 steps, deeply nested field
+    # assertions) took ~12-13 minutes in isolation against the live system,
+    # on top of ~7-8 minutes of compile/bootstrap/cargo-test overhead before
+    # the replay step even starts - let alone the other 5 flows and
+    # --retries 2. This was never a hang; the job just never had enough
+    # wall-clock time to finish legitimate work.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -109,13 +116,8 @@ jobs:
       # points at — real data on the reference system this was recorded
       # against, not guaranteed elsewhere. --retries absorbs the odd flake
       # (stock-overview's screen has been the least reliable of the four).
-      # TEMPORARY DIAGNOSTIC (#501): isolate the suspected flow with
-      # --retries 0 to get its real failure reason fast instead of another
-      # 20-minute blind run - --retries 2 on the full suite means one flaky
-      # flow retries the whole thing from scratch 3x, burning the entire job
-      # budget before ever printing a result. Revert once we have an answer.
       - name: replay SAP example flows (live SAP GUI)
-        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/audit-sales-order.flow.yaml --retries 0
+        run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/ --retries 2
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
           SAP_USER: ${{ secrets.SAP_USER }}
