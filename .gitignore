@@ -50,4 +50,3 @@ yarn-error.log*
 # (`cargo build --release` + a generated package.json). Ephemeral on a CI
 # runner, but a 20MB binary one `git add -A` away from a commit locally.
 /dist-npm/
-.orchestrator/
