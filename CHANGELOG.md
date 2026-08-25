@@ -26,6 +26,18 @@ together).
 
 ### Fixed
 
+- **The Python SDK's dev/test lock resolved a known-vulnerable `pytest` for
+  Python 3.9.** `pytest < 9.0.3` has insecure `/tmp/pytest-of-{user}`
+  handling on UNIX (GHSA-6w46-j5rx-g56g); the fix only ever shipped in the
+  9.x line, and 9.x dropped Python 3.9 support outright, so a plain floor
+  bump was unsatisfiable for the 3.9 branch of the lock. The `dev`
+  dependency group now declares its own `requires-python = ">=3.10"`
+  (`[tool.uv.dependency-groups]`), separate from the package's own
+  `requires-python = ">=3.9"` — running the test suite from source now needs
+  3.10+, same as CI already effectively runs, while nothing changes for
+  anyone installing the shipped `flowproof` package on 3.9. The lock now
+  resolves one `pytest` version everywhere: 9.1.1, patched.
+
 - **The nightly SAP suite was failing on the same field, every night, for a
   reason nobody had looked for.** Every scheduled `sap-e2e` run since early
   August had failed on the first field of every flow that types into one —
