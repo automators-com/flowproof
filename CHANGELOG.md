@@ -8,6 +8,23 @@ together).
 
 ### Added
 
+- **flowproof publishes a security reporting policy and a threat model.**
+  Nothing told a researcher how to report a vulnerability privately, and
+  nothing wrote down what flowproof's containment, credential handling, and
+  secret handling actually guarantee versus what they don't — for a tool
+  adopters use to decide whether an agent may touch a production system,
+  that gap was itself a risk. `SECURITY.md` opens a private reporting route
+  (GitHub private vulnerability reporting, now enabled on this repository)
+  and `docs/threat-model.md` maps every claim to the code that enforces it —
+  the model-proxy credential boundary, Linux seccomp and Windows WFP egress
+  containment (and the true no-op on everything else, made safe only by
+  `assert_no_egress`'s fail-closed gate), the narrower-than-it-sounds secret
+  scan, and more. It also names seven gaps found while writing it — an
+  unredacted debug bundle among them — rather than staying silent about
+  them: honesty about what is and isn't enforced is the same principle
+  `egress.rs` already lives by, applied to the document as much as the code.
+
+
 - **The SAP test simulator models more than one screen shape.** Every
   automated SAP check ran against the same flat VA01 window - one `wnd[0]`,
   every field hanging straight off it. A fixture like that cannot fail.
