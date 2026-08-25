@@ -15,14 +15,26 @@
 # wording here is representative of a standard Fiori theme; if your
 # system's labels differ, record with --json and the clarification payload
 # will list the real fields on screen (see docs/self-help.md).
+#
+# The launchpad URL itself carries sap-client/sap-language as query params
+# (same names the SAP GUI adapter's optional login.client/login.language
+# use) — confirmed live: hitting the base URL alone 404s post-login on a
+# real system, because the shell's actual bootstrap path only resolves
+# once client/language are present on the request, not guessed at as a
+# path suffix.
 name: Manage info records - edit and verify
 app: web
-url: ${FIORI_BASE_URL}/ui#Shell-home
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
 steps:
   # -- Log in on the launchpad's login screen --------------------------
   - Type ${SAP_USER} into the "User" field
   - Type ${SAP_PASSWORD} into the "Password" field
   - Press the "Log On" button
+  # TODO: "Home" is an unconfirmed guess, not a verified label. A live run
+  # reached the authenticated shell (user-avatar badge visible, login form
+  # gone) but never rendered this text within 60s — resolve the real
+  # landing-state assertion at the next `flowproof record` pass, and check
+  # whether the test account has any tiles/catalogs assigned at all.
   - Wait until page shows Home within 60s
 
   # -- Navigate: module tile, then the app -----------------------------

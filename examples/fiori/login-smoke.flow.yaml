@@ -1,0 +1,27 @@
+# Smoke test: does the CDP browser adapter reach a real Fiori launchpad and
+# log in, using nothing but env vars for URL + credentials? No test-data
+# mining (the sibling suite.yaml's env_from needs a DataMaker CLI this
+# doesn't) — this is step zero, run before manage-info-records.flow.yaml or
+# purchase-info-records-report.flow.yaml.
+#
+# sap-client/sap-language travel as query params on the launchpad URL
+# itself (same names as the SAP GUI adapter's optional login.client/
+# login.language) rather than as typed form fields — a live run confirmed
+# the base URL alone 404s post-login without them, and that the login
+# page's own Client/Language inputs pre-fill from these params.
+#
+# TODO: the final assertion is an unconfirmed guess. A live run reached
+# the authenticated shell (user-avatar badge visible, login form gone) but
+# never rendered literal "Home" text within 60s. Resolve the real
+# landing-state assertion at the next `flowproof record` pass, and check
+# whether the test account has any tiles/catalogs assigned — a blank tile
+# area may be a permissions fact about the account, not a flow bug.
+name: Fiori login smoke test
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  - assert: page shows Home
