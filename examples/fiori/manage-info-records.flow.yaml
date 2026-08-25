@@ -15,14 +15,25 @@
 # wording here is representative of a standard Fiori theme; if your
 # system's labels differ, record with --json and the clarification payload
 # will list the real fields on screen (see docs/self-help.md).
+#
+# The launchpad URL itself carries sap-client/sap-language as query params
+# (same names the SAP GUI adapter's optional login.client/login.language
+# use) — confirmed live: hitting the base URL alone 404s post-login on a
+# real system, because the shell's actual bootstrap path only resolves
+# once client/language are present on the request, not guessed at as a
+# path suffix.
 name: Manage info records - edit and verify
 app: web
-url: ${FIORI_BASE_URL}/ui#Shell-home
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
 steps:
   # -- Log in on the launchpad's login screen --------------------------
   - Type ${SAP_USER} into the "User" field
   - Type ${SAP_PASSWORD} into the "Password" field
   - Press the "Log On" button
+  # Confirmed live against a real system via login-smoke.flow.yaml: "Home"
+  # resolves from the shell's own tab label once authenticated, regardless
+  # of whether the account has any tiles assigned. This flow itself is
+  # otherwise still unrecorded — see the module's own TODOs below.
   - Wait until page shows Home within 60s
 
   # -- Navigate: module tile, then the app -----------------------------

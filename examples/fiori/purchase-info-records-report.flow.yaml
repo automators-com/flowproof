@@ -21,7 +21,10 @@ name: Purchase info-records report
 apps:
   fiori:
     app: web
-    url: ${FIORI_BASE_URL}/ui#Shell-home
+    # sap-client/sap-language on the URL itself, same as
+    # manage-info-records.flow.yaml — confirmed live that the base URL
+    # alone 404s post-login without them.
+    url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
     # No `browser: {downloads_dir: ...}` needed — downloads are enabled by
     # default at every launch, into a per-launch temp directory the driver
     # creates and owns, so `wait until the download completes` always has
@@ -41,6 +44,7 @@ steps:
       - Type ${SAP_USER} into the "User" field
       - Type ${SAP_PASSWORD} into the "Password" field
       - Press the "Log On" button
+      # Confirmed live via login-smoke.flow.yaml — see manage-info-records.flow.yaml.
       - Wait until page shows Home within 60s
 
       # -- Navigate: module tile, then the report app --------------------

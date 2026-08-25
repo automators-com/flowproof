@@ -1,0 +1,34 @@
+# Smoke test: does the CDP browser adapter reach a real Fiori launchpad and
+# log in, using nothing but env vars for URL + credentials? No test-data
+# mining (the sibling suite.yaml's env_from needs a DataMaker CLI this
+# doesn't) — this is step zero, run before manage-info-records.flow.yaml or
+# purchase-info-records-report.flow.yaml.
+#
+# sap-client/sap-language travel as query params on the launchpad URL
+# itself (same names as the SAP GUI adapter's optional login.client/
+# login.language) rather than as typed form fields — a live run confirmed
+# the base URL alone 404s post-login without them, and that the login
+# page's own Client/Language inputs pre-fill from these params.
+#
+# Confirmed live with `--author rules` (bypassing the LLM authoring
+# backend entirely — see login-smoke.trace.jsonl): all 5 steps pass,
+# "Home" resolves from the shell's own tab label, not tile content. The
+# test account's tile area is genuinely empty ("Nothing here yet?"), which
+# is a fact about the account's assigned catalogs, not a flow defect.
+#
+# Record with --author rules, not the auto default: every step here is
+# already exact deterministic grammar (see rules.rs), but --author auto
+# sends plain steps to the LLM regardless, and it isn't always faithful to
+# the literal grammar phrasing (e.g. paraphrasing "wait until page shows"
+# into "wait until the page shows ..."), which the deterministic parser
+# then rejects outright. That produced several non-reproducible failures
+# while first recording this flow, unrelated to the browser or the app.
+name: Fiori login smoke test
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  - assert: page shows Home
