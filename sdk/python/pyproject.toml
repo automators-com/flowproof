@@ -34,7 +34,7 @@ Repository = "https://github.com/automators-com/flowproof"
 [dependency-groups]
 dev = [
     "mcp>=1.2; python_version >= '3.10'",
-    "pytest>=8",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
 ]
@@ -66,3 +66,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
+
+[tool.uv.dependency-groups]
+dev = { requires-python = ">=3.10" }
