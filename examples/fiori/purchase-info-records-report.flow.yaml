@@ -44,7 +44,7 @@ steps:
       - Type ${SAP_USER} into the "User" field
       - Type ${SAP_PASSWORD} into the "Password" field
       - Press the "Log On" button
-      # TODO: "Home" is an unconfirmed guess — see manage-info-records.flow.yaml.
+      # Confirmed live via login-smoke.flow.yaml — see manage-info-records.flow.yaml.
       - Wait until page shows Home within 60s
 
       # -- Navigate: module tile, then the report app --------------------

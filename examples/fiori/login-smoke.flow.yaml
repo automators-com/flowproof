@@ -10,12 +10,19 @@
 # the base URL alone 404s post-login without them, and that the login
 # page's own Client/Language inputs pre-fill from these params.
 #
-# TODO: the final assertion is an unconfirmed guess. A live run reached
-# the authenticated shell (user-avatar badge visible, login form gone) but
-# never rendered literal "Home" text within 60s. Resolve the real
-# landing-state assertion at the next `flowproof record` pass, and check
-# whether the test account has any tiles/catalogs assigned — a blank tile
-# area may be a permissions fact about the account, not a flow bug.
+# Confirmed live with `--author rules` (bypassing the LLM authoring
+# backend entirely — see login-smoke.trace.jsonl): all 5 steps pass,
+# "Home" resolves from the shell's own tab label, not tile content. The
+# test account's tile area is genuinely empty ("Nothing here yet?"), which
+# is a fact about the account's assigned catalogs, not a flow defect.
+#
+# Record with --author rules, not the auto default: every step here is
+# already exact deterministic grammar (see rules.rs), but --author auto
+# sends plain steps to the LLM regardless, and it isn't always faithful to
+# the literal grammar phrasing (e.g. paraphrasing "wait until page shows"
+# into "wait until the page shows ..."), which the deterministic parser
+# then rejects outright. That produced several non-reproducible failures
+# while first recording this flow, unrelated to the browser or the app.
 name: Fiori login smoke test
 app: web
 url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
