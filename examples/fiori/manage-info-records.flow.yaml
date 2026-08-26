@@ -5,8 +5,8 @@
 #
 # Every value that is test DATA travels as a ${VAR} reference: it resolves
 # from the environment at record AND replay, and only the raw `${VAR}` is
-# ever stored in the trace. The sibling suite.yaml mints these vars from
-# the DataMaker CLI (env_from) before any flow runs — so the flow always
+# ever stored in the trace. The sibling suite.yaml mints these vars via
+# mint-test-data.sh (env_from) before any flow runs — so the flow always
 # targets a Material/Supplier/Plant combination that really exists in the
 # connected SAP system.
 #
@@ -32,9 +32,19 @@ steps:
   - Press the "Log On" button
   # Confirmed live against a real system via login-smoke.flow.yaml: "Home"
   # resolves from the shell's own tab label once authenticated, regardless
-  # of whether the account has any tiles assigned. This flow itself is
-  # otherwise still unrecorded — see the module's own TODOs below.
+  # of whether the account has any tiles assigned.
   - Wait until page shows Home within 60s
+
+  # This flow is still UNRECORDED past this point. A live attempt against
+  # the reference system's OBEVA account failed here: `Click "PTP Process
+  # Area BU Apps"` has no matching tile — confirmed via three independent
+  # navigation surfaces (Home page, the shell's "All My Apps" panel, and
+  # Enterprise Search under the Apps category all show zero apps for this
+  # account). That's a backend Fiori catalog/PFCG-role gap, not a flow
+  # defect: OBEVA has no Launchpad role assigned yet, separate from
+  # whatever SAP GUI/backend authorization it holds. Needs a Basis/Fiori
+  # admin to assign the catalog behind ZMM_PUR_INFO_RECORDS_MANAGE_SRV_0001
+  # ("Manage Purchasing Info Records") before this flow can be recorded.
 
   # -- Navigate: module tile, then the app -----------------------------
   - Click "PTP Process Area BU Apps"
@@ -68,7 +78,15 @@ steps:
 
   # -- Out-of-band truth: the changed record as SAP's OData sees it -----
   # UI says saved; the API proves it. body_contains resolves ${VAR} too.
+  #
+  # API_INFORECORD_PROCESS_SRV (the standard S/4 API this originally named)
+  # does not exist in this system's service catalog — confirmed against the
+  # live catalog via datamaker-sap-cli, exact and prefix match both empty.
+  # ZMM_PUR_INFO_RECORDS_MANAGE_SRV_0001 is the real service backing the
+  # "Manage Info Records" Fiori app itself (same one the UI steps above
+  # drive), so it verifies against the same system of record the UI wrote
+  # to, not a same-named-in-theory API that was never actually deployed here.
   - assert_api:
-      request: GET ${SAP_ODATA_BASE}/API_INFORECORD_PROCESS_SRV/A_PurchasingInfoRecord?$filter=Material%20eq%20'${MATERIAL}'
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'
       status: 200
       body_contains: ${NET_PRICE}
