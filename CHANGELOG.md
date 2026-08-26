@@ -8,6 +8,22 @@ together).
 
 ### Added
 
+- **`flowproof record` shows the browser by default; `--headed`/`--headless`
+  make the choice a flag, not tribal knowledge.** Watching a `web` recording
+  has been possible since `FLOWPROOF_HEADED` shipped, but only if you already
+  knew the variable existed - nothing in `--help` said so, and a new user
+  evaluating flowproof against a tool like Tosca (where you always watch the
+  browser while recording) got a blank terminal by default. Recording is the
+  one human-in-the-loop step, so it now opens Chromium unless told not to;
+  `flowproof run` (replay) is unchanged and stays headless, because it is
+  meant to run unattended on CI runners that often have no display at all,
+  and a default flip there risks the false-green class of bug this project
+  exists to catch - headed Chromium sizes its window from the desktop, so a
+  visual baseline recorded one way and replayed the other reports a mismatch
+  that has nothing to do with the flow. Anything that scripts `flowproof
+  record` without a person watching (CI, a container, a cassette-generation
+  pipeline) needs `--headless` now; everything else needs nothing at all.
+
 - **The SAP test simulator models more than one screen shape.** Every
   automated SAP check ran against the same flat VA01 window - one `wnd[0]`,
   every field hanging straight off it. A fixture like that cannot fail.
