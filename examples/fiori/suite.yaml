@@ -3,17 +3,17 @@
 # `env_from` runs once before any flow (for `run` on this directory, and
 # for `record`/single-flow `run` on any spec under it — the manifest is
 # discovered by walking up from the spec). Its stdout must be KEY=VALUE
-# lines; a non-zero exit or malformed line aborts the run. Swap the
-# command for whatever your DataMaker CLI exposes — the contract is only
-# "print the vars the specs reference".
+# lines; a non-zero exit or malformed line aborts the run.
 #
-#   $ datamaker sap info-record pick --plant 1010 --format env
-#   MATERIAL=100-100
-#   SUPPLIER=17300001
-#   PLANT=1010
-#   NET_PRICE=123.45
-#
-env_from: datamaker sap info-record pick --plant 1010 --format env
+# This used to read `datamaker sap info-record pick --plant 1010 --format
+# env` — a CLI command that never existed anywhere: not in the DataMaker
+# monorepo, and not in datamaker-sap-cli (the actual SAP<->DataMaker bridge
+# tool, whose commands are catalog/extract/transform/connect/push — none of
+# which return one picked record). mint-test-data.sh queries the live
+# Manage Purchasing Info Records OData service directly instead: no
+# external tool needed beyond curl + python3, using the same SAP
+# credentials the flows themselves already require.
+env_from: ./mint-test-data.sh
 
 # Ambient values passed through (and composable with captured ones via
 # ${VAR}). Credentials stay in the environment — traces only ever store
