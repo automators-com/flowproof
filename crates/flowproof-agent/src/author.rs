@@ -407,9 +407,34 @@ fn target_from_scene(scene: &str, token: &str) -> Option<Target> {
     if let Some(scope) = entry.get("scope") {
         if let Some(frame) = scope.get("frame").and_then(|value| value.as_str()) {
             let inner = crate::rules::target_from_token(scope["inner"].as_str()?)?;
+            // A same-origin frame nested inside another (discovered live,
+            // never hand-authored — see docs/authoring.md's "one frame, no
+            // combining" for the grammar-level restriction, which this
+            // does not touch): `path` names the further hops the scene
+            // walked past `frame`, outer-to-inner, and wraps up from the
+            // innermost target outward into genuinely nested Target::Framed
+            // values, which recorder.rs::target_selector then flattens back
+            // into one FrameQuery.path for the trace.
+            let path = scope
+                .get("path")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let nested = path
+                .into_iter()
+                .rev()
+                .fold(inner, |acc, name| Target::Framed {
+                    frame: name,
+                    inner: Box::new(acc),
+                });
             return Some(Target::Framed {
                 frame: frame.to_string(),
-                inner: Box::new(inner),
+                inner: Box::new(nested),
             });
         }
         let container = scope["container"].as_str()?.to_string();

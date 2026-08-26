@@ -280,31 +280,48 @@ fn cross_origin(frame: &str) -> DriverError {
 /// Returns a STATUS STRING, never a throw: an exception inside
 /// `call_js_fn` does not reach Rust as an `Err`, which has produced a
 /// silent green in this adapter before.
-const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
+const FRAME_ACT: &str = r#"function(FRAME, PATH, CSS, ID, TEXT, OP, ARG){
   function nameOf(f){
     return f.getAttribute('title') || f.getAttribute('name') || f.getAttribute('id')
       || f.getAttribute('aria-label') || '';
   }
-  var frames = Array.prototype.slice.call(document.querySelectorAll('iframe, frame'));
+  // Resolve one hop of frame identity, scoped to whichever document the
+  // walk has reached so far - the same name/css matching a single frame
+  // used, just re-runnable at every level of a nested chain.
+  function resolveFrame(doc, name){
+    var frames = Array.prototype.slice.call(doc.querySelectorAll('iframe, frame'));
+    var available = frames.map(nameOf).filter(function(n){ return n; });
+    if (name.indexOf('css:') === 0){
+      var el = null;
+      try { el = doc.querySelector(name.slice(4)); } catch (e) { el = null; }
+      if (el && el.tagName !== 'IFRAME' && el.tagName !== 'FRAME') el = null;
+      return { chosen: el, available: available };
+    }
+    var exact = frames.filter(function(f){ return nameOf(f) === name; });
+    var loose = frames.filter(function(f){ return nameOf(f).indexOf(name) !== -1; });
+    return { chosen: exact.length ? exact[0] : (loose.length === 1 ? loose[0] : null), available: available };
+  }
+  // Descend [FRAME].concat(PATH) one document at a time. A miss or a wall
+  // at ANY level reports the same way a single-level frame always has -
+  // nothing here treats a deeper hop as more forgivable than the first.
+  var names = [FRAME].concat(PATH);
+  var doc = document;
   var chosen = null;
-  if (FRAME.indexOf('css:') === 0){
-    try { chosen = document.querySelector(FRAME.slice(4)); } catch (e) { chosen = null; }
-    if (chosen && chosen.tagName !== 'IFRAME' && chosen.tagName !== 'FRAME') chosen = null;
-  } else {
-    var exact = frames.filter(function(f){ return nameOf(f) === FRAME; });
-    var loose = frames.filter(function(f){ return nameOf(f).indexOf(FRAME) !== -1; });
-    chosen = exact.length ? exact[0] : (loose.length === 1 ? loose[0] : null);
+  for (var i = 0; i < names.length; i++){
+    var found = resolveFrame(doc, names[i]);
+    chosen = found.chosen;
+    if (!chosen){
+      return 'no_frame:' + JSON.stringify(found.available);
+    }
+    // A frame nobody can see is not one an action may drive.
+    if (typeof chosen.checkVisibility === 'function' && !chosen.checkVisibility()){
+      return 'frame_hidden';
+    }
+    var nextDoc = null;
+    try { nextDoc = chosen.contentDocument; } catch (e) { nextDoc = null; }
+    if (!nextDoc) { return 'cross_origin'; }
+    doc = nextDoc;
   }
-  if (!chosen){
-    return 'no_frame:' + JSON.stringify(frames.map(nameOf).filter(function(n){ return n; }));
-  }
-  // A frame nobody can see is not one an action may drive.
-  if (typeof chosen.checkVisibility === 'function' && !chosen.checkVisibility()){
-    return 'frame_hidden';
-  }
-  var doc = null;
-  try { doc = chosen.contentDocument; } catch (e) { doc = null; }
-  if (!doc) { return 'cross_origin'; }
   var el = null;
   if (CSS) { try { el = doc.querySelector(CSS); } catch (e) { el = null; } }
   else if (ID) { el = doc.getElementById(ID); }
@@ -343,28 +360,44 @@ const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
   return el.value === next ? 'ok' : 'took:' + el.value;
 }"#;
 
-const FRAME_PROBE: &str = r#"function(FRAME, CSS, ID, TEXT){
+const FRAME_PROBE: &str = r#"function(FRAME, PATH, CSS, ID, TEXT){
   function nameOf(f){
     return f.getAttribute('title') || f.getAttribute('name') || f.getAttribute('id')
       || f.getAttribute('aria-label') || '';
   }
-  var frames = Array.prototype.slice.call(document.querySelectorAll('iframe, frame'));
+  // Resolve one hop of frame identity, scoped to whichever document the
+  // walk has reached so far - the same name/css matching a single frame
+  // used, just re-runnable at every level of a nested chain.
+  function resolveFrame(doc, name){
+    var frames = Array.prototype.slice.call(doc.querySelectorAll('iframe, frame'));
+    var available = frames.map(nameOf).filter(function(n){ return n; });
+    if (name.indexOf('css:') === 0){
+      var el = null;
+      try { el = doc.querySelector(name.slice(4)); } catch (e) { el = null; }
+      if (el && el.tagName !== 'IFRAME' && el.tagName !== 'FRAME') el = null;
+      return { chosen: el, available: available };
+    }
+    var exact = frames.filter(function(f){ return nameOf(f) === name; });
+    var loose = frames.filter(function(f){ return nameOf(f).indexOf(name) !== -1; });
+    return { chosen: exact.length ? exact[0] : (loose.length === 1 ? loose[0] : null), available: available };
+  }
+  // Descend [FRAME].concat(PATH) one document at a time. A miss or a wall
+  // at ANY level reports the same way a single-level frame always has.
+  var names = [FRAME].concat(PATH);
+  var doc = document;
   var chosen = null;
-  if (FRAME.indexOf('css:') === 0){
-    try { chosen = document.querySelector(FRAME.slice(4)); } catch (e) { chosen = null; }
-    if (chosen && chosen.tagName !== 'IFRAME' && chosen.tagName !== 'FRAME') chosen = null;
-  } else {
-    var exact = frames.filter(function(f){ return nameOf(f) === FRAME; });
-    var loose = frames.filter(function(f){ return nameOf(f).indexOf(FRAME) !== -1; });
-    chosen = exact.length ? exact[0] : (loose.length === 1 ? loose[0] : null);
+  for (var i = 0; i < names.length; i++){
+    var found = resolveFrame(doc, names[i]);
+    chosen = found.chosen;
+    if (!chosen){
+      return 'no_frame:' + JSON.stringify(found.available);
+    }
+    var nextDoc = null;
+    // A cross-origin frame throws OR yields null - both mean walled off.
+    try { nextDoc = chosen.contentDocument; } catch (e) { nextDoc = null; }
+    if (!nextDoc) return 'cross_origin';
+    doc = nextDoc;
   }
-  if (!chosen){
-    return 'no_frame:' + JSON.stringify(frames.map(nameOf).filter(function(n){ return n; }));
-  }
-  var doc = null;
-  // A cross-origin frame throws OR yields null - both mean walled off.
-  try { doc = chosen.contentDocument; } catch (e) { doc = null; }
-  if (!doc) return 'cross_origin';
   var el = null;
   if (CSS){ try { el = doc.querySelector(CSS); } catch (e) { el = null; } }
   else if (ID){ try { el = doc.getElementById(ID); } catch (e) { el = null; } }
@@ -1713,8 +1746,9 @@ impl WebAppDriver {
                 .unwrap_or_else(|| "null".into())
         };
         let call = format!(
-            "({FRAME_ACT})({frame},{css},{id},{text},{op},{arg})",
+            "({FRAME_ACT})({frame},{path},{css},{id},{text},{op},{arg})",
             frame = serde_json::Value::from(query.frame.as_str()),
+            path = serde_json::json!(query.path),
             css = js(&query.inner_css),
             id = js(&query.inner_id),
             text = js(&query.inner_text),
@@ -3183,8 +3217,9 @@ impl AppDriver for WebAppDriver {
                 .unwrap_or_else(|| "null".into())
         };
         let call = format!(
-            "({FRAME_PROBE})({frame},{css},{id},{text})",
+            "({FRAME_PROBE})({frame},{path},{css},{id},{text})",
             frame = serde_json::Value::from(query.frame.as_str()),
+            path = serde_json::json!(query.path),
             css = js(&query.inner_css),
             id = js(&query.inner_id),
             text = js(&query.inner_text),
@@ -3958,66 +3993,94 @@ impl AppDriver for WebAppDriver {
               }
 
               // Same-origin iframe values are a normal part of the live
-              // scene. Their synthetic token is translated to Target::Framed
-              // before tracing, just like a scoped row token; no synthetic
-              // authoring syntax is persisted or shown to the human.
-              for (const frameEl of document.querySelectorAll('iframe, frame')) {
-                const frameRect = frameEl.getBoundingClientRect();
-                const frameStyle = getComputedStyle(frameEl);
-                if (frameStyle.display === 'none' || frameStyle.visibility === 'hidden' ||
-                    Number(frameStyle.opacity) <= 0 || frameRect.width <= 0 || frameRect.height <= 0) {
-                  continue;
+              // scene, at any nesting depth. Their synthetic token is
+              // translated to Target::Framed before tracing, just like a
+              // scoped row token; no synthetic authoring syntax is
+              // persisted or shown to the human.
+              //
+              // An unlabelled iframe (no title/name/id/aria-label) still
+              // gets a stable identity - a positional `css:` path scoped to
+              // its OWN parent, never the top page - so it is discovered
+              // transparently instead of silently skipped.
+              function anonymousFrameSelector(frameEl) {
+                const ownerDoc = frameEl.ownerDocument;
+                const parts = [];
+                let el = frameEl;
+                while (el && el.nodeType === 1 && el !== ownerDoc.body && el !== ownerDoc.documentElement) {
+                  const parent = el.parentElement;
+                  if (!parent) break;
+                  const siblings = Array.from(parent.children).filter((s) => s.tagName === el.tagName);
+                  parts.unshift(el.tagName.toLowerCase() + ':nth-of-type(' + (siblings.indexOf(el) + 1) + ')');
+                  el = parent;
                 }
-                const frame = frameEl.getAttribute('title') || frameEl.getAttribute('name') ||
-                  frameEl.id || frameEl.getAttribute('aria-label');
-                if (!frame) continue;
-                let frameDoc;
-                try { frameDoc = frameEl.contentDocument; } catch (_) { continue; }
-                if (!frameDoc || !frameDoc.body) continue;
-                const inner = [frameDoc.body].concat(Array.from(frameDoc.querySelectorAll(
-                  'input, button, select, textarea, a, [role=button], [role=checkbox], [role=radio], [role=menuitem], [id]'
-                )));
-                for (const el of inner) {
-                  const style = frameDoc.defaultView.getComputedStyle(el);
-                  const rect = el.getBoundingClientRect();
-                  if (style.display === 'none' || style.visibility === 'hidden' ||
-                      Number(style.opacity) <= 0 || rect.width <= 0 || rect.height <= 0) {
+                return 'css:' + parts.join(' > ');
+              }
+              // `chain` is every frame name from the root down to (and
+              // including) `doc`'s own frame; `depth` bounds recursion
+              // against a pathological/self-embedding nesting.
+              function walkFrames(doc, chain, depth) {
+                if (depth > 5) return;
+                for (const frameEl of doc.querySelectorAll('iframe, frame')) {
+                  const frameRect = frameEl.getBoundingClientRect();
+                  const frameStyle = frameEl.ownerDocument.defaultView.getComputedStyle(frameEl);
+                  if (frameStyle.display === 'none' || frameStyle.visibility === 'hidden' ||
+                      Number(frameStyle.opacity) <= 0 || frameRect.width <= 0 || frameRect.height <= 0) {
                     continue;
                   }
-                  let css = el === frameDoc.body ? 'body' : null;
-                  if (!css && el.id) css = '#' + CSS.escape(el.id);
-                  if (!css) {
-                    for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name']) {
-                      const value = el.getAttribute(attr);
-                      if (!value) continue;
-                      const candidate = el.tagName.toLowerCase() + '[' + attr + '="' +
-                        CSS.escape(value) + '"]';
-                      if (frameDoc.querySelectorAll(candidate).length === 1) {
-                        css = candidate;
-                        break;
+                  const name = frameEl.getAttribute('title') || frameEl.getAttribute('name') ||
+                    frameEl.id || frameEl.getAttribute('aria-label') || anonymousFrameSelector(frameEl);
+                  let frameDoc;
+                  try { frameDoc = frameEl.contentDocument; } catch (_) { continue; }
+                  if (!frameDoc || !frameDoc.body) continue;
+                  const nextChain = chain.concat([name]);
+                  const inner = [frameDoc.body].concat(Array.from(frameDoc.querySelectorAll(
+                    'input, button, select, textarea, a, [role=button], [role=checkbox], [role=radio], [role=menuitem], [id]'
+                  )));
+                  for (const el of inner) {
+                    const style = frameDoc.defaultView.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    if (style.display === 'none' || style.visibility === 'hidden' ||
+                        Number(style.opacity) <= 0 || rect.width <= 0 || rect.height <= 0) {
+                      continue;
+                    }
+                    let css = el === frameDoc.body ? 'body' : null;
+                    if (!css && el.id) css = '#' + CSS.escape(el.id);
+                    if (!css) {
+                      for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name']) {
+                        const value = el.getAttribute(attr);
+                        if (!value) continue;
+                        const candidate = el.tagName.toLowerCase() + '[' + attr + '="' +
+                          CSS.escape(value) + '"]';
+                        if (frameDoc.querySelectorAll(candidate).length === 1) {
+                          css = candidate;
+                          break;
+                        }
                       }
                     }
+                    if (!css) continue;
+                    const innerTarget = 'css:' + css;
+                    const token = 'framed:' + nextChain.map((n) => JSON.stringify(n)).join(' > ') +
+                      ' > ' + innerTarget;
+                    const actionable = el.matches(
+                      'input, button, select, textarea, a, [role=button], [role=checkbox], [role=radio], [role=menuitem]'
+                    );
+                    const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
+                      : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+                    entries.push({
+                      target: token,
+                      css,
+                      tag: el.tagName.toLowerCase(),
+                      actionable,
+                      text: el === frameDoc.body ? undefined
+                        : (el.value || el.textContent || '').trim().slice(0, 80) || undefined,
+                      label: label || (el === frameDoc.body ? 'scroll surface' : undefined),
+                      scope: { frame: nextChain[0], path: nextChain.slice(1), inner: innerTarget },
+                    });
                   }
-                  if (!css) continue;
-                  const innerTarget = 'css:' + css;
-                  const token = 'framed:' + JSON.stringify(frame) + ' > ' + innerTarget;
-                  const actionable = el.matches(
-                    'input, button, select, textarea, a, [role=button], [role=checkbox], [role=radio], [role=menuitem]'
-                  );
-                  const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
-                    : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
-                  entries.push({
-                    target: token,
-                    css,
-                    tag: el.tagName.toLowerCase(),
-                    actionable,
-                    text: el === frameDoc.body ? undefined
-                      : (el.value || el.textContent || '').trim().slice(0, 80) || undefined,
-                    label: label || (el === frameDoc.body ? 'scroll surface' : undefined),
-                    scope: { frame, inner: innerTarget },
-                  });
+                  walkFrames(frameDoc, nextChain, depth + 1);
                 }
               }
+              walkFrames(document, [], 0);
               return JSON.stringify({
                 ready: document.readyState === 'complete',
                 entries,
