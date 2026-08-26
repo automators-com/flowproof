@@ -127,15 +127,23 @@ pub fn frame_miss(frame: &str, probe: &FrameProbe) -> String {
             format!("iframe '{frame}' was never found ({seen})")
         }
         FrameProbe::Ready { .. } => format!("the target was not found inside iframe '{frame}'"),
+        FrameProbe::Occluded => format!(
+            "iframe '{frame}' is covered by something else on the page, so nobody can \
+             currently read it"
+        ),
     }
 }
 
-/// What a frame probe learned. The three states are deliberately distinct so
+/// What a frame probe learned. The four states are deliberately distinct so
 /// nothing is ever conflated into a silent pass:
 ///
 /// - `Ready` - the frame was reached and read.
 /// - `NoFrame` - no iframe matched that name YET. A soft miss: the caller
 ///   keeps polling, because a frame can still be appearing.
+/// - `Occluded` - the frame exists and renders, but something else on the
+///   page (a modal, a toast) currently covers it. Also a soft miss: unlike
+///   a cross-origin wall this can resolve on its own, so the caller keeps
+///   polling rather than failing on what may be a passing overlay.
 /// - `CrossOrigin` - the frame exists but its document is walled off by the
 ///   same-origin policy. A hard stop with its own message: waiting cannot
 ///   fix it, and pretending the element is absent would be a lie.
@@ -151,6 +159,7 @@ pub enum FrameProbe {
         /// The iframes actually on the page, to name in the failure.
         available: Vec<String>,
     },
+    Occluded,
     CrossOrigin,
 }
 

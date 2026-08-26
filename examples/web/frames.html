@@ -36,5 +36,23 @@
          addressable today via an explicit "css:iframe:nth-of-type(N)",
          and now discoverable by scene() too via that same fallback. -->
     <iframe srcdoc="<p class='status'>Anonymous frame content</p>"></iframe>
+
+    <!-- Text that exists ONLY inside a same-origin frame, for a PLAIN
+         `page shows` assertion (no iframe grammar at all) to prove
+         surface_text() now walks into frames instead of reading the top
+         document alone. -->
+    <iframe title="report" srcdoc="<p>Quarterly figure 77.00</p>"></iframe>
+
+    <!-- One frame covered by an opaque sibling, one left alone: the
+         control that proves the occlusion check actually discriminates
+         rather than refusing every framed action uniformly. -->
+    <div style="position: relative; width: 22rem; height: 7rem;">
+      <iframe title="covered" srcdoc="<input id='hidden-field' value='Covered'>"></iframe>
+      <div
+        id="overlay"
+        style="position: absolute; inset: 0; background: rgba(0,0,0,0.9); z-index: 1;"
+      ></div>
+    </div>
+    <iframe title="uncovered" srcdoc="<input id='visible-field' value='Reachable'>"></iframe>
   </body>
 </html>

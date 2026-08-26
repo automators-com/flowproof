@@ -317,6 +317,23 @@ const FRAME_ACT: &str = r#"function(FRAME, PATH, CSS, ID, TEXT, OP, ARG){
     if (typeof chosen.checkVisibility === 'function' && !chosen.checkVisibility()){
       return 'frame_hidden';
     }
+    // A frame that renders but sits under a modal/toast/overlay in ITS OWN
+    // parent document is not one a user can currently reach either - the
+    // same question ordinary (unframed) actionability asks at the target's
+    // own point, asked here at the FRAME's point instead, since a framed
+    // action never dispatches a click there but is not exempt from the
+    // surface actually being reachable.
+    //
+    // Scroll first, exactly as the ordinary gate does - elementFromPoint
+    // outside the viewport returns null, and a frame below the fold must
+    // not read as occluded.
+    if (chosen.scrollIntoViewIfNeeded) { chosen.scrollIntoViewIfNeeded(); }
+    else { chosen.scrollIntoView({ block: 'center', inline: 'center' }); }
+    var frameRect = chosen.getBoundingClientRect();
+    var hit = doc.elementFromPoint(frameRect.x + frameRect.width / 2, frameRect.y + frameRect.height / 2);
+    if (!hit || (hit !== chosen && !chosen.contains(hit) && !hit.contains(chosen))){
+      return 'frame_occluded';
+    }
     var nextDoc = null;
     try { nextDoc = chosen.contentDocument; } catch (e) { nextDoc = null; }
     if (!nextDoc) { return 'cross_origin'; }
@@ -391,6 +408,21 @@ const FRAME_PROBE: &str = r#"function(FRAME, PATH, CSS, ID, TEXT){
     chosen = found.chosen;
     if (!chosen){
       return 'no_frame:' + JSON.stringify(found.available);
+    }
+    // A frame sitting under a modal/toast/overlay in its OWN parent
+    // document is not one a user can currently read - "shows"/"is visible"
+    // asserting otherwise would be exactly the false pass this project
+    // exists to catch.
+    //
+    // Scroll first, exactly as the ordinary gate does - elementFromPoint
+    // outside the viewport returns null, and a frame below the fold must
+    // not read as occluded.
+    if (chosen.scrollIntoViewIfNeeded) { chosen.scrollIntoViewIfNeeded(); }
+    else { chosen.scrollIntoView({ block: 'center', inline: 'center' }); }
+    var frameRect = chosen.getBoundingClientRect();
+    var hit = doc.elementFromPoint(frameRect.x + frameRect.width / 2, frameRect.y + frameRect.height / 2);
+    if (!hit || (hit !== chosen && !chosen.contains(hit) && !hit.contains(chosen))){
+      return 'frame_occluded';
     }
     var nextDoc = null;
     // A cross-origin frame throws OR yields null - both mean walled off.
@@ -1769,6 +1801,10 @@ impl WebAppDriver {
                 "iframe '{frame}' is not rendered, so driving it would act on a surface \
                  nobody can see"
             ))),
+            "frame_occluded" => Err(DriverError::Browser(format!(
+                "iframe '{frame}' is covered by something else on the page, so driving it \
+                 would act on a surface nobody can currently reach"
+            ))),
             "no_element" => Err(DriverError::Browser(format!(
                 "the target was not found inside iframe '{frame}'"
             ))),
@@ -2372,19 +2408,38 @@ impl AppDriver for WebAppDriver {
         // Visible text PLUS the accessible names of visible elements:
         // icon-only buttons (a command palette, an account menu) exist on
         // the page only as aria-labels, and `page shows` must see them.
+        //
+        // Same-origin iframes are walked too, at any nesting depth (#514):
+        // an assertion that only ever saw the top document could pass on
+        // stale/background text while what a user actually reads sits
+        // inside a frame. A cross-origin frame is silently OMITTED rather
+        // than failing the whole read - one uncooperative frame (an ad, a
+        // third-party widget) must not blind `page shows` to everything
+        // else on the page.
         let value = self
             .tab()?
             .evaluate(
                 r#"(() => {
-                    const text = document.body ? document.body.innerText : '';
-                    const names = [];
-                    for (const el of document.querySelectorAll('[aria-label]')) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 0 && r.height > 0) {
-                            names.push(el.getAttribute('aria-label'));
+                    function readDoc(doc, depth) {
+                        if (depth > 5 || !doc || !doc.body) return '';
+                        let text = doc.body.innerText || '';
+                        const names = [];
+                        for (const el of doc.querySelectorAll('[aria-label]')) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0) {
+                                names.push(el.getAttribute('aria-label'));
+                            }
                         }
+                        if (names.length) text += '\n' + names.join('\n');
+                        for (const frameEl of doc.querySelectorAll('iframe, frame')) {
+                            let frameDoc;
+                            try { frameDoc = frameEl.contentDocument; } catch (_) { continue; }
+                            const inner = readDoc(frameDoc, depth + 1);
+                            if (inner) text += '\n' + inner;
+                        }
+                        return text;
                     }
-                    return names.length ? text + '\n' + names.join('\n') : text;
+                    return readDoc(document, 0);
                 })()"#,
                 false,
             )
@@ -2439,7 +2494,22 @@ impl AppDriver for WebAppDriver {
         if let Some(query) = &selector.frame {
             return match self.probe_frame(query)? {
                 flowproof_driver::FrameProbe::Ready { present, .. } => Ok(present),
+                // A frame that can still appear answers `false`, same as an
+                // ordinary absent element - the pre-action gate above this
+                // call already replans or waits on a plain `false`.
                 flowproof_driver::FrameProbe::NoFrame { .. } => Ok(false),
+                // An occluded frame is NOT a plain absence: `false` here
+                // would fall into the generic "not on the current screen"
+                // refusal and lose the actual reason, exactly the silent
+                // conflation this project exists to refuse. Answering `Err`
+                // instead surfaces "covered by something else" directly,
+                // the same way a cross-origin wall already does.
+                flowproof_driver::FrameProbe::Occluded => {
+                    Err(DriverError::Browser(flowproof_driver::frame_miss(
+                        &query.frame,
+                        &flowproof_driver::FrameProbe::Occluded,
+                    )))
+                }
                 flowproof_driver::FrameProbe::CrossOrigin => Err(cross_origin(&query.frame)),
             };
         }
@@ -3234,6 +3304,9 @@ impl AppDriver for WebAppDriver {
         if status == "cross_origin" {
             return Ok(FrameProbe::CrossOrigin);
         }
+        if status == "frame_occluded" {
+            return Ok(FrameProbe::Occluded);
+        }
         if let Some(names) = status.strip_prefix("no_frame:") {
             let available: Vec<String> = serde_json::from_str(names).unwrap_or_default();
             return Ok(FrameProbe::NoFrame { available });
@@ -3272,7 +3345,8 @@ impl AppDriver for WebAppDriver {
                         query.frame
                     )))
                 }
-                probe @ flowproof_driver::FrameProbe::NoFrame { .. } => Err(DriverError::Browser(
+                probe @ (flowproof_driver::FrameProbe::NoFrame { .. }
+                | flowproof_driver::FrameProbe::Occluded) => Err(DriverError::Browser(
                     flowproof_driver::frame_miss(&query.frame, &probe),
                 )),
                 flowproof_driver::FrameProbe::CrossOrigin => Err(cross_origin(&query.frame)),

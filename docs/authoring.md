@@ -94,7 +94,12 @@ Matching is exact first, then prefix (`"Name"` finds the field labelled
 still finds the button reading `Close account`) — a case-sensitive match
 always wins. `page shows` reads visible text **plus** the accessible names
 of visible elements, so icon-only buttons that exist purely as an
-`aria-label` count. Assertion TEXT matches the same way selectors do:
+`aria-label` count. On the web driver this now includes same-origin
+iframes, at any nesting depth (#514) — text that exists only inside a
+frame is no longer invisible to a plain `page shows`, with no `iframe`
+grammar needed to reach it. A cross-origin frame is omitted rather than
+failing the read; one uncooperative frame must not blind the assertion to
+everything else on the page. Assertion TEXT matches the same way selectors do:
 exact first, then case-insensitive (`page shows Close Account` passes
 against a page reading `Close account`), and the negative forms mirror
 it — if `shows X` would pass, `does not show X` fails. Two escape
@@ -624,12 +629,13 @@ assertion fails even when an identically named element sits on the page
 outside it. That is the whole point - a scope that silently fell back to
 the main document would pass green on the wrong element.
 
-Three failures are kept distinct so none of them can read as a pass:
+Four situations are kept distinct so none of them can read as a pass:
 
 | Situation | What happens |
 |---|---|
 | the named iframe is not on the page | fails naming the frames that ARE there (`iframe 'invoice' was never found (iframes present: checkout, receipt)`) |
 | the iframe is cross-origin | the run ERRORS - the same-origin policy walls off the document, so the assertion cannot be checked, and it is never silently passed |
+| the iframe renders but something else on the page currently covers it (a modal, a toast) | a soft miss like the first row, not a hard error like the second - an overlay can pass on its own, so `Wait until …` keeps polling rather than failing on what may be transient. A `Type`/`Replace`/etc. action refuses immediately instead, the same way it refuses a `disabled` target |
 | the element is not inside the frame | an ordinary miss, reported as `inside iframe '<frame>'` so it is not confused with a page-wide miss |
 
 Limits in v1, each for a reason rather than for later:
