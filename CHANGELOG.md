@@ -27,6 +27,26 @@ together).
   syntax to hand-write. Cross-origin frames remain out of reach, same as
   before (#514 tracks that as separate, larger work).
 
+- **`page shows` now reads inside same-origin iframes too, and a covered
+  iframe is refused instead of silently acted on.** `surface_text()` read
+  only the top document — the second half of the same #514 gap: a classic
+  transaction embedded in a Fiori tile updated its own iframe's title bar
+  correctly, but its actual field text was invisible to `assert: page shows
+  X` no matter how long a flow waited, because the assertion was never
+  looking in the right place to begin with.
+
+  The web driver now walks same-origin iframes recursively when reading
+  page text (a cross-origin frame is omitted, not a failure — one
+  uncooperative frame must not blind the whole assertion). Separately, a
+  framed `Type`/`Replace`/etc. action — and a framed assertion's wait — now
+  checks whether the iframe ITSELF is covered by something else on the page
+  (a modal, a toast), the same actionability question already asked of
+  ordinary targets. A framed action refuses immediately on an occluded
+  frame, the same way it already refuses a disabled one; a framed
+  assertion's `Wait until …` keeps polling instead, since an overlay can
+  pass on its own and a cross-origin-style hard stop would be the wrong
+  call for something transient.
+
 - **`flowproof record` shows the browser by default; `--headed`/`--headless`
   make the choice a flag, not tribal knowledge.** Watching a `web` recording
   has been possible since `FLOWPROOF_HEADED` shipped, but only if you already

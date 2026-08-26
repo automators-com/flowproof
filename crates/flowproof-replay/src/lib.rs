@@ -558,6 +558,10 @@ fn check_framed_expectation<D: AppDriver>(
     let mut fault: Option<flowproof_driver::DriverError> = None;
     let mut last: Option<String> = None;
     let mut missing_frame: Option<Vec<String>> = None;
+    // Whether the MOST RECENT poll found the frame occluded - tracked
+    // separately from `missing_frame` so a deadline reached mid-overlay
+    // reports THAT, not a misleading "never appeared"/"still there".
+    let mut occluded = false;
     let mut read_ok = false;
     loop {
         match tolerate(driver.probe_frame(query), &mut fault)? {
@@ -572,10 +576,18 @@ fn check_framed_expectation<D: AppDriver>(
             Some(FrameProbe::NoFrame { available }) => {
                 read_ok = true;
                 missing_frame = Some(available);
+                occluded = false;
+            }
+            // Unlike a cross-origin wall, an overlay can pass on its own -
+            // keep polling rather than failing on what may be transient.
+            Some(FrameProbe::Occluded) => {
+                read_ok = true;
+                occluded = true;
             }
             Some(FrameProbe::Ready { present, text }) => {
                 read_ok = true;
                 missing_frame = None;
+                occluded = false;
                 if let Some(want) = wanted_present {
                     if present == want {
                         return Ok((Ok(()), Some(rung)));
@@ -601,6 +613,15 @@ fn check_framed_expectation<D: AppDriver>(
         if Instant::now() >= deadline {
             if !read_ok {
                 return Err(exhausted(fault));
+            }
+            if occluded {
+                return Ok((
+                    Err(flowproof_driver::frame_miss(
+                        &query.frame,
+                        &FrameProbe::Occluded,
+                    )),
+                    Some(rung),
+                ));
             }
             if let Some(available) = missing_frame {
                 return Ok((

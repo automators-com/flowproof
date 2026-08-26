@@ -46,6 +46,37 @@ steps:
   - assert: the "css:.status" in the iframe "invoice" shows anything
 "#;
 
+/// No iframe grammar at all: this text exists ONLY inside the "report"
+/// frame, so a plain `page shows` can only pass if surface_text() now
+/// walks into frames instead of reading the top document alone.
+const PLAIN_TEXT_INSIDE_FRAME_SPEC: &str = r#"
+name: plain page shows reads inside a frame
+app: web
+url: __URL__
+steps:
+  - assert: page shows Quarterly figure 77.00
+"#;
+
+/// The "covered" frame sits under an opaque sibling; "uncovered" does not.
+/// Same value action, same kind of target, only the occlusion differs -
+/// the control that proves the check discriminates rather than refusing
+/// every framed action alike.
+const OCCLUDED_FRAME_SPEC: &str = r#"
+name: occluded iframe refuses the action
+app: web
+url: __URL__
+steps:
+  - Type Attempt into the "css:#hidden-field" in the iframe "covered"
+"#;
+
+const UNCOVERED_FRAME_SPEC: &str = r#"
+name: uncovered iframe accepts the action
+app: web
+url: __URL__
+steps:
+  - Type Reachable into the "css:#visible-field" in the iframe "uncovered"
+"#;
+
 fn skip() -> bool {
     if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
         eprintln!("skipping iframe E2E: set FLOWPROOF_E2E=1 to run it");
@@ -258,6 +289,65 @@ fn a_missing_frame_names_the_frames_that_are_there() {
         message.contains("checkout") || message.contains("receipt"),
         "and names the frames that ARE there: {message}"
     );
+    drop(driver);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The direct fix for the real repro that opened #514: a classic-transaction
+/// iframe's content was invisible to `page shows` no matter how long a flow
+/// waited, because surface_text() never looked past the top document at all.
+#[test]
+fn a_plain_page_shows_reads_inside_a_same_origin_frame() {
+    if skip() {
+        return;
+    }
+    let (dir, page) = write_page("plain-text");
+    let trace = dir.join("plain-text.trace.jsonl");
+    let spec = spec_for(PLAIN_TEXT_INSIDE_FRAME_SPEC, &page);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let summary = flowproof_agent::record(&spec, &mut driver, &trace).expect(
+        "a plain 'page shows' must now see text that exists only inside a same-origin frame",
+    );
+    assert_eq!(summary.steps, 1);
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _) = flowproof_replay::run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "must replay too: {report:#?}");
+    drop(driver);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Same shape of target, same value action, only the occlusion differs -
+/// the control that proves the new check discriminates rather than
+/// refusing every framed action alike.
+#[test]
+fn an_occluded_frame_is_refused_and_the_uncovered_one_is_not() {
+    if skip() {
+        return;
+    }
+    let (dir, page) = write_page("occlusion");
+
+    let covered_trace = dir.join("covered.trace.jsonl");
+    let covered_spec = spec_for(OCCLUDED_FRAME_SPEC, &page);
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let err = flowproof_agent::record(&covered_spec, &mut driver, &covered_trace)
+        .expect_err("acting on a covered frame must be refused");
+    let message = err.to_string();
+    assert!(
+        message.contains("'covered'") && message.contains("covered by something else"),
+        "the failure must name the frame and say it is covered, not something vaguer: {message}"
+    );
+    drop(driver);
+
+    let uncovered_trace = dir.join("uncovered.trace.jsonl");
+    let uncovered_spec = spec_for(UNCOVERED_FRAME_SPEC, &page);
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&uncovered_spec, &mut driver, &uncovered_trace)
+        .expect("the same action on an UNCOVERED frame must succeed");
     drop(driver);
 
     std::fs::remove_dir_all(&dir).ok();
