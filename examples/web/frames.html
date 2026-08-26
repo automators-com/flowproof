@@ -22,9 +22,19 @@
         <p id='total' class='total'>Total 42.00</p>
         <p class='status'>Card accepted</p>
         <input name='coupon' value='SAVE20'>
+        <!-- A frame nested inside a frame: same-origin two levels deep,
+             the shape #514's fix resolves via FrameQuery.path rather than
+             the (unchanged) single-level authoring grammar. -->
+        <iframe title='nested' srcdoc='<p id=&quot;deep&quot;>Deep 99.00</p>'></iframe>
       "
     ></iframe>
 
     <iframe title="receipt" srcdoc="<p class='status'>Receipt pending</p>"></iframe>
+
+    <!-- No title/name/id/aria-label at all: scene() used to skip this
+         entirely (#514). It still has a real, same-origin document -
+         addressable today via an explicit "css:iframe:nth-of-type(N)",
+         and now discoverable by scene() too via that same fallback. -->
+    <iframe srcdoc="<p class='status'>Anonymous frame content</p>"></iframe>
   </body>
 </html>

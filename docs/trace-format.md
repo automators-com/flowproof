@@ -310,6 +310,25 @@ these fields existed) is byte-identical:
   scope exists to exclude. Framed rungs are recorded for assertions only
   (see [authoring.md](authoring.md#iframes-same-origin-assertions)).
 
+  An optional `frame_path` array names further same-origin frames to
+  descend through, past `frame`, outer-to-inner:
+
+  ```json
+  {"kind":"framed","frame":"checkout","frame_path":["nested"],"inner_id":"deep"}
+  ```
+
+  Absent (or empty) in every trace written before nested frames existed,
+  which decodes to the single-level resolution unchanged. `frame` and each
+  `frame_path` entry name themselves the same way — a human anchor, or an
+  explicit `css:…` — and an unlabelled iframe (no
+  `title`/`name`/`id`/`aria-label`) is named this way too: the live scene
+  falls back to a positional `css:` identity scoped to that iframe's own
+  parent, rather than dropping it from discovery entirely. `frame_path`
+  is currently reachable only through scene-driven discovery (an LLM
+  authoring reply, or the deterministic click-anchor resolver matching an
+  already-recorded selector) — the WRITTEN grammar's frame scope stays
+  single-level, unchanged (see authoring.md's "one frame, no combining").
+
   **Replay semantics**: the engine walks rungs in order and acts on the
   first one that resolves to a live element. Tiers 1–3 execute today
   (`text_anchor` currently via accessible-name matching; OCR arrives with

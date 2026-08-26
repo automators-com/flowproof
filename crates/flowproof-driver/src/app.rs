@@ -93,9 +93,16 @@ pub struct ScopeQuery {
 /// any target names itself: a human anchor matched against the iframe's
 /// title/name/id/aria-label, or an explicit `css:<selector>`. The inner
 /// keys are the ordinary target, resolved inside the frame's own document.
+///
+/// `path` names further frames to descend through, outer-to-inner, past
+/// `frame` — empty for every trace written before nested frames existed,
+/// which keeps today's single-level resolution unchanged. Each entry is a
+/// frame name the same way `frame` is: a human anchor or `css:<selector>`,
+/// resolved against the PREVIOUS frame's own document, never the top page.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameQuery {
     pub frame: String,
+    pub path: Vec<String>,
     pub inner_css: Option<String>,
     pub inner_id: Option<String>,
     pub inner_text: Option<String>,

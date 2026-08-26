@@ -8,6 +8,25 @@ together).
 
 ### Added
 
+- **Same-origin iframes are now discovered several levels deep, and an
+  unlabelled one is no longer invisible.** Recording a real SAP Fiori flow
+  found the scene walk stopping cold at the first iframe boundary: it would
+  match one level of nesting only, and only if that iframe carried a
+  `title`/`name`/`id`/`aria-label` — an iframe with none of those, or a
+  target sitting inside a frame nested inside another frame, was silently
+  dropped from both `Click`/`Type` resolution and `assert: page shows X`,
+  with no error naming what happened. Nothing was lying about the result -
+  the step just never saw the element to begin with.
+
+  `FrameQuery` now carries a `path` past its first frame, `scene()`'s walk
+  recurses instead of stopping at one level, and an iframe with no
+  identifying attribute falls back to a positional `css:` selector scoped to
+  its own parent document, rather than being skipped. The written grammar's
+  frame scope stays single-level by design (see authoring.md's "one frame,
+  no combining") - this is scene-driven discovery reaching further, not new
+  syntax to hand-write. Cross-origin frames remain out of reach, same as
+  before (#514 tracks that as separate, larger work).
+
 - **`flowproof record` shows the browser by default; `--headed`/`--headless`
   make the choice a flag, not tribal knowledge.** Watching a `web` recording
   has been possible since `FLOWPROOF_HEADED` shipped, but only if you already

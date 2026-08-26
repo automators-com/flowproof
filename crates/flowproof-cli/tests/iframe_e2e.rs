@@ -131,6 +131,112 @@ fn a_frame_scope_does_not_leak_to_the_other_frame() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The written grammar stays single-level (docs/authoring.md's "one frame,
+/// no combining"), so a nested path can only be exercised by constructing
+/// the query directly, the way scene-driven discovery does internally.
+/// This drives the actual driver method the fix touched, not a synthetic
+/// unit — the same JS that ships resolves the real grandchild.
+#[test]
+fn a_nested_frame_path_resolves_the_grandchild() {
+    if skip() {
+        return;
+    }
+    let (dir, page) = write_page("nested");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    driver
+        .launch(
+            &format!("file://{}", page.display()),
+            "",
+            std::time::Duration::from_secs(10),
+        )
+        .expect("page loads");
+
+    let query = flowproof_driver::FrameQuery {
+        frame: "checkout".to_string(),
+        path: vec!["nested".to_string()],
+        inner_id: Some("deep".to_string()),
+        ..Default::default()
+    };
+    let probe = driver.probe_frame(&query).expect("probe runs");
+    assert_eq!(
+        probe,
+        flowproof_driver::FrameProbe::Ready {
+            present: true,
+            text: "Deep 99.00".to_string(),
+        },
+        "a path past the first frame must still reach the grandchild's own document"
+    );
+
+    // A wrong hop anywhere in the chain is a clean miss, naming what IS at
+    // that level - never a silent fall-through to the outer frame or page.
+    let wrong = flowproof_driver::FrameQuery {
+        frame: "checkout".to_string(),
+        path: vec!["not-a-real-frame".to_string()],
+        inner_id: Some("deep".to_string()),
+        ..Default::default()
+    };
+    let miss = driver.probe_frame(&wrong).expect("probe runs");
+    assert!(
+        matches!(miss, flowproof_driver::FrameProbe::NoFrame { .. }),
+        "a wrong nested hop must report a clean miss, not a pass: {miss:?}"
+    );
+
+    drop(driver);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An iframe with no title/name/id/aria-label used to be dropped from the
+/// scene entirely (#514) - it still has a real, same-origin document, so it
+/// must be discoverable, identified by a positional `css:` fallback rather
+/// than silently skipped.
+#[test]
+fn scene_discovers_an_anonymous_iframe() {
+    if skip() {
+        return;
+    }
+    let (dir, page) = write_page("anonymous");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    driver
+        .launch(
+            &format!("file://{}", page.display()),
+            "",
+            std::time::Duration::from_secs(10),
+        )
+        .expect("page loads");
+
+    let scene = driver
+        .scene()
+        .expect("scene runs")
+        .expect("scene returns entries");
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(&scene).expect("scene is valid JSON");
+    // scene() only ever surfaces interactive elements plus each frame's
+    // `body` (a bare, id-less `<p>` isn't captured for ANY frame, named or
+    // anonymous — that is what assertions read, not the grounding scene).
+    // So the signal that the unlabelled iframe was discovered at all is its
+    // own `body` entry existing with a synthetic `css:` frame identity,
+    // where before this fix it would have been dropped entirely.
+    let anonymous = entries.iter().find(|entry| {
+        entry["scope"]["frame"]
+            .as_str()
+            .is_some_and(|frame| frame.starts_with("css:"))
+    });
+    let entry = anonymous
+        .unwrap_or_else(|| panic!("an unlabelled iframe must still appear in the scene: {scene}"));
+    let frame_name = entry["scope"]["frame"]
+        .as_str()
+        .expect("the discovered entry names its own frame");
+    assert!(
+        frame_name.starts_with("css:iframe"),
+        "the fallback identity should be a positional css: path, got '{frame_name}'"
+    );
+
+    drop(driver);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_missing_frame_names_the_frames_that_are_there() {
     if skip() {

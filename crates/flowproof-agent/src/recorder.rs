@@ -391,11 +391,30 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
             let mut payload = serde_json::Map::new();
             payload.insert("kind".into(), "framed".into());
             payload.insert("frame".into(), frame.as_str().into());
-            match inner.as_ref() {
+            // The written grammar only ever builds Css/AutomationId/Text as
+            // `inner` (nesting is a parse error, by design — see
+            // docs/authoring.md's "one frame, no combining"). Scene-driven
+            // discovery of a target several frames deep is a SEPARATE path
+            // (author.rs::target_from_scene) and can build a genuinely
+            // nested Target::Framed here; flatten it into `frame_path`
+            // (outer-to-inner, past `frame`) instead of dropping it.
+            let mut leaf: &Target = inner.as_ref();
+            let mut path = Vec::new();
+            while let Target::Framed {
+                frame: next_frame,
+                inner: next_inner,
+            } = leaf
+            {
+                path.push(next_frame.as_str());
+                leaf = next_inner.as_ref();
+            }
+            if !path.is_empty() {
+                payload.insert("frame_path".into(), serde_json::json!(path));
+            }
+            match leaf {
                 Target::Css(css) => payload.insert("inner_css".into(), css.as_str().into()),
                 Target::AutomationId(id) => payload.insert("inner_id".into(), id.as_str().into()),
                 Target::Text(text) => payload.insert("inner_text".into(), text.as_str().into()),
-                // The parser builds only those three inners for a frame.
                 _ => None,
             };
             vec![Selector {
@@ -1095,15 +1114,38 @@ fn target_selector(target: &Target) -> Option<UiaSelector> {
         Target::Nth(n, inner) => target_selector(inner).map(|s| s.with_nth(Some(*n))),
         Target::Framed { frame, inner } => {
             let inner_sel = target_selector(inner)?;
-            Some(UiaSelector {
-                frame: Some(flowproof_driver::FrameQuery {
-                    frame: frame.clone(),
-                    inner_css: inner_sel.css.clone(),
-                    inner_id: inner_sel.automation_id.clone(),
-                    inner_text: inner_sel.name.clone(),
-                }),
-                ..UiaSelector::default()
-            })
+            // A framed target whose OWN inner is itself framed (nested
+            // iframes, discovered via the live scene rather than written by
+            // hand — see docs/authoring.md's "one frame, no combining" for
+            // the authoring-grammar side, which this does not touch) is
+            // flattened into a single FrameQuery with a path, rather than
+            // dropped: the inner selector's own `frame` becomes the next
+            // hop, and its leaf `inner_*` keys become the final target.
+            if let Some(inner_frame) = inner_sel.frame {
+                let mut path = vec![inner_frame.frame];
+                path.extend(inner_frame.path);
+                Some(UiaSelector {
+                    frame: Some(flowproof_driver::FrameQuery {
+                        frame: frame.clone(),
+                        path,
+                        inner_css: inner_frame.inner_css,
+                        inner_id: inner_frame.inner_id,
+                        inner_text: inner_frame.inner_text,
+                    }),
+                    ..UiaSelector::default()
+                })
+            } else {
+                Some(UiaSelector {
+                    frame: Some(flowproof_driver::FrameQuery {
+                        frame: frame.clone(),
+                        path: Vec::new(),
+                        inner_css: inner_sel.css.clone(),
+                        inner_id: inner_sel.automation_id.clone(),
+                        inner_text: inner_sel.name.clone(),
+                    }),
+                    ..UiaSelector::default()
+                })
+            }
         }
         Target::Cell {
             column,

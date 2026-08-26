@@ -152,6 +152,10 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             frame: (get("kind").as_deref() == Some("framed")).then(|| {
                 flowproof_driver::FrameQuery {
                     frame: get("frame").unwrap_or_default(),
+                    // Absent in every trace written before nested frames
+                    // existed, which decodes to today's single-level
+                    // resolution unchanged.
+                    path: get_list("frame_path"),
                     inner_css: get("inner_css"),
                     inner_id: get("inner_id"),
                     inner_text: get("inner_text"),

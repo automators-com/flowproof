@@ -666,7 +666,16 @@ Limits in v1, each for a reason rather than for later:
   the CDP per-frame execution-context path is not deterministic enough to
   ship behind a grammar that looks identical.
 - **One frame, no combining.** A frame scope cannot be nested inside a
-  container or cell scope yet; one context per target.
+  container or cell scope yet; one context per target. Writing a frame
+  nested inside another frame (`the "X" in the iframe "A" in the iframe
+  "B"`) is likewise not accepted syntax. This is a limit on what you can
+  WRITE, not on what replay can resolve: a target the live scene discovers
+  several same-origin frames deep — the LLM authoring path, or the
+  deterministic click-anchor resolver matching an already-recorded
+  selector — is recorded and replayed with the full chain regardless. An
+  unlabelled iframe (no `title`/`name`/`id`/`aria-label`) is discovered the
+  same way, falling back to a positional `css:` identity rather than being
+  silently skipped.
 - An ordinal cannot address a frame (`the 2nd iframe`): name it.
 ### Cookie controls (web, security)
 
