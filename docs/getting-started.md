@@ -451,9 +451,11 @@ maintainer-run, `FLOWPROOF_E2E_SAP=1`).
 ## Web flows (any OS)
 
 The same spine drives browsers through the `web` adapter — this works on
-Linux and macOS too, since it runs on Chromium (headless by default; see
-[`FLOWPROOF_HEADED`](#watching-the-browser-flowproof_headed)) rather than
-Windows UIA. Specs add a `url:` and use the web vocabulary
+Linux and macOS too, since it runs on Chromium rather than Windows UIA.
+`record` shows the browser by default so you can watch it work; `run`
+(replay) stays headless, which is right for CI. See
+[watching the browser](#watching-the-browser-headed-and-headless) to change
+either. Specs add a `url:` and use the web vocabulary
 ([`examples/web.flow.yaml`](../examples/web.flow.yaml)):
 
 ```yaml
@@ -474,28 +476,48 @@ Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web
 live-app suite (`cargo test -p flowproof-cli --test web_e2e`,
 `FLOWPROOF_E2E=1`) runs in CI on ubuntu.
 
-### Watching the browser: `FLOWPROOF_HEADED`
+### Watching the browser: headed and headless
 
-Web flows run headless by default, which is right for CI and unhelpful the
-first time a recording does not do what you expected. Set `FLOWPROOF_HEADED`
-to see the window:
+`flowproof record` shows the browser by default — recording is the one
+human-in-the-loop step, and watching a misread selector fail live is far
+faster than debugging it blind against a `debug/dom.html` dump. `flowproof
+run` (replay) stays headless by default, because it is meant to run
+unattended in CI, often on a runner with no display at all.
+
+Override either with a flag, for one invocation:
 
 ```bash
-FLOWPROOF_HEADED=1 flowproof record web.flow.yaml
+flowproof record web.flow.yaml --headless   # e.g. a scripted/CI recording pass
+flowproof run web.flow.yaml --headed        # watch a replay while debugging it
+```
+
+`--headed` and `--headless` are mutually exclusive and take priority over
+everything else, including the environment variable below.
+
+**If you script `flowproof record`** — in CI, a container, or any pipeline
+that generates cassettes without a person watching — pass `--headless`
+explicitly. Recording now opens a window by default, and a host with no
+display cannot give it one (see the port-timeout note further down).
+
+The same choice is also available as `FLOWPROOF_HEADED`, which both commands
+still honor when no flag is passed:
+
+```bash
+FLOWPROOF_HEADED=1 flowproof run web.flow.yaml
 ```
 
 ```powershell
-$env:FLOWPROOF_HEADED = "1"; flowproof record web.flow.yaml
+$env:FLOWPROOF_HEADED = "1"; flowproof run web.flow.yaml
 ```
 
 It is presence-based, like `FLOWPROOF_NO_SHARED_BROWSER` — `FLOWPROOF_HEADED=0`
 still shows the window, because a variable you bothered to set is one you meant.
-Unset it to go back to headless.
+Unset it, or pass `--headless`, to go back to headless.
 
-Deliberately an environment variable and not a spec field: watching is a
-property of the run you are supervising, not of the flow. A committed
-`headed: true` would follow the flow into CI, where nobody is watching and
-there may be no display at all.
+Deliberately an environment variable (and now flags) rather than a spec
+field: watching is a property of the run you are supervising, not of the
+flow. A committed `headed: true` would follow the flow into CI, where nobody
+is watching and there may be no display at all.
 
 The visible browser belongs to that flow alone. Flowproof maximizes it and
 brings it to the foreground before navigation starts, then closes the process
@@ -548,8 +570,10 @@ note: FLOWPROOF_HEADED is set, so Chromium was asked for a VISIBLE window. ...
 ```
 
 The first line is the launcher's own; the note is flowproof naming the cause,
-because nothing in "no available ports" suggests a missing display. Unset
-`FLOWPROOF_HEADED` and it goes back to working.
+because nothing in "no available ports" suggests a missing display. This
+happens with `FLOWPROOF_HEADED`, with `--headed`, and with a plain `flowproof
+record` on a display-less host — recording is headed by default. Pass
+`--headless`, or unset `FLOWPROOF_HEADED`, and it goes back to working.
 
 ### The web action vocabulary
 

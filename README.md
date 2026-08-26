@@ -239,9 +239,10 @@ against the live app and proposes a reviewable trace diff with
 before/after frames — applied only with explicit `--apply`.
 
 **Reach** — adapters behind one spec format:
-- `app: web` — Chromium via DevTools protocol, cross-platform; headless by
-  default, `FLOWPROOF_HEADED=1` to watch it; `--keep-open` leaves a single
-  flow visible for inspection until its window is closed
+- `app: web` — Chromium via DevTools protocol, cross-platform; `record`
+  shows the browser by default, `run` (replay) stays headless — override
+  either with `--headed`/`--headless` or `FLOWPROOF_HEADED`; `--keep-open`
+  leaves a single flow visible for inspection until its window is closed
 - Windows desktop via UI Automation (`calc`, `notepad`)
 - `app: sap` — SAP GUI Scripting over COM: native scripting ids,
   transaction-code navigation (`Go to /nVA01`), SAP virtual keys, SAP Logon

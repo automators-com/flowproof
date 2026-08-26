@@ -34,6 +34,43 @@ fn with_keep_browser_open<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
     result
 }
 
+/// Resolve whether this invocation should show the browser: an explicit
+/// `--headed`/`--headless` flag wins outright, then an ambient
+/// `FLOWPROOF_HEADED` someone already set in their shell, then the command's
+/// own default (`record` watches by default; `run` stays headless — see
+/// `with_headed_mode`).
+fn resolve_headed(headed: bool, headless: bool, default_headed: bool) -> bool {
+    if headed {
+        true
+    } else if headless {
+        false
+    } else {
+        std::env::var_os("FLOWPROOF_HEADED").is_some() || default_headed
+    }
+}
+
+/// Scope `FLOWPROOF_HEADED` — the same variable `flowproof-adapters` already
+/// reads — to one CLI invocation, so the resolved headed/headless decision
+/// reaches the adapter without it needing to know which command is running.
+/// Unlike `with_keep_browser_open`, this must be able to force the variable
+/// *off* as well as on: an explicit `--headless` has to win even when
+/// `FLOWPROOF_HEADED` is already set in the caller's environment.
+fn with_headed_mode<T>(headed: bool, action: impl FnOnce() -> T) -> T {
+    const KEY: &str = "FLOWPROOF_HEADED";
+    let previous = std::env::var_os(KEY);
+    if headed {
+        std::env::set_var(KEY, "1");
+    } else {
+        std::env::remove_var(KEY);
+    }
+    let result = action();
+    match previous {
+        Some(value) => std::env::set_var(KEY, value),
+        None => std::env::remove_var(KEY),
+    }
+    result
+}
+
 #[derive(Parser)]
 #[command(name = "flowproof", version, about)]
 pub struct Cli {
@@ -126,6 +163,14 @@ enum Command {
         /// flow window to let Flowproof exit.
         #[arg(long, conflicts_with = "json")]
         keep_open: bool,
+        /// Show Chromium during recording. Already the default; this makes
+        /// it explicit and overrides FLOWPROOF_HEADED if unset elsewhere.
+        #[arg(long, conflicts_with = "headless")]
+        headed: bool,
+        /// Record headless (hide Chromium), overriding the default and any
+        /// ambient FLOWPROOF_HEADED for this run.
+        #[arg(long, conflicts_with_all = ["headed", "keep_open"])]
+        headless: bool,
         /// Visual capture density: full, low, or off.
         #[arg(long, value_enum, default_value_t)]
         recording_detail: RecordingDetailArg,
@@ -169,6 +214,14 @@ enum Command {
         /// flow window to let Flowproof exit. Not available for suites.
         #[arg(long, conflicts_with = "json")]
         keep_open: bool,
+        /// Show Chromium during this run, overriding the (headless) default
+        /// and any ambient FLOWPROOF_HEADED.
+        #[arg(long, conflicts_with = "headless")]
+        headed: bool,
+        /// Force headless (hide Chromium). Already the default; this makes
+        /// it explicit and overrides an ambient FLOWPROOF_HEADED.
+        #[arg(long, conflicts_with_all = ["headed", "keep_open"])]
+        headless: bool,
         /// Visual capture density: full, low, or off.
         #[arg(long, value_enum, default_value_t)]
         recording_detail: RecordingDetailArg,
@@ -2308,19 +2361,23 @@ where
             reuse,
             verify,
             keep_open,
+            headed,
+            headless,
             recording_detail,
             video,
             highlight_cursor,
-        } => with_keep_browser_open(keep_open, || {
-            cmd_record(
-                &spec,
-                out,
-                json,
-                author,
-                reuse,
-                verify,
-                recording_options(recording_detail, video, highlight_cursor),
-            )
+        } => with_headed_mode(resolve_headed(headed, headless, true), || {
+            with_keep_browser_open(keep_open, || {
+                cmd_record(
+                    &spec,
+                    out,
+                    json,
+                    author,
+                    reuse,
+                    verify,
+                    recording_options(recording_detail, video, highlight_cursor),
+                )
+            })
         }),
         Command::Run {
             spec,
@@ -2331,6 +2388,8 @@ where
             author,
             strict,
             keep_open,
+            headed,
+            headless,
             recording_detail,
             video,
             highlight_cursor,
@@ -2348,16 +2407,18 @@ where
                 } else {
                     MissingTrace::Skip
                 };
-                with_keep_browser_open(keep_open, || {
-                    cmd_run(
-                        &spec,
-                        trace,
-                        json,
-                        retries,
-                        missing,
-                        author,
-                        recording_options(recording_detail, video, highlight_cursor),
-                    )
+                with_headed_mode(resolve_headed(headed, headless, false), || {
+                    with_keep_browser_open(keep_open, || {
+                        cmd_run(
+                            &spec,
+                            trace,
+                            json,
+                            retries,
+                            missing,
+                            author,
+                            recording_options(recording_detail, video, highlight_cursor),
+                        )
+                    })
                 })
             }
         }
@@ -2792,6 +2853,120 @@ mod tests {
             EXIT_ERROR,
             "inspection is one final attempt, not every retry"
         );
+    }
+
+    #[test]
+    fn record_defaults_headed_run_defaults_headless() {
+        const KEY: &str = "FLOWPROOF_HEADED";
+        let restore = std::env::var_os(KEY);
+        std::env::remove_var(KEY);
+
+        assert!(
+            resolve_headed(false, false, true),
+            "record's default is headed"
+        );
+        assert!(
+            !resolve_headed(false, false, false),
+            "run's default stays headless"
+        );
+
+        match restore {
+            Some(value) => std::env::set_var(KEY, value),
+            None => std::env::remove_var(KEY),
+        }
+    }
+
+    #[test]
+    fn explicit_flag_overrides_ambient_env_and_default() {
+        const KEY: &str = "FLOWPROOF_HEADED";
+        let restore = std::env::var_os(KEY);
+        std::env::set_var(KEY, "1");
+
+        assert!(
+            !resolve_headed(false, true, true),
+            "--headless must win over an ambient FLOWPROOF_HEADED and a headed default"
+        );
+        assert!(
+            resolve_headed(true, false, false),
+            "--headed must win even against run's headless default"
+        );
+
+        match restore {
+            Some(value) => std::env::set_var(KEY, value),
+            None => std::env::remove_var(KEY),
+        }
+    }
+
+    #[test]
+    fn headed_and_headless_flags_are_mutually_exclusive() {
+        assert!(
+            Cli::try_parse_from([
+                "flowproof",
+                "record",
+                "insurance.flow.yaml",
+                "--headed",
+                "--headless",
+            ])
+            .is_err(),
+            "record must reject contradictory visibility flags"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "flowproof",
+                "run",
+                "insurance.flow.yaml",
+                "--headed",
+                "--headless",
+            ])
+            .is_err(),
+            "run must reject contradictory visibility flags"
+        );
+    }
+
+    #[test]
+    fn headless_conflicts_with_keep_open() {
+        assert!(
+            Cli::try_parse_from([
+                "flowproof",
+                "run",
+                "insurance.flow.yaml",
+                "--headless",
+                "--keep-open",
+            ])
+            .is_err(),
+            "keep-open implies a visible browser, so --headless contradicts it"
+        );
+    }
+
+    #[test]
+    fn headed_mode_environment_is_scoped_to_the_command() {
+        const KEY: &str = "FLOWPROOF_HEADED";
+        let restore = std::env::var_os(KEY);
+
+        std::env::remove_var(KEY);
+        let visible_inside = with_headed_mode(true, || std::env::var_os(KEY).is_some());
+        assert!(visible_inside, "the adapter sees the scoped flag");
+        assert!(
+            std::env::var_os(KEY).is_none(),
+            "the flag is restored after"
+        );
+
+        std::env::set_var(KEY, "1");
+        let hidden_inside = with_headed_mode(false, || std::env::var_os(KEY).is_some());
+        assert!(
+            !hidden_inside,
+            "an explicit headless resolution must force-remove an ambient flag"
+        );
+        assert_eq!(
+            std::env::var_os(KEY).as_deref(),
+            Some(std::ffi::OsStr::new("1")),
+            "the prior ambient value is restored after"
+        );
+
+        match restore {
+            Some(value) => std::env::set_var(KEY, value),
+            None => std::env::remove_var(KEY),
+        }
     }
 
     #[test]
