@@ -38,17 +38,19 @@ curl -sf $CURL_INSECURE_FLAG -u "${SAP_USER}:${SAP_PASSWORD}" \
 import json, sys
 
 rows = json.load(sys.stdin)["d"]["results"]
-usable = [r for r in rows if r.get("Material") and r.get("Supplier") and r.get("NetPriceAmount")]
+usable = [r for r in rows if r.get("Material") and r.get("Supplier") and r.get("NetPriceAmount") and r.get("PurchasingOrganization")]
 if not usable:
-    sys.exit("no usable info record found for Plant=" + repr(sys.argv[1]) + " (got " + str(len(rows)) + " rows, none with Material+Supplier+NetPriceAmount all set)")
+    sys.exit("no usable info record found for Plant=" + repr(sys.argv[1]) + " (got " + str(len(rows)) + " rows, none with Material+Supplier+NetPriceAmount+PurchasingOrganization all set)")
 
 r = usable[0]
 material = r["Material"]
 supplier = r["Supplier"]
 plant = r["Plant"]
 net_price = r["NetPriceAmount"]
+purchasing_org = r["PurchasingOrganization"]
 print("MATERIAL=" + material)
 print("SUPPLIER=" + supplier)
 print("PLANT=" + plant)
 print("NET_PRICE=" + str(net_price))
+print("PURCHASING_ORG=" + purchasing_org)
 ' "$PLANT_FILTER"
