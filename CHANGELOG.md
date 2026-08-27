@@ -8,6 +8,51 @@ together).
 
 ### Added
 
+- **A same-origin framed `Click` and `Press … button` now dispatch a real
+  trusted click, not a refusal.** A classic SAP GUI for HTML screen embeds
+  its whole UI in a same-origin iframe, and every tab strip, button, and
+  field on it lived behind that frame boundary. Clicking one was refused
+  outright: a pointer action inside a frame could only ever reach it as an
+  untrusted synthetic event, which an application checking `isTrusted` is
+  free to ignore while the step still reports success - a real
+  release-without-effect false green, so the refusal was the honest answer
+  at the time. It no longer has to be. The driver now computes the target's
+  page-absolute point (the frame's own offset in the parent document, plus
+  the element's offset inside the frame) and dispatches the same
+  `Input.dispatchMouseEvent` sequence the top-level document's click
+  already used - the click is real, `isTrusted` is true, and an application
+  driven this way cannot tell the difference from a person. `Hover`,
+  `Double-click`, `Right-click`, and `Upload` inside a frame stay refused;
+  none has this point-computation wired up yet.
+
+- **A framed `Type` into a real `<input>`/`<textarea>` now types for real.**
+  Framed value-writes previously set `.value` through the native setter and
+  fired synthetic `input`/`change` events - correct for anything listening
+  to those events, and wrong for anything that is not. A live SAP GUI for
+  HTML screen tracks its own field state off real keyboard events, the same
+  way its desktop ancestor always did, and never saw a synthetic write at
+  all: the field stayed visibly empty no matter what the trace said it
+  typed. The driver now clicks the field for real, selects any existing
+  value, and types the real keystrokes CDP would generate for an actual
+  person - the same trusted path the top-level document's `Type` already
+  used. Anything framed that is not a native input (a contenteditable, a
+  custom widget) keeps the synthetic write, since there is no native
+  keystroke target to land on.
+
+- **A framed element is now found by the label its OWN form control
+  resolves to, not by matching arbitrary text.** `the "Material" in the
+  iframe "X"` used to search the frame for any element whose raw
+  `textContent` read exactly `"Material"` - which, on a screen where the
+  visible label and the input it labels are separate DOM nodes (common
+  outside hand-rolled markup), matched the label itself, never the field.
+  Typing then landed on a `<div>`, silently no-op'd through the
+  now-corrected trusted-keystroke path, and the search it was meant to fill
+  in ran empty. Both the write and read paths now check a form control's
+  native `.labels` association first - the same relationship `scene()`
+  already uses to report a field's label back to authoring - before falling
+  back to the old plain-text search, so a label naming a real field finds
+  that field.
+
 - **`flowproof record` shows the browser by default; `--headed`/`--headless`
   make the choice a flag, not tribal knowledge.** Watching a `web` recording
   has been possible since `FLOWPROOF_HEADED` shipped, but only if you already
