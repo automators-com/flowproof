@@ -6,6 +6,8 @@ together).
 
 ## Unreleased
 
+## 0.20.0
+
 ### Added
 
 - **A same-origin framed `Click` and `Press … button` now dispatch a real
