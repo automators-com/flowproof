@@ -309,8 +309,25 @@ const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
   if (CSS) { try { el = doc.querySelector(CSS); } catch (e) { el = null; } }
   else if (ID) { el = doc.getElementById(ID); }
   else if (TEXT) {
-    var all = Array.prototype.slice.call(doc.querySelectorAll('*'));
-    el = all.filter(function(n){ return (n.textContent||'').trim() === TEXT; })[0] || null;
+    // A form control's VISIBLE label is rarely its own textContent - it is
+    // a sibling <label for=id> (or an ancestor <label>), which scene()
+    // already resolves via the native `.labels` association when it
+    // reports this same field's label back to authoring. Matching by raw
+    // textContent instead finds the label element itself, not the field it
+    // labels - fine for read-only text, wrong for every value-driving op
+    // this function performs, so those look for the control FIRST.
+    var fields = Array.prototype.slice.call(doc.querySelectorAll('input, select, textarea'));
+    var byLabel = fields.filter(function(f){
+      var lbl = f.labels && f.labels[0] ? f.labels[0].textContent.trim() : '';
+      return lbl === TEXT || f.getAttribute('aria-label') === TEXT
+        || f.getAttribute('placeholder') === TEXT;
+    });
+    if (byLabel.length) {
+      el = byLabel[0];
+    } else {
+      var all = Array.prototype.slice.call(doc.querySelectorAll('*'));
+      el = all.filter(function(n){ return (n.textContent||'').trim() === TEXT; })[0] || null;
+    }
   }
   if (!el) { return 'no_element'; }
   var win = doc.defaultView;
@@ -331,6 +348,39 @@ const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
   }
   if (el.disabled === true) { return 'disabled'; }
   if (el.readOnly === true) { return 'readonly'; }
+  // `click` hands back a page-absolute point exactly like `type` does
+  // below, for the same reason: a synthetic click has `isTrusted` false,
+  // which an application checking it can ignore while the step still
+  // passes. Any visible element can be a click target, not only form
+  // controls - a tab strip item is typically a plain div/span/a.
+  if (OP === 'click'){
+    var cRect = chosen.getBoundingClientRect();
+    var clRect = el.getBoundingClientRect();
+    if (clRect.width === 0 || clRect.height === 0) { return 'no_box'; }
+    var cx = cRect.left + clRect.left + clRect.width / 2;
+    var cy = cRect.top + clRect.top + clRect.height / 2;
+    return 'point:' + JSON.stringify({ x: cx, y: cy });
+  }
+  // `type` hands back a page-absolute point instead of writing the value
+  // itself: some same-origin frames (legacy widget frameworks, not just
+  // modern SAPUI5) track field changes off real keyboard events, and never
+  // see a value this function sets directly - the synthetic input/change
+  // below is invisible to them. The caller clicks the point for real and
+  // types for real, the same trusted path the top-level document already
+  // uses; only elements with no native keystroke target (not INPUT/TEXTAREA)
+  // keep the synthetic write.
+  if (OP === 'type' && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')){
+    var fRect = chosen.getBoundingClientRect();
+    var eRect = el.getBoundingClientRect();
+    if (eRect.width === 0 || eRect.height === 0) { return 'no_box'; }
+    var px = fRect.left + eRect.left + eRect.width / 2;
+    var py = fRect.top + eRect.top + eRect.height / 2;
+    return 'point:' + JSON.stringify({ x: px, y: py });
+  }
+  if (OP === 'select_all'){
+    if (typeof el.select === 'function') { el.select(); }
+    return 'ok';
+  }
   var proto = el.tagName === 'TEXTAREA'
     ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
   var desc = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -369,23 +419,30 @@ const FRAME_PROBE: &str = r#"function(FRAME, CSS, ID, TEXT){
   if (CSS){ try { el = doc.querySelector(CSS); } catch (e) { el = null; } }
   else if (ID){ try { el = doc.getElementById(ID); } catch (e) { el = null; } }
   else if (TEXT){
-    var all = Array.prototype.slice.call(doc.querySelectorAll('*'));
-    // Innermost element whose own text is the anchor, mirroring the
-    // page-level text rung.
-    var hits = all.filter(function(e){
-      return (e.textContent || '').indexOf(TEXT) !== -1
-        && !Array.prototype.some.call(e.children, function(c){
-             return (c.textContent || '').indexOf(TEXT) !== -1; });
+    // A form control's own effective label (native `.labels` association,
+    // same as scene() already reports it) is tried FIRST: reading "the
+    // Material field" should mean the field's value, not its label
+    // element's own text, whenever a control actually owns that label.
+    // Nothing here changes for text with no associated control - it falls
+    // through to the same innermost-text search as before.
+    var fields = Array.prototype.slice.call(doc.querySelectorAll('input, textarea, select'));
+    var byLabel = fields.filter(function(f){
+      var lbl = f.labels && f.labels[0] ? f.labels[0].textContent.trim() : '';
+      return lbl === TEXT || f.getAttribute('aria-label') === TEXT
+        || f.getAttribute('placeholder') === TEXT || f.getAttribute('name') === TEXT;
     });
-    el = hits.length ? hits[0] : null;
-    if (!el){
-      // Inputs show their anchor as a value/placeholder, not as text.
-      var fields = Array.prototype.slice.call(doc.querySelectorAll('input, textarea, select'));
-      var f = fields.filter(function(e){
-        return (e.placeholder || '') === TEXT || (e.name || '') === TEXT
-          || (e.getAttribute('aria-label') || '') === TEXT;
+    if (byLabel.length) {
+      el = byLabel[0];
+    } else {
+      var all = Array.prototype.slice.call(doc.querySelectorAll('*'));
+      // Innermost element whose own text is the anchor, mirroring the
+      // page-level text rung.
+      var hits = all.filter(function(e){
+        return (e.textContent || '').indexOf(TEXT) !== -1
+          && !Array.prototype.some.call(e.children, function(c){
+               return (c.textContent || '').indexOf(TEXT) !== -1; });
       });
-      el = f.length ? f[0] : null;
+      el = hits.length ? hits[0] : null;
     }
   }
   if (!el) return 'ok:' + JSON.stringify({ present: false, text: '' });
@@ -1749,6 +1806,9 @@ impl WebAppDriver {
                 "the target inside iframe '{frame}' is not a scroll container (its content \
                  fits), so scrolling it would pass without moving anything"
             ))),
+            "no_box" => Err(DriverError::Browser(format!(
+                "the target inside iframe '{frame}' has no box to click inside"
+            ))),
             s if s.starts_with("no_frame:") => {
                 let available: Vec<String> =
                     serde_json::from_str(&s["no_frame:".len()..]).unwrap_or_default();
@@ -1772,6 +1832,45 @@ impl WebAppDriver {
             ))),
             _ => Ok(status),
         }
+    }
+
+    /// A real mouse click at page-absolute coordinates - the same three
+    /// `Input.dispatchMouseEvent` calls the top-level click path uses,
+    /// factored out so the framed-typing path (which has no `Element`
+    /// handle for something living in another document) can reach it too.
+    fn click_page_point(&mut self, x: f64, y: f64) -> Result<(), DriverError> {
+        let tab = self.tab()?.clone();
+        let mouse = |kind, button| Input::DispatchMouseEvent {
+            Type: kind,
+            x,
+            y,
+            button,
+            click_count: Some(1),
+            modifiers: None,
+            timestamp: None,
+            buttons: None,
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        };
+        tab.call_method(mouse(Input::DispatchMouseEventTypeOption::MouseMoved, None))
+            .map_err(|e| web_err("moving onto the framed click point", e))?;
+        tab.call_method(mouse(
+            Input::DispatchMouseEventTypeOption::MousePressed,
+            Some(Input::MouseButton::Left),
+        ))
+        .map_err(|e| web_err("pressing at the framed click point", e))?;
+        tab.call_method(mouse(
+            Input::DispatchMouseEventTypeOption::MouseReleased,
+            Some(Input::MouseButton::Left),
+        ))
+        .map_err(|e| web_err("releasing at the framed click point", e))?;
+        Ok(())
     }
 }
 
@@ -2929,6 +3028,23 @@ impl AppDriver for WebAppDriver {
     }
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        // A framed target has no `Element` handle - it lives in another
+        // document, so FRAME_ACT resolves it and hands back a page-absolute
+        // point, then a real trusted click lands there. The same mechanism
+        // the framed-typing fix already uses.
+        if let Some(query) = &selector.frame {
+            let query = query.clone();
+            let result = self.frame_act(&query, "click", serde_json::Value::Null)?;
+            if let Some(point) = result.strip_prefix("point:") {
+                let parsed: serde_json::Value = serde_json::from_str(point).map_err(|e| {
+                    DriverError::Browser(format!("reading the framed click point: {e}"))
+                })?;
+                let x = parsed.get("x").and_then(|v| v.as_f64()).unwrap_or_default();
+                let y = parsed.get("y").and_then(|v| v.as_f64()).unwrap_or_default();
+                self.click_page_point(x, y)?;
+            }
+            return Ok(());
+        }
         let locator = Self::locator(selector)?;
         self.with_element(&locator, &format!("clicking [{selector}]"), |element| {
             element.click().map(|_| ())
@@ -3270,13 +3386,41 @@ impl AppDriver for WebAppDriver {
     }
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
-        // A framed target lives in another document. Driven through the
-        // frame's own DOM, with the guards `FRAME_ACT` documents - NOT the
-        // trusted-keystroke path the main document uses, which is a real
-        // difference and is stated in docs/authoring.md.
+        // A framed target lives in another document. For a real <input>/
+        // <textarea>, FRAME_ACT hands back the element's page-absolute
+        // point instead of writing the value itself: a real click there,
+        // then real keystrokes, so a same-origin frame that tracks changes
+        // off actual keyboard events (some legacy widget frameworks do,
+        // not just modern ones listening for input/change) sees the same
+        // trusted path the top-level document already used. Anything else
+        // framed (contenteditable, custom widgets) keeps the synthetic
+        // value+event write FRAME_ACT falls back to - documented in
+        // docs/authoring.md.
         if let Some(query) = &selector.frame {
             let query = query.clone();
-            self.frame_act(&query, "type", serde_json::Value::from(text))?;
+            let result = self.frame_act(&query, "type", serde_json::Value::from(text))?;
+            if let Some(point) = result.strip_prefix("point:") {
+                let parsed: serde_json::Value = serde_json::from_str(point).map_err(|e| {
+                    DriverError::Browser(format!("reading the framed click point: {e}"))
+                })?;
+                let x = parsed.get("x").and_then(|v| v.as_f64()).unwrap_or_default();
+                let y = parsed.get("y").and_then(|v| v.as_f64()).unwrap_or_default();
+                self.click_page_point(x, y)?;
+                // Select whatever the field already holds AFTER the click
+                // (which itself collapses to a caret) so typing REPLACES
+                // it - the same click -> select -> keystrokes contract the
+                // top-level path below uses, not an append.
+                self.frame_act(&query, "select_all", serde_json::Value::Null)?;
+                self.tab()?
+                    .type_str(text)
+                    .map_err(|e| web_err("typing into the framed field", e))?;
+                // An Escape here was tried to dismiss the value-help popup
+                // real keystrokes can trigger on classic SAP GUI screens
+                // (confirmed live), but Escape on these fields REVERTS to
+                // the pre-edit value rather than just closing the popup -
+                // confirmed live too, the worse of the two problems, since
+                // it silently erases what was just typed. Removed.
+            }
             return Ok(());
         }
         let locator = Self::locator(selector)?;
