@@ -33,48 +33,76 @@ steps:
   # Confirmed live against a real system via login-smoke.flow.yaml: "Home"
   # resolves from the shell's own tab label once authenticated, regardless
   # of whether the account has any tiles assigned.
-  - Wait until page shows Home within 60s
+  - Wait until page shows Home within 90s
 
-  # This flow is still UNRECORDED past this point. A live attempt against
-  # the reference system's OBEVA account failed here: `Click "PTP Process
-  # Area BU Apps"` has no matching tile — confirmed via three independent
-  # navigation surfaces (Home page, the shell's "All My Apps" panel, and
-  # Enterprise Search under the Apps category all show zero apps for this
-  # account). That's a backend Fiori catalog/PFCG-role gap, not a flow
-  # defect: OBEVA has no Launchpad role assigned yet, separate from
-  # whatever SAP GUI/backend authorization it holds. Needs a Basis/Fiori
-  # admin to assign the catalog behind ZMM_PUR_INFO_RECORDS_MANAGE_SRV_0001
-  # ("Manage Purchasing Info Records") before this flow can be recorded.
-
-  # -- Navigate: module tile, then the app -----------------------------
-  - Click "PTP Process Area BU Apps"
-  - Click "Manage Info Records"
-  - assert: page shows Manage Purchasing Info Records
+  # -- Navigate: the real tile on this account's Home page -------------
+  # Confirmed live: this account's "My Home" page has no "PTP Process
+  # Area BU Apps" / "Manage Info Records" tiles at all - those names came
+  # from an assumed manual test script, not this system's real catalog.
+  # The actual tile is "Change Purchasing Info Record", one click away.
+  # "Home" resolves from the shell's own tab label (see above) before the
+  # tile area below it necessarily finishes rendering - confirmed live via
+  # a diagnostic hitting ElementNotFound here without this wait.
+  - Wait until page shows Change Purchasing Info Record within 20s
+  - Click "Change Purchasing Info Record"
+  # The tile opens the app to its own initial screen, titled "Change
+  # Info Record: Initial Screen" - confirmed live. Assert against what
+  # the screen actually says.
+  - assert: "page shows Change Info Record: Initial Screen"
 
   # -- Search the standard info record by the minted test data ---------
-  - Type ${MATERIAL} into the "Material" field
-  - Type ${SUPPLIER} into the "Supplier" field
-  - Type ${PLANT} into the "Plant" field
-  - Press the "Go" button
-  - assert: page shows ${MATERIAL}
+  # This is transaction ME12 rendered through WebGUI, not a modern
+  # OData list-report app: confirmed live, there is no "Go" button at
+  # all, and Purchasing Org. is a real field the search needs (ME12
+  # requires it unless searching by Info Record number directly) -
+  # mint-test-data.sh now mints it from the same OData row. The search
+  # fields themselves live inside the classic WebGUI's own same-origin
+  # iframe (named "Application"), not the top-level page - confirmed
+  # live via scene() - so each Type targets it explicitly rather than
+  # relying on rules mode's plain-grammar element search, which only
+  # looks at the top-level document.
+  - Type ${MATERIAL} into the "Material" in the iframe "Application"
+  - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
+  - Type ${PURCHASING_ORG} into the "Purchasing Org." in the iframe "Application"
+  - Type ${PLANT} into the "Plant" in the iframe "Application"
+  - Press Enter
+  # Confirmed live: when Material+Supplier+Purchasing Org+Plant match
+  # EXACTLY one info record, ME12 skips the results list entirely and
+  # opens the record directly in its editable detail screen, titled
+  # "Change Info Record: General Data" - there is no results list to
+  # click into and no separate "Edit" button, unlike a modern Fiori
+  # list-report app. A single-shot assert can catch the iframe mid-reload
+  # right after Enter triggers the real search round-trip - the same
+  # reason "page shows Home" above waits instead of asserting once.
+  # Reaching this exact title already proves the search matched exactly
+  # one record (see above) - a further "page shows ${MATERIAL}" check
+  # would fail regardless, since ${MATERIAL} lands in an <input>'s VALUE,
+  # not its textContent; surface_text() (like any DOM text walk) does not
+  # see a value there, only the surrounding label - confirmed live.
+  - "Wait until page shows Change Info Record: General Data within 30s"
 
-  # -- Open the record and make the field changes ----------------------
-  # This is the expansion of the manual script's vague "make required
-  # field changes": each field is named concretely. The first result row
-  # is addressed via the css escape hatch (targets don't resolve ${VAR},
-  # so the row can't be clicked "by material number").
-  - Click the 1st "css:.sapMListItems .sapMLIB"
-  - Press the "Edit" button
-  - Replace the "Net Price" field with ${NET_PRICE}
-  - Replace the "Minimum Order Quantity" field with 10
+  # -- Make the field changes -------------------------------------------
+  # Net Price and Minimum Order Quantity live on the "Purch. Org. Data 1"
+  # tab, not the "General Data" tab the record opens on - confirmed live.
+  # Every target here is inside the same classic WebGUI iframe as the
+  # search fields above, so each needs the same explicit iframe grammar.
+  - Click "Purch. Org. Data 1" in the iframe "Application"
+  # "Replace ... with" has no framed grammar form (confirmed live) even
+  # though its two halves individually do - expressed as Clear + Type.
+  - Clear the "Net Price" field in the iframe "Application"
+  - Type ${NET_PRICE} into the "Net Price" in the iframe "Application"
+  - Clear the "Minimum Order Quantity" field in the iframe "Application"
+  - Type 10 into the "Minimum Order Quantity" in the iframe "Application"
 
   # -- Save ------------------------------------------------------------
-  - Press the "Save" button
+  - Press the "Save" button in the iframe "Application"
   - assert: page shows saved
 
-  # -- Verify the change back in the Manage Info Records list ----------
-  - Press the "Go" button
-  - assert: the "Net Price" field contains ${NET_PRICE}
+  # -- Verify the change is reflected on the same screen -----------------
+  # ME12 stays on this record's detail screen after Save rather than
+  # returning to a search screen, so re-verifying is reading the same
+  # screen again, not re-searching.
+  - assert: the "Net Price" field in the iframe "Application" contains ${NET_PRICE}
 
   # -- Out-of-band truth: the changed record as SAP's OData sees it -----
   # UI says saved; the API proves it. body_contains resolves ${VAR} too.

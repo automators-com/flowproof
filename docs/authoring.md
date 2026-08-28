@@ -634,34 +634,41 @@ Three failures are kept distinct so none of them can read as a pass:
 
 Limits in v1, each for a reason rather than for later:
 
-- **Value-driving actions, not pointer actions.** `Type`, `Replace`, `Clear`,
-  `Check`/`Uncheck`, `Remember` and `Scroll` work inside a frame; `Click`,
-  `Press … button`, `Hover`, `Double-click`, `Right-click` and `Upload` are
-  a parse error naming the reason.
+- **Value-driving actions, plus plain `Click` and `Press … button`.** `Type`,
+  `Clear`, `Check`/`Uncheck`, `Remember` and `Scroll` work inside a frame,
+  performed through the frame's own DOM - the same mechanism `Select` uses in
+  the main document. `Click` and `Press … button` also work inside a frame:
+  the driver computes the target element's page-absolute point (the frame's
+  own offset in the parent document, plus the element's offset within the
+  frame) and dispatches a REAL trusted click there via CDP, the same
+  mechanism the top-level document's click already used - `isTrusted` is
+  true, not an untrusted synthetic event.
 
-  The original refusal covered every action, on the grounds that actions act
-  at composited coordinates resolved against the main document and so could
-  "succeed" without touching the frame. That reasoning was right, and it is
-  specifically about COORDINATES. A same-origin frame does not need them: the
-  parent's own scripts can reach `iframe.contentDocument`, so a value action
-  is driven through the frame's DOM - the same mechanism `Select` uses in the
-  main document - and nothing is dispatched at a point.
+  `Hover`, `Double-click`, `Right-click` and `Upload` remain a parse error
+  naming the reason: no such point-computation is wired up for them yet, so
+  each could only reach the frame as an untrusted event, which an
+  application is free to ignore while the step still passes -
+  release-without-effect.
 
-  A pointer action has no such route. It could only reach the frame as an
-  untrusted event (`isTrusted` is false), which an application is free to
-  ignore while the step still passes - release-without-effect. So those stay
-  refused until a trusted mechanism exists.
+  **`Replace … with` has no framed form**, even though `Clear` and `Type`
+  individually do - express it as the two steps instead: `Clear the "X" in
+  the iframe "Y"` followed by `Type <value> into the "X" in the iframe "Y"`.
 
-  **A framed `Type` is not the main-document `Type`.** In the main document
-  it is real keystrokes typed over a select-all (fill semantics - the field
-  ends up reading the text exactly); inside a frame it is a value assignment
-  plus `input`/`change`. Both replace, but an application that filters on
-  `keydown` sees the main-document keys and not the framed assignment.
-  Two guards keep that honest rather than silent: the target must not be
-  `disabled` or read-only (a value assignment succeeds on a disabled control
-  where typing would be ignored - so it is refused by name), and the value
-  is read BACK from the element afterwards, so a control that rejected or
-  rewrote it fails the step.
+  **A framed `Type` targeting a real `<input>`/`<textarea>` uses the SAME
+  trusted keystroke path the main document does** (click the point, select
+  any existing value, type for real) - not a synthetic value assignment.
+  Some same-origin frames track field changes off real keyboard events
+  (legacy widget frameworks, not only modern ones listening for
+  `input`/`change`), and never see a value this driver set directly. Any
+  other framed element (contenteditable, a custom widget with no native
+  keystroke target) keeps the synthetic value-plus-event write: `.value` is
+  set through the native setter and `input`/`change` fire on it. Both
+  replace what was there rather than appending. Two guards keep either path
+  honest rather than silent: the target must not be `disabled` or read-only
+  (a value assignment succeeds on a disabled control where typing would be
+  ignored - so it is refused by name), and the value is read BACK from the
+  element afterwards, so a control that rejected or rewrote it fails the
+  step.
 - **Same-origin only.** A cross-origin frame's document is unreachable, and
   the CDP per-frame execution-context path is not deterministic enough to
   ship behind a grammar that looks identical.
