@@ -1,0 +1,36 @@
+# SAP Fiori: look up a purchasing info record by supplier, read-only - a
+# deliberately SIMPLE example next to manage-info-records.flow.yaml (which
+# also edits and saves). This flow only searches and reads, so it never
+# touches the deeper edit-mode/validity-period navigation that flow needed.
+#
+# Reuses everything already proven live for the sibling flow: login, the
+# real Home tile name, and the explicit iframe grammar for the classic
+# WebGUI search fields (this is the "display" counterpart of ME12 - same
+# family of transaction, same same-origin iframe named "Application").
+name: Display info record by supplier - read only
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  # -- Log in on the launchpad's login screen --------------------------
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 90s
+
+  # -- Navigate: the real "display" tile on this account's Home page ---
+  - Wait until page shows Display Purchasing Info Record by Supplier within 20s
+  - Click "Display Purchasing Info Record by Supplier"
+
+  # The real screen title, confirmed live via scene(): "Info Records per
+  # Supplier" - a classic ABAP selection screen (paired from/to range
+  # fields per criterion, not ME12's single-value fields), same-origin
+  # iframe named "Application" like the sibling flow. Waiting for the
+  # title first avoids typing before the iframe has actually settled -
+  # confirmed live to matter the same way it did for ME12's screen.
+  - "Wait until page shows Info Records per Supplier within 20s"
+
+  # -- Search by the minted test data (Supplier + Material identify the
+  #    same record the sibling flow edits) -----------------------------
+  - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
+  - Type ${MATERIAL} into the "Material" in the iframe "Application"
+  - Press Enter
