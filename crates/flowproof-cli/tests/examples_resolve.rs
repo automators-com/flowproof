@@ -86,9 +86,13 @@ fn purchase_info_records_example_parses_as_a_multi_surface_flow() {
 fn fiori_suite_manifest_declares_the_data_leg() {
     let manifest: SuiteManifest = serde_yaml::from_str(FIORI_SUITE).expect("suite.yaml parses");
     let cmd = manifest.env_from.expect("env_from present");
+    // Was a `datamaker` CLI invocation; that command never existed anywhere
+    // in DataMaker's own tooling (confirmed against the real catalog) and
+    // was replaced with mint-test-data.sh, which queries the live OData
+    // service directly - see the script's own header for the full story.
     assert!(
-        cmd.contains("datamaker"),
-        "data comes from the DataMaker CLI"
+        cmd.contains("mint-test-data.sh"),
+        "data comes from mint-test-data.sh, querying the live OData service directly"
     );
     assert!(manifest.env.contains_key("FIORI_BASE_URL"));
 }
