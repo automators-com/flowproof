@@ -12,7 +12,7 @@ on:
 jobs:
   guard:
     name: version is new on npm
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - name: The tag must name the version it builds
@@ -168,7 +168,7 @@ jobs:
   publish:
     name: publish flowproof
     needs: binaries
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       id-token: write
       contents: read
