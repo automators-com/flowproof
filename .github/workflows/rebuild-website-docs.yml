@@ -19,7 +19,7 @@ on:
 
 jobs:
   trigger:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, ci-light]
     steps:
       - name: Trigger website deploy hook
         env:

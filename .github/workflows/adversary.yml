@@ -43,7 +43,7 @@ env:
 jobs:
   adversary:
     name: adversary
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, ci-light]
     steps:
       - uses: actions/checkout@v4
         with:
