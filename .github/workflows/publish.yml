@@ -18,7 +18,7 @@ jobs:
   # 0.2.1 releases). Also catches Cargo.toml/pyproject version skew.
   guard:
     name: version is new on PyPI
-    runs-on: [self-hosted, Linux, X64, ci-light]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: The tag must name the version it builds
@@ -107,7 +107,7 @@ jobs:
 
   publish:
     needs: build
-    runs-on: [self-hosted, Linux, X64, ci-light]
+    runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
