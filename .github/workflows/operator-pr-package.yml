@@ -17,6 +17,7 @@ jobs:
   publish:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository
+    # The shared workflow uses a GitHub-hosted runner, which is free for this public repository.
     uses: automators-com/engineering-workflows/.github/workflows/operator-pr-package.yml@main
     with:
       pr-number: ${{ format('{0}', github.event.pull_request.number) }}
