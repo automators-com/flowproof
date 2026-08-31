@@ -359,10 +359,15 @@ this plan ships.
 - [x] Spike phase 1 (schema + path resolution + tests against a fake
   `HOME`) — done for macOS/Linux (`dirs::config_dir()` reading an overridden
   `HOME`/`XDG_CONFIG_HOME`, `crates/flowproof-cli/src/config.rs`'s
-  `config_path_resolves_under_a_fake_home` test). **Still not actually
-  confirmed on Windows** — `dirs` resolves `%APPDATA%` via the Known Folder
-  API there, not an env var a unit test can override, and this environment
-  has no Windows host to check against. Real risk, not closed by this work.
+  `config_path_resolves_under_a_fake_home` test). A second, platform-neutral
+  test (`config_path_has_the_right_shape_on_whatever_platform_is_running`,
+  no `#[cfg(unix)]`) asserts the shape — `flowproof/config.yaml` under an
+  absolute path — against whatever the real environment is, so it actually
+  runs under this repo's Windows CI job too, unlike every other test this
+  plan added (all `#[cfg(unix)]`, since `HOME`-overriding doesn't work on
+  Windows). **The exact resolved path is still not confirmed on a real
+  Windows machine** — that needs someone to actually run the binary there
+  and look, which this environment cannot do. Real risk, not closed here.
 - [x] Pick the masked-input crate and confirm licensing — `rpassword` 7.5.4
   (`Apache-2.0`) and `dirs` 6.0.0 (`MIT OR Apache-2.0`), read directly from
   each crate's fetched `Cargo.toml` rather than assumed. Both clear

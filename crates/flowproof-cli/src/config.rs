@@ -599,6 +599,33 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
+    /// Unlike the fake-`HOME` test above, this one is NOT `#[cfg(unix)]` —
+    /// it runs against whatever the real environment actually is, on every
+    /// platform this test suite executes on, Windows included. It cannot
+    /// assert an exact path (Windows resolves `%APPDATA%` through the Known
+    /// Folder API, not an env var a test can override the way `HOME` is on
+    /// Unix — see plans/001-credential-config.md's "Next": Windows path
+    /// resolution was never verified end to end for exactly this reason).
+    /// What it CAN prove, cheaply, on every CI runner including Windows: the
+    /// call succeeds at all and the shape is right — `flowproof/config.yaml`
+    /// under an absolute directory, not a panic or a silent empty path.
+    #[test]
+    fn config_path_has_the_right_shape_on_whatever_platform_is_running() {
+        let resolved = config_path().expect("dirs::config_dir() must resolve on a real machine");
+        assert!(resolved.is_absolute(), "{resolved:?} must be absolute");
+        assert_eq!(
+            resolved.file_name().and_then(|n| n.to_str()),
+            Some("config.yaml")
+        );
+        assert_eq!(
+            resolved
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str()),
+            Some("flowproof")
+        );
+    }
+
     #[test]
     fn seed_env_fills_gaps_only() {
         let _guard = ENV.lock().expect("env lock");
