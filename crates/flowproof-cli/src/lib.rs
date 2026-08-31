@@ -3,6 +3,7 @@
 
 mod agent_flow;
 mod capture;
+pub mod config;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -133,8 +134,57 @@ fn recording_options(
     }
 }
 
+/// `flowproof config <action>` — see [`Command::Config`].
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// SAP GUI: user, password, client, language, and the SAP Logon
+    /// connection name. Prompts interactively unless any flag is given.
+    Sap {
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+        #[arg(long)]
+        client: Option<String>,
+        #[arg(long)]
+        language: Option<String>,
+        #[arg(long)]
+        connection: Option<String>,
+    },
+    /// Fiori: user, password, client, language, and the launchpad base
+    /// URL — an identity independent of `sap`, not shared with it
+    /// (plans/001-credential-config.md, "Two profiles, not one identity").
+    Fiori {
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+        #[arg(long)]
+        client: Option<String>,
+        #[arg(long)]
+        language: Option<String>,
+        #[arg(long = "base-url")]
+        base_url: Option<String>,
+    },
+    /// Print the config file's path and contents, password masked.
+    Show,
+    /// Print the resolved config file path alone (for scripting or opening
+    /// in an editor).
+    Path,
+}
+
 #[derive(Subcommand)]
 enum Command {
+    /// Manage flowproof's own global, per-machine config file: SAP GUI and
+    /// Fiori credentials, seeded into the environment as a fallback so
+    /// `${VAR}` resolution picks them up (plans/001-credential-config.md).
+    /// Writes only — nothing here is checked against a live system, since
+    /// SAP already gives a specific error the first time a bad value is
+    /// actually used at record/run time.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Record a flow from a YAML spec: perform it once against the live app
     /// and write a deterministic trace next to the spec.
     Record {
@@ -984,9 +1034,17 @@ fn apply_env_from(manifest: &flowproof_agent::SuiteManifest, dir: &Path) -> Resu
 /// DataMaker CLI mints at suite level reaches `${VAR}` at record time AND
 /// replay time. No manifest = no-op. Returns the manifest so callers can
 /// apply its non-env defaults (e.g. `browser:`) to the spec.
+///
+/// Before any of that: seed `${VAR}`s from `flowproof config`'s file,
+/// fill-gaps-only, so a bare single-flow run with no suite at all still has
+/// something to fall back on (plans/001-credential-config.md, "How it
+/// reaches the flow"). This runs unconditionally, ahead of the "no
+/// suite.yaml" early return below, precisely because that's the case with
+/// nothing else to seed from.
 pub fn apply_suite_context(
     spec_path: &Path,
 ) -> Result<Option<flowproof_agent::SuiteManifest>, String> {
+    config::seed_env();
     let Some((manifest, dir)) =
         flowproof_agent::SuiteManifest::discover(spec_path).map_err(|e| e.to_string())?
     else {
@@ -2353,6 +2411,40 @@ where
     };
 
     let result = match cli.command {
+        Command::Config { action } => match action {
+            ConfigAction::Sap {
+                user,
+                password,
+                client,
+                language,
+                connection,
+            } => config::cmd_sap(
+                config::SharedArgs {
+                    user,
+                    password,
+                    client,
+                    language,
+                },
+                connection,
+            ),
+            ConfigAction::Fiori {
+                user,
+                password,
+                client,
+                language,
+                base_url,
+            } => config::cmd_fiori(
+                config::SharedArgs {
+                    user,
+                    password,
+                    client,
+                    language,
+                },
+                base_url,
+            ),
+            ConfigAction::Show => config::cmd_show(),
+            ConfigAction::Path => config::cmd_path(),
+        },
         Command::Record {
             spec,
             out,

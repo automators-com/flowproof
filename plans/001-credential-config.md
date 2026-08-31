@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 # Plan 1 — `flowproof config`: one file, two SAP surfaces, credentials off the command line
 
@@ -356,16 +356,105 @@ this plan ships.
 
 ## Next
 
-- [ ] Spike phase 1 (schema + path resolution + tests against a fake
-  `HOME`) to confirm the platform paths are actually right on Windows,
-  not just plausible
-- [ ] Pick the masked-input crate (`rpassword` or equivalent) and confirm it
-  and `dirs` both clear `CHARTER.md`'s Apache-2.0 licensing expectations
-- [ ] Write the `docs/getting-started.md` update alongside phase 3, not
-  after — CLAUDE.md's own rule ("prose describing code that no longer
-  exists is a defect") cuts the same way for prose describing a command
-  that doesn't exist yet
-- [ ] Land the three example-flow renames (`${SAP_USER}` → `${FIORI_USER}`,
-  etc.) in the same phase-3 commit that introduces the `FIORI_*` names, not
-  as a separate follow-up that can be forgotten
+- [x] Spike phase 1 (schema + path resolution + tests against a fake
+  `HOME`) — done for macOS/Linux (`dirs::config_dir()` reading an overridden
+  `HOME`/`XDG_CONFIG_HOME`, `crates/flowproof-cli/src/config.rs`'s
+  `config_path_resolves_under_a_fake_home` test). **Still not actually
+  confirmed on Windows** — `dirs` resolves `%APPDATA%` via the Known Folder
+  API there, not an env var a unit test can override, and this environment
+  has no Windows host to check against. Real risk, not closed by this work.
+- [x] Pick the masked-input crate and confirm licensing — `rpassword` 7.5.4
+  (`Apache-2.0`) and `dirs` 6.0.0 (`MIT OR Apache-2.0`), read directly from
+  each crate's fetched `Cargo.toml` rather than assumed. Both clear
+  `CHARTER.md`'s Apache-2.0 expectations.
+- [x] Write the `docs/getting-started.md` update alongside phase 3 — landed
+  together: the SAP GUI section (`docs/getting-started.md:788-813`) now
+  points at a new `### flowproof config` subsection after "Secrets: values
+  never enter the trace", and `docs/multi-surface.md`'s staged-`login:` gap
+  now explicitly says `flowproof config` does NOT close it (different
+  layer: personal-machine default vs. per-surface staging).
+- [x] Land the example-flow renames — 2 of 3.
+  `manage-info-records.flow.yaml` and `purchase-info-records-report.flow.yaml`
+  now use `${FIORI_USER}`/`${FIORI_PASSWORD}`/`${FIORI_CLIENT}`/
+  `${FIORI_LANGUAGE}`. **`login-smoke.flow.yaml` was deliberately left on
+  `SAP_*`** — see "Divergence from this plan" below.
+
+## Divergence from this plan
+
+One thing built differently from what Phasing step 3 said, found only once
+implementation started:
+
+**`login-smoke.flow.yaml` was not renamed to `FIORI_*`, unlike its two
+sibling examples.** It is the one Fiori example with a committed cassette
+(`login-smoke.trace.jsonl`), and that cassette stores its steps' text
+verbatim — `grep` against it turns up `SAP_USER`/`SAP_PASSWORD`/
+`SAP_CLIENT`/`SAP_LANGUAGE` as literal bytes, the same way `secret.rs`'s own
+doc comment says a trace stores the `${VAR}` reference, never the resolved
+value. Renaming the flow's steps without re-recording would desync the flow
+from its own trace; re-recording needs a live Fiori system, which does not
+exist in this sandbox. Hand-editing the committed `.jsonl` to match would
+have kept the two in sync, but `CLAUDE.md` rules that out explicitly:
+"Don't modify a committed `*.trace.jsonl`... rewriting one silently
+redefines what correct means. It is human-only."
+
+So `login-smoke.flow.yaml` keeps `SAP_USER`/`SAP_PASSWORD`/`SAP_CLIENT`/
+`SAP_LANGUAGE`, with a comment explaining why, pointing at re-recording it
+under the new names as the next step once real Fiori access exists. Until
+then, `flowproof config fiori`'s `FIORI_*` vars have no effect on this one
+flow — only on the two renamed siblings and on any new Fiori flow written
+against the current docs.
+
+## What landed
+
+All four Phasing steps:
+
+- **`crates/flowproof-cli/src/config.rs`** (new, 635 lines including tests):
+  `SapProfile`/
+  `FioriProfile`/`Config`, `dirs`-based `config_path()`, `load()`/`save()`
+  (`0600` on Unix), `seed_env()` (fill-gaps-only), the interactive/flag-driven
+  `cmd_sap`/`cmd_fiori`/`cmd_show`/`cmd_path`. 8 unit tests, all passing.
+- **`crates/flowproof-cli/src/lib.rs`**: `Command::Config` (first variant, as
+  specified) with a nested `ConfigAction` subcommand — `sap`/`fiori`/`show`/
+  `path`, dispatched in `run_cli`. `apply_suite_context` now calls
+  `config::seed_env()` as its first line, ahead of the no-`suite.yaml`
+  early return.
+- **`crates/flowproof-cli/Cargo.toml`**: added `dirs = "6"` and
+  `rpassword = "7"`, declared directly (not in `[workspace.dependencies]`),
+  matching `ctrlc`'s existing precedent for a CLI-only dependency.
+  `Cargo.lock` picked up both plus their small transitive dependencies
+  (`dirs-sys`, `option-ext`, `redox_users`, `rtoolbox`) — 61 lines, no
+  surprises (checked by hand).
+- **Two new integration test files**: `crates/flowproof-cli/tests/
+  config_seed_e2e.rs` (3 tests: unset var filled, already-set var wins, a
+  suite's own `env:` still overrides the config file) and `crates/
+  flowproof-cli/tests/config_cli_e2e.rs` (4 tests: flag-driven writes merge
+  on a second call, `sap`/`fiori` are independent, `show`/`path` succeed on
+  an empty config, no-TTY-no-flags fails fast rather than hanging).
+- **`examples/fiori/manage-info-records.flow.yaml`,
+  `purchase-info-records-report.flow.yaml`**: renamed to `FIORI_*`, comments
+  updated to explain why (the divergence above covers the third file).
+- **`examples/fiori/mint-test-data.sh`**: comment fixed — it deliberately
+  keeps `SAP_USER`/`SAP_PASSWORD` (an OData Basic-Auth call against the
+  backend, not a launchpad login), and the old comment's "same credentials
+  the flows themselves use" stopped being true once the sibling flows moved
+  to `FIORI_*`.
+- **`docs/getting-started.md`**: a new subsection after "Secrets: values
+  never enter the trace" documenting the full command surface, cross-linked
+  from the SAP GUI section's env var example.
+- **`docs/multi-surface.md`**: a paragraph stating plainly that this feature
+  does *not* close the multi-surface staged-`login:` gap (different layer),
+  so a future reader doesn't conflate the two.
+
+Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+warnings`, and `cargo test --workspace` (every crate, every existing suite
+included) all pass with zero failures. Manually exercised the built binary
+end to end against a fake `HOME` — flags and interactive-shaped prompts both
+write correctly, `show` masks the password, the file lands `0600`, and the
+no-TTY-no-flags path fails in under a second with a named alternative
+instead of hanging.
+
+Not done, and said so above rather than silently: Windows path-resolution
+correctness (no Windows host available to check), and one-third of the
+example-flow rename (the cassette-desync problem). Both are real, open
+gaps for whoever picks this up next, not oversights.
 
