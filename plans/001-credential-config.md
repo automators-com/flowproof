@@ -409,6 +409,17 @@ then, `flowproof config fiori`'s `FIORI_*` vars have no effect on this one
 flow — only on the two renamed siblings and on any new Fiori flow written
 against the current docs.
 
+**Update, found while scoping [plan 4](004-single-flow-shareability.md):**
+this is no longer the only exception. `display-info-record-by-supplier.flow.yaml`
+landed after this plan's rename work (`d037017`), in the identical
+position — its own committed trace
+(`display-info-record-by-supplier.trace.jsonl`) stores `SAP_USER`/
+`SAP_PASSWORD` as literal text the same way `login-smoke`'s does, so it was
+never a candidate for this plan's rename regardless — it didn't exist yet
+when that work happened. Plan 4 tracks both flows together rather than
+amending this section further; see its "Gap 1" for the current state and
+reasoning.
+
 ## What landed
 
 All four Phasing steps:
