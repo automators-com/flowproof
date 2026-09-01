@@ -194,13 +194,13 @@ document-specific input a test case needs. Those values are why the current
 examples still lean on `suite.yaml` plus `env_from`/`mint-test-data.sh` for
 some flows.
 
-The direction to carry into the next plan: introduce a values-file layer for
-business data, keeping secrets in `flowproof config` or the caller's secret
-environment. This fits the real user workflow better than requiring a
-person to hand-type many `--var KEY=value` flags, because these users start
-from a test-case document. `author-from-doc` can read that document, extract
-the business inputs it needs, generate placeholders in the flow, and write
-the sibling values file automatically.
+Implemented direction: introduce a values-file layer for business data,
+keeping secrets in `flowproof config` or the caller's secret environment.
+This fits the real user workflow better than requiring a person to hand-type
+many `--var KEY=value` flags, because these users start from a test-case
+document. `author-from-doc` can now accept structured `VALUE: NAME=value`
+lines from its model translation, generate placeholders in the flow, and
+write the sibling values file automatically when business data is extracted.
 
 Proposed artifact shape:
 
@@ -243,14 +243,20 @@ flowproof run x.flow.yaml --vars qa.values.yaml
 flowproof run x.flow.yaml --vars qa.values.yaml --var MATERIAL=M-99999
 ```
 
-Likely precedence, still to be finalized in the next plan:
+Implemented precedence:
 
 1. `--var KEY=value`
 2. `--vars path.yaml`
 3. sibling `<flow-stem>.values.yaml`
 4. suite `env` / `env_from`
-5. `flowproof config` for credential-profile names
-6. ambient shell env, subject to the current fill-gaps-only semantics
+5. ambient shell env
+6. `flowproof config` for credential-profile names, fill-gaps-only
+
+This deliberately keeps the already-shipped `flowproof config` semantics:
+it seeds only missing credential-profile variables and never overwrites an
+explicit shell export. Values files and `--var` are then applied later as
+business-data overlays, so they can override suite defaults for the flow
+being run.
 
 The product workflow this enables:
 
@@ -263,17 +269,19 @@ The product workflow this enables:
 5. User replays with `flowproof run x.flow.yaml`; the sibling values file is
    loaded automatically.
 
-Open design questions for the follow-up plan:
+Decisions made in the implementation pass:
 
-- Should `author-from-doc` always generate a values file when it extracts
-  business data, or only when a value appears more than once / is marked as
-  case data?
-- Should `run` print a short note when it auto-loads `x.values.yaml`, or stay
-  quiet unless a referenced var is missing?
-- Should values files be allowed to contain only strings, or should JSON/YAML
-  scalars be accepted and converted at resolution time?
-- Should flow-level `env_from` or `values_from` exist later for generated
-  data, replacing suite-level `mint-test-data.sh` for single-flow examples?
+- `author-from-doc` writes a values file when the model emits at least one
+  valid `VALUE: NAME=value` line. It does not try to infer values with a
+  regex pass outside the model translation.
+- `record` and `run` stay quiet when auto-loading `x.values.yaml`; missing
+  vars still fail at moment-of-use with the existing missing-secret message.
+- Values files accept YAML mappings whose keys are valid `${VAR}` names and
+  whose values are strings, numbers, or bools. Nested arrays/maps and nulls
+  are rejected.
+- Flow-level `env_from` / `values_from` remains out of scope. Sibling values
+  files cover document-derived static business data; dynamic minting still
+  belongs to suite `env_from` until separately designed.
 
 ## Next
 
@@ -289,6 +297,12 @@ Open design questions for the follow-up plan:
   plan 4 row. Implementation note: the row already existed, so no table edit
   was needed.
 - [x] `docs/getting-started.md` one-liner.
+- [x] Implement sibling values-file loading for `record` and `run`, including
+  suite per-flow scoping and `--vars` / `--var` overrides.
+- [x] Extend `author-from-doc` so document-derived business data can be
+  emitted as `VALUE: NAME=value` and written to `<flow-stem>.values.yaml`.
+- [x] Document business-data values in `docs/getting-started.md` and
+  `docs/authoring.md`.
 
 ## What landed
 
@@ -303,11 +317,21 @@ Open design questions for the follow-up plan:
 - `display-info-record-by-supplier.flow.yaml`,
   `plans/001-credential-config.md`, and `docs/getting-started.md` now carry
   the plan's documentation updates.
+- `record` and `run` now auto-load `<flow-stem>.values.yaml`, accept
+  `--vars <path>`, and accept repeatable `--var KEY=VALUE` overrides for
+  arbitrary non-secret business data.
+- Suite runs apply each flow's values as a scoped overlay, so one flow's
+  sibling values file does not leak into the next; passing flow exports still
+  publish after the overlay is restored.
+- `author-from-doc` can now write a sibling values file when the model marks
+  document business data with `VALUE: NAME=value`.
 
 Verified with:
 
 - `cargo fmt`
 - `CARGO_INCREMENTAL=0 cargo test -p flowproof-cli --lib secret_detail -- --nocapture`
+- `CARGO_INCREMENTAL=0 cargo test -p flowproof-cli --lib values_ -- --nocapture`
+- `CARGO_INCREMENTAL=0 cargo test -p flowproof-agent doc_author -j 1 -- --nocapture`
 - `CARGO_INCREMENTAL=0 cargo test -p flowproof-cli --test config_seed_e2e -- --nocapture --test-threads=1`
 - `CARGO_INCREMENTAL=0 cargo test -p flowproof-cli --test api_pipeline missing_secret -- --nocapture --test-threads=1`
 
@@ -316,3 +340,10 @@ test binary and failed with `No space left on device`; after `cargo clean`,
 the target-scoped runs above passed. The `config_seed_e2e` target needed to
 run outside the sandbox because its local 127.0.0.1 server fixture was
 blocked from binding inside the sandbox.
+
+For the values-file follow-up pass, `flowproof-cli --lib values_`,
+`flowproof-cli --lib secret_detail`, and `flowproof-agent doc_author` passed.
+The new `config_seed_e2e` values-file case could not be rerun after the
+follow-up implementation because this machine had only ~250 MiB free and
+linking `headless_chrome` failed with `No space left on device`, even with
+`cargo test -j 1`.

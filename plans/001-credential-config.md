@@ -387,10 +387,10 @@ this plan ships.
 ## Divergence from this plan
 
 One thing built differently from what Phasing step 3 said, found only once
-implementation started:
+implementation started, now with a second identical case found by plan 4:
 
 **`login-smoke.flow.yaml` was not renamed to `FIORI_*`, unlike its two
-sibling examples.** It is the one Fiori example with a committed cassette
+sibling examples.** At the time, it was the one Fiori example with a committed cassette
 (`login-smoke.trace.jsonl`), and that cassette stores its steps' text
 verbatim — `grep` against it turns up `SAP_USER`/`SAP_PASSWORD`/
 `SAP_CLIENT`/`SAP_LANGUAGE` as literal bytes, the same way `secret.rs`'s own
@@ -405,12 +405,12 @@ redefines what correct means. It is human-only."
 So `login-smoke.flow.yaml` keeps `SAP_USER`/`SAP_PASSWORD`/`SAP_CLIENT`/
 `SAP_LANGUAGE`, with a comment explaining why, pointing at re-recording it
 under the new names as the next step once real Fiori access exists. Until
-then, `flowproof config fiori`'s `FIORI_*` vars have no effect on this one
-flow — only on the two renamed siblings and on any new Fiori flow written
-against the current docs.
+then, `flowproof config fiori`'s `FIORI_*` vars have no effect on this flow
+or the later `display-info-record-by-supplier.flow.yaml` — only on the
+renamed siblings and on any new Fiori flow written against the current docs.
 
 **Update, found while scoping [plan 4](004-single-flow-shareability.md):**
-this is no longer the only exception. `display-info-record-by-supplier.flow.yaml`
+`display-info-record-by-supplier.flow.yaml`
 landed after this plan's rename work (`d037017`), in the identical
 position — its own committed trace
 (`display-info-record-by-supplier.trace.jsonl`) stores `SAP_USER`/
@@ -473,4 +473,3 @@ Not done, and said so above rather than silently: Windows path-resolution
 correctness (no Windows host available to check), and one-third of the
 example-flow rename (the cassette-desync problem). Both are real, open
 gaps for whoever picks this up next, not oversights.
-

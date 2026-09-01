@@ -964,3 +964,105 @@ steps:
     server_thread.join().ok();
     std::fs::remove_dir_all(&dir).ok();
 }
+
+fn run_missing_secret_flow(var: &str, json: bool) -> std::process::Output {
+    let dir = std::env::temp_dir().join(format!(
+        "flowproof-missing-secret-{}-{}-{}",
+        var.to_ascii_lowercase(),
+        if json { "json" } else { "human" },
+        std::process::id()
+    ));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).expect("fake home");
+    let spec_path = dir.join("health.flow.yaml");
+    std::fs::write(
+        &spec_path,
+        format!(
+            "\
+name: Health checks
+app: api
+steps:
+  - assert: page shows ${{{var}}}
+"
+        ),
+    )
+    .expect("spec written");
+    let trace_path = dir.join("health.trace.jsonl");
+    std::fs::write(
+        &trace_path,
+        format!(
+            "\
+{{\"format\":\"flowproof-trace\",\"version\":1,\"trace_id\":\"missing-secret\",\"recorded_at\":\"2026-09-01T00:00:00Z\",\"spec\":{{\"name\":\"Health checks\"}},\"app\":{{\"name\":\"api\",\"adapter\":\"api\"}},\"env\":{{\"os\":\"macos\",\"resolution\":[1,1]}}}}
+{{\"id\":\"s0001\",\"intent\":\"page shows ${{{var}}}\",\"action\":{{\"type\":\"assert\",\"params\":{{\"kind\":\"element_state\",\"expect\":{{\"scope\":\"surface\",\"timeout_ms\":10000,\"value_contains\":\"${{{var}}}\"}}}}}},\"selectors\":[],\"sync\":{{\"pre\":[],\"post\":[]}},\"artifacts\":{{}}}}
+"
+        ),
+    )
+    .expect("trace written");
+
+    let mut command = std::process::Command::new(FLOWPROOF_BIN);
+    command
+        .args(["run", spec_path.to_str().expect("utf-8 path")])
+        .env_remove(var)
+        .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME");
+    if json {
+        command.arg("--json");
+    }
+    let output = command.output().expect("run runs");
+    std::fs::remove_dir_all(&dir).ok();
+    output
+}
+
+#[test]
+fn missing_secret_human_output_names_the_matching_config_command() {
+    let cases = [
+        ("SAP_USER", Some("flowproof config sap")),
+        ("FIORI_USER", Some("flowproof config fiori")),
+        ("MATERIAL", None),
+    ];
+    for (var, command) in cases {
+        let output = run_missing_secret_flow(var, false);
+        assert!(
+            !output.status.success(),
+            "run must fail on missing {var}; stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = format!("secret ${{{var}}} is not set in the environment");
+        assert!(stdout.contains(&detail), "missing detail in:\n{stdout}");
+        match command {
+            Some(command) => assert!(
+                stdout.contains(command),
+                "missing suggestion `{command}` in:\n{stdout}"
+            ),
+            None => assert!(
+                !stdout.contains("flowproof config"),
+                "suite-minted data must not get credential-profile advice:\n{stdout}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn missing_secret_json_output_keeps_the_original_step_detail() {
+    let output = run_missing_secret_flow("FIORI_USER", true);
+    assert!(
+        !output.status.success(),
+        "run must fail on the missing secret; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("run --json is valid JSON");
+    let detail = payload["report"]["steps"][0]["detail"]
+        .as_str()
+        .expect("step detail is present");
+    assert_eq!(detail, "secret ${FIORI_USER} is not set in the environment");
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("flowproof config"),
+        "JSON stays the replay report, with no human guidance injected"
+    );
+}

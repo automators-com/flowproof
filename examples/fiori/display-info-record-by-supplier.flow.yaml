@@ -7,6 +7,13 @@
 # real Home tile name, and the explicit iframe grammar for the classic
 # WebGUI search fields (this is the "display" counterpart of ME12 - same
 # family of transaction, same same-origin iframe named "Application").
+#
+# Deliberately still SAP_* here, like login-smoke.flow.yaml: this flow has
+# a committed trace (display-info-record-by-supplier.trace.jsonl), which
+# stores these var names as literal text. Renaming the steps without
+# re-recording would desync this flow from its own cassette; re-recording
+# needs live Fiori access this environment does not have. Rename alongside
+# the next real re-record.
 name: Display info record by supplier - read only
 app: web
 url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home

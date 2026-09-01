@@ -20,6 +20,17 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn serve_health(server: tiny_http::Server, requests: usize) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for _ in 0..requests {
+            let Ok(request) = server.recv() else { break };
+            let response = tiny_http::Response::from_string(r#"{"status":"ok"}"#)
+                .with_status_code(if request.url() == "/health" { 200 } else { 404 });
+            request.respond(response).ok();
+        }
+    })
+}
+
 /// Point `dirs::config_dir()` at a fake `HOME` for the duration of `body`,
 /// restoring whatever was there before (and clearing `XDG_CONFIG_HOME`,
 /// which would otherwise win over `HOME` on Linux).
@@ -72,6 +83,91 @@ fn an_unset_var_is_filled_from_the_config_file_for_a_bare_flow() {
     );
     std::env::remove_var("SAP_CONNECTION");
     std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&spec_dir).ok();
+}
+
+#[test]
+fn a_suite_less_single_flow_resolves_sap_refs_from_the_config_file() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_dir("single-run-home");
+    let spec_dir = temp_dir("single-run-spec");
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let server_thread = serve_health(server, 2);
+    std::env::remove_var("SAP_USER");
+
+    with_fake_home(&home, || {
+        let config = flowproof_cli::config::Config {
+            sap: Some(flowproof_cli::config::SapProfile {
+                user: Some(base),
+                ..Default::default()
+            }),
+            fiori: None,
+        };
+        flowproof_cli::config::save(&config).expect("fixture config writes");
+
+        let spec = spec_dir.join("x.flow.yaml");
+        std::fs::write(
+            &spec,
+            "name: x\napp: api\nsteps:\n  - assert_api:\n      request: GET ${SAP_USER}/health\n      status: 200\n",
+        )
+        .expect("spec");
+        // No suite.yaml anywhere above `spec`: both commands must reach the
+        // API flow using only `flowproof config`'s seeded env fallback.
+        assert_eq!(
+            flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]),
+            0,
+            "record succeeds without a suite.yaml"
+        );
+        std::env::remove_var("SAP_USER");
+        assert_eq!(
+            flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]),
+            0,
+            "run succeeds without a suite.yaml"
+        );
+    });
+
+    std::env::remove_var("SAP_USER");
+    server_thread.join().ok();
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&spec_dir).ok();
+}
+
+#[test]
+fn a_suite_less_single_flow_resolves_business_data_from_sibling_values_file() {
+    let _guard = ENV.lock().expect("env lock");
+    let spec_dir = temp_dir("single-values-spec");
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let server_thread = serve_health(server, 2);
+    std::env::remove_var("API_BASE");
+
+    let spec = spec_dir.join("x.flow.yaml");
+    std::fs::write(
+        &spec,
+        "name: x\napp: api\nsteps:\n  - assert_api:\n      request: GET ${API_BASE}/health\n      status: 200\n",
+    )
+    .expect("spec");
+    std::fs::write(
+        spec_dir.join("x.values.yaml"),
+        format!("API_BASE: {base}\n"),
+    )
+    .expect("values");
+
+    assert_eq!(
+        flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]),
+        0,
+        "record succeeds from sibling values"
+    );
+    std::env::remove_var("API_BASE");
+    assert_eq!(
+        flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]),
+        0,
+        "run succeeds from sibling values"
+    );
+
+    std::env::remove_var("API_BASE");
+    server_thread.join().ok();
     std::fs::remove_dir_all(&spec_dir).ok();
 }
 

@@ -1621,6 +1621,21 @@ flowproof author-from-doc uat-export.pdf --app sap --name "Manage purchasing inf
 - `--name` — the flow name written into the draft's `name:` field.
 - `--out` — where the draft `.flow.yaml` is written.
 
+When the document contains concrete non-secret business data, such as a
+material, supplier, plant, customer, or order id, the draft can use
+`${NAME}` placeholders and `author-from-doc` writes a sibling values file
+next to the flow:
+
+```text
+draft.flow.yaml
+draft.values.yaml
+```
+
+`flowproof record draft.flow.yaml` and `flowproof run draft.flow.yaml` load
+that values file automatically. Keep passwords, tokens, and login
+credentials in `flowproof config` or the caller's secret environment, not in
+the generated values file.
+
 The PDF's text is extracted and segmented into per-step records, then each
 `Description`/`Expected` pair is translated into this page's grammar by a
 model call — the same "flag, don't guess" discipline as live authoring
