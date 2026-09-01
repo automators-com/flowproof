@@ -10,7 +10,7 @@ authors.workspace = true
 [features]
 default = []
 sap-com = ["dep:windows"]
-web = ["dep:headless_chrome"]
+web = ["dep:headless_chrome", "dep:ureq"]
 # Pixels-only (Citrix/RDP) driving: OCR perception via ocrs/rten, model
 # download via ureq.
 vision = ["dep:ocrs", "dep:rten", "dep:ureq"]

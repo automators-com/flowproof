@@ -1246,6 +1246,44 @@ skills-root for any other harness, and `--force` overwrites a target that
 already exists with different content. The skill deliberately never handles
 your password itself — see `plans/003-agent-config-skill.md`.
 
+### `flowproof doctor --sap` / `--fiori`: is any of this reachable?
+
+Writing a config profile doesn't tell you it actually points at something
+live. `flowproof doctor --sap` and `flowproof doctor --fiori` read whichever
+of the above is already seeded into your environment and report what they
+can reach — the SAP/Fiori equivalent of `flowproof doctor --agent` at the
+model boundary (see [Wiring a real agent](agent-testing.md#wiring-a-real-agent-env-handles-and-the-record-upstream)).
+
+```console
+$ flowproof doctor --sap
+SAP_CONNECTION=S/4HANA Development
+attached to SAP GUI scripting.
+connection 'S/4HANA Development': open
+session logged in as TRAINING-USER
+
+$ flowproof doctor --fiori
+GET https://my-launchpad.example.com/?sap-client=100&sap-language=EN
+reachable: HTTP 200 in 0.31s
+attempting a real login as training-user - this submits a real credential to
+a live system. Never run --fiori from CI or on a loop: a wrong password is a
+real failed logon.
+login succeeded: the shell loaded ("Home" is showing).
+```
+
+The two behave differently on purpose. `--sap` only ever OBSERVES — is SAP
+Logon reachable, is the configured connection open, who (if anyone) is
+logged in — and never submits a credential, because SAP already rejects a
+bad one on its own and a doctor that kept retrying a stale password would
+risk locking the account. `--fiori` checks reachability the same
+observation-only way first, but Fiori has no equivalent non-UI login channel
+to observe instead: if `fiori.user`/`fiori.password` are configured, it goes
+further and attempts a REAL login through the launchpad's own form. Treat
+`--fiori` as a manual, occasional check, never something wired into CI or run
+on a schedule — that real login attempt is exactly the kind of repeated,
+unattended credential submission that risks an account lockout. `--sap` is
+Windows-only, like `app: sap` itself; `--fiori` runs anywhere `app: web`
+does. Design rationale lives in `plans/002-sap-fiori-doctor.md`.
+
 ## Healing a stale trace
 
 When the app changes and replay fails, `heal` re-authors the flow from the
