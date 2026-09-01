@@ -811,6 +811,8 @@ Typing those into every new shell gets old fast — `flowproof config sap`
 writes them to a global, per-machine config file once, and every `record`/
 `run` picks them up automatically (see
 [below](#flowproof-config-credentials-without-hand-exporting-env-vars)).
+That includes a single `.flow.yaml` run directly with no neighboring
+`suite.yaml`.
 
 For a non-standard installation, set `SAP_LOGON_EXE` to the full path of
 `saplogon.exe`. Named connections wait up to 60 seconds by default; override
@@ -1245,6 +1247,36 @@ or `--agents` narrows to just one, `--dir <path>` adds an arbitrary
 skills-root for any other harness, and `--force` overwrites a target that
 already exists with different content. The skill deliberately never handles
 your password itself — see `plans/003-agent-config-skill.md`.
+
+### Business data values
+
+Credentials belong in `flowproof config`; test-case business data belongs
+beside the flow. When a flow references arbitrary non-secret values such as
+`${MATERIAL}`, `${SUPPLIER}`, `${PLANT}`, or `${ORDER_ID}`, `record` and
+`run` automatically load a sibling values file:
+
+```text
+display-info-record.flow.yaml
+display-info-record.trace.jsonl
+display-info-record.values.yaml
+```
+
+```yaml
+MATERIAL: M-10092
+SUPPLIER: "45000031"
+PLANT: "1000"
+```
+
+The values file is resolved relative to the flow file, so
+`flowproof run /path/to/display-info-record.flow.yaml` looks for
+`/path/to/display-info-record.values.yaml` no matter where the command is
+run from. Use `--vars <path>` to supply a different file, and repeat
+`--var KEY=VALUE` for one-off overrides:
+
+```console
+$ flowproof run display-info-record.flow.yaml --vars qa.values.yaml
+$ flowproof run display-info-record.flow.yaml --var MATERIAL=M-99999
+```
 
 ### `flowproof doctor --sap` / `--fiori`: is any of this reachable?
 

@@ -216,6 +216,12 @@ enum Command {
         /// Output trace file (default: <spec>.trace.jsonl next to the spec).
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// Business-data values file to load before resolving ${VAR}s.
+        #[arg(long)]
+        vars: Option<PathBuf>,
+        /// Business-data override, repeatable as KEY=VALUE.
+        #[arg(long = "var", value_name = "KEY=VALUE")]
+        var: Vec<String>,
         /// Emit the result as JSON on stdout (for programmatic callers).
         #[arg(long)]
         json: bool,
@@ -264,6 +270,12 @@ enum Command {
         /// Trace file (default: the trace `record` wrote for this spec).
         #[arg(short, long)]
         trace: Option<PathBuf>,
+        /// Business-data values file to load before resolving ${VAR}s.
+        #[arg(long)]
+        vars: Option<PathBuf>,
+        /// Business-data override, repeatable as KEY=VALUE.
+        #[arg(long = "var", value_name = "KEY=VALUE")]
+        var: Vec<String>,
         /// Emit the full report as JSON on stdout (for programmatic callers).
         #[arg(long)]
         json: bool,
@@ -447,6 +459,25 @@ pub fn default_trace_path(spec: &Path) -> PathBuf {
     spec.with_file_name(format!("{base}.trace.jsonl"))
 }
 
+pub fn default_values_path(spec: &Path) -> PathBuf {
+    let stem = spec
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let base = stem.strip_suffix(".flow.yaml").unwrap_or_else(|| {
+        stem.strip_suffix(".yaml")
+            .or_else(|| stem.strip_suffix(".yml"))
+            .unwrap_or(&stem)
+    });
+    spec.with_file_name(format!("{base}.values.yaml"))
+}
+
+#[derive(Debug, Clone, Default)]
+struct ValuesArgs {
+    vars_file: Option<PathBuf>,
+    vars: Vec<String>,
+}
+
 /// Pick the driver implementation for an app id — the browser driver for
 /// `web`, SAP GUI Scripting for `sap`, the platform UIA driver otherwise.
 pub fn driver_for(app: &str) -> Result<Box<dyn AppDriver>, String> {
@@ -510,19 +541,31 @@ fn record_failure_json(err: &flowproof_agent::RecordError) -> Option<serde_json:
     }
 }
 
-fn cmd_record(
-    spec_path: &Path,
+struct RecordOptions {
     out: Option<PathBuf>,
+    values: ValuesArgs,
     json: bool,
     author: AuthorArg,
     reuse: bool,
     verify: bool,
     recording: flowproof_driver::RecordingOptions,
-) -> Result<u8, String> {
+}
+
+fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
+    let RecordOptions {
+        out,
+        values,
+        json,
+        author,
+        reuse,
+        verify,
+        recording,
+    } = options;
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     // The suite's data (env_from) and env govern recording too — the
     // ${VAR}s a spec references must resolve the same here as in `run`.
     let manifest = apply_suite_context(spec_path)?;
+    let _values = apply_values_context(spec_path, &values)?;
     // Suite-level browser defaults apply only when the spec has none —
     // recording bakes the result into the trace header.
     if spec.browser.is_none() {
@@ -666,7 +709,7 @@ fn cmd_record(
         );
     }
     if verify {
-        return verify_recording(spec_path, &summary.trace_path, json, recording);
+        return verify_recording(spec_path, &summary.trace_path, values, json, recording);
     }
     Ok(EXIT_PASS)
 }
@@ -687,6 +730,7 @@ fn cmd_record(
 fn verify_recording(
     spec_path: &Path,
     trace_path: &Path,
+    values: ValuesArgs,
     json: bool,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<u8, String> {
@@ -695,12 +739,15 @@ fn verify_recording(
     }
     let replayed = cmd_run(
         spec_path,
-        Some(trace_path.to_path_buf()),
-        json,
-        0,
-        MissingTrace::Error,
-        AuthorArg::Rules,
-        recording,
+        RunOptions {
+            trace: Some(trace_path.to_path_buf()),
+            json,
+            retries: 0,
+            missing: MissingTrace::Error,
+            author: AuthorArg::Rules,
+            values,
+            recording,
+        },
     )?;
     if replayed == EXIT_PASS {
         if !json {
@@ -978,19 +1025,121 @@ fn apply_suite_env(manifest: &flowproof_agent::SuiteManifest) {
     }
 }
 
+#[derive(Default)]
+struct EnvOverlay {
+    previous: Vec<(String, Option<std::ffi::OsString>)>,
+}
+
+impl EnvOverlay {
+    fn set(&mut self, name: &str, value: &str) {
+        if !self.previous.iter().any(|(key, _)| key == name) {
+            self.previous
+                .push((name.to_string(), std::env::var_os(name)));
+        }
+        std::env::set_var(name, value);
+    }
+}
+
+impl Drop for EnvOverlay {
+    fn drop(&mut self) {
+        for (name, previous) in self.previous.iter().rev() {
+            match previous {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+fn valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn value_file_scalar(path: &Path, key: &str, value: &serde_yaml::Value) -> Result<String, String> {
+    match value {
+        serde_yaml::Value::String(s) => Ok(s.clone()),
+        serde_yaml::Value::Bool(b) => Ok(b.to_string()),
+        serde_yaml::Value::Number(n) => Ok(n.to_string()),
+        serde_yaml::Value::Null
+        | serde_yaml::Value::Sequence(_)
+        | serde_yaml::Value::Mapping(_)
+        | serde_yaml::Value::Tagged(_) => Err(format!(
+            "values file {} key `{key}` must be a string, number, or bool",
+            path.display()
+        )),
+    }
+}
+
+fn apply_values_file(path: &Path, overlay: &mut EnvOverlay) -> Result<(), String> {
+    let raw =
+        std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(&raw).map_err(|e| format!("parsing {}: {e}", path.display()))?;
+    let Some(mapping) = value.as_mapping() else {
+        return Err(format!(
+            "values file {} must be a YAML mapping",
+            path.display()
+        ));
+    };
+    for (key, value) in mapping {
+        let Some(name) = key.as_str() else {
+            return Err(format!(
+                "values file {} has a non-string key",
+                path.display()
+            ));
+        };
+        if !valid_env_name(name) {
+            return Err(format!(
+                "values file {} key `{name}` is invalid \
+                 (must match [A-Za-z_][A-Za-z0-9_]*)",
+                path.display()
+            ));
+        }
+        let scalar = value_file_scalar(path, name, value)?;
+        overlay.set(name, &scalar);
+    }
+    Ok(())
+}
+
+fn parse_var_arg(raw: &str) -> Result<(&str, &str), String> {
+    let Some((name, value)) = raw.split_once('=') else {
+        return Err(format!("--var `{raw}` must be KEY=VALUE"));
+    };
+    if !valid_env_name(name) {
+        return Err(format!(
+            "--var `{raw}` has invalid key `{name}` \
+             (must match [A-Za-z_][A-Za-z0-9_]*)"
+        ));
+    }
+    Ok((name, value))
+}
+
+fn apply_values_context(spec_path: &Path, args: &ValuesArgs) -> Result<EnvOverlay, String> {
+    let mut overlay = EnvOverlay::default();
+    let sibling = default_values_path(spec_path);
+    if args.vars_file.is_none() && sibling.exists() {
+        apply_values_file(&sibling, &mut overlay)?;
+    }
+    if let Some(path) = &args.vars_file {
+        apply_values_file(path, &mut overlay)?;
+    }
+    for raw in &args.vars {
+        let (name, value) = parse_var_arg(raw)?;
+        overlay.set(name, value);
+    }
+    Ok(overlay)
+}
+
 /// Parse a data command's stdout into env pairs. Dotenv-ish and strict:
 /// blank lines and `#` comments are skipped; everything else must be
 /// `NAME=VALUE` with a `${VAR}`-legal name; the value is taken verbatim
 /// (no quote stripping). Anything else is an error naming the line —
 /// running flows against half-seeded data is the failure mode to prevent.
 fn parse_env_lines(stdout: &str) -> Result<Vec<(String, String)>, String> {
-    let valid_name = |name: &str| {
-        let mut chars = name.chars();
-        chars
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-    };
     let mut pairs = Vec::new();
     for (i, line) in stdout.lines().enumerate() {
         let line = line.trim();
@@ -1001,7 +1150,7 @@ fn parse_env_lines(stdout: &str) -> Result<Vec<(String, String)>, String> {
             return Err(format!("env_from output line {} is not NAME=VALUE", i + 1));
         };
         let name = name.trim();
-        if !valid_name(name) {
+        if !valid_env_name(name) {
             return Err(format!(
                 "env_from output line {} has invalid name '{name}' \
                  (must match [A-Za-z_][A-Za-z0-9_]*)",
@@ -1279,6 +1428,7 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
         retries,
         missing,
         AuthorArg::Auto,
+        ValuesArgs::default(),
         flowproof_driver::RecordingOptions::default(),
     )
 }
@@ -1289,6 +1439,7 @@ fn run_suite_with_author(
     retries: u8,
     missing: MissingTrace,
     author: AuthorArg,
+    values: ValuesArgs,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<u8, String> {
     // Same fill-gaps-only seed `apply_suite_context` does for a single flow
@@ -1339,6 +1490,20 @@ fn run_suite_with_author(
                 errored_flow(
                     spec_path,
                     &spec_path.display().to_string(),
+                    e,
+                    json,
+                    &mut flows,
+                    &mut reports,
+                );
+                continue;
+            }
+        };
+        let values_overlay = match apply_values_context(spec_path, &values) {
+            Ok(overlay) => overlay,
+            Err(e) => {
+                errored_flow(
+                    spec_path,
+                    &gated_spec.name,
                     e,
                     json,
                     &mut flows,
@@ -1565,6 +1730,7 @@ fn run_suite_with_author(
         // captured value stays out of CI logs the same way it stays out of
         // the trace.
         let export_names: Vec<&str> = exported.iter().map(|(n, _)| n.as_str()).collect();
+        drop(values_overlay);
         if report.passed {
             for (name, value) in &exported {
                 std::env::set_var(name, value);
@@ -1861,17 +2027,28 @@ fn write_run_record(dir: &Path, flows: Vec<flowproof_replay::FlowRecord>) {
     }
 }
 
-fn cmd_run(
-    spec_path: &Path,
+struct RunOptions {
     trace: Option<PathBuf>,
     json: bool,
     retries: u8,
     missing: MissingTrace,
     author: AuthorArg,
+    values: ValuesArgs,
     recording: flowproof_driver::RecordingOptions,
-) -> Result<u8, String> {
+}
+
+fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
+    let RunOptions {
+        trace,
+        json,
+        retries,
+        missing,
+        author,
+        values,
+        recording,
+    } = options;
     if spec_path.is_dir() {
-        return run_suite_with_author(spec_path, json, retries, missing, author, recording);
+        return run_suite_with_author(spec_path, json, retries, missing, author, values, recording);
     }
     // A single flow gets its suite's env/data too — replay resolves ${VAR}
     // at moment-of-use, so the same values must be present as at record.
@@ -1881,6 +2058,7 @@ fn cmd_run(
     // expensive way - the second consecutive single-spec run failed on
     // state the first had left behind, while the suite passed.
     let manifest = apply_suite_context(spec_path)?;
+    let _values = apply_values_context(spec_path, &values)?;
     // Load the spec for its gate (this also surfaces spec parse errors on
     // single runs, deliberately — a typo'd spec should not replay).
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
@@ -2064,7 +2242,7 @@ fn cmd_run(
                     "FAIL",
                     step.detail
                         .as_deref()
-                        .map(|d| format!(" — {d}"))
+                        .map(step_detail_suffix)
                         .unwrap_or_default(),
                 ),
                 StepStatus::Skipped => ("SKIP", String::new()),
@@ -2072,7 +2250,7 @@ fn cmd_run(
                     "ERROR",
                     step.detail
                         .as_deref()
-                        .map(|d| format!(" — {d}"))
+                        .map(step_detail_suffix)
                         .unwrap_or_default(),
                 ),
             };
@@ -2103,6 +2281,27 @@ fn cmd_run(
         }
     }
     Ok(if report.passed { EXIT_PASS } else { EXIT_FAIL })
+}
+
+fn step_detail_suffix(detail: &str) -> String {
+    let mut suffix = format!(" — {detail}");
+    if let Some(command) = config_command_for_missing_secret(detail) {
+        suffix.push_str(&format!("\n         Run `{command}` to set it."));
+    }
+    suffix
+}
+
+fn config_command_for_missing_secret(detail: &str) -> Option<&'static str> {
+    let var = detail
+        .strip_prefix("secret ${")?
+        .strip_suffix("} is not set in the environment")?;
+    if var.starts_with("SAP_") {
+        Some("flowproof config sap")
+    } else if var.starts_with("FIORI_") {
+        Some("flowproof config fiori")
+    } else {
+        None
+    }
 }
 
 /// One control's row in the audit report. A rendering of the persisted run
@@ -2321,13 +2520,19 @@ fn cmd_author_from_doc(
         out,
     };
     match flowproof_agent::doc_author::author_from_doc(&opts) {
-        Ok(path) => {
+        Ok(result) => {
             println!(
                 "draft spec written to {} — DRAFT; review every step (a flagged one needs \
                  the live app to resolve it, an assert is a light translation of the \
                  document's own wording), then `flowproof record`",
-                path.display()
+                result.flow.display()
             );
+            if let Some(values) = result.values {
+                println!(
+                    "business-data values written to {} — review them; secrets still belong in `flowproof config`",
+                    values.display()
+                );
+            }
             Ok(EXIT_PASS)
         }
         Err(e) => Err(e.to_string()),
@@ -2504,6 +2709,8 @@ where
         Command::Record {
             spec,
             out,
+            vars,
+            var,
             json,
             author,
             reuse,
@@ -2518,18 +2725,26 @@ where
             with_keep_browser_open(keep_open, || {
                 cmd_record(
                     &spec,
-                    out,
-                    json,
-                    author,
-                    reuse,
-                    verify,
-                    recording_options(recording_detail, video, highlight_cursor),
+                    RecordOptions {
+                        out,
+                        values: ValuesArgs {
+                            vars_file: vars,
+                            vars: var,
+                        },
+                        json,
+                        author,
+                        reuse,
+                        verify,
+                        recording: recording_options(recording_detail, video, highlight_cursor),
+                    },
                 )
             })
         }),
         Command::Run {
             spec,
             trace,
+            vars,
+            var,
             json,
             retries,
             record_missing,
@@ -2559,12 +2774,22 @@ where
                     with_keep_browser_open(keep_open, || {
                         cmd_run(
                             &spec,
-                            trace,
-                            json,
-                            retries,
-                            missing,
-                            author,
-                            recording_options(recording_detail, video, highlight_cursor),
+                            RunOptions {
+                                trace,
+                                json,
+                                retries,
+                                missing,
+                                author,
+                                values: ValuesArgs {
+                                    vars_file: vars,
+                                    vars: var,
+                                },
+                                recording: recording_options(
+                                    recording_detail,
+                                    video,
+                                    highlight_cursor,
+                                ),
+                            },
                         )
                     })
                 })
@@ -2943,6 +3168,122 @@ mod tests {
     fn cli_definition_is_valid() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn default_values_path_mirrors_the_trace_path_convention() {
+        let spec = Path::new("/tmp/example/display.flow.yaml");
+        assert_eq!(
+            default_values_path(spec),
+            PathBuf::from("/tmp/example/display.values.yaml")
+        );
+    }
+
+    #[test]
+    fn values_context_loads_sibling_file_and_inline_overrides() {
+        let dir =
+            std::env::temp_dir().join(format!("flowproof-values-context-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec = dir.join("case.flow.yaml");
+        std::fs::write(&spec, "name: case\napp: api\nsteps: []\n").expect("spec");
+        std::fs::write(
+            dir.join("case.values.yaml"),
+            "FP_VALUES_A_MATERIAL: M-10092\nFP_VALUES_A_SUPPLIER: 45000031\nFP_VALUES_A_ACTIVE: true\n",
+        )
+        .expect("values");
+        std::env::remove_var("FP_VALUES_A_MATERIAL");
+        std::env::remove_var("FP_VALUES_A_SUPPLIER");
+        std::env::remove_var("FP_VALUES_A_ACTIVE");
+        {
+            let _overlay = apply_values_context(
+                &spec,
+                &ValuesArgs {
+                    vars_file: None,
+                    vars: vec!["FP_VALUES_A_MATERIAL=M-99999".into()],
+                },
+            )
+            .expect("values apply");
+            assert_eq!(
+                std::env::var("FP_VALUES_A_MATERIAL").as_deref(),
+                Ok("M-99999")
+            );
+            assert_eq!(
+                std::env::var("FP_VALUES_A_SUPPLIER").as_deref(),
+                Ok("45000031")
+            );
+            assert_eq!(std::env::var("FP_VALUES_A_ACTIVE").as_deref(), Ok("true"));
+        }
+        assert!(
+            std::env::var_os("FP_VALUES_A_MATERIAL").is_none(),
+            "values overlay restores the caller env"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_values_file_overrides_the_default_sibling_file() {
+        let dir =
+            std::env::temp_dir().join(format!("flowproof-values-explicit-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec = dir.join("case.flow.yaml");
+        let explicit = dir.join("qa.values.yaml");
+        std::fs::write(&spec, "name: case\napp: api\nsteps: []\n").expect("spec");
+        std::fs::write(
+            dir.join("case.values.yaml"),
+            "FP_VALUES_B_MATERIAL: DEFAULT\n",
+        )
+        .expect("default");
+        std::fs::write(&explicit, "FP_VALUES_B_MATERIAL: QA\n").expect("explicit");
+        std::env::remove_var("FP_VALUES_B_MATERIAL");
+        {
+            let _overlay = apply_values_context(
+                &spec,
+                &ValuesArgs {
+                    vars_file: Some(explicit),
+                    vars: Vec::new(),
+                },
+            )
+            .expect("values apply");
+            assert_eq!(std::env::var("FP_VALUES_B_MATERIAL").as_deref(), Ok("QA"));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_sap_secret_detail_names_the_sap_config_command() {
+        let suffix = step_detail_suffix("secret ${SAP_USER} is not set in the environment");
+        assert!(
+            suffix.contains("Run `flowproof config sap` to set it."),
+            "{suffix}"
+        );
+        assert!(
+            !suffix.contains("flowproof config fiori"),
+            "SAP_* must not point at the Fiori profile: {suffix}"
+        );
+    }
+
+    #[test]
+    fn missing_fiori_secret_detail_names_the_fiori_config_command() {
+        let suffix = step_detail_suffix("secret ${FIORI_USER} is not set in the environment");
+        assert!(
+            suffix.contains("Run `flowproof config fiori` to set it."),
+            "{suffix}"
+        );
+        assert!(
+            !suffix.contains("flowproof config sap"),
+            "FIORI_* must not point at the SAP profile: {suffix}"
+        );
+    }
+
+    #[test]
+    fn unrelated_missing_secret_detail_gets_no_config_command() {
+        let suffix = step_detail_suffix("secret ${MATERIAL} is not set in the environment");
+        assert!(
+            !suffix.contains("flowproof config"),
+            "suite-minted data must not get credential-profile advice: {suffix}"
+        );
     }
 
     #[test]

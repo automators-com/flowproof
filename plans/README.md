@@ -21,6 +21,8 @@ instead so they're easy to find as a set.
 | 1 | [001-credential-config.md](001-credential-config.md) | `flowproof config sap` / `flowproof config fiori`: a global, per-machine file for SAP GUI and Fiori credentials, replacing hand-exported env vars |
 | 2 | [002-sap-fiori-doctor.md](002-sap-fiori-doctor.md) | Stub — `flowproof doctor` for SAP/Fiori connectivity, split out of plan 1's open questions, not yet scoped |
 | 3 | [003-agent-config-skill.md](003-agent-config-skill.md) | `flowproof config skill`: installs an Agent Skill into an end user's own project so their coding agent (Claude Code, Codex CLI, and others) can walk them through `flowproof config sap`/`fiori` — issue #529 |
+| 4 | [004-single-flow-shareability.md](004-single-flow-shareability.md) | Closing the loop on "one `.flow.yaml` + one `flowproof config` + one `flowproof run`, no `suite.yaml`": a stale-naming inventory fix and a missing-var error that now names the fix — issue #534 |
+| 5 | [005-fiori-field-commit.md](005-fiori-field-commit.md) | Make Fiori/SAP WebGUI framed input typing pass only after the field value is committed and read back, preventing prefilled values from silently restoring |
 
 ## How to read and amend these
 

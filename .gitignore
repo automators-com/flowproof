@@ -34,6 +34,11 @@ yarn-error.log*
 .env.*
 !.env.example
 
+# Flowproof business-data values files are local/share-time inputs.
+# Secrets stay in flowproof config; do not commit concrete test data.
+*.values.yaml
+*.values.yml
+
 # maturin develop artifacts
 *.abi3.so
 *.pyd

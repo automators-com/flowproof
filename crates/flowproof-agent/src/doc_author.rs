@@ -33,6 +33,14 @@ pub enum DocAuthorError {
     NoStepsInferred,
     #[error("model produced a draft that does not parse as a flow spec: {0}")]
     DraftInvalid(#[from] crate::spec::SpecError),
+    #[error("model produced invalid business-data value `{0}`")]
+    InvalidValue(String),
+    #[error("model produced conflicting values for `{name}`: `{first}` and `{second}`")]
+    ValueConflict {
+        name: String,
+        first: String,
+        second: String,
+    },
     #[error(transparent)]
     Agent(#[from] AgentError),
     #[error("io error at '{path}': {source}")]
@@ -93,8 +101,16 @@ Overview`) - light copy-editing of the Expected text, not invention. If \
 Expected is empty or not a meaningful, checkable outcome, respond with \
 exactly: ASSERT: NONE
 
-Respond with ONLY the STEP:/UNEXPLAINED:/ASSERT: line(s) — no prose, no \
-quotes, no numbering, no code fences."
+If the document gives concrete non-secret business data that should be \
+reusable across runs (material number, supplier, plant, customer, order id, \
+dates, quantities, document numbers), put a placeholder in the STEP:/ASSERT: \
+text using `${{UPPER_SNAKE_CASE}}` and add one line per value as \
+`VALUE: UPPER_SNAKE_CASE=the literal value`. Do not emit VALUE lines for \
+passwords, tokens, API keys, or login credentials; those belong in \
+`flowproof config` or the caller's secret environment.
+
+Respond with ONLY the STEP:/UNEXPLAINED:/ASSERT:/VALUE: line(s) — no prose, \
+no quotes, no numbering, no code fences."
     )
 }
 
@@ -120,9 +136,16 @@ pub fn translate_record(
     record: &DocStepRecord,
     client: &mut dyn ModelClient,
 ) -> Result<Vec<DraftLine>, DocAuthorError> {
+    Ok(translate_record_with_values(record, client)?.lines)
+}
+
+fn translate_record_with_values(
+    record: &DocStepRecord,
+    client: &mut dyn ModelClient,
+) -> Result<DocTranslation, DocAuthorError> {
     let system = translation_system_prompt();
     let reply = client.complete(&system, &user_prompt(record))?;
-    let mut lines = Vec::new();
+    let mut translated = DocTranslation::default();
     for line in reply.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -133,24 +156,30 @@ pub fn translate_record(
             if step.is_empty() || step == "NO_ACTION" {
                 continue;
             }
-            lines.push(DraftLine::Action(step.to_string()));
+            translated.lines.push(DraftLine::Action(step.to_string()));
         } else if let Some(observed) = line.strip_prefix("UNEXPLAINED:") {
-            lines.push(DraftLine::Flagged(observed.trim().to_string()));
+            translated
+                .lines
+                .push(DraftLine::Flagged(observed.trim().to_string()));
         } else if let Some(observed) = line.strip_prefix("OUT_OF_SCOPE:") {
-            lines.push(DraftLine::OutOfScope(observed.trim().to_string()));
+            translated
+                .lines
+                .push(DraftLine::OutOfScope(observed.trim().to_string()));
         } else if let Some(assert) = line.strip_prefix("ASSERT:") {
             let assert = assert.trim();
             if assert.is_empty() || assert == "NONE" {
                 continue;
             }
-            lines.push(DraftLine::Assert(assert.to_string()));
+            translated.lines.push(DraftLine::Assert(assert.to_string()));
+        } else if let Some(value) = line.strip_prefix("VALUE:") {
+            translated.values.push(parse_value_line(value.trim())?);
         }
         // Any other line shape is silently ignored rather than treated
         // as an error: a model occasionally adds a stray line despite
         // instructions, and failing the whole step over one ignorable
         // line would be worse than tolerating it.
     }
-    Ok(lines)
+    Ok(translated)
 }
 
 /// doc-in, draft-spec-out options for [`author_from_doc`].
@@ -161,7 +190,79 @@ pub struct DocAuthorOptions {
     pub out: PathBuf,
 }
 
-pub fn author_from_doc(opts: &DocAuthorOptions) -> Result<PathBuf, DocAuthorError> {
+pub struct DocAuthorResult {
+    pub flow: PathBuf,
+    pub values: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BusinessValue {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Default)]
+struct DocTranslation {
+    lines: Vec<DraftLine>,
+    values: Vec<BusinessValue>,
+}
+
+fn default_values_path(spec: &Path) -> PathBuf {
+    let stem = spec
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let base = stem.strip_suffix(".flow.yaml").unwrap_or_else(|| {
+        stem.strip_suffix(".yaml")
+            .or_else(|| stem.strip_suffix(".yml"))
+            .unwrap_or(&stem)
+    });
+    spec.with_file_name(format!("{base}.values.yaml"))
+}
+
+fn valid_value_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn parse_value_line(line: &str) -> Result<BusinessValue, DocAuthorError> {
+    let Some((name, value)) = line.split_once('=') else {
+        return Err(DocAuthorError::InvalidValue(line.to_string()));
+    };
+    let name = name.trim();
+    if !valid_value_name(name) {
+        return Err(DocAuthorError::InvalidValue(line.to_string()));
+    }
+    Ok(BusinessValue {
+        name: name.to_string(),
+        value: value.trim().to_string(),
+    })
+}
+
+fn values_yaml(values: &[BusinessValue]) -> Result<String, DocAuthorError> {
+    let mut map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for value in values {
+        match map.get(&value.name) {
+            Some(existing) if existing != &value.value => {
+                return Err(DocAuthorError::ValueConflict {
+                    name: value.name.clone(),
+                    first: existing.clone(),
+                    second: value.value.clone(),
+                });
+            }
+            Some(_) => {}
+            None => {
+                map.insert(value.name.clone(), value.value.clone());
+            }
+        }
+    }
+    serde_yaml::to_string(&map).map_err(|e| DocAuthorError::InvalidValue(e.to_string()))
+}
+
+pub fn author_from_doc(opts: &DocAuthorOptions) -> Result<DocAuthorResult, DocAuthorError> {
     let config = BackendConfig::from_env().map_err(DocAuthorError::from)?;
     if !config.is_usable() {
         return Err(DocAuthorError::Agent(AgentError::Config(
@@ -175,8 +276,11 @@ pub fn author_from_doc(opts: &DocAuthorOptions) -> Result<PathBuf, DocAuthorErro
     let mut client = crate::llm::HttpModelClient::new(config);
 
     let mut lines = Vec::new();
+    let mut values = Vec::new();
     for record in &records {
-        lines.extend(translate_record(record, &mut client)?);
+        let translated = translate_record_with_values(record, &mut client)?;
+        lines.extend(translated.lines);
+        values.extend(translated.values);
     }
     if lines.is_empty() {
         return Err(DocAuthorError::NoStepsInferred);
@@ -193,7 +297,17 @@ pub fn author_from_doc(opts: &DocAuthorOptions) -> Result<PathBuf, DocAuthorErro
     );
     let yaml = draft_assembly::assemble(&header, &opts.name, &opts.app, &lines)?;
     std::fs::write(&opts.out, &yaml).map_err(|e| io_err(&opts.out, e))?;
-    Ok(opts.out.clone())
+    let values = if values.is_empty() {
+        None
+    } else {
+        let path = default_values_path(&opts.out);
+        std::fs::write(&path, values_yaml(&values)?).map_err(|e| io_err(&path, e))?;
+        Some(path)
+    };
+    Ok(DocAuthorResult {
+        flow: opts.out.clone(),
+        values,
+    })
 }
 
 #[cfg(test)]
@@ -310,6 +424,65 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(matches!(&lines[0], DraftLine::Action(a) if a == "Press the \"Go\" button"));
         assert!(matches!(&lines[1], DraftLine::Assert(a) if a == "page shows search results"));
+    }
+
+    #[test]
+    fn translate_record_extracts_business_values_separately() {
+        let mut client = ScriptedModel {
+            replies: ["STEP: Type ${MATERIAL} into the \"Material\" field\n\
+                 ASSERT: page shows ${MATERIAL}\n\
+                 VALUE: MATERIAL=M-10092"]
+            .into_iter()
+            .collect(),
+        };
+        let translated = translate_record_with_values(
+            &record(
+                "Enter material M-10092 in the Material field.",
+                "The page shows M-10092.",
+            ),
+            &mut client,
+        )
+        .expect("translates");
+        assert_eq!(translated.lines.len(), 2);
+        assert_eq!(
+            translated.values,
+            vec![BusinessValue {
+                name: "MATERIAL".to_string(),
+                value: "M-10092".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn values_yaml_deduplicates_identical_values_and_rejects_conflicts() {
+        let yaml = values_yaml(&[
+            BusinessValue {
+                name: "MATERIAL".into(),
+                value: "M-10092".into(),
+            },
+            BusinessValue {
+                name: "MATERIAL".into(),
+                value: "M-10092".into(),
+            },
+        ])
+        .expect("identical duplicates are harmless");
+        assert!(yaml.contains("MATERIAL: M-10092"), "{yaml}");
+
+        let err = values_yaml(&[
+            BusinessValue {
+                name: "MATERIAL".into(),
+                value: "M-10092".into(),
+            },
+            BusinessValue {
+                name: "MATERIAL".into(),
+                value: "M-99999".into(),
+            },
+        ])
+        .expect_err("conflicting values are not silently resolved");
+        assert!(
+            err.to_string().contains("conflicting values"),
+            "error names the conflict: {err}"
+        );
     }
 
     #[test]
