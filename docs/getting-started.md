@@ -807,6 +807,11 @@ $env:SAP_CLIENT = "100"                      # optional
 $env:SAP_LANGUAGE = "EN"                     # optional
 ```
 
+Typing those into every new shell gets old fast — `flowproof config sap`
+writes them to a global, per-machine config file once, and every `record`/
+`run` picks them up automatically (see
+[below](#flowproof-config-credentials-without-hand-exporting-env-vars)).
+
 For a non-standard installation, set `SAP_LOGON_EXE` to the full path of
 `saplogon.exe`. Named connections wait up to 60 seconds by default; override
 that for slow SAProuter landscapes with `FLOWPROOF_SAP_CONNECT_TIMEOUT_MS`.
@@ -1176,6 +1181,59 @@ mask live text whenever the expectation contained a reference.
 This covers the *trace text*; the *pixels* of secret fields are covered by
 the recording layer (`redact:` rules and always-on password-field masking,
 see [docs/recording.md](recording.md)).
+
+### `flowproof config`: credentials without hand-exporting env vars
+
+`${VAR}` still resolves from the environment exactly as above — `flowproof
+config` just gives SAP GUI and Fiori a place to put those variables once per
+machine instead of re-exporting them in every shell. It writes a config file
+under a per-user directory (`%APPDATA%\flowproof\` on Windows, `~/Library/
+Application Support/flowproof/` on macOS, `$XDG_CONFIG_HOME/flowproof/` or
+`~/.config/flowproof/` on Linux) and seeds any of its variables that aren't
+already set before `record`/`run` resolve `${VAR}`s — an explicit shell
+export, a CI secret, or a suite's own `env:`/`env_from` always wins over it.
+Nothing is checked against a live system when you run it: SAP already gives a
+specific error the first time a wrong value is actually used, so there is
+nothing to duplicate here.
+
+```console
+$ flowproof config sap
+SAP user: training-user
+SAP password: ****************
+SAP client (optional): 100
+SAP language (optional): EN
+SAP Logon connection name (optional): S/4HANA Development
+wrote /Users/you/Library/Application Support/flowproof/config.yaml
+
+$ flowproof config fiori
+Fiori user: training-user
+Fiori password: ****************
+Fiori client (optional): 100
+Fiori language (optional): EN
+Fiori launchpad base URL (optional): https://my-launchpad.example.com/
+wrote /Users/you/Library/Application Support/flowproof/config.yaml
+```
+
+`sap` and `fiori` are independent profiles, not one shared identity — a real
+deployment's Fiori login can differ from its SAP GUI one (an SSO-fronted
+launchpad in front of a password-auth backend is common), so `sap` seeds
+`SAP_USER`/`SAP_PASSWORD`/`SAP_CLIENT`/`SAP_LANGUAGE`/`SAP_CONNECTION` and
+`fiori` seeds its own `FIORI_USER`/`FIORI_PASSWORD`/`FIORI_CLIENT`/
+`FIORI_LANGUAGE`/`FIORI_BASE_URL` — a Fiori flow's steps reference the
+`FIORI_*` names, same as `examples/fiori/manage-info-records.flow.yaml`.
+Re-running either command merges into what's already stored rather than
+blanking fields you didn't mention — pressing Enter at a prompt keeps the
+current value (the password prompt never shows what's currently stored, so
+"leave blank to keep it" is the only way to change one field without
+retyping the rest).
+
+Flags exist for scripting a machine's setup instead of typing it by hand:
+`--user`, `--password`, `--client`, `--language`, `--connection` (`sap`) or
+`--base-url` (`fiori`). `flowproof config show` prints the file's path and
+contents with the password masked; `flowproof config path` prints just the
+resolved path. Design rationale, including what's deliberately out of scope
+for now (multiple SAP systems on one machine, Windows file permissions),
+lives in `plans/001-credential-config.md`.
 
 ## Healing a stale trace
 
