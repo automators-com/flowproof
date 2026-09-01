@@ -23,6 +23,15 @@
 # into "wait until the page shows ..."), which the deterministic parser
 # then rejects outright. That produced several non-reproducible failures
 # while first recording this flow, unrelated to the browser or the app.
+#
+# Deliberately still SAP_* here, unlike the sibling flows: this is the one
+# Fiori example with a committed trace (login-smoke.trace.jsonl), which
+# stores these var names as literal text (plans/001-credential-config.md's
+# "Two profiles, not one identity" moved Fiori onto its own FIORI_USER/
+# FIORI_PASSWORD/FIORI_CLIENT/FIORI_LANGUAGE names, and the sibling flows
+# use them). Renaming the steps here without re-recording would desync this
+# flow from its own cassette; re-recording needs a live Fiori system this
+# environment doesn't have. Rename alongside the next real re-record.
 name: Fiori login smoke test
 app: web
 url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
