@@ -309,25 +309,45 @@ fill-gaps-only rule, before assuming the config file itself is wrong.
    skill` itself, so a reader who isn't already inside an agent session
    knows the command exists.
 
-## Open questions
+## Both original open questions, resolved
 
-- **Whether a future `--password-stdin`/`--password-env` flag on
-  `flowproof config` changes the answer in "The password question."** If
-  one is ever added (for CI-provisioning use cases, independent of this
-  plan), it would let the skill pass a password through an env var the
-  agent sets and immediately unsets, without a literal value on the command
-  line — meaningfully safer than today's `--password`, and worth revisiting
-  the "agent never touches the password" decision against at that point.
-  Not proposed by this plan; noted so it isn't rediscovered from scratch
-  later.
-- **Whether `flowproof config skill` should also work when there's no
-  `flowproof.exe`/binary co-located** — i.e., does anything about how npm's
-  wrapper or the PyPI wheel resolves to the underlying binary change what
-  `include_str!`'s embedded content actually is at runtime for those two
-  distributions versus a `cargo install`? Expected to be a non-issue (all
-  three distributions run the same compiled Rust binary or bind to the same
-  crate), but worth a concrete check against the actual npm/PyPI packaging
-  scripts during implementation rather than assumed here.
+Both items this section used to carry as open have since been closed —
+one by a deliberate decision, one by direct verification against the
+actual packaging code. Recorded here rather than deleted outright, per
+`plans/README.md`'s own rule that a plan's decisions are the changelog,
+not just its git history.
+
+- **A `--password-stdin`/`--password-env` flag, or any lighter-weight
+  password path (`--password-only` was the concrete version raised):
+  deliberately not being built right now.** Discussed directly — the
+  friction a flag like this would remove (walking through the other four
+  prompts to reach the password one) turned out to be close to free in
+  practice, since those four are "press Enter to keep the current value,"
+  not real re-entry. What it would *not* fix is the actual gap — someone
+  driving the agent from somewhere with no second real terminal to run any
+  interactive prompt in at all — and closing that gap for real means a
+  materially different, more sensitive decision about how a password
+  reaches the process non-interactively, not a UX shortcut on the existing
+  path. Decision: leave "The password question" exactly as this plan
+  shipped it; revisit the non-interactive path only as its own deliberate
+  call later, not as a follow-on to this plan.
+- **Whether `flowproof config skill` behaves the same across npm, PyPI,
+  and `cargo install` — verified, not assumed.** Traced end to end:
+  `sdk/python/flowproof/cli.py` is a bare `sys.argv` passthrough into
+  `_native.cli_main`, which (`crates/flowproof-python/src/lib.rs:62-64`)
+  calls `flowproof_cli::run_cli(args)` directly — the identical dispatch
+  function the compiled binary and `config_skill_e2e.rs` already exercise.
+  `maturin build` compiles `flowproof-cli`'s lib crate straight into the
+  PyO3 native extension, so `include_str!` re-embeds the same
+  `crates/flowproof-cli/skills/flowproof-config/SKILL.md` from the same
+  source path at that build's own compile time — not a separate
+  reimplementation, not a bundled binary with its own resolution logic.
+  npm's per-platform packages (`sdk/js/package.json`'s
+  `optionalDependencies`) ship the same compiled `flowproof-cli` bin
+  target `cargo install` builds directly. All three distributions run the
+  same `run_cli → ConfigAction::Skill → cmd_skill → SKILL_MD` path,
+  confirmed by reading the actual packaging code rather than inferred from
+  "they're the same crate" alone.
 
 ## Divergence from this plan
 
