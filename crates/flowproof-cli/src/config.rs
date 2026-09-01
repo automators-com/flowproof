@@ -435,6 +435,80 @@ pub fn cmd_path() -> Result<u8, String> {
     Ok(EXIT_PASS)
 }
 
+/// The canonical `flowproof-config` skill, embedded at compile time so it
+/// ships through every distribution (npm, PyPI, `cargo install`) without a
+/// separate packaging step (plans/003-agent-config-skill.md, "Getting the
+/// skill into the end user's project").
+const SKILL_MD: &str = include_str!("../skills/flowproof-config/SKILL.md");
+
+/// `flowproof config skill`: write the `flowproof-config` Agent Skill into
+/// the current directory for whichever coding-agent convention(s) the
+/// caller asks for. Neither `--claude` nor `--agents` given means both
+/// defaults — `.claude/skills/` (Claude Code) and `.agents/skills/` (Codex
+/// CLI, GitHub Copilot, Cursor, Gemini CLI, and the rest of that shared
+/// convention) — since an end user doesn't have to know in advance which
+/// their agent reads, and writing an unread file costs nothing
+/// (plans/003-agent-config-skill.md, "Getting the skill into the end
+/// user's project"). `--claude`/`--agents` alone narrows to just that one;
+/// `--dir` is always additive on top of whichever of those apply, for a
+/// harness that reads neither convention.
+pub fn cmd_skill(
+    claude: bool,
+    agents: bool,
+    dir: Option<PathBuf>,
+    force: bool,
+) -> Result<u8, String> {
+    let default_both = !claude && !agents;
+    let mut roots = Vec::new();
+    if claude || default_both {
+        roots.push(PathBuf::from(".claude/skills"));
+    }
+    if agents || default_both {
+        roots.push(PathBuf::from(".agents/skills"));
+    }
+    if let Some(d) = dir {
+        roots.push(d);
+    }
+
+    for root in roots {
+        let path = root.join("flowproof-config").join("SKILL.md");
+        if write_skill_file(&path, force)? {
+            println!("wrote {}", path.display());
+        } else {
+            println!("up to date: {}", path.display());
+        }
+    }
+    Ok(EXIT_PASS)
+}
+
+/// Writes [`SKILL_MD`] to `path` unless it's already there verbatim.
+/// Returns `true` if a write happened, `false` for a no-op — re-running
+/// `flowproof config skill` is safe and silent once the file is current. A
+/// target that exists with DIFFERENT content is refused without `--force`:
+/// it may have been hand-edited, and clobbering it silently would be worse
+/// than a named refusal (plans/003-agent-config-skill.md, "Idempotent, not
+/// silently destructive").
+fn write_skill_file(path: &Path, force: bool) -> Result<bool, String> {
+    if let Ok(existing) = std::fs::read_to_string(path) {
+        if existing == SKILL_MD {
+            return Ok(false);
+        }
+        if !force {
+            return Err(format!(
+                "{} already exists with different content; pass --force to overwrite",
+                path.display()
+            ));
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, SKILL_MD)
+        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

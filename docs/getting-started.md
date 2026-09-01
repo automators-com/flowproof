@@ -1235,6 +1235,17 @@ resolved path. Design rationale, including what's deliberately out of scope
 for now (multiple SAP systems on one machine, Windows file permissions),
 lives in `plans/001-credential-config.md`.
 
+`flowproof config skill` installs a packaged Agent Skill into the current
+project — `.claude/skills/flowproof-config/` (Claude Code) and
+`.agents/skills/flowproof-config/` (Codex CLI, GitHub Copilot, Cursor,
+Gemini CLI, and the rest of that shared convention) by default — so a
+coding agent working in your test-automation project can walk you through
+`sap`/`fiori` itself instead of you reading this section by hand. `--claude`
+or `--agents` narrows to just one, `--dir <path>` adds an arbitrary
+skills-root for any other harness, and `--force` overwrites a target that
+already exists with different content. The skill deliberately never handles
+your password itself — see `plans/003-agent-config-skill.md`.
+
 ## Healing a stale trace
 
 When the app changes and replay fails, `heal` re-authors the flow from the
