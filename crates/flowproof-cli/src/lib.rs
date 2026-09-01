@@ -1247,6 +1247,12 @@ fn run_suite_with_author(
     author: AuthorArg,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<u8, String> {
+    // Same fill-gaps-only seed `apply_suite_context` does for a single flow
+    // (plans/001-credential-config.md, "How it reaches the flow") — this is
+    // the other entry point that reaches a driver, and it built its own
+    // manifest handling below without ever going through that chokepoint, so
+    // the config file was invisible to every suite-mode `run`.
+    config::seed_env();
     let mut specs = Vec::new();
     discover_specs(dir, &mut specs)?;
     if specs.is_empty() {
