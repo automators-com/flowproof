@@ -1,5 +1,5 @@
 ---
-status: open
+status: done
 ---
 # Plan 3 — an agent skill that drives `flowproof config`
 
@@ -328,3 +328,73 @@ fill-gaps-only rule, before assuming the config file itself is wrong.
   three distributions run the same compiled Rust binary or bind to the same
   crate), but worth a concrete check against the actual npm/PyPI packaging
   scripts during implementation rather than assumed here.
+
+## Divergence from this plan
+
+One thing decided during implementation that this plan left ambiguous:
+**`--dir <path>` is always additive**, never a mode switch. A first pass at
+`cmd_skill` made `--dir` alone suppress the two conventional defaults (only
+the custom directory got written) — wrong, because someone reaching for
+`--dir` almost certainly still wants Claude Code and the `.agents/skills/`
+group covered too; they're adding a third target for an unlisted harness,
+not replacing the first two. Fixed before landing: only `--claude`/`--agents`
+narrow the defaults (each alone means "just this one"); `--dir` sits outside
+that logic entirely and is written in addition to whatever `--claude`/
+`--agents` resolve to. Covered by
+`config_skill_dir_writes_an_arbitrary_extra_target`
+(`crates/flowproof-cli/tests/config_skill_e2e.rs`).
+
+Also not done, stated plainly rather than silently skipped: **Phase 3's live
+agent-session verification** — opening a scratch directory in an actual
+Claude Code (and Codex CLI, if available) session and watching the agent
+use the installed skill in a real conversation — did not happen here. What
+did happen instead: the compiled binary was run by hand in a scratch
+directory outside this repo, confirming the exact output shown in "Getting
+the skill into the end user's project" (`wrote .claude/skills/...`, `wrote
+.agents/skills/...`, idempotent rerun, `--help` text), plus the automated
+`config_skill_e2e.rs` suite covering the mechanics (defaults, `--claude`/
+`--agents`, `--dir`, `--force`). Whether the *skill's own instructions*
+actually produce the intended conversation — the agent asking the right
+questions, never asking for the password, handing that step back correctly
+— is unverified by an actual agent following them. Real risk, not closed
+here; flagged the same way plan 1 flagged its unverified Windows path.
+
+## What landed
+
+All four Phasing steps, though not exactly in the written order (the
+canonical `SKILL.md` and the CLI wiring landed together, then tests, then
+docs):
+
+- **`crates/flowproof-cli/skills/flowproof-config/SKILL.md`** (new): the
+  full skill body — six numbered steps (pick a profile, gather non-secret
+  fields, one flag-driven call, hand the password step back, verify via
+  `show`/`path`, and a troubleshooting note about `seed_env`'s
+  fill-gaps-only precedence) — grounded in the same behavior cited
+  throughout this plan.
+- **`crates/flowproof-cli/src/config.rs`**: `SKILL_MD` (`include_str!` of
+  the file above), `cmd_skill(claude, agents, dir, force)`, and
+  `write_skill_file` (idempotent-or-refuse-without-`--force` write, shared
+  by every target).
+- **`crates/flowproof-cli/src/lib.rs`**: `ConfigAction::Skill` (`--claude`,
+  `--agents`, `--dir`, `--force`), dispatched in `run_cli`'s existing
+  `Command::Config` match.
+- **`crates/flowproof-cli/tests/config_skill_e2e.rs`** (new, 5 tests):
+  both defaults write and are byte-identical; a rerun is a no-op; a
+  differing existing file is refused without `--force` and accepted with
+  it; `--claude`/`--agents` alone select just one target; `--dir` is
+  additive on top of the defaults.
+- **`docs/getting-started.md`**: a paragraph after the existing `flowproof
+  config` section documenting `flowproof config skill` and its flags.
+
+Verified: `cargo fmt --check`, `cargo clippy -p flowproof-cli --all-targets
+-- -D warnings`, and every `config`-matching test in `flowproof-cli`
+(18 tests across the module's own unit tests, `config_cli_e2e.rs`,
+`config_seed_e2e.rs`, and the new `config_skill_e2e.rs`) all pass. The
+compiled binary was also run by hand in a scratch directory outside this
+repo and produced exactly the output shown above.
+
+Not done, and said so above rather than silently: the live-agent-session
+half of Phase 3 (see "Divergence from this plan"), and everything this
+plan already named as future work in "Open questions" and "Non-goals"
+(a `--password-stdin`/`--password-env` flag, `agentskills.io` registry
+publish, a multi-skill catalog surface, `doctor` integration).
