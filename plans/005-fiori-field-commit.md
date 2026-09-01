@@ -1,7 +1,7 @@
 ---
 status: planned
 ---
-# Plan 5 - Fiori field value commit
+# Plan 5 — Fiori field value commit
 
 Plan 4 made a single flow shareable without a `suite.yaml`: credentials and
 connection defaults come from `flowproof config`, while business data can live
