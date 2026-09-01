@@ -541,8 +541,7 @@ fn record_failure_json(err: &flowproof_agent::RecordError) -> Option<serde_json:
     }
 }
 
-fn cmd_record(
-    spec_path: &Path,
+struct RecordOptions {
     out: Option<PathBuf>,
     values: ValuesArgs,
     json: bool,
@@ -550,7 +549,18 @@ fn cmd_record(
     reuse: bool,
     verify: bool,
     recording: flowproof_driver::RecordingOptions,
-) -> Result<u8, String> {
+}
+
+fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
+    let RecordOptions {
+        out,
+        values,
+        json,
+        author,
+        reuse,
+        verify,
+        recording,
+    } = options;
     let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     // The suite's data (env_from) and env govern recording too — the
     // ${VAR}s a spec references must resolve the same here as in `run`.
@@ -729,13 +739,15 @@ fn verify_recording(
     }
     let replayed = cmd_run(
         spec_path,
-        Some(trace_path.to_path_buf()),
-        json,
-        0,
-        MissingTrace::Error,
-        AuthorArg::Rules,
-        values,
-        recording,
+        RunOptions {
+            trace: Some(trace_path.to_path_buf()),
+            json,
+            retries: 0,
+            missing: MissingTrace::Error,
+            author: AuthorArg::Rules,
+            values,
+            recording,
+        },
     )?;
     if replayed == EXIT_PASS {
         if !json {
@@ -2015,8 +2027,7 @@ fn write_run_record(dir: &Path, flows: Vec<flowproof_replay::FlowRecord>) {
     }
 }
 
-fn cmd_run(
-    spec_path: &Path,
+struct RunOptions {
     trace: Option<PathBuf>,
     json: bool,
     retries: u8,
@@ -2024,7 +2035,18 @@ fn cmd_run(
     author: AuthorArg,
     values: ValuesArgs,
     recording: flowproof_driver::RecordingOptions,
-) -> Result<u8, String> {
+}
+
+fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
+    let RunOptions {
+        trace,
+        json,
+        retries,
+        missing,
+        author,
+        values,
+        recording,
+    } = options;
     if spec_path.is_dir() {
         return run_suite_with_author(spec_path, json, retries, missing, author, values, recording);
     }
@@ -2703,16 +2725,18 @@ where
             with_keep_browser_open(keep_open, || {
                 cmd_record(
                     &spec,
-                    out,
-                    ValuesArgs {
-                        vars_file: vars,
-                        vars: var,
+                    RecordOptions {
+                        out,
+                        values: ValuesArgs {
+                            vars_file: vars,
+                            vars: var,
+                        },
+                        json,
+                        author,
+                        reuse,
+                        verify,
+                        recording: recording_options(recording_detail, video, highlight_cursor),
                     },
-                    json,
-                    author,
-                    reuse,
-                    verify,
-                    recording_options(recording_detail, video, highlight_cursor),
                 )
             })
         }),
@@ -2750,16 +2774,22 @@ where
                     with_keep_browser_open(keep_open, || {
                         cmd_run(
                             &spec,
-                            trace,
-                            json,
-                            retries,
-                            missing,
-                            author,
-                            ValuesArgs {
-                                vars_file: vars,
-                                vars: var,
+                            RunOptions {
+                                trace,
+                                json,
+                                retries,
+                                missing,
+                                author,
+                                values: ValuesArgs {
+                                    vars_file: vars,
+                                    vars: var,
+                                },
+                                recording: recording_options(
+                                    recording_detail,
+                                    video,
+                                    highlight_cursor,
+                                ),
                             },
-                            recording_options(recording_detail, video, highlight_cursor),
                         )
                     })
                 })
