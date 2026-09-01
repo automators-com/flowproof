@@ -331,6 +331,23 @@ const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
   }
   if (!el) { return 'no_element'; }
   var win = doc.defaultView;
+  function isSapWebGui(){
+    return !!doc.querySelector(
+      '#webguiPage0, #webguiform0, [id^="webgui"], #Cua2Fiori2Toolbar, '
+      + '.urMnu, .lsPOMNContainer, [id^="ARIA_"], [id*="SAPGUI"]'
+    );
+  }
+  if (OP === 'kind'){
+    var nativeInput = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+    return (nativeInput ? 'native_input' : 'other') + ':'
+      + (isSapWebGui() ? 'sap_webgui' : 'generic');
+  }
+  if (OP === 'value'){
+    var value = ('value' in el)
+      ? String(el.value)
+      : String(el.innerText !== undefined ? el.innerText : (el.textContent || ''));
+    return 'value:' + JSON.stringify(value);
+  }
   if (OP === 'scroll'){
     var target = el;
     // In standards mode `body.scrollTop` is inert; the scrolling element
@@ -1832,6 +1849,15 @@ impl WebAppDriver {
             ))),
             _ => Ok(status),
         }
+    }
+
+    fn frame_value(&mut self, query: &flowproof_driver::FrameQuery) -> Result<String, DriverError> {
+        let status = self.frame_act(query, "value", serde_json::Value::Null)?;
+        let Some(raw) = status.strip_prefix("value:") else {
+            return Ok(status);
+        };
+        serde_json::from_str(raw)
+            .map_err(|e| DriverError::Browser(format!("reading framed value: {e}")))
     }
 
     /// A real mouse click at page-absolute coordinates - the same three
@@ -3406,20 +3432,43 @@ impl AppDriver for WebAppDriver {
                 let x = parsed.get("x").and_then(|v| v.as_f64()).unwrap_or_default();
                 let y = parsed.get("y").and_then(|v| v.as_f64()).unwrap_or_default();
                 self.click_page_point(x, y)?;
-                // Select whatever the field already holds AFTER the click
-                // (which itself collapses to a caret) so typing REPLACES
-                // it - the same click -> select -> keystrokes contract the
-                // top-level path below uses, not an append.
-                self.frame_act(&query, "select_all", serde_json::Value::Null)?;
-                self.tab()?
-                    .type_str(text)
-                    .map_err(|e| web_err("typing into the framed field", e))?;
-                // An Escape here was tried to dismiss the value-help popup
-                // real keystrokes can trigger on classic SAP GUI screens
-                // (confirmed live), but Escape on these fields REVERTS to
-                // the pre-edit value rather than just closing the popup -
-                // confirmed live too, the worse of the two problems, since
-                // it silently erases what was just typed. Removed.
+                let kind = self.frame_act(&query, "kind", serde_json::Value::Null)?;
+                if kind == "native_input:sap_webgui" {
+                    // SAP WebGUI validates some fields only when they blur.
+                    // A prefilled field can briefly show typed text, then
+                    // restore its old value on commit. Use the same keyboard
+                    // path a person used live, commit with Tab, then read
+                    // back the accepted value before passing.
+                    self.press_key("A", &[KeyMod::Ctrl])?;
+                    self.press_key("Backspace", &[])?;
+                    self.tab()?
+                        .type_str(text)
+                        .map_err(|e| web_err("typing into the framed SAP field", e))?;
+                    self.press_key("Tab", &[])?;
+                    std::thread::sleep(Duration::from_millis(300));
+                    let accepted = self.frame_value(&query)?;
+                    if accepted != text {
+                        return Err(DriverError::Browser(format!(
+                            "the field inside iframe '{}' accepted a different value after commit",
+                            query.frame
+                        )));
+                    }
+                } else {
+                    // Select whatever the field already holds AFTER the click
+                    // (which itself collapses to a caret) so typing REPLACES
+                    // it - the same click -> select -> keystrokes contract the
+                    // top-level path below uses, not an append.
+                    self.frame_act(&query, "select_all", serde_json::Value::Null)?;
+                    self.tab()?
+                        .type_str(text)
+                        .map_err(|e| web_err("typing into the framed field", e))?;
+                    // An Escape here was tried to dismiss the value-help popup
+                    // real keystrokes can trigger on classic SAP GUI screens
+                    // (confirmed live), but Escape on these fields REVERTS to
+                    // the pre-edit value rather than just closing the popup -
+                    // confirmed live too, the worse of the two problems, since
+                    // it silently erases what was just typed. Removed.
+                }
             }
             return Ok(());
         }

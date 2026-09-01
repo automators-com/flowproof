@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 # Plan 5 — Fiori field value commit
 
@@ -132,17 +132,19 @@ field-setting action. The trace should not need to expand into the internal
 click/select/delete/type/tab sequence unless existing trace structure already
 requires that representation.
 
-Failure details should name the real problem, for example:
+Failure details should name the real problem while staying value-free:
 
 ```text
-the field inside iframe 'Application' accepted '10300016' instead of the
-requested value
+the field inside iframe 'Application' accepted a different value after commit
 ```
 
-The message must avoid leaking secrets. In this plan's intended use case the
-values are business data, but the same field machinery can still receive
-credential placeholders on login screens, so failure rendering must preserve
-the existing masking guarantees.
+This deliberately diverges from the earlier accepted-vs-requested wording: by
+the time the web adapter reads the field it only has resolved text, and cannot
+know whether the requested value came from business data or a credential
+placeholder. In this plan's intended use case the values are business data, but
+the same field machinery can still receive credential placeholders on login
+screens, so failure rendering must preserve the existing masking guarantees by
+not printing either value.
 
 ## Tests
 
@@ -152,7 +154,7 @@ the existing masking guarantees.
 - Add a regression test proving `Type ${SUPPLIER} into ... in the iframe ...`
   replaces the prefilled value, commits it, and only passes after readback.
 - Add a negative regression test proving a revert after commit fails at the
-  value-setting step with a clear accepted-vs-requested message.
+  value-setting step with a clear value-free commit/readback message.
 - Add a non-SAP generic web fixture proving ordinary top-level typing does not
   gain an automatic `Tab`.
 - Add a non-SAP generic framed fixture proving the stronger commit behavior is
@@ -184,3 +186,25 @@ the existing masking guarantees.
 None. The design is intentionally scoped: fix the adapter/runtime contract for
 Fiori/SAP WebGUI framed inputs, keep generic web behavior stable, and use local
 fixtures for regression coverage.
+
+## Landed
+
+Implemented in `crates/flowproof-adapters/src/web.rs`: same-origin framed
+native inputs that look like SAP WebGUI now use the real click, Control+A,
+Backspace, type, Tab commit path and then read the field back before the step
+passes. Generic top-level inputs and generic framed inputs keep their existing
+non-auto-Tab behavior.
+
+Added `crates/flowproof-cli/tests/fiori_field_commit_e2e.rs` with local browser
+fixtures for the SAP-like commit path, the revert-after-commit failure, and the
+two generic non-auto-Tab guards. Updated `docs/authoring.md` with the Fiori
+commit/readback behavior and frame-scoped assertion guidance.
+
+Verified with `cargo fmt --all --check`, `cargo check -j 1 -p flowproof-cli
+--test fiori_field_commit_e2e`, `cargo clippy -j 1 -p flowproof-adapters
+--all-targets --all-features -- -D warnings`, `cargo clippy -j 1 -p
+flowproof-cli --all-targets --all-features -- -D warnings`, and `git diff
+--check`. Runtime `cargo test` attempts for the new E2E and plan-4 values-file
+compatibility test were blocked locally by the machine running out of disk space
+while building executable artifacts; CI should run them with normal disk
+headroom.
