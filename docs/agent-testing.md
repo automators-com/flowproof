@@ -166,6 +166,11 @@ default). And if the agent spawns a child that outlives it, the wall clock
 can exceed that timeout, because flowproof stops the process it started
 rather than the tree.
 
+`--agent` is this doctor's only concern — for SAP GUI / Fiori connectivity
+(`app: sap` / `app: web`), see [`flowproof doctor --sap` /
+`--fiori`](getting-started.md#flowproof-doctor---sap----fiori-is-any-of-this-reachable)
+in the getting-started guide instead.
+
 **A record run that captures nothing FAILS.** If zero model requests reach
 the proxy, `record` errors and writes NO trace. That is the one failure a
 determinism tool must never let through: an agent that reached the real

@@ -4,6 +4,7 @@
 mod agent_flow;
 mod capture;
 pub mod config;
+mod doctor;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -335,22 +336,43 @@ enum Command {
         #[arg(long, conflicts_with = "run")]
         since: Option<String>,
     },
-    /// Check that an agent's model traffic actually reaches flowproof, before
-    /// you write a spec or spend a key on a recording.
+    /// Check that an agent's model traffic reaches flowproof, or that SAP
+    /// GUI / Fiori is reachable, before you write a spec or spend a key or
+    /// credential on it. Exactly one of `--agent`, `--sap`, `--fiori`.
     ///
-    /// Starts the proxy, runs the command once, and reports what ARRIVED.
-    /// It deliberately does not tell you the wiring is correct: it tells you
-    /// what it saw, because an agent with two clients can reach the proxy
-    /// with one and the real provider with the other.
+    /// `--agent` starts the proxy, runs the command once, and reports what
+    /// ARRIVED — it deliberately does not tell you the wiring is correct,
+    /// because an agent with two clients can reach the proxy with one and
+    /// the real provider with the other. `--sap`/`--fiori` read whatever
+    /// `flowproof config` seeded into the environment and report what they
+    /// can reach: `--sap` only ever observes (never submits a credential —
+    /// SAP already rejects a bad one on its own); `--fiori` also attempts a
+    /// real login when `FIORI_USER`/`FIORI_PASSWORD` are both configured, so
+    /// it must never run in CI or on any repeated trigger — see
+    /// plans/002-sap-fiori-doctor.md.
     Doctor {
         /// The command that starts the agent, exactly as `agent.command:`
         /// would spell it.
+        #[arg(long, conflicts_with_all = ["sap", "fiori"])]
+        agent: Option<String>,
+        /// Check SAP GUI: is SAP Logon reachable, and what does the
+        /// configured connection (`SAP_CONNECTION`) currently show?
+        /// Observation only — never submits a credential.
+        #[arg(long, conflicts_with = "fiori")]
+        sap: bool,
+        /// Check Fiori: is the launchpad URL reachable, and — only when
+        /// FIORI_USER/FIORI_PASSWORD are configured — does a real login
+        /// work? NOT CI-safe: a wrong password is a real failed logon on a
+        /// live system, so this is a manual, occasional check only.
         #[arg(long)]
-        agent: String,
-        /// Seconds to let the agent run before giving up on it.
+        fiori: bool,
+        /// Seconds to let the agent run before giving up (`--agent`), or the
+        /// Fiori login attempt before giving up (`--fiori`). Unused by
+        /// `--sap`, which never waits on anything external.
         #[arg(long, default_value_t = 60)]
         timeout: u64,
-        /// The task handed to the agent through FLOWPROOF_PROMPT.
+        /// The task handed to the agent through FLOWPROOF_PROMPT
+        /// (`--agent` only).
         #[arg(long, default_value = "Say hello.")]
         prompt: String,
     },
@@ -2529,9 +2551,21 @@ where
         Command::Capture { port, out, json } => capture::cmd_capture(port, Some(out), json),
         Command::Doctor {
             agent,
+            sap,
+            fiori,
             timeout,
             prompt,
-        } => agent_flow::cmd_doctor(&agent, timeout, &prompt),
+        } => match (agent, sap, fiori) {
+            (Some(agent), false, false) => agent_flow::cmd_doctor_agent(&agent, timeout, &prompt),
+            (None, true, false) => doctor::cmd_doctor_sap(),
+            (None, false, true) => doctor::cmd_doctor_fiori(timeout),
+            (None, false, false) => {
+                Err("specify one of --agent <command>, --sap, or --fiori".to_string())
+            }
+            _ => unreachable!(
+                "clap's conflicts_with_all on --agent/--sap/--fiori already rejects any other combination"
+            ),
+        },
         Command::AuthorFromDoc {
             doc,
             app,
@@ -3033,6 +3067,67 @@ mod tests {
             ])
             .is_err(),
             "keep-open implies a visible browser, so --headless contradicts it"
+        );
+    }
+
+    /// plans/002-sap-fiori-doctor.md: `--agent`, `--sap`, `--fiori` are
+    /// mutually exclusive on `doctor`, enforced by clap before either
+    /// handler ever runs.
+    #[test]
+    fn doctor_agent_conflicts_with_sap() {
+        assert!(
+            Cli::try_parse_from(["flowproof", "doctor", "--agent", "./start-agent", "--sap"])
+                .is_err(),
+            "--agent and --sap answer different questions and must not combine"
+        );
+    }
+
+    #[test]
+    fn doctor_agent_conflicts_with_fiori() {
+        assert!(Cli::try_parse_from([
+            "flowproof",
+            "doctor",
+            "--agent",
+            "./start-agent",
+            "--fiori"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn doctor_sap_conflicts_with_fiori() {
+        assert!(Cli::try_parse_from(["flowproof", "doctor", "--sap", "--fiori"]).is_err());
+    }
+
+    /// The documented onboarding invocation
+    /// (`docs/agent-testing.md:139`) must keep parsing exactly as it always
+    /// has - `--agent` moved from required to optional to make room for
+    /// `--sap`/`--fiori`, and that move must not disturb this.
+    #[test]
+    fn doctor_agent_alone_still_parses() {
+        assert!(Cli::try_parse_from(["flowproof", "doctor", "--agent", "./start-agent"]).is_ok());
+    }
+
+    #[test]
+    fn doctor_sap_alone_parses() {
+        assert!(Cli::try_parse_from(["flowproof", "doctor", "--sap"]).is_ok());
+    }
+
+    #[test]
+    fn doctor_fiori_alone_parses() {
+        assert!(Cli::try_parse_from(["flowproof", "doctor", "--fiori"]).is_ok());
+    }
+
+    /// clap accepts `doctor` with none of the three - that's deliberate
+    /// (there is no natural default among them), so the "pick one" error is
+    /// `run_cli`'s job, not clap's. Covered separately below.
+    #[test]
+    fn doctor_with_none_of_the_three_parses_but_run_cli_rejects_it() {
+        assert!(Cli::try_parse_from(["flowproof", "doctor"]).is_ok());
+        assert_eq!(
+            run_cli(["doctor"]),
+            EXIT_ERROR,
+            "run_cli must name the missing choice rather than panic or silently no-op"
         );
     }
 

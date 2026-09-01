@@ -992,6 +992,84 @@ pub mod com {
         ))
     }
 
+    /// One SAP GUI session's login state, as `doctor --sap` sees it. Mirrors
+    /// the two states `connect()` already distinguishes via `Info.User`
+    /// (empty vs. populated) — this stops there rather than calling
+    /// `try_auto_login` (plans/002-sap-fiori-doctor.md, "The SAP check:
+    /// observe only").
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum SapSessionState {
+        LoggedIn(String),
+        AtLoginScreen,
+    }
+
+    /// What `doctor --sap` observed: a single pass over whatever is already
+    /// there, with no retry loop and no side effect on the live system.
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    pub struct SapObservation {
+        /// `SAPGUI` was found in the Running Object Table at all.
+        pub attached: bool,
+        /// `None` when `connection` was empty (attach-only, so "found"
+        /// doesn't apply); `Some(true/false)` otherwise.
+        pub connection_found: Option<bool>,
+        /// Every session on the matching connection(s) — empty is itself an
+        /// observation ("attached, but no session is open").
+        pub sessions: Vec<SapSessionState>,
+    }
+
+    /// Look at what is already there. Unlike `connect()`, this never starts
+    /// SAP Logon, never opens a connection that is not already open, and
+    /// never submits a credential — each of those is an action on a live
+    /// system, and this command's whole point is to observe without acting
+    /// on it (plans/002-sap-fiori-doctor.md). `connection` empty means
+    /// attach-only, the same convention `connect()` uses.
+    pub fn observe(connection: &str) -> Result<SapObservation, DriverError> {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let sapgui = match attach_to_sapgui() {
+            Ok(sapgui) => Disp(sapgui),
+            Err(_) => return Ok(SapObservation::default()),
+        };
+        let engine = sapgui.call_disp("GetScriptingEngine", vec![])?;
+        let connections = engine.get_disp("Children")?;
+        let count = connections.get_i32("Count").unwrap_or(0);
+
+        let mut candidates = Vec::new();
+        for index in 0..count {
+            let candidate = connections.call_disp("ElementAt", vec![VARIANT::from(index)])?;
+            if connection.is_empty() || ComEngine::connection_matches(&candidate, connection) {
+                candidates.push(candidate);
+            }
+        }
+        let connection_found = (!connection.is_empty()).then(|| !candidates.is_empty());
+
+        let mut sessions = Vec::new();
+        for candidate in &candidates {
+            let session_list = candidate.get_disp("Children")?;
+            let count = session_list.get_i32("Count").unwrap_or(0);
+            for index in 0..count {
+                let session = session_list.call_disp("ElementAt", vec![VARIANT::from(index)])?;
+                let user = session
+                    .get_disp("Info")
+                    .map(|info| info.get_string("User"))
+                    .unwrap_or_default();
+                let user = user.trim();
+                sessions.push(if user.is_empty() {
+                    SapSessionState::AtLoginScreen
+                } else {
+                    SapSessionState::LoggedIn(user.to_string())
+                });
+            }
+        }
+
+        Ok(SapObservation {
+            attached: true,
+            connection_found,
+            sessions,
+        })
+    }
+
     impl SapEngine for ComEngine {
         fn connect(
             &mut self,
@@ -1241,6 +1319,13 @@ pub mod com {
         }
     }
 }
+
+/// `doctor --sap` (plans/002-sap-fiori-doctor.md): a read-only look at
+/// whatever SAP GUI session already exists, never a login attempt. Windows
+/// only, like the rest of `com` — `driver_for("sap")` refuses this whole app
+/// on every other platform before `flowproof-cli` would ever call it.
+#[cfg(windows)]
+pub use com::{observe, SapObservation, SapSessionState};
 
 #[cfg(test)]
 mod tests {
