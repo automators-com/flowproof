@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: done
 ---
 # Plan 4 — closing the loop on single-flow shareability
 
@@ -184,15 +184,135 @@ layers narrative onto.
   credentials file can or should solve; nothing found while researching
   this plan contradicts that.
 
+## Post-plan refinement: business data without `suite.yaml`
+
+After this plan landed, the remaining shareability gap is clearer:
+`flowproof config` handles credentials and connection defaults, but it does
+not and should not handle arbitrary business data such as `${MATERIAL}`,
+`${SUPPLIER}`, `${PLANT}`, `${CUSTOMER}`, `${ORDER_ID}`, or any other
+document-specific input a test case needs. Those values are why the current
+examples still lean on `suite.yaml` plus `env_from`/`mint-test-data.sh` for
+some flows.
+
+The direction to carry into the next plan: introduce a values-file layer for
+business data, keeping secrets in `flowproof config` or the caller's secret
+environment. This fits the real user workflow better than requiring a
+person to hand-type many `--var KEY=value` flags, because these users start
+from a test-case document. `author-from-doc` can read that document, extract
+the business inputs it needs, generate placeholders in the flow, and write
+the sibling values file automatically.
+
+Proposed artifact shape:
+
+```text
+display-info-record-by-supplier.flow.yaml
+display-info-record-by-supplier.trace.jsonl
+display-info-record-by-supplier.values.yaml
+```
+
+The flow keeps reusable placeholders:
+
+```yaml
+steps:
+  - Type ${SUPPLIER} into the "Supplier" field
+  - Type ${MATERIAL} into the "Material" field
+```
+
+The sibling values file carries non-secret document data:
+
+```yaml
+SUPPLIER: "45000031"
+MATERIAL: "M-10092"
+PLANT: "1000"
+```
+
+Default discovery should mirror the existing trace convention and resolve
+relative to the flow file, not the current working directory:
+
+- `x.flow.yaml` → `x.trace.jsonl`
+- `x.flow.yaml` → `x.values.yaml`
+
+So `flowproof run /path/to/x.flow.yaml` should look for
+`/path/to/x.values.yaml` by default. Moving the three sibling files together
+keeps the test case runnable from any directory.
+
+Explicit overrides still matter for technical users and CI:
+
+```bash
+flowproof run x.flow.yaml --vars qa.values.yaml
+flowproof run x.flow.yaml --vars qa.values.yaml --var MATERIAL=M-99999
+```
+
+Likely precedence, still to be finalized in the next plan:
+
+1. `--var KEY=value`
+2. `--vars path.yaml`
+3. sibling `<flow-stem>.values.yaml`
+4. suite `env` / `env_from`
+5. `flowproof config` for credential-profile names
+6. ambient shell env, subject to the current fill-gaps-only semantics
+
+The product workflow this enables:
+
+1. User starts with the same test-case document they already follow manually.
+2. `flowproof author-from-doc` extracts both the screen steps and the
+   business inputs.
+3. Flowproof writes `*.flow.yaml`, `*.trace.jsonl`, and `*.values.yaml`.
+4. User runs `flowproof config sap` or `flowproof config fiori` once for
+   credentials.
+5. User replays with `flowproof run x.flow.yaml`; the sibling values file is
+   loaded automatically.
+
+Open design questions for the follow-up plan:
+
+- Should `author-from-doc` always generate a values file when it extracts
+  business data, or only when a value appears more than once / is marked as
+  case data?
+- Should `run` print a short note when it auto-loads `x.values.yaml`, or stay
+  quiet unless a referenced var is missing?
+- Should values files be allowed to contain only strings, or should JSON/YAML
+  scalars be accepted and converted at resolution time?
+- Should flow-level `env_from` or `values_from` exist later for generated
+  data, replacing suite-level `mint-test-data.sh` for single-flow examples?
+
 ## Next
 
-- [ ] Implement the per-step suggestion in `cmd_run`'s rendering loop,
+- [x] Implement the per-step suggestion in `cmd_run`'s rendering loop,
   `crates/flowproof-cli/src/lib.rs`.
-- [ ] Add the fixture test proving suite-less single-flow credential
+- [x] Add the fixture test proving suite-less single-flow credential
   resolution (codifying the manual check this plan already ran).
-- [ ] Add the suggestion-line tests (SAP_*, FIORI_*, unrelated var, JSON
+- [x] Add the suggestion-line tests (SAP_*, FIORI_*, unrelated var, JSON
   untouched).
-- [ ] Add the matching code comment to
+- [x] Add the matching code comment to
   `display-info-record-by-supplier.flow.yaml`.
-- [ ] Amend `plans/001-credential-config.md` and `plans/README.md` as above.
-- [ ] `docs/getting-started.md` one-liner.
+- [x] Amend `plans/001-credential-config.md` and verify `plans/README.md`'s
+  plan 4 row. Implementation note: the row already existed, so no table edit
+  was needed.
+- [x] `docs/getting-started.md` one-liner.
+
+## What landed
+
+- `cmd_run`'s human step rendering now tells users to run
+  `flowproof config sap` for `SAP_*` missing-secret details, and the
+  equivalent `flowproof config fiori` line for `FIORI_*`. Other missing
+  vars, such as suite-minted `${MATERIAL}`, stay untouched.
+- `--json` still emits the original `StepReport.detail` without the human
+  suggestion text.
+- `config_seed_e2e` now records and runs a suite-less single `app: api` flow
+  whose `${SAP_USER}` value comes only from a fixture `flowproof config` file.
+- `display-info-record-by-supplier.flow.yaml`,
+  `plans/001-credential-config.md`, and `docs/getting-started.md` now carry
+  the plan's documentation updates.
+
+Verified with:
+
+- `cargo fmt`
+- `CARGO_INCREMENTAL=0 cargo test -p flowproof-cli --lib secret_detail -- --nocapture`
+- `CARGO_INCREMENTAL=0 cargo test -p flowproof-cli --test config_seed_e2e -- --nocapture --test-threads=1`
+- `CARGO_INCREMENTAL=0 cargo test -p flowproof-cli --test api_pipeline missing_secret -- --nocapture --test-threads=1`
+
+The first broad filtered cargo run attempted to link every `flowproof-cli`
+test binary and failed with `No space left on device`; after `cargo clean`,
+the target-scoped runs above passed. The `config_seed_e2e` target needed to
+run outside the sandbox because its local 127.0.0.1 server fixture was
+blocked from binding inside the sandbox.
