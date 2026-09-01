@@ -20,6 +20,7 @@ instead so they're easy to find as a set.
 |------|-----|----------------|
 | 1 | [001-credential-config.md](001-credential-config.md) | `flowproof config sap` / `flowproof config fiori`: a global, per-machine file for SAP GUI and Fiori credentials, replacing hand-exported env vars |
 | 2 | [002-sap-fiori-doctor.md](002-sap-fiori-doctor.md) | Stub — `flowproof doctor` for SAP/Fiori connectivity, split out of plan 1's open questions, not yet scoped |
+| 3 | [003-agent-config-skill.md](003-agent-config-skill.md) | `flowproof config skill`: installs an Agent Skill into an end user's own project so their coding agent (Claude Code, Codex CLI, and others) can walk them through `flowproof config sap`/`fiori` — issue #529 |
 
 ## How to read and amend these
 

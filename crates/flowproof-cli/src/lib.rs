@@ -172,6 +172,28 @@ enum ConfigAction {
     /// Print the resolved config file path alone (for scripting or opening
     /// in an editor).
     Path,
+    /// Install the `flowproof-config` Agent Skill into the current
+    /// directory, so a coding agent (Claude Code, or anything reading the
+    /// shared `.agents/skills/` convention — Codex CLI, GitHub Copilot,
+    /// Cursor, Gemini CLI) can walk the user through `sap`/`fiori`
+    /// (plans/003-agent-config-skill.md). Defaults to writing both
+    /// `.claude/skills/` and `.agents/skills/`.
+    Skill {
+        /// Write only `.claude/skills/flowproof-config/SKILL.md`.
+        #[arg(long)]
+        claude: bool,
+        /// Write only `.agents/skills/flowproof-config/SKILL.md`.
+        #[arg(long)]
+        agents: bool,
+        /// Also write to `<dir>/flowproof-config/SKILL.md` — for a harness
+        /// that reads neither `.claude/skills/` nor `.agents/skills/`.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Overwrite a target file that already exists with different
+        /// content.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2472,6 +2494,12 @@ where
             ),
             ConfigAction::Show => config::cmd_show(),
             ConfigAction::Path => config::cmd_path(),
+            ConfigAction::Skill {
+                claude,
+                agents,
+                dir,
+                force,
+            } => config::cmd_skill(claude, agents, dir, force),
         },
         Command::Record {
             spec,
