@@ -1,0 +1,21 @@
+# Business data for sap-gui-fiori-excel.flow.yaml — non-secret SAP
+# identifiers, safe to commit (unlike credentials, which stay in
+# `flowproof config sap` / `flowproof config fiori`, never in this file).
+#
+# `*.values.yaml` is gitignored (see .gitignore) because most flows' values
+# files hold environment-specific test data that should not be committed.
+# This one is the exception's template, not the exception: copy it to
+# sap-gui-fiori-excel.values.yaml (untracked) before recording or running —
+# `record`/`run` load the sibling `.values.yaml`, never the `.example`.
+#
+# Pulled live from MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg,
+# a plant-scoped row (plans/006-sap-gui-fiori-excel-config-demo.md
+# "Resolved workflow choices"). If the reference tenant changes, refresh
+# with the same OData shape examples/fiori/mint-test-data.sh uses —
+# credentials for that query come from flowproof config or the operator's
+# environment, never from this file.
+SUPPLIER: "10300001"
+MATERIAL: TG10
+PLANT: "1010"
+NET_PRICE: "12.35"
+REPORT_TILE: Display Purchasing Info Record by Supplier
