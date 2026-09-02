@@ -92,14 +92,14 @@ steps:
       - Type ${FIORI_USER} into the "User" field
       - Type ${FIORI_PASSWORD} into the "Password" field
       - Press the "Log On" button
-      - Wait until page shows Home within 60s
-      - Wait until page shows ${REPORT_TILE} within 20s
-      - Click ${REPORT_TILE}
-      - Wait until page shows Info Records per Supplier within 20s
-      - Type ${captured.gui_material} into the "Material" field inside iframe "Application"
-      - Type ${SUPPLIER} into the "Supplier" field inside iframe "Application"
-      - Type ${PLANT} into the "Plant" field inside iframe "Application"
-      - Press the "Go" button
+      - Wait until page shows Display Purchasing Info Record by Supplier within 60s
+      - Click "Display Purchasing Info Record by Supplier"
+      - Wait until page shows Info Records per Supplier within 60s
+      - Type ${captured.gui_material} into the "Material" in the iframe "Application"
+      - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
+      - Type ${PLANT} into the "Plant" in the iframe "Application"
+      - Press the "Execute" button in the iframe "Application"
+      - Wait until page shows Purchasing Info Records for Supplier within 60s
       - Press the "Export" button
       - Wait until the download completes as fiori_export within 60s
 
@@ -132,7 +132,6 @@ Fiori iframe if the generic labels do not replay reliably.
   SUPPLIER: "10300001"
   PLANT: "1010"
   NET_PRICE: "12.35"
-  REPORT_TILE: Display Purchasing Info Record by Supplier
   ```
 
   The values are non-secret SAP business identifiers and can be committed in the
@@ -141,9 +140,11 @@ Fiori iframe if the generic labels do not replay reliably.
   credentials in `flowproof config` or the operator's environment, not in the
   example package.
 - Fiori should use the already-recorded launchpad tile
-  `Display Purchasing Info Record by Supplier`, which opens the WebGUI screen
-  titled `Info Records per Supplier`. Existing live artifacts show stable iframe
-  field selectors for the search form if label targeting is not enough:
+  `Display Purchasing Info Record by Supplier`, which opens the WebGUI selection
+  screen. The search is submitted with the
+  `Execute` button inside iframe `Application`, then waits for the result title
+  `Purchasing Info Records for Supplier`. Existing live artifacts show stable
+  iframe field selectors for the search form if label targeting is not enough:
   Supplier `css:#M0\:46\:\:\:0\:34`, Material `css:#M0\:46\:\:\:1\:34`,
   and Plant `css:#M0\:46\:\:\:8\:34` inside iframe `Application`.
 - The Excel handoff should export from the Fiori/WebGUI report result, then
@@ -175,7 +176,6 @@ SUPPLIER: "10300001"
 MATERIAL: TG10
 PLANT: "1010"
 NET_PRICE: "12.35"
-REPORT_TILE: Display Purchasing Info Record by Supplier
 ```
 
 The README should state the contract plainly:

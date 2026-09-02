@@ -64,13 +64,14 @@ steps:
       - Type ${FIORI_USER} into the "User" field
       - Type ${FIORI_PASSWORD} into the "Password" field
       - Press the "Log On" button
-      - Wait until page shows ${REPORT_TILE} within 60s
-      - Click ${REPORT_TILE}
-      - Wait until page shows Info Records per Supplier within 45s
+      - Wait until page shows Display Purchasing Info Record by Supplier within 60s
+      - Click "Display Purchasing Info Record by Supplier"
+      - Wait until page shows Info Records per Supplier within 60s
       - Type ${captured.gui_material} into the "Material" in the iframe "Application"
       - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
       - Type ${PLANT} into the "Plant" in the iframe "Application"
-      - Press the "Go" button
+      - Press the "Execute" button in the iframe "Application"
+      - Wait until page shows Purchasing Info Records for Supplier within 60s
       - Press the "Export" button
       - Wait until the download completes as fiori_export within 60s
 
