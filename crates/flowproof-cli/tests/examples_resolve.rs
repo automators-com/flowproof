@@ -8,6 +8,8 @@ use flowproof_agent::{FlowSpec, SuiteManifest};
 const FIORI_SPEC: &str = include_str!("../../../examples/fiori/manage-info-records.flow.yaml");
 const PURCHASE_INFO_RECORDS_SPEC: &str =
     include_str!("../../../examples/fiori/purchase-info-records-report.flow.yaml");
+const SAP_GUI_FIORI_EXCEL_SPEC: &str =
+    include_str!("../../../examples/release-notes/sap-gui-fiori-excel.flow.yaml");
 const FIORI_SUITE: &str = include_str!("../../../examples/fiori/suite.yaml");
 const CONN_TEST_SPEC: &str = include_str!("../../../examples/api/connection-test.flow.yaml");
 /// The npm-path agent quickstart. It is the first example a reader coming
@@ -79,6 +81,24 @@ fn purchase_info_records_example_parses_as_a_multi_surface_flow() {
     assert!(
         spec.apps.contains_key("fiori") && spec.apps.contains_key("excel"),
         "flow declares both the fiori and excel surfaces"
+    );
+}
+
+/// The release-notes walkthrough (plans/006-sap-gui-fiori-excel-config-
+/// demo.md) is a three-surface flow, one more than
+/// `purchase_info_records_example_parses_as_a_multi_surface_flow`'s two —
+/// this only proves it parses and declares all three, since several of its
+/// steps (the exact SAP GUI field ids, the Fiori export control) are
+/// deliberately left for `flowproof record` to resolve against the live
+/// target system, not guessed here.
+#[test]
+fn sap_gui_fiori_excel_example_parses_as_a_three_surface_flow() {
+    let spec = FlowSpec::parse(SAP_GUI_FIORI_EXCEL_SPEC).expect("example parses");
+    assert!(
+        spec.apps.contains_key("gui")
+            && spec.apps.contains_key("fiori")
+            && spec.apps.contains_key("excel"),
+        "flow declares the gui, fiori, and excel surfaces"
     );
 }
 

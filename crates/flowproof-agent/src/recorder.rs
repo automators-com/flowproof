@@ -1957,7 +1957,8 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
     // Case-insensitive FALLBACK, mirroring element anchors: an exact
     // match always wins; when it misses, lowercased comparison decides
     // ("page shows Close Account" against a page reading "Close
-    // account").
+    // account"). Soft hyphens are layout hints in browser text, so text
+    // matchers compare the human-visible text.
     //
     // Widening-only, and it must stay byte-identical to replay's
     // `text_matches`: if record and replay disagree about a single
@@ -1966,16 +1967,21 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
     // form therefore does NOT take the fallback (widening it would fail
     // traces that used to pass), and a nonzero case-sensitive count is
     // the count.
-    let (actual_ci, expected_ci) = (actual.to_lowercase(), expected.to_lowercase());
     match matcher {
-        TextMatch::Contains => actual.contains(expected) || actual_ci.contains(&expected_ci),
-        TextMatch::NotContains => !actual.contains(expected),
-        TextMatch::CountEquals(n) => {
-            let sensitive = actual.matches(expected).count() as u64;
-            sensitive == n
-                || (sensitive == 0 && actual_ci.matches(&expected_ci).count() as u64 == n)
+        TextMatch::Contains => flowproof_driver::text_contains(actual, expected),
+        TextMatch::NotContains => {
+            let actual = flowproof_driver::normalize_visible_text(actual);
+            let expected = flowproof_driver::normalize_visible_text(expected);
+            !actual.contains(&expected)
         }
-        TextMatch::Equals => actual == expected || actual_ci == expected_ci,
+        TextMatch::CountEquals(n) => {
+            flowproof_driver::text_occurrences(expected, actual) as u64 == n
+        }
+        TextMatch::Equals => {
+            let actual = flowproof_driver::normalize_visible_text(actual);
+            let expected = flowproof_driver::normalize_visible_text(expected);
+            actual == expected || actual.to_lowercase() == expected.to_lowercase()
+        }
         TextMatch::NumericEquals => matches!(
             (flowproof_driver::numeric_value(actual), expected.parse::<f64>()),
             (Some(a), Ok(e)) if a == e
@@ -1989,12 +1995,19 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
         TextMatch::Cookie(_) => false,
         // A title is compared as plain text, not with the url's path/query
         // rules: it is a human-facing string, not a structured locator.
-        TextMatch::TitleEquals => actual.trim() == expected.trim(),
+        TextMatch::TitleEquals => {
+            flowproof_driver::normalize_visible_text(actual).trim()
+                == flowproof_driver::normalize_visible_text(expected).trim()
+        }
         TextMatch::TitleContains => flowproof_driver::text_contains(actual, expected),
-        TextMatch::Empty(want_empty) => actual.trim().is_empty() == want_empty,
+        TextMatch::Empty(want_empty) => {
+            flowproof_driver::normalize_visible_text(actual)
+                .trim()
+                .is_empty()
+                == want_empty
+        }
     }
 }
-
 /// Does this condition hold RIGHT NOW?
 ///
 /// The predicate language of `repeat.until` and `when` is a deliberate

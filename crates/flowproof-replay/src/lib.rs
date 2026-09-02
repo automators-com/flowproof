@@ -497,19 +497,23 @@ fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
 /// only when the case-sensitive one found nothing.
 fn text_matches(expect: &serde_json::Value, expected: &str, negated: bool, text: &str) -> bool {
     if let Some(want_empty) = expect.get("value_empty").and_then(|v| v.as_bool()) {
-        return text.trim().is_empty() == want_empty;
+        return flowproof_driver::normalize_visible_text(text)
+            .trim()
+            .is_empty()
+            == want_empty;
     }
+    let text = flowproof_driver::normalize_visible_text(text);
+    let expected = flowproof_driver::normalize_visible_text(expected);
     let (text_ci, expected_ci) = (text.to_lowercase(), expected.to_lowercase());
     if negated {
-        !text.contains(expected)
+        !text.contains(&expected)
     } else if let Some(n) = expect.get("count").and_then(|v| v.as_u64()) {
-        let sensitive = text.matches(expected).count() as u64;
-        sensitive == n || (sensitive == 0 && text_ci.matches(&expected_ci).count() as u64 == n)
+        flowproof_driver::text_occurrences(&expected, &text) as u64 == n
     } else if expect.get("value_contains").is_some() {
-        text.contains(expected) || text_ci.contains(&expected_ci)
+        flowproof_driver::text_contains(&text, &expected)
     } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
         matches!(
-            (numeric_value(text), expected.parse::<f64>()),
+            (numeric_value(&text), expected.parse::<f64>()),
             (Some(actual), Ok(wanted)) if actual == wanted
         )
     } else {

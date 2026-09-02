@@ -1,0 +1,84 @@
+# One test case across three surfaces: SAP GUI, SAP Fiori, and Excel — the
+# artifact plans/006-sap-gui-fiori-excel-config-demo.md asked for, answering
+# issue #536 ("SAP GUI flow continuing into Fiori, with flowproof config").
+#
+# The point is not new engine capability — multi-surface flows, Fiori
+# downloads, and assert_spreadsheet all already ship (see
+# examples/fiori/purchase-info-records-report.flow.yaml, the Fiori-to-Excel
+# precedent this reuses). The point is the setup story: no repo-local .env.
+# SAP GUI and Fiori credentials come from `flowproof config sap` /
+# `flowproof config fiori` (per-machine, outside this repo); the non-secret
+# business data below (SUPPLIER/MATERIAL/PLANT/etc.) lives in the sibling
+# sap-gui-fiori-excel.values.yaml. See examples/release-notes/README.md for
+# the full setup and record/replay commands.
+#
+# Multi-surface `login:` blocks are refused today (no surface-specific
+# credential staging yet — docs/multi-surface.md), so this flow never
+# declares one: the gui surface's SAP GUI login happens via
+# `flowproof config sap`-seeded env vars ahead of `connection:`, same as
+# examples/sap/view-order.flow.yaml, and the fiori surface logs in with an
+# explicit Type/Type/Press block, same as
+# examples/fiori/purchase-info-records-report.flow.yaml.
+#
+# SAP GUI opens with /nME1L, the read-only "Purchasing Info Records by
+# Supplier" report — the native counterpart to the Fiori tile below, same
+# Supplier/Material/Plant business data, never mutates a record in a
+# release demo. Fiori then reruns the same lookup on the launchpad tile
+# "Display Purchasing Info Record by Supplier" (examples/fiori/display-info-
+# record-by-supplier.flow.yaml is the read-only precedent for that route)
+# and exports the result; Excel gets the download handed to it the same way
+# purchase-info-records-report.flow.yaml hands off pir_export.
+#
+# The exact SAP GUI field ids, the Fiori export toolbar control, and the
+# iframe field selectors are recording-time decisions against the live
+# target system — guessing them here would record a lie, not a step. Where
+# an earlier live probe already found stable selectors, this flow leans on
+# them (see the plan's "Resolved workflow choices"); `flowproof record`
+# still owns the final call.
+name: SAP GUI to Fiori to Excel release walkthrough
+apps:
+  gui:
+    app: sap
+    connection: ${SAP_CONNECTION}
+  fiori:
+    app: web
+    url: ${FIORI_BASE_URL}?sap-client=${FIORI_CLIENT}&sap-language=${FIORI_LANGUAGE}#Shell-home
+  excel:
+    app:
+      command: EXCEL.EXE ${captured.fiori_export}
+      window_title: Excel
+steps:
+  - in: gui
+    steps:
+      # Start from a native SAP GUI transaction using the same business
+      # data the Fiori report will later search/export.
+      - Go to /nME1L
+      - Type ${SUPPLIER} into the Supplier field
+      - Type ${MATERIAL} into the Material field
+      - Type ${PLANT} into the Plant field
+      - Press Enter
+      - Remember the accepted material as gui_material
+
+  - in: fiori
+    steps:
+      - Type ${FIORI_USER} into the "User" field
+      - Type ${FIORI_PASSWORD} into the "Password" field
+      - Press the "Log On" button
+      - Wait until page shows Display Purchasing Info Record by Supplier within 60s
+      - Click "Display Purchasing Info Record by Supplier"
+      - Wait until page shows Info Records per Supplier within 60s
+      - Type ${captured.gui_material} into the "Material" in the iframe "Application"
+      - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
+      - Type ${PLANT} into the "Plant" in the iframe "Application"
+      - Press the "Execute" button in the iframe "Application"
+      - Wait until page shows Purchasing Info Records for Supplier within 60s
+      - Press the "Export" button
+      - Wait until the download completes as fiori_export within 60s
+
+  - in: excel
+    steps:
+      - assert: page shows Net Price
+      - assert_spreadsheet:
+          path: ${captured.fiori_export}
+          column: Net Price
+          row_contains: ${captured.gui_material}
