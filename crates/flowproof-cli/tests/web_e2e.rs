@@ -1468,6 +1468,50 @@ fn hover_reveals_a_submenu_the_next_step_can_click() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn soft_hyphenated_visible_text_resolves_for_waits_and_clicks() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web soft-hyphen E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-soft-hyphen-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("soft-hyphen.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Soft hyphen</title>
+<main>
+  <button onclick="document.getElementById('status').textContent = 'opened'">
+    Dis&shy;play Pur&shy;chas&shy;ing Info Record by Supplier
+  </button>
+  <div id="status"></div>
+</main>"#,
+    )
+    .expect("page written");
+
+    let spec = FlowSpec::parse(&format!(
+        "name: Soft hyphen text\napp: web\nurl: file://{}\nsteps:\n  \
+         - Wait until page shows Display Purchasing Info Record by Supplier within 5s\n  \
+         - Click \"Display Purchasing Info Record by Supplier\"\n  \
+         - assert: page shows opened\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("soft-hyphen.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "soft-hyphen flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Round-2 selector fixes against real Chromium, all three in one flow:
 /// a wrapping `<label>Name: <input/></label>` resolves as a label query,
 /// `Click "Close Account"` lands on a button whose DOM text is
