@@ -1,12 +1,18 @@
 # TEMPORARY, throwaway workflow — not part of the normal CI suite. Exists
 # only to hand a Windows flowproof.exe to a developer whose own machine
-# cannot compile the workspace (out of RAM on `headless_chrome`). Manual
-# trigger only, uploads one artifact, does nothing else. Delete this file
-# once the binary has been downloaded.
-name: scratch build cli (manual, temporary)
+# cannot compile the workspace (out of RAM on `headless_chrome`). Uploads
+# one artifact, does nothing else. Delete this file once the binary has
+# been downloaded.
+#
+# Triggered on push (scoped to this one throwaway branch), not
+# workflow_dispatch: GitHub only lets workflow_dispatch runs be requested
+# for a workflow that already exists on the repo's default branch, and this
+# workflow is deliberately never going there.
+name: scratch build cli (temporary)
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [chore/scratch-build-cli]
 
 jobs:
   build:
