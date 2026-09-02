@@ -1,0 +1,23 @@
+# TEMPORARY, throwaway workflow — not part of the normal CI suite. Exists
+# only to hand a Windows flowproof.exe to a developer whose own machine
+# cannot compile the workspace (out of RAM on `headless_chrome`). Manual
+# trigger only, uploads one artifact, does nothing else. Delete this file
+# once the binary has been downloaded.
+name: scratch build cli (manual, temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p flowproof-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flowproof-windows
+          path: target/release/flowproof.exe
+          retention-days: 3
