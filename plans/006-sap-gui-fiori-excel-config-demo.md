@@ -92,15 +92,18 @@ steps:
       - Type ${FIORI_USER} into the "User" field
       - Type ${FIORI_PASSWORD} into the "Password" field
       - Press the "Log On" button
-      - Wait until page shows Display Purchasing Info Record by Supplier within 60s
-      - Click "Display Purchasing Info Record by Supplier"
-      - Wait until page shows Info Records per Supplier within 60s
-      - Type ${captured.gui_material} into the "Material" in the iframe "Application"
-      - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
-      - Type ${PLANT} into the "Plant" in the iframe "Application"
-      - Press the "Execute" button in the iframe "Application"
-      - Wait until page shows Purchasing Info Records for Supplier within 60s
-      - Press the "Export" button
+      - Wait until page shows My Apps within 60s
+      - Wait until page shows More within 60s
+      - Click "More"
+      - Click "Purchasing"
+      - Press Escape
+      - Wait until page shows Monitor Supplier Confirmation within 60s
+      - Click "Monitor Supplier Confirmation"
+      - Wait until page shows Display Currency within 60s
+      - Replace the "Display Currency" field with USD
+      - Press the "Go" button
+      - Wait until page shows Purchasing Document Items within 60s
+      - Click "css:button[id$='--table-btnExcelExport-internalSplitBtn-textButton']" at 25%,50%
       - Wait until the download completes as fiori_export within 60s
 
   - in: excel
@@ -139,20 +142,17 @@ Fiori iframe if the generic labels do not replay reliably.
   same OData shape used by `examples/fiori/mint-test-data.sh`, keeping
   credentials in `flowproof config` or the operator's environment, not in the
   example package.
-- Fiori should use the already-recorded launchpad tile
-  `Display Purchasing Info Record by Supplier`, which opens the WebGUI selection
-  screen. The search is submitted with the
-  `Execute` button inside iframe `Application`, then waits for the result title
-  `Purchasing Info Records for Supplier`. Existing live artifacts show stable
-  iframe field selectors for the search form if label targeting is not enough:
-  Supplier `css:#M0\:46\:\:\:0\:34`, Material `css:#M0\:46\:\:\:1\:34`,
-  and Plant `css:#M0\:46\:\:\:8\:34` inside iframe `Application`.
-- The Excel handoff should export from the Fiori/WebGUI report result, then
-  assert the downloaded spreadsheet by checking that the `Net Price` column is
-  present and the exported rows contain `${captured.gui_material}` / `${MATERIAL}`.
-  The exact toolbar control for export is a recording-time selector decision
-  because the WebGUI ALV toolbar may expose it as a button, menu item, or
-  spreadsheet action depending on theme and layout.
+- Fiori should use the Purchasing work area's `Monitor Supplier Confirmation`
+  tile, set `Display Currency` to `USD`, keep the default confirmation category,
+  press `Go`, and export the `Purchasing Document Items` table. Live recording
+  showed the table export control is an icon-only split button whose text half
+  is stable by the suffix selector
+  `css:button[id$='--table-btnExcelExport-internalSplitBtn-textButton']`; click
+  it at `25%,50%` to avoid the overlapping split-arrow half.
+- The Excel handoff should export from the Fiori analytical table result, then
+  assert the downloaded spreadsheet on Windows. The exact spreadsheet assertions
+  are intentionally left to the Windows Excel pass, because this Mac-side pass
+  only proves Fiori navigation and download capture.
 - Release-note copy belongs in `examples/release-notes/README.md`, with the
   normal `CHANGELOG.md` entry if this plan is implemented. No separate external
   release-notes file is required for this plan.
