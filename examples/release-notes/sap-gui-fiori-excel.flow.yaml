@@ -63,16 +63,16 @@ steps:
       - Type ${FIORI_USER} into the "User" field
       - Type ${FIORI_PASSWORD} into the "Password" field
       - Press the "Log On" button
-      - Wait until page shows My Apps within 120s
-      - Wait until page shows Purchasing within 60s
+      - rules: Wait until page shows My Apps within 120s
+      - rules: Wait until page shows Purchasing within 60s
       - Click "Purchasing"
       - Press Escape
-      - Wait until page shows Monitor Supplier Confirmation within 60s
+      - rules: Wait until page shows Monitor Supplier Confirmation within 60s
       - Click "Monitor Supplier Confirmation"
-      - Wait until page shows Display Currency within 60s
+      - rules: Wait until page shows Display Currency within 60s
       - Replace the "Display Currency" field with USD
       - Press the "Go" button
-      - Wait until page shows Purchasing Document Items within 60s
+      - rules: Wait until page shows Purchasing Document Items within 60s
       - Click "css:button[id$='--table-btnExcelExport-internalSplitBtn-textButton']" at 25%,50%
       - Wait until the download completes as fiori_export within 60s
 
