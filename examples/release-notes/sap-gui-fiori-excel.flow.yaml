@@ -52,9 +52,9 @@ steps:
       # Start from a native SAP GUI transaction using the sample business
       # data before continuing into the Fiori export leg.
       - Go to /nME1L
-      - Type ${SUPPLIER} into the Supplier field
-      - Type ${MATERIAL} into the Material field
-      - Type ${PLANT} into the Plant field
+      - Type ${SUPPLIER} into the "Supplier" field
+      - Type ${MATERIAL} into the "Material" field
+      - Type ${PLANT} into the "Plant" field
       - Press Enter
       - Remember the accepted material as gui_material
 
