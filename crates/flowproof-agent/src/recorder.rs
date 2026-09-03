@@ -158,7 +158,7 @@ pub enum RecordError {
     Agent(#[from] crate::AgentError),
     #[error(
         "cannot resolve step '{step}' with rules and no model backend is configured \
-         (set FLOWPROOF_AI_PROVIDER / FLOWPROOF_AI_API_KEY to enable LLM authoring): {rules_error}"
+         (run `flowproof config ai` or set FLOWPROOF_AI_PROVIDER / FLOWPROOF_AI_API_KEY to enable LLM authoring): {rules_error}"
     )]
     NoAuthor { step: String, rules_error: String },
     #[error("driver cannot describe its scene; LLM authoring is unavailable for app '{0}'")]
@@ -2315,8 +2315,8 @@ fn author_actions<D: AppDriver, C: ModelClient>(
                 .unwrap_or_default();
             return Err(clarify(
                 crate::clarify::ClarifyStage::NoModel,
-                "--author llm was requested, but no model backend is configured (set \
-                 FLOWPROOF_AI_PROVIDER / FLOWPROOF_AI_API_KEY)"
+                "--author llm was requested, but no model backend is configured (run \
+                 `flowproof config ai` or set FLOWPROOF_AI_PROVIDER / FLOWPROOF_AI_API_KEY)"
                     .into(),
                 None,
                 inventory,

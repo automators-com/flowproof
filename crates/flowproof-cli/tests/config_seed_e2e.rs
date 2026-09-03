@@ -67,6 +67,7 @@ fn an_unset_var_is_filled_from_the_config_file_for_a_bare_flow() {
                 ..Default::default()
             }),
             fiori: None,
+            ai: None,
         };
         flowproof_cli::config::save(&config).expect("fixture config writes");
 
@@ -103,6 +104,7 @@ fn a_suite_less_single_flow_resolves_sap_refs_from_the_config_file() {
                 ..Default::default()
             }),
             fiori: None,
+            ai: None,
         };
         flowproof_cli::config::save(&config).expect("fixture config writes");
 
@@ -185,6 +187,7 @@ fn an_already_set_var_wins_over_the_config_file() {
                 ..Default::default()
             }),
             fiori: None,
+            ai: None,
         };
         flowproof_cli::config::save(&config).expect("fixture config writes");
 
@@ -220,6 +223,7 @@ fn a_suites_own_env_still_overrides_the_config_file() {
                 ..Default::default()
             }),
             fiori: None,
+            ai: None,
         };
         flowproof_cli::config::save(&config).expect("fixture config writes");
 
@@ -263,6 +267,7 @@ fn an_unset_var_is_filled_from_the_config_file_for_a_suite_directory() {
                 ..Default::default()
             }),
             fiori: None,
+            ai: None,
         };
         flowproof_cli::config::save(&config).expect("fixture config writes");
 
@@ -282,6 +287,127 @@ fn an_unset_var_is_filled_from_the_config_file_for_a_suite_directory() {
         "the unset var is filled from the config file for a suite-directory run too"
     );
     std::env::remove_var("SAP_CONNECTION");
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&spec_dir).ok();
+}
+
+#[test]
+fn ai_config_fills_neutral_and_anthropic_alias_gaps_only() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_dir("ai-anthropic-home");
+    let spec_dir = temp_dir("ai-anthropic-spec");
+    std::env::remove_var("FLOWPROOF_AI_PROVIDER");
+    std::env::remove_var("FLOWPROOF_AI_API_KEY");
+    std::env::remove_var("ANTHROPIC_API_KEY");
+    std::env::set_var("FLOWPROOF_AI_MODEL", "FROM_SHELL");
+
+    with_fake_home(&home, || {
+        let config = flowproof_cli::config::Config {
+            sap: None,
+            fiori: None,
+            ai: Some(flowproof_cli::config::AiProfile {
+                provider: Some(flowproof_cli::config::AiProvider::Anthropic),
+                api_key: Some("sk-ant-config".into()),
+                model: Some("FROM_CONFIG".into()),
+            }),
+        };
+        flowproof_cli::config::save(&config).expect("fixture config writes");
+
+        let spec = spec_dir.join("x.flow.yaml");
+        std::fs::write(
+            &spec,
+            "name: x
+app: api
+steps:
+  - Type 1
+",
+        )
+        .expect("spec");
+        flowproof_cli::apply_suite_context(&spec).expect("context applies");
+    });
+
+    assert_eq!(
+        std::env::var("FLOWPROOF_AI_PROVIDER").as_deref(),
+        Ok("anthropic")
+    );
+    assert_eq!(
+        std::env::var("FLOWPROOF_AI_API_KEY").as_deref(),
+        Ok("sk-ant-config")
+    );
+    assert_eq!(
+        std::env::var("ANTHROPIC_API_KEY").as_deref(),
+        Ok("sk-ant-config")
+    );
+    assert_eq!(
+        std::env::var("FLOWPROOF_AI_MODEL").as_deref(),
+        Ok("FROM_SHELL"),
+        "already-set env still wins over config"
+    );
+
+    std::env::remove_var("FLOWPROOF_AI_PROVIDER");
+    std::env::remove_var("FLOWPROOF_AI_API_KEY");
+    std::env::remove_var("ANTHROPIC_API_KEY");
+    std::env::remove_var("FLOWPROOF_AI_MODEL");
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&spec_dir).ok();
+}
+
+#[test]
+fn ai_config_fills_openai_alias_when_openai_provider_is_set() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_dir("ai-openai-home");
+    let spec_dir = temp_dir("ai-openai-spec");
+    std::env::remove_var("FLOWPROOF_AI_PROVIDER");
+    std::env::remove_var("FLOWPROOF_AI_API_KEY");
+    std::env::remove_var("OPENAI_API_KEY");
+    std::env::remove_var("FLOWPROOF_AI_BASE_URL");
+
+    with_fake_home(&home, || {
+        let config = flowproof_cli::config::Config {
+            sap: None,
+            fiori: None,
+            ai: Some(flowproof_cli::config::AiProfile {
+                provider: Some(flowproof_cli::config::AiProvider::Openai),
+                api_key: Some("sk-openai-config".into()),
+                model: None,
+            }),
+        };
+        flowproof_cli::config::save(&config).expect("fixture config writes");
+
+        let spec = spec_dir.join("x.flow.yaml");
+        std::fs::write(
+            &spec,
+            "name: x
+app: api
+steps:
+  - Type 1
+",
+        )
+        .expect("spec");
+        flowproof_cli::apply_suite_context(&spec).expect("context applies");
+    });
+
+    assert_eq!(
+        std::env::var("FLOWPROOF_AI_PROVIDER").as_deref(),
+        Ok("openai")
+    );
+    assert_eq!(
+        std::env::var("FLOWPROOF_AI_API_KEY").as_deref(),
+        Ok("sk-openai-config")
+    );
+    assert_eq!(
+        std::env::var("OPENAI_API_KEY").as_deref(),
+        Ok("sk-openai-config")
+    );
+    assert!(
+        std::env::var("FLOWPROOF_AI_BASE_URL").is_err(),
+        "config ai should not seed a base URL in the first implementation"
+    );
+
+    std::env::remove_var("FLOWPROOF_AI_PROVIDER");
+    std::env::remove_var("FLOWPROOF_AI_API_KEY");
+    std::env::remove_var("OPENAI_API_KEY");
+    std::env::remove_var("FLOWPROOF_AI_BASE_URL");
     std::fs::remove_dir_all(&home).ok();
     std::fs::remove_dir_all(&spec_dir).ok();
 }

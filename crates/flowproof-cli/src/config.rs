@@ -11,6 +11,7 @@
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::EXIT_PASS;
@@ -98,14 +99,81 @@ impl FioriProfile {
     }
 }
 
-/// The whole file: two independent, optional profiles. Both absent is the
-/// state before anyone has run `flowproof config` at all — not an error.
+/// Model provider choices exposed through `flowproof config ai`. The CLI keeps
+/// these deliberately narrow; the lower-level model client still accepts the
+/// old `openai-compatible` env spelling for backwards compatibility.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiProvider {
+    #[default]
+    Anthropic,
+    Openai,
+}
+
+impl AiProvider {
+    fn env_value(self) -> &'static str {
+        match self {
+            AiProvider::Anthropic => "anthropic",
+            AiProvider::Openai => "openai",
+        }
+    }
+
+    fn compatibility_api_key_var(self) -> &'static str {
+        match self {
+            AiProvider::Anthropic => "ANTHROPIC_API_KEY",
+            AiProvider::Openai => "OPENAI_API_KEY",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            AiProvider::Anthropic => "anthropic",
+            AiProvider::Openai => "openai",
+        }
+    }
+}
+
+/// Flowproof's authoring-model config. The secret is stored once as a neutral
+/// `api_key`, then seeded into Flowproof's own `FLOWPROOF_AI_*` variables and
+/// the provider-specific compatibility variable when missing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<AiProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl AiProfile {
+    fn env_pairs(&self) -> Vec<(&'static str, String)> {
+        let mut pairs = Vec::new();
+        let provider = self.provider.unwrap_or_default();
+        if let Some(v) = self.provider {
+            pairs.push(("FLOWPROOF_AI_PROVIDER", v.env_value().to_string()));
+        }
+        if let Some(v) = &self.api_key {
+            pairs.push(("FLOWPROOF_AI_API_KEY", v.clone()));
+            pairs.push((provider.compatibility_api_key_var(), v.clone()));
+        }
+        if let Some(v) = &self.model {
+            pairs.push(("FLOWPROOF_AI_MODEL", v.clone()));
+        }
+        pairs
+    }
+}
+
+/// The whole file: independent, optional profiles. All absent is the state
+/// before anyone has run `flowproof config` at all — not an error.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sap: Option<SapProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fiori: Option<FioriProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<AiProfile>,
 }
 
 impl Config {
@@ -118,6 +186,9 @@ impl Config {
         }
         if let Some(fiori) = &self.fiori {
             pairs.extend(fiori.env_pairs());
+        }
+        if let Some(ai) = &self.ai {
+            pairs.extend(ai.env_pairs());
         }
         pairs
     }
@@ -137,6 +208,11 @@ impl Config {
         if let Some(fiori) = &mut copy.fiori {
             if fiori.password.is_some() {
                 fiori.password = Some("********".to_string());
+            }
+        }
+        if let Some(ai) = &mut copy.ai {
+            if ai.api_key.is_some() {
+                ai.api_key = Some("********".to_string());
             }
         }
         copy
@@ -402,6 +478,96 @@ pub fn cmd_fiori(shared: SharedArgs, base_url: Option<String>) -> Result<u8, Str
     Ok(EXIT_PASS)
 }
 
+/// `flowproof config ai` flag arguments. Provider and model are non-secret;
+/// `api_key` mirrors the existing password flag behavior for scripted setup.
+pub struct AiArgs {
+    pub provider: Option<AiProvider>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub clear_api_key: bool,
+    pub clear_model: bool,
+}
+
+impl AiArgs {
+    fn any_set(&self) -> bool {
+        self.provider.is_some()
+            || self.api_key.is_some()
+            || self.model.is_some()
+            || self.clear_api_key
+            || self.clear_model
+    }
+}
+
+fn prompt_ai_provider(current: Option<AiProvider>) -> Result<AiProvider, String> {
+    let current = current.unwrap_or_default();
+    println!("AI provider:");
+    println!("  1) anthropic");
+    println!("  2) openai");
+    print!("Choose provider [default: {}]: ", current.label());
+    std::io::stdout()
+        .flush()
+        .map_err(|e| format!("writing prompt: {e}"))?;
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| format!("reading input: {e}"))?;
+    match line.trim() {
+        "" => Ok(current),
+        "1" => Ok(AiProvider::Anthropic),
+        "2" => Ok(AiProvider::Openai),
+        other => Err(format!(
+            "invalid provider '{other}' (expected one of: anthropic, openai)"
+        )),
+    }
+}
+
+/// `flowproof config ai`: prompt for (or take as flags) the authoring model
+/// provider/API key, with model as an advanced flag-only override. No live
+/// provider check happens here; `flowproof doctor --ai` owns validation.
+pub fn cmd_ai(args: AiArgs) -> Result<u8, String> {
+    if args.clear_api_key && args.api_key.is_some() {
+        return Err("--clear-api-key cannot be combined with --api-key".to_string());
+    }
+    if args.clear_model && args.model.is_some() {
+        return Err("--clear-model cannot be combined with --model".to_string());
+    }
+
+    let any_flag = args.any_set();
+    let mut config = load()?;
+    let mut profile = config.ai.take().unwrap_or_default();
+
+    if any_flag {
+        if let Some(provider) = args.provider {
+            profile.provider = Some(provider);
+        }
+        if args.clear_api_key {
+            profile.api_key = None;
+        }
+        if let Some(v) = args.api_key {
+            profile.api_key = Some(v);
+        }
+        if args.clear_model {
+            profile.model = None;
+        }
+        if let Some(v) = args.model {
+            profile.model = Some(v);
+        }
+    } else {
+        require_tty(
+            "flowproof config ai",
+            &["--provider", "--api-key", "--model"],
+        )?;
+        profile.provider = Some(prompt_ai_provider(profile.provider)?);
+        profile.api_key =
+            prompt_password("AI API key", profile.api_key.is_some())?.or(profile.api_key);
+    }
+
+    config.ai = Some(profile);
+    save(&config)?;
+    println!("wrote {}", config_path()?.display());
+    Ok(EXIT_PASS)
+}
+
 /// A real TTY is required to prompt; piped/non-interactive stdin (a script,
 /// CI) fails fast with the flag alternative named, rather than hanging on a
 /// read that will never come — the same "an agent that fails to start says
@@ -542,6 +708,11 @@ mod tests {
                 language: Some("DE".into()),
                 base_url: Some("https://launchpad.test/".into()),
             }),
+            ai: Some(AiProfile {
+                provider: Some(AiProvider::Anthropic),
+                api_key: Some("sk-ant".into()),
+                model: Some("claude-sonnet-5".into()),
+            }),
         };
         let pairs = config.env_pairs();
         // The table in plans/001-credential-config.md:167-178, verbatim.
@@ -555,7 +726,11 @@ mod tests {
         assert!(pairs.contains(&("FIORI_CLIENT", "200".to_string())));
         assert!(pairs.contains(&("FIORI_LANGUAGE", "DE".to_string())));
         assert!(pairs.contains(&("FIORI_BASE_URL", "https://launchpad.test/".to_string())));
-        assert_eq!(pairs.len(), 10, "no extra, no missing: {pairs:?}");
+        assert!(pairs.contains(&("FLOWPROOF_AI_PROVIDER", "anthropic".to_string())));
+        assert!(pairs.contains(&("FLOWPROOF_AI_API_KEY", "sk-ant".to_string())));
+        assert!(pairs.contains(&("ANTHROPIC_API_KEY", "sk-ant".to_string())));
+        assert!(pairs.contains(&("FLOWPROOF_AI_MODEL", "claude-sonnet-5".to_string())));
+        assert_eq!(pairs.len(), 14, "no extra, no missing: {pairs:?}");
     }
 
     #[test]
@@ -572,6 +747,10 @@ mod tests {
                 ..Default::default()
             }),
             fiori: Some(FioriProfile::default()),
+            ai: Some(AiProfile {
+                api_key: Some("sk-secret".into()),
+                ..Default::default()
+            }),
         };
         let masked = config.masked();
         let sap = masked.sap.as_ref().expect("sap profile present");
@@ -580,6 +759,8 @@ mod tests {
         // No password set on the fiori profile: nothing to mask, stays None.
         let fiori = masked.fiori.as_ref().expect("fiori profile present");
         assert_eq!(fiori.password, None);
+        let ai = masked.ai.as_ref().expect("ai profile present");
+        assert_eq!(ai.api_key.as_deref(), Some("********"));
     }
 
     #[test]
@@ -593,6 +774,7 @@ mod tests {
                 ..Default::default()
             }),
             fiori: None,
+            ai: None,
         };
         save_to(&path, &config).expect("save");
         let loaded = load_from(&path).expect("load");
@@ -713,6 +895,7 @@ mod tests {
                 ..Default::default()
             }),
             fiori: None,
+            ai: None,
         };
         for (name, value) in config.env_pairs() {
             if std::env::var(name).is_err() {
@@ -732,5 +915,45 @@ mod tests {
 
         std::env::remove_var("SAP_CLIENT");
         std::env::remove_var("SAP_LANGUAGE");
+    }
+
+    #[test]
+    fn ai_openai_profile_seeds_neutral_and_compatibility_vars() {
+        let config = Config {
+            sap: None,
+            fiori: None,
+            ai: Some(AiProfile {
+                provider: Some(AiProvider::Openai),
+                api_key: Some("sk-openai".into()),
+                model: Some("gpt-5".into()),
+            }),
+        };
+        let pairs = config.env_pairs();
+        assert!(pairs.contains(&("FLOWPROOF_AI_PROVIDER", "openai".to_string())));
+        assert!(pairs.contains(&("FLOWPROOF_AI_API_KEY", "sk-openai".to_string())));
+        assert!(pairs.contains(&("OPENAI_API_KEY", "sk-openai".to_string())));
+        assert!(pairs.contains(&("FLOWPROOF_AI_MODEL", "gpt-5".to_string())));
+        assert!(!pairs
+            .iter()
+            .any(|(name, _)| *name == "FLOWPROOF_AI_BASE_URL"));
+        assert_eq!(pairs.len(), 4, "no extra, no missing: {pairs:?}");
+    }
+
+    #[test]
+    fn ai_key_without_provider_defaults_compatibility_to_anthropic() {
+        let config = Config {
+            sap: None,
+            fiori: None,
+            ai: Some(AiProfile {
+                api_key: Some("sk-ant".into()),
+                ..Default::default()
+            }),
+        };
+        let pairs = config.env_pairs();
+        assert!(pairs.contains(&("FLOWPROOF_AI_API_KEY", "sk-ant".to_string())));
+        assert!(pairs.contains(&("ANTHROPIC_API_KEY", "sk-ant".to_string())));
+        assert!(!pairs
+            .iter()
+            .any(|(name, _)| *name == "FLOWPROOF_AI_PROVIDER"));
     }
 }

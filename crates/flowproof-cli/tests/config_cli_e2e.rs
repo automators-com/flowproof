@@ -103,6 +103,69 @@ fn config_sap_and_fiori_are_independent_profiles() {
 }
 
 #[test]
+fn config_ai_via_flags_writes_merges_and_clears() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("ai-merge-clear");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli([
+            "config",
+            "ai",
+            "--provider",
+            "anthropic",
+            "--api-key",
+            "sk-ant",
+            "--model",
+            "claude-sonnet-5",
+        ]);
+        assert_eq!(code, 0, "first write succeeds");
+
+        let code = flowproof_cli::run_cli(["config", "ai", "--provider", "openai"]);
+        assert_eq!(code, 0, "second write succeeds");
+
+        let config = flowproof_cli::config::load().expect("loads");
+        let ai = config.ai.expect("ai profile written");
+        assert_eq!(
+            ai.provider,
+            Some(flowproof_cli::config::AiProvider::Openai),
+            "provider changed by second call"
+        );
+        assert_eq!(ai.api_key.as_deref(), Some("sk-ant"), "key preserved");
+        assert_eq!(
+            ai.model.as_deref(),
+            Some("claude-sonnet-5"),
+            "model preserved"
+        );
+
+        let code = flowproof_cli::run_cli(["config", "ai", "--clear-api-key"]);
+        assert_eq!(code, 0, "clear key succeeds");
+        let code = flowproof_cli::run_cli(["config", "ai", "--clear-model"]);
+        assert_eq!(code, 0, "clear model succeeds");
+
+        let config = flowproof_cli::config::load().expect("loads after clear");
+        let ai = config.ai.expect("ai profile still present");
+        assert_eq!(ai.provider, Some(flowproof_cli::config::AiProvider::Openai));
+        assert_eq!(ai.api_key, None);
+        assert_eq!(ai.model, None);
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn config_ai_rejects_a_misspelled_provider_without_writing() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("ai-provider-typo");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli(["config", "ai", "--provider", "antropic"]);
+        assert_eq!(code, 2, "clap rejects the misspelled provider");
+        let config = flowproof_cli::config::load().expect("missing stays empty");
+        assert_eq!(config.ai, None, "invalid provider never writes config");
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
 fn config_show_and_path_succeed_on_an_empty_config() {
     let _guard = ENV.lock().expect("env lock");
     let home = temp_home("show-empty");

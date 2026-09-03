@@ -266,7 +266,7 @@ pub fn author_from_doc(opts: &DocAuthorOptions) -> Result<DocAuthorResult, DocAu
     let config = BackendConfig::from_env().map_err(DocAuthorError::from)?;
     if !config.is_usable() {
         return Err(DocAuthorError::Agent(AgentError::Config(
-            "no usable model backend configured (set FLOWPROOF_AI_API_KEY or ANTHROPIC_API_KEY)"
+            "no usable model backend configured (run `flowproof config ai` or set FLOWPROOF_AI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY)"
                 .into(),
         )));
     }
