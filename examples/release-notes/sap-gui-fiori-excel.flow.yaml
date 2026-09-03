@@ -64,9 +64,9 @@ steps:
       - Type ${FIORI_PASSWORD} into the "Password" field
       - Press the "Log On" button
       - rules: Wait until page shows My Apps within 120s
-      - rules: Wait until page shows Purchasing within 60s
-      - Click "Purchasing"
-      - Press Escape
+      - Click "Open Search"
+      - Type Monitor Supplier Confirmation into the "Search" field
+      - Press Enter
       - rules: Wait until page shows Monitor Supplier Confirmation within 60s
       - Click "Monitor Supplier Confirmation"
       - rules: Wait until page shows Display Currency within 60s
