@@ -74,7 +74,7 @@ steps:
       - Replace the "Display Currency" field with USD
       - Press the "Go" button
       - rules: Wait until page shows Purchasing Document Items within 60s
-      - Click "css:button[id$='--table-btnExcelExport-internalSplitBtn-textButton']" at 50%,50%
+      - Click "css:button[id$='--table-btnExcelExport-internalSplitBtn']" at 50%,50%
       - Wait until the download completes as fiori_export within 60s
 
   - in: excel
