@@ -24,6 +24,7 @@ instead so they're easy to find as a set.
 | 4 | [004-single-flow-shareability.md](004-single-flow-shareability.md) | Closing the loop on "one `.flow.yaml` + one `flowproof config` + one `flowproof run`, no `suite.yaml`": a stale-naming inventory fix and a missing-var error that now names the fix — issue #534 |
 | 5 | [005-fiori-field-commit.md](005-fiori-field-commit.md) | Make Fiori/SAP WebGUI framed input typing pass only after the field value is committed and read back, preventing prefilled values from silently restoring |
 | 6 | [006-sap-gui-fiori-excel-config-demo.md](006-sap-gui-fiori-excel-config-demo.md) | Release-demo walkthrough for issue #536: one flow starts in SAP GUI, continues in Fiori using `flowproof config` instead of `.env`, exports data, and ends in Excel |
+| 7 | [007-assisted-production-authoring.md](007-assisted-production-authoring.md) | Productize the support-engineer loop around `author-from-doc`, live recording, diagnosis, model-assisted patch proposals, reruns, verification, and production promotion |
 
 ## How to read and amend these
 
