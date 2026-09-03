@@ -64,6 +64,7 @@ steps:
       - Type ${FIORI_PASSWORD} into the "Password" field
       - Press the "Log On" button
       - rules: Wait until page shows My Apps within 120s
+      - rules: Wait until page shows Open Search within 30s
       - Click "Open Search"
       - Type Monitor Supplier Confirmation into the "Search" field
       - Press Enter
