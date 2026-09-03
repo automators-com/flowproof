@@ -249,9 +249,13 @@ pub fn cmd_doctor_ai() -> Result<u8, String> {
         "You are a connectivity check. Reply with exactly: ok",
         "Reply with exactly: ok",
     ) {
-        Ok(_) => {
+        Ok(reply) if reply.trim() == "ok" => {
             println!("model call succeeded.");
             Ok(EXIT_PASS)
+        }
+        Ok(_) => {
+            println!("model call failed: expected `ok` response.");
+            Ok(EXIT_FAIL)
         }
         Err(e) => {
             println!("model call failed: {e}");

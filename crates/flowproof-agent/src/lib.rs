@@ -131,7 +131,7 @@ impl BackendConfig {
                 })
             }
             other => Err(AgentError::Config(format!(
-                "unknown FLOWPROOF_AI_PROVIDER '{other}' (expected 'anthropic' or 'openai')"
+                "unknown FLOWPROOF_AI_PROVIDER '{other}' (expected 'anthropic', 'openai', or legacy 'openai-compatible')"
             ))),
         }
     }
@@ -176,9 +176,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_provider_is_rejected() {
+    fn unknown_provider_is_rejected_and_lists_supported_names() {
         let err = BackendConfig::from_provider_name("gemini", None)
             .expect_err("unknown provider must be rejected");
-        assert!(matches!(err, AgentError::Config(_)));
+        let AgentError::Config(message) = err else {
+            panic!("expected config error");
+        };
+        assert!(message.contains("anthropic"));
+        assert!(message.contains("openai"));
+        assert!(message.contains("openai-compatible"));
     }
 }

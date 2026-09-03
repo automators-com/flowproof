@@ -516,15 +516,14 @@ fn prompt_ai_provider(current: Option<AiProvider>) -> Result<AiProvider, String>
         "1" => Ok(AiProvider::Anthropic),
         "2" => Ok(AiProvider::Openai),
         other => Err(format!(
-            "invalid provider '{other}'
-expected one of: anthropic, openai"
+            "invalid provider '{other}' (expected one of: anthropic, openai)"
         )),
     }
 }
 
 /// `flowproof config ai`: prompt for (or take as flags) the authoring model
 /// provider/API key, with model as an advanced flag-only override. No live
-/// provider check happens here; `flowproof doctor ai` owns validation.
+/// provider check happens here; `flowproof doctor --ai` owns validation.
 pub fn cmd_ai(args: AiArgs) -> Result<u8, String> {
     if args.clear_api_key && args.api_key.is_some() {
         return Err("--clear-api-key cannot be combined with --api-key".to_string());
