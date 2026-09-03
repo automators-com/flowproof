@@ -12,8 +12,9 @@ case:
 1. **SAP GUI** — `/nME1L`, the read-only "Purchasing Info Records by
    Supplier" report. Looks up a purchasing info record by
    Supplier/Material/Plant and remembers the accepted material.
-2. **SAP Fiori** — the launchpad tile "Display Purchasing Info Record by
-   Supplier", searched with the same business data, then exported.
+2. **SAP Fiori** — the Purchasing work area tile "Monitor Supplier
+   Confirmation", filtered to USD, then exported from the "Purchasing
+   Document Items" table.
 3. **Excel** — the exported spreadsheet, opened and asserted against
    directly (`assert_spreadsheet`, not Excel's UI grid).
 

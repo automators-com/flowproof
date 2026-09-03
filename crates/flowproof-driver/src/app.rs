@@ -2048,8 +2048,24 @@ mod windows_impl {
 
     impl UiaAppDriver {
         pub fn new() -> Result<Self, DriverError> {
-            let automation =
-                UIAutomation::new().map_err(|e| uia_err("initializing UIA COM client", e))?;
+            // `UIAutomation::new()` unconditionally calls CoInitializeEx with
+            // COINIT_MULTITHREADED, which fails with RPC_E_CHANGED_MODE the
+            // moment this OS thread already has COM initialized differently
+            // - which it does whenever a `gui` (SAP COM) surface ran earlier
+            // in the same recording process: sap_com.rs initializes the
+            // thread as COINIT_APARTMENTTHREADED and never tears it down.
+            // Match that same defensive pattern here (a prior init with
+            // another model just means COM is already usable), then create
+            // the client with `new_direct`, which trusts the caller's COM
+            // init instead of forcing its own.
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                );
+            }
+            let automation = UIAutomation::new_direct()
+                .map_err(|e| uia_err("initializing UIA COM client", e))?;
             Ok(Self {
                 automation,
                 window: None,
@@ -2471,6 +2487,32 @@ mod windows_impl {
                 ));
             }
             Ok(rects)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The bug this guards: `UIAutomation::new()` unconditionally
+        /// requests COINIT_MULTITHREADED, which fails with
+        /// RPC_E_CHANGED_MODE the instant this OS thread's COM was already
+        /// initialized differently - exactly what sap_com.rs does
+        /// (COINIT_APARTMENTTHREADED) before a `gui` surface hands off to an
+        /// `excel` surface in the same recording process. Reproduce that
+        /// same prior state here, on this test's own thread, without any
+        /// SAP dependency: an apartment-threaded init first, same as
+        /// sap_com.rs performs, then confirm `UiaAppDriver::new()` still
+        /// succeeds instead of inheriting the mode conflict.
+        #[test]
+        fn new_succeeds_when_thread_already_has_com_in_a_different_apartment_mode() {
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                );
+            }
+            UiaAppDriver::new().expect("must not fail with RPC_E_CHANGED_MODE");
         }
     }
 }

@@ -177,6 +177,6 @@ impl WindowInfo {
             return None;
         }
         let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
-        (!root.is_invalid() && root.0 as isize != self.hwnd).then(|| root.0 as isize)
+        (!root.is_invalid() && root.0 as isize != self.hwnd).then_some(root.0 as isize)
     }
 }

@@ -21,13 +21,12 @@
 # examples/fiori/purchase-info-records-report.flow.yaml.
 #
 # SAP GUI opens with /nME1L, the read-only "Purchasing Info Records by
-# Supplier" report — the native counterpart to the Fiori tile below, same
-# Supplier/Material/Plant business data, never mutates a record in a
-# release demo. Fiori then reruns the same lookup on the launchpad tile
-# "Display Purchasing Info Record by Supplier" (examples/fiori/display-info-
-# record-by-supplier.flow.yaml is the read-only precedent for that route)
-# and exports the result; Excel gets the download handed to it the same way
-# purchase-info-records-report.flow.yaml hands off pir_export.
+# Supplier" report, using Supplier/Material/Plant business data and never
+# mutating a record in a release demo. Fiori then switches to the Purchasing
+# work area, opens "Monitor Supplier Confirmation", filters the analytical
+# list page to USD, and exports its "Purchasing Document Items" table; Excel
+# gets the download handed to it the same way purchase-info-records-
+# report.flow.yaml hands off pir_export.
 #
 # The exact SAP GUI field ids, the Fiori export toolbar control, and the
 # iframe field selectors are recording-time decisions against the live
@@ -50,12 +49,12 @@ apps:
 steps:
   - in: gui
     steps:
-      # Start from a native SAP GUI transaction using the same business
-      # data the Fiori report will later search/export.
+      # Start from a native SAP GUI transaction using the sample business
+      # data before continuing into the Fiori export leg.
       - Go to /nME1L
-      - Type ${SUPPLIER} into the Supplier field
-      - Type ${MATERIAL} into the Material field
-      - Type ${PLANT} into the Plant field
+      - Type ${SUPPLIER} into the "Supplier" field
+      - Type ${MATERIAL} into the "Material" field
+      - Type ${PLANT} into the "Plant" field
       - Press Enter
       - Remember the accepted material as gui_material
 
@@ -64,15 +63,18 @@ steps:
       - Type ${FIORI_USER} into the "User" field
       - Type ${FIORI_PASSWORD} into the "Password" field
       - Press the "Log On" button
-      - Wait until page shows Display Purchasing Info Record by Supplier within 60s
-      - Click "Display Purchasing Info Record by Supplier"
-      - Wait until page shows Info Records per Supplier within 60s
-      - Type ${captured.gui_material} into the "Material" in the iframe "Application"
-      - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
-      - Type ${PLANT} into the "Plant" in the iframe "Application"
-      - Press the "Execute" button in the iframe "Application"
-      - Wait until page shows Purchasing Info Records for Supplier within 60s
-      - Press the "Export" button
+      - rules: Wait until page shows My Apps within 120s
+      - rules: Wait until page shows Open Search within 30s
+      - Click "Open Search"
+      - Type Monitor Supplier Confirmation into the "Search" field
+      - Press Enter
+      - rules: Wait until page shows Monitor Supplier Confirmation within 60s
+      - Click "Monitor Supplier Confirmation"
+      - rules: Wait until page shows Display Currency within 60s
+      - Replace the "Display Currency" field with USD
+      - Press the "Go" button
+      - rules: Wait until page shows Purchasing Document Items within 60s
+      - Click "css:button[id$='--table-btnExcelExport-internalSplitBtn']" at 50%,50%
       - Wait until the download completes as fiori_export within 60s
 
   - in: excel
