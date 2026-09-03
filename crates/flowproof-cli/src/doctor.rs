@@ -3,6 +3,8 @@
 //! report what can actually be reached, before anyone writes a flow against
 //! it. Design and reasoning: plans/002-sap-fiori-doctor.md.
 
+use flowproof_agent::ModelClient;
+
 use crate::{EXIT_FAIL, EXIT_PASS};
 
 /// `doctor --sap`: a read-only look at whatever SAP GUI session already
@@ -197,6 +199,62 @@ fn login_attempt(url: &str, timeout_secs: u64) -> Result<u8, String> {
         }
         Err(e) => {
             println!("login did NOT succeed: {e}");
+            Ok(EXIT_FAIL)
+        }
+    }
+}
+
+/// `doctor --ai`: validate the model authoring backend after `flowproof config`
+/// has had a chance to seed it. Prints no secret material.
+pub fn cmd_doctor_ai() -> Result<u8, String> {
+    crate::config::seed_env();
+
+    let config = flowproof_agent::BackendConfig::from_env().map_err(|e| e.to_string())?;
+    let provider = match config.kind {
+        flowproof_agent::BackendKind::Anthropic => "anthropic",
+        flowproof_agent::BackendKind::OpenAi => "openai",
+        flowproof_agent::BackendKind::OpenAiCompatible => "openai-compatible",
+    };
+    println!("provider: {provider}");
+    match config.base_url.as_deref() {
+        Some(base_url) => println!("endpoint: {base_url}"),
+        None => println!("endpoint: built-in provider default"),
+    }
+    println!(
+        "api key: {}",
+        if config
+            .api_key
+            .as_ref()
+            .is_some_and(|v| !v.trim().is_empty())
+        {
+            "configured"
+        } else {
+            "not configured"
+        }
+    );
+
+    if !config.is_usable() {
+        println!();
+        println!(concat!(
+            "AI backend is not usable; run `flowproof config ai` or set ",
+            "FLOWPROOF_AI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY."
+        ));
+        return Ok(EXIT_FAIL);
+    }
+
+    let mut client = flowproof_agent::HttpModelClient::new(config);
+    let (backend, model) = client.identity();
+    println!("model: {backend}/{model}");
+    match client.complete(
+        "You are a connectivity check. Reply with exactly: ok",
+        "Reply with exactly: ok",
+    ) {
+        Ok(_) => {
+            println!("model call succeeded.");
+            Ok(EXIT_PASS)
+        }
+        Err(e) => {
+            println!("model call failed: {e}");
             Ok(EXIT_FAIL)
         }
     }

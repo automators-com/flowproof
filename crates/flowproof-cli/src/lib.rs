@@ -167,6 +167,21 @@ enum ConfigAction {
         #[arg(long = "base-url")]
         base_url: Option<String>,
     },
+    /// AI authoring: provider and API key for model-assisted recording/doc
+    /// authoring. Prompts interactively unless any flag is given; model is an
+    /// advanced flag-only override.
+    Ai {
+        #[arg(long, value_enum)]
+        provider: Option<config::AiProvider>,
+        #[arg(long = "api-key")]
+        api_key: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long = "clear-api-key")]
+        clear_api_key: bool,
+        #[arg(long = "clear-model")]
+        clear_model: bool,
+    },
     /// Print the config file's path and contents, password masked.
     Show,
     /// Print the resolved config file path alone (for scripting or opening
@@ -370,9 +385,10 @@ enum Command {
         #[arg(long, conflicts_with = "run")]
         since: Option<String>,
     },
-    /// Check that an agent's model traffic reaches flowproof, or that SAP
-    /// GUI / Fiori is reachable, before you write a spec or spend a key or
-    /// credential on it. Exactly one of `--agent`, `--sap`, `--fiori`.
+    /// Check that an agent's model traffic reaches flowproof, that SAP
+    /// GUI / Fiori is reachable, or that AI authoring config can call a
+    /// model, before you write a spec or spend a key or credential on it.
+    /// Exactly one of `--agent`, `--sap`, `--fiori`, `--ai`.
     ///
     /// `--agent` starts the proxy, runs the command once, and reports what
     /// ARRIVED — it deliberately does not tell you the wiring is correct,
@@ -387,19 +403,23 @@ enum Command {
     Doctor {
         /// The command that starts the agent, exactly as `agent.command:`
         /// would spell it.
-        #[arg(long, conflicts_with_all = ["sap", "fiori"])]
+        #[arg(long, conflicts_with_all = ["sap", "fiori", "ai"])]
         agent: Option<String>,
         /// Check SAP GUI: is SAP Logon reachable, and what does the
         /// configured connection (`SAP_CONNECTION`) currently show?
         /// Observation only — never submits a credential.
-        #[arg(long, conflicts_with = "fiori")]
+        #[arg(long, conflicts_with_all = ["fiori", "ai"])]
         sap: bool,
         /// Check Fiori: is the launchpad URL reachable, and — only when
         /// FIORI_USER/FIORI_PASSWORD are configured — does a real login
         /// work? NOT CI-safe: a wrong password is a real failed logon on a
         /// live system, so this is a manual, occasional check only.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "ai")]
         fiori: bool,
+        /// Check AI authoring config: provider, key presence, endpoint, and a
+        /// tiny model call. Prints no API key material.
+        #[arg(long)]
+        ai: bool,
         /// Seconds to let the agent run before giving up (`--agent`), or the
         /// Fiori login attempt before giving up (`--fiori`). Unused by
         /// `--sap`, which never waits on anything external.
@@ -2697,6 +2717,19 @@ where
                 },
                 base_url,
             ),
+            ConfigAction::Ai {
+                provider,
+                api_key,
+                model,
+                clear_api_key,
+                clear_model,
+            } => config::cmd_ai(config::AiArgs {
+                provider,
+                api_key,
+                model,
+                clear_api_key,
+                clear_model,
+            }),
             ConfigAction::Show => config::cmd_show(),
             ConfigAction::Path => config::cmd_path(),
             ConfigAction::Skill {
@@ -2806,17 +2839,21 @@ where
             agent,
             sap,
             fiori,
+            ai,
             timeout,
             prompt,
-        } => match (agent, sap, fiori) {
-            (Some(agent), false, false) => agent_flow::cmd_doctor_agent(&agent, timeout, &prompt),
-            (None, true, false) => doctor::cmd_doctor_sap(),
-            (None, false, true) => doctor::cmd_doctor_fiori(timeout),
-            (None, false, false) => {
-                Err("specify one of --agent <command>, --sap, or --fiori".to_string())
+        } => match (agent, sap, fiori, ai) {
+            (Some(agent), false, false, false) => {
+                agent_flow::cmd_doctor_agent(&agent, timeout, &prompt)
+            }
+            (None, true, false, false) => doctor::cmd_doctor_sap(),
+            (None, false, true, false) => doctor::cmd_doctor_fiori(timeout),
+            (None, false, false, true) => doctor::cmd_doctor_ai(),
+            (None, false, false, false) => {
+                Err("specify one of --agent <command>, --sap, --fiori, or --ai".to_string())
             }
             _ => unreachable!(
-                "clap's conflicts_with_all on --agent/--sap/--fiori already rejects any other combination"
+                "clap's conflicts_with_all on --agent/--sap/--fiori/--ai already rejects any other combination"
             ),
         },
         Command::AuthorFromDoc {
@@ -3439,9 +3476,8 @@ mod tests {
         );
     }
 
-    /// plans/002-sap-fiori-doctor.md: `--agent`, `--sap`, `--fiori` are
-    /// mutually exclusive on `doctor`, enforced by clap before either
-    /// handler ever runs.
+    /// `--agent`, `--sap`, `--fiori`, and `--ai` are mutually exclusive on
+    /// `doctor`, enforced by clap before any handler runs.
     #[test]
     fn doctor_agent_conflicts_with_sap() {
         assert!(
@@ -3468,6 +3504,16 @@ mod tests {
         assert!(Cli::try_parse_from(["flowproof", "doctor", "--sap", "--fiori"]).is_err());
     }
 
+    #[test]
+    fn doctor_ai_conflicts_with_the_other_modes() {
+        assert!(Cli::try_parse_from(["flowproof", "doctor", "--ai", "--sap"]).is_err());
+        assert!(Cli::try_parse_from(["flowproof", "doctor", "--ai", "--fiori"]).is_err());
+        assert!(
+            Cli::try_parse_from(["flowproof", "doctor", "--ai", "--agent", "./start-agent"])
+                .is_err()
+        );
+    }
+
     /// The documented onboarding invocation
     /// (`docs/agent-testing.md:139`) must keep parsing exactly as it always
     /// has - `--agent` moved from required to optional to make room for
@@ -3487,11 +3533,16 @@ mod tests {
         assert!(Cli::try_parse_from(["flowproof", "doctor", "--fiori"]).is_ok());
     }
 
-    /// clap accepts `doctor` with none of the three - that's deliberate
+    #[test]
+    fn doctor_ai_alone_parses() {
+        assert!(Cli::try_parse_from(["flowproof", "doctor", "--ai"]).is_ok());
+    }
+
+    /// clap accepts `doctor` with none of the four - that's deliberate
     /// (there is no natural default among them), so the "pick one" error is
     /// `run_cli`'s job, not clap's. Covered separately below.
     #[test]
-    fn doctor_with_none_of_the_three_parses_but_run_cli_rejects_it() {
+    fn doctor_with_none_of_the_four_parses_but_run_cli_rejects_it() {
         assert!(Cli::try_parse_from(["flowproof", "doctor"]).is_ok());
         assert_eq!(
             run_cli(["doctor"]),

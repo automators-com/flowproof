@@ -1601,9 +1601,10 @@ An explicit `rules:` step instead succeeds or fails against the grammar on
 this page and names the accepted forms for that app. Use `--author rules`
 or `--author llm` when the entire recording should force one backend.
 
-When auto mode has no configured model (`FLOWPROOF_AI_PROVIDER` /
-`FLOWPROOF_AI_API_KEY`), the CLI emits a visible warning before trying the
-deterministic grammar. This fallback is identified as its own `fallback` route in
+When auto mode has no configured model (`flowproof config ai`, or
+`FLOWPROOF_AI_PROVIDER` / `FLOWPROOF_AI_API_KEY`), the CLI emits a visible
+warning before trying the deterministic grammar. This fallback is identified as
+its own `fallback` route in
 the per-step human and structured diagnostics, so ordinary prose is never
 silently mistaken for deliberate rule syntax.
 

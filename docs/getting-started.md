@@ -59,7 +59,7 @@ only step that needs a key:
 
 ```bash
 npm install openai
-export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY
+npx flowproof config ai             # stores the model API key with a masked prompt
 npx flowproof record examples/agent-demo/weather-node.flow.yaml
 ```
 
@@ -1074,8 +1074,8 @@ options — so a chosen option is one the control actually offers. A password's
 value is never included.
 
 ```bash
-export FLOWPROOF_AI_PROVIDER=anthropic        # or openai-compatible
-export FLOWPROOF_AI_API_KEY=sk-...            # falls back to ANTHROPIC_API_KEY
+flowproof config ai                           # provider + masked API key prompt
+flowproof doctor --ai                         # validates the configured model key
 flowproof record shop.flow.yaml               # steps in your own words
 flowproof run shop.flow.yaml                  # replays with ZERO model calls
 ```
