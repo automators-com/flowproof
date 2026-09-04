@@ -917,6 +917,37 @@ having reached whatever it liked. Since 0.11 that run prints a warning naming
 the allow-list, the reason it was not applied, and the step to add - but a
 warning is what it is, and the assertion is what makes it a control.
 
+## Side-effect assertion (`assert_no_side_effect`)
+
+The recorded `side_effects` lane (below) can be asserted on directly, one
+step per kind: `- assert_no_side_effect: fs_write` (and/or `http_request`).
+It certifies what was OBSERVED, on the observation tier the lane names: no
+destructive filesystem syscall was observed attempted, no off-loopback
+network attempt was observed. Attempts, not outcomes - the observation
+punts below apply unchanged. The honesty rules are `assert_no_egress`'s:
+wherever observation cannot run (macOS, Windows, any `url:` service) the
+step fails "cannot certify" with no bypass, and a supervisor fault relevant
+to an asserted kind fails the same way, because an empty effects list under
+a blind supervisor is silence, not evidence.
+
+A flow asserting this WITHOUT engaging egress is supervised on Linux under
+an allow-all policy nobody declared. Its one tier line therefore reads `not
+contained (flow engages side-effect observation only; ...)` - observation is
+not containment, and replay under allow-all still PERFORMS the agent's
+connects before the verdict fails. Engaging observation also buys the
+supervisor's structural refusals, policy or none: fd-passing over trapped
+`sendmsg` is refused `EPERM`, and a non-loopback `listen()` is denied
+`EACCES` - visible to the agent as errno, recorded in no lane.
+
+Two readings to keep straight. `assert_no_side_effect: http_request` in a
+flow that also declares `allow_egress` fails BY CONSTRUCTION - every allowed
+and performed destination is an observed side effect; a flow wanting bounded
+egress wants `allow_egress` + `assert_no_egress` instead. And DNS: on a host
+whose resolver is off-loopback, the resolver's own UDP send is admitted
+under allow-all, observed, and fails the assertion - consistent with
+`assert_no_egress`, which denies the same send. The failure names your
+resolver, not a flowproof bug.
+
 ## Filesystem observation
 
 **The observation itself is not a control.** It prevents nothing, and it
