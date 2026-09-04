@@ -139,6 +139,22 @@ repository level. GitHub's own free secret scanning is currently **disabled**
 on `automators-com/flowproof` (confirmed via the GitHub API while writing this
 document). See Known limitations.
 
+### `flowproof config` file at rest
+
+**Guarantee**: `flowproof config sap`/`fiori`/`ai` (`plans/001-credential-config.md`,
+`plans/008-ai-authoring-config.md`) write a SAP password, a Fiori password,
+and/or an AI provider API key to one per-user file
+(`crates/flowproof-cli/src/config.rs`). On Unix, that file is created `0600`
+at write time (`config.rs:266-271`) — owner-read/write only.
+
+**Not covered — real gap**: there is no Windows-side equivalent of the Unix
+`0600` permission. The code comment at the same write site says so directly:
+"No Windows-side equivalent yet — a stated gap, not a silent one." A Windows
+user's `%APPDATA%\flowproof\config.yaml` therefore has whatever the OS
+default ACL grants, which is typically already scoped to the owning user
+account but is not something this codebase asserts or narrows itself. See
+Known limitations.
+
 ### Debug artifacts (`debug/dom.html`, `debug/console.log`)
 
 **Guarantee**: none currently exists for this specific artifact — stated here
@@ -337,6 +353,10 @@ named honestly, per the principle this document opened with.
 7. **Uncontained-path timeouts kill only the direct child.** A detached
    grandchild process can outlive `wait_to_deadline()`'s kill outside the
    Windows Job Object path.
+8. **`flowproof config`'s file has no Windows permission hardening.** The
+   `0600` mode set on Unix (`config.rs:266-271`) has no counterpart on
+   Windows, where the file can hold a plaintext SAP/Fiori password and an AI
+   API key with only the OS's default ACL protecting it.
 
 ## Open questions — for a human, not a loop
 

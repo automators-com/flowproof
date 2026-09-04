@@ -349,7 +349,11 @@ More suite machinery, all from the first external adoption:
   never recorded reports as junit `skipped` with the reason, instead of
   hard-failing everyone's suite run. `--record-missing` records it in
   place first; `--strict` restores the hard error for CI that must not
-  let coverage silently shrink.
+  let coverage silently shrink. `run`'s own `--author <auto|rules|llm>`
+  only has an effect together with `--record-missing` — it picks the
+  authoring backend for whatever gets recorded, same flag and default as
+  `record`'s; on a spec that already has a trace, `run --author` is a
+  no-op.
 - **Suite `env:` is lazy per entry**: an unresolvable value warns and is
   skipped instead of blocking flows that never reference it. A flow that
   DOES reference it still fails at the moment of use, naming the
@@ -1271,9 +1275,11 @@ same fill-gaps-only precedence as `sap`/`fiori`. `--provider`, `--api-key`,
 and the advanced-only `--model` script the same setup non-interactively;
 `--clear-api-key` and `--clear-model` remove just that field from the
 stored profile without touching the rest (there's no interactive path for
-clearing — the flags are it). `flowproof config show` masks `ai.api_key`
-the same way it masks SAP/Fiori passwords. Design rationale lives in
-`plans/008-ai-authoring-config.md`.
+clearing — the flags are it). Pairing a clear flag with its own setter is
+rejected outright (`--clear-api-key` with `--api-key`, `--clear-model` with
+`--model`) rather than silently picking one. `flowproof config show` masks
+`ai.api_key` the same way it masks SAP/Fiori passwords. Design rationale
+lives in `plans/008-ai-authoring-config.md`.
 
 ### Business data values
 
@@ -1341,7 +1347,10 @@ further and attempts a REAL login through the launchpad's own form. Treat
 on a schedule — that real login attempt is exactly the kind of repeated,
 unattended credential submission that risks an account lockout. `--sap` is
 Windows-only, like `app: sap` itself; `--fiori` runs anywhere `app: web`
-does. Design rationale lives in `plans/002-sap-fiori-doctor.md`.
+does. `--timeout <seconds>` (default `60`) bounds how long `--fiori` waits on
+that login attempt before giving up — `--sap` never waits on anything
+external, so it ignores `--timeout` entirely. Design rationale lives in
+`plans/002-sap-fiori-doctor.md`.
 
 ## Healing a stale trace
 
@@ -1367,7 +1376,9 @@ step ran, then decide on `--apply`.
 Exit codes: `0` healthy (or applied), `1` changes proposed for review,
 `2` error. `--json` emits the structured report (including `diff_html`); the
 Python API returns a `HealResult` (with `diff_html: Path | None`) and the
-MCP tool mirrors it.
+MCP tool mirrors it. `--author <auto|rules|llm>` picks the authoring backend
+for the re-record, same meaning and same default (`auto`) as `record`'s flag
+of the same name.
 
 ## What's deliberately missing (this is the first slice)
 

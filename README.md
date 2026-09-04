@@ -160,7 +160,7 @@ needs a key:
 
 ```bash
 npm install openai
-export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY
+npx flowproof config ai             # stores the model API key with a masked prompt
 npx flowproof record examples/agent-demo/weather-node.flow.yaml
 ```
 
