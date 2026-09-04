@@ -1941,6 +1941,13 @@ fn build_control_record(
     if agent_flow::engages_egress(spec) {
         lanes.push("egress".to_string());
     }
+    if spec
+        .steps
+        .iter()
+        .any(|s| matches!(s, flowproof_agent::SpecStep::AssertNoSideEffect { .. }))
+    {
+        lanes.push("side_effects".to_string());
+    }
     if !secrets_checked.is_empty() {
         lanes.push("secret_leak".to_string());
     }
@@ -2336,7 +2343,8 @@ struct AuditControl {
     verdict: flowproof_replay::ControlVerdict,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
-    /// Which control lanes the flow asserted (`egress`, `secret_leak`).
+    /// Which control lanes the flow asserted (`egress`, `secret_leak`,
+    /// `side_effects`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     lanes: Vec<String>,
     /// The containment tier the run actually ran under. An `egress` lane
