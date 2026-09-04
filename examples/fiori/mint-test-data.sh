@@ -9,9 +9,15 @@
 # commands are catalog/extract/transform/connect/push, none of which return
 # a single picked record). This script talks straight to SAP instead.
 #
-# Requires SAP_ODATA_BASE, SAP_USER, SAP_PASSWORD in the environment — same
-# credentials the flows themselves use, no separate tool or install needed
-# beyond curl + python3.
+# Requires SAP_ODATA_BASE, SAP_USER, SAP_PASSWORD in the environment — no
+# separate tool or install needed beyond curl + python3. Deliberately
+# SAP_USER/SAP_PASSWORD, not FIORI_USER/FIORI_PASSWORD: this is a direct
+# OData Basic-Auth call against the ABAP backend, not a launchpad UI login,
+# so it's the SAP backend identity flowproof config sap manages, same
+# category as the SAP GUI adapter's own credentials
+# (plans/001-credential-config.md scopes that plan to the SAP GUI and Fiori
+# UI logins only — this script's API credential is neither, and stays a
+# plain suite env var either way).
 #
 # The reference system's own record data is sparse: the root entity set's
 # first several hundred rows (unfiltered) all have an empty Plant field

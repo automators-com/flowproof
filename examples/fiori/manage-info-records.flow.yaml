@@ -17,18 +17,21 @@
 # will list the real fields on screen (see docs/self-help.md).
 #
 # The launchpad URL itself carries sap-client/sap-language as query params
-# (same names the SAP GUI adapter's optional login.client/login.language
-# use) — confirmed live: hitting the base URL alone 404s post-login on a
-# real system, because the shell's actual bootstrap path only resolves
-# once client/language are present on the request, not guessed at as a
-# path suffix.
+# — confirmed live: hitting the base URL alone 404s post-login on a real
+# system, because the shell's actual bootstrap path only resolves once
+# client/language are present on the request, not guessed at as a path
+# suffix. FIORI_* rather than SAP_* deliberately: `flowproof config sap` and
+# `flowproof config fiori` are two independent profiles (a real deployment's
+# Fiori identity can differ from its SAP GUI one, e.g. an SSO-fronted
+# launchpad), so a shared name would let one silently overwrite the other's
+# env var (plans/001-credential-config.md, "Two profiles, not one identity").
 name: Manage info records - edit and verify
 app: web
-url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+url: ${FIORI_BASE_URL}?sap-client=${FIORI_CLIENT}&sap-language=${FIORI_LANGUAGE}#Shell-home
 steps:
   # -- Log in on the launchpad's login screen --------------------------
-  - Type ${SAP_USER} into the "User" field
-  - Type ${SAP_PASSWORD} into the "Password" field
+  - Type ${FIORI_USER} into the "User" field
+  - Type ${FIORI_PASSWORD} into the "Password" field
   - Press the "Log On" button
   # Confirmed live against a real system via login-smoke.flow.yaml: "Home"
   # resolves from the shell's own tab label once authenticated, regardless

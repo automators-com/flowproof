@@ -854,12 +854,16 @@ pub fn resolve_step(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>, R
     })
 }
 
-/// v1 fences iframe scoping to ASSERTIONS. An assertion reads inside the
-/// frame's own document with plain DOM calls, which is deterministic; an
-/// ACTION clicks or types at composited coordinates resolved against the
-/// MAIN document, which would either miss the frame silently or act on the
-/// wrong element. Rather than ship an action that can pass without doing
-/// anything, a framed action is a parse error that says so.
+/// v1 fences iframe scoping to ASSERTIONS and a single point-driven action
+/// (`Press`/plain `Click`). Both are dispatched as a REAL trusted click at
+/// a page-absolute point FRAME_ACT computes for the frame's own element -
+/// `isTrusted` is true, the same as a top-level click, so an application
+/// checking it sees a genuine click. The remaining pointer actions
+/// (double-click, right-click, hover, an explicit percent offset, file
+/// upload) have no such point-computation wired up yet and stay refused,
+/// each for the same reason a framed click USED to be refused entirely:
+/// no trusted path exists for them, so shipping one would let a step pass
+/// without having done anything.
 fn reject_framed_actions(step: &str, actions: &[ResolvedAction]) -> Result<(), RulesError> {
     fn is_framed(target: &Target) -> bool {
         match target {
@@ -869,17 +873,12 @@ fn reject_framed_actions(step: &str, actions: &[ResolvedAction]) -> Result<(), R
         }
     }
     for action in actions {
-        // POINTER-DRIVEN actions stay refused inside a frame. Each can only
-        // reach the frame as an untrusted event, so an application that
-        // checks `isTrusted` does nothing and the step still passes - the
-        // release-without-effect false green.
-        //
-        // VALUE-DRIVING actions (Type, Clear, Check, Remember, Scroll) are
-        // allowed: each is performed through the frame's own DOM and each
-        // reads its own effect back, so a step that did nothing fails.
+        // VALUE-DRIVING actions (Type, Clear, Check, Remember, Scroll) and
+        // `Press` (a real trusted click) are allowed inside a frame; the
+        // remaining pointer actions below stay refused - see the function
+        // doc for why.
         let acting = match action {
-            ResolvedAction::Press { target, .. }
-            | ResolvedAction::ContextClick { target, .. }
+            ResolvedAction::ContextClick { target, .. }
             | ResolvedAction::DoubleClick { target, .. }
             | ResolvedAction::Hover { target, .. }
             | ResolvedAction::ClickAt { target, .. }
@@ -889,12 +888,13 @@ fn reject_framed_actions(step: &str, actions: &[ResolvedAction]) -> Result<(), R
         if is_framed(acting) {
             return Err(unresolvable(
                 step,
-                "this action is not supported inside an iframe. A framed CLICK can only \
-                 dispatch an untrusted event (`isTrusted` is false), so an application \
-                 that checks it does nothing and the step still passes - the \
-                 release-without-effect false green. Drive the click from the page \
-                 itself, or use an action that sets and verifies a value: Type, \
-                 Replace, Clear, Check/Uncheck, Remember, Scroll",
+                "this action is not supported inside an iframe. It can only dispatch an \
+                 untrusted event (`isTrusted` is false), so an application that checks it \
+                 does nothing and the step still passes - the release-without-effect false \
+                 green. A plain Click or `Press … button` now works inside a frame (a real \
+                 trusted click); this specific action does not yet. Drive it from the page \
+                 itself, or use an action that sets and verifies a value: Type, Replace, \
+                 Clear, Check/Uncheck, Remember, Scroll",
             ));
         }
     }
@@ -5893,12 +5893,13 @@ mod framed_target_tests {
 
     #[test]
     fn a_pointer_action_inside_a_frame_is_rejected_rather_than_silently_missing() {
-        // A framed pointer action can only reach the frame as an UNTRUSTED
-        // event, so an app checking `isTrusted` does nothing and the step
-        // still passes - release-without-effect. That must be a loud parse
-        // error, never a green step.
+        // These pointer actions have no trusted-click mechanism wired up
+        // yet (unlike plain Click/Press, see the next test), so each can
+        // only reach the frame as an UNTRUSTED event - an app checking
+        // `isTrusted` does nothing and the step still passes,
+        // release-without-effect. That must be a loud parse error, never a
+        // green step.
         for text in [
-            r#"Click the "Pay" in the iframe "checkout""#,
             r#"Hover over the "Pay" in the iframe "checkout""#,
             r#"Double-click the "Pay" in the iframe "checkout""#,
             r#"Right-click the "Pay" in the iframe "checkout""#,
@@ -5923,6 +5924,22 @@ mod framed_target_tests {
             r#"Clear the "Coupon" field in the iframe "checkout""#,
             r#"Remember the "Total" in the iframe "checkout" as total"#,
             r#"Scroll the "css:body" in the iframe "checkout" to 147px"#,
+        ] {
+            plain(text).unwrap_or_else(|e| panic!("{text} must parse: {e}"));
+        }
+    }
+
+    /// A framed plain Click / `Press … button` is allowed too, unlike the
+    /// pointer actions above: both dispatch a REAL trusted click at a
+    /// page-absolute point the driver computes for the frame's own
+    /// element, so `isTrusted` is true and an app checking it sees a
+    /// genuine click - not the release-without-effect the other pointer
+    /// actions are still refused over.
+    #[test]
+    fn a_framed_click_or_button_press_is_allowed() {
+        for text in [
+            r#"Click the "Pay" in the iframe "checkout""#,
+            r#"Press the "Pay" button in the iframe "checkout""#,
         ] {
             plain(text).unwrap_or_else(|e| panic!("{text} must parse: {e}"));
         }

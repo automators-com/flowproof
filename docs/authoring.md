@@ -634,34 +634,57 @@ Three failures are kept distinct so none of them can read as a pass:
 
 Limits in v1, each for a reason rather than for later:
 
-- **Value-driving actions, not pointer actions.** `Type`, `Replace`, `Clear`,
-  `Check`/`Uncheck`, `Remember` and `Scroll` work inside a frame; `Click`,
-  `Press … button`, `Hover`, `Double-click`, `Right-click` and `Upload` are
-  a parse error naming the reason.
+- **Value-driving actions, plus plain `Click` and `Press … button`.** `Type`,
+  `Clear`, `Check`/`Uncheck`, `Remember` and `Scroll` work inside a frame,
+  performed through the frame's own DOM - the same mechanism `Select` uses in
+  the main document. `Click` and `Press … button` also work inside a frame:
+  the driver computes the target element's page-absolute point (the frame's
+  own offset in the parent document, plus the element's offset within the
+  frame) and dispatches a REAL trusted click there via CDP, the same
+  mechanism the top-level document's click already used - `isTrusted` is
+  true, not an untrusted synthetic event.
 
-  The original refusal covered every action, on the grounds that actions act
-  at composited coordinates resolved against the main document and so could
-  "succeed" without touching the frame. That reasoning was right, and it is
-  specifically about COORDINATES. A same-origin frame does not need them: the
-  parent's own scripts can reach `iframe.contentDocument`, so a value action
-  is driven through the frame's DOM - the same mechanism `Select` uses in the
-  main document - and nothing is dispatched at a point.
+  `Hover`, `Double-click`, `Right-click` and `Upload` remain a parse error
+  naming the reason: no such point-computation is wired up for them yet, so
+  each could only reach the frame as an untrusted event, which an
+  application is free to ignore while the step still passes -
+  release-without-effect.
 
-  A pointer action has no such route. It could only reach the frame as an
-  untrusted event (`isTrusted` is false), which an application is free to
-  ignore while the step still passes - release-without-effect. So those stay
-  refused until a trusted mechanism exists.
+  **`Replace … with` has no framed form**, even though `Clear` and `Type`
+  individually do - express it as the two steps instead: `Clear the "X" in
+  the iframe "Y"` followed by `Type <value> into the "X" in the iframe "Y"`.
 
-  **A framed `Type` is not the main-document `Type`.** In the main document
-  it is real keystrokes typed over a select-all (fill semantics - the field
-  ends up reading the text exactly); inside a frame it is a value assignment
-  plus `input`/`change`. Both replace, but an application that filters on
-  `keydown` sees the main-document keys and not the framed assignment.
-  Two guards keep that honest rather than silent: the target must not be
-  `disabled` or read-only (a value assignment succeeds on a disabled control
-  where typing would be ignored - so it is refused by name), and the value
-  is read BACK from the element afterwards, so a control that rejected or
-  rewrote it fails the step.
+  **A framed `Type` targeting a real `<input>`/`<textarea>` uses the SAME
+  trusted keystroke path the main document does** (click the point, select
+  any existing value, type for real) - not a synthetic value assignment.
+  Some same-origin frames track field changes off real keyboard events
+  (legacy widget frameworks, not only modern ones listening for
+  `input`/`change`), and never see a value this driver set directly. Any
+  other framed element (contenteditable, a custom widget with no native
+  keystroke target) keeps the synthetic value-plus-event write: `.value` is
+  set through the native setter and `input`/`change` fire on it. Both
+  replace what was there rather than appending. Two guards keep either path
+  honest rather than silent: the target must not be `disabled` or read-only
+  (a value assignment succeeds on a disabled control where typing would be
+  ignored - so it is refused by name), and the value is read BACK from the
+  element afterwards, so a control that rejected or rewrote it fails the
+  step.
+
+  SAP WebGUI inside Fiori has one more guard. When Flowproof detects a
+  WebGUI-like same-origin frame, a framed native `Type` commits the field
+  with `Tab`, waits for SAP's field processing to settle, and reads the
+  value back after that commit. This catches the prefilled-field failure
+  mode where a field briefly displays the typed value, then restores its old
+  value on blur. The failure is reported at the field-setting step, without
+  printing either value, because the same machinery can drive credential
+  fields.
+
+  Fiori application content usually lives inside the `Application` iframe,
+  so assertions about result-screen content should be frame-scoped too:
+
+  ```yaml
+  - assert: the "css:body" in the iframe "Application" shows ${MATERIAL}
+  ```
 - **Same-origin only.** A cross-origin frame's document is unreachable, and
   the CDP per-frame execution-context path is not deterministic enough to
   ship behind a grammar that looks identical.
@@ -1578,9 +1601,10 @@ An explicit `rules:` step instead succeeds or fails against the grammar on
 this page and names the accepted forms for that app. Use `--author rules`
 or `--author llm` when the entire recording should force one backend.
 
-When auto mode has no configured model (`FLOWPROOF_AI_PROVIDER` /
-`FLOWPROOF_AI_API_KEY`), the CLI emits a visible warning before trying the
-deterministic grammar. This fallback is identified as its own `fallback` route in
+When auto mode has no configured model (`flowproof config ai`, or
+`FLOWPROOF_AI_PROVIDER` / `FLOWPROOF_AI_API_KEY`), the CLI emits a visible
+warning before trying the deterministic grammar. This fallback is identified as
+its own `fallback` route in
 the per-step human and structured diagnostics, so ordinary prose is never
 silently mistaken for deliberate rule syntax.
 
@@ -1613,6 +1637,21 @@ flowproof author-from-doc uat-export.pdf --app sap --name "Manage purchasing inf
   (`sap`, `web`, …).
 - `--name` — the flow name written into the draft's `name:` field.
 - `--out` — where the draft `.flow.yaml` is written.
+
+When the document contains concrete non-secret business data, such as a
+material, supplier, plant, customer, or order id, the draft can use
+`${NAME}` placeholders and `author-from-doc` writes a sibling values file
+next to the flow:
+
+```text
+draft.flow.yaml
+draft.values.yaml
+```
+
+`flowproof record draft.flow.yaml` and `flowproof run draft.flow.yaml` load
+that values file automatically. Keep passwords, tokens, and login
+credentials in `flowproof config` or the caller's secret environment, not in
+the generated values file.
 
 The PDF's text is extracted and segmented into per-step records, then each
 `Description`/`Expected` pair is translated into this page's grammar by a
