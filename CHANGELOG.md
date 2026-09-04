@@ -6,6 +6,8 @@ together).
 
 ## Unreleased
 
+## 0.21.0
+
 ### Added
 
 - **`flowproof config sap`/`fiori` store SAP GUI and Fiori credentials in one
