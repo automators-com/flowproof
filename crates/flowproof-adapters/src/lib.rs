@@ -35,6 +35,14 @@ pub mod egress_windows;
 // Filesystem OBSERVATION. Cross-platform like `egress`, and for the same
 // reason: the "nothing was observed" path must compile and be exercised on
 // every OS, even though only Linux has a mechanism to observe with.
+// Fiori doctor Stage 1 (plans/002-sap-fiori-doctor.md). Gated on `web`
+// rather than `agent`/`vision`, which happen to be the features that
+// already pull `ureq` in this workspace today - Fiori reachability is a
+// `web`-adapter concern and should not silently stop compiling if either of
+// those unrelated features is ever dropped from a build.
+#[cfg(feature = "web")]
+pub mod fiori;
+
 #[cfg(feature = "agent")]
 pub mod fs_observe;
 
@@ -64,6 +72,9 @@ pub use agent_runner::{AgentRun, RunError, Trigger};
 
 #[cfg(feature = "agent")]
 pub use egress::{AllowSet, Containment, EgressLog};
+
+#[cfg(feature = "web")]
+pub use fiori::{fiori_reachability, FioriReachability};
 
 #[cfg(feature = "agent")]
 pub use fs_observe::{FsEvent, FsLog};

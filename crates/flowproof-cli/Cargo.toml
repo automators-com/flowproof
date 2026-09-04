@@ -22,11 +22,18 @@ clap = { workspace = true }
 # deliberate interrupt exits 0 cleanly on Windows and Unix alike. Light: no
 # async runtime, just a signal handler.
 ctrlc = "3"
+# `flowproof config`'s platform config directory (plans/001-credential-config.md,
+# "Where the file lives"): a single-purpose lookup, no multi-app namespacing
+# to justify `directories`' extra structure.
+dirs = "6"
 flowproof-adapters = { workspace = true, features = ["web", "sap-com", "vision", "agent"] }
 flowproof-agent = { workspace = true }
 flowproof-driver = { workspace = true }
 flowproof-replay = { workspace = true }
 flowproof-trace = { workspace = true }
+# Masked password entry for `flowproof config sap`/`fiori` — std has no
+# terminal-echo control.
+rpassword = "7"
 serde = { workspace = true }
 serde_json = { workspace = true }
 # The `audit` report renders as YAML (default) or JSON.

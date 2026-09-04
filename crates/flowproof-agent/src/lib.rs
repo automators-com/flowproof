@@ -49,16 +49,22 @@ pub enum AgentError {
 pub enum BackendKind {
     /// Anthropic Messages API.
     Anthropic,
-    /// Any OpenAI-compatible endpoint (e.g. vLLM serving a local model).
+    /// OpenAI's public API, using the OpenAI-compatible chat completions shape.
+    OpenAi,
+    /// Any custom OpenAI-compatible endpoint (e.g. vLLM serving a local model).
     OpenAiCompatible,
 }
+
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// Backend configuration, resolved from the environment.
 ///
 /// Env names mirror the conventions used across Automators products:
-/// `FLOWPROOF_AI_PROVIDER` (`anthropic` | `openai-compatible`),
+/// `FLOWPROOF_AI_PROVIDER` (`anthropic` | `openai`),
 /// `FLOWPROOF_AI_BASE_URL`, `FLOWPROOF_AI_API_KEY`, `FLOWPROOF_AI_MODEL`.
-/// The API key falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+/// The API key falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. The old
+/// `openai-compatible` provider spelling remains accepted for custom endpoints
+/// that set `FLOWPROOF_AI_BASE_URL`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConfig {
     pub kind: BackendKind,
@@ -78,44 +84,56 @@ impl BackendConfig {
                         .ok()
                         .or_else(|| match config.kind {
                             BackendKind::Anthropic => env::var("ANTHROPIC_API_KEY").ok(),
-                            BackendKind::OpenAiCompatible => env::var("OPENAI_API_KEY").ok(),
+                            BackendKind::OpenAi | BackendKind::OpenAiCompatible => {
+                                env::var("OPENAI_API_KEY").ok()
+                            }
                         });
                 config
             },
         )
     }
 
-    /// Whether this configuration can actually make calls: Anthropic needs a
-    /// key; an OpenAI-compatible endpoint needs a base url (key optional —
-    /// local vLLM commonly runs without one).
+    /// Whether this configuration can actually make calls: Anthropic and the
+    /// public OpenAI API need a key; a custom OpenAI-compatible endpoint needs
+    /// a base url (key optional — local vLLM commonly runs without one).
     pub fn is_usable(&self) -> bool {
         match self.kind {
-            BackendKind::Anthropic => self.api_key.is_some(),
+            BackendKind::Anthropic | BackendKind::OpenAi => self.api_key.is_some(),
             BackendKind::OpenAiCompatible => self.base_url.is_some(),
         }
     }
 
     fn from_provider_name(provider: &str, base_url: Option<String>) -> Result<Self, AgentError> {
-        let kind = match provider {
-            "" | "anthropic" => BackendKind::Anthropic,
-            "openai-compatible" => BackendKind::OpenAiCompatible,
-            other => {
-                return Err(AgentError::Config(format!(
-                    "unknown FLOWPROOF_AI_PROVIDER '{other}' (expected 'anthropic' or 'openai-compatible')"
-                )))
+        match provider {
+            "" | "anthropic" => Ok(Self {
+                kind: BackendKind::Anthropic,
+                base_url,
+                model: None,
+                api_key: None,
+            }),
+            "openai" => Ok(Self {
+                kind: BackendKind::OpenAi,
+                base_url: base_url.or_else(|| Some(DEFAULT_OPENAI_BASE_URL.to_string())),
+                model: None,
+                api_key: None,
+            }),
+            "openai-compatible" => {
+                let Some(base_url) = base_url else {
+                    return Err(AgentError::Config(
+                        "FLOWPROOF_AI_BASE_URL is required for the legacy openai-compatible provider; use FLOWPROOF_AI_PROVIDER=openai for the public OpenAI API".into(),
+                    ));
+                };
+                Ok(Self {
+                    kind: BackendKind::OpenAiCompatible,
+                    base_url: Some(base_url),
+                    model: None,
+                    api_key: None,
+                })
             }
-        };
-        if kind == BackendKind::OpenAiCompatible && base_url.is_none() {
-            return Err(AgentError::Config(
-                "FLOWPROOF_AI_BASE_URL is required for the openai-compatible provider".into(),
-            ));
+            other => Err(AgentError::Config(format!(
+                "unknown FLOWPROOF_AI_PROVIDER '{other}' (expected 'anthropic', 'openai', or legacy 'openai-compatible')"
+            ))),
         }
-        Ok(Self {
-            kind,
-            base_url,
-            model: None,
-            api_key: None,
-        })
     }
 }
 
@@ -131,7 +149,19 @@ mod tests {
     }
 
     #[test]
-    fn openai_compatible_requires_base_url() {
+    fn openai_uses_the_public_default_base_url() {
+        let ok = BackendConfig::from_provider_name("openai", None).expect("openai config");
+        assert_eq!(ok.kind, BackendKind::OpenAi);
+        assert_eq!(
+            ok.base_url.as_deref(),
+            Some("https://api.openai.com/v1"),
+            "public OpenAI should not require users to configure a base URL"
+        );
+        assert!(!ok.is_usable(), "public OpenAI still needs a key");
+    }
+
+    #[test]
+    fn legacy_openai_compatible_still_requires_base_url() {
         let err = BackendConfig::from_provider_name("openai-compatible", None)
             .expect_err("missing base url must be rejected");
         assert!(matches!(err, AgentError::Config(_)));
@@ -146,9 +176,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_provider_is_rejected() {
+    fn unknown_provider_is_rejected_and_lists_supported_names() {
         let err = BackendConfig::from_provider_name("gemini", None)
             .expect_err("unknown provider must be rejected");
-        assert!(matches!(err, AgentError::Config(_)));
+        let AgentError::Config(message) = err else {
+            panic!("expected config error");
+        };
+        assert!(message.contains("anthropic"));
+        assert!(message.contains("openai"));
+        assert!(message.contains("openai-compatible"));
     }
 }

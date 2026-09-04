@@ -27,11 +27,12 @@ Self-healing on failure proposes a reviewable diff — never a silent mutation.
   the live scene graph (interactable elements with real selectors), the model must choose its
   target FROM that list — it cannot invent selectors — and the chosen action
   is performed and verified like any other before being recorded. Backends:
-  Anthropic Messages API and any OpenAI-compatible endpoint (e.g. vLLM),
-  configured via `FLOWPROOF_AI_PROVIDER`, `FLOWPROOF_AI_BASE_URL`,
-  `FLOWPROOF_AI_API_KEY` (falls back to `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`),
-  `FLOWPROOF_AI_MODEL` (mirrors the `AI_PROVIDER`-style convention used
-  across Automators products). Scene-graph grounding is deliberate: it keeps
+  Anthropic Messages API and OpenAI's API, configured via `flowproof config ai`
+  or `FLOWPROOF_AI_PROVIDER`, `FLOWPROOF_AI_API_KEY` (falls back to
+  `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), and `FLOWPROOF_AI_MODEL` as an
+  advanced override. Custom OpenAI-compatible endpoints remain available via
+  `FLOWPROOF_AI_PROVIDER=openai-compatible` plus `FLOWPROOF_AI_BASE_URL`.
+  Scene-graph grounding is deliberate: it keeps
   authored traces selector-based and replayable; screenshot/vision
   observation joins later (required for Citrix mode).
 - **Assertions**: element state, OCR, visual diff, out-of-band SQL/API.
