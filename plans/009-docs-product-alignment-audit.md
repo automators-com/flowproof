@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 # Plan 9 — Docs/product alignment audit: closing the gap between what ships and what's written down
 
@@ -315,6 +315,35 @@ limitation rather than a proposed test change here.
   006 and 007 entirely. Renumber if either lands first and creates a
   collision; nothing in this plan's content depends on the number.
 - **Should `documented_flags.rs` recurse into nested subcommands now, as
-  part of this PR, or as a separate follow-up?** Leaning separate, since it
-  touches test code rather than prose and this plan's fix is meant to be
-  small enough to land fast.
+  part of this PR, or as a separate follow-up?** Left separate — not done in
+  this pass; see "What landed."
+
+## What landed
+
+All of the "Fix" and "Smaller precision gaps" items, none of the ratchet
+strengthening (left as a follow-up, per the open question above):
+
+- **`README.md`**: Quick Start's `export ANTHROPIC_API_KEY=... # or
+  OPENAI_API_KEY` line replaced with `npx flowproof config ai`, wording
+  matched verbatim to `docs/getting-started.md`'s copy.
+- **`docs/adopting.md`**: Step 0 now names `flowproof config ai` and links
+  to `getting-started.md`'s credentials anchor, instead of just saying an
+  API key is needed with no pointer to how to store it.
+- **`docs/threat-model.md`**: new "`flowproof config` file at rest"
+  subsection under Trust boundaries, stating the Unix `0600` guarantee and
+  the stated Windows gap; a matching 8th entry added to Known limitations.
+- **`docs/getting-started.md`**: four additions — `heal --author` documented
+  in "Healing a stale trace"; `--record-missing`'s bullet in the suite
+  section now says `run --author` only matters combined with it; `--fiori`'s
+  doctor section now states `--timeout` bounds its login wait (`--sap`
+  ignores it); `config ai`'s section now states the `--clear-api-key`/
+  `--api-key` and `--clear-model`/`--model` mutual-exclusion.
+- **Not touched**: `documented_flags.rs` itself (recursing into `config`'s
+  own subcommands, and the same-flag-shared-across-siblings blind spot) —
+  both remain open per the questions above, deliberately left as a smaller,
+  separate, test-code change rather than folded into a docs PR.
+
+Verified: `cargo test -p flowproof-cli --test documented_flags` (both tests
+still pass — this was a strictly-additive doc change) and `cargo fmt
+--check`. No Rust source changed, so `cargo clippy`/`cargo test --workspace`
+were not re-run in full; nothing in this PR touches code paths they cover.
