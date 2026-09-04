@@ -6,6 +6,16 @@ together).
 
 ## Unreleased
 
+### Changed
+
+- **The package now calls itself alpha, not pre-alpha.** The PyPI classifier
+  said `2 - Pre-Alpha` since the first publish, which reads as "nothing works
+  yet" to anyone evaluating the package from the outside — and that reading
+  has been wrong for a while: record and replay, model-grounded authoring,
+  healing, suites, run recordings and the MCP server all ship and are tested
+  in CI. Alpha is the honest word for "works, interfaces may still move".
+  Classifier and the Python SDK README moved together.
+
 ## 0.21.0
 
 ### Added
