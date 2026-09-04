@@ -21,6 +21,8 @@ use crate::{AgentError, BackendConfig, BackendKind};
 const ANTHROPIC_MAX_TOKENS: u32 = 16_384;
 const OPENAI_COMPATIBLE_MAX_TOKENS: u32 = 1024;
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-5";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-5";
+const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 
 /// A minimal chat completion: system + user in, text out.
 pub trait ModelClient {
@@ -80,7 +82,12 @@ impl HttpModelClient {
         self.config
             .model
             .clone()
-            .unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string())
+            .unwrap_or_else(|| match self.config.kind {
+                BackendKind::Anthropic => DEFAULT_ANTHROPIC_MODEL.to_string(),
+                BackendKind::OpenAi | BackendKind::OpenAiCompatible => {
+                    DEFAULT_OPENAI_MODEL.to_string()
+                }
+            })
     }
 
     fn http_err(context: &str, err: impl std::fmt::Display) -> AgentError {
@@ -146,7 +153,7 @@ impl HttpModelClient {
             .base_url
             .clone()
             .or_else(|| std::env::var("ANTHROPIC_BASE_URL").ok())
-            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+            .unwrap_or_else(|| DEFAULT_ANTHROPIC_BASE_URL.to_string());
         let key = self
             .config
             .api_key
@@ -207,9 +214,11 @@ impl HttpModelClient {
     }
 
     fn complete_openai(&mut self, system: &str, user: &str) -> Result<String, AgentError> {
-        let base = self.config.base_url.clone().ok_or_else(|| {
-            AgentError::Config("openai-compatible backend needs a base url".into())
-        })?;
+        let base = self
+            .config
+            .base_url
+            .clone()
+            .ok_or_else(|| AgentError::Config("openai backend needs a base url".into()))?;
         let mut request = self
             .agent
             .post(format!("{}/chat/completions", base.trim_end_matches('/')));
@@ -249,15 +258,45 @@ impl ModelClient for HttpModelClient {
     fn complete(&mut self, system: &str, user: &str) -> Result<String, AgentError> {
         match self.config.kind {
             BackendKind::Anthropic => self.complete_anthropic(system, user),
-            BackendKind::OpenAiCompatible => self.complete_openai(system, user),
+            BackendKind::OpenAi | BackendKind::OpenAiCompatible => {
+                self.complete_openai(system, user)
+            }
         }
     }
 
     fn identity(&self) -> (String, String) {
         let backend = match self.config.kind {
             BackendKind::Anthropic => "anthropic",
+            BackendKind::OpenAi => "openai",
             BackendKind::OpenAiCompatible => "openai-compatible",
         };
         (backend.to_string(), self.model())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_uses_provider_specific_default_models() {
+        let anthropic = HttpModelClient::new(BackendConfig {
+            kind: BackendKind::Anthropic,
+            base_url: None,
+            model: None,
+            api_key: Some("sk-ant".into()),
+        });
+        assert_eq!(
+            anthropic.identity(),
+            ("anthropic".into(), "claude-sonnet-5".into())
+        );
+
+        let openai = HttpModelClient::new(BackendConfig {
+            kind: BackendKind::OpenAi,
+            base_url: Some("https://api.openai.com/v1".into()),
+            model: None,
+            api_key: Some("sk-openai".into()),
+        });
+        assert_eq!(openai.identity(), ("openai".into(), "gpt-5".into()));
     }
 }

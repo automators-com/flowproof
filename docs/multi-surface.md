@@ -94,6 +94,15 @@ open, as whoever opened it, which is the exact confusion `login:` exists to
 prevent. Until it lands, the same case is a suite of single-surface flows with
 one `login:` each, chained with `exports:` — Phase 1, which is shipped.
 
+`flowproof config sap`/`fiori` (`plans/001-credential-config.md`) is a
+different layer and does not close this gap: it seeds *process* env vars as
+a personal-machine default, one value per variable, so it cannot hold the
+`clerk`/`approver` case's two simultaneous `SAP_USER`s any more than a plain
+shell export could. What staging a surface's `login:` needs is a way to hand
+each surface its own credential pair independent of the process environment
+— worth designing alongside whichever of the two lands second, so the second
+one's interface doesn't get built twice.
+
 Design decisions, each with its reason:
 
 - **Explicit `in:` blocks, not per-step surface prefixes.** The prose

@@ -1,0 +1,62 @@
+# SAP: verify a real purchasing info record via its OData API directly —
+# no browser, no Fiori Launchpad, no login screen, no tile navigation at
+# all. `app: api` is flowproof's UI-less flow kind: pure out-of-band
+# assertions, the same grammar `manage-info-records.flow.yaml`'s own
+# out-of-band verification step already uses, just as the WHOLE flow
+# instead of one step at the end of a UI walk.
+#
+# This targets the exact same OData service (MM_PUR_INFO_RECORDS_MANAGE_SRV
+# / C_PurInfoRecordWithOrg) that suite.yaml's mint-test-data.sh already
+# depends on for real test data — proving the underlying business data
+# layer independent of the Fiori Launchpad's own UI/navigation state,
+# which is what blocked manage-info-records.flow.yaml (see that file's own
+# notes) and has been the source of most of this suite's live flakiness.
+#
+# Basic Auth travels as a precomputed base64(user:password) var
+# (SAP_ODATA_BASIC_AUTH) rather than raw credentials in a header value —
+# only the ${VAR} reference is ever written to the trace, same as every
+# other secret this suite uses.
+name: Purchasing info record - verified via OData directly
+app: api
+steps:
+  # Filtered on all three of Plant+Material+Supplier together: a Material
+  # can have more than one info record at the same Plant (one per
+  # Supplier), so Plant+Material alone can match a DIFFERENT row than the
+  # one mint-test-data.sh actually picked — confirmed live: an earlier,
+  # narrower filter here passed status 200 against a real row, just not
+  # the SAME real row, and failed on Supplier because of it. All three
+  # together is the only filter that names the row uniquely.
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Plant%20eq%20'${PLANT}'%20and%20Material%20eq%20'${MATERIAL}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_json: d.results.0.Material
+      equals: ${MATERIAL}
+
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Plant%20eq%20'${PLANT}'%20and%20Material%20eq%20'${MATERIAL}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_json: d.results.0.Supplier
+      equals: ${SUPPLIER}
+
+  # The real acceptance question: does the actual net price on record match
+  # the value mint-test-data.sh minted this test run around?
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Plant%20eq%20'${PLANT}'%20and%20Material%20eq%20'${MATERIAL}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_contains: ${NET_PRICE}
+
+  # A combination that does not exist must come back empty — not silently
+  # pass by matching some OTHER record.
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Plant%20eq%20'9999'%20and%20Material%20eq%20'DOES-NOT-EXIST'%20and%20Supplier%20eq%20'00000000'&$format=json
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_json: d.results
+      count: 0

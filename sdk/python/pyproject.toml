@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "flowproof"
-version = "0.19.0"
+version = "0.20.0"
 description = "Test that a bot only ever does the job it was given — and never deletes, sends or approves the thing it must not. Record it doing the job once, then replay on every commit with zero LLM calls. For the agents and RPA already running real work in production: web, desktop, SAP, Citrix."
 readme = "README.md"
 license = "Apache-2.0"
@@ -34,7 +34,7 @@ Repository = "https://github.com/automators-com/flowproof"
 [dependency-groups]
 dev = [
     "mcp>=1.2; python_version >= '3.10'",
-    "pytest>=8",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
 ]
@@ -66,3 +66,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
+
+[tool.uv.dependency-groups]
+dev = { requires-python = ">=3.10" }

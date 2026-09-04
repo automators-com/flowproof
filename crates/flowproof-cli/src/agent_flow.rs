@@ -1121,7 +1121,7 @@ fn require_progress(run: &AgentRun, cassette: &Cassette, plan: &Plan) -> Result<
 /// the proxy - not that all of them did. Reporting the observation and
 /// letting the reader judge is the honest shape, and the same reason the
 /// zero-capture guard names causes as possibilities rather than facts.
-pub fn cmd_doctor(command: &str, timeout_secs: u64, prompt: &str) -> Result<u8, String> {
+pub fn cmd_doctor_agent(command: &str, timeout_secs: u64, prompt: &str) -> Result<u8, String> {
     use flowproof_trace::cassette::{Cassette, Message, Turn, TurnRequest, TurnResponse};
 
     // One canned turn. Anything the agent sends is answered from this, so no

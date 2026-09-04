@@ -6,6 +6,8 @@ together).
 
 ## Unreleased
 
+## 0.20.0
+
 ### Added
 
 - **flowproof publishes a security reporting policy and a threat model.**
@@ -24,6 +26,66 @@ together).
   them: honesty about what is and isn't enforced is the same principle
   `egress.rs` already lives by, applied to the document as much as the code.
 
+- **A same-origin framed `Click` and `Press … button` now dispatch a real
+  trusted click, not a refusal.** A classic SAP GUI for HTML screen embeds
+  its whole UI in a same-origin iframe, and every tab strip, button, and
+  field on it lived behind that frame boundary. Clicking one was refused
+  outright: a pointer action inside a frame could only ever reach it as an
+  untrusted synthetic event, which an application checking `isTrusted` is
+  free to ignore while the step still reports success - a real
+  release-without-effect false green, so the refusal was the honest answer
+  at the time. It no longer has to be. The driver now computes the target's
+  page-absolute point (the frame's own offset in the parent document, plus
+  the element's offset inside the frame) and dispatches the same
+  `Input.dispatchMouseEvent` sequence the top-level document's click
+  already used - the click is real, `isTrusted` is true, and an application
+  driven this way cannot tell the difference from a person. `Hover`,
+  `Double-click`, `Right-click`, and `Upload` inside a frame stay refused;
+  none has this point-computation wired up yet.
+
+- **A framed `Type` into a real `<input>`/`<textarea>` now types for real.**
+  Framed value-writes previously set `.value` through the native setter and
+  fired synthetic `input`/`change` events - correct for anything listening
+  to those events, and wrong for anything that is not. A live SAP GUI for
+  HTML screen tracks its own field state off real keyboard events, the same
+  way its desktop ancestor always did, and never saw a synthetic write at
+  all: the field stayed visibly empty no matter what the trace said it
+  typed. The driver now clicks the field for real, selects any existing
+  value, and types the real keystrokes CDP would generate for an actual
+  person - the same trusted path the top-level document's `Type` already
+  used. Anything framed that is not a native input (a contenteditable, a
+  custom widget) keeps the synthetic write, since there is no native
+  keystroke target to land on.
+
+- **A framed element is now found by the label its OWN form control
+  resolves to, not by matching arbitrary text.** `the "Material" in the
+  iframe "X"` used to search the frame for any element whose raw
+  `textContent` read exactly `"Material"` - which, on a screen where the
+  visible label and the input it labels are separate DOM nodes (common
+  outside hand-rolled markup), matched the label itself, never the field.
+  Typing then landed on a `<div>`, silently no-op'd through the
+  now-corrected trusted-keystroke path, and the search it was meant to fill
+  in ran empty. Both the write and read paths now check a form control's
+  native `.labels` association first - the same relationship `scene()`
+  already uses to report a field's label back to authoring - before falling
+  back to the old plain-text search, so a label naming a real field finds
+  that field.
+
+- **`flowproof record` shows the browser by default; `--headed`/`--headless`
+  make the choice a flag, not tribal knowledge.** Watching a `web` recording
+  has been possible since `FLOWPROOF_HEADED` shipped, but only if you already
+  knew the variable existed - nothing in `--help` said so, and a new user
+  evaluating flowproof against a tool like Tosca (where you always watch the
+  browser while recording) got a blank terminal by default. Recording is the
+  one human-in-the-loop step, so it now opens Chromium unless told not to;
+  `flowproof run` (replay) is unchanged and stays headless, because it is
+  meant to run unattended on CI runners that often have no display at all,
+  and a default flip there risks the false-green class of bug this project
+  exists to catch - headed Chromium sizes its window from the desktop, so a
+  visual baseline recorded one way and replayed the other reports a mismatch
+  that has nothing to do with the flow. Anything that scripts `flowproof
+  record` without a person watching (CI, a container, a cassette-generation
+  pipeline) needs `--headless` now; everything else needs nothing at all.
 
 - **The SAP test simulator models more than one screen shape.** Every
   automated SAP check ran against the same flat VA01 window - one `wnd[0]`,
@@ -42,6 +104,18 @@ together).
   `sap_sim_e2e` drives both through the production COM engine.
 
 ### Fixed
+
+- **The Python SDK's dev/test lock resolved a known-vulnerable `pytest` for
+  Python 3.9.** `pytest < 9.0.3` has insecure `/tmp/pytest-of-{user}`
+  handling on UNIX (GHSA-6w46-j5rx-g56g); the fix only ever shipped in the
+  9.x line, and 9.x dropped Python 3.9 support outright, so a plain floor
+  bump was unsatisfiable for the 3.9 branch of the lock. The `dev`
+  dependency group now declares its own `requires-python = ">=3.10"`
+  (`[tool.uv.dependency-groups]`), separate from the package's own
+  `requires-python = ">=3.9"` — running the test suite from source now needs
+  3.10+, same as CI already effectively runs, while nothing changes for
+  anyone installing the shipped `flowproof` package on 3.9. The lock now
+  resolves one `pytest` version everywhere: 9.1.1, patched.
 
 - **The nightly SAP suite was failing on the same field, every night, for a
   reason nobody had looked for.** Every scheduled `sap-e2e` run since early
