@@ -24,6 +24,7 @@ instead so they're easy to find as a set.
 | 4 | [004-single-flow-shareability.md](004-single-flow-shareability.md) | Closing the loop on "one `.flow.yaml` + one `flowproof config` + one `flowproof run`, no `suite.yaml`": a stale-naming inventory fix and a missing-var error that now names the fix — issue #534 |
 | 5 | [005-fiori-field-commit.md](005-fiori-field-commit.md) | Make Fiori/SAP WebGUI framed input typing pass only after the field value is committed and read back, preventing prefilled values from silently restoring |
 | 8 | [008-ai-authoring-config.md](008-ai-authoring-config.md) | Add `flowproof config ai` for provider-neutral model authoring settings, storing one AI key and seeding `FLOWPROOF_AI_*` plus compatibility env vars — issue #541 |
+| 9 | [009-docs-product-alignment-audit.md](009-docs-product-alignment-audit.md) | Audit docs against the actual CLI/config surface: README's quickstart still shows the pre-`flowproof config` credential pattern, `docs/adopting.md` never mentions `config ai`, and the `documented_flags.rs` ratchet's blind spots that let this class of gap through |
 
 ## How to read and amend these
 
