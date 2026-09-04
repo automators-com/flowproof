@@ -604,8 +604,8 @@ real suites.
 ### The assertion vocabulary (shared across every app profile)
 
 Assertions describe **what** to check; **how** each target resolves is the
-adapter's job, so the same forms work for web, desktop (UIA), SAP GUI —
-and vision/OCR when that adapter lands. All forms auto-wait
+adapter's job, so the same forms work for web, desktop (UIA), SAP GUI, and
+vision/OCR. All forms auto-wait
 (bounded, recorded timeout; `within <N>s` overrides) — including waiting
 for the *target itself* to appear, so asserting on a toast works:
 
@@ -613,7 +613,7 @@ for the *target itself* to appear, so asserting on a toast works:
 steps:
   - assert: page shows Welcome                       # the SURFACE: page text on
                                                      #   web, window subtree on
-                                                     #   UIA, OCR frame later
+                                                     #   UIA, OCR frame on vision
   - assert: page shows templates found 2 times       # occurrences of the TEXT
                                                      #   (not an element count)
   - assert: page does not show TestConnection        # waits for it to be GONE
@@ -1247,6 +1247,33 @@ or `--agents` narrows to just one, `--dir <path>` adds an arbitrary
 skills-root for any other harness, and `--force` overwrites a target that
 already exists with different content. The skill deliberately never handles
 your password itself — see `plans/003-agent-config-skill.md`.
+
+`flowproof config ai` stores the model key used for `--author llm`/`auto`
+authoring the same way, instead of exporting `ANTHROPIC_API_KEY` or
+`OPENAI_API_KEY` by hand every shell:
+
+```console
+$ flowproof config ai
+AI provider:
+  1) anthropic
+  2) openai
+Choose provider [default: anthropic]:
+AI API key: ****************
+wrote /Users/you/Library/Application Support/flowproof/config.yaml
+```
+
+Only `anthropic` and `openai` are accepted — a misspelled provider fails
+before anything is written, rather than being stored and failing later at
+record time. One neutral `ai.api_key` is stored; at runtime it seeds
+`FLOWPROOF_AI_API_KEY` first, then the provider-specific compatibility
+variable (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) if that is still unset —
+same fill-gaps-only precedence as `sap`/`fiori`. `--provider`, `--api-key`,
+and the advanced-only `--model` script the same setup non-interactively;
+`--clear-api-key` and `--clear-model` remove just that field from the
+stored profile without touching the rest (there's no interactive path for
+clearing — the flags are it). `flowproof config show` masks `ai.api_key`
+the same way it masks SAP/Fiori passwords. Design rationale lives in
+`plans/008-ai-authoring-config.md`.
 
 ### Business data values
 
