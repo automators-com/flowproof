@@ -6,6 +6,88 @@ together).
 
 ## Unreleased
 
+### Added
+
+- **`flowproof config sap`/`fiori` store SAP GUI and Fiori credentials in one
+  per-machine file, seeded into the environment as a fallback.** Every SAP or
+  Fiori flow needed `SAP_USER`/`SAP_PASSWORD`/... exported by hand in every
+  shell that ran `record` or `run` — nothing wrong with a shell export, but
+  nothing durable either. `flowproof config sap`/`fiori` write to a per-user
+  config file (`0600` on Unix) instead, and `apply_suite_context` seeds any
+  of its variables that aren't already set before `${VAR}` resolution runs —
+  an explicit shell export, CI secret, or a suite's own `env:` still wins.
+  `sap` and `fiori` are independent profiles, not one shared identity, since
+  a real deployment's Fiori login (often SSO-fronted) can differ from its
+  SAP GUI one. `flowproof config show`/`path` read it back, password masked.
+  See `plans/001-credential-config.md`.
+
+- **`flowproof config skill` installs an Agent Skill so a coding agent can
+  walk a user through credential setup instead of them reading docs.**
+  Writes `.claude/skills/flowproof-config/SKILL.md` and
+  `.agents/skills/flowproof-config/SKILL.md` by default — `--claude`/
+  `--agents` narrows to one, `--dir` adds another skills-root, `--force`
+  overwrites a differing file. The skill never handles a password itself,
+  only walks the human through the flag-driven `config sap`/`fiori` call.
+  See `plans/003-agent-config-skill.md`.
+
+- **`flowproof doctor --sap`/`--fiori` report what's actually reachable,
+  before a flow is written or a credential is spent.** `--sap` is
+  observation-only on Windows: SAP Logon attach state, an existing
+  session's `Info.User` if any, login-screen presence — it never
+  authenticates, since SAP already rejects a bad login on its own and a
+  wrong one risks locking the account. `--fiori` goes further: an
+  unauthenticated reachability GET first (status, elapsed time, the
+  post-redirect URL — a redirect to an external SSO host is exactly the
+  risk `sap`/`fiori` being separate profiles exists to catch), then, only
+  when `FIORI_USER`/`FIORI_PASSWORD` are both configured, a real login
+  attempt through the same rules-authoring path a flow would use. That
+  second stage is real UI automation against a live system, so `--fiori` is
+  deliberately not CI-safe — a human running it occasionally is fine, a
+  scheduled job re-attempting a stale password every five minutes is the
+  lockout scenario this explicitly does not want. See
+  `plans/002-sap-fiori-doctor.md`.
+
+- **`flowproof config ai` stores the model-authoring API key the same way,
+  replacing a hand-exported `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`.** One
+  neutral `ai.api_key` is stored under a strict `anthropic`/`openai`
+  provider choice; at runtime it seeds `FLOWPROOF_AI_API_KEY` first, then
+  the provider-specific compatibility variable if that's still unset.
+  `model` stays an advanced flag-only override, since a model swap can
+  silently drop a capability (vision, tool use, structured output) that
+  authoring needs — not a prompt an ordinary setup should offer.
+  `--clear-api-key`/`--clear-model` remove just that field.
+  `flowproof doctor --ai` validates the configured key with a tiny model
+  call and prints no key material. See `plans/008-ai-authoring-config.md`.
+
+- **A flow's own business data can live beside it, with no `suite.yaml`
+  required.** `record`/`run` auto-load a sibling `<flow-stem>.values.yaml`,
+  and `--vars <path>`/repeatable `--var KEY=VALUE` override or supply it
+  directly — closing the last piece of "one `.flow.yaml` + one
+  `flowproof config` + one `flowproof run`, no suite" (issue #534). Suite
+  runs apply each flow's values as a scoped overlay, so one flow's values
+  file can't leak into the next. `author-from-doc` can now also write a
+  sibling values file when the source document marks business data with
+  `VALUE: NAME=value`. See `plans/004-single-flow-shareability.md`.
+
+### Fixed
+
+- **A prefilled Fiori/SAP WebGUI field could accept a typed value and then
+  silently revert to its old one.** Live verification of the values-file
+  work above reached a real report screen where a business value looked
+  typed but SAP restored the field's previous value once the page
+  processed it — a value-setting step passing on keystrokes sent, not on
+  the value actually landing. Same-origin framed native inputs that match
+  the SAP WebGUI pattern now click, select-all, backspace, type, and Tab to
+  commit, then read the field back before the step is allowed to pass;
+  generic framed and top-level inputs are unaffected. See
+  `plans/005-fiori-field-commit.md`.
+
+- **A missing `SAP_*`/`FIORI_*` variable now names the fix, not just the
+  gap.** `run`'s human step output pointed at an unresolved `${VAR}` but not
+  at what to do about it; it now suggests `flowproof config sap` or
+  `flowproof config fiori` by name when the missing variable is one of
+  theirs. `--json` output is unchanged.
+
 ## 0.20.0
 
 ### Added

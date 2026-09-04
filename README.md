@@ -276,6 +276,19 @@ control-bearing flows into a `pass`/`fail`/`capability-error` coverage map
 with `flowproof audit`
 ([docs/authoring.md](docs/authoring.md#security-controls)).
 
+**Set up once, diagnose before you spend a key**: `flowproof config sap` /
+`fiori` / `ai` store SAP GUI, Fiori, and model-authoring credentials in one
+per-machine file, seeded into the environment as a fallback so an explicit
+shell export or CI secret always wins; `flowproof config skill` installs an
+Agent Skill so a coding agent can walk a user through setup instead of them
+reading docs. `flowproof doctor --sap` / `--fiori` / `--ai` / `--agent` then
+report what's actually reachable — connectivity and (for Fiori and AI) a
+real check, before a flow is written or a key is spent
+([docs/getting-started.md](docs/getting-started.md#flowproof-config-credentials-without-hand-exporting-env-vars)).
+`flowproof author-from-doc` is an experimental third path into a flow: draft
+a `.flow.yaml` from a requirement/test-case PDF, then resolve it with one
+live `record` pass ([docs/authoring.md](docs/authoring.md)).
+
 **Debug what a tool sends**: `flowproof capture` is a byte-fidelity HTTP
 capture endpoint: point a tool-under-test at it and every request is printed
 and saved verbatim (method, path, all headers, raw body as text and hexdump,

@@ -58,9 +58,11 @@ scoped tokens are authoring-only handles: Flowproof translates them to ordinary
 deterministic targets before writing the trace.
 
 A plain step is a unit of intent, not a unit of work. `Fill out all the vehicle
-data and click next` is one step, and the model answers it with the whole
-sequence of grounded actions it takes — one per field, plus the button — in a
-single call. Every action in that sequence is grounded against the same listed
+data and click next` is one step (`examples/tricentis-insurance-natural.flow.yaml`,
+the natural-language sibling of the field-by-field
+`examples/tricentis-insurance.flow.yaml`), and the model answers it with the
+whole sequence of grounded actions it takes — one per field, plus the button —
+in a single call. Every action in that sequence is grounded against the same listed
 inventory and rejected as a whole if any one of them is not, so a half-filled
 form never reaches the trace. A rejected sequence is put back to the model as a
 correction rather than as a fresh question: the reply names which action failed
