@@ -1250,11 +1250,20 @@ pub fn capture_matches(captured: &str, offset: Option<f64>, actual: &str) -> Res
     Ok((seen - expected).abs() <= 1e-6 * expected.abs().max(1.0))
 }
 
-/// Substring match with the ASCII case-insensitive fallback rung: exact
-/// first, lowercased only if that misses. Widening-only, so it can never
-/// turn a passing trace into a failing one.
+/// Text as a user reads it, after removing browser/layout hint characters
+/// that are not part of the visible label.
+pub fn normalize_visible_text(text: &str) -> String {
+    text.replace('\u{00ad}', "")
+}
+
+/// Substring match with the Unicode case-insensitive fallback rung: exact
+/// first, lowercased only if that misses. Soft hyphens are layout hints, not
+/// visible text, so both sides are compared after removing them. Widening-only,
+/// so it can never turn a passing trace into a failing one.
 pub fn text_contains(actual: &str, expected: &str) -> bool {
-    actual.contains(expected) || actual.to_lowercase().contains(&expected.to_lowercase())
+    let actual = normalize_visible_text(actual);
+    let expected = normalize_visible_text(expected);
+    actual.contains(&expected) || actual.to_lowercase().contains(&expected.to_lowercase())
 }
 
 /// Does `actual` (a full URL) satisfy a `page url` expectation?
@@ -1628,7 +1637,9 @@ fn named_css_color(name: &str) -> Option<[u8; 4]> {
 /// that disagreed with the predicate would send a caller healing a trace
 /// that is not broken.
 pub fn text_occurrences(expected: &str, text: &str) -> usize {
-    let sensitive = text.matches(expected).count();
+    let expected = normalize_visible_text(expected);
+    let text = normalize_visible_text(text);
+    let sensitive = text.matches(&expected).count();
     if sensitive > 0 {
         sensitive
     } else {
@@ -2876,6 +2887,21 @@ mod numeric_value_tests {
         assert_eq!(numeric_value("Account Balance $930.26"), Some(930.26));
         assert_eq!(numeric_value("€1.234"), Some(1.234));
         assert_eq!(numeric_value("£12"), Some(12.0));
+    }
+}
+
+#[cfg(test)]
+mod visible_text_tests {
+    use super::{normalize_visible_text, text_contains, text_occurrences};
+
+    #[test]
+    fn soft_hyphens_are_layout_hints_not_visible_text() {
+        let actual = "Dis\u{00ad}play Pur\u{00ad}chas\u{00ad}ing Info Record by Supplier";
+        let expected = "Display Purchasing Info Record by Supplier";
+
+        assert_eq!(normalize_visible_text(actual), expected);
+        assert!(text_contains(actual, expected));
+        assert_eq!(text_occurrences(expected, actual), 1);
     }
 }
 
