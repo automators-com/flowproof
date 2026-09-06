@@ -245,6 +245,22 @@ new steps are authored fresh — for model-authored steps that means the
 model is consulted **only** for the drift. The summary reports the
 split: `Recorded 'Flow': 12 steps (11 reused)`.
 
+**Autonomous repair.** When a `record` step fails and an authoring model is
+configured (`flowproof config ai`), `record` does not just stop and report
+the failure. It diagnoses the failure, asks the model for a minimal edit to
+the failing step in the `.flow.yaml`, applies that edit directly, and reruns
+— up to 3 attempts, or fewer if the same failure recurs with no progress
+(treated as a Flowproof limitation rather than a fixable flow, not
+something more patching can solve). The only file this ever touches is the
+`.flow.yaml` being recorded; it never edits Flowproof's own code. A
+`<flow>.repair.json` report next to the trace records every attempt, what
+changed, and why. Pass `--no-repair` to disable this and get the original
+behavior: stop and report the first failure immediately.
+
+```bash
+flowproof record shop.flow.yaml --no-repair
+```
+
 **Actionability.** Element actions don't fire on an element that merely
 exists: replay gates every click/type on **enabled** (not
 `disabled`/`aria-disabled`), **stable** (bounding box settled — no
