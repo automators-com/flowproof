@@ -13,6 +13,7 @@ pub mod draft_assembly;
 pub mod heal;
 pub mod llm;
 pub mod recorder;
+pub mod repair;
 pub mod rules;
 pub mod spec;
 
@@ -22,6 +23,10 @@ pub use llm::{HttpModelClient, ModelClient};
 pub use recorder::{
     record, record_incremental, record_incremental_with_options, record_with_author,
     record_with_author_and_options, surface_targets, Author, RecordError, RecordSummary,
+};
+pub use repair::{
+    apply_patch, diagnose, find_step_index, propose_patch, FailureContext, ProposedPatch,
+    RepairAttempt, RepairError, RepairOptions, RepairOutcome, RepairReport,
 };
 pub use spec::{
     check_control_ids, FlowSpec, LoginSpec, McpServerSpec, SessionRef, SpecStep, SuiteManifest,
