@@ -5,6 +5,7 @@ mod agent_flow;
 mod capture;
 pub mod config;
 mod doctor;
+mod update_check;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -3307,6 +3308,7 @@ where
         }
     };
 
+    let is_mcp_stdio = matches!(cli.command, Command::McpStdio { .. });
     let result = match cli.command {
         Command::Config { action } => match action {
             ConfigAction::Sap {
@@ -3500,6 +3502,12 @@ where
             flowproof_adapters::mcp_stdio::run_stand_in(&server).map(|()| EXIT_PASS)
         }
     };
+    // Skipped for mcp-stdio: that command's contract is stdout speaks
+    // JSON-RPC and nothing else, and its stderr is read by an orchestrator
+    // that has no use for a human upgrade notice.
+    if !is_mcp_stdio {
+        update_check::notify_if_outdated(env!("CARGO_PKG_VERSION"));
+    }
     match result {
         Ok(code) => code,
         Err(message) => {
