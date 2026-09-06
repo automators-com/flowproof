@@ -958,27 +958,6 @@ fn run_repair_loop(
             );
         }
 
-        let Some(step_yaml) = &patch.step_yaml else {
-            attempts.push(flowproof_agent::RepairAttempt {
-                attempt,
-                category: ctx.category.to_string(),
-                failing_intent: Some(failing_intent.clone()),
-                error_detail: ctx.detail.clone(),
-                rationale: Some(patch.rationale.clone()),
-                applied: false,
-            });
-            return RepairLoopOutcome::GaveUp(
-                err,
-                flowproof_agent::RepairReport {
-                    attempts,
-                    outcome: flowproof_agent::RepairOutcome::BudgetExhausted {
-                        last_error: "model proposed neither a patch nor an engine-gap reason"
-                            .to_string(),
-                    },
-                },
-            );
-        };
-
         let Some(step_index) = flowproof_agent::find_step_index(&spec, &failing_intent) else {
             attempts.push(flowproof_agent::RepairAttempt {
                 attempt,
@@ -1001,7 +980,19 @@ fn run_repair_loop(
             );
         };
 
-        let patched_yaml = match flowproof_agent::apply_patch(&raw, step_index, step_yaml) {
+        // Prefer widen_timeout_seconds when the model set it: it's the
+        // narrower edit (only the wait window, not the step's wording), and
+        // is how a load-timing race — the target was right, the page just
+        // hadn't settled — gets fixed without risking a wrong-target rewrite.
+        let apply_result = match (&patch.step_yaml, patch.widen_timeout_seconds) {
+            (_, Some(seconds)) => flowproof_agent::widen_timeout(&raw, step_index, seconds),
+            (Some(step_yaml), None) => flowproof_agent::apply_patch(&raw, step_index, step_yaml),
+            (None, None) => Err(flowproof_agent::RepairError::BadModelOutput(
+                "model proposed neither a patch, a timeout widen, nor an engine-gap reason"
+                    .to_string(),
+            )),
+        };
+        let patched_yaml = match apply_result {
             Ok(yaml) => yaml,
             Err(e) => {
                 attempts.push(flowproof_agent::RepairAttempt {
