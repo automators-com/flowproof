@@ -41,6 +41,10 @@ serde_yaml = { workspace = true }
 # Side-effect path redaction hashes what it will not store. Already in the
 # build graph via pdf-extract, so no new crate compiles.
 sha2 = "0.10"
+# Best-effort "a newer version exists" check (crates/flowproof-cli/src/update_check.rs).
+# Already in the build graph via flowproof-agent's model-client calls, so no
+# new crate compiles.
+ureq = { version = "3", features = ["platform-verifier"] }
 
 [lints]
 workspace = true
