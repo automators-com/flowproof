@@ -411,6 +411,7 @@ const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
 }"#;
 
 const FRAME_PROBE: &str = r#"function(FRAME, CSS, ID, TEXT){
+  function norm(s){ return String(s || '').replace(/\u00ad/g, '').trim(); }
   function nameOf(f){
     return f.getAttribute('title') || f.getAttribute('name') || f.getAttribute('id')
       || f.getAttribute('aria-label') || '';
@@ -442,11 +443,12 @@ const FRAME_PROBE: &str = r#"function(FRAME, CSS, ID, TEXT){
     // element's own text, whenever a control actually owns that label.
     // Nothing here changes for text with no associated control - it falls
     // through to the same innermost-text search as before.
+    var want = norm(TEXT);
     var fields = Array.prototype.slice.call(doc.querySelectorAll('input, textarea, select'));
     var byLabel = fields.filter(function(f){
-      var lbl = f.labels && f.labels[0] ? f.labels[0].textContent.trim() : '';
-      return lbl === TEXT || f.getAttribute('aria-label') === TEXT
-        || f.getAttribute('placeholder') === TEXT || f.getAttribute('name') === TEXT;
+      var lbl = f.labels && f.labels[0] ? norm(f.labels[0].textContent) : '';
+      return lbl === want || norm(f.getAttribute('aria-label')) === want
+        || norm(f.getAttribute('placeholder')) === want || norm(f.getAttribute('name')) === want;
     });
     if (byLabel.length) {
       el = byLabel[0];
@@ -455,9 +457,9 @@ const FRAME_PROBE: &str = r#"function(FRAME, CSS, ID, TEXT){
       // Innermost element whose own text is the anchor, mirroring the
       // page-level text rung.
       var hits = all.filter(function(e){
-        return (e.textContent || '').indexOf(TEXT) !== -1
+        return norm(e.textContent).indexOf(want) !== -1
           && !Array.prototype.some.call(e.children, function(c){
-               return (c.textContent || '').indexOf(TEXT) !== -1; });
+               return norm(c.textContent).indexOf(want) !== -1; });
       });
       el = hits.length ? hits[0] : null;
     }
@@ -1644,11 +1646,26 @@ impl std::fmt::Display for WebLocator {
 fn text_xpaths(text: &str) -> Vec<String> {
     const UPPER: &str = "'ABCDEFGHIJKLMNOPQRSTUVWXYZ'";
     const LOWER: &str = "'abcdefghijklmnopqrstuvwxyz'";
-    let lit = xpath_literal(text);
+    let text = flowproof_driver::normalize_visible_text(text);
+    let lit = xpath_literal(&text);
     let lower_lit = xpath_literal(&text.to_ascii_lowercase());
-    let ci = |expr: &str| format!("translate({expr}, {UPPER}, {LOWER})={lower_lit}");
-    let ci_prefix =
-        |expr: &str| format!("starts-with(translate({expr}, {UPPER}, {LOWER}), {lower_lit})");
+    let soft_hyphen = xpath_literal("\u{00ad}");
+    let clean = |expr: &str| format!("translate({expr}, {soft_hyphen}, '')");
+    let norm = |expr: &str| format!("normalize-space({})", clean(expr));
+    let ci = |expr: &str| format!("translate({}, {UPPER}, {LOWER})={lower_lit}", clean(expr));
+    let ci_norm = |expr: &str| format!("translate({}, {UPPER}, {LOWER})={lower_lit}", norm(expr));
+    let ci_prefix = |expr: &str| {
+        format!(
+            "starts-with(translate({}, {UPPER}, {LOWER}), {lower_lit})",
+            clean(expr)
+        )
+    };
+    let ci_norm_prefix = |expr: &str| {
+        format!(
+            "starts-with(translate({}, {UPPER}, {LOWER}), {lower_lit})",
+            norm(expr)
+        )
+    };
     let build = |by_text: String, by_label: String, by_placeholder: String, by_value: String| {
         format!(
             "//*[self::button or self::a or self::summary or @role='button' or \
@@ -1674,50 +1691,50 @@ fn text_xpaths(text: &str) -> Vec<String> {
     };
     vec![
         build(
-            format!("text()[normalize-space(.)={lit}]"),
-            format!("@aria-label={lit}"),
-            format!("@placeholder={lit}"),
-            format!("@value={lit}"),
+            format!("text()[{}={lit}]", norm(".")),
+            format!("{}={lit}", clean("@aria-label")),
+            format!("{}={lit}", clean("@placeholder")),
+            format!("{}={lit}", clean("@value")),
         ),
         build(
-            format!("normalize-space()={lit}"),
-            format!("@aria-label={lit}"),
-            format!("@placeholder={lit}"),
-            format!("@value={lit}"),
+            format!("{}={lit}", norm(".")),
+            format!("{}={lit}", clean("@aria-label")),
+            format!("{}={lit}", clean("@placeholder")),
+            format!("{}={lit}", clean("@value")),
         ),
-        by_label_assoc(format!("normalize-space()={lit}")),
+        by_label_assoc(format!("{}={lit}", norm("."))),
         build(
-            format!("text()[starts-with(normalize-space(.), {lit})]"),
-            format!("starts-with(@aria-label, {lit})"),
-            format!("starts-with(@placeholder, {lit})"),
-            format!("starts-with(@value, {lit})"),
+            format!("text()[starts-with({}, {lit})]", norm(".")),
+            format!("starts-with({}, {lit})", clean("@aria-label")),
+            format!("starts-with({}, {lit})", clean("@placeholder")),
+            format!("starts-with({}, {lit})", clean("@value")),
         ),
         build(
-            format!("starts-with(normalize-space(), {lit})"),
-            format!("starts-with(@aria-label, {lit})"),
-            format!("starts-with(@placeholder, {lit})"),
-            format!("starts-with(@value, {lit})"),
+            format!("starts-with({}, {lit})", norm(".")),
+            format!("starts-with({}, {lit})", clean("@aria-label")),
+            format!("starts-with({}, {lit})", clean("@placeholder")),
+            format!("starts-with({}, {lit})", clean("@value")),
         ),
-        by_label_assoc(format!("starts-with(normalize-space(), {lit})")),
+        by_label_assoc(format!("starts-with({}, {lit})", norm("."))),
         format!(
             "{} | {}",
             build(
-                ci("normalize-space()"),
+                ci_norm("."),
                 ci("@aria-label"),
                 ci("@placeholder"),
                 ci("@value"),
             ),
-            by_label_assoc(ci("normalize-space()")),
+            by_label_assoc(ci_norm(".")),
         ),
         format!(
             "{} | {}",
             build(
-                ci_prefix("normalize-space()"),
+                ci_norm_prefix("."),
                 ci_prefix("@aria-label"),
                 ci_prefix("@placeholder"),
                 ci_prefix("@value"),
             ),
-            by_label_assoc(ci_prefix("normalize-space()")),
+            by_label_assoc(ci_norm_prefix(".")),
         ),
     ]
 }
@@ -2453,10 +2470,12 @@ impl AppDriver for WebAppDriver {
             .tab()?
             .evaluate("document.title", false)
             .map_err(|e| web_err("reading page title", e))?;
-        Ok(value
-            .value
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default())
+        Ok(flowproof_driver::normalize_visible_text(
+            &value
+                .value
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        ))
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
@@ -2480,10 +2499,12 @@ impl AppDriver for WebAppDriver {
                 false,
             )
             .map_err(|e| web_err("reading page text", e))?;
-        Ok(value
-            .value
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default())
+        Ok(flowproof_driver::normalize_visible_text(
+            &value
+                .value
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        ))
     }
 
     fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
@@ -3358,11 +3379,12 @@ impl AppDriver for WebAppDriver {
                 .get("present")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
-            text: parsed
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            text: flowproof_driver::normalize_visible_text(
+                parsed
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+            ),
         })
     }
 
@@ -3405,10 +3427,12 @@ impl AppDriver for WebAppDriver {
                 )
             },
         )?;
-        Ok(value
-            .value
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default())
+        Ok(flowproof_driver::normalize_visible_text(
+            &value
+                .value
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        ))
     }
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
@@ -4577,23 +4601,35 @@ mod tests {
     fn text_xpath_ladder_orders_exact_label_prefix_then_case_insensitive() {
         let rungs = super::text_xpaths("Close Account");
         assert_eq!(rungs.len(), 8);
-        // Rung 1: exact own-text — unchanged from the original ladder.
-        assert!(rungs[0].contains("text()[normalize-space(.)='Close Account']"));
+        let soft = "\u{00ad}";
+        // Rung 1: exact own-text after dropping layout-only soft hyphens.
+        assert!(rungs[0].contains(&format!(
+            "text()[normalize-space(translate(., '{soft}', ''))='Close Account']"
+        )));
         // Rung 3: label association — wrapping form and for/id pairing.
-        assert!(rungs[2].contains("//label[normalize-space()='Close Account']//input"));
-        assert!(rungs[2].contains("//input[@id = //label[normalize-space()='Close Account']/@for]"));
+        assert!(rungs[2].contains(&format!(
+            "//label[normalize-space(translate(., '{soft}', ''))='Close Account']//input"
+        )));
+        assert!(rungs[2].contains(&format!(
+            "//input[@id = //label[normalize-space(translate(., '{soft}', ''))='Close Account']/@for]"
+        )));
         assert!(rungs[2].contains("//select"));
         // Rung 6: label prefix — `Name` finds the field labelled `Name:`.
-        assert!(rungs[5].contains("starts-with(normalize-space(), 'Close Account')"));
+        assert!(rungs[5].contains(&format!(
+            "starts-with(normalize-space(translate(., '{soft}', '')), 'Close Account')"
+        )));
         // Rungs 7-8: case-insensitive fallbacks compare lowercased text.
-        assert!(rungs[6].contains("translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='close account'"));
-        assert!(rungs[6].contains("translate(@aria-label"));
-        assert!(rungs[7].contains("starts-with(translate(normalize-space()"));
-        // No case-sensitive rung mentions translate: exact always wins.
+        assert!(rungs[6].contains(&format!(
+            "translate(normalize-space(translate(., '{soft}', '')), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='close account'"
+        )));
+        assert!(rungs[6].contains("translate(translate(@aria-label"));
+        assert!(rungs[7].contains("starts-with(translate(normalize-space(translate(."));
+        // No case-sensitive rung performs case folding: exact still wins
+        // before the lowercased fallback rungs.
         for rung in &rungs[..6] {
             assert!(
-                !rung.contains("translate("),
-                "case-sensitive rung uses translate: {rung}"
+                !rung.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+                "case-sensitive rung performs case folding: {rung}"
             );
         }
     }
@@ -4601,11 +4637,14 @@ mod tests {
     #[test]
     fn text_xpath_ladder_matches_button_type_inputs_by_value() {
         let rungs = super::text_xpaths("Login");
+        let soft = "\u{00ad}";
         const TYPES: &str = "(@type='submit' or @type='button' or @type='reset')";
         // Exact rungs (1-2): @value equality, gated to button-type inputs.
         for rung in [&rungs[0], &rungs[1]] {
             assert!(
-                rung.contains(&format!("//input[{TYPES} and @value='Login']")),
+                rung.contains(&format!(
+                    "//input[{TYPES} and translate(@value, '{soft}', '')='Login']"
+                )),
                 "exact rung missing value branch: {rung}"
             );
         }
@@ -4613,17 +4652,17 @@ mod tests {
         for rung in [&rungs[3], &rungs[4]] {
             assert!(
                 rung.contains(&format!(
-                    "//input[{TYPES} and starts-with(@value, 'Login')]"
+                    "//input[{TYPES} and starts-with(translate(@value, '{soft}', ''), 'Login')]"
                 )),
                 "prefix rung missing value branch: {rung}"
             );
         }
-        // CI rungs (7-8): translate()-lowered @value comparison.
+        // CI rungs (7-8): soft-hyphen-stripped, translate()-lowered @value comparison.
         assert!(rungs[6].contains(&format!(
-            "//input[{TYPES} and translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='login']"
+            "//input[{TYPES} and translate(translate(@value, '{soft}', ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='login']"
         )));
         assert!(rungs[7].contains(&format!(
-            "//input[{TYPES} and starts-with(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login')]"
+            "//input[{TYPES} and starts-with(translate(translate(@value, '{soft}', ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login')]"
         )));
         // Label-association rungs (3, 6) never consult @value.
         assert!(!rungs[2].contains("@value"));
