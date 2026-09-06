@@ -257,6 +257,19 @@ something more patching can solve). The only file this ever touches is the
 changed, and why. Pass `--no-repair` to disable this and get the original
 behavior: stop and report the first failure immediately.
 
+When the model concludes a failure is a Flowproof limitation rather than a
+fixable flow (an "engine gap"), that verdict is treated as provisional, not
+final: live evidence at the moment of failure can be ambiguous (a target
+that briefly reads as empty text, for example), so `record` gives the whole
+flow one independent, fresh attempt — a new driver session, from the top —
+before reporting a hard failure. If the fresh attempt passes outright, the
+first failure was a one-off; if it fails again and repair finds a real fix,
+that's used; if it fails the same way again, both failures are recorded in
+`<flow>.repair.json` as agreeing evidence of a genuine problem. A
+budget-exhausted verdict (repair genuinely tried several real fixes) does
+not get this free retry — only a verdict that never really tried a fix at
+all.
+
 ```bash
 flowproof record shop.flow.yaml --no-repair
 ```
