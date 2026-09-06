@@ -716,20 +716,121 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                         return record_failure_result(&err, json);
                     }
                     RepairLoopOutcome::GaveUp(err, report) => {
-                        write_repair_report(&out, &report)?;
-                        if json {
-                            let mut payload = record_failure_json(&err)
-                                .unwrap_or_else(|| serde_json::json!({ "error": err.to_string() }));
-                            payload["repair"] =
-                                serde_json::to_value(&report).map_err(|e| e.to_string())?;
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
-                            );
-                            return Ok(EXIT_ERROR);
+                        // An engine_gap verdict is a judgment call on
+                        // whatever the live app happened to show that
+                        // instant — not a proven, reproducible fact. Give
+                        // the whole flow one independent, fresh attempt
+                        // before treating that verdict as final; a
+                        // budget-exhausted verdict already tried several
+                        // real fixes, so it does not get a freebie retry.
+                        let is_engine_gap = matches!(
+                            report.outcome,
+                            flowproof_agent::RepairOutcome::EngineGap { .. }
+                        );
+                        if !is_engine_gap {
+                            write_repair_report(&out, &report)?;
+                            return emit_repair_failure(&err, &report, &report, json);
                         }
-                        print_repair_report(&report);
-                        return Err(err.to_string());
+                        if !json {
+                            eprintln!(
+                                "Repair called this an engine gap; giving the flow one fresh, \
+                                 independent attempt before reporting a final failure..."
+                            );
+                        }
+                        match fresh_record_attempt(spec_path, &values, &out, author, recording) {
+                            Ok(summary) => {
+                                let combined = RepairReportWithFreshRetry {
+                                    first_attempt: &report,
+                                    fresh_retry: FreshRetryOutcome::Passed,
+                                };
+                                write_json_report(&out, &combined)?;
+                                if !json {
+                                    println!(
+                                        "Fresh retry passed without needing repair — the first \
+                                         failure was a one-off, not a real problem."
+                                    );
+                                }
+                                summary
+                            }
+                            Err(FreshRetryError::Setup(setup_err)) => {
+                                let combined = RepairReportWithFreshRetry {
+                                    first_attempt: &report,
+                                    fresh_retry: FreshRetryOutcome::FailedAgain {
+                                        report: flowproof_agent::RepairReport {
+                                            attempts: Vec::new(),
+                                            outcome:
+                                                flowproof_agent::RepairOutcome::NotApplicable {
+                                                    reason: setup_err.clone(),
+                                                },
+                                        },
+                                    },
+                                };
+                                write_json_report(&out, &combined)?;
+                                return Err(setup_err);
+                            }
+                            Err(FreshRetryError::Record(retry_err)) => {
+                                match run_repair_loop(
+                                    spec_path, &values, &out, author, recording, retry_err,
+                                ) {
+                                    RepairLoopOutcome::Passed {
+                                        summary,
+                                        report: retry_report,
+                                    } => {
+                                        let combined = RepairReportWithFreshRetry {
+                                            first_attempt: &report,
+                                            fresh_retry: FreshRetryOutcome::Repaired {
+                                                report: retry_report.clone(),
+                                            },
+                                        };
+                                        write_json_report(&out, &combined)?;
+                                        if !json {
+                                            print_repair_report(&retry_report);
+                                        }
+                                        summary
+                                    }
+                                    RepairLoopOutcome::NotRepaired(final_err) => {
+                                        let combined = RepairReportWithFreshRetry {
+                                            first_attempt: &report,
+                                            fresh_retry: FreshRetryOutcome::FailedAgain {
+                                                report: flowproof_agent::RepairReport {
+                                                    attempts: Vec::new(),
+                                                    outcome:
+                                                        flowproof_agent::RepairOutcome::NotApplicable {
+                                                            reason: final_err.to_string(),
+                                                        },
+                                                },
+                                            },
+                                        };
+                                        write_json_report(&out, &combined)?;
+                                        return emit_repair_failure(
+                                            &final_err, &combined, &report, json,
+                                        );
+                                    }
+                                    RepairLoopOutcome::GaveUp(final_err, final_report) => {
+                                        let combined = RepairReportWithFreshRetry {
+                                            first_attempt: &report,
+                                            fresh_retry: FreshRetryOutcome::FailedAgain {
+                                                report: final_report.clone(),
+                                            },
+                                        };
+                                        write_json_report(&out, &combined)?;
+                                        if !json {
+                                            eprintln!(
+                                                "Fresh retry did not recover either — two \
+                                                 independent failures agree, this looks like a \
+                                                 real problem, not a flake."
+                                            );
+                                        }
+                                        return emit_repair_failure(
+                                            &final_err,
+                                            &combined,
+                                            &final_report,
+                                            json,
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             } else {
@@ -791,6 +892,66 @@ fn record_failure_result(err: &flowproof_agent::RecordError, json: bool) -> Resu
             return Ok(EXIT_ERROR);
         }
     }
+    Err(err.to_string())
+}
+
+/// Either half of what [`fresh_record_attempt`] can fail with: a setup
+/// problem (can't even load the spec or open a driver — not something a
+/// second repair loop pass could address) or a genuine [`RecordError`] from
+/// actually running the flow, which the caller can feed back into
+/// [`run_repair_loop`] as it would any other failure.
+enum FreshRetryError {
+    Setup(String),
+    Record(flowproof_agent::RecordError),
+}
+
+/// One completely fresh `record` attempt: reload the spec, rebuild the
+/// driver from scratch (new browser session, new login), and run once. Used
+/// to give an `engine_gap` verdict a second, independent roll of the dice —
+/// see [`cmd_record`]'s handling of [`RepairLoopOutcome::GaveUp`] for why
+/// that verdict is treated as provisional rather than final.
+fn fresh_record_attempt(
+    spec_path: &Path,
+    values: &ValuesArgs,
+    out: &Path,
+    author: AuthorArg,
+    recording: flowproof_driver::RecordingOptions,
+) -> Result<flowproof_agent::RecordSummary, FreshRetryError> {
+    let (spec, _env_overlay) =
+        load_prepared_spec(spec_path, values).map_err(FreshRetryError::Setup)?;
+    let mut driver = record_driver(&spec).map_err(FreshRetryError::Setup)?;
+    flowproof_agent::record_with_author_and_options(
+        &spec,
+        &mut driver,
+        out,
+        author.into(),
+        recording,
+    )
+    .map_err(FreshRetryError::Record)
+}
+
+/// Report a final repair failure, in whichever shape the caller has:
+/// `repair_payload` is whatever gets embedded in the `--json` output's
+/// `repair` field (a plain [`flowproof_agent::RepairReport`] or, after a
+/// fresh retry, a [`RepairReportWithFreshRetry`]); `human_report` is the
+/// most relevant single report for the human-readable printout.
+fn emit_repair_failure(
+    err: &flowproof_agent::RecordError,
+    repair_payload: &impl serde::Serialize,
+    human_report: &flowproof_agent::RepairReport,
+    json: bool,
+) -> Result<u8, String> {
+    if json {
+        let mut payload = record_failure_json(err)
+            .unwrap_or_else(|| serde_json::json!({ "error": err.to_string() }));
+        payload["repair"] = serde_json::to_value(repair_payload).map_err(|e| e.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+        );
+        return Ok(EXIT_ERROR);
+    }
+    print_repair_report(human_report);
     Err(err.to_string())
 }
 
@@ -958,27 +1119,6 @@ fn run_repair_loop(
             );
         }
 
-        let Some(step_yaml) = &patch.step_yaml else {
-            attempts.push(flowproof_agent::RepairAttempt {
-                attempt,
-                category: ctx.category.to_string(),
-                failing_intent: Some(failing_intent.clone()),
-                error_detail: ctx.detail.clone(),
-                rationale: Some(patch.rationale.clone()),
-                applied: false,
-            });
-            return RepairLoopOutcome::GaveUp(
-                err,
-                flowproof_agent::RepairReport {
-                    attempts,
-                    outcome: flowproof_agent::RepairOutcome::BudgetExhausted {
-                        last_error: "model proposed neither a patch nor an engine-gap reason"
-                            .to_string(),
-                    },
-                },
-            );
-        };
-
         let Some(step_index) = flowproof_agent::find_step_index(&spec, &failing_intent) else {
             attempts.push(flowproof_agent::RepairAttempt {
                 attempt,
@@ -1001,7 +1141,19 @@ fn run_repair_loop(
             );
         };
 
-        let patched_yaml = match flowproof_agent::apply_patch(&raw, step_index, step_yaml) {
+        // Prefer widen_timeout_seconds when the model set it: it's the
+        // narrower edit (only the wait window, not the step's wording), and
+        // is how a load-timing race — the target was right, the page just
+        // hadn't settled — gets fixed without risking a wrong-target rewrite.
+        let apply_result = match (&patch.step_yaml, patch.widen_timeout_seconds) {
+            (_, Some(seconds)) => flowproof_agent::widen_timeout(&raw, step_index, seconds),
+            (Some(step_yaml), None) => flowproof_agent::apply_patch(&raw, step_index, step_yaml),
+            (None, None) => Err(flowproof_agent::RepairError::BadModelOutput(
+                "model proposed neither a patch, a timeout widen, nor an engine-gap reason"
+                    .to_string(),
+            )),
+        };
+        let patched_yaml = match apply_result {
             Ok(yaml) => yaml,
             Err(e) => {
                 attempts.push(flowproof_agent::RepairAttempt {
@@ -1123,9 +1275,43 @@ fn repair_report_path(out: &Path) -> PathBuf {
 }
 
 fn write_repair_report(out: &Path, report: &flowproof_agent::RepairReport) -> Result<(), String> {
+    write_json_report(out, report)
+}
+
+fn write_json_report(out: &Path, report: &impl serde::Serialize) -> Result<(), String> {
     let path = repair_report_path(out);
     let json = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// What happened when an `engine_gap` verdict got one fresh, independent
+/// attempt before being treated as final — see [`cmd_record`]'s handling of
+/// [`RepairLoopOutcome::GaveUp`] for why that verdict is provisional rather
+/// than immediate.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "retry_outcome", rename_all = "kebab-case")]
+enum FreshRetryOutcome {
+    /// The fresh attempt just worked — no repair needed at all the second
+    /// time, meaning the first failure really was a one-off flake.
+    Passed,
+    /// The fresh attempt failed too, but this time the repair loop found a
+    /// real fix.
+    Repaired {
+        report: flowproof_agent::RepairReport,
+    },
+    /// The fresh attempt failed again and repair gave up again — two
+    /// independent failures agreeing is real evidence, not a flake.
+    FailedAgain {
+        report: flowproof_agent::RepairReport,
+    },
+}
+
+/// The full record of an `engine_gap` verdict plus what its fresh retry did.
+#[derive(Debug, serde::Serialize)]
+struct RepairReportWithFreshRetry<'a> {
+    #[serde(flatten)]
+    first_attempt: &'a flowproof_agent::RepairReport,
+    fresh_retry: FreshRetryOutcome,
 }
 
 fn print_repair_report(report: &flowproof_agent::RepairReport) {

@@ -25,8 +25,8 @@ pub use recorder::{
     record_with_author_and_options, surface_targets, Author, RecordError, RecordSummary,
 };
 pub use repair::{
-    apply_patch, diagnose, find_step_index, propose_patch, FailureContext, ProposedPatch,
-    RepairAttempt, RepairError, RepairOptions, RepairOutcome, RepairReport,
+    apply_patch, diagnose, find_step_index, propose_patch, widen_timeout, FailureContext,
+    ProposedPatch, RepairAttempt, RepairError, RepairOptions, RepairOutcome, RepairReport,
 };
 pub use spec::{
     check_control_ids, FlowSpec, LoginSpec, McpServerSpec, SessionRef, SpecStep, SuiteManifest,
