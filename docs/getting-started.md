@@ -1,4 +1,7 @@
-# Getting started
+---
+title: "Getting started"
+description: "Record a flow once from a natural-language YAML spec, then replay it deterministically with zero LLM calls."
+---
 
 flowproof records a flow once from a natural-language YAML spec, then replays
 it deterministically - **zero LLM calls at replay time**.

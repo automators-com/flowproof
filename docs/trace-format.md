@@ -1,4 +1,7 @@
-# flowproof trace format (v1)
+---
+title: "Trace format (v1)"
+description: "The JSON-lines trace format the recording agent writes and the deterministic replayer reads."
+---
 
 Status: **shipped**. The serde types in `flowproof-trace` are
 implemented against this document and the JSON Schema at

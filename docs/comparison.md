@@ -1,4 +1,7 @@
-# flowproof alongside your existing suite
+---
+title: "flowproof vs. your existing suite"
+description: "An honest look at where flowproof fits alongside browser-automation suites, when not to adopt it, and what external review got right."
+---
 
 flowproof exists to reach applications that browser automation cannot —
 SAP GUI, Oracle Forms, Citrix, and any Windows desktop app — and to let

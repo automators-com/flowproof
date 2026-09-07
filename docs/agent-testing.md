@@ -1,4 +1,7 @@
-# Agent-boundary testing
+---
+title: "Agent-boundary testing"
+description: "Testing an AI agent at the model boundary: record its trajectory once, replay deterministically, and assert the tool calls it makes."
+---
 
 Status: **shipped**. v1 (OpenAI-compatible proxy, `assert_tool_call`), v2
 (Anthropic Messages API, streaming replay, http-target agents) and v3.1/v3.2

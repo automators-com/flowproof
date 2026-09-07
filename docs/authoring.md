@@ -1,4 +1,7 @@
-# The authoring grammar — every accepted form
+---
+title: "Authoring grammar"
+description: "Every accepted form for writing a flow, from plain natural-language steps to explicit deterministic rules."
+---
 
 In the default `--author auto` mode, a plain scalar UI step is
 **natural-language model intent**:

@@ -1,4 +1,7 @@
-# Adopting flowproof in an existing repo
+---
+title: "Adopting flowproof"
+description: "Written to be handed to a coding agent: the complete path to adding flowproof to an existing repo, including the judgement calls."
+---
 
 Written to be handed to a coding agent. Point Claude Code (or any agent) at
 this file and it has the whole adoption path, including the parts that are

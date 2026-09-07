@@ -1,4 +1,7 @@
-# When authoring gets stuck: the outside-in loop
+---
+title: "The outside-in loop"
+description: "What happens when authoring gets stuck: recording hands the ambiguity to the driving agent to resolve and re-record."
+---
 
 A spec step like **"make required field changes"** cannot be authored — it
 names no fields, and no amount of grounding fixes that. flowproof's answer

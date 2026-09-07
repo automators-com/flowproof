@@ -1,0 +1,22 @@
+{
+  "title": "Flowproof",
+  "pages": [
+    "getting-started",
+    "authoring",
+    "recording",
+    "self-help",
+    "agent-testing",
+    "capture",
+    "multi-surface",
+    "adopting",
+    "compatibility",
+    "trace-format",
+    "design",
+    "threat-model",
+    "autonomous-architecture",
+    "how-flowproof-tests-flowproof",
+    "obstacle-course",
+    "comparison",
+    "explore-mode"
+  ]
+}

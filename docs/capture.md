@@ -1,4 +1,7 @@
-# Debugging what a tool sends
+---
+title: "Debugging what a tool sends"
+description: "flowproof capture is a byte-fidelity HTTP endpoint for seeing exactly what a tool under test puts on the wire."
+---
 
 When a request goes wrong, the first question is: what did the tool actually
 put on the wire? Logs, proxies, and pretty-printers all sit between you and

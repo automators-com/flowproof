@@ -1,4 +1,7 @@
-# flowproof design
+---
+title: "flowproof design"
+description: "The design decisions behind the engine: core principles and the reasoning fixed so far."
+---
 
 > Status: skeleton. The full design doc will be pasted in here; the sections
 > below capture the decisions already fixed so the scaffold has a home for

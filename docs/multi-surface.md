@@ -1,4 +1,7 @@
-# Test cases that span technologies
+---
+title: "Test cases that span technologies"
+description: "How multi-surface flows record and replay across apps and surfaces with exports: and apps: + in: blocks."
+---
 
 > Status: Phases 1 and 2 are **shipped**. `exports:` chains
 > single-surface flows through a suite

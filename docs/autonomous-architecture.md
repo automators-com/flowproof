@@ -1,4 +1,7 @@
-# How the autonomous system works
+---
+title: "How the autonomous system works"
+description: "How flowproof's unattended AI loops find work, do it, review it, and merge it without quality drifting."
+---
 
 flowproof is built partly by AI loops that run unattended: they find work, do it,
 review it, and merge it. This is how that is arranged so quality does not drift.

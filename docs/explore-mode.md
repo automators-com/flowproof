@@ -1,4 +1,7 @@
-# Exploratory mode (`flowproof explore`)
+---
+title: "Exploratory mode"
+description: "A proposed second runner beside flowproof run, and why it needs to stay separate from replay."
+---
 
 Status: **proposed**, nothing built. This is a design for review, opened
 from [#281](https://github.com/automators-com/flowproof/issues/281). It
