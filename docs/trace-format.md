@@ -186,6 +186,12 @@ already follows.
   `browser` block (the same shape as the header-level one, which stays
   the single-surface spelling), applied identically at record and every
   replay so that surface keeps the shape it was recorded on.
+- Optional `control` is the named security control this flow validates,
+  copied from the spec's `control:` block: `{"id": "...", "title"?: "...",
+  "description"?: "..."}`. `id` is the author-chosen dotted lowercase
+  identifier, stable across renames and re-records; `title`/`description`
+  are free text. Absent for flows without a `control:` block. `flowproof
+  audit` reads this to report which controls a repository's traces cover.
 
 ## Step line
 
