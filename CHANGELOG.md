@@ -6,6 +6,61 @@ together).
 
 ## Unreleased
 
+## 0.22.0
+
+### Added
+
+- **`record` now diagnoses a live-recording failure, asks the configured
+  authoring model for a minimal `.flow.yaml` edit, applies it, and reruns in a
+  bounded loop (default 3 attempts) instead of just reporting the first
+  failure.** It stops early as an engine gap when the same failure category
+  recurs on the same step with no progress, or when the model itself says the
+  failure isn't fixable by a flow edit. The loop only ever writes the target
+  `.flow.yaml` and its `trace/repair.json` sidecar report; `--no-repair`
+  restores the original single-attempt behavior. Verified live against a real
+  Fiori tenant: a deliberately malformed step failed `record`, the model
+  correctly diagnosed and rewrote it, and the rerun passed with zero manual
+  edits. See `plans/007-autonomous-flow-repair-loop.md`.
+
+- **The repair loop recognizes a load-timing race as its own category,
+  distinct from a wrong target.** Previously it had two moves — rewrite a
+  step's text, or declare an engine gap — so a genuine timing race (the
+  target was right, the page just hadn't settled yet) burned an attempt
+  guessing new, wrong text instead of just waiting longer. A new
+  `widen_timeout_seconds` patch only regex-replaces a step's `within Ns`
+  window (capped at 120s), so a timing-race fix can't also change what the
+  step is waiting for.
+
+- **An `engine_gap` verdict gets one fresh retry before it's treated as
+  final.** Live testing against a real Fiori tenant found the same symptom
+  (a wait target briefly resolving to empty text) diagnosed as an unfixable
+  engine gap once and a fixable timing race twice, across otherwise-identical
+  runs — a verdict driven by one ambiguous read of a flaky moment was ending
+  the whole record attempt immediately. `record` now starts the flow over
+  completely fresh (new driver session, new login) once before reporting a
+  hard failure; if that also fails, both failures are recorded together in
+  `<flow>.repair.json` as agreeing evidence of a real problem, not a coin
+  flip. A budget-exhausted verdict (repair genuinely tried real fixes and
+  none stuck) doesn't get this free retry.
+
+- **Every command now checks, at most once every 24h, whether a newer
+  flowproof release exists, and prints a colored notice to stderr.** Nothing
+  told a user they were on an outdated CLI short of checking manually. The
+  check can never affect a command's outcome — any failure (offline, API
+  down, malformed response) is swallowed silently, bounded by a 1.5s timeout
+  — and never writes to stdout, so `--json` output and the mcp-stdio protocol
+  stay clean. Since distribution is split across pip and npm with no
+  reliable way for the binary to know which channel installed it, the
+  message shows both upgrade commands plus a release-notes link rather than
+  guessing. `FLOWPROOF_NO_UPDATE_CHECK` opts out entirely (CI, air-gapped
+  machines); `NO_COLOR` and a non-terminal stderr both fall back to the
+  plain, colorless form.
+
+- **Traces carry a first-class `side_effect` record and lane, and `record`
+  now populates it with observed filesystem writes.** Assertions about what
+  an agent changed on disk previously had nothing to bind to in the trace
+  format itself.
+
 ### Changed
 
 - **The package now calls itself alpha, not pre-alpha.** The PyPI classifier
