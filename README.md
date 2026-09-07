@@ -186,6 +186,27 @@ walkthrough lives in [docs/getting-started.md](docs/getting-started.md), which
 is the complete version of this section. Add `--json` for the structured
 report on stdout.
 
+## Upgrading
+
+```bash
+pip install --upgrade flowproof
+# or: npm install --save-dev flowproof@latest
+```
+
+Every command checks once a day (cached, 1.5s network timeout, never blocks
+or fails a command) and prints a notice on stderr when a newer release
+exists. Set `FLOWPROOF_NO_UPDATE_CHECK=1` to disable it, e.g. in CI or an
+air-gapped environment.
+
+Rust crates, the Python wheel and the npm package all move together on one
+version, so upgrading any one of them gets you the same release everywhere.
+The trace format carries its own version number
+([docs/trace-format.md](docs/trace-format.md)), separate from the flowproof
+release version — a format change is called out there and in
+[CHANGELOG.md](CHANGELOG.md), which is the source of truth for
+version-specific behaviour changes, not just a list of new features. Check it
+before upgrading in CI.
+
 ## Python API
 
 ```python
