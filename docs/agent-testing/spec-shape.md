@@ -29,7 +29,7 @@ Semantics:
 
 - `assert_tool_call` steps assert an **ordered subsequence**: the listed
   calls must occur in this order; unlisted calls in between are allowed.
-  A `strict: true` flow-level flag forbids unlisted calls — both modes
+  A `strict: true` flow-level flag forbids unlisted calls; both modes
   are needed in practice, and subsequence is the right default for
   multi-step agents.
 - `tools:` entries provide the mocked results the trajectory needs to
@@ -50,11 +50,11 @@ Semantics:
   in the trajectory (optionally `where` clauses narrow it to calls matching
   specific arguments, using the same matchers as `assert_tool_call`). This
   is the guard-path assertion: "the agent must
-  refuse WITHOUT side effects" — and arguably the highest-value one in
+  refuse WITHOUT side effects," and arguably the highest-value one in
   the feature: the assertion proves the agent misbehaved, and its result
   is spec-controlled so the model cannot be steered by a real return
   value. It does NOT by itself stop the tool from executing (flowproof is
-  at the model boundary, not the tool boundary) — for a genuinely
+  at the model boundary, not the tool boundary); for a genuinely
   dangerous tool, stub or sandbox it author-side, or use the v3 MCP
   boundary. Scoped to the
   whole trajectory regardless of position; a positional variant can come
@@ -159,11 +159,11 @@ are spec-authored mocks, the expected arguments of *downstream* calls
 are known when the spec is written: if the `search_flights` mock returns
 `id: KQ311`, asserting `create_booking where flight.id equals KQ311`
 tests that the agent correctly threaded data from one tool's result into
-the next tool's call — the actual behavior multi-step agents get wrong —
+the next tool's call (the actual behavior multi-step agents get wrong)
 with zero nondeterminism and no capture machinery.
 
 **Volatile arguments** ("tomorrow" rendered as a date, generated
-idempotency keys): assert shape, not value — `matches` a pattern, or
+idempotency keys): assert shape, not value: `matches` a pattern, or
 `exists`. The cassette layer (below) still pins the exact recorded value
 for regression purposes; the spec assertion names only what must hold
 across re-records.
@@ -176,8 +176,8 @@ even unasserted arguments are regression-protected by default. Arguments
 that are not valid JSON cannot be compared field by field, and the whole
 payload is reported instead rather than a precise-looking half-answer.
 `assert_tool_call` is the *intent* layer on top: it is checked at record
-time (no trace is minted for a trajectory that fails it — same rule as
+time (no trace is minted for a trajectory that fails it, same rule as
 UI flows), re-checked against the new trajectory after every re-record,
-and it documents in the spec which argument properties are meaningful —
+and it documents in the spec which argument properties are meaningful,
 the ones a reviewer should defend in a heal diff, versus incidental
 values the cassette merely happens to pin.
