@@ -5843,10 +5843,6 @@ mod framed_target_tests {
                 include_str!("../../../docs/getting-started/resilience.md"),
             ),
             (
-                "docs/getting-started/roadmap.md",
-                include_str!("../../../docs/getting-started/roadmap.md"),
-            ),
-            (
                 "docs/getting-started/sap-flows.md",
                 include_str!("../../../docs/getting-started/sap-flows.md"),
             ),
