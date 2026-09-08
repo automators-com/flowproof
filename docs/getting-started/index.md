@@ -1,5 +1,5 @@
 ---
-title: "Getting started"
+title: "Installation"
 description: "Install flowproof and run the agent quickstart: record a flow once, then replay it with zero LLM calls."
 ---
 

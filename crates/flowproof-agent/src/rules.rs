@@ -657,7 +657,7 @@ fn refused(step: &str, reason: impl Into<String>) -> RulesError {
 /// reason and the thing to write instead.
 ///
 /// Every one of these is a decision that already exists — in `CHARTER.md`,
-/// in `docs/design.md`, or in this file's own comments. What did not exist
+/// in `internal/design.md`, or in this file's own comments. What did not exist
 /// was anything that made the decision hold: an unparseable step falls
 /// through to the model author, which grounds it into *some* recording, and
 /// a recording is exactly what a decline is supposed to prevent. Silence is
@@ -5759,16 +5759,112 @@ mod framed_target_tests {
     fn no_documented_example_shows_a_shape_the_grammar_refuses() {
         const PAGES: &[(&str, &str)] = &[
             (
-                "docs/authoring.md",
-                include_str!("../../../docs/authoring.md"),
+                "docs/authoring/actions.md",
+                include_str!("../../../docs/authoring/actions.md"),
+            ),
+            (
+                "docs/authoring/agent-steps.md",
+                include_str!("../../../docs/authoring/agent-steps.md"),
+            ),
+            (
+                "docs/authoring/assertions.md",
+                include_str!("../../../docs/authoring/assertions.md"),
+            ),
+            (
+                "docs/authoring/desktop-apps.md",
+                include_str!("../../../docs/authoring/desktop-apps.md"),
+            ),
+            (
+                "docs/authoring/iframes-and-cookies.md",
+                include_str!("../../../docs/authoring/iframes-and-cookies.md"),
+            ),
+            (
+                "docs/authoring/index.md",
+                include_str!("../../../docs/authoring/index.md"),
+            ),
+            (
+                "docs/authoring/multi-surface-flows.md",
+                include_str!("../../../docs/authoring/multi-surface-flows.md"),
+            ),
+            (
+                "docs/authoring/out-of-band-assertions.md",
+                include_str!("../../../docs/authoring/out-of-band-assertions.md"),
+            ),
+            (
+                "docs/authoring/repeating.md",
+                include_str!("../../../docs/authoring/repeating.md"),
+            ),
+            (
+                "docs/authoring/security-controls.md",
+                include_str!("../../../docs/authoring/security-controls.md"),
+            ),
+            (
+                "docs/authoring/troubleshooting.md",
+                include_str!("../../../docs/authoring/troubleshooting.md"),
+            ),
+            (
+                "docs/authoring/variables-and-exports.md",
+                include_str!("../../../docs/authoring/variables-and-exports.md"),
+            ),
+            (
+                "docs/authoring/visual-and-network.md",
+                include_str!("../../../docs/authoring/visual-and-network.md"),
             ),
             (
                 "docs/multi-surface.md",
                 include_str!("../../../docs/multi-surface.md"),
             ),
             (
-                "docs/getting-started.md",
-                include_str!("../../../docs/getting-started.md"),
+                "docs/getting-started/agent-flows.md",
+                include_str!("../../../docs/getting-started/agent-flows.md"),
+            ),
+            (
+                "docs/getting-started/api-flows.md",
+                include_str!("../../../docs/getting-started/api-flows.md"),
+            ),
+            (
+                "docs/getting-started/index.md",
+                include_str!("../../../docs/getting-started/index.md"),
+            ),
+            (
+                "docs/getting-started/live-app-tests.md",
+                include_str!("../../../docs/getting-started/live-app-tests.md"),
+            ),
+            (
+                "docs/getting-started/python-api.md",
+                include_str!("../../../docs/getting-started/python-api.md"),
+            ),
+            (
+                "docs/getting-started/record-and-replay.md",
+                include_str!("../../../docs/getting-started/record-and-replay.md"),
+            ),
+            (
+                "docs/getting-started/resilience.md",
+                include_str!("../../../docs/getting-started/resilience.md"),
+            ),
+            (
+                "docs/getting-started/roadmap.md",
+                include_str!("../../../docs/getting-started/roadmap.md"),
+            ),
+            (
+                "docs/getting-started/sap-flows.md",
+                include_str!("../../../docs/getting-started/sap-flows.md"),
+            ),
+            (
+                "docs/getting-started/secrets-and-config.md",
+                include_str!("../../../docs/getting-started/secrets-and-config.md"),
+            ),
+            (
+                "docs/getting-started/test-context-seeding.md",
+                include_str!("../../../docs/getting-started/test-context-seeding.md"),
+            ),
+            (
+                "docs/getting-started/vision-flows.md",
+                include_str!("../../../docs/getting-started/vision-flows.md"),
+            ),
+            (
+                "docs/getting-started/web-flows.md",
+                include_str!("../../../docs/getting-started/web-flows.md"),
             ),
         ];
         let mut checked = 0usize;

@@ -7,7 +7,7 @@ decided silently.
 
 It is **not** a restatement of the product vision — that already lives in
 [`CHARTER.md`](../CHARTER.md) (mission, invariants, out-of-scope list, priority
-ordering) and [`docs/design.md`](../docs/design.md) (architecture). A plan here
+ordering) and [`internal/design.md`](../internal/design.md) (architecture). A plan here
 takes those as given and works out one feature against them. `docs/` itself
 already holds a few documents written in this exact register —
 [`docs/multi-surface.md`](../docs/multi-surface.md) is effectively plan 0 of

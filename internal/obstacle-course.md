@@ -83,7 +83,7 @@ grammar reaches.
 three times running. What unblocked it was not the API the notes twice named
 but two structural defects in the dispatch — the two midpoints were read in
 different layouts, and the moves named no held button. Measured 20/20; see
-`docs/design.md`.
+`design.md`.
 
 ## Taken by `repeat:` and `when:` (2 of 3)
 

@@ -12,16 +12,10 @@
     "capture",
     "---Guides---",
     "adopting",
+    "comparison",
     "---Reference---",
     "trace-format",
     "compatibility",
-    "design",
-    "threat-model",
-    "---Behind the scenes---",
-    "autonomous-architecture",
-    "how-flowproof-tests-flowproof",
-    "obstacle-course",
-    "comparison",
-    "explore-mode"
+    "threat-model"
   ]
 }
