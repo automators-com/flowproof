@@ -88,9 +88,9 @@ grounded actions that carries it out, and the recorder performs and verifies
 each one exactly as if it had been written out by hand. The trace that results
 lists every action individually, so replay is no less deterministic than a flow
 whose steps were spelled out field by field. The scene the model works from
-carries what a form-filler needs — what each field currently holds, which ones
+carries what a form-filler needs: what each field currently holds, which ones
 the page marks required, which boxes are ticked, and a dropdown's exact
-options — so a chosen option is one the control actually offers. A password's
+options, so a chosen option is one the control actually offers. A password's
 value is never included.
 
 ```bash
