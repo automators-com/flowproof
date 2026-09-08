@@ -3,7 +3,7 @@ title: "Compatibility and deprecation contract"
 description: "The written contract for what changes between versions and what doesn't, replacing the early-stage hedge in the README."
 ---
 
-This is flowproof's compatibility and deprecation contract — what changes
+This is flowproof's compatibility and deprecation contract: what changes
 between versions, and what doesn't. Where a section describes something the
 code already does, it says so; where it commits to a policy, that policy
 applies going forward. Some surfaces still ship labeled experimental; those
@@ -12,7 +12,7 @@ have their own readiness notes and aren't covered by this contract yet.
 ## Why this exists
 
 flowproof's pitch is "record once, replay forever" (docs/comparison.md).
-That promise is about the *recording* — a `.trace.jsonl` file — surviving
+That promise is about the *recording* (a `.trace.jsonl` file) surviving
 time. It said nothing about what "forever" means when the engine that
 reads the trace is several versions newer than the one that wrote it.
 Enterprises treating a recording as durable evidence need that gap closed.
@@ -21,18 +21,18 @@ version bump and what is not.
 
 ## 1. Support matrix
 
-Lists only what CI actually verifies today — not a broader claim the CI
+Lists only what CI actually verifies today, not a broader claim the CI
 doesn't back yet (see §10 for why, and what widening this later looks
 like).
 
 | Surface | Support |
 |---|---|
-| OS | Linux (`ubuntu-latest`) and Windows (`windows-latest`), verified on every push. macOS builds (stub backend) but is not otherwise exercised — **not supported**, best-effort only |
-| Architecture | x86_64, CI-verified. `npm`'s optional deps also publish `darwin-arm64` — **not CI-verified**, best-effort only |
+| OS | Linux (`ubuntu-latest`) and Windows (`windows-latest`), verified on every push. macOS builds (stub backend) but is not otherwise exercised: **not supported**, best-effort only |
+| Architecture | x86_64, CI-verified. `npm`'s optional deps also publish `darwin-arm64`: **not CI-verified**, best-effort only |
 | Python | Declared floor `>=3.9` (`sdk/python/pyproject.toml`, enforced by packaging). CI-verified against **3.12** only (`.github/workflows/publish.yml`). Versions between the floor and 3.12 are not excluded, but are unverified |
 | Node | Declared floor `>=18` (`sdk/js/package.json`, enforced by `engines`). CI-verified against **20 and 22** (`npx-smoke.yml`, `ci.yml`, `publish-npm.yml`). Versions between the floor and 20 are not excluded, but are unverified |
 | Browser | Real Chromium via CDP, Linux |
-| SAP GUI | **Not version-pinned.** Real SAP GUI Scripting runs nightly on a self-hosted runner ([#32](https://github.com/automators-com/flowproof/issues/32)) against whatever version is installed there; no specific version is certified. This is the honest current state, not a target — narrowing it to a certified version is follow-up work, not blocking this document |
+| SAP GUI | **Not version-pinned.** Real SAP GUI Scripting runs nightly on a self-hosted runner ([#32](https://github.com/automators-com/flowproof/issues/32)) against whatever version is installed there; no specific version is certified. This is the honest current state, not a target; narrowing it to a certified version is follow-up work, not blocking this document |
 
 ## 2. Stable vs. experimental at v1
 
@@ -43,24 +43,24 @@ consumer sees a change coming before it lands.
 
 **Stable at v1** (real and tested in CI today):
 - record→replay spine (`flowproof record`, `flowproof run`)
-- trace format v1 (`docs/trace-format.md` — already marked "shipped")
+- trace format v1 (`docs/trace-format.md`, already marked "shipped")
 - the `web`, `sap`, `vision`, `api` adapters and the desktop (UIA) adapter
 - security-control surface (`flowproof audit`, `assert_no_tool_call`,
   `assert_no_egress`)
-- CLI exit codes (0 pass / 1 test failure / 2 error — `crates/flowproof-cli/src/lib.rs`)
+- CLI exit codes (0 pass / 1 test failure / 2 error; `crates/flowproof-cli/src/lib.rs`)
 - the Python API and MCP server (bundled in the one wheel)
 
-**Explicitly experimental, not covered by any v1 guarantee — and not a v1
+**Explicitly experimental, not covered by any v1 guarantee, and not a v1
 blocker (see §8):**
 - `agent.url` services and the MCP boundary over streamable HTTP (README
   says "thinner coverage" today)
-- multi-turn agent conversations — a v1 agent flow is one turn, not a
+- multi-turn agent conversations: a v1 agent flow is one turn, not a
   conversation ([#375](https://github.com/automators-com/flowproof/issues/375))
 - egress containment outside Linux (macOS, Windows, kernels <5.6 report
-  "not contained" rather than enforcing —
+  "not contained" rather than enforcing, per
   [#303](https://github.com/automators-com/flowproof/issues/303))
 - the `v3.4` server-initiated MCP REQUEST slice (`id`/`answer` fields
-  reserved in the trace schema but inert — `docs/trace-format.md`)
+  reserved in the trace schema but inert (`docs/trace-format.md`))
 
 ## 3. Backward/forward compatibility
 
@@ -78,7 +78,7 @@ Committed policy:
   within the same trace format major version (currently `1`). A trace
   format major bump (`format` version 2) is the only sanctioned breaking
   change, and ships with the `flowproof migrate` path described in §4.
-- `.flow.yaml` specs follow the same rule — a spec written against
+- `.flow.yaml` specs follow the same rule: a spec written against
   flowproof `N.x` parses on every `flowproof >= N.x` until the next
   spec-schema major version.
 - Run records (`result.json`, JUnit, HTML, audit output) are an *output*
@@ -86,7 +86,7 @@ Committed policy:
   major version: a script parsing `result.json` from version `N` should
   not need to change for `N+1` unless the major version changes.
 - Cassettes (recorded model/tool responses inside `app: agent` traces)
-  follow the trace format rule above — they are trace content, not a
+  follow the trace format rule above, since they are trace content, not a
   separate format.
 
 ## 4. Migration behavior
@@ -96,7 +96,7 @@ Committed policy:
   old trace never wrote.
 - **A trace predates a breaking format-major bump:** `flowproof run`
   refuses outright, with a named error pointing at `flowproof migrate`.
-  It does **not** attempt a silent best-effort read — a replay that
+  It does **not** attempt a silent best-effort read: a replay that
   quietly reinterprets old evidence is worse than one that stops and says
   so.
 - **Older engine reads a newer trace:** refuses, citing the unsupported
@@ -117,7 +117,7 @@ job, six file locations checked in `.github/workflows/ci.yml`). The rules
 below take effect at 1.0.0.
 
 - **MAJOR:** any change to a surface marked stable in §2 that isn't
-  backward-compatible per §3 — trace format major bump, a removed CLI
+  backward-compatible per §3: trace format major bump, a removed CLI
   flag, a Python API signature change, an MCP tool renamed or removed.
 - **MINOR:** new capability, new optional trace field, new CLI subcommand.
 - **PATCH:** bug fixes with no interface change.
@@ -125,7 +125,7 @@ below take effect at 1.0.0.
   deprecated CLI flag, Python function, or MCP tool ships at least one
   release emitting a deprecation warning before it can be removed, and
   removal only happens in the next MAJOR after that. Measured in release
-  count, not calendar time — flowproof's release cadence isn't fixed
+  count, not calendar time, since flowproof's release cadence isn't fixed
   enough yet to make a calendar promise meaningful.
 
 ## 6. Release lines and security backports
@@ -136,7 +136,7 @@ backports.** This is explicitly **contingent on
 ("remove single-person release and security-response dependencies before
 v1"): a two-line backport promise is only real if more than one person can
 execute it. Until #379 lands, treat backports as best-effort, not a
-committed SLA — publishing the target now is what makes #379 a tracked
+committed SLA; publishing the target now is what makes #379 a tracked
 prerequisite instead of a vague aspiration.
 
 How this interacts with [#376](https://github.com/automators-com/flowproof/issues/376)'s
@@ -147,7 +147,7 @@ to fix it. Whoever writes #376 should check the number here still holds.
 
 ## 7. Compatibility fixtures in CI
 
-Pinned now, pre-1.0 — the trace format itself is already "shipped" per
+Pinned now, pre-1.0: the trace format itself is already "shipped" per
 `docs/trace-format.md`, so it's the thing under test, not the workspace
 version number. Waiting for 1.0.0 risks a compat break landing before the
 ratchet that would catch it exists.
@@ -155,11 +155,11 @@ ratchet that would catch it exists.
 Two releases selected from the CHANGELOG, each representing a genuine
 additive trace-format change (not just any two arbitrary old versions):
 
-- **0.4.0** — introduced the agent-boundary trace shape and the additive
+- **0.4.0**: introduced the agent-boundary trace shape and the additive
   `mcp` lane (stdio/streamable-HTTP servers, the egress audit lane). The
   oldest release whose traces have a materially different shape from
   today's.
-- **0.14.0** — introduced the additive `apps` header map (multi-surface
+- **0.14.0**: introduced the additive `apps` header map (multi-surface
   attribution: which step ran on which surface). The most recent release
   that added a new top-level additive field, making it a good "did the
   engine stay silently readable" checkpoint distinct from 0.4.0's.
@@ -168,13 +168,13 @@ Shape of the CI job, consistent with how the rest of the suite works
 (committed traces replay for free, per CLAUDE.md):
 
 - commit one `.trace.jsonl` recorded at each pinned version, unmodified
-  (traces are human-only to edit — CLAUDE.md);
+  (traces are human-only to edit, per CLAUDE.md);
 - a CI job runs current `flowproof run` against each fixture and asserts
   it still passes, so a silent backward-compat break fails the `adversary`
   ratchet instead of shipping;
 - a second job runs a synthetic trace with a `version` newer than
   currently supported, and asserts the §4 refusal fires with the right
-  message and exit code — the test that currently doesn't exist for the
+  message and exit code, the test that currently doesn't exist for the
   "must reject" rule.
 
 This CI job is follow-up engineering work this document identifies but
@@ -182,26 +182,26 @@ does not itself implement.
 
 ## 8. v1 exit criteria
 
-**v1 means this compatibility contract is written, honest, and enforced —
+**v1 means this compatibility contract is written, honest, and enforced;
 not that every feature is finished.** The experimental/stable split in §2
 exists precisely so an unfinished surface can ship v1 correctly labeled
 instead of blocking the release. None of the issues below gate v1; they
 are tracked separately and ship (or don't) on their own timeline:
 
 - live-SAP GUI Scripting attach verified outside the fake engine on a
-  licensed host — [#479](https://github.com/automators-com/flowproof/issues/479)
+  licensed host: [#479](https://github.com/automators-com/flowproof/issues/479)
   (already labeled experimental via §2's Linux-only/SAP caveats where
   applicable)
-- egress containment beyond Linux-only —
+- egress containment beyond Linux-only:
   [#303](https://github.com/automators-com/flowproof/issues/303)
   (already labeled experimental in §2)
-- multi-turn agent conversations —
+- multi-turn agent conversations:
   [#375](https://github.com/automators-com/flowproof/issues/375)
   (already labeled experimental in §2; v1 ships single-turn)
-- security reporting policy and threat model —
+- security reporting policy and threat model:
   [#376](https://github.com/automators-com/flowproof/issues/376)
   (feeds §6's backport window, doesn't block it)
-- release/security-response process no longer single-person —
+- release/security-response process no longer single-person:
   [#379](https://github.com/automators-com/flowproof/issues/379)
   (blocks §6's backport promise specifically, not v1 as a whole)
 
@@ -217,20 +217,20 @@ What **does** gate v1, because it's this document's own commitment:
 packaging (Python `>=3.9`, Node `>=18`) because CI only verifies single
 pinned versions today. Widening CI to matrix-test the full declared range
 is real, separate engineering work (multiple Python/Node versions × OSes)
-and is not a prerequisite for landing this document — the matrix in §1 is
+and is not a prerequisite for landing this document; the matrix in §1 is
 allowed to be narrow and honest rather than wide and unverified.
 
 ## 10. "Replay forever" vs. the actual guarantee
 
 The phrase, from `docs/comparison.md`: *"Record once with a model in the
 loop; replay forever with zero model calls."* Read plainly, "forever" is a
-claim about *this* engine version replaying *this* trace deterministically
-— true and tested today. It is not, and should not be read as, a claim
+claim about *this* engine version replaying *this* trace deterministically,
+true and tested today. It is not, and should not be read as, a claim
 that `flowproof run` on next year's release replays a trace from today
 without change.
 
 **Decision: keep the phrase, add a qualifier.** The zero-model-calls claim
 is real and worth keeping memorable. Wherever it appears in marketing copy
 (`docs/comparison.md`, README), append a qualifier along the lines of
-*"forever, within the compatibility window this document defines"* —
+*"forever, within the compatibility window this document defines"*:
 follow-up copy work, not blocking this document's merge.
