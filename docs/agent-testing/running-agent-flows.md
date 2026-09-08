@@ -38,7 +38,7 @@ And one the demo cannot show you, because the demo works:
 
 - **An agent that never starts is reported as such, with its stderr.** A
   process that exits non-zero without reaching the proxy fails with its exit
-  code and the tail of what it printed, not with a bare "made 0 model calls" —
+  code and the tail of what it printed, not with a bare "made 0 model calls":
   the failure is the agent's, and the reason is usually in its own output. An
   agent that exits CLEANLY without calling a model is the different failure:
   its client never honoured the injected base URL, which is what

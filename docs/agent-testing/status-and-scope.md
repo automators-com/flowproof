@@ -91,7 +91,7 @@ one flow per turn with the conversation state seeded through `agent.env`.
 
 ## Decision: model-output evals are out of scope
 
-The second problem — "is the model's answer good?" — needs samples,
+The second problem ("is the model's answer good?") needs samples,
 scoring, thresholds, and judges. Its verdicts are statistical, not
 deterministic, and its artifacts are score distributions, not traces. A
 future `flowproof eval` could exist as a *separate* runner sharing the
@@ -106,8 +106,8 @@ A *third* problem is neither of these two, and is proposed separately in
 [explore-mode.md](https://github.com/automators-com/flowproof/blob/main/internal/explore-mode.md):
 not "is the answer good?" but "can a
 control this suite already declares be violated by an input the recording
-never saw?" Its verdict is existential rather than statistical — one
+never saw?" Its verdict is existential rather than statistical: one
 violation is a finding, and the finding converts into an ordinary
-deterministic replay — but it can still fail on an unchanged system, so it
+deterministic replay, but it can still fail on an unchanged system, so it
 inherits the constraint above in full: a separate runner, a separate report
 path, and no contribution to `flowproof audit`.

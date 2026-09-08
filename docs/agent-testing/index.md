@@ -152,7 +152,7 @@ provider with another. `record` is what settles that.
 
 The task it hands the agent is `Say hello.`, delivered through
 `FLOWPROOF_PROMPT`. Change it with `--prompt` when that default would not
-make your agent call a model at all — one that routes on the task, or
+make your agent call a model at all, one that routes on the task, or
 short-circuits something trivial, can answer without a single request and
 report a zero that says nothing about the wiring:
 
@@ -161,7 +161,7 @@ flowproof doctor --agent "./start-agent" --prompt "Look up order 4711."
 ```
 
 The reply is canned either way, so the prompt only decides whether the agent
-reaches for a model — never what comes back.
+reaches for a model, never what comes back.
 
 Two limits worth knowing. It cannot tell a hang from a slow agent, so a
 process waiting for a useful answer sits until `--timeout` (60 seconds by
@@ -169,7 +169,7 @@ default). And if the agent spawns a child that outlives it, the wall clock
 can exceed that timeout, because flowproof stops the process it started
 rather than the tree.
 
-`--agent` is this doctor's only concern — for SAP GUI / Fiori connectivity
+`--agent` is this doctor's only concern; for SAP GUI / Fiori connectivity
 (`app: sap` / `app: web`), see [`flowproof doctor --sap` /
 `--fiori`](../getting-started/secrets-and-config.md#flowproof-doctor---sap----fiori-is-any-of-this-reachable)
 in the getting-started guide instead.
