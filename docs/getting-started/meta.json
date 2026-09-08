@@ -12,7 +12,6 @@
     "api-flows",
     "agent-flows",
     "resilience",
-    "secrets-and-config",
-    "roadmap"
+    "secrets-and-config"
   ]
 }
