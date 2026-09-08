@@ -1,0 +1,18 @@
+{
+  "title": "Getting started",
+  "pages": [
+    "index",
+    "record-and-replay",
+    "python-api",
+    "live-app-tests",
+    "web-flows",
+    "test-context-seeding",
+    "sap-flows",
+    "vision-flows",
+    "api-flows",
+    "agent-flows",
+    "resilience",
+    "secrets-and-config",
+    "roadmap"
+  ]
+}
