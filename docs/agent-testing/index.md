@@ -1,5 +1,5 @@
 ---
-title: "Agent-boundary testing"
+title: "Agent-testing overview"
 description: "How a test runs with no model, what's actually under test, and wiring a real agent for recording."
 ---
 
