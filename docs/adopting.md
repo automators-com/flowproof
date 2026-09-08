@@ -1,4 +1,7 @@
-# Adopting flowproof in an existing repo
+---
+title: "Adopting flowproof"
+description: "Written to be handed to a coding agent: the complete path to adding flowproof to an existing repo, including the judgement calls."
+---
 
 Written to be handed to a coding agent. Point Claude Code (or any agent) at
 this file and it has the whole adoption path, including the parts that are
@@ -17,7 +20,7 @@ npx flowproof --version
 
 Replay needs no API key. Recording needs one, once per flow — `flowproof
 config ai` stores it once per machine instead of exporting it in every shell
-(see [getting-started.md](getting-started.md#flowproof-config-credentials-without-hand-exporting-env-vars)).
+(see [getting-started.md](getting-started/secrets-and-config.md#flowproof-config-credentials-without-hand-exporting-env-vars)).
 
 ## Step 1: the audit (do this before writing any spec)
 
@@ -114,7 +117,7 @@ Now write the tests. In value order:
    the tool intact: `assert_tool_call: create_set where rows equals 100`.
    This catches the most common real regression.
 2. **A guard flow.** `assert_no_tool_call` on a destructive tool. Read
-   [agent-testing.md](agent-testing.md#making-a-guard-flow-prove-enforcement-not-compliance)
+   [agent-testing.md](agent-testing/spec-shape.md#making-a-guard-flow-prove-enforcement-not-compliance)
    first: a guard proves the agent did not ASK, not that it could not. Pair
    it with enforcement in code, and record an adversarial turn where the
    model actually tried, or the flow certifies a polite day.

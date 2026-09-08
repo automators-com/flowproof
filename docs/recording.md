@@ -1,4 +1,7 @@
-# Run recording
+---
+title: "Run recording"
+description: "Reference for controlling the visual evidence every run leaves behind, and why the pipeline is shaped this way."
+---
 
 Every run leaves visual evidence behind: redacted, step-synchronized frames
 you can open beside the verdict, and — on request — a GIF of the whole

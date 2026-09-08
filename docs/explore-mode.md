@@ -1,4 +1,7 @@
-# Exploratory mode (`flowproof explore`)
+---
+title: "Exploratory mode"
+description: "A proposed second runner beside flowproof run, and why it needs to stay separate from replay."
+---
 
 Status: **proposed**, nothing built. This is a design for review, opened
 from [#281](https://github.com/automators-com/flowproof/issues/281). It
@@ -7,7 +10,7 @@ document is about why it must stay separate rather than what it does.
 
 ## The question replay cannot answer
 
-[agent-testing.md](agent-testing.md) already states the limit, and states it
+[agent-testing.md](agent-testing/index.md) already states the limit, and states it
 better than a proposal usually states the gap it wants to fill:
 
 > This is regression evidence, not proof of impossibility: a model that
@@ -44,7 +47,7 @@ nothing in the tool is looking at it.
 
 ## Why a separate runner, and not a flag on `run`
 
-[agent-testing.md](agent-testing.md#decision-model-output-evals-are-out-of-scope)
+[agent-testing.md](agent-testing/status-and-scope.md#decision-model-output-evals-are-out-of-scope)
 already ruled on the shape this must take:
 
 > A future `flowproof eval` could exist as a *separate* runner sharing the

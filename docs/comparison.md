@@ -1,4 +1,7 @@
-# flowproof alongside your existing suite
+---
+title: "flowproof vs. your existing suite"
+description: "An honest look at where flowproof fits alongside browser-automation suites, when not to adopt it, and what external review got right."
+---
 
 flowproof exists to reach applications that browser automation cannot —
 SAP GUI, Oracle Forms, Citrix, and any Windows desktop app — and to let
@@ -22,7 +25,7 @@ external evaluation got right.
 - **You ship an AI agent and need its tool use tested deterministically.**
   `app: agent` records an agent's tool-call trajectory once against a real
   model and replays it with zero model calls, asserting which tools it
-  called and with what arguments (see [agent-testing.md](agent-testing.md)).
+  called and with what arguments (see [agent-testing.md](agent-testing/index.md)).
   Neither Playwright nor Cypress addresses this.
 
 ## When to keep what you have
@@ -44,7 +47,7 @@ the honest ones about fit remain true.
 |---|---|
 | Native `<select>` change never committed (their blocker) | **Fixed** — `Select … from the "…" field` sets the value through the native setter and fires `input`+`change` (React-safe) |
 | Text anchors fused sibling text ("ETE2E Test Runner's Team") | **Fixed** — anchors match an element's own text before its subtree |
-| Grammar undocumented, had to be read from source | **Fixed** — [docs/authoring.md](authoring.md) is the complete grammar, kept honest by a test that parses every example |
+| Grammar undocumented, had to be read from source | **Fixed** — [docs/authoring.md](authoring/index.md) is the complete grammar, kept honest by a test that parses every example |
 | `Navigate to`, `the page shows`, `is disabled`, one-step replace rejected | **Fixed** — all accepted now |
 | Fresh Chromium per flow (4.3s floor) | **Fixed** — one browser per run, isolated context per flow |
 | No retries, no API-only flows | **Fixed** — `run --retries N`; `app: api` for UI-less suites |

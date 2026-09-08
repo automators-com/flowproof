@@ -1,4 +1,7 @@
-# flowproof threat model
+---
+title: "Threat model"
+description: "What flowproof actually protects against today, and where that protection stops."
+---
 
 > Status: v1, maintainer-written, not yet independently reviewed. This
 > document is the current answer to "what does flowproof actually protect

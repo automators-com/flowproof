@@ -1,4 +1,7 @@
-# How flowproof tests flowproof
+---
+title: "How flowproof tests flowproof"
+description: "Proving that every assertion flowproof ships can actually fail, not just that it passes on good input."
+---
 
 A test suite proves a tool does the right thing when the input is good. This
 page is about the other half: proving each assertion flowproof ships can

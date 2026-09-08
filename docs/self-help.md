@@ -1,4 +1,7 @@
-# When authoring gets stuck: the outside-in loop
+---
+title: "The outside-in loop"
+description: "What happens when authoring gets stuck: recording hands the ambiguity to the driving agent to resolve and re-record."
+---
 
 A spec step like **"make required field changes"** cannot be authored — it
 names no fields, and no amount of grounding fixes that. flowproof's answer
@@ -14,7 +17,7 @@ test data reaches the spec). Together they let an agent author tests
 against systems it cannot see into — like SAP — by asking tools that can.
 
 This loop is for UI authoring. An `app: agent` flow (see
-[agent-testing.md](agent-testing.md)) never enters it: its steps
+[agent-testing.md](agent-testing/index.md)) never enters it: its steps
 (`prompt:`, `assert_tool_call:`, `assert_no_tool_call:`) are structured and
 either parse or raise a plain error, so there is nothing to clarify.
 
@@ -124,7 +127,7 @@ cannot set its parent's environment.
 Related: because traces store only the raw `${VAR}` refs, `app: api`
 flow traces can be minted **offline** against a local contract responder
 and replayed against the real stack — see
-[getting-started](getting-started.md#minting-traces-offline-against-a-contract-responder).
+[getting-started](getting-started/api-flows.md#minting-traces-offline-against-a-contract-responder).
 
 ## Why no in-loop tool use
 

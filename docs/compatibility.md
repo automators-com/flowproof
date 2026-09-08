@@ -1,4 +1,7 @@
-# Compatibility, support and deprecation contract
+---
+title: "Compatibility and deprecation contract"
+description: "The written contract for what changes between versions and what doesn't, replacing the early-stage hedge in the README."
+---
 
 **Status: agreed, pending the follow-up work it names.** This answers
 [#378](https://github.com/automators-com/flowproof/issues/378), a

@@ -1,4 +1,7 @@
-# What a deliberately awkward page taught us
+---
+title: "What a deliberately awkward page taught us"
+description: "Findings from running flowproof against a 40-page obstacle course built to be hard to automate."
+---
 
 A public obstacle web page — 40 pages, each built to be hard to automate,
 each scoring itself by calling its own `obstacleCompleted()` — was used as a
