@@ -23,7 +23,7 @@ spec-level config, like `mock:` and `browser:` above.
 
 Sugar is an alias layer, not a cage: on every UIA-driven app (`calc`,
 `notepad`, and the `app:` mapping form) the full shared action grammar
-applies too — `Press the "<label>" button`, `Click "<text>"`, `Type <text>
+applies too: `Press the "<label>" button`, `Click "<text>"`, `Type <text>
 into the "<label>" field`, `Press Ctrl+S`, `id:` targets and ordinals all
 act on any control the app shows, menus and dialogs included. Sugar wins
 where it matches; everything else falls through to the shared forms.

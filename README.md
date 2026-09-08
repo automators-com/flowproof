@@ -8,13 +8,13 @@
 ## Your bot behaved today. Prove it'll behave tomorrow.
 
 Software robots already do real work in production. They raise orders in SAP,
-update records, close tickets — jobs a person used to do by hand, and jobs
+update records, close tickets: jobs a person used to do by hand, and jobs
 agents are taking over more of every month. flowproof is how you test that one
 of them only ever does the job it was given, and never deletes, sends or
 approves the thing it must not.
 
 Record the bot doing its job once. After that, every commit runs that
-recording again and checks it — no model, no API key, nothing billed. Name the
+recording again and checks it: no model, no API key, nothing billed. Name the
 lines it must never cross, and the build breaks the instant one is crossed.
 Not a suite you hope still passes. Evidence, every push.
 
@@ -24,26 +24,26 @@ Everywhere your bots work: web, desktop, SAP, Citrix.
 
 One spec, one `record` against a real model, then `run` forever with none. The
 frames are a capture of [`scripts/demo/`](scripts/demo/) actually running, not a
-mock-up. The same three commands carry the guard path — add
+mock-up. The same three commands carry the guard path: add
 `assert_no_tool_call` and the call an agent must *never* make is proven on every
 commit ([docs/agent-testing.md](docs/agent-testing.md)).
 
 ## The same promise, precisely
 
-A rule the bot has to obey — never refund without approval, never delete a
-customer — is what flowproof calls a **control**, and its job is to keep
+A rule the bot has to obey (never refund without approval, never delete a
+customer) is what flowproof calls a **control**, and its job is to keep
 proving that control still holds.
 
 Record your agent's real run once: every model request and every tool-call
 decision it made. From then on, replay it with **zero LLM calls** and assert
-what matters — which tools were called, with which arguments, and which were
+what matters: which tools were called, with which arguments, and which were
 **never** called. `flowproof audit --since` exits non-zero the moment a control
 starts failing or quietly stops being checked, so a guarantee you made last
 month is re-proved on every commit instead of being remembered.
 
 The same spec format drives web, Windows, SAP GUI, Citrix and HTTP. A bot can
-go wrong in two places — what it decided to do, and what it actually did to
-your system — and one recording covers both. An agent that files an SAP order
+go wrong in two places (what it decided to do, and what it actually did to
+your system), and one recording covers both. An agent that files an SAP order
 is one job to get right, not two.
 
 **Three verbs, three mechanisms, and they are not equally strong.** Worth
@@ -53,12 +53,12 @@ green build actually proves:
 | The claim | Backed by | What it is |
 |---|---|---|
 | never **approves** | `assert_no_tool_call` | the agent did not ask for the call, on any platform |
-| never **deletes** | `assert_no_tool_call` | same, when the delete goes through a tool — which is how an agent deletes a customer |
+| never **deletes** | `assert_no_tool_call` | same, when the delete goes through a tool, which is how an agent deletes a customer |
 | never **sends** | `assert_no_egress` | a real seccomp filter refused it, on Linux; the step fails outright anywhere it cannot be enforced, rather than passing vacuously |
 
 What is *not* asserted: a file the agent's own process destroys directly. On
-Linux that is now **reported** — the run prints what it unlinked, renamed or
-truncated — but a report is not a control, and no build breaks on one. See
+Linux that is now **reported** (the run prints what it unlinked, renamed or
+truncated), but a report is not a control, and no build breaks on one. See
 [docs/agent-testing.md](docs/agent-testing.md#filesystem-observation).
 
 Flows are plain YAML - short enough for an agent to write, readable enough
@@ -72,15 +72,15 @@ Product page: [automators.ai/flowproof](https://automators.ai/flowproof)
 ## How it works
 
 **Agents author, a deterministic engine executes.** An agent performs a
-flow once from a natural-language YAML spec and records a **trace** — the
+flow once from a natural-language YAML spec and records a **trace**: the
 resolved selectors, actions, and assertions. The trace replays
 deterministically in CI with **zero LLM calls**. When the app changes and
-a step breaks, healing proposes a reviewable diff — never a silent
+a step breaks, healing proposes a reviewable diff, never a silent
 mutation.
 
 flowproof is built **agent-native**: the primary caller is a program
 (usually an AI agent), with humans in an oversight role. Every operation
-is a library call returning structured results — including a structured
+is a library call returning structured results, including a structured
 "here is what I'd need to know" payload when a step is too ambiguous to
 author. The CLI and [MCP server](docs/self-help.md) are thin renderings
 over the same code paths.
@@ -88,13 +88,13 @@ over the same code paths.
 Open-source automation has moved in steps: Selenium made browsers
 scriptable, Robot Framework widened automation beyond the browser to
 acceptance testing and RPA, Playwright made web automation reliable.
-flowproof is built for the next step — the era in which AI agents write
+flowproof is built for the next step: the era in which AI agents write
 and maintain the automation, and what matters is that their output is
 **deterministic to execute and cheap to review**.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lineage-dark.svg">
-  <img alt="Selenium (2004), Robot Framework (2008), Playwright (2020), Flowproof (2026): agents author, a deterministic engine executes — across web, desktop, and Citrix" src="docs/assets/lineage-light.svg" width="880">
+  <img alt="Selenium (2004), Robot Framework (2008), Playwright (2020), Flowproof (2026): agents author, a deterministic engine executes, across web, desktop, and Citrix" src="docs/assets/lineage-light.svg" width="880">
 </picture>
 
 ## Two kinds of claim, and the difference matters
@@ -102,17 +102,17 @@ and maintain the automation, and what matters is that their output is
 flowproof makes two sorts of guarantee, and it is worth being blunt about
 which is which.
 
-**Containment claims — "it cannot."** Declare an agent's allowed network
+**Containment claims: "it cannot."** Declare an agent's allowed network
 with `allow_egress` and certify it with `assert_no_egress`, and on Linux
 the agent runs under an unprivileged default-deny seccomp filter:
 undeclared destinations are refused by the kernel. Declare a tool under
-`mcp:` with a `result:` and flowproof answers it as the server — the real
+`mcp:` with a `result:` and flowproof answers it as the server: the real
 tool never executes, in either phase. These hold regardless of what the
 model decides, because a mechanism enforces them rather than an
 instruction. On macOS and Windows containment is not enforced, and the run
 reports "not contained" rather than passing vacuously.
 
-**Behaviour claims — "it did not, and it is re-checked on every change."**
+**Behaviour claims: "it did not, and it is re-checked on every change."**
 `assert_no_tool_call` proves the agent did not request a forbidden tool
 given the recorded model response, and the cassette pins every argument
 byte-exactly, so drift you never thought to assert still fails. This is
@@ -122,7 +122,7 @@ the day you recorded is not a model that always will.
 A guard flow is strongest when it is paired with enforcement, and when the
 recording contains a model that genuinely tried. If the only thing between
 a user and a destructive call is a sentence in a system prompt, that is not
-a control — and flowproof's job is to make that visible, not to paper over
+a control. flowproof's job is to make that visible, not to paper over
 it ([docs/agent-testing.md](docs/agent-testing.md#making-a-guard-flow-prove-enforcement-not-compliance)).
 
 ## Quick start
@@ -136,7 +136,7 @@ npm install --save-dev flowproof
 # or: pip install flowproof
 ```
 
-A spec is natural-language steps and no selectors. This one tests an agent —
+A spec is natural-language steps and no selectors. This one tests an agent,
 a real one, built on the official OpenAI SDK, shipped in
 [`examples/agent-demo/`](examples/agent-demo/):
 
@@ -170,7 +170,7 @@ npx flowproof record examples/agent-demo/weather-node.flow.yaml
 npx flowproof run examples/agent-demo/weather-node.flow.yaml
 ```
 
-The agent ran for real both times — same client, same tool loop. At record
+The agent ran for real both times: same client, same tool loop. At record
 flowproof captured the exchange at the model boundary; at replay it served
 that recording back, so the trajectory is fixed and nothing was billed.
 `assert_tool_call` is the part that fails when the agent regresses: wrong
@@ -178,7 +178,7 @@ tool, wrong argument, or a tool called out of order.
 
 Want a green run before you have a key? The GIF's cassette is committed, so
 `pip install openai && flowproof run scripts/demo/order-status.flow.yaml`
-passes on a fresh clone — no key, no provider network.
+passes on a fresh clone: no key, no provider network.
 
 Any OS. For a UI instead of an agent, point `app: web` at a page, or `app: api`
 at a flow with no UI at all ([examples/](examples/)); the Windows Calculator
@@ -202,7 +202,7 @@ Rust crates, the Python wheel and the npm package all move together on one
 version, so upgrading any one of them gets you the same release everywhere.
 The trace format carries its own version number
 ([docs/trace-format.md](docs/trace-format.md)), separate from the flowproof
-release version — a format change is called out there and in
+release version, and a format change is called out there and in
 [CHANGELOG.md](CHANGELOG.md), which is the source of truth for
 version-specific behaviour changes, not just a list of new features. Check it
 before upgrading in CI.
@@ -215,19 +215,19 @@ from flowproof import Flow
 flow = Flow("calc.flow.yaml")
 flow.record()                    # RecordResult(..., routing=({"route": "llm", ...},))
 
-result = flow.run()              # RunResult — truthy iff the flow passed
+result = flow.run()              # RunResult, truthy iff the flow passed
 result.steps[4].status           # "passed"
 result.report_path               # result.json artifact for this run
 
 trace = flow.get_trace()         # inspect the recorded trace programmatically
 ```
 
-Agents can drive the same four operations — record, run, get_trace, heal —
+Agents can drive the same four operations (record, run, get_trace, heal)
 over MCP: `pip install flowproof[mcp]`, run `flowproof-mcp`.
 
 ## What works today
 
-**Author** — plain scalar steps are human intent: a model grounds them
+**Author**: plain scalar steps are human intent: a model grounds them
 against the live app's real elements via neutral target tokens, and the
 result replays with zero model calls. It cannot invent selectors. Use
 `rules: <text>` for one deterministic step or `--author rules` for an
@@ -236,11 +236,11 @@ entire flow; the complete grammar is in
 by a test. Anthropic and OpenAI-compatible endpoints (including vLLM) are
 supported.
 - When a step is too ambiguous to author ("make required field changes"),
-  recording returns a structured clarification payload — the stuck step
-  plus the live screen's field inventory — so the driving agent can
+  recording returns a structured clarification payload (the stuck step
+  plus the live screen's field inventory) so the driving agent can
   resolve the ambiguity and re-record ([docs/self-help.md](docs/self-help.md)).
 
-**Execute** — deterministic replay with a provenance-tagged
+**Execute**: deterministic replay with a provenance-tagged
 [selector ladder](docs/trace-format.md) (native id → structural → text
 anchor) that falls back rung by rung and flags degraded matches for
 healing; auto-waiting assertions; `--retries` for infra flakes. Point
@@ -249,7 +249,7 @@ isolated context per flow, a `suite.yaml` manifest for shared env,
 seed/cleanup hooks, and data minted by an external CLI
 (`env_from` → `${VAR}`).
 
-**Review** — every run writes a bundle: `result.json`, JUnit XML,
+**Review**: every run writes a bundle: `result.json`, JUnit XML,
 an HTML report, and screenshot checkpoints. GIF/video assembly is off by
 default for faster execution; pass `--video` when a trace-synced
 `recording.gif` is useful. Use `--recording-detail low` or
@@ -257,21 +257,21 @@ default for faster execution; pass `--video` when a trace-synced
 `--highlight-cursor` to render an unmistakable cursor and click halo into the
 evidence frames. `flowproof heal` re-authors a broken flow
 against the live app and proposes a reviewable trace diff with
-before/after frames — applied only with explicit `--apply`.
+before/after frames; applied only with explicit `--apply`.
 
-**Reach** — adapters behind one spec format:
-- `app: web` — Chromium via DevTools protocol, cross-platform; `record`
-  shows the browser by default, `run` (replay) stays headless — override
+**Reach**: adapters behind one spec format:
+- `app: web`: Chromium via DevTools protocol, cross-platform; `record`
+  shows the browser by default, `run` (replay) stays headless; override
   either with `--headed`/`--headless` or `FLOWPROOF_HEADED`; `--keep-open`
   leaves a single flow visible for inspection until its window is closed
 - Windows desktop via UI Automation (`calc`, `notepad`)
-- `app: sap` — SAP GUI Scripting over COM: native scripting ids,
+- `app: sap`: SAP GUI Scripting over COM: native scripting ids,
   transaction-code navigation (`Go to /nVA01`), SAP virtual keys, SAP Logon
   launch/connection selection, and optional environment-backed login; an
   in-memory fake engine keeps the pipeline tested on every platform
-- `app: vision` — pixels-only driving for Citrix/RDP: OCR perception
+- `app: vision`: pixels-only driving for Citrix/RDP: OCR perception
   (pure-Rust ocrs), spatial text anchors, real input injection
-- `app: api` — no UI at all: flows made of HTTP and SQL assertions
+- `app: api`: no UI at all: flows made of HTTP and SQL assertions
 - `app: agent`: test an AI agent at the model boundary. Record its
   trajectory once against a real model, replay it deterministically with
   zero model calls, and assert the tool calls it makes
@@ -280,7 +280,7 @@ before/after frames — applied only with explicit `--apply`.
   containment (seccomp)**: declare its network with `allow_egress` and
   certify it with `assert_no_egress`
 
-**Verify beyond the UI** — out-of-band truth in any flow: `assert_sql`
+**Verify beyond the UI**: out-of-band truth in any flow: `assert_sql`
 (postgres) and `assert_api` (status, body matching, JSON request body,
 auth headers); and for an `app: agent` flow, `assert_tool_call` /
 `assert_no_tool_call` over the agent's trajectory. Secrets travel as
@@ -303,7 +303,7 @@ per-machine file, seeded into the environment as a fallback so an explicit
 shell export or CI secret always wins; `flowproof config skill` installs an
 Agent Skill so a coding agent can walk a user through setup instead of them
 reading docs. `flowproof doctor --sap` / `--fiori` / `--ai` / `--agent` then
-report what's actually reachable — connectivity and (for Fiori and AI) a
+report what's actually reachable: connectivity and (for Fiori and AI) a
 real check, before a flow is written or a key is spent
 ([docs/getting-started.md](docs/getting-started.md#flowproof-config-credentials-without-hand-exporting-env-vars)).
 `flowproof author-from-doc` is an experimental third path into a flow: draft
@@ -350,13 +350,13 @@ run bundle                     ← result.json · junit.xml · report.html ·
 ## Status
 
 Early, in active development; interfaces may still change between minor
-versions. The badges above carry the current release — the Rust crates, the
+versions. The badges above carry the current release: the Rust crates, the
 Python wheel and the npm package move together, so they are the same number.
 
 Real and tested in CI: the record→replay spine, all six adapters (`web`,
 Windows desktop, `sap`, `vision`, `api`, `agent`), model-grounded authoring,
 healing with reviewable diffs, suites, the security-control surface
-(`flowproof audit`), the MCP server, and — at the agent boundary — the
+(`flowproof audit`), the MCP server, and, at the agent boundary, the
 OpenAI-compatible proxy with `assert_tool_call`, the Anthropic Messages
 dialect, streaming replay in both dialects, plus the MCP tool boundary over
 stdio.
@@ -367,7 +367,7 @@ over streamable HTTP.
 per-capability table rather than leaving "built" to imply "tested".
 
 Two limits to know before you start: an agent flow is **one turn**, not a
-conversation, and **egress containment is Linux-only** — elsewhere a
+conversation, and **egress containment is Linux-only**: elsewhere a
 `command:` agent is reported "not contained" rather than silently trusted.
 
 **Choosing between flowproof and an existing browser-automation suite?**

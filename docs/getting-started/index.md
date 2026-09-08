@@ -34,7 +34,7 @@ Building from source instead? You need Rust and maturin: `pip install .`
 from `sdk/python` compiles the engine automatically.
 
 **Staying current.** Every command checks (at most once a day, cached) whether
-a newer release exists, and prints a one-line notice to stderr if so — never
+a newer release exists, and prints a one-line notice to stderr if so, never
 to stdout, so `--json` output and scripted use stay clean. Set
 `FLOWPROOF_NO_UPDATE_CHECK` (any value) to disable it entirely, e.g. for CI or
 an air-gapped machine.

@@ -123,26 +123,26 @@ auto-wait: "poll until the collection has N rows" is a real pattern.
 ```
 
 Reads the file directly (`calamine`) rather than through UI Automation over
-Excel's own grid — the manual test's own second check ("open the file and
+Excel's own grid; the manual test's own second check ("open the file and
 review it") is a screen a person can look at, but its GRID support over UIA
 is untested and known-flaky, so the out-of-band read is the one that must
 hold. `path` resolves `${captured.x}` then `${VAR}`, exactly like a typed
-field — the common case is a path a `Wait until the download completes as
+field; the common case is a path a `Wait until the download completes as
 <name>` step captured moments earlier in another surface.
 
 The cell is addressed EITHER by `at` (an absolute `A1` reference) OR by
-`column`+`row_contains` together — never both, and never neither, both
-parse-time errors. `column` resolves against the sheet's first row the same
+`column`+`row_contains` together (never both, and never neither, both
+parse-time errors). `column` resolves against the sheet's first row the same
 two-rung ladder a web table cell uses: exact match after trim, then a
 unique substring match; an ambiguous or missing header is a parse-time-shaped
 failure naming what was asked for. `row_contains` is the unique data row
-(excluding the header) where ANY cell's text contains it — ambiguous or
+(excluding the header) where ANY cell's text contains it; ambiguous or
 absent is reported the same way.
 
-`equals`/`contains` compare the cell's text (its canonical rendering — a
+`equals`/`contains` compare the cell's text (its canonical rendering; a
 number reads as `"12.5"`, not `"12.50000"`); at most one may be set, a
 parse-time error otherwise. With neither, resolving the cell is the whole
-assertion — mirroring `assert_sql`, where omitting `equals` means a row
+assertion, mirroring `assert_sql`, where omitting `equals` means a row
 merely has to exist. Like `assert_sql`, this is always a READ: a
 just-landed download may still be mid-write when the first poll fires, so
 the auto-wait loop keeps re-opening the file until it resolves or the bound
