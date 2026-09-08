@@ -3,10 +3,10 @@ title: "The outside-in loop"
 description: "What happens when authoring gets stuck: recording hands the ambiguity to the driving agent to resolve and re-record."
 ---
 
-A spec step like **"make required field changes"** cannot be authored — it
+A spec step like **"make required field changes"** cannot be authored: it
 names no fields, and no amount of grounding fixes that. flowproof's answer
 is deliberately *not* an in-loop conversation: recording stops and hands
-the **driving agent** (you, or any MCP-capable agent — DataMaker's agent,
+the **driving agent** (you, or any MCP-capable agent: DataMaker's agent,
 Claude, a CI bot) everything it needs to resolve the ambiguity itself,
 rewrite the step into concrete grammar, and record again. flowproof stays
 deterministic; the intelligence stays outside.
@@ -14,7 +14,7 @@ deterministic; the intelligence stays outside.
 The loop has two legs: a **clarification payload** (what was ambiguous,
 what the live screen offered) and **`env_from`** (how externally-minted
 test data reaches the spec). Together they let an agent author tests
-against systems it cannot see into — like SAP — by asking tools that can.
+against systems it cannot see into, like SAP, by asking tools that can.
 
 This loop is for UI authoring. An `app: agent` flow (see
 [agent-testing.md](agent-testing/index.md)) never enters it: its steps
@@ -46,16 +46,16 @@ one self-correcting retry) can author a step, recording fails with data:
 ```
 
 - `scene` is the live screen's interactable inventory **at the moment of
-  failure** — the app is in the state after `completed_steps`, so these
+  failure**: the app is in the state after `completed_steps`, so these
   are the real fields the vague step was about. Each `target` token is
   usable verbatim in a rewritten step.
 - `stage` is `no_model` (rules failed, no model backend configured) or
   `model` (the model was consulted and could not ground the step).
-- Every text field keeps `${VAR}` references raw — the payload never
+- Every text field keeps `${VAR}` references raw: the payload never
   holds a resolved secret.
 - `--author rules` keeps failing with a plain rules error (no payload):
   rules-only mode is a request for determinism, not a conversation.
-- `heal` currently surfaces plain errors only — payload support there is
+- `heal` currently surfaces plain errors only: payload support there is
   a known follow-up.
 
 ### Where it surfaces
@@ -78,7 +78,7 @@ field changes"*. The loop that turned it into grammar:
    offers: `Net Price`, `Minimum Order Quantity`, a `Save` button.
 3. **Ask the system of record what "required" means.** The scene knows
    what is *on screen*; it cannot know which fields the test *should*
-   change or to what values. That is a domain question — so the driving
+   change or to what values. That is a domain question, so the driving
    agent asks the tool that can see into SAP (here, the DataMaker CLI):
    "which fields on info record `${MATERIAL}`/`${SUPPLIER}`/`${PLANT}`
    are editable, and give me a valid new net price."
@@ -92,13 +92,13 @@ field changes"*. The loop that turned it into grammar:
 
 One rule worth internalizing while rewriting: **quoted targets never
 resolve `${VAR}`** (selectors travel raw in traces). You cannot
-`Click "${MATERIAL}"` — address the row structurally (`Click the 1st
+`Click "${MATERIAL}"`; address the row structurally (`Click the 1st
 "css:.sapMListItems .sapMLIB"`) and assert on the data instead
 (`assert: page shows ${MATERIAL}`).
 
 ## The data leg: `env_from`
 
-The rewritten steps reference `${MATERIAL}`, `${NET_PRICE}`, … — values
+The rewritten steps reference `${MATERIAL}`, `${NET_PRICE}`, …, values
 that must exist in the connected SAP system, so they cannot be hardcoded.
 `suite.yaml` bridges them in:
 
@@ -114,19 +114,19 @@ directory; its stdout must be `KEY=VALUE` lines (blank lines and `#`
 comments allowed). It applies to `run <dir>` suites **and** to
 `record`/single-flow `run` of any spec under the suite (nearest
 `suite.yaml` walking up wins, and the chosen manifest is named on
-stderr). Precedence: process env < `env_from` < `env:`. It fails closed —
+stderr). Precedence: process env < `env_from` < `env:`. It fails closed:
 a non-zero exit or one malformed line aborts the run, because flows
 against half-seeded data produce the least debuggable failures. Values
 reach traces only as raw `${VAR}` references, never resolved.
 
 `before_each`/`after_each` hooks remain the right place for *effects*
 (seed a row, clean up); `env_from` exists because hooks structurally
-cannot return values — their stdout is not captured, and a child process
+cannot return values: their stdout is not captured, and a child process
 cannot set its parent's environment.
 
 Related: because traces store only the raw `${VAR}` refs, `app: api`
 flow traces can be minted **offline** against a local contract responder
-and replayed against the real stack — see
+and replayed against the real stack, see
 [getting-started](getting-started/api-flows.md#minting-traces-offline-against-a-contract-responder).
 
 ## Why no in-loop tool use
@@ -137,5 +137,5 @@ computer-use loop (ground against the scene, act, record), and every
 judgment that needs external truth happens *outside*, where it is
 reviewable and where the driving agent already has richer context. This
 mirrors the selector-ladder philosophy: deterministic first, model only
-where genuinely ambiguous — and *conversational* never, inside the
+where genuinely ambiguous, and *conversational* never, inside the
 engine.

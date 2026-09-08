@@ -18,7 +18,7 @@ npm install --save-dev flowproof     # or: pip install flowproof
 npx flowproof --version
 ```
 
-Replay needs no API key. Recording needs one, once per flow — `flowproof
+Replay needs no API key. Recording needs one, once per flow: `flowproof
 config ai` stores it once per machine instead of exporting it in every shell
 (see [getting-started.md](getting-started/secrets-and-config.md#flowproof-config-credentials-without-hand-exporting-env-vars)).
 
