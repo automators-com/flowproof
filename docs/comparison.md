@@ -3,8 +3,8 @@ title: "flowproof vs. your existing suite"
 description: "An honest look at where flowproof fits alongside browser-automation suites, when not to adopt it, and what external review got right."
 ---
 
-flowproof exists to reach applications that browser automation cannot —
-SAP GUI, Oracle Forms, Citrix, and any Windows desktop app — and to let
+flowproof exists to reach applications that browser automation cannot:
+SAP GUI, Oracle Forms, Citrix, and any Windows desktop app, and to let
 one deterministic engine replay tests that an AI authored once. This page
 is honest about where it fits, when NOT to adopt it, and what a recent
 external evaluation got right.
@@ -33,7 +33,7 @@ external evaluation got right.
 **If every app you test is a browser app, and your current tool tests it
 well, flowproof is not an upgrade for that suite.** An external team
 measured exactly this against a Next.js monorepo and recommended staying
-on Playwright — a fair call for their situation. Adopting a second
+on Playwright, a fair call for their situation. Adopting a second
 test-automation framework means two runners and two places to look when
 something breaks;
 that cost is only worth paying for coverage you don't already have.
@@ -45,15 +45,15 @@ the honest ones about fit remain true.
 
 | Finding | Status |
 |---|---|
-| Native `<select>` change never committed (their blocker) | **Fixed** — `Select … from the "…" field` sets the value through the native setter and fires `input`+`change` (React-safe) |
-| Text anchors fused sibling text ("ETE2E Test Runner's Team") | **Fixed** — anchors match an element's own text before its subtree |
-| Grammar undocumented, had to be read from source | **Fixed** — [docs/authoring.md](authoring/index.md) is the complete grammar, kept honest by a test that parses every example |
-| `Navigate to`, `the page shows`, `is disabled`, one-step replace rejected | **Fixed** — all accepted now |
-| Fresh Chromium per flow (4.3s floor) | **Fixed** — one browser per run, isolated context per flow |
-| No retries, no API-only flows | **Fixed** — `run --retries N`; `app: api` for UI-less suites |
-| Raw driver faults surfaced ("connection is closed") | **Improved** — web driver retries transient CDP faults once |
+| Native `<select>` change never committed (their blocker) | **Fixed**: `Select … from the "…" field` sets the value through the native setter and fires `input`+`change` (React-safe) |
+| Text anchors fused sibling text ("ETE2E Test Runner's Team") | **Fixed**: anchors match an element's own text before its subtree |
+| Grammar undocumented, had to be read from source | **Fixed**: [docs/authoring.md](authoring/index.md) is the complete grammar, kept honest by a test that parses every example |
+| `Navigate to`, `the page shows`, `is disabled`, one-step replace rejected | **Fixed**: all accepted now |
+| Fresh Chromium per flow (4.3s floor) | **Fixed**: one browser per run, isolated context per flow |
+| No retries, no API-only flows | **Fixed**: `run --retries N`; `app: api` for UI-less suites |
+| Raw driver faults surfaced ("connection is closed") | **Improved**: web driver retries transient CDP faults once |
 | Network mocking (SSE, Stripe interception) | **Fixed**: `mock:` answers matched requests inside the browser (status/body/headers), identically at record and replay |
-| Re-record on every UI change | Partly — `heal` proposes diffs; incremental re-record is planned |
+| Re-record on every UI change | Partly: `heal` proposes diffs; incremental re-record is planned |
 | Adds Python + Rust wheel to a JS monorepo | An npm distribution is planned; the wheel stays the primary SDK |
 | Needs a harness for seed/cleanup sequencing | **Fixed**: `suite.yaml` gives shared env, a `before_each` seed/cleanup hook, and `env_from` for externally-minted data |
 
@@ -61,7 +61,7 @@ the honest ones about fit remain true.
 
 Zero-LLM deterministic replay, session seeding with `${VAR}` indirection,
 auto-waiting assertions with the bound recorded in the trace, and
-out-of-band API/SQL assertions were all called out as genuinely good —
+out-of-band API/SQL assertions were all called out as genuinely good,
 and none of them changed.
 
 ## Two things worth carrying into any suite
@@ -73,4 +73,4 @@ acting on regardless of tool:
    server killed an entire project run because global setup did not retry.
    That fragility lives in the harness, not the framework.
 2. **Out-of-band API assertions are worth adopting** even in a
-   browser-only suite — verifying the posted record, not just the pixel.
+   browser-only suite: verifying the posted record, not just the pixel.

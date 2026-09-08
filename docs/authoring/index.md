@@ -34,7 +34,7 @@ This page is the **complete rules grammar**. The forms below are the text
 accepted inside `rules: <text>` (or as plain steps under global
 `--author rules`). They require no model call and are covered by tests that
 parse the exact examples shown (`documented_grammar_examples_all_resolve`
-in `crates/flowproof-agent/src/rules.rs` — if the doc and the code drift,
+in `crates/flowproof-agent/src/rules.rs`, if the doc and the code drift,
 CI fails).
 
 Model authoring does not make replay probabilistic. The driver gives the
@@ -64,7 +64,7 @@ A plain step is a unit of intent, not a unit of work. `Fill out all the vehicle
 data and click next` is one step (`examples/tricentis-insurance-natural.flow.yaml`,
 the natural-language sibling of the field-by-field
 `examples/tricentis-insurance.flow.yaml`), and the model answers it with the
-whole sequence of grounded actions it takes — one per field, plus the button —
+whole sequence of grounded actions it takes (one per field, plus the button)
 in a single call. Every action in that sequence is grounded against the same listed
 inventory and rejected as a whole if any one of them is not, so a half-filled
 form never reaches the trace. A rejected sequence is put back to the model as a
@@ -82,13 +82,13 @@ model response can directly express clicking a point within a control,
 dragging, remembering a count or value, choosing one or several select options,
 scrolling a container to an exact offset, typing inside a frame, and pressing a
 key. These are capabilities of the authoring protocol, not syntax authors must
-learn. Write the user intent—for example, `Select Functional, End2End, GUI, and
-Exploratory testing together`—and keep `rules:` for the comparatively rare case
+learn. Write the user intent, for example, `Select Functional, End2End, GUI, and
+Exploratory testing together`, and keep `rules:` for the comparatively rare case
 where exact deterministic grammar is deliberately wanted in the source spec.
 
 Conventions: forms are case-insensitive in their keywords. `<text>` is
 literal text (may carry `${VAR}` secret references). A quoted `"<label>"`
-is a **text anchor** — matched against visible text, accessible label
+is a **text anchor**: matched against visible text, accessible label
 (`aria-label`), placeholder, an associated `<label>` (both
 `<label>Name: <input/></label>` wrapping and `<label for>`/`id` pairing),
 or, for `<input type="submit|button|reset">`, the `value` attribute (the
@@ -96,13 +96,13 @@ accessible name of a void button-type input, so `Press the "Login"
 button` finds `<input type="submit" value="Login">`).
 Matching is exact first, then prefix (`"Name"` finds the field labelled
 `Name:`), then ASCII case-insensitive as a last resort (`"Close Account"`
-still finds the button reading `Close account`) — a case-sensitive match
+still finds the button reading `Close account`), and a case-sensitive match
 always wins. `page shows` reads visible text **plus** the accessible names
 of visible elements, so icon-only buttons that exist purely as an
 `aria-label` count. Assertion TEXT matches the same way selectors do:
 exact first, then case-insensitive (`page shows Close Account` passes
 against a page reading `Close account`), and the negative forms mirror
-it — if `shows X` would pass, `does not show X` fails. Two escape
+it: if `shows X` would pass, `does not show X` fails. Two escape
 hatches work inside any
 quoted label: `"css:<selector>"` (web) and `"id:<native id>"` (DOM id,
 UIA AutomationId, SAP scripting id). `[2nd ]` marks an optional 1-based
