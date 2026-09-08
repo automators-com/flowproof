@@ -8,7 +8,7 @@ append `within <N>s` to any form to change the bound.
 
 | Assert | Meaning |
 |---|---|
-| `page shows <text>` | the whole surface (page text / window subtree / SAP session / OCR frame) contains `<text>` — `the page shows <text>` also accepted |
+| `page shows <text>` | the whole surface (page text / window subtree / SAP session / OCR frame) contains `<text>`; `the page shows <text>` also accepted |
 | `page shows <text> <N> times` | exact occurrence count of the TEXT |
 | `page does not show <text>` | waits for it to be GONE |
 | `page url is <expected>` | the surface's URL. A `<expected>` starting with `/` compares the PATHNAME exactly, including the query only when `<expected>` carries a `?` and the fragment only when it carries a `#` (so `/orders` ignores `?page=2`); one containing `://` compares the whole URL exactly. Web flows only: a window or an OCR frame has no URL, and the error says so |
@@ -179,17 +179,17 @@ container).
 
 **Steps are not instant, and some apps care.** A click step costs roughly
 **0.2 seconds** between the action landing and the next one reaching the
-page, and typing adds about **20ms per character** — measured on a local
-fixture with no network. The cost is CDP round trips, and a keystroke is
-two of them. The probes that only need an answer — does the target exist,
-is it actionable — each ask the page in a single round trip for css and
+page, and typing adds about **20ms per character** (measured on a local
+fixture with no network). The cost is CDP round trips, and a keystroke is
+two of them. The probes that only need an answer (does the target exist,
+is it actionable) each ask the page in a single round trip for css and
 text-anchor targets; earlier engines walked an element-handle path that
 cost four to six calls per question, which put a step at 3.1-3.2s.
 
 Those numbers assume the patched transport this workspace pins (see the
 `[patch.crates-io]` block in the root `Cargo.toml`). The published
 `headless_chrome` transport shares one mutex between the socket reader and
-every sender, and the reader holds it across a blocking read — so a send
+every sender, and the reader holds it across a blocking read, so a send
 waits out a read rather than proceeding. Profiling found the reader holding
 that lock for 94% of a run's wall-clock while the writes themselves cost
 0.07ms each. Unpatched, a click costs ~1.4s and a character ~213ms, which
@@ -197,8 +197,8 @@ is where the "0.2s per character" figure in older notes comes from. The
 patch shortens the read timeout and stops polling for responses; it does not
 remove the shared lock, so a send still queues behind a read.
 
-A deadline-bearing interaction — a value that stays valid for two seconds,
-a token that expires, a confirmation that auto-dismisses — may still be
+A deadline-bearing interaction (a value that stays valid for two seconds,
+a token that expires, a confirmation that auto-dismisses) may still be
 **out of reach** once a step involves typing more than a few characters,
 and the failure is at least loud rather than silent: the app's own
 complaint (an alert, a rejection) surfaces as a failed step rather than a
