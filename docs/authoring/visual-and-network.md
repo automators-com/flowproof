@@ -11,13 +11,13 @@ description: "Visual assertions, web network mocks, browser config, and pinning 
 ```
 
 `record` captures the surface, blanks each mask's element rect, and mints
-`<spec-stem>.baselines/<name>.png` next to the trace — re-recording (or
+`<spec-stem>.baselines/<name>.png` next to the trace; re-recording (or
 `record --reuse`) is how baselines refresh. Replay captures with the
 **same masks** and compares pixel-exact (up to `threshold`); on failure
 the run bundle gains `visual/<name>.actual.png` and `visual/<name>.diff.png`
 (differing pixels in red) and the message names the diff percentage.
 Masks take the same forms as quoted labels (text anchor, `css:`, `id:`)
-and every mask must resolve — a silently-unmasked volatile region would
+and every mask must resolve: a silently-unmasked volatile region would
 mint a flaky baseline. Pin the viewport with `browser:` so capture
 dimensions stay stable across machines.
 
@@ -33,7 +33,7 @@ mock:
       source: mocked                  #   JSON; content_type: overrides
 ```
 
-Requests matching a rule are answered inside the browser — the real host
+Requests matching a rule are answered inside the browser; the real host
 is never contacted (it need not even exist). The rules travel in the
 trace header and apply **identically at record and replay**: what was
 mocked once is mocked always, which is what keeps the two executions
@@ -60,11 +60,11 @@ browser:
 ```
 
 The config travels in the trace header and applies **identically at
-record and replay** — a flow recorded on an emulated phone never replays
+record and replay**: a flow recorded on an emulated phone never replays
 on a desktop viewport. This is how `*.mobile` test variants and
 deterministic-seeding user agents (previously an env-var wrapper around
 Chrome) become first-class. `args` forces a private (non-shared) browser
-for the flow, since flags only apply at process start — expect its cold
+for the flow, since flags only apply at process start; expect its cold
 start. A suite's `suite.yaml` may carry the same `browser:` block as a
 default for every flow; a flow's own block wins outright.
 
@@ -83,7 +83,7 @@ browser:
 
 Same argument as the clock, applied to the other source of per-run drift. A
 page that mints a value from `Math.random` shows something different every
-run, so the only honest thing to write against it is another read — and for
+run, so the only honest thing to write against it is another read, and for
 a value the flow must ENTER rather than compare, there is nothing to read.
 Pinned, the value is a constant you can write by hand, and record and every
 replay see the same one.
@@ -103,8 +103,8 @@ server-side randomness is `mock:`'s job.
 **The seed pins the SEQUENCE, not the position.** The page draws the same
 series of numbers every run; which of them reaches the value you care about
 depends on how many draws the page made first. A page whose earlier scripts
-draw a *variable* number of times — an animation that fires once or twice
-depending on timing — can still hand you a different value, taken from the
+draw a *variable* number of times (an animation that fires once or twice
+depending on timing) can still hand you a different value, taken from the
 same series one place along. Observed once in the wild against a page that
 generates on focus: the value was stable across six runs and shifted by
 exactly one draw on a seventh.
@@ -119,24 +119,24 @@ So **assert the drawn value before you use it**:
 
 Without the first two lines a shifted sequence types a confidently wrong
 answer and fails somewhere else entirely, or worse, passes. With them, the
-shift is the failure — which is the whole reason a pinned value is worth
+shift is the failure, which is the whole reason a pinned value is worth
 asserting even though it is "constant".
 
 ### Pinning the clock
 
 `browser.clock` freezes what the page reads as "now", so a date-dependent
-flow is deterministic — a "last 7 days" filter, a "renews in N days"
+flow is deterministic: a "last 7 days" filter, a "renews in N days"
 label, a relative timestamp, a picker that opens on the current month. The
 clock STARTS at `at` and advances at real wall rate (it is a fixed offset
 on `Date`, not a hard freeze), so pick a **mid-day** `at` and no step will
 straddle a pinned midnight. Both fields are literals, never `${VAR}`: a
 precondition that varied by environment would not be one. Set `timezone`
-whenever you set `at` — without it, local dates and week boundaries still
+whenever you set `at`; without it, local dates and week boundaries still
 depend on the runner's zone.
 
 What it does NOT cover, by design:
 
-- **server-side "today"** — a date the SERVER computes (an SSR page, an API
+- **server-side "today"**: a date the SERVER computes (an SSR page, an API
   returning a relative window) is untouched; pin those with a `mock:` rule
   instead.
 - **web workers** see the real clock; only the main frame's `Date` is
