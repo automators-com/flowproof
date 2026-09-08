@@ -24,7 +24,7 @@ steps:
 ## Repeating until the app settles (`repeat:` and `when:`)
 
 `foreach` repeats a block as many times as you know when you write it.
-Sometimes you do not know — press a button until the label changes, recover
+Sometimes you do not know: press a button until the label changes, recover
 if an error appeared. Those are `repeat:` and `when:`.
 
 ```yaml
@@ -41,7 +41,7 @@ steps:
 
 **Both expand while recording, not while replaying.** The condition is read
 against the live app, and what lands in the trace is the passes that
-actually ran — ordinary concrete steps, no `repeat` and no `when`. The trace
+actually ran: ordinary concrete steps, no `repeat` and no `when`. The trace
 stays a recording of what happened and replay still decides nothing. Against
 a non-deterministic application that recording only replays against the same
 behaviour, which for a regression test is the right way round: a flow that
@@ -61,7 +61,7 @@ Conditions read state; they never wait:
 | `the "<target>" is visible` / `is not visible` | it is on screen, or is missing or hidden |
 | `the "<a>" is greater than the "<b>"` / `is less than` | both read as numbers, and the ordering holds |
 
-A missing element makes a positive `shows` false and a negative one true —
+A missing element makes a positive `shows` false and a negative one true,
 the same reading replay takes. Anything else is refused by name.
 
 The comparison is the one condition that weighs two readings against each

@@ -18,12 +18,12 @@ the per-step human and structured diagnostics, so ordinary prose is never
 silently mistaken for deliberate rule syntax.
 
 When a step is too *ambiguous* to author at all ("make required field
-changes" — which fields? — or `Enter it` with several remembered values),
+changes", which fields?, or `Enter it` with several remembered values),
 recording fails with a structured **clarification payload**: the stuck step
 plus the relevant live-scene fields or remembered-value candidates. It is
 available via `record --json`, the MCP record tool, or Python's
 `ClarificationNeeded`. The driving agent rewrites the step more precisely
-and re-records — see [self-help.md](self-help.md) for the loop.
+and re-records; see [self-help.md](self-help.md) for the loop.
 
 Whichever route authors a step, recording persists grounded selectors and
 actions in the trace. `flowproof run` executes those deterministic artifacts
@@ -42,10 +42,10 @@ instead of hand-translating the same steps twice:
 flowproof author-from-doc uat-export.pdf --app sap --name "Manage purchasing info records" --out draft.flow.yaml
 ```
 
-- `--app` — the target app id the draft's `app:` field is written with
+- `--app`: the target app id the draft's `app:` field is written with
   (`sap`, `web`, …).
-- `--name` — the flow name written into the draft's `name:` field.
-- `--out` — where the draft `.flow.yaml` is written.
+- `--name`: the flow name written into the draft's `name:` field.
+- `--out`: where the draft `.flow.yaml` is written.
 
 When the document contains concrete non-secret business data, such as a
 material, supplier, plant, customer, or order id, the draft can use
@@ -64,22 +64,22 @@ the generated values file.
 
 The PDF's text is extracted and segmented into per-step records, then each
 `Description`/`Expected` pair is translated into this page's grammar by a
-model call — the same "flag, don't guess" discipline as live authoring
+model call, the same "flag, don't guess" discipline as live authoring
 above, extended to three distinct outcomes instead of a binary
 action-or-not:
 
 - A `Description` that maps cleanly becomes a real step in the grammar
-  above, and its `Expected` becomes a real `assert:` — something a video
+  above, and its `Expected` becomes a real `assert:`, something a video
   recording never has, since a document already states a belief about
   correctness.
 - A `Description` that implies an action *within* the app under test, but
   too ambiguously to map with confidence, is flagged as a `# TODO` plus a
   freeform step for the next live `flowproof record` pass to resolve
-  against the real screen — never a forced guess.
+  against the real screen, never a forced guess.
 - A `Description` whose action clearly targets a *different* app or tool
   entirely (e.g. reviewing a downloaded export in a spreadsheet program) is
   flagged as its own distinct `# TODO` rather than silently dropped or
-  confused with in-app ambiguity — it isn't automatable here at all, and
+  confused with in-app ambiguity: it isn't automatable here at all, and
   needs a human decision, not a screen to search.
 
 The output is a **draft**: review every step, then run `flowproof record`

@@ -81,3 +81,10 @@ For running a UWP app on a CI runner that does not ship one, see
 [Deploying a UWP app on a CI runner](../getting-started/live-app-tests.md#deploying-a-uwp-app-on-a-ci-runner):
 a Windows Server image has no Store apps, but it can build and side-load
 the one a suite needs.
+
+## Known limitations
+
+Only `calc`, `notepad`, `web`, and `sap` resolve as built-in registry ids,
+each with a small vocabulary — the rule-based resolver covers the common
+forms and the AI authoring agent handles everything else through the same
+seam (healing re-uses it too).
