@@ -13,7 +13,7 @@ the only thing the deterministic replayer reads. Design constraints:
 - **Replayable with zero LLM calls.** Every step carries the full selector
   ladder with recorded payloads; replay walks the ladder top-down.
 - **Diffable and reviewable.** JSON-lines, one step per line, stable key
-  order, content-addressed artifacts — so healing produces a small, readable
+  order, content-addressed artifacts, so healing produces a small, readable
   diff instead of a silent mutation.
 - **Provenance-tagged.** Every selector says which perception source produced
   it (`uia`, `sap-com`, `web`, `vision`), so a step records *why* replay may
@@ -137,7 +137,7 @@ already follows.
   lets replay detect drift between spec and trace.
 - `adapter` is the *primary* perception/adapter mode: `uia`, `sap-com`,
   `web`, `vision` (vision = Citrix/RDP mode where only pixels exist), or
-  `api` (no UI at all — the flow is out-of-band assertions only). The
+  `api` (no UI at all: the flow is out-of-band assertions only). The
   reserved value `multi` appears only on a multi-surface header (below),
   never as selector provenance.
 - `app.url` is how replay reaches the app again: the URL for `web`, the
@@ -145,9 +145,9 @@ already follows.
   running session). Either may be a `${VAR}` reference, stored raw and
   resolved at every launch.
 - Optional `app.login_user` (sap) is the user the recording logged in as,
-  stored raw like `url`. The identity is part of what a recording *means* —
+  stored raw like `url`. The identity is part of what a recording *means*:
   an order created by a clerk and one created by an approver are different
-  evidence — so a trace that could not name it would not be reviewable.
+  evidence, so a trace that could not name it would not be reviewable.
   There is deliberately **no password field**: the password lives in the
   spec's `login:` block and is resolved fresh at every launch, so a
   committed trace has nothing to leak and nothing to redact. Absent =
@@ -177,10 +177,10 @@ already follows.
   record and every replay run the SAME browser shape.
 - Optional `apps` is the surface map of a **multi-surface trace**
   (docs/multi-surface.md): `name -> app object`, each entry the same shape
-  as `app` — `{"gui": {"name": "SAP GUI for Windows", "adapter":
+  as `app`: `{"gui": {"name": "SAP GUI for Windows", "adapter":
   "sap-com", "url": "${SAP_CONNECTION}"}, "portal": {"name": "web",
   "adapter": "web", "url": "${PORTAL_URL}/orders"}}`. When `apps` is
-  present, `app` carries the reserved name `multi` with adapter `multi` —
+  present, `app` carries the reserved name `multi` with adapter `multi`,
   deliberately not a copy of any one surface, so an engine predating
   multi-surface fails LOUDLY at load (an unknown adapter) instead of
   replaying every step against whichever surface happened to be first.
@@ -223,23 +223,23 @@ already follows.
 
 ### Fields
 
-- `id` — unique within the trace, monotonically ordered (`s0001`, `s0002`, …).
-- `intent` — the natural-language step description. Never executed; used for
+- `id`: unique within the trace, monotonically ordered (`s0001`, `s0002`, …).
+- `intent`: the natural-language step description. Never executed; used for
   review, reporting, and as the prompt seed for `ai_relocation`/healing.
-- `surface` (optional) — the named surface (a key of the header's `apps`)
+- `surface` (optional): the named surface (a key of the header's `apps`)
   that executed this step: how a multi-surface replay knows which driver a
   step belongs to. Absent on single-surface traces, where the header's one
-  `app` is the surface — those serialize byte-identically to before the
+  `app` is the surface; those serialize byte-identically to before the
   field existed. Optional PER STEP even in a multi-surface trace: an
   out-of-band assertion (`assert_api`/`assert_sql`/`assert_spreadsheet`)
   drives no UI and may carry none.
-- `action.type` — one of `launch`, `focus_window`, `click`, `double_click`,
+- `action.type`: one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`,
   `upload`, `capture`, `capture_download`, `set_checked`, `wait`, `assert`.
   `params` is action-specific (see schema `$defs`).
   Text params (`type_text` text, assert expectations) may contain `${VAR}`
   **secret references**: the engine resolves them from the environment at
-  execution time — recording and every replay — and the trace only ever
+  execution time (recording and every replay) and the trace only ever
   stores the reference, never the value. An unset variable fails closed
   with an error naming it.
   A `type_text` text may also contain a `${captured.<name>}` **capture
@@ -252,25 +252,25 @@ already follows.
   not contain a dot.
 
   A `capture` step carries `{"name": "<name>"}` and, for the **counted**
-  reading, `"count": true` — how many elements match, rather than one
+  reading, `"count": true`: how many elements match, rather than one
   element's text. A new param key rather than a new action type, so a trace
   written before counting existed still loads and an old reader meeting one
   does not misread it as a text capture. Either way the trace holds only the
   name: the number is taken at execution time on record and on every replay,
   so a page that grew a row does not need the trace rewritten. A counted
-  capture of **zero** fails rather than remembering `0` — a selector typo
+  capture of **zero** fails rather than remembering `0`: a selector typo
   matches nothing and so does an empty table, and the step that means zero
   is an `assert` with `element_count: 0`.
 
   A `capture_download` step carries `{"name": "<name>"}` and an optional
-  `{"timeout_ms": …}`, and has no selectors — a download belongs to the
+  `{"timeout_ms": …}`, and has no selectors: a download belongs to the
   surface, not an element on screen, the same reasoning `press_key` uses for
   the focused element. Like `capture`, only the name is stored: the
   download's resolved path is read at execution time on record and on every
   replay and lives only in that run's captures, never in the trace.
 
   A `kind: "cell"` payload may carry `row_anchor_also: [...]`, and a
-  `kind: "scoped"` payload `anchor_also: [...]` — the ADDITIONAL anchors
+  `kind: "scoped"` payload `anchor_also: [...]`: the ADDITIONAL anchors
   that must all be present in the same row or container, beside the primary
   `row_anchor`/`container_anchor`. A new key rather than a changed one, so a
   reader that knows only one anchor still finds the field it expects; absent
@@ -278,7 +278,7 @@ already follows.
   single-anchor behaviour unchanged.
 
   A `scroll` step carries `to: "top"|"bottom"`, `into_view: true`, or
-  **`to_px: <n>`** — an exact offset from the top of the scroll container.
+  **`to_px: <n>`**: an exact offset from the top of the scroll container.
   A new key rather than a new action, so a trace written before offsets
   still loads.
 
@@ -286,9 +286,9 @@ already follows.
   `kind: "framed"` acts INSIDE that frame. The action is performed through
   the frame's own document rather than at composited coordinates, which is
   why value-driving actions are recordable there and pointer actions are
-  not — see docs/authoring.md.
+  not; see docs/authoring.md.
 
-  A `type_text` step may carry `params.values: [...]` — a **multi-selection**,
+  A `type_text` step may carry `params.values: [...]`: a **multi-selection**,
   the whole set committed at once. Where `values` is present it is
   authoritative; `params.text` repeats only the first option, so a reader
   that shows text still names something concrete. A consumer that honours
@@ -298,9 +298,9 @@ already follows.
 
   `type_text` variants: an **empty `selectors` array** means "type into the
   element that currently has keyboard focus"; `params.replace: true` marks
-  fill semantics — the input's current value is cleared before typing (a
+  fill semantics: the input's current value is cleared before typing (a
   bare `Clear the … field` step is a replace-typing of the empty string).
-  `press_key` carries `{key, modifiers[]}` and never has selectors — it
+  `press_key` carries `{key, modifiers[]}` and never has selectors; it
   goes to the focused element by definition.
 
   A **trigger** action (`click`, `double_click`, `right_click`, `hover`) may
@@ -327,13 +327,13 @@ already follows.
   That is a forward-compat note, not a format break. Web-only: non-web adapters
   reject a step carrying `dialog`, since a native desktop message box is a
   real window driven by ordinary steps.
-- `selectors` — the ladder, ordered deterministic-first. Tiers:
-  1. `native_id` — UIA AutomationId, SAP GUI Scripting ID, DOM id/CSS.
-  2. `structural` — path through the accessibility/DOM tree.
-  3. `text_anchor` — OCR text anchor + spatial relation
+- `selectors`: the ladder, ordered deterministic-first. Tiers:
+  1. `native_id`: UIA AutomationId, SAP GUI Scripting ID, DOM id/CSS.
+  2. `structural`: path through the accessibility/DOM tree.
+  3. `text_anchor`: OCR text anchor + spatial relation
      (`left_of|right_of|above|below|inside`).
-  4. `visual_template` — content-addressed image patch + expected region.
-  5. `ai_relocation` — NL context for model-assisted relocation. Replay
+  4. `visual_template`: content-addressed image patch + expected region.
+  5. `ai_relocation`: NL context for model-assisted relocation. Replay
      treats reaching this tier as a **failure that proposes a heal diff**,
      never a silent fix.
   A step records only the tiers its perception sources could produce (a
@@ -341,8 +341,8 @@ already follows.
   `[0.0, 1.0]`. Any rung's payload may carry `nth` (1-based) to address
   the nth matching element when a selector legitimately matches several
   (`Type email into the 2nd "Field Name" field`). `nth` indexes the
-  adapter's natural match enumeration — document order on the web,
-  tree-walk order on UIA, reading order for OCR — so the same trace means
+  adapter's natural match enumeration (document order on the web,
+  tree-walk order on UIA, reading order for OCR), so the same trace means
   the same element on every provenance.
 
   A `structural` rung may instead carry a **cell** payload
@@ -394,15 +394,15 @@ already follows.
   first one that resolves to a live element. Tiers 1–3 execute today
   (`text_anchor` currently via accessible-name matching; OCR arrives with
   the vision mode, as does `visual_template`). Matching on any rung other
-  than the recorded primary keeps the run green but marks the step — and
-  the run — `degraded` in `result.json`, with the matched tier in
+  than the recorded primary keeps the run green but marks the step, and
+  the run, `degraded` in `result.json`, with the matched tier in
   `selector_tier`: the flow still works, the app has drifted, heal the
   trace.
-- `sync.pre` / `sync.post` — conditions gating the action / confirming its
+- `sync.pre` / `sync.post`: conditions gating the action / confirming its
   effect. Kinds: `element_exists`, `element_state`, `window_title`,
   `ocr_text_present`, `visual_stable`. Each carries `timeout_ms`.
   `selector_ref` points into this step's `selectors` array by index.
-- `artifacts` — content hashes (`sha256:<hex>`) of screenshots taken
+- `artifacts`: content hashes (`sha256:<hex>`) of screenshots taken
   immediately before/after the action. Blobs live outside the trace in the
   artifact store (`.flowproof/artifacts/<hash>`), keeping traces small and
   diffable.
@@ -411,57 +411,57 @@ already follows.
 
 `action.type == "assert"` covers checks as first-class steps. `params.kind`:
 
-- `element_state` — selector resolves and matches `{property: value}`.
+- `element_state`: selector resolves and matches `{property: value}`.
   `expect` keys in use: `value_contains`, `value_equals` (+`normalize:
   numeric`), `value_not_contains` (text must be absent), `count` (with
   `value_contains`: exact occurrence count of the TEXT, not an element
-  count — provenance-neutral, an OCR adapter counts occurrences in the
+  count; provenance-neutral, an OCR adapter counts occurrences in the
   scene the same way; the ELEMENT count `the "Row" appears N times`
   serializes instead as `element_count` over the step's resolved selector
-  ladder), `element_present` (true/false — presence itself is
+  ladder), `element_present` (true/false: presence itself is
   the assertion; note this means "the target resolves", not visual
-  visibility — a tree-present-but-hidden element counts as present until
+  visibility, since a tree-present-but-hidden element counts as present until
   the vision mode adds a true visual check), and `timeout_ms` (the
   auto-wait bound; the resolver runs inside the poll, so the target may
-  legitimately appear — or disappear — during the wait).
+  legitimately appear or disappear during the wait).
 
   `expect.scope: "surface"` marks a **surface-scoped** assertion: no
-  selector ladder (the step's `selectors` is empty, `selector_ref` null) —
+  selector ladder (the step's `selectors` is empty, `selector_ref` null);
   the expectation runs against everything readable on the app's surface.
   Each adapter answers its own way: the page text for a browser, the
   foreground window's subtree for UIA, the OCR'd frame for a vision
   adapter. This is how `page shows X` serializes without baking any
   provenance into the trace.
-- `ocr_text` — OCR of `region` (or the resolved element bounds) matches
+- `ocr_text`: OCR of `region` (or the resolved element bounds) matches
   `text` (`equals|contains|regex`).
-- `visual_diff` — region matches `baseline` (a `sha256:` hash) within
+- `visual_diff`: region matches `baseline` (a `sha256:` hash) within
   `threshold` (0.0–1.0 normalized difference).
-- `sql` — out-of-band DB probe: named `connection`, `query`, `expect`
+- `sql`: out-of-band DB probe: named `connection`, `query`, `expect`
   (`equals`: first column of the first row as text; `timeout_ms`).
   Credentials are **never** stored in the trace; `connection` is a name
   resolved from `FLOWPROOF_SQL_<NAME>` in the environment at run time
   (recording and every replay), failing closed when unset. The query may
   carry `${VAR}` references, resolved at execution.
-- `api` — out-of-band HTTP probe: `request {method,url,body?,headers?}`,
+- `api`: out-of-band HTTP probe: `request {method,url,body?,headers?}`,
   expected `status` (default: any 2xx) and `expect` (`body_contains`,
   `timeout_ms`). The url, header values, and body string leaves may carry
-  `${VAR}` references — base hosts, tokens, and connection strings resolve
+  `${VAR}` references: base hosts, tokens, and connection strings resolve
   at execution and never persist. `body` is any JSON, sent for
   POST/PUT/PATCH with an auto `application/json` content-type unless a
   user `content-type` header is present.
-- `spreadsheet` — out-of-band file probe: `path` (may carry
-  `${captured.x}`/`${VAR}` references — the export this checks is often
-  itself a captured download path — resolved at probe time), optional
+- `spreadsheet`: out-of-band file probe: `path` (may carry
+  `${captured.x}`/`${VAR}` references; the export this checks is often
+  itself a captured download path, resolved at probe time), optional
   `sheet` (the workbook's first sheet when absent), and a cell addressed
   EITHER by `at` (an absolute `A1` reference, e.g. `"B2"`) OR by
   `column`+`row_contains` (a header/anchor pair resolved against the sheet
   like a table cell on a live page: `column` matched exact-after-trim then
   unique-contains against the first row, `row_contains` the unique row where
-  any cell contains it) — exactly one form, a parse-time error otherwise.
+  any cell contains it), exactly one form, a parse-time error otherwise.
   `expect` (`equals`, `contains`, `timeout_ms`): with neither set, resolving
   the cell is the whole assertion, mirroring `sql`'s bare row-exists check.
   Read via `calamine` directly against the file on disk, not through UI
-  Automation over Excel's grid — untested and known-flaky there.
+  Automation over Excel's grid; untested and known-flaky there.
 
 ## Versioning
 
