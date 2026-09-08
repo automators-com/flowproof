@@ -657,7 +657,7 @@ fn refused(step: &str, reason: impl Into<String>) -> RulesError {
 /// reason and the thing to write instead.
 ///
 /// Every one of these is a decision that already exists — in `CHARTER.md`,
-/// in `docs/design.md`, or in this file's own comments. What did not exist
+/// in `internal/design.md`, or in this file's own comments. What did not exist
 /// was anything that made the decision hold: an unparseable step falls
 /// through to the model author, which grounds it into *some* recording, and
 /// a recording is exactly what a decline is supposed to prevent. Silence is

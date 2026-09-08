@@ -3,8 +3,8 @@ title: "Trace format (v1)"
 description: "The JSON-lines trace format the recording agent writes and the deterministic replayer reads."
 ---
 
-Status: **shipped**. The serde types in `flowproof-trace` are
-implemented against this document and the JSON Schema at
+The serde types in `flowproof-trace` are implemented against this
+document and the JSON Schema at
 [`crates/flowproof-trace/schema/trace-v1.schema.json`](../crates/flowproof-trace/schema/trace-v1.schema.json).
 
 A trace is what the recording agent writes while performing a flow once, and

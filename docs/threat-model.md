@@ -3,11 +3,9 @@ title: "Threat model"
 description: "What flowproof actually protects against today, and where that protection stops."
 ---
 
-> Status: v1, maintainer-written, not yet independently reviewed. This
-> document is the current answer to "what does flowproof actually protect
-> against, and where does that protection stop" — see `SECURITY.md` for how
-> to report a gap in it. Tracked against
-> [issue #376](https://github.com/automators-com/flowproof/issues/376).
+> This document answers "what does flowproof actually protect against, and
+> where does that protection stop." If you find a gap in it, see
+> `SECURITY.md` for how to report it.
 
 ## Why this document exists
 
@@ -293,10 +291,10 @@ addition would catch it. See Known limitations.
 
 **Guarantee**: `.flow.yaml` + `.trace.jsonl` are the committed, shareable
 contract (traces hold only `${VAR}` references, never resolved values,
-verified end to end per `docs/getting-started.md`). Everything else —
+verified end to end per `docs/getting-started/`). Everything else —
 run records, screenshots, reports, debug bundles — lives under `.flowproof/`,
 is gitignored, and is pruned locally to the most recent 10 records per suite
-(`docs/design.md`).
+(`internal/design.md`).
 
 **Not covered — real gap**: this is disk hygiene, not a data-governance
 policy. Nothing in the docs states who owns a customer's recorded flow or
@@ -361,17 +359,3 @@ named honestly, per the principle this document opened with.
    Windows, where the file can hold a plaintext SAP/Fiori password and an AI
    API key with only the OS's default ACL protecting it.
 
-## Open questions — for a human, not a loop
-
-Per `CHARTER.md` §8's own escalation pattern, and per `SECURITY.md`, these
-are named rather than guessed:
-
-- **Independent review scope, budget, and reviewer selection.** Tracked in
-  issue #376; not decided here.
-- **The acknowledgement/remediation windows in `SECURITY.md`** are a draft
-  proposal pending sign-off, not a committed policy yet.
-- **A v1.0 findings-blocking policy** — which severities block a release
-  versus ship with a named, human-accepted residual risk — is undecided.
-- **Whether, and in what order, the seven items above get fixed** rather
-  than just documented. This document's job was to make them visible; fixing
-  them is separate follow-up work, tracked as the team decides to take it on.

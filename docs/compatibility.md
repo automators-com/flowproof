@@ -3,23 +3,11 @@ title: "Compatibility and deprecation contract"
 description: "The written contract for what changes between versions and what doesn't, replacing the early-stage hedge in the README."
 ---
 
-**Status: agreed, pending the follow-up work it names.** This answers
-[#378](https://github.com/automators-com/flowproof/issues/378), a
-`needs-human` issue: flowproof's current status is "early, interfaces may
-still change between minor versions" (README), and this document replaces
-that hedge with a written contract. The decisions below were made
-deliberately, not derived from the code — where a section describes
-something the code already does, it says so; where it commits to a policy,
-that policy is new as of this document.
-
-This document is the v1 gate for the compatibility contract itself. It is
-**not** a gate on the five related readiness issues linked in §8 — those
-track unfinished surfaces that ship v1 labeled experimental, not blockers
-on this doc.
-
-Once merged, this supersedes the "interfaces may change" line in the
-README's Status section, and `flowproof --version` / the docs site should
-link here.
+This is flowproof's compatibility and deprecation contract — what changes
+between versions, and what doesn't. Where a section describes something the
+code already does, it says so; where it commits to a policy, that policy
+applies going forward. Some surfaces still ship labeled experimental; those
+have their own readiness notes and aren't covered by this contract yet.
 
 ## Why this exists
 

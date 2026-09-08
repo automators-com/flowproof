@@ -961,7 +961,7 @@ impl WebAppDriver {
     ///    Measured: dropping it takes the fixture from 10/10 to 0/10.
     ///
     /// Measured 20/20 against a live jQuery UI `sortable` with
-    /// `connectToSortable`; recorded in `docs/design.md`.
+    /// `connectToSortable`; recorded in `internal/design.md`.
     pub(crate) fn drag_mouse(
         &mut self,
         from: &UiaSelector,

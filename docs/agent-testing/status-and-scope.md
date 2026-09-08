@@ -50,7 +50,7 @@ is now a list of things measured to.
 
 The falsifiability suite is the other half of this table's honesty: a row
 saying "covered" means a test exists, and
-[how-flowproof-tests-flowproof.md](how-flowproof-tests-flowproof.md) is where
+[how-flowproof-tests-flowproof.md](https://github.com/automators-com/flowproof/blob/main/internal/how-flowproof-tests-flowproof.md) is where
 each assertion is proven able to FAIL. Coverage that cannot fail is not
 coverage.
 
@@ -99,11 +99,11 @@ proxy/cassette infrastructure, but the replay engine's promise
 ("recorded once, passes forever unless the system changed") must not be
 blurred by a step type that can fail on an unchanged system. Same
 philosophy as the `page.evaluate` rejection in
-[design.md](design.md): protect the invariant that makes the tool
+[design.md](https://github.com/automators-com/flowproof/blob/main/internal/design.md): protect the invariant that makes the tool
 trustworthy.
 
 A *third* problem is neither of these two, and is proposed separately in
-[explore-mode.md](https://github.com/automators-com/flowproof/blob/main/docs/explore-mode.md):
+[explore-mode.md](https://github.com/automators-com/flowproof/blob/main/internal/explore-mode.md):
 not "is the answer good?" but "can a
 control this suite already declares be violated by an input the recording
 never saw?" Its verdict is existential rather than statistical — one
