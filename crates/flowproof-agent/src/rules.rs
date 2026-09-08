@@ -5866,7 +5866,6 @@ mod framed_target_tests {
                 "docs/getting-started/web-flows.md",
                 include_str!("../../../docs/getting-started/web-flows.md"),
             ),
-
         ];
         let mut checked = 0usize;
         let mut offenders = Vec::new();
