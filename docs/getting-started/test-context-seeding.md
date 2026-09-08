@@ -122,4 +122,4 @@ container.
 
 For the control-authoring forms these identities feed (the `control:` block,
 the denial pattern, `assert_no_secret_leak`, and `flowproof audit`), see
-[authoring.md](authoring.md#security-controls).
+[authoring.md](../authoring/security-controls.md).

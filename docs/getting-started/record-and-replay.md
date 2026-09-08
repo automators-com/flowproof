@@ -65,7 +65,7 @@ them later:
 
 - **A flow is one turn, not a conversation.** Every `prompt:` step is joined
   into a single task delivered up front; there is no follow-up user turn.
-  See [agent-testing.md](agent-testing.md).
+  See [agent-testing.md](../agent-testing/index.md).
 - **The model boundary is not the tool boundary.** A `tools:` mock changes
   what the model is TOLD a tool returned; the agent still ran its own tool.
   Only the `mcp:` boundary stops a tool executing. flowproof warns at
@@ -79,7 +79,7 @@ Python instead of Node? Same flow, same assertions:
 written to be handed to a coding agent: the audit to run first, the three
 questions that decide everything, and the order to do it in.
 
-Next: [agent-testing.md](agent-testing.md) for the full assertion grammar,
+Next: [agent-testing.md](../agent-testing/index.md) for the full assertion grammar,
 the MCP tool boundary, and egress containment.
 
 ## Walkthrough: a UI flow (Windows Calculator)

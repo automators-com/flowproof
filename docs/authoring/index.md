@@ -112,5 +112,5 @@ Steps are only half the spec. Starting state that a flow should not
 rebuild through the UI (an authenticated session, a pre-filled cart or
 other app-state fixture) is declared in the spec-level `session:` block,
 and network shaping in `mock:` - see
-[test-context seeding](getting-started.md#test-context-seeding-sessions-fixtures-and-navigation)
+[test-context seeding](../getting-started/test-context-seeding.md)
 before migrating a suite's setup helpers step by step.

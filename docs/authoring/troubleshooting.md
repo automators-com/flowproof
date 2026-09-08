@@ -28,7 +28,7 @@ and re-records — see [self-help.md](self-help.md) for the loop.
 Whichever route authors a step, recording persists grounded selectors and
 actions in the trace. `flowproof run` executes those deterministic artifacts
 directly and makes zero authoring-model calls. See
-[getting-started](getting-started.md#authoring-with-a-model-arbitrary-steps).
+[getting-started](../getting-started/agent-flows.md#authoring-with-a-model-arbitrary-steps).
 
 ## Drafting a spec from a requirement document (`author-from-doc`)
 

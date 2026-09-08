@@ -227,4 +227,4 @@ the record-time scan runs before the trace is minted, a leak writes no trace
 (a store-guard on flowproof's own cassette). The full form, its limits, and
 how it folds into `flowproof audit` are documented with the rest of the
 control grammar in
-[authoring.md](authoring.md#assert_no_secret_leak-var-v1).
+[authoring.md](../authoring/security-controls.md#assert_no_secret_leak-var-v1).

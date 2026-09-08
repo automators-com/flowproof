@@ -5,7 +5,7 @@ description: "The app: agent step grammar and shorthand sugar for common app con
 
 An `app: agent` flow tests an AI agent at the model boundary rather than a
 UI, so it has its own small step vocabulary, documented in full in
-[agent-testing.md](agent-testing.md). Unlike the forms above, these are
+[agent-testing.md](../agent-testing/index.md). Unlike the forms above, these are
 structured steps that either parse or error; they do NOT fall back to the
 LLM author. The step forms:
 

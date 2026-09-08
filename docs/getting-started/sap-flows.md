@@ -55,7 +55,7 @@ steps:
 ```
 
 The two-user test case is then two flows in a suite, one `login:` each,
-chained with [`exports:`](authoring.md#handing-a-value-to-the-next-flow-exports).
+chained with [`exports:`](../authoring/variables-and-exports.md#handing-a-value-to-the-next-flow-exports).
 `login:` requires `connection:`: without one the flow would attach to
 whatever session is already open, which may be a different user than the one
 named — so that combination is a parse error rather than a surprise at run

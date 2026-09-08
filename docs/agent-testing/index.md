@@ -171,7 +171,7 @@ rather than the tree.
 
 `--agent` is this doctor's only concern — for SAP GUI / Fiori connectivity
 (`app: sap` / `app: web`), see [`flowproof doctor --sap` /
-`--fiori`](getting-started.md#flowproof-doctor---sap----fiori-is-any-of-this-reachable)
+`--fiori`](../getting-started/secrets-and-config.md#flowproof-doctor---sap----fiori-is-any-of-this-reachable)
 in the getting-started guide instead.
 
 **A record run that captures nothing FAILS.** If zero model requests reach

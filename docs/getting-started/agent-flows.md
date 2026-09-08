@@ -36,7 +36,7 @@ flowproof spawns the agent, injects the proxy URL (`OPENAI_BASE_URL` and
 friends) and the prompt (`FLOWPROOF_PROMPT`) into its environment, and
 captures the trajectory into a cassette. The key rides only the outbound
 `Authorization` header and is never written to disk. The full grammar and
-runtime contract are in [agent-testing.md](agent-testing.md); the runnable
+runtime contract are in [agent-testing.md](../agent-testing/index.md); the runnable
 example is `examples/agent-demo/`.
 
 ## Authoring with a model (arbitrary steps)
@@ -112,7 +112,7 @@ steps:
 
 `--author rules|llm|auto` controls the whole recording. `--author rules`
 is the global deterministic opt-in for a flow already written in the
-[rules grammar](authoring.md); `--author llm` forces model authoring for
+[rules grammar](../authoring/index.md); `--author llm` forces model authoring for
 plain UI steps. Structured steps such as `assert:` keep their own meaning.
 
 If auto mode has no configured model, recording warns visibly and then

@@ -154,7 +154,7 @@ Writing a config profile doesn't tell you it actually points at something
 live. `flowproof doctor --sap` and `flowproof doctor --fiori` read whichever
 of the above is already seeded into your environment and report what they
 can reach — the SAP/Fiori equivalent of `flowproof doctor --agent` at the
-model boundary (see [Wiring a real agent](agent-testing.md#wiring-a-real-agent-env-handles-and-the-record-upstream)).
+model boundary (see [Wiring a real agent](../agent-testing/index.md#wiring-a-real-agent-env-handles-and-the-record-upstream)).
 
 ```console
 $ flowproof doctor --sap

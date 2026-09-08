@@ -26,7 +26,7 @@ non-empty line is a **step**. Consumers must reject a file whose first line
 has `format != "flowproof-trace"` or an unsupported `version`.
 
 **`app: agent` traces are a different shape.** An agent-boundary flow
-(see [agent-testing.md](agent-testing.md)) records a self-contained JSON
+(see [agent-testing.md](agent-testing/index.md)) records a self-contained JSON
 document (`{"app":"agent","mocks":{…},"cassette":{…}}`), not JSON-lines and
 without the header below, because a new app kind gets a new trace shape
 rather than bending the step-log format. A step-log reader never opens one.
@@ -70,7 +70,7 @@ supervision engaged) records one more additive key, `side_effects` - schema:
 - `observation` (required) is the tag the recording ran under, in
   observation's vocabulary, never containment's: `observed`, never
   `enforced` - nothing here was prevented (see
-  [agent-testing.md](agent-testing.md#filesystem-observation)).
+  [agent-testing.md](agent-testing/security.md#filesystem-observation)).
 - `effects` (skipped when empty), ordered by `at_ms`. Each record carries
   `kind` (`fs_write` or `http_request`; `db_change`/`sap_transaction` are
   RESERVED - in the schema's enum, never emitted), optional `target` and
@@ -350,7 +350,7 @@ already follows.
   addressing a
   table cell by its column-header text and a row anchor rather than a tree
   path, so a row insert or a column reorder does not move the target (see
-  [authoring.md](authoring.md#scoped-targets-table-cells-and-list-items-by-identity)). Record may attach
+  [authoring.md](authoring/assertions.md#scoped-targets-table-cells-and-list-items-by-identity)). Record may attach
   `column_field` / `row_id` hints read from the live grid, used as fallbacks
   if the header text or the anchor later fails to resolve.
 
@@ -388,7 +388,7 @@ already follows.
   and here the stakes are the same: an old engine resolving a bare `css`
   would read the MAIN document, which is precisely the element the frame
   scope exists to exclude. Framed rungs are recorded for assertions only
-  (see [authoring.md](authoring.md#iframes-same-origin-assertions)).
+  (see [authoring.md](authoring/iframes-and-cookies.md#iframes-same-origin-assertions)).
 
   **Replay semantics**: the engine walks rungs in order and acts on the
   first one that resolves to a live element. Tiers 1–3 execute today

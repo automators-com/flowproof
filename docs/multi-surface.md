@@ -5,9 +5,9 @@ description: "How multi-surface flows record and replay across apps and surfaces
 
 > Status: Phases 1 and 2 are **shipped**. `exports:` chains
 > single-surface flows through a suite
-> ([authoring.md](authoring.md#handing-a-value-to-the-next-flow-exports)),
+> ([authoring.md](authoring/variables-and-exports.md#handing-a-value-to-the-next-flow-exports)),
 > and multi-surface flows record AND replay
-> ([authoring.md](authoring.md#multi-surface-flows-apps-and-in-blocks)):
+> ([authoring.md](authoring/multi-surface-flows.md)):
 > `apps:` + `in:` blocks, one surface active at a time, captures crossing
 > blocks, per-step surface attribution, replay from the trace alone with
 > zero LLM calls. Per-surface `browser:` and `window:` are shipped —
