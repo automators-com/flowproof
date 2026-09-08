@@ -4,7 +4,7 @@ description: "Reference for controlling the visual evidence every run leaves beh
 ---
 
 Every run leaves visual evidence behind: redacted, step-synchronized frames
-you can open beside the verdict, and — on request — a GIF of the whole
+you can open beside the verdict, and, on request, a GIF of the whole
 execution. This page is the reference for controlling that, followed by the
 design record for why the pipeline is shaped the way it is.
 
@@ -66,7 +66,7 @@ flow.run(video=True, highlight_cursor=True)
 
 `report.html` (generated from `result.json`) carries a step-synchronized
 viewer: the step table is clickable, showing that step's frames
-(before/after, failure frame highlighted). Self-contained — frames are
+(before/after, failure frame highlighted). Self-contained: frames are
 referenced relatively from the bundle, with no external resources. This is
 the "jump to the assert step" experience, driven entirely by the structured
 timeline, never by scrubbing.
@@ -93,7 +93,7 @@ is therefore a **first-class review surface**, not a debug artifact. The bar:
 Principles this design enforces:
 
 - **One source of truth.** Step→time mappings live inside the artifact that
-  already describes the steps of that execution — the trace for the
+  already describes the steps of that execution: the trace for the
   recording (authoring) run, `result.json` for replay runs. No side-channel
   timing files that can drift.
 - **Structured data is the machine surface; video is the human surface.**
@@ -122,7 +122,7 @@ Per step, the executor tells the RunRecorder `step_started(id)` /
 `step_finished(id)`; the RunRecorder captures and timestamps frames and
 produces a `Timeline`: for each step, `{start_ms, end_ms}` offsets from the
 execution start, plus the persisted frame offsets falling in that range.
-Timestamps are captured once, by the RunRecorder — the executor and the
+Timestamps are captured once, by the RunRecorder, so the executor and the
 recorder cannot disagree, because the executor doesn't keep its own clock.
 
 ### 3. Capture pipeline
@@ -131,19 +131,19 @@ recorder cannot disagree, because the executor doesn't keep its own clock.
 raw frames. Two implementations planned; both feed the identical
 redact→persist path, so upgrading capture never touches sync or redaction:
 
-- **v1 — keyframe source** (shipped): captures a full frame *before each
+- **v1: keyframe source** (shipped): captures a full frame *before each
   step*, *after each step*, and *on failure*, via the driver:
   - Web: `Tab::capture_screenshot` (already available in headless_chrome).
   - Windows: GDI `BitBlt` screen grab behind the existing `Capture` trait
     (deliberately simple; correctness over frame rate).
   Keyframes make step sync *exact by construction* and keep the bundle
   small. The visual result is a step-synchronized filmstrip, not 30fps
-  video — an accepted v1 tradeoff, stated in the artifact format so
+  video, an accepted v1 tradeoff, stated in the artifact format so
   consumers can distinguish it. With `--video`, the bundle also carries a
   ready-to-play `recording.gif`: the keyframes as one animation, each frame
   shown for the real gap to the next (clamped to stay watchable), so a whole
   run reviews like a video without continuous capture.
-- **Later — continuous source** (follow-up PRs): DXGI desktop duplication on
+- **Later: continuous source** (follow-up PRs): DXGI desktop duplication on
   Windows, CDP screencast for web, feeding the same sink at N fps and
   assembled into WebM. The bundle format below already carries a `format`
   discriminator (`filmstrip/1` now, `webm/1` later) so this lands without
@@ -188,7 +188,7 @@ agent-authored test needs only the trace + its bundle:
   ```
   (existing `pre_screenshot`/`post_screenshot` hashes are unchanged and will
   point at the same content-addressed frames once stills land).
-- **Header** gains optional `redaction` (§7) — recorded into the trace so
+- **Header** gains optional `redaction` (§7), recorded into the trace so
   every future replay redacts identically **without needing the spec**:
   ```json
   "redaction": [ {"target": {"css": "#ssn"}, "mode": "mask"} ]
@@ -201,7 +201,7 @@ one place a step and its evidence can't drift apart.
 ### 6. Run report changes (replay executions)
 
 - `StepResult` gains `started_ms` (offset from run start; with the existing
-  `duration_ms` this *is* the step→time mapping — no new sidecar).
+  `duration_ms` this *is* the step→time mapping, no new sidecar).
 - `RunReport` gains optional `recording { format, dir }`.
 - Python `RunResult` mirrors both; MCP/CLI `--json` inherit automatically.
 
@@ -214,8 +214,8 @@ frames now, trace screenshots when they land):
   a selector (css / automation_id) or a fixed rect, `mode: mask` (solid
   fill). Declared in the spec under `redact:`, copied into the trace header
   at record time (§5).
-- **Automatic, non-optional rule**: password fields are always masked —
-  web `input[type=password]`, UIA `IsPassword` elements — regardless of
+- **Automatic, non-optional rule**: password fields are always masked
+  (web `input[type=password]`, UIA `IsPassword` elements), regardless of
   spec. Not configurable off.
 - **Application point**: the RunRecorder resolves rule targets to screen
   rects via the driver *at capture time* (elements move; rects are resolved
@@ -233,7 +233,7 @@ execution gets its own self-contained bundle keyed by `trace_id`, a healed
 trace that is re-authored gets a new `trace_id` + new bundle while the
 original keeps its own. A before/after review view is then pure composition:
 for each changed step id, show `old trace bundle[step range]` beside
-`new trace bundle[step range]` — both sides already exist with exact
+`new trace bundle[step range]`, both sides already exist with exact
 step-time mappings. Nothing in this design (content-addressed frames,
 per-trace bundles, step-keyed ranges) needed rework for that; heal now
 renders exactly this composition as a self-contained `<name>.heal.html`
