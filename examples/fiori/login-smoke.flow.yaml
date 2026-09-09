@@ -1,8 +1,8 @@
 # Smoke test: does the CDP browser adapter reach a real Fiori launchpad and
-# log in, using nothing but env vars for URL + credentials? No test-data
-# mining (the sibling suite.yaml's env_from needs a DataMaker CLI this
-# doesn't) — this is step zero, run before manage-info-records.flow.yaml or
-# purchase-info-records-report.flow.yaml.
+# log in, using nothing but env vars for URL + credentials? No business
+# values file is needed here because this smoke flow never searches for a
+# Material/Supplier/Plant record. This is step zero, run before
+# manage-info-records.flow.yaml or purchase-info-records-report.flow.yaml.
 #
 # sap-client/sap-language travel as query params on the launchpad URL
 # itself (same names as the SAP GUI adapter's optional login.client/

@@ -12,9 +12,10 @@ rewrite the step into concrete grammar, and record again. flowproof stays
 deterministic; the intelligence stays outside.
 
 The loop has two legs: a **clarification payload** (what was ambiguous,
-what the live screen offered) and **`env_from`** (how externally-minted
-test data reaches the spec). Together they let an agent author tests
-against systems it cannot see into, like SAP, by asking tools that can.
+what the live screen offered) and **values files** (how non-secret
+business inputs reach the spec without being baked into flow steps).
+Together they let an agent author tests against systems it cannot see
+into, like SAP, by asking tools that can.
 
 This loop is for UI authoring. An `app: agent` flow (see
 [agent-testing.md](agent-testing/index.md)) never enters it: its steps
@@ -96,33 +97,41 @@ resolve `${VAR}`** (selectors travel raw in traces). You cannot
 "css:.sapMListItems .sapMLIB"`) and assert on the data instead
 (`assert: page shows ${MATERIAL}`).
 
-## The data leg: `env_from`
+## The data leg: values files
 
 The rewritten steps reference `${MATERIAL}`, `${NET_PRICE}`, …, values
-that must exist in the connected SAP system, so they cannot be hardcoded.
-`suite.yaml` bridges them in:
+that must exist in the connected SAP system. Those are business inputs,
+not credentials, so the Fiori examples keep them visible in a checked-in
+file:
 
 ```yaml
-# examples/fiori/suite.yaml
-env_from: datamaker sap info-record pick --plant 1010 --format env
-env:
-  FIORI_BASE_URL: ${FIORI_BASE_URL}
+# examples/fiori/values.yaml
+MATERIAL: "TG10"
+SUPPLIER: "10300001"
+PLANT: "1010"
+NET_PRICE: "12.35"
 ```
 
-`env_from` runs once before any flow, via `sh -c`, from the suite
-directory; its stdout must be `KEY=VALUE` lines (blank lines and `#`
-comments allowed). It applies to `run <dir>` suites **and** to
-`record`/single-flow `run` of any spec under the suite (nearest
-`suite.yaml` walking up wins, and the chosen manifest is named on
-stderr). Precedence: process env < `env_from` < `env:`. It fails closed:
-a non-zero exit or one malformed line aborts the run, because flows
-against half-seeded data produce the least debuggable failures. Values
-reach traces only as raw `${VAR}` references, never resolved.
+Run the shared Fiori values explicitly:
 
-`before_each`/`after_each` hooks remain the right place for *effects*
-(seed a row, clean up); `env_from` exists because hooks structurally
-cannot return values: their stdout is not captured, and a child process
-cannot set its parent's environment.
+```console
+$ flowproof run examples/fiori/display-info-record-by-supplier.flow.yaml --vars examples/fiori/values.yaml
+$ flowproof run examples/fiori/purchasing-info-record-api.flow.yaml --vars examples/fiori/values.yaml
+$ flowproof run examples/fiori/ --vars examples/fiori/values.yaml --missing skip
+```
+
+A single standalone flow can also use the sibling convention, where the
+values file sits beside the flow and is discovered automatically:
+
+```text
+display-info-record-by-supplier.flow.yaml
+display-info-record-by-supplier.values.yaml
+```
+
+Credentials still stay outside the example values file: use
+`flowproof config`, CI secrets, or the caller's environment for login
+names, passwords, and API auth tokens. Values reach traces only as raw
+`${VAR}` references, never resolved.
 
 Related: because traces store only the raw `${VAR}` refs, `app: api`
 flow traces can be minted **offline** against a local contract responder

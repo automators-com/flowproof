@@ -166,3 +166,16 @@ file.
   convention for single-flow users.
 - Track live Fiori CI coverage separately in issue #575 instead of expanding
   this plan beyond the values-file/example cleanup.
+
+## Completion
+
+Implemented the Fiori values-file example: deleted the old Fiori
+`suite.yaml` and `mint-test-data.sh`, added
+`examples/fiori/values.yaml` with the committed demo business values, updated
+the Fiori comments and `docs/self-help.md` to describe the shared `--vars`
+path plus sibling values-file convention, and changed
+`crates/flowproof-cli/tests/examples_resolve.rs` to assert the values file is
+a flat non-secret mapping with `MATERIAL`, `SUPPLIER`, `PLANT`, and
+`NET_PRICE`. Verified with
+`cargo test -p flowproof-cli --test examples_resolve -- --nocapture` and the
+required stale-reference `rg` check.

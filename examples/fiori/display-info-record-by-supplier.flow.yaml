@@ -36,7 +36,7 @@ steps:
   # confirmed live to matter the same way it did for ME12's screen.
   - "Wait until page shows Info Records per Supplier within 20s"
 
-  # -- Search by the minted test data (Supplier + Material identify the
+  # -- Search by the example test data (Supplier + Material identify the
   #    same record the sibling flow edits) -----------------------------
   - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
   - Type ${MATERIAL} into the "Material" in the iframe "Application"
