@@ -33,7 +33,10 @@ pub enum Author {
     Llm,
 }
 
-const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
+// CI Windows runners can take well over 15s to surface a window when they're
+// the third test in a row spawning/killing Notepad; the flow itself never
+// waits this long, only recording against a real app does.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 const STEP_TIMEOUT_MS: u64 = 5000;
 /// Poll cadence while an auto-waiting assertion is pending.
 const ASSERT_POLL_INTERVAL: Duration = Duration::from_millis(250);
