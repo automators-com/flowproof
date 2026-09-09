@@ -54,8 +54,8 @@ checked in.
 2. Delete `examples/fiori/suite.yaml` unless it is still needed for ordering
    or hooks after the implementation pass. The intended final shape has no
    Fiori suite manifest.
-3. Add `examples/fiori/values.yaml` with the shared non-secret data used by
-   the Fiori examples:
+3. Add `examples/fiori/values.yaml` with the real demo/reference-system
+   business data used by the Fiori examples:
 
    ```yaml
    MATERIAL: "..."
@@ -64,8 +64,10 @@ checked in.
    NET_PRICE: "..."
    ```
 
-   Keep credentials out of this file. Do not include `FIORI_USER`,
-   `FIORI_PASSWORD`, `SAP_USER`, `SAP_PASSWORD`, or
+   This is intentionally a committed example file, not a secret-backed CI
+   fixture. The values are business inputs for the demo/reference system, not
+   credentials. Keep credentials out of this file: do not include
+   `FIORI_USER`, `FIORI_PASSWORD`, `SAP_USER`, `SAP_PASSWORD`, or
    `SAP_ODATA_BASIC_AUTH`.
 4. Update Fiori example comments that currently say the data is minted by
    `suite.yaml`/`env_from`. They should say business data comes from
@@ -98,12 +100,28 @@ Fiori flows exercise the same material/supplier/plant record. That makes it a
 good example of the explicit `--vars` path, not the sibling auto-discovery
 path.
 
+Docs should still show the sibling-file path too, because it is the simplest
+shape for one standalone flow:
+
+```text
+display-info-record-by-supplier.flow.yaml
+display-info-record-by-supplier.values.yaml
+```
+
+The Fiori examples use the shared `--vars examples/fiori/values.yaml` form;
+the docs can use a smaller generic snippet to demonstrate sibling
+auto-discovery without duplicating the Fiori values file.
+
 ## CI impact
 
 There is no current GitHub workflow that runs `examples/fiori/` as a live
 Fiori suite. The SAP workflow runs `examples/sap/`, not `examples/fiori/`.
 So the implementation does not need to change `.github/workflows/sap-e2e.yml`
 unless another branch adds Fiori replay there first.
+
+That gap is now tracked separately in
+[#575](https://github.com/automators-com/flowproof/issues/575): CI runs SAP
+GUI examples today, but not Fiori examples.
 
 If a Fiori workflow is added later, it should pass
 `--vars examples/fiori/values.yaml` explicitly. It should continue to source
@@ -128,19 +146,23 @@ file.
   finds no stale Fiori-example claims.
 - `examples/fiori/values.yaml` parses as a flat YAML mapping, and the example
   test asserts it contains `MATERIAL`, `SUPPLIER`, `PLANT`, and `NET_PRICE`.
+- `examples/fiori/values.yaml` contains committed demo/reference-system
+  business values, not placeholders and not credentials.
 - `cargo test -p flowproof-cli --test examples_resolve -- --nocapture`
   passes.
 - A dry parse of the affected Fiori flows still succeeds through the existing
   example-resolution tests.
 
-## Open questions
+## Resolved decisions
 
-- Which exact sample values should be committed? Prefer the reference/demo
-  system values already used to record these examples, but a human with access
-  to the system should confirm they are acceptable to publish as non-secret
-  example data.
-- Should the docs show only the shared `--vars examples/fiori/values.yaml`
-  path, or also include a one-flow sibling-file example such as
-  `display-info-record-by-supplier.values.yaml`? The implementation can keep
-  this plan narrow with the shared file and let the existing getting-started
-  docs continue to cover sibling auto-discovery.
+- Commit the actual demo/reference-system business values that the OData
+  picker was fetching. They are example inputs, not credentials, so duplicating
+  them into GitHub secrets would not add protection. Credentials and auth
+  tokens still stay in secrets/config.
+- Keep the Fiori implementation on one shared
+  `examples/fiori/values.yaml`, because several flows target the same record.
+- Update docs to show both business-data patterns: the shared `--vars` file
+  used by the Fiori examples, and the sibling `<flow-stem>.values.yaml`
+  convention for single-flow users.
+- Track live Fiori CI coverage separately in issue #575 instead of expanding
+  this plan beyond the values-file/example cleanup.
