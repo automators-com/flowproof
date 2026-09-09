@@ -143,7 +143,10 @@ assertion.
 1. **Maintainer release checklist** — checked the repo: there is no existing
    release checklist anywhere (`docs/`, `CONTRIBUTING.md`, `.github/`, no
    release-issue template). This plan adds a new one:
-   `docs/release-checklist.md`, a short markdown list a maintainer works
+   `internal/release-checklist.md` — `docs/` is the public-facing user docs
+   site (see `docs/meta.json`'s nav), and this checklist is a maintainer-only
+   operational doc, so it belongs with `internal/design.md` and the other
+   contributor-facing docs instead. A short markdown list a maintainer works
    through before announcing. First item: "Run `release-smoke.yml` against
    the exact released version and confirm every leg is green." The
    darwin-x64 and website/install-path items below join it as items 2 and 3
@@ -162,8 +165,8 @@ assertion.
 ## Resolved questions
 
 - **Maintainer checklist location** — resolved above: new file,
-  `docs/release-checklist.md`. No prior art existed in the repo to conflict
-  with.
+  `internal/release-checklist.md` (not `docs/`, which is the public docs
+  site). No prior art existed in the repo to conflict with.
 - **What "assert the expected command surface" means** — plain version: the
   workflow's `--help` check needs to know which words to `grep` for in the
   output, e.g. making sure `record` and `run` show up as commands. Rather
