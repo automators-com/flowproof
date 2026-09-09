@@ -45,8 +45,11 @@ jobs:
         include:
           - os: ubuntu-latest
             expect_arch: x86_64
+          # python's platform.machine() reports 'AMD64' on Windows, not
+          # 'x86_64' - confirmed against a real release-smoke.yml run
+          # (windows-latest failed this assertion before this fix).
           - os: windows-latest
-            expect_arch: x86_64
+            expect_arch: amd64
           # Apple Silicon on GitHub-hosted runners today. NOT macos-13: see
           # the darwin-x64 note in npx-smoke.yml - Intel macOS is checked at
           # publish time but not schedulable/executable in CI.
