@@ -1,0 +1,61 @@
+name: "npm smoke steps"
+description: >
+  Install and run flowproof from npm exactly as a newcomer would: no
+  checkout, no warm cache. Shared by npx-smoke.yml (daily/latest) and
+  release-smoke.yml (exact released version) so the two workflows cannot
+  drift into checking different things.
+
+inputs:
+  version:
+    description: "npm version to smoke test (e.g. 'latest' or '0.22.0')"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    # No checkout on purpose: a newcomer has no clone. A clean cache too, so
+    # a stale local copy cannot make a broken publish look fine.
+    - name: npx flowproof --version, from a clean cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        version='${{ inputs.version }}'
+        cache="$(mktemp -d)"
+        out="$(npm_config_cache="$cache" npx --yes "flowproof@$version" --version 2>&1)"
+        echo "$out"
+        echo "$out" | grep -qE '^flowproof [0-9]+\.[0-9]+\.[0-9]+' \
+          || { echo "::error::--version did not print a version"; exit 1; }
+
+    # The binary must actually be the platform's own: a package that
+    # installs but cannot exec is worse than one that fails to install.
+    - name: the resolved binary runs and reports the same version
+      shell: bash
+      run: |
+        set -euo pipefail
+        version='${{ inputs.version }}'
+        dir="$(mktemp -d)" && cd "$dir"
+        npm install --silent "flowproof@$version"
+        node node_modules/flowproof/bin/flowproof.js --help > help.txt 2>&1
+        grep -qi "record" help.txt || { echo "::error::--help lost its commands"; cat help.txt; exit 1; }
+        echo "help ok"
+
+    # The failure a real user is most likely to hit: a package manager that
+    # skipped optional dependencies. It must fail LOUDLY (non-zero), say
+    # what to do, and keep stdout clean so `--json` consumers are not
+    # corrupted by a diagnostic.
+    - name: a missing platform binary fails loudly and says what to do
+      shell: bash
+      run: |
+        set -uo pipefail
+        version='${{ inputs.version }}'
+        dir="$(mktemp -d)" && cd "$dir"
+        npm install --silent --no-optional "flowproof@$version"
+        set +e
+        node node_modules/flowproof/bin/flowproof.js --version >out.txt 2>err.txt
+        code=$?
+        set -e
+        echo "exit=$code"; echo "--- stdout ---"; cat out.txt; echo "--- stderr ---"; cat err.txt
+        [ "$code" -ne 0 ] || { echo "::error::a missing binary exited 0 - CI would go green without running"; exit 1; }
+        [ ! -s out.txt ] || { echo "::error::diagnostics went to stdout, which corrupts --json output"; exit 1; }
+        grep -qi "not installed" err.txt || { echo "::error::the error does not name the problem"; exit 1; }
+        grep -qi "optional" err.txt || { echo "::error::the error does not tell the user how to fix it"; exit 1; }
