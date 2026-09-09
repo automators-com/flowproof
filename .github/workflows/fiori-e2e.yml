@@ -1,0 +1,74 @@
+name: Fiori E2E (real launchpad)
+
+# Fiori's counterpart to sap-e2e.yml (#575): the fake engine and the COM
+# simulator prove the SAP GUI path on every push via ci.yml, but nothing
+# replays examples/fiori/ against a live Fiori launchpad. This workflow is
+# that leg — real browser, real launchpad — so it needs the self-hosted `sap`
+# runner (same box, same reachable reference system) and stays out of the
+# pull_request path for the same reason sap-e2e.yml does: fork PRs must
+# never reach a real system.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * *"
+
+# Browser automation doesn't contend with the physical SAP GUI session that
+# sap-e2e.yml serializes on, so this gets its own concurrency group rather
+# than sharing sap-e2e's — a Fiori run and a SAP GUI run can go at once.
+concurrency:
+  group: fiori-e2e
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # This runner has Edge, not Chrome — Edge is Chromium under a different
+  # shell and speaks the same DevTools Protocol the web adapter drives, so
+  # it's a drop-in for the CHROME env var (see web.rs). Default install path
+  # for a 64-bit Windows install of Edge.
+  CHROME: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+
+jobs:
+  fiori-e2e:
+    name: fiori_e2e (real Fiori launchpad)
+    runs-on: [self-hosted, sap]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same rationale as sap-e2e.yml's pre-build step: get the multi-minute
+      # compile out of the way before any Fiori-touching step, so a slow
+      # first `cargo run` doesn't read as the launchpad or the browser being
+      # unresponsive.
+      - name: pre-build flowproof CLI
+        run: cargo build -p flowproof-cli --bin flowproof
+
+      # Two flows (login-smoke, display-info-record-by-supplier) still read
+      # SAP_* names because their committed traces store those names as
+      # literal text (see login-smoke.flow.yaml); the other two already use
+      # FIORI_*. Setting both here means every example flow resolves
+      # regardless of which generation it's from — see the next real
+      # re-record for retiring the SAP_* half.
+      - name: replay Fiori example flows (live launchpad)
+        run: cargo run -p flowproof-cli --bin flowproof -- run examples/fiori/ --vars examples/fiori/values.yaml --retries 2
+        env:
+          FIORI_BASE_URL: ${{ secrets.FIORI_BASE_URL }}
+          FIORI_USER: ${{ secrets.FIORI_USER }}
+          FIORI_PASSWORD: ${{ secrets.FIORI_PASSWORD }}
+          FIORI_CLIENT: ${{ secrets.FIORI_CLIENT }}
+          FIORI_LANGUAGE: ${{ secrets.FIORI_LANGUAGE }}
+          SAP_USER: ${{ secrets.FIORI_USER }}
+          SAP_PASSWORD: ${{ secrets.FIORI_PASSWORD }}
+          SAP_CLIENT: ${{ secrets.FIORI_CLIENT }}
+          SAP_LANGUAGE: ${{ secrets.FIORI_LANGUAGE }}
+
+      # Same reasoning as sap-e2e.yml's diagnostics upload: `flowproof run`
+      # already writes per-step frames and report.html into the suite's run
+      # dir, so keep that bundle past the job on failure.
+      - name: upload Fiori flow diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fiori-e2e-run-${{ github.run_id }}
+          path: examples/fiori/.flowproof/runs/
+          retention-days: 14
+          if-no-files-found: ignore
