@@ -60,6 +60,12 @@ jobs:
           SAP_PASSWORD: ${{ secrets.FIORI_PASSWORD }}
           SAP_CLIENT: ${{ secrets.FIORI_CLIENT }}
           SAP_LANGUAGE: ${{ secrets.FIORI_LANGUAGE }}
+          # purchasing-info-record-api.flow.yaml asserts against OData
+          # directly rather than driving the launchpad, so it needs its own
+          # pair: the service host and a pre-built base64 user:password for
+          # the Basic auth header.
+          SAP_ODATA_BASE: ${{ secrets.SAP_ODATA_BASE }}
+          SAP_ODATA_BASIC_AUTH: ${{ secrets.SAP_ODATA_BASIC_AUTH }}
 
       # Same reasoning as sap-e2e.yml's diagnostics upload: `flowproof run`
       # already writes per-step frames and report.html into the suite's run
