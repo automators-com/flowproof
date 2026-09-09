@@ -26,6 +26,7 @@ instead so they're easy to find as a set.
 | 7 | [007-autonomous-flow-repair-loop.md](007-autonomous-flow-repair-loop.md) | `record` grows a bounded, unattended repair loop: on failure, diagnose against the live app, patch the `.flow.yaml` (never source code), and rerun without requiring a human to re-record or approve each edit |
 | 8 | [008-ai-authoring-config.md](008-ai-authoring-config.md) | Add `flowproof config ai` for provider-neutral model authoring settings, storing one AI key and seeding `FLOWPROOF_AI_*` plus compatibility env vars — issue #541 |
 | 9 | [009-docs-product-alignment-audit.md](009-docs-product-alignment-audit.md) | Audit docs against the actual CLI/config surface: README's quickstart still shows the pre-`flowproof config` credential pattern, `docs/adopting.md` never mentions `config ai`, and the `documented_flags.rs` ratchet's blind spots that let this class of gap through |
+| 11 | [011-fiori-values-example.md](011-fiori-values-example.md) | Replace the Fiori examples' `suite.yaml`/`mint-test-data.sh` business-data minting with a checked-in `examples/fiori/values.yaml` that demonstrates `--vars` while keeping credentials in config or secrets |
 
 ## How to read and amend these
 
