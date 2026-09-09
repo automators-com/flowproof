@@ -1,0 +1,190 @@
+name: release smoke test
+
+# Post-publish evidence, not a pre-release check: a maintainer runs this
+# AFTER `publish.yml`/`publish-npm.yml` have shipped a version to PyPI and
+# npm, and BEFORE announcing it, to prove a clean machine with no checkout
+# and no local cache can actually install and run that exact version.
+#
+# `npx-smoke.yml` already does this for npm on a schedule against `latest`.
+# This workflow reuses its steps (.github/actions/npm-smoke-steps) for npm,
+# and adds the PyPI half that nothing in CI checks today. It exists because
+# `cargo test` proves the engine, not the two things a real user actually
+# types: `pip install flowproof==<version>` and `npx flowproof@<version>`.
+#
+# See plans/010-release-registry-smoke.md and issue #382.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact released version to validate, e.g. 0.22.0 (no 'latest', no 'v' prefix)"
+        required: true
+
+jobs:
+  # Fail in seconds if the input isn't real release evidence: "latest" or a
+  # malformed string would silently test a moving target instead of the
+  # release being announced.
+  guard:
+    name: version input is an exact semantic version
+    runs-on: ubuntu-latest
+    steps:
+      - name: reject anything that isn't X.Y.Z
+        run: |
+          version='${{ inputs.version }}'
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$version' is not an exact semantic version (e.g. 0.22.0) - 'latest' is not release evidence"
+            exit 1
+          fi
+          echo "validating flowproof $version"
+
+  pypi:
+    name: pip install (${{ matrix.os }})
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            expect_arch: x86_64
+          # python's platform.machine() reports 'AMD64' on Windows, not
+          # 'x86_64' - confirmed against a real release-smoke.yml run
+          # (windows-latest failed this assertion before this fix).
+          - os: windows-latest
+            expect_arch: amd64
+          # Apple Silicon on GitHub-hosted runners today. NOT macos-13: see
+          # the darwin-x64 note in npx-smoke.yml - Intel macOS is checked at
+          # publish time but not schedulable/executable in CI.
+          - os: macos-latest
+            expect_arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      # No actions/checkout here on purpose - a clean machine with no clone
+      # is exactly what this proves against.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: runner architecture is what the matrix expects
+        shell: bash
+        run: |
+          actual="$(python -c 'import platform; print(platform.machine().lower())')"
+          expected='${{ matrix.expect_arch }}'
+          # Windows/arm64 naming quirks aside, this matrix only asks for
+          # x86_64 or arm64, both of which platform.machine() reports directly.
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::runner reports architecture '$actual', expected '$expected' - the hosted image changed under this matrix leg"
+            exit 1
+          fi
+          echo "architecture ok: $actual"
+
+      - name: pip install flowproof==<version>, no cache, bounded retry
+        shell: bash
+        run: |
+          set -uo pipefail
+          version='${{ inputs.version }}'
+          attempts=3
+          delay=20
+          for i in $(seq 1 "$attempts"); do
+            if pip install --no-cache-dir --no-input "flowproof==$version"; then
+              echo "installed on attempt $i"
+              exit 0
+            fi
+            echo "attempt $i/$attempts failed (registry propagation lag is the only retryable case)"
+            sleep "$delay"
+          done
+          echo "::error::flowproof==$version never became installable from PyPI after $attempts attempts - failing closed, not falling back to an unpinned version"
+          exit 1
+
+      - name: the native extension imports
+        shell: bash
+        run: python -c "from flowproof import _native; print('native extension ok:', _native.__name__)"
+
+      - name: flowproof --version reports the exact requested version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version }}'
+          out="$(flowproof --version)"
+          echo "$out"
+          [ "$out" = "flowproof $version" ] || { echo "::error::--version printed '$out', expected 'flowproof $version'"; exit 1; }
+
+      - name: flowproof --help exposes the expected command surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(flowproof --help)"
+          echo "$out"
+          # Kept to the commands stable across releases; the source of
+          # truth is the Command enum in crates/flowproof-cli/src/lib.rs.
+          for cmd in record run config doctor; do
+            echo "$out" | grep -qi "\\b$cmd\\b" \
+              || { echo "::error::--help does not list '$cmd'"; exit 1; }
+          done
+
+  npm:
+    name: npx/npm install (${{ matrix.os }})
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            expect_arch: x64
+          - os: windows-latest
+            expect_arch: x64
+          - os: macos-latest
+            expect_arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Sparse checkout of only the shared composite action - not the
+      # crates or a build tree. This does not compromise "no checkout" for
+      # the package under test; see the identical comment in npx-smoke.yml.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/actions/npm-smoke-steps
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: runner architecture is what the matrix expects
+        shell: bash
+        run: |
+          actual="$(node -e 'console.log(process.arch)')"
+          expected='${{ matrix.expect_arch }}'
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::runner reports architecture '$actual', expected '$expected' - the hosted image changed under this matrix leg"
+            exit 1
+          fi
+          echo "architecture ok: $actual"
+
+      # Same steps npx-smoke.yml runs against 'latest' on a schedule, now
+      # against the exact version being released. A bounded retry around
+      # registry propagation is inside this action's first step already
+      # failing the workflow non-zero if it never resolves - it does not
+      # fall back to 'latest'.
+      - uses: ./.github/actions/npm-smoke-steps
+        with:
+          version: ${{ inputs.version }}
+
+  summary:
+    name: release validation summary
+    needs: [pypi, npm]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: report result
+        run: |
+          echo "## Release smoke test — flowproof ${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Channel | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PyPI (ubuntu/windows/macos-arm64) | ${{ needs.pypi.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| npm (ubuntu/windows/macos-arm64) | ${{ needs.npm.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Per-OS/per-arch detail is in each matrix job above; this table is the go/no-go rollup for the release checklist." >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.pypi.result }}" != "success" ] || [ "${{ needs.npm.result }}" != "success" ]; then
+            echo "::error::release smoke test failed for flowproof ${{ inputs.version }} - do not announce this release"
+            exit 1
+          fi

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 # Plan 11 - replace generated Fiori test data with a checked-in values example
 
