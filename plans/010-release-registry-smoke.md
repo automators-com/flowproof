@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 # Plan 10 — post-publish registry smoke test for an exact release version
 
