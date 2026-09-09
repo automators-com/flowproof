@@ -21,14 +21,15 @@ system is not built on the agent behaving well. It is built on two properties:
 
 ## The flywheel
 
-```
-  Prospector ──▶ Migrator ──▶ Ledger ──▶ Builder ──▶ Adversary ──▶ Integrator
-   finds        runs their    counts     writes      reviews       merges
-   public       tests, and    gaps       the fix                     │
-   repos        ours, and     across                                 ▼
-                compares      repos                                main
-                                    ▲                                │
-                                    └──── Warden watches, and halts ──┘
+```mermaid
+flowchart LR
+    Prospector["Prospector<br/>finds public repos"] --> Migrator["Migrator<br/>runs their tests, and ours, and compares"]
+    Migrator --> Ledger["Ledger<br/>counts gaps across repos"]
+    Ledger --> Builder["Builder<br/>writes the fix"]
+    Builder --> Adversary["Adversary<br/>reviews"]
+    Adversary --> Integrator["Integrator<br/>merges"]
+    Integrator --> Main["main"]
+    Main -. "Warden watches, and halts" .-> Ledger
 ```
 
 **Prospector** searches public repositories for test suites and MCP servers.

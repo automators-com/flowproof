@@ -111,11 +111,12 @@ Both `record` and `run` execute the same step loop against an `AppDriver`.
 This design introduces one shared component, the **RunRecorder**, that both
 loops drive:
 
-```
-step loop ──▶ RunRecorder
-                 ├─ FrameSource  (where pixels come from)
-                 ├─ Redactor     (masks applied in-memory, pre-persist)
-                 └─ Bundle       (frames on disk + timeline entries)
+```mermaid
+flowchart LR
+    A["step loop"] --> B["RunRecorder"]
+    B --> C["FrameSource<br/>(where pixels come from)"]
+    B --> D["Redactor<br/>(masks applied in-memory, pre-persist)"]
+    B --> E["Bundle<br/>(frames on disk + timeline entries)"]
 ```
 
 Per step, the executor tells the RunRecorder `step_started(id)` /
