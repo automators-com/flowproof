@@ -3,12 +3,12 @@
 //! backend. This is the same role `documented_grammar_examples_all_
 //! resolve` plays for docs/authoring.md.
 
-use flowproof_agent::{FlowSpec, SuiteManifest};
+use flowproof_agent::FlowSpec;
 
 const FIORI_SPEC: &str = include_str!("../../../examples/fiori/manage-info-records.flow.yaml");
 const PURCHASE_INFO_RECORDS_SPEC: &str =
     include_str!("../../../examples/fiori/purchase-info-records-report.flow.yaml");
-const FIORI_SUITE: &str = include_str!("../../../examples/fiori/suite.yaml");
+const FIORI_VALUES: &str = include_str!("../../../examples/fiori/values.yaml");
 const CONN_TEST_SPEC: &str = include_str!("../../../examples/api/connection-test.flow.yaml");
 /// The npm-path agent quickstart. It is the first example a reader coming
 /// from `npx flowproof` runs, so it has to keep parsing.
@@ -83,18 +83,27 @@ fn purchase_info_records_example_parses_as_a_multi_surface_flow() {
 }
 
 #[test]
-fn fiori_suite_manifest_declares_the_data_leg() {
-    let manifest: SuiteManifest = serde_yaml::from_str(FIORI_SUITE).expect("suite.yaml parses");
-    let cmd = manifest.env_from.expect("env_from present");
-    // Was a `datamaker` CLI invocation; that command never existed anywhere
-    // in DataMaker's own tooling (confirmed against the real catalog) and
-    // was replaced with mint-test-data.sh, which queries the live OData
-    // service directly - see the script's own header for the full story.
-    assert!(
-        cmd.contains("mint-test-data.sh"),
-        "data comes from mint-test-data.sh, querying the live OData service directly"
-    );
-    assert!(manifest.env.contains_key("FIORI_BASE_URL"));
+fn fiori_values_file_declares_the_business_data_leg() {
+    let values: serde_yaml::Mapping =
+        serde_yaml::from_str(FIORI_VALUES).expect("values.yaml parses as a mapping");
+    for key in ["MATERIAL", "SUPPLIER", "PLANT", "NET_PRICE"] {
+        let value = values
+            .get(serde_yaml::Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("values.yaml contains {key}"));
+        assert!(value.as_str().is_some(), "{key} is a string example value");
+    }
+    for secret in [
+        "FIORI_USER",
+        "FIORI_PASSWORD",
+        "SAP_USER",
+        "SAP_PASSWORD",
+        "SAP_ODATA_BASIC_AUTH",
+    ] {
+        assert!(
+            !values.contains_key(serde_yaml::Value::String(secret.to_string())),
+            "values.yaml must not contain credential {secret}"
+        );
+    }
 }
 
 /// The quickstart's two agent demos must stay runnable and stay TWINS: the

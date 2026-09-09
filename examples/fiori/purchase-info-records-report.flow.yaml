@@ -7,8 +7,9 @@
 # describes (`apps:` + `in:` blocks) combined with the download/spreadsheet
 # primitives it names as the missing pieces.
 #
-# Every value that is test DATA travels as a ${VAR} reference, minted by the
-# sibling suite.yaml's env_from (DataMaker), same as manage-info-records.flow.yaml.
+# Every value that is test DATA travels as a ${VAR} reference, read from
+# examples/fiori/values.yaml when passed with --vars, same as
+# manage-info-records.flow.yaml.
 #
 # Two steps below are left as flagged TODOs rather than guessed: the source
 # PDF itself records the tester choosing between three near-identical tile
@@ -57,7 +58,7 @@ steps:
       - resolve the tile to click against the live catalog — no single clear target is named. Observed - the PDF's Step 3 lists three near-identical options — "Manage Info Records", "Display purchasing info records by Supplier", "Display purchasing info records by material".
       - assert: page shows Info Record
 
-      # -- Search the standard info record by the minted test data -------
+      # -- Search the standard info record by the example test data ------
       - Type ${SUPPLIER} into the "Supplier" field
       - Type ${MATERIAL} into the "Material" field
       - Type ${PLANT} into the "Plant" field
