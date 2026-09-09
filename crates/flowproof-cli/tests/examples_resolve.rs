@@ -88,7 +88,7 @@ fn fiori_values_file_declares_the_business_data_leg() {
         serde_yaml::from_str(FIORI_VALUES).expect("values.yaml parses as a mapping");
     for key in ["MATERIAL", "SUPPLIER", "PLANT", "NET_PRICE"] {
         let value = values
-            .get(&serde_yaml::Value::String(key.to_string()))
+            .get(serde_yaml::Value::String(key.to_string()))
             .unwrap_or_else(|| panic!("values.yaml contains {key}"));
         assert!(value.as_str().is_some(), "{key} is a string example value");
     }
@@ -100,7 +100,7 @@ fn fiori_values_file_declares_the_business_data_leg() {
         "SAP_ODATA_BASIC_AUTH",
     ] {
         assert!(
-            !values.contains_key(&serde_yaml::Value::String(secret.to_string())),
+            !values.contains_key(serde_yaml::Value::String(secret.to_string())),
             "values.yaml must not contain credential {secret}"
         );
     }
