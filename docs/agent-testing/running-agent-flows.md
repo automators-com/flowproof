@@ -17,14 +17,20 @@ Five facts about the runtime contract, all exercised by
   turn, and its position relative to the assertion is discarded.
 
   A real multi-turn conversation is a separate step form, `conversation:`
-  (issue #375; see `plans/012-agent-multiturn-conversations.md`). It parses
-  today - a `conversation:` block is a list of deliveries, each a `user:`
-  message plus its own delivery-local `assert:`/`assert_tool_call:`/
-  `assert_no_tool_call:` - but `record`/`replay` do not yet gate delivery on
-  it: the interactive recording session and the delivery-by-delivery replay
-  wiring are follow-up work, not shipped yet. A bare `prompt:` step stays
-  exactly what it always was; it is not desugared into a one-delivery
-  `conversation:` internally.
+  (issue #375; see `plans/012-agent-multiturn-conversations.md`): a list of
+  deliveries, each a `user:` message plus its own delivery-local
+  `assert:`/`assert_tool_call:`/`assert_no_tool_call:`, checked against just
+  the turns that delivery produced before the next one is sent. Both drivers
+  gate on it: `agent.url` sends each delivery as its own sequential POST,
+  and `agent.command` sends delivery 0 via `FLOWPROOF_PROMPT` as always and
+  writes every later delivery to the child process's own stdin, one JSON
+  line (`{"prompt": "..."}`) per delivery, once the previous one settles -
+  the process is spawned once and stays alive for the whole conversation,
+  and its stdin is closed after the last delivery settles so a well-behaved
+  multi-turn agent can finish and exit. A `conversation:` flow that also
+  engages egress containment still falls back to the ordinary single-shot
+  path for now. A bare `prompt:` step is unaffected either way; it is not
+  desugared into a one-delivery `conversation:` internally.
 - **The proxy URL is injected for you.** flowproof points the agent at its
   local proxy by setting `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_BASE`,
   and `FLOWPROOF_LLM_PROXY`, plus a placeholder `OPENAI_API_KEY` so a client
