@@ -1121,10 +1121,14 @@ for _ in range(turns):
                     },
                     stop_reason: None,
                 },
+                delivery_index: 0,
             });
             messages.push(Message::new("tool", r#"{"id":"KQ311"}"#));
         }
-        Cassette { turns: out }
+        Cassette {
+            turns: out,
+            ..Default::default()
+        }
     }
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
