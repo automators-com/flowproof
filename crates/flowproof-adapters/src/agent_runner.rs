@@ -802,6 +802,132 @@ pub fn run_against_conversation(
     Ok((run, windows))
 }
 
+/// One delivery's outcome inside an interactive [`ConversationSession`]:
+/// whether it settled and, when it did, the reply text an operator's
+/// terminal should show for it (the LAST assistant message the proxy
+/// observed during that delivery - never the process's own stdout, for the
+/// same reason [`Cassette::reply`] never uses it: stdout is whatever the
+/// harness chose to print, the model boundary is the one fact every agent
+/// shares). `None` when the delivery produced no assistant content (e.g. it
+/// ended on a tool call) or the run diverged before any reply arrived.
+pub struct SettleOutcome {
+    pub settled: bool,
+    pub reply: Option<String>,
+}
+
+/// A live, interactive conversational recording session against a real
+/// `command:` process - the primitive `flowproof record --agent-conversation`
+/// drives one operator-typed delivery at a time. Unlike
+/// [`run_against_conversation`], the delivery COUNT is not known in advance:
+/// the caller decides after each reply whether to send another or finish.
+pub struct ConversationSession<'a> {
+    proxy: &'a AgentProxy,
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    out_drain: PipeDrain,
+    err_drain: PipeDrain,
+    served_before: usize,
+    timeout: Duration,
+}
+
+impl<'a> ConversationSession<'a> {
+    /// Spawn the agent with `env` (which must already carry `FLOWPROOF_PROMPT`
+    /// set to the operator's first typed line) and wait for delivery 0 to
+    /// settle - symmetric with every later delivery, just triggered by spawn
+    /// instead of a stdin line.
+    pub fn start(
+        proxy: &'a AgentProxy,
+        command: &str,
+        env: &BTreeMap<String, String>,
+        timeout: Duration,
+    ) -> Result<(Self, SettleOutcome), RunError> {
+        let base = proxy.base_url();
+        let mut cmd = configure(command, &base, env)?;
+        cmd.stdin(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|source| RunError::Spawn {
+            command: command.trim().to_string(),
+            source,
+        })?;
+        let stdin = child.stdin.take();
+        let out_drain = PipeDrain::start(child.stdout.take());
+        let err_drain = PipeDrain::start(child.stderr.take());
+        let served_before = proxy.log().served;
+
+        let mut session = Self {
+            proxy,
+            child,
+            stdin,
+            out_drain,
+            err_drain,
+            served_before,
+            timeout,
+        };
+        let outcome = session.await_settle();
+        Ok((session, outcome))
+    }
+
+    /// Wait for the delivery that just started to settle, and report its
+    /// reply. Internal: called once by `start` for delivery 0 and once by
+    /// `send` for every later delivery.
+    fn await_settle(&mut self) -> SettleOutcome {
+        let deadline = Instant::now() + self.timeout;
+        let (served_after, settled) = wait_for_settle(self.proxy, self.served_before, deadline);
+        self.served_before = served_after;
+        let reply = self.proxy.captured().reply().map(str::to_string);
+        SettleOutcome { settled, reply }
+    }
+
+    /// Write `text` to the child's stdin as the next delivery and wait for
+    /// it to settle. `Err` means the process closed its stdin - exited
+    /// early, or never adopted the multi-turn contract - so there is no
+    /// point trying to send further deliveries.
+    pub fn send(&mut self, text: &str) -> Result<SettleOutcome, RunError> {
+        let line = format!("{}\n", serde_json::json!({ "prompt": text }));
+        let wrote = self
+            .stdin
+            .as_mut()
+            .map(|pipe| pipe.write_all(line.as_bytes()).and_then(|_| pipe.flush()));
+        if !matches!(wrote, Some(Ok(()))) {
+            return Err(RunError::Spawn {
+                command: "<conversation session>".to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "the agent closed its stdin before the session finished",
+                ),
+            });
+        }
+        Ok(self.await_settle())
+    }
+
+    /// End the session: close stdin (EOF, so a well-behaved multi-turn agent
+    /// finishes and exits) and wait for the process, exactly like
+    /// [`run_against_conversation`]'s own finish step.
+    pub fn finish(mut self) -> AgentRun {
+        drop(self.stdin.take());
+        let (status, timed_out) = wait_to_deadline(&mut self.child, self.timeout);
+        let stdout = self.out_drain.collect(PIPE_DRAIN_GRACE);
+        let stderr = self.err_drain.collect(PIPE_DRAIN_GRACE);
+
+        let log = self.proxy.log();
+        let run = AgentRun {
+            served: log.served,
+            divergence: log.divergence.clone(),
+            trigger: Trigger::Process,
+            exit_code: status.and_then(|s| s.code()),
+            timed_out,
+            stdout,
+            stderr,
+            upstream_error: log.upstream_error.clone(),
+            egress: EgressLog::default(),
+            fs: FsLog::default(),
+            observed: false,
+            containment: None,
+        };
+        drop(log);
+        run
+    }
+}
+
 /// Spawn the agent against `proxy` with egress CONTAINED to `allow`. Live in
 /// both record and replay (a determinism requirement: the same denial
 /// environment both phases reproduces the same trajectory). On Linux this

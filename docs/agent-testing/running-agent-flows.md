@@ -31,6 +31,23 @@ Five facts about the runtime contract, all exercised by
   engages egress containment still falls back to the ordinary single-shot
   path for now. A bare `prompt:` step is unaffected either way; it is not
   desugared into a one-delivery `conversation:` internally.
+
+  A `conversation:` block is authored LIVE, not typed into the YAML by
+  hand: write a placeholder step `- conversation: interactive` in the
+  flow's `steps:`, then run `flowproof record <spec> --agent-conversation`
+  (`agent.command` only for now). This drives a real interactive terminal
+  session against the real agent - it prints `You>` and waits for a typed
+  line, sends it as the next delivery, and prints the agent's reply
+  (`Agent> ...`, the model-boundary reply, never the process's own stdout)
+  once that delivery settles. An empty line, EOF, or typing `done` ends the
+  session (at least one delivery is required). On success, the ONE
+  `- conversation: interactive` line is replaced - by exact text
+  substitution, not a full-file reserialize, so nothing else in the flow
+  file (comments included) is touched - with the deliveries actually typed,
+  and the trace is written with `delivery_index`/`deliveries` metadata
+  already correct. The generated block carries no assertions; add
+  `assert:`/`assert_tool_call:`/`assert_no_tool_call:` under each delivery
+  afterward, then `flowproof run` to confirm.
 - **The proxy URL is injected for you.** flowproof points the agent at its
   local proxy by setting `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_BASE`,
   and `FLOWPROOF_LLM_PROXY`, plus a placeholder `OPENAI_API_KEY` so a client
