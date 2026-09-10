@@ -15,7 +15,7 @@
 //! because it is useful context, never because it decides anything.
 
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -659,6 +659,147 @@ pub fn run_against(
     };
     drop(log);
     Ok(run)
+}
+
+/// How often [`wait_for_settle`] polls the proxy, and how long a quiet
+/// window must hold before a delivery counts as settled. Plan 12's resolved
+/// decision: settle is proxy-observed (the most recent served response has
+/// no pending tool call, and no further model call lands before the
+/// per-delivery timeout) - never an agent-emitted marker, so no `command:`
+/// agent needs a new, flowproof-specific protocol just to be multi-turn
+/// testable.
+const SETTLE_POLL: Duration = Duration::from_millis(20);
+const SETTLE_QUIET: Duration = Duration::from_millis(150);
+
+/// Block until the delivery that started at `served_before` settles, or
+/// `deadline` passes. Returns `(served, true)` on settle - the served count
+/// having strictly advanced past `served_before` with no pending tool call
+/// and nothing new arriving during one quiet window - or `(served, false)`
+/// on timeout, `served` being whatever the proxy had observed at that point.
+/// A divergence counts as settled immediately: continuing to poll would
+/// only wait out the deadline for a trajectory that has already left its
+/// recording.
+fn wait_for_settle(proxy: &AgentProxy, served_before: usize, deadline: Instant) -> (usize, bool) {
+    loop {
+        let log = proxy.log();
+        let served = log.served;
+        let pending_tool = log.last_tool_call;
+        let diverged = log.divergence.is_some();
+        drop(log);
+        if diverged {
+            return (served, true);
+        }
+        if served > served_before && !pending_tool {
+            std::thread::sleep(SETTLE_QUIET);
+            let after = proxy.log().served;
+            if after == served {
+                return (after, true);
+            }
+            // Another call landed during the quiet window; keep polling.
+        }
+        if Instant::now() >= deadline {
+            return (served, false);
+        }
+        std::thread::sleep(SETTLE_POLL);
+    }
+}
+
+/// Drive a `command:` agent through MULTIPLE deliveries in order: the first
+/// arrives via `FLOWPROOF_PROMPT` in `env`, exactly like today's single-shot
+/// contract, and every later one is written to the CHILD'S OWN STDIN as one
+/// JSON line (`{"prompt": "..."}`) once the previous delivery settles - the
+/// live-process half of plan 12's delivery gating (issue #375), the `url:`
+/// driver's counterpart being sequential POSTs.
+///
+/// The process is spawned ONCE and stays alive across every delivery; stdin
+/// is closed after the last one settles, which a well-behaved multi-turn
+/// agent can treat as "no more input coming" and use to finish and exit.
+/// An agent that only understands the old single-shot contract still gets
+/// its first delivery normally and simply never reads the lines that
+/// follow, which is why this path is only taken when the flow actually has
+/// more than one delivery (see `drive_plan` in flowproof-cli).
+///
+/// UNcontained, matching [`run_against`]: a `conversation:` flow that also
+/// engages egress containment falls back to the ordinary single-shot path
+/// today (see plan 12's open questions) rather than a half-built contained
+/// multi-delivery run.
+pub fn run_against_conversation(
+    proxy: &AgentProxy,
+    command: &str,
+    env: &BTreeMap<String, String>,
+    deliveries: &[String],
+    timeout: Duration,
+) -> Result<(AgentRun, Vec<(usize, usize)>), RunError> {
+    let base = proxy.base_url();
+    let mut cmd = configure(command, &base, env)?;
+    cmd.stdin(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|source| RunError::Spawn {
+        command: command.trim().to_string(),
+        source,
+    })?;
+    let mut stdin = child.stdin.take();
+
+    // Drain BEFORE waiting, not after - see `run_against`'s comment; the
+    // same pipe-buffer hazard applies across a longer-lived process.
+    let out_drain = PipeDrain::start(child.stdout.take());
+    let err_drain = PipeDrain::start(child.stderr.take());
+
+    let mut windows = Vec::with_capacity(deliveries.len());
+    let mut served_before = proxy.log().served;
+    let mut timed_out = false;
+    for (i, delivery) in deliveries.iter().enumerate() {
+        // Delivery 0 already went out via FLOWPROOF_PROMPT in `env`, at
+        // spawn - only deliveries after it are written here.
+        if i > 0 {
+            let line = format!("{}\n", serde_json::json!({ "prompt": delivery }));
+            let wrote = stdin
+                .as_mut()
+                .map(|pipe| pipe.write_all(line.as_bytes()).and_then(|_| pipe.flush()));
+            if !matches!(wrote, Some(Ok(()))) {
+                // The process closed its stdin - exited early, or never
+                // adopted the multi-turn contract. Stop feeding it; the
+                // settle/reproduction checks below report why.
+                break;
+            }
+        }
+        let deadline = Instant::now() + timeout;
+        let (served_after, settled) = wait_for_settle(proxy, served_before, deadline);
+        windows.push((served_before, served_after));
+        served_before = served_after;
+        if !settled {
+            timed_out = true;
+            break;
+        }
+        if proxy.log().divergence.is_some() {
+            break;
+        }
+    }
+    // EOF tells a well-behaved multi-turn agent there is nothing more
+    // coming, so it can finish and exit rather than block reading a next
+    // line forever.
+    drop(stdin);
+
+    let (status, exit_timed_out) = wait_to_deadline(&mut child, timeout);
+    let stdout = out_drain.collect(PIPE_DRAIN_GRACE);
+    let stderr = err_drain.collect(PIPE_DRAIN_GRACE);
+
+    let log = proxy.log();
+    let run = AgentRun {
+        served: log.served,
+        divergence: log.divergence.clone(),
+        trigger: Trigger::Process,
+        exit_code: status.and_then(|s| s.code()),
+        timed_out: timed_out || exit_timed_out,
+        stdout,
+        stderr,
+        upstream_error: log.upstream_error.clone(),
+        egress: EgressLog::default(),
+        fs: FsLog::default(),
+        observed: false,
+        containment: None,
+    };
+    drop(log);
+    Ok((run, windows))
 }
 
 /// Spawn the agent against `proxy` with egress CONTAINED to `allow`. Live in
@@ -1609,5 +1750,187 @@ for _ in range(turns):
             ),
             Err(RunError::NoUrl)
         ));
+    }
+
+    // ---- command: delivery gating (plan 12 / issue #375) ----
+
+    /// A fake MULTI-TURN system under test: handles delivery 0 via
+    /// `FLOWPROOF_PROMPT` exactly like [`FAKE_AGENT`], then adopts the
+    /// stdin-line contract plan 12 documents for a conversational
+    /// `command:` agent - one JSON line per later delivery, read in a loop,
+    /// EOF meaning "no more input coming".
+    ///
+    /// `FAKE_SETTLE_DELAY_MS`, when set, sleeps before EVERY model call -
+    /// the timing-sensitive test below relies on this to prove
+    /// `wait_for_settle` actually waits for the call to land rather than
+    /// declaring settle on a fixed short sleep that would race a slower
+    /// agent.
+    const FAKE_CONVERSATIONAL_AGENT: &str = r#"
+import json, os, sys, time, urllib.request
+
+base = os.environ["OPENAI_BASE_URL"]
+delay = float(os.environ.get("FAKE_SETTLE_DELAY_MS", "0")) / 1000.0
+messages = [{"role": "user", "content": os.environ["FLOWPROOF_PROMPT"]}]
+
+def call():
+    if delay:
+        time.sleep(delay)
+    payload = json.dumps({"model": "gpt-4o", "messages": messages, "tools": []}).encode()
+    request = urllib.request.Request(
+        base + "/chat/completions", data=payload,
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(request) as response:
+        body = json.load(response)
+    message = body["choices"][0]["message"]
+    messages.append({"role": "assistant", "content": message.get("content") or ""})
+    if message.get("content"):
+        print(message["content"])
+        sys.stdout.flush()
+
+call()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    delivery = json.loads(line)
+    messages.append({"role": "user", "content": delivery["prompt"]})
+    call()
+"#;
+
+    fn write_fake_agent_content(name: &str, content: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("flowproof-agent-runner");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(name);
+        std::fs::write(&path, content).expect("write agent");
+        path
+    }
+
+    /// A two-delivery cassette matching exactly what [`FAKE_CONVERSATIONAL_AGENT`]
+    /// sends: delivery 0's request is just the first user message, delivery
+    /// 1's carries the accumulated history.
+    fn conversation_cassette(
+        first_user: &str,
+        first_reply: &str,
+        second_user: &str,
+        second_reply: &str,
+    ) -> Cassette {
+        Cassette {
+            turns: vec![
+                Turn {
+                    protocol: flowproof_trace::cassette::default_protocol(),
+                    request: TurnRequest {
+                        model: "gpt-4o".into(),
+                        messages: vec![Message::new("user", first_user)],
+                        tools: vec![],
+                    },
+                    response: TurnResponse {
+                        message: Message::new("assistant", first_reply),
+                        stop_reason: None,
+                    },
+                    delivery_index: 0,
+                },
+                Turn {
+                    protocol: flowproof_trace::cassette::default_protocol(),
+                    request: TurnRequest {
+                        model: "gpt-4o".into(),
+                        messages: vec![
+                            Message::new("user", first_user),
+                            Message::new("assistant", first_reply),
+                            Message::new("user", second_user),
+                        ],
+                        tools: vec![],
+                    },
+                    response: TurnResponse {
+                        message: Message::new("assistant", second_reply),
+                        stop_reason: None,
+                    },
+                    delivery_index: 1,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// The headline case: a real, long-lived process replays a two-delivery
+    /// conversation offline - delivery 0 via `FLOWPROOF_PROMPT`, delivery 1
+    /// via a stdin line written only after delivery 0 settles - with the
+    /// correct served count and per-delivery windows.
+    #[test]
+    fn a_real_process_replays_a_two_delivery_conversation_offline() {
+        let agent = write_fake_agent_content("agent_conversation.py", FAKE_CONVERSATIONAL_AGENT);
+        let cassette = conversation_cassette(
+            "Please cancel my order A-4471.",
+            "Are you sure?",
+            "Yes, confirm.",
+            "Cancelled.",
+        );
+        let proxy = AgentProxy::start(cassette, Mocks::new(), 0).expect("starts");
+        let deliveries = vec![
+            "Please cancel my order A-4471.".to_string(),
+            "Yes, confirm.".to_string(),
+        ];
+        let mut env = env(&[]);
+        env.insert("FLOWPROOF_PROMPT".to_string(), deliveries[0].clone());
+
+        let (run, windows) = run_against_conversation(
+            &proxy,
+            &format!("python3 \"{}\"", agent.display()),
+            &env,
+            &deliveries,
+            Duration::from_secs(30),
+        )
+        .expect("runs");
+
+        assert_eq!(run.reproduced(2), Ok(()), "{run:#?}");
+        assert!(!run.timed_out, "{run:#?}");
+        assert_eq!(windows, vec![(0, 1), (1, 2)]);
+        assert!(run.stdout.contains("Are you sure?"), "{run:#?}");
+        assert!(run.stdout.contains("Cancelled."), "{run:#?}");
+    }
+
+    /// `wait_for_settle` must wait for the delivery's model call to actually
+    /// land, not declare settle on a fixed short sleep - proven by an agent
+    /// that deliberately delays every call well past `SETTLE_QUIET`. A
+    /// settle detector that raced ahead would write delivery 1 before
+    /// delivery 0's response arrived, and the cassette's strict, positional
+    /// matching would catch the resulting divergence.
+    #[test]
+    fn settle_detection_waits_out_a_slow_delivery() {
+        let agent =
+            write_fake_agent_content("agent_conversation_slow.py", FAKE_CONVERSATIONAL_AGENT);
+        let cassette = conversation_cassette(
+            "Please cancel my order A-4471.",
+            "Are you sure?",
+            "Yes, confirm.",
+            "Cancelled.",
+        );
+        let proxy = AgentProxy::start(cassette, Mocks::new(), 0).expect("starts");
+        let deliveries = vec![
+            "Please cancel my order A-4471.".to_string(),
+            "Yes, confirm.".to_string(),
+        ];
+        let mut env = env(&[("FAKE_SETTLE_DELAY_MS", "300")]);
+        env.insert("FLOWPROOF_PROMPT".to_string(), deliveries[0].clone());
+
+        let started = Instant::now();
+        let (run, windows) = run_against_conversation(
+            &proxy,
+            &format!("python3 \"{}\"", agent.display()),
+            &env,
+            &deliveries,
+            Duration::from_secs(30),
+        )
+        .expect("runs");
+
+        assert_eq!(run.reproduced(2), Ok(()), "{run:#?}");
+        assert_eq!(windows, vec![(0, 1), (1, 2)]);
+        // Two delayed calls at 300ms each is a floor no false-settle could
+        // beat; SETTLE_QUIET alone (150ms) would finish under it.
+        assert!(
+            started.elapsed() >= Duration::from_millis(600),
+            "settle must have waited for both delayed calls: {:?}",
+            started.elapsed()
+        );
     }
 }

@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use flowproof_adapters::agent_proxy::AgentProxy;
-use flowproof_adapters::agent_runner::{run_against, run_against_contained, run_http, AgentRun};
+use flowproof_adapters::agent_runner::{
+    run_against, run_against_contained, run_against_conversation, run_http, AgentRun,
+};
 use flowproof_adapters::egress::{AllowSet, Containment};
 use flowproof_adapters::mcp_http::McpHttpServer;
 use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan, McpServerEvent};
@@ -1306,6 +1308,22 @@ fn drive_plan(plan: &Plan, proxy: &AgentProxy) -> Result<(AgentRun, Vec<(usize, 
     match &plan.driver {
         Driver::Http { url, headers, .. } if plan.deliveries.len() > 1 => {
             drive_deliveries_http(url, headers, &plan.deliveries, proxy, AGENT_TIMEOUT)
+        }
+        // Uncontained only: a conversation: flow that also engages egress
+        // containment falls back to the single-shot path below rather than
+        // a half-built contained multi-delivery run (plan 12's open
+        // questions leave that combination unresolved).
+        Driver::Command(command) if plan.deliveries.len() > 1 && !plan.engages_egress => {
+            // Delivery 0 goes out via FLOWPROOF_PROMPT, same as always -
+            // but as JUST its own text, not `plan.env`'s joined-all-
+            // deliveries fallback (that fallback is for the single-shot
+            // path only; here it would hand the agent everything up front
+            // and defeat gating before it starts).
+            let mut env = plan.env.clone();
+            env.insert(PROMPT_VAR.to_string(), plan.deliveries[0].user.clone());
+            let texts: Vec<String> = plan.deliveries.iter().map(|d| d.user.clone()).collect();
+            run_against_conversation(proxy, command, &env, &texts, AGENT_TIMEOUT)
+                .map_err(|e| e.to_string())
         }
         _ => plan.drive(proxy).map(|run| (run, Vec::new())),
     }
