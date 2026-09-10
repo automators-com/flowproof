@@ -1,93 +1,59 @@
-# SAP Fiori: change a purchasing info record and verify it — the classic
-# "PTP Process Area BU Apps → Manage Info Records" test case, expressed in
-# flowproof's ordinary web grammar. Fiori is a browser app, so `app: web`
-# (the CDP driver); `app: sap` is SAP GUI (desktop) only.
+# SAP Fiori: navigate into a purchasing info record via the "Change
+# Purchasing Info Record" app and confirm it loads, read-only.
 #
-# Every value that is test DATA travels as a ${VAR} reference: it resolves
-# from examples/fiori/values.yaml when passed with --vars, or from the
-# environment, and only the raw `${VAR}` is ever stored in the trace.
-# Credentials still come from flowproof config or the caller's environment.
+# Originally recorded as an edit-and-save flow (Net Price + Minimum Order
+# Quantity via Save), but that would mean writing to a live, shared
+# reference-system record on every CI run with no undo - unlike
+# standard-text/create-revise-delete.flow.yaml's SAP GUI counterpart, which
+# creates and deletes its own throwaway record, this app has no
+# create-a-scratch-record path, so any edit here permanently steers a
+# pre-existing record's values on a schedule nobody else consented to.
+# Deliberately narrowed to navigation + a read-only OData confirmation
+# instead - proves login, tile navigation, the search screen, and record
+# lookup all still work live, without ever writing.
 #
-# Quoted TARGETS ("Material", "Go", …) are text anchors matched against
-# labels/aria-labels/placeholders — they never resolve ${VAR}. Label
-# wording here is representative of a standard Fiori theme; if your
-# system's labels differ, record with --json and the clarification payload
-# will list the real fields on screen (see docs/self-help.md).
+# Confirmed live: "Wait until page shows X within Ns" resolves a specific
+# element whose own text equals X exactly - it's not a page-wide substring
+# search. "Initial Screen"/"General Data" are only fragments of compound
+# headings ("Change Info Record: Initial Screen"/"...General Data"), not
+# any element's own full text, so that form can't match them. Plain
+# `assert: page shows X` does a full-page substring check instead, which
+# does match here.
 #
-# The launchpad URL itself carries sap-client/sap-language as query params
-# — confirmed live: hitting the base URL alone 404s post-login on a real
-# system, because the shell's actual bootstrap path only resolves once
-# client/language are present on the request, not guessed at as a path
-# suffix. FIORI_* rather than SAP_* deliberately: `flowproof config sap` and
-# `flowproof config fiori` are two independent profiles (a real deployment's
-# Fiori identity can differ from its SAP GUI one, e.g. an SSO-fronted
-# launchpad), so a shared name would let one silently overwrite the other's
-# env var (plans/001-credential-config.md, "Two profiles, not one identity").
-name: Manage info records - edit and verify
+# The record's own field values render inside the embedded classic SAP GUI
+# transaction (a same-origin iframe named "Application", same as the
+# sibling display-info-record-by-supplier.flow.yaml) - page-text
+# assertions can't see into it, hence the explicit iframe-scoped field
+# grammar for the Material check below.
+name: Manage info records - view record details
 app: web
 url: ${FIORI_BASE_URL}?sap-client=${FIORI_CLIENT}&sap-language=${FIORI_LANGUAGE}#Shell-home
 steps:
-  # -- Log in on the launchpad's login screen --------------------------
   - Type ${FIORI_USER} into the "User" field
   - Type ${FIORI_PASSWORD} into the "Password" field
   - Press the "Log On" button
-  # Confirmed live against a real system via login-smoke.flow.yaml: "Home"
-  # resolves from the shell's own tab label once authenticated, regardless
-  # of whether the account has any tiles assigned.
-  - Wait until page shows Home within 60s
-
-  # This flow is still UNRECORDED past this point. A live attempt against
-  # the reference system's OBEVA account failed here: `Click "PTP Process
-  # Area BU Apps"` has no matching tile — confirmed via three independent
-  # navigation surfaces (Home page, the shell's "All My Apps" panel, and
-  # Enterprise Search under the Apps category all show zero apps for this
-  # account). That's a backend Fiori catalog/PFCG-role gap, not a flow
-  # defect: OBEVA has no Launchpad role assigned yet, separate from
-  # whatever SAP GUI/backend authorization it holds. Needs a Basis/Fiori
-  # admin to assign the catalog behind ZMM_PUR_INFO_RECORDS_MANAGE_SRV_0001
-  # ("Manage Purchasing Info Records") before this flow can be recorded.
-
-  # -- Navigate: module tile, then the app -----------------------------
-  - Click "PTP Process Area BU Apps"
-  - Click "Manage Info Records"
-  - assert: page shows Manage Purchasing Info Records
-
-  # -- Search the standard info record by the example test data --------
+  - Wait until page shows "My Apps" within 120s
+  - assert: page shows Change Purchasing Info Record
+  - Click "Change Purchasing Info Record"
+  - assert: page shows Initial Screen
   - Type ${MATERIAL} into the "Material" field
   - Type ${SUPPLIER} into the "Supplier" field
   - Type ${PLANT} into the "Plant" field
+  # The screen hard-blocks with "Please also enter a purchasing organization"
+  # without this - confirmed live, not optional on this reference system.
+  - Type ${PURCHASING_ORG} into the "Purchasing Organization" field
   - Press the "Go" button
-  - assert: page shows ${MATERIAL}
+  # A unique Material+Supplier+Plant+Purchasing Org match navigates straight
+  # into the record's own screen, not a results list.
+  - assert: page shows General Data
+  - the "Material" field in the iframe "Application" contains ${MATERIAL}
 
-  # -- Open the record and make the field changes ----------------------
-  # This is the expansion of the manual script's vague "make required
-  # field changes": each field is named concretely. The first result row
-  # is addressed via the css escape hatch (targets don't resolve ${VAR},
-  # so the row can't be clicked "by material number").
-  - Click the 1st "css:.sapMListItems .sapMLIB"
-  - Press the "Edit" button
-  - Replace the "Net Price" field with ${NET_PRICE}
-  - Replace the "Minimum Order Quantity" field with 10
-
-  # -- Save ------------------------------------------------------------
-  - Press the "Save" button
-  - assert: page shows saved
-
-  # -- Verify the change back in the Manage Info Records list ----------
-  - Press the "Go" button
-  - assert: the "Net Price" field contains ${NET_PRICE}
-
-  # -- Out-of-band truth: the changed record as SAP's OData sees it -----
-  # UI says saved; the API proves it. body_contains resolves ${VAR} too.
-  #
-  # API_INFORECORD_PROCESS_SRV (the standard S/4 API this originally named)
-  # does not exist in this system's service catalog — confirmed against the
-  # live catalog via datamaker-sap-cli, exact and prefix match both empty.
-  # ZMM_PUR_INFO_RECORDS_MANAGE_SRV_0001 is the real service backing the
-  # "Manage Info Records" Fiori app itself (same one the UI steps above
-  # drive), so it verifies against the same system of record the UI wrote
-  # to, not a same-named-in-theory API that was never actually deployed here.
+  # -- Out-of-band truth: the same record as SAP's OData sees it, read-only --
+  # Basic auth header (not session cookies) rather than raw credentials in a
+  # header value - same pattern as purchasing-info-record-api.flow.yaml.
   - assert_api:
-      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
       status: 200
-      body_contains: ${NET_PRICE}
+      body_contains: ${MATERIAL}
