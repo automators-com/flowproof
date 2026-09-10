@@ -617,6 +617,7 @@ impl FlowSpec {
             matches!(
                 step,
                 SpecStep::Prompt { .. }
+                    | SpecStep::Conversation { .. }
                     | SpecStep::AssertToolCall { .. }
                     | SpecStep::AssertNoToolCall { .. }
                     | SpecStep::AssertNoEgress
@@ -723,10 +724,11 @@ impl FlowSpec {
             if !self
                 .steps
                 .iter()
-                .any(|s| matches!(s, SpecStep::Prompt { .. }))
+                .any(|s| matches!(s, SpecStep::Prompt { .. } | SpecStep::Conversation { .. }))
             {
                 return bad(
-                    "an `app: agent` flow has no `prompt:` step, so the agent is never given                      anything to do"
+                    "an `app: agent` flow has no `prompt:` or `conversation:` step, so the agent \
+                     is never given anything to do"
                         .into(),
                 );
             }
@@ -1454,6 +1456,15 @@ pub enum SpecStep {
     Prompt {
         prompt: String,
     },
+    /// `app: agent`: a multi-turn conversation - a list of deliveries, each
+    /// a user message plus the delivery-local assertions checked against it
+    /// before the next delivery is sent (issue #375, plan 12). A bare
+    /// `prompt:` step is the single-delivery case of this same concept; it
+    /// is not desugared into this variant, since replay and doctor need to
+    /// tell "always was a single prompt" apart from "conversation of one."
+    Conversation {
+        conversation: Vec<DeliverySpec>,
+    },
     /// `app: agent`: assert a tool was called, in prose (see agent_steps).
     AssertToolCall {
         assert_tool_call: String,
@@ -1546,6 +1557,35 @@ pub struct WhenSpec {
     pub steps: Vec<SpecStep>,
 }
 
+/// One delivery inside a `conversation:` block: a recorded user message and
+/// the delivery-local assertions checked against just the turns it
+/// produced, before the next delivery is sent. See plan 12 / issue #375.
+///
+/// `user:` is meant to be filled from an interactive `record` session (what
+/// the operator actually typed), not authored blind - see the plan's
+/// "authoring model is live, not scripted" decision - but nothing here
+/// enforces that; a hand-written `user:` parses identically; only `record`
+/// can tell the difference.
+///
+/// Assertion fields are plain `Option<String>` rather than reusing
+/// `SpecStep`'s one-key-per-mapping rule, because a single delivery
+/// legitimately carries several assertions side by side (e.g. `assert:` and
+/// `assert_no_tool_call:` both checking the same delivery). Only the three
+/// agent assertion forms that make sense turn-by-turn are supported here;
+/// `assert_no_secret_leak`/SQL/API/spreadsheet assertions stay conversation-
+/// wide, as outer steps after the `conversation:` block closes.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliverySpec {
+    pub user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assert: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assert_tool_call: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assert_no_tool_call: Option<String>,
+}
+
 /// Validate one `assert_no_secret_leak` selector: it must be exactly a
 /// single `${NAME}` reference, nothing else. Returns the bare variable name.
 /// A non-`${VAR}` selector is a clear parse error, since the whole point is
@@ -1573,7 +1613,8 @@ impl SpecStep {
     const FORMS: &'static str = "a plain string, `rules: <text>`, `assert: <text>`, \
          `assert_sql: {...}`, `assert_api: {...}`, `assert_spreadsheet: {...}`, \
          `assert_screenshot: {...}`, \
-         `prompt: <text>`, `assert_tool_call: <text>`, \
+         `prompt: <text>`, `conversation: [{user: <text>, ...}]`, \
+         `assert_tool_call: <text>`, \
          `assert_no_tool_call: <text>`, `assert_no_egress`, \
          `assert_no_secret_leak: ${VAR}`, `repeat: {...}`, `when: <cond>` with `steps:`, \
          `in: <surface>` with `steps:`, or `foreach: {...}`";
@@ -1632,6 +1673,19 @@ impl SpecStep {
                         Value::String(s) => Ok(SpecStep::Prompt { prompt: s }),
                         _ => Err("`prompt:` takes a string (the user turn)".into()),
                     },
+                    Some("conversation") => {
+                        let deliveries: Vec<DeliverySpec> = serde_yaml::from_value(inner)
+                            .map_err(|e| format!("in `conversation` step: {e}"))?;
+                        if deliveries.is_empty() {
+                            return Err(
+                                "`conversation:` needs at least one delivery (a `user:` message)"
+                                    .into(),
+                            );
+                        }
+                        Ok(SpecStep::Conversation {
+                            conversation: deliveries,
+                        })
+                    }
                     Some("assert_tool_call") => match inner {
                         Value::String(s) => Ok(SpecStep::AssertToolCall {
                             assert_tool_call: s,
@@ -1801,6 +1855,12 @@ impl Serialize for SpecStep {
             },
             SpecStep::Assert { assert } => single(serializer, "assert", assert),
             SpecStep::Prompt { prompt } => single(serializer, "prompt", prompt),
+            SpecStep::Conversation { conversation } => {
+                use serde::ser::SerializeMap;
+                let mut m = serializer.serialize_map(Some(1))?;
+                m.serialize_entry("conversation", conversation)?;
+                m.end()
+            }
             SpecStep::AssertToolCall { assert_tool_call } => {
                 single(serializer, "assert_tool_call", assert_tool_call)
             }
@@ -2020,6 +2080,9 @@ impl SpecStep {
                 format!("screenshot matches {}", assert_screenshot.name)
             }
             SpecStep::Prompt { prompt } => format!("prompt: {prompt}"),
+            SpecStep::Conversation { conversation } => {
+                format!("conversation: {} deliveries", conversation.len())
+            }
             SpecStep::AssertToolCall { assert_tool_call } => {
                 format!("assert_tool_call: {assert_tool_call}")
             }
@@ -3064,6 +3127,92 @@ steps:
         assert!(matches!(flow.steps[0], SpecStep::Prompt { .. }));
         assert!(matches!(flow.steps[1], SpecStep::AssertToolCall { .. }));
         assert!(matches!(flow.steps[2], SpecStep::AssertNoToolCall { .. }));
+    }
+
+    /// The `conversation:` grammar (plan 12 / issue #375): a list of
+    /// deliveries, each carrying its own delivery-local assertions.
+    #[test]
+    fn a_conversation_step_parses_its_deliveries() {
+        let src = r#"
+name: Cancel with confirmation
+app: agent
+agent:
+  command: python3 assistant.py
+tools:
+  - name: cancel_order
+steps:
+  - conversation:
+      - user: Please cancel my order A-4471.
+        assert: reply contains "are you sure"
+        assert_no_tool_call: cancel_order
+      - user: Yes, I confirm - go ahead and cancel it.
+        assert_tool_call: cancel_order where order_id contains A-4471
+        assert: reply contains cancelled
+  - assert: reply contains cancelled
+"#;
+        let flow = spec(src).expect("parses");
+        let SpecStep::Conversation { conversation } = &flow.steps[0] else {
+            panic!("expected a conversation step, got {:?}", flow.steps[0]);
+        };
+        assert_eq!(conversation.len(), 2);
+        assert_eq!(conversation[0].user, "Please cancel my order A-4471.");
+        assert_eq!(
+            conversation[0].assert.as_deref(),
+            Some(r#"reply contains "are you sure""#)
+        );
+        assert_eq!(
+            conversation[0].assert_no_tool_call.as_deref(),
+            Some("cancel_order")
+        );
+        assert_eq!(
+            conversation[1].user,
+            "Yes, I confirm - go ahead and cancel it."
+        );
+        assert_eq!(
+            conversation[1].assert_tool_call.as_deref(),
+            Some("cancel_order where order_id contains A-4471")
+        );
+        // The outer `assert:` after the block closes is an ordinary,
+        // conversation-wide assertion - unaffected by the block before it.
+        assert!(matches!(flow.steps[1], SpecStep::Assert { .. }));
+    }
+
+    /// A `conversation:` step still counts as "gives the agent something to
+    /// do" - a flow with only a conversation and no bare `prompt:` must not
+    /// be rejected as empty.
+    #[test]
+    fn a_conversation_only_flow_is_not_rejected_as_empty() {
+        let src = "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - conversation:\n      - user: hi\n";
+        spec(src).expect("a conversation step satisfies the agent-has-work check");
+    }
+
+    /// An empty `conversation:` list is refused: it isn't a delivery, so it
+    /// isn't a valid step at all, rather than a silent no-op.
+    #[test]
+    fn an_empty_conversation_is_a_parse_error() {
+        let src = "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - conversation: []\n";
+        let err = spec(src).expect_err("empty conversation");
+        assert!(err.to_string().contains("at least one delivery"), "{err}");
+    }
+
+    /// An unknown key inside a delivery is a parse error naming it, exactly
+    /// like every other keyed spec shape (`deny_unknown_fields`).
+    #[test]
+    fn an_unknown_key_in_a_delivery_is_a_parse_error() {
+        let src = "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - conversation:\n      - user: hi\n        assert_sql: {}\n";
+        let err = spec(src).expect_err("unknown delivery key");
+        assert!(err.to_string().contains("assert_sql"), "{err}");
+    }
+
+    /// A `conversation:` block round-trips through (de)serialization, same
+    /// guarantee every other step form gets.
+    #[test]
+    fn a_conversation_step_round_trips() {
+        let src = "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - conversation:\n      - user: hi\n        assert: reply contains hi\n      - user: bye\n";
+        let flow = spec(src).expect("parses");
+        let yaml = serde_yaml::to_string(&flow).expect("serializes");
+        let back = spec(&yaml).expect("reparses");
+        assert_eq!(flow.steps, back.steps);
     }
 
     /// The #66/#67 lesson in spec form: the surface belongs to ONE app and
