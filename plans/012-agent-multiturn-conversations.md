@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 # Plan 12 — Multi-turn agent conversations
 
@@ -408,3 +408,24 @@ assumption breaks.
   needs one clarifying sentence added to `running-agent-flows.md`'s
   `before_each` guidance in the same doc change as everything else in this
   plan, but requires no new mechanism.
+
+## Shipped
+
+Every decision above is implemented and tested, in four commits: the trace
+schema (`delivery_index`/`deliveries`), the `conversation:` grammar, `url:`
+delivery gating, `command:` delivery gating, and the interactive `record
+--agent-conversation` authoring loop (the `conversation: interactive`
+placeholder + text-substitution write-back this plan's authoring-model
+section calls for). All tested end to end with fakes — a real spawned
+process, a fake real-model upstream, a fake stateful `url:` service — never
+a real model or API key.
+
+**Known gap, not blocking:** the dialect/streaming coverage this plan asked
+for ("exercised as fixtures... flagged if that assumption breaks") was not
+built out. Every test here uses the OpenAI wire shape, non-streaming. The
+delivery-gating code added is dialect-agnostic by construction — it never
+inspects `Turn.protocol` or touches the proxy's streaming path, only the
+served-count/tool-call-presence signals `cassette.rs` already tracks
+uniformly — so there is no known reason Anthropic or streaming would behave
+differently, but that is confidence, not a fixture. Left as follow-up
+coverage rather than a blocker.
