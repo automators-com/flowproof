@@ -24,7 +24,9 @@
 # transaction (a same-origin iframe named "Application", same as the
 # sibling display-info-record-by-supplier.flow.yaml) - page-text
 # assertions can't see into it, hence the explicit iframe-scoped field
-# grammar for the Material check below.
+# grammar for the Material check below. Needs the `assert:` key (not a
+# bare plain step) - the deterministic rules resolver only accepts a
+# narrow action grammar for unprefixed plain steps.
 name: Manage info records - view record details
 app: web
 url: ${FIORI_BASE_URL}?sap-client=${FIORI_CLIENT}&sap-language=${FIORI_LANGUAGE}#Shell-home
@@ -46,7 +48,7 @@ steps:
   # A unique Material+Supplier+Plant+Purchasing Org match navigates straight
   # into the record's own screen, not a results list.
   - assert: page shows General Data
-  - the "Material" field in the iframe "Application" contains ${MATERIAL}
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}
 
   # -- Out-of-band truth: the same record as SAP's OData sees it, read-only --
   # Basic auth header (not session cookies) rather than raw credentials in a
