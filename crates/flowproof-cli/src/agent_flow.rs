@@ -1289,7 +1289,9 @@ pub fn cmd_doctor_agent(command: &str, timeout_secs: u64, prompt: &str) -> Resul
                 },
                 stop_reason: None,
             },
+            delivery_index: 0,
         }],
+        ..Default::default()
     };
 
     let proxy = AgentProxy::start(probe, Mocks::new(), 0)
@@ -1726,7 +1728,9 @@ mod tests {
                     message: Message::new("assistant", reply),
                     stop_reason: None,
                 },
+                delivery_index: 0,
             }],
+            ..Default::default()
         }
     }
 

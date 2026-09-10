@@ -224,6 +224,7 @@ impl AgentProxy {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            ..Default::default()
         }
     }
 
@@ -429,6 +430,7 @@ fn serve_one(
                                 message: message.clone(),
                                 stop_reason: stop_reason.clone(),
                             },
+                            delivery_index: 0,
                         });
                     log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
                     // Hand the model's OWN response body back to the agent
@@ -1323,6 +1325,7 @@ mod tests {
                 message,
                 stop_reason: None,
             },
+            delivery_index: 0,
         }
     }
 
@@ -1335,6 +1338,7 @@ mod tests {
                 message,
                 stop_reason: stop_reason.map(str::to_string),
             },
+            delivery_index: 0,
         }
     }
 
@@ -1370,6 +1374,7 @@ mod tests {
                     Message::new("assistant", "Booked KQ311."),
                 ),
             ],
+            ..Default::default()
         }
     }
 
@@ -1483,6 +1488,7 @@ mod tests {
                     Some("end_turn"),
                 ),
             ],
+            ..Default::default()
         }
     }
 
@@ -1678,6 +1684,7 @@ mod tests {
                     Message::new("assistant", "It is fixed o'clock."),
                 ),
             ],
+            ..Default::default()
         };
         let mocks: Mocks = [("clock".to_string(), serde_json::json!({"now": "FIXED"}))]
             .into_iter()
@@ -1931,6 +1938,7 @@ mod tests {
                     Some("end_turn"),
                 ),
             ],
+            ..Default::default()
         };
         let mocks: Mocks = [("thermo".to_string(), serde_json::json!({"temp": "FIXED"}))]
             .into_iter()
@@ -1983,6 +1991,7 @@ mod tests {
         // One anthropic turn, replayed via /chat/completions (openai).
         let cassette = Cassette {
             turns: vec![anthropic_cassette().turns.remove(0)],
+            ..Default::default()
         };
         let proxy = AgentProxy::start(cassette, Mocks::new(), 0).expect("starts");
 
