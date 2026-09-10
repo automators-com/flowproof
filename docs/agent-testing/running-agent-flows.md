@@ -15,6 +15,16 @@ Five facts about the runtime contract, all exercised by
   `prompt -> assert_tool_call -> prompt` concatenates BOTH prompts and
   delivers them before the agent starts. The second `prompt:` is not a second
   turn, and its position relative to the assertion is discarded.
+
+  A real multi-turn conversation is a separate step form, `conversation:`
+  (issue #375; see `plans/012-agent-multiturn-conversations.md`). It parses
+  today - a `conversation:` block is a list of deliveries, each a `user:`
+  message plus its own delivery-local `assert:`/`assert_tool_call:`/
+  `assert_no_tool_call:` - but `record`/`replay` do not yet gate delivery on
+  it: the interactive recording session and the delivery-by-delivery replay
+  wiring are follow-up work, not shipped yet. A bare `prompt:` step stays
+  exactly what it always was; it is not desugared into a one-delivery
+  `conversation:` internally.
 - **The proxy URL is injected for you.** flowproof points the agent at its
   local proxy by setting `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_BASE`,
   and `FLOWPROOF_LLM_PROXY`, plus a placeholder `OPENAI_API_KEY` so a client
