@@ -363,22 +363,48 @@ assumption breaks.
   `delivery_index`/`deliveries` fields when re-recording a drifted
   multi-delivery trace.
 
-## Open questions
+## Resolved decisions (formerly open questions)
 
-- Exact settle-detection signal for the `command:` stdin-line contract: is
-  "no pending tool call and a fresh line of agent output" enough, or does
-  this need an explicit end-of-delivery marker the agent process itself
-  emits? The `url:` driver gets this for free (HTTP response = settle); the
-  long-lived `command:` process does not have an equivalent boundary today.
-- Should `deliveries` metadata store the `user:` text verbatim (readable
-  diffs, but is a second copy of something already implicit in the flow
-  file) or only a hash/length (leaner, less redundant, worse standalone
-  diff readability)?
-- Does a `conversation:` block get its own timeout budget (e.g., 300s per
-  delivery) or does the existing 300s apply to the whole block? A
-  multi-delivery approval flow plausibly needs longer wall-clock than a
-  single turn.
-- Where does `before_each`/service-reset guidance from
-  `running-agent-flows.md` land for a `conversation:`-driven `url:` service,
-  given this plan requires the service to now preserve history across a
-  block's deliveries but presumably still reset between separate flow runs?
+- **Settle-detection for `command:` is proxy-observed, not agent-emitted.**
+  No new agent-side contract is required. flowproof's proxy already sees
+  every model call the long-lived process makes (that's the entire premise
+  of model-boundary interception); settle for a delivery is defined as "the
+  most recent response the proxy observed for this delivery has a
+  `stop_reason` that isn't a pending-tool-call state, and no further model
+  call arrives before the per-delivery timeout." This is the same signal
+  `reply` already relies on for the single-shot case, just evaluated without
+  waiting for process exit. Rejected alternative: an explicit end-of-delivery
+  marker line the agent process itself prints. That would work but requires
+  every `command:` agent to adopt a new, flowproof-specific protocol just to
+  be testable multi-turn — inconsistent with the rest of this feature, which
+  deliberately asks nothing new of the agent under test (the `url:` driver
+  gets settle for free from the HTTP response for the same reason: no new
+  agent-side cooperation).
+- **`deliveries` metadata stores `user:` text verbatim.** `cassette.rs`
+  already states the design goal plainly — "diffable and reviewable" — and
+  the redundancy cost (a short string, once per delivery) is negligible next
+  to what it buys: a cassette diff or `heal` report that reads as an actual
+  transcript instead of a hash a human has to cross-reference against the
+  flow file by hand. A hash/length-only encoding is the kind of savings that
+  matters for secrets (hence the side-effect lane's path hashing), and
+  `user:` text is not a secret — it is the operator's own already-visible
+  flow-file content. Verbatim storage wins with no real trade-off here.
+- **Timeout is per-delivery, not a shared block budget.** Each delivery keeps
+  the existing 300-second bound, reset at the start of that delivery, rather
+  than dividing one 300-second budget across however many deliveries a
+  `conversation:` block has. A shared budget would make a flow's viable
+  delivery count silently depend on how slow earlier deliveries happened to
+  be — nondeterministic in the same way this whole feature exists to
+  eliminate. Per-delivery keeps each delivery's bound predictable and
+  matches how the constant is already used today (as a bound on one
+  settle-cycle, not on a whole flow file's wall-clock).
+- **`before_each`/service reset is a flow-run boundary, never a mid-block
+  boundary.** A `conversation:` block's deliveries share one live service
+  session by construction — that's what makes it a conversation rather than
+  N independent single-turn flows — so reset semantics don't change from
+  today: `before_each` (or process (re)spawn for `command:`) fires once,
+  before delivery 1, exactly where it fires today before a flow's one
+  (implicit) delivery. Nothing resets between deliveries inside a block. This
+  needs one clarifying sentence added to `running-agent-flows.md`'s
+  `before_each` guidance in the same doc change as everything else in this
+  plan, but requires no new mechanism.
