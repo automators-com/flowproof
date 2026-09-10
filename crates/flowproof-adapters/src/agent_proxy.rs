@@ -42,6 +42,13 @@ pub struct ProxyLog {
     /// The first upstream error, in record mode: a real model call that
     /// failed. A recording is not minted when this is set.
     pub upstream_error: Option<String>,
+    /// Whether the MOST RECENTLY served response asked for a tool call
+    /// (its message carried at least one). Plan 12's command: delivery
+    /// gating polls this - proxy-observed, dialect-agnostic settle
+    /// detection, since a pending tool call means the trajectory is not
+    /// done regardless of which wire's `stop_reason`/`finish_reason`
+    /// spelling produced it.
+    pub last_tool_call: bool,
 }
 
 /// Why the proxy could not bind. A taken FIXED port is named, because it is
@@ -224,6 +231,7 @@ impl AgentProxy {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            ..Default::default()
         }
     }
 
@@ -371,7 +379,10 @@ fn serve_one(
     match mode {
         Mode::Replay(cassette) => match cassette.match_turn(consumed, &incoming, protocol) {
             Ok((_index, recorded)) => {
-                log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
+                let mut guard = log.lock().unwrap_or_else(|e| e.into_inner());
+                guard.served += 1;
+                guard.last_tool_call = !recorded.message.tool_calls.is_empty();
+                drop(guard);
                 // Render the recorded assistant message in the dialect the
                 // agent asked in. OpenAI honors `stream: true` with a
                 // synthetic SSE stream. Each dialect streams when the client
@@ -429,8 +440,12 @@ fn serve_one(
                                 message: message.clone(),
                                 stop_reason: stop_reason.clone(),
                             },
+                            delivery_index: 0,
                         });
-                    log.lock().unwrap_or_else(|e| e.into_inner()).served += 1;
+                    let mut guard = log.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.served += 1;
+                    guard.last_tool_call = !message.tool_calls.is_empty();
+                    drop(guard);
                     // Hand the model's OWN response body back to the agent
                     // verbatim, so record is transparent. When an OpenAI
                     // agent asked for a stream, the upstream was forced
@@ -1323,6 +1338,7 @@ mod tests {
                 message,
                 stop_reason: None,
             },
+            delivery_index: 0,
         }
     }
 
@@ -1335,6 +1351,7 @@ mod tests {
                 message,
                 stop_reason: stop_reason.map(str::to_string),
             },
+            delivery_index: 0,
         }
     }
 
@@ -1370,6 +1387,7 @@ mod tests {
                     Message::new("assistant", "Booked KQ311."),
                 ),
             ],
+            ..Default::default()
         }
     }
 
@@ -1483,6 +1501,7 @@ mod tests {
                     Some("end_turn"),
                 ),
             ],
+            ..Default::default()
         }
     }
 
@@ -1678,6 +1697,7 @@ mod tests {
                     Message::new("assistant", "It is fixed o'clock."),
                 ),
             ],
+            ..Default::default()
         };
         let mocks: Mocks = [("clock".to_string(), serde_json::json!({"now": "FIXED"}))]
             .into_iter()
@@ -1931,6 +1951,7 @@ mod tests {
                     Some("end_turn"),
                 ),
             ],
+            ..Default::default()
         };
         let mocks: Mocks = [("thermo".to_string(), serde_json::json!({"temp": "FIXED"}))]
             .into_iter()
@@ -1983,6 +2004,7 @@ mod tests {
         // One anthropic turn, replayed via /chat/completions (openai).
         let cassette = Cassette {
             turns: vec![anthropic_cassette().turns.remove(0)],
+            ..Default::default()
         };
         let proxy = AgentProxy::start(cassette, Mocks::new(), 0).expect("starts");
 

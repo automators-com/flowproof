@@ -15,6 +15,39 @@ Five facts about the runtime contract, all exercised by
   `prompt -> assert_tool_call -> prompt` concatenates BOTH prompts and
   delivers them before the agent starts. The second `prompt:` is not a second
   turn, and its position relative to the assertion is discarded.
+
+  A real multi-turn conversation is a separate step form, `conversation:`
+  (issue #375; see `plans/012-agent-multiturn-conversations.md`): a list of
+  deliveries, each a `user:` message plus its own delivery-local
+  `assert:`/`assert_tool_call:`/`assert_no_tool_call:`, checked against just
+  the turns that delivery produced before the next one is sent. Both drivers
+  gate on it: `agent.url` sends each delivery as its own sequential POST,
+  and `agent.command` sends delivery 0 via `FLOWPROOF_PROMPT` as always and
+  writes every later delivery to the child process's own stdin, one JSON
+  line (`{"prompt": "..."}`) per delivery, once the previous one settles -
+  the process is spawned once and stays alive for the whole conversation,
+  and its stdin is closed after the last delivery settles so a well-behaved
+  multi-turn agent can finish and exit. A `conversation:` flow that also
+  engages egress containment still falls back to the ordinary single-shot
+  path for now. A bare `prompt:` step is unaffected either way; it is not
+  desugared into a one-delivery `conversation:` internally.
+
+  A `conversation:` block is authored LIVE, not typed into the YAML by
+  hand: write a placeholder step `- conversation: interactive` in the
+  flow's `steps:`, then run `flowproof record <spec> --agent-conversation`
+  (`agent.command` only for now). This drives a real interactive terminal
+  session against the real agent - it prints `You>` and waits for a typed
+  line, sends it as the next delivery, and prints the agent's reply
+  (`Agent> ...`, the model-boundary reply, never the process's own stdout)
+  once that delivery settles. An empty line, EOF, or typing `done` ends the
+  session (at least one delivery is required). On success, the ONE
+  `- conversation: interactive` line is replaced - by exact text
+  substitution, not a full-file reserialize, so nothing else in the flow
+  file (comments included) is touched - with the deliveries actually typed,
+  and the trace is written with `delivery_index`/`deliveries` metadata
+  already correct. The generated block carries no assertions; add
+  `assert:`/`assert_tool_call:`/`assert_no_tool_call:` under each delivery
+  afterward, then `flowproof run` to confirm.
 - **The proxy URL is injected for you.** flowproof points the agent at its
   local proxy by setting `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_BASE`,
   and `FLOWPROOF_LLM_PROXY`, plus a placeholder `OPENAI_API_KEY` so a client
