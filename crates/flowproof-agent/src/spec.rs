@@ -618,6 +618,7 @@ impl FlowSpec {
                 step,
                 SpecStep::Prompt { .. }
                     | SpecStep::Conversation { .. }
+                    | SpecStep::ConversationPlaceholder
                     | SpecStep::AssertToolCall { .. }
                     | SpecStep::AssertNoToolCall { .. }
                     | SpecStep::AssertNoEgress
@@ -721,11 +722,14 @@ impl FlowSpec {
                     }
                 }
             }
-            if !self
-                .steps
-                .iter()
-                .any(|s| matches!(s, SpecStep::Prompt { .. } | SpecStep::Conversation { .. }))
-            {
+            if !self.steps.iter().any(|s| {
+                matches!(
+                    s,
+                    SpecStep::Prompt { .. }
+                        | SpecStep::Conversation { .. }
+                        | SpecStep::ConversationPlaceholder
+                )
+            }) {
                 return bad(
                     "an `app: agent` flow has no `prompt:` or `conversation:` step, so the agent \
                      is never given anything to do"
@@ -1465,6 +1469,16 @@ pub enum SpecStep {
     Conversation {
         conversation: Vec<DeliverySpec>,
     },
+    /// `app: agent`: `conversation: interactive` - a placeholder an author
+    /// writes by hand to mark "record this live." `flowproof record
+    /// --agent-conversation` finds the ONE step written exactly this way,
+    /// drives an interactive terminal session against the real agent, and
+    /// replaces this exact line with the generated `conversation:` block
+    /// (text substitution, never a full-file reserialize, so nothing else
+    /// in the flow file - comments included - is touched). Any other
+    /// command (`run`, `record` without the flag) refuses this step by
+    /// name rather than treating it as an empty conversation.
+    ConversationPlaceholder,
     /// `app: agent`: assert a tool was called, in prose (see agent_steps).
     AssertToolCall {
         assert_tool_call: String,
@@ -1613,7 +1627,7 @@ impl SpecStep {
     const FORMS: &'static str = "a plain string, `rules: <text>`, `assert: <text>`, \
          `assert_sql: {...}`, `assert_api: {...}`, `assert_spreadsheet: {...}`, \
          `assert_screenshot: {...}`, \
-         `prompt: <text>`, `conversation: [{user: <text>, ...}]`, \
+         `prompt: <text>`, `conversation: [{user: <text>, ...}]`, `conversation: interactive`, \
          `assert_tool_call: <text>`, \
          `assert_no_tool_call: <text>`, `assert_no_egress`, \
          `assert_no_secret_leak: ${VAR}`, `repeat: {...}`, `when: <cond>` with `steps:`, \
@@ -1673,19 +1687,25 @@ impl SpecStep {
                         Value::String(s) => Ok(SpecStep::Prompt { prompt: s }),
                         _ => Err("`prompt:` takes a string (the user turn)".into()),
                     },
-                    Some("conversation") => {
-                        let deliveries: Vec<DeliverySpec> = serde_yaml::from_value(inner)
-                            .map_err(|e| format!("in `conversation` step: {e}"))?;
-                        if deliveries.is_empty() {
-                            return Err(
-                                "`conversation:` needs at least one delivery (a `user:` message)"
-                                    .into(),
-                            );
+                    Some("conversation") => match inner {
+                        Value::String(s) if s.trim() == "interactive" => {
+                            Ok(SpecStep::ConversationPlaceholder)
                         }
-                        Ok(SpecStep::Conversation {
-                            conversation: deliveries,
-                        })
-                    }
+                        other => {
+                            let deliveries: Vec<DeliverySpec> = serde_yaml::from_value(other)
+                                .map_err(|e| format!("in `conversation` step: {e}"))?;
+                            if deliveries.is_empty() {
+                                return Err(
+                                    "`conversation:` needs at least one delivery (a `user:` \
+                                     message) or the literal `interactive`"
+                                        .into(),
+                                );
+                            }
+                            Ok(SpecStep::Conversation {
+                                conversation: deliveries,
+                            })
+                        }
+                    },
                     Some("assert_tool_call") => match inner {
                         Value::String(s) => Ok(SpecStep::AssertToolCall {
                             assert_tool_call: s,
@@ -1860,6 +1880,9 @@ impl Serialize for SpecStep {
                 let mut m = serializer.serialize_map(Some(1))?;
                 m.serialize_entry("conversation", conversation)?;
                 m.end()
+            }
+            SpecStep::ConversationPlaceholder => {
+                single(serializer, "conversation", &"interactive".to_string())
             }
             SpecStep::AssertToolCall { assert_tool_call } => {
                 single(serializer, "assert_tool_call", assert_tool_call)
@@ -2083,6 +2106,7 @@ impl SpecStep {
             SpecStep::Conversation { conversation } => {
                 format!("conversation: {} deliveries", conversation.len())
             }
+            SpecStep::ConversationPlaceholder => "conversation: interactive".to_string(),
             SpecStep::AssertToolCall { assert_tool_call } => {
                 format!("assert_tool_call: {assert_tool_call}")
             }
@@ -3213,6 +3237,32 @@ steps:
         let yaml = serde_yaml::to_string(&flow).expect("serializes");
         let back = spec(&yaml).expect("reparses");
         assert_eq!(flow.steps, back.steps);
+    }
+
+    /// `conversation: interactive` is the placeholder `flowproof record
+    /// --agent-conversation` looks for. It parses on its own (agent-only,
+    /// same as a real conversation step), counts as "gives the agent
+    /// something to do", and round-trips.
+    #[test]
+    fn a_conversation_placeholder_parses_and_round_trips() {
+        let src =
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - conversation: interactive\n";
+        let flow = spec(src).expect("the placeholder is a valid, complete step on its own");
+        assert!(matches!(flow.steps[0], SpecStep::ConversationPlaceholder));
+        let yaml = serde_yaml::to_string(&flow).expect("serializes");
+        assert!(yaml.contains("conversation: interactive"), "{yaml}");
+        let back = spec(&yaml).expect("reparses");
+        assert_eq!(flow.steps, back.steps);
+    }
+
+    /// Any other string under `conversation:` is not the placeholder and not
+    /// a valid delivery list either - refused, not silently treated as an
+    /// empty conversation.
+    #[test]
+    fn a_conversation_step_rejects_an_unrecognized_string() {
+        let src = "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - conversation: live\n";
+        let err = spec(src).expect_err("not the `interactive` sentinel");
+        assert!(err.to_string().contains("conversation"), "{err}");
     }
 
     /// The #66/#67 lesson in spec form: the surface belongs to ONE app and

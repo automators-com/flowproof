@@ -1648,6 +1648,233 @@ pub fn record(spec: &FlowSpec, out: &Path) -> (Containment, Result<(), String>) 
     (achieved.unwrap_or_else(|| containment(spec)), outcome)
 }
 
+/// Print one delivery's settle outcome to the operator's terminal. The
+/// reply shown is the model-boundary reply (see `ConversationSession`'s
+/// doc), never the process's own stdout.
+fn report_settle(
+    output: &mut impl std::io::Write,
+    outcome: &flowproof_adapters::agent_runner::SettleOutcome,
+) -> Result<(), String> {
+    match &outcome.reply {
+        Some(reply) => writeln!(output, "Agent> {reply}"),
+        None => writeln!(output, "Agent> (no reply)"),
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// `flowproof record --agent-conversation`: a live, interactive terminal
+/// session against the real `agent.command` process, replacing the flow's
+/// ONE `conversation: interactive` placeholder with the deliveries the
+/// operator actually typed - plan 12's "authoring model is live, not
+/// scripted" decision (issue #375).
+///
+/// `input`/`output` are injected so this is testable without a real
+/// terminal: the CLI passes real stdin/stdout, a test an in-memory buffer
+/// pair. Returns the number of deliveries recorded.
+///
+/// The `.flow.yaml` is edited by TEXT SUBSTITUTION, not a full-spec
+/// reserialize: the placeholder line is found and replaced, and nothing
+/// else in the file - comments included - is touched. This is why exactly
+/// one placeholder, written exactly as `- conversation: interactive`, is
+/// required rather than merely one `SpecStep::ConversationPlaceholder` in
+/// the parsed spec: the text search is the actual write mechanism, so it is
+/// checked directly, not inferred from the parse.
+pub fn record_interactive(
+    spec: &FlowSpec,
+    spec_path: &Path,
+    out: &Path,
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+) -> Result<usize, String> {
+    let raw = std::fs::read_to_string(spec_path)
+        .map_err(|e| format!("reading {}: {e}", spec_path.display()))?;
+    let placeholder_lines: Vec<usize> = raw
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.trim() == "- conversation: interactive")
+        .map(|(i, _)| i)
+        .collect();
+    let placeholder_line = match placeholder_lines.as_slice() {
+        [i] => *i,
+        [] => {
+            return Err(
+                "--agent-conversation needs exactly one `- conversation: interactive` step \
+                 in the flow file, written on its own line; none found"
+                    .to_string(),
+            )
+        }
+        many => {
+            return Err(format!(
+                "--agent-conversation needs exactly one `- conversation: interactive` step; \
+                 found {}",
+                many.len()
+            ))
+        }
+    };
+    let placeholder_count = spec
+        .steps
+        .iter()
+        .filter(|s| matches!(s, SpecStep::ConversationPlaceholder))
+        .count();
+    if placeholder_count != 1 {
+        return Err(format!(
+            "--agent-conversation needs exactly one `conversation: interactive` step in the \
+             parsed spec; found {placeholder_count}"
+        ));
+    }
+
+    let plan = plan(spec)?;
+    let Driver::Command(command) = &plan.driver else {
+        return Err(
+            "--agent-conversation only supports agent.command today, not agent.url".to_string(),
+        );
+    };
+
+    let read_line = |input: &mut dyn std::io::BufRead,
+                     output: &mut dyn std::io::Write|
+     -> Result<Option<String>, String> {
+        write!(output, "You> ").map_err(|e| e.to_string())?;
+        output.flush().map_err(|e| e.to_string())?;
+        let mut line = String::new();
+        let n = input.read_line(&mut line).map_err(|e| e.to_string())?;
+        let typed = line.trim().to_string();
+        if n == 0 || typed.is_empty() || typed.eq_ignore_ascii_case("done") {
+            return Ok(None);
+        }
+        Ok(Some(typed))
+    };
+
+    // Read the operator's first line BEFORE requiring a real model or
+    // spawning anything: an empty session is refused with the file and
+    // environment both untouched, not after paying for a real upstream call.
+    let Some(first) = read_line(input, output)? else {
+        return Err("--agent-conversation needs at least one delivery".to_string());
+    };
+
+    let upstream = upstream()?;
+    let auth = upstream_auth();
+    let proxy = AgentProxy::record(&upstream, auth, plan.mocks.clone(), 0)
+        .map_err(|e| format!("starting the record proxy: {e}"))?;
+
+    let mut deliveries: Vec<String> = Vec::new();
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+
+    let mut env = plan.env.clone();
+    env.insert(PROMPT_VAR.to_string(), first.clone());
+    let served_before = proxy.log().served;
+    let (mut session, outcome) = flowproof_adapters::agent_runner::ConversationSession::start(
+        &proxy,
+        command,
+        &env,
+        AGENT_TIMEOUT,
+    )
+    .map_err(|e| e.to_string())?;
+    windows.push((served_before, proxy.log().served));
+    deliveries.push(first);
+    report_settle(output, &outcome)?;
+    if !outcome.settled {
+        return Err("delivery 1 did not settle before the timeout".to_string());
+    }
+
+    while let Some(typed) = read_line(input, output)? {
+        let before = proxy.log().served;
+        let outcome = session.send(&typed).map_err(|e| e.to_string())?;
+        windows.push((before, proxy.log().served));
+        deliveries.push(typed);
+        report_settle(output, &outcome)?;
+        if !outcome.settled {
+            return Err(format!(
+                "delivery {} did not settle before the timeout",
+                deliveries.len()
+            ));
+        }
+    }
+
+    let run = session.finish();
+    // Same reasoning as `record_inner`'s own quiesce: the agent has exited,
+    // which is not the same as the proxy being done with an in-flight call.
+    proxy.quiesce(Duration::from_millis(300), Duration::from_secs(15));
+    let mut cassette = proxy.captured();
+    drop(proxy);
+
+    require_progress(&run, &cassette, &plan)?;
+
+    for (i, window) in windows.iter().enumerate() {
+        let end = window.1.min(cassette.turns.len());
+        for turn in &mut cassette.turns[window.0..end] {
+            turn.delivery_index = i;
+        }
+    }
+    cassette.deliveries = deliveries
+        .iter()
+        .zip(&windows)
+        .map(
+            |(user, (start, end))| flowproof_trace::cassette::DeliveryMeta {
+                user: user.clone(),
+                turn_count: end.saturating_sub(*start),
+            },
+        )
+        .collect();
+
+    report_fs(&run);
+    let side_effects = side_effects_lane(&run, &std::env::current_dir().unwrap_or_default());
+    check_secret_leak(&plan, &cassette, &BTreeMap::new(), side_effects.as_ref())?;
+
+    let trace = AgentTrace {
+        app: "agent".into(),
+        mocks: plan.mocks.into_iter().collect(),
+        cassette,
+        mcp: BTreeMap::new(),
+        egress: None,
+        side_effects,
+    };
+    let trace_json = serde_json::to_string_pretty(&trace).map_err(|e| e.to_string())?;
+    std::fs::write(out, trace_json).map_err(|e| format!("writing {}: {e}", out.display()))?;
+
+    let indent: String = raw
+        .lines()
+        .nth(placeholder_line)
+        .expect("counted above")
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect();
+    let item_indent = format!("{indent}    ");
+    let mut new_lines: Vec<String> = Vec::new();
+    for (i, l) in raw.lines().enumerate() {
+        if i == placeholder_line {
+            new_lines.push(format!("{indent}- conversation:"));
+            for d in &deliveries {
+                let one = vec![flowproof_agent::DeliverySpec {
+                    user: d.clone(),
+                    assert: None,
+                    assert_tool_call: None,
+                    assert_no_tool_call: None,
+                }];
+                let yaml = serde_yaml::to_string(&one).map_err(|e| e.to_string())?;
+                for yline in yaml.lines() {
+                    new_lines.push(format!("{item_indent}{yline}"));
+                }
+            }
+        } else {
+            new_lines.push(l.to_string());
+        }
+    }
+    let new_text = format!("{}\n", new_lines.join("\n"));
+    std::fs::write(spec_path, new_text)
+        .map_err(|e| format!("writing {}: {e}", spec_path.display()))?;
+
+    writeln!(
+        output,
+        "[record] wrote {} ({} deliveries) - add assert lines under each delivery, then \
+         `flowproof run` to confirm",
+        spec_path.display(),
+        deliveries.len()
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(deliveries.len())
+}
+
 /// The body. Takes `achieved` as an out-parameter rather than returning the
 /// tier, because the tier becomes known PART WAY THROUGH and every `?` before
 /// that point would otherwise have to name a tier it does not have yet. A run
@@ -3079,6 +3306,188 @@ mod tests {
         handle.join().ok();
         assert!(why.contains("delivery 1"), "{why}");
         assert!(why.contains("does not contain"), "{why}");
+    }
+
+    // ---- interactive record: --agent-conversation (plan 12 / issue #375) ----
+
+    /// Env-var mutation (`FLOWPROOF_AGENT_UPSTREAM`) is process-global;
+    /// serialize the tests that touch it, the same pattern
+    /// `doctor_ai_e2e.rs` uses for the same reason.
+    static INTERACTIVE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A fake multi-turn `command:` agent: handles delivery 0 via
+    /// `FLOWPROOF_PROMPT`, then adopts the stdin-line contract
+    /// `ConversationSession`/`record_interactive` speak - one JSON line per
+    /// later delivery, EOF meaning "no more input coming."
+    const FAKE_INTERACTIVE_AGENT: &str = r#"
+import json, os, sys, urllib.request
+
+base = os.environ["OPENAI_BASE_URL"]
+messages = [{"role": "user", "content": os.environ["FLOWPROOF_PROMPT"]}]
+
+def call():
+    payload = json.dumps({"model": "gpt-4o", "messages": messages, "tools": []}).encode()
+    request = urllib.request.Request(
+        base + "/chat/completions", data=payload,
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(request) as response:
+        body = json.load(response)
+    message = body["choices"][0]["message"]
+    messages.append({"role": "assistant", "content": message.get("content") or ""})
+
+call()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    delivery = json.loads(line)
+    messages.append({"role": "user", "content": delivery["prompt"]})
+    call()
+"#;
+
+    fn write_fake_interactive_agent() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("flowproof-agent-flow");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!(
+            "interactive_agent-{}-{}.py",
+            std::process::id(),
+            mcp_nonce()
+        ));
+        std::fs::write(&path, FAKE_INTERACTIVE_AGENT).expect("write agent");
+        path
+    }
+
+    /// A fake real model upstream: answers each POST with the next reply in
+    /// `replies`, in the OpenAI chat-completions shape `record` reads.
+    fn spawn_fake_upstream(replies: Vec<&'static str>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind upstream");
+        let addr = listener.local_addr().expect("addr");
+        let url = format!("http://{addr}");
+        let handle = std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let _ = read_prompt(&mut stream);
+                let body = serde_json::json!({
+                    "choices": [{"message": {"role": "assistant", "content": reply}}]
+                })
+                .to_string();
+                answer_trigger(&mut stream, &body);
+            }
+        });
+        (url, handle)
+    }
+
+    /// The headline case: a real interactive session against a real
+    /// spawned process and a fake real-model upstream (record mode, not
+    /// replay) - proving the whole loop end to end. The operator types two
+    /// deliveries then "done"; the placeholder is replaced with exactly
+    /// what was typed, and the trace carries correct delivery_index/
+    /// deliveries metadata.
+    #[test]
+    fn record_interactive_writes_a_trace_and_substitutes_the_placeholder() {
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let agent = write_fake_interactive_agent();
+        let (upstream_url, upstream_handle) =
+            spawn_fake_upstream(vec!["Are you sure?", "Cancelled."]);
+        std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", &upstream_url);
+
+        let dir = std::env::temp_dir().join("flowproof-agent-flow");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let nonce = format!("{}-{}", std::process::id(), mcp_nonce());
+        let spec_path = dir.join(format!("interactive-{nonce}.flow.yaml"));
+        let out_path = dir.join(format!("interactive-{nonce}.trace.json"));
+        std::fs::write(
+            &spec_path,
+            format!(
+                "name: Cancel with confirmation\napp: agent\nagent:\n  command: python3 \"{}\"\n\
+                 steps:\n  - conversation: interactive\n",
+                agent.display()
+            ),
+        )
+        .expect("write spec");
+
+        let spec = FlowSpec::parse(&std::fs::read_to_string(&spec_path).expect("read spec"))
+            .expect("parses");
+        let mut input = std::io::BufReader::new(std::io::Cursor::new(
+            b"Please cancel my order A-4471.\nYes, confirm.\ndone\n".to_vec(),
+        ));
+        let mut output: Vec<u8> = Vec::new();
+
+        let n = record_interactive(&spec, &spec_path, &out_path, &mut input, &mut output)
+            .expect("records interactively");
+        std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+        upstream_handle.join().ok();
+
+        assert_eq!(n, 2);
+
+        let transcript = String::from_utf8(output).expect("utf8 transcript");
+        assert!(transcript.contains("Agent> Are you sure?"), "{transcript}");
+        assert!(transcript.contains("Agent> Cancelled."), "{transcript}");
+
+        let rewritten = std::fs::read_to_string(&spec_path).expect("read back");
+        assert!(
+            !rewritten.contains("conversation: interactive"),
+            "{rewritten}"
+        );
+        assert!(rewritten.contains("- conversation:"), "{rewritten}");
+        assert!(
+            rewritten.contains("user: Please cancel my order A-4471."),
+            "{rewritten}"
+        );
+        assert!(rewritten.contains("user: Yes, confirm."), "{rewritten}");
+        let reparsed = FlowSpec::parse(&rewritten).expect("rewritten spec still parses");
+        assert!(matches!(reparsed.steps[0], SpecStep::Conversation { .. }));
+
+        let trace_json = std::fs::read_to_string(&out_path).expect("read trace");
+        let trace: AgentTrace = serde_json::from_str(&trace_json).expect("parses trace");
+        assert_eq!(trace.cassette.turns.len(), 2);
+        assert_eq!(trace.cassette.turns[0].delivery_index, 0);
+        assert_eq!(trace.cassette.turns[1].delivery_index, 1);
+        assert_eq!(trace.cassette.deliveries.len(), 2);
+        assert_eq!(
+            trace.cassette.deliveries[0].user,
+            "Please cancel my order A-4471."
+        );
+        assert_eq!(trace.cassette.deliveries[1].user, "Yes, confirm.");
+    }
+
+    /// Zero deliveries (immediate "done"/EOF) is refused, not silently
+    /// accepted as an empty recording.
+    #[test]
+    fn record_interactive_refuses_zero_deliveries() {
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join("flowproof-agent-flow");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let nonce = format!("{}-{}", std::process::id(), mcp_nonce());
+        let spec_path = dir.join(format!("interactive-empty-{nonce}.flow.yaml"));
+        let out_path = dir.join(format!("interactive-empty-{nonce}.trace.json"));
+        std::fs::write(
+            &spec_path,
+            "name: n\napp: agent\nagent:\n  command: python3 -c pass\nsteps:\n  \
+             - conversation: interactive\n",
+        )
+        .expect("write spec");
+        let spec = FlowSpec::parse(&std::fs::read_to_string(&spec_path).expect("read spec"))
+            .expect("parses");
+        let mut input = std::io::BufReader::new(std::io::Cursor::new(b"done\n".to_vec()));
+        let mut output: Vec<u8> = Vec::new();
+
+        let err = record_interactive(&spec, &spec_path, &out_path, &mut input, &mut output)
+            .expect_err("zero deliveries must be refused");
+        assert!(err.contains("at least one delivery"), "{err}");
+        // Refusing before spawning anything means the file is untouched.
+        let unchanged = std::fs::read_to_string(&spec_path).expect("read back");
+        assert!(
+            unchanged.contains("conversation: interactive"),
+            "{unchanged}"
+        );
     }
 
     /// A mispointed service (never calls the proxy) fails replay, and the
