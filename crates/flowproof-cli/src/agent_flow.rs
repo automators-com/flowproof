@@ -27,7 +27,7 @@ use flowproof_adapters::FsEvent;
 use flowproof_agent::{FlowSpec, SpecStep};
 use flowproof_trace::cassette::Cassette;
 use flowproof_trace::egress::EgressEvent;
-use flowproof_trace::side_effect::{SideEffect, KIND_FS_WRITE};
+use flowproof_trace::side_effect::{SideEffect, KIND_FS_WRITE, KIND_HTTP_REQUEST};
 use flowproof_trace::substitution::Mocks;
 use flowproof_trace::toolcalls::{self, ToolCallExpectation};
 
@@ -654,10 +654,15 @@ impl Plan {
     /// service flowproof did not start is never contained.
     fn drive(&self, proxy: &AgentProxy) -> Result<AgentRun, String> {
         match &self.driver {
-            Driver::Command(command) if self.engages_egress => {
-                run_against_contained(proxy, command, &self.env, AGENT_TIMEOUT, &self.allow)
-                    .map_err(|e| e.to_string())
-            }
+            Driver::Command(command) if self.engages_egress => run_against_contained(
+                proxy,
+                command,
+                &self.env,
+                AGENT_TIMEOUT,
+                &self.allow,
+                /* egress_engaged: */ true,
+            )
+            .map_err(|e| e.to_string()),
             Driver::Command(command) => {
                 run_against(proxy, command, &self.env, AGENT_TIMEOUT).map_err(|e| e.to_string())
             }
@@ -733,7 +738,13 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
         resolved_allow
             .push(flowproof_trace::secret::resolve_refs(entry).map_err(|e| e.to_string())?);
     }
-    let allow = AllowSet::resolve(&resolved_allow)?;
+    // The set keeps each entry's UNRESOLVED spelling beside its resolved
+    // form, so an observed destination a `${VAR}` entry admits is recorded
+    // by spelling - the value never reaches the trace.
+    let spelled: Vec<(&str, &str)> = (allow_unresolved.iter().map(String::as_str))
+        .zip(resolved_allow.iter().map(String::as_str))
+        .collect();
+    let allow = AllowSet::resolve_spelled(&spelled)?;
     let assert_no_egress = spec
         .steps
         .iter()
@@ -1064,10 +1075,36 @@ fn fs_effect(event: &FsEvent, workspace: &Path) -> SideEffect {
     }
 }
 
+/// One observed egress event as the trace record. The target is value-free
+/// (`ip:port`) unless a `${VAR}`-bearing allow entry admits it - then the
+/// UNRESOLVED spelling is recorded, since the resolved address would
+/// disclose what the variable held. The port sits after the LAST colon.
+fn http_effect(event: &EgressEvent, allow: &AllowSet) -> SideEffect {
+    let target = (event.destination.rsplit_once(':'))
+        .and_then(|(ip, port)| allow.allowed_as(ip.parse().ok()?, port.parse().ok()?))
+        .filter(|spelling| spelling.contains("${"))
+        .map_or_else(|| event.destination.clone(), str::to_string);
+    SideEffect {
+        kind: KIND_HTTP_REQUEST.into(),
+        target: Some(target),
+        target_note: None,
+        op: Some(event.protocol.clone()),
+        flags: None,
+        at_ms: event.at_ms,
+        before: None,
+        after: None,
+        diff: None,
+    }
+}
+
 /// The trace's side-effect lane, or `None` when the observation mechanism
 /// never ran - absence keeps meaning "not observed", and a present lane
 /// with no effects stays positive evidence: observed, and clean.
-fn side_effects_lane(run: &AgentRun, workspace: &Path) -> Option<SideEffectsTrace> {
+fn side_effects_lane(
+    run: &AgentRun,
+    allow: &AllowSet,
+    workspace: &Path,
+) -> Option<SideEffectsTrace> {
     if !run.observed {
         return None;
     }
@@ -1076,12 +1113,24 @@ fn side_effects_lane(run: &AgentRun, workspace: &Path) -> Option<SideEffectsTrac
     let root = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
+    let mut effects: Vec<SideEffect> = (run.fs.destructive.iter())
+        .map(|e| fs_effect(e, &root))
+        .chain(run.egress.observed.iter().map(|e| http_effect(e, allow)))
+        .collect();
+    // One lane, one clock: merged by when it happened (a stable sort).
+    effects.sort_by_key(|e| e.at_ms);
+    // Either half going blind makes an empty effects list silence rather
+    // than evidence, so the faults are the UNION of both, deduped.
+    let mut faults = run.fs.distinct_faults();
+    for fault in run.egress.distinct_faults() {
+        if !faults.contains(&fault) {
+            faults.push(fault);
+        }
+    }
     Some(SideEffectsTrace {
         observation: "observed (linux seccomp)".into(),
-        effects: (run.fs.destructive.iter())
-            .map(|e| fs_effect(e, &root))
-            .collect(),
-        faults: run.fs.distinct_faults(),
+        effects,
+        faults,
     })
 }
 
@@ -1526,7 +1575,8 @@ fn record_inner(
     // The side-effect lane, built whenever the run was observed (the
     // workspace root is the agent's spawn cwd) and scanned WITH the
     // cassette below, BEFORE the trace is minted - the same store-guard.
-    let side_effects = side_effects_lane(&run, &std::env::current_dir().unwrap_or_default());
+    let workspace = std::env::current_dir().unwrap_or_default();
+    let side_effects = side_effects_lane(&run, &plan.allow, &workspace);
     check_secret_leak(&plan, &cassette, &mcp_trace, side_effects.as_ref())?;
 
     let trace = AgentTrace {
@@ -2114,7 +2164,8 @@ mod tests {
     #[test]
     fn the_lane_records_hygiene_outputs_never_raw_paths() {
         let mut run = egress_run(vec![]);
-        assert!(side_effects_lane(&run, ws()).is_none(), "not observed");
+        let unobserved = side_effects_lane(&run, &AllowSet::default(), ws());
+        assert!(unobserved.is_none(), "not observed");
 
         run.observed = true;
         run.fs.faults = vec!["openat2: EPERM".into(), "openat2: EPERM".into()];
@@ -2131,7 +2182,8 @@ mod tests {
             event("renameat2", "/ws/a", Some("/home/u/b.csv")),
             event("rename", "/home/u/a", Some("/home/u/b")),
         ];
-        let lane = side_effects_lane(&run, ws()).expect("observed mints the lane");
+        let lane =
+            side_effects_lane(&run, &AllowSet::default(), ws()).expect("observed mints the lane");
         assert_eq!(lane.observation, "observed (linux seccomp)");
         assert_eq!(lane.faults.len(), 1, "one mechanism, one finding");
         assert_eq!(lane.effects[0].target.as_deref(), Some("./gone.csv"));
@@ -2145,6 +2197,53 @@ mod tests {
         // The store-guard scans the lane, as a named corpus element.
         let corpus = secret_corpus(&neutral_cassette("hi", "x"), &BTreeMap::new(), Some(&lane));
         assert!(corpus.iter().any(|(n, _)| n == "the side-effects lane"));
+    }
+
+    /// The http half: observed egress joins the lane ordered by `at_ms` (the
+    /// clock the fs records share), a `${VAR}`-admitted destination is named
+    /// by its UNRESOLVED spelling, and the faults are the UNION of both
+    /// supervisor halves - egress faults must not be silently dropped.
+    #[cfg(unix)]
+    #[test]
+    fn the_lane_merges_observed_egress_and_folds_in_its_faults() {
+        let observed = |destination: &str, protocol: &str, at_ms: u64| EgressEvent {
+            destination: destination.into(),
+            protocol: protocol.into(),
+            at_ms,
+        };
+        let mut run = egress_run(vec![]);
+        run.observed = true;
+        run.fs.faults = vec!["openat2: EPERM".into()];
+        run.egress.observed = vec![
+            observed("198.51.100.9:443", "tcp", 610),
+            observed("203.0.113.9:53", "udp", 100),
+        ];
+        run.egress.faults = vec!["sendto: pidfd_getfd: EPERM".into(), "openat2: EPERM".into()];
+        // BOTH a concrete and a `${VAR}` entry admit the tcp destination:
+        // redaction-first, the unresolved spelling must win.
+        let allow = AllowSet::resolve_spelled(&[
+            ("198.51.100.9:443", "198.51.100.9:443"),
+            ("${SERVICE_HOST}:443", "198.51.100.9:443"),
+        ])
+        .expect("resolves");
+        let lane = side_effects_lane(&run, &allow, ws()).expect("observed mints the lane");
+
+        // Sorted by at_ms: the udp send first, keeping its `ip:port`.
+        assert_eq!(lane.effects[0].kind, "http_request");
+        assert_eq!(lane.effects[0].target.as_deref(), Some("203.0.113.9:53"));
+        assert_eq!(lane.effects[0].op.as_deref(), Some("udp"));
+        let spelled = lane.effects[1].target.as_deref();
+        assert_eq!(spelled, Some("${SERVICE_HOST}:443"));
+        let json = serde_json::to_string(&lane).expect("serialize");
+        assert!(
+            !json.contains("198.51.100.9"),
+            "resolved value leaked: {json}"
+        );
+        // The union, deduped: the shared fault is one finding.
+        assert_eq!(
+            lane.faults,
+            ["openat2: EPERM", "sendto: pidfd_getfd: EPERM"]
+        );
     }
 
     // ---- egress containment verdict (cross-platform) ----
@@ -2184,7 +2283,11 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             upstream_error: None,
-            egress: flowproof_adapters::egress::EgressLog { blocked, faults },
+            egress: flowproof_adapters::egress::EgressLog {
+                blocked,
+                faults,
+                observed: Vec::new(),
+            },
             fs: flowproof_adapters::FsLog::default(),
             observed: false,
             containment: None,
