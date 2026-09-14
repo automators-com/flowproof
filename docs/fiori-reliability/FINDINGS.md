@@ -328,6 +328,34 @@ strong leads, not closed verdicts.
   eating the low single digits of GB) rather than assuming 9.3GB is enough
   headroom for the rest of Phase 0. Reversal: if disk pressure reappears, stop
   and report the number again rather than pushing through silently.
+- **Pivoted from the mock fixture to the real Fiori system as the primary
+  test vehicle, on the user's explicit, live instruction — overriding the
+  brief's own ground rule 5** ("do not run hundreds of iterations against the
+  real corporate SAP system... the real system is a checkpoint, not a
+  workbench"). The user's reasoning, given directly: a mock built by the same
+  session doing the fixing is exactly the overfitting risk the brief's own
+  holdout-set logic warns about (dev FAA climbs, holdout doesn't, and you
+  never find out because you built both). They also clarified that
+  `examples/fiori/`'s existing real-launchpad traces took hours of live
+  iteration with a coding agent to get working, so their existence is *not*
+  evidence Fiori already works reliably - it's evidence of exactly the
+  problem this brief exists to fix. Confirmed real credentials
+  (`.env`: `FIORI_BASE_URL`/`SAP_USER`/`SAP_PASSWORD`/`SAP_CLIENT`/
+  `SAP_LANGUAGE`) and live reachability (`curl` -> HTTP 200) before treating
+  this as workable, rather than assuming. **What this session is doing
+  instead of a blind override**: staying judicious about write-volume against
+  the real system specifically (favoring read-only/idempotent flows, not
+  running the full generator-driven Gate A/B/C rounds against production
+  without further explicit confirmation of that specific scale), since the
+  user authorized "test against real Fiori," not "hammer production with 30
+  fresh specs per round with no limit." Reversal: if this turns out to create
+  real load or side effects the user didn't anticipate, stop and say so - the
+  override was for correctness of measurement, not a blank check on volume.
+  The mock fixture built earlier (`examples/fiori/fixture/`) is left in place
+  (it already caught one real bug - see its README - and cost is sunk) but is
+  no longer the primary vehicle; it may still be useful later for the
+  latency/error-injection robustness checks the brief asks for, which the
+  real system cannot safely provide on demand.
 - **Left `examples/fiori/` untouched**, recorded the collision instead of
   guessing a resolution and building into it. Reason: the brief's own
   assumption about that path was wrong, and picking a new location for a
