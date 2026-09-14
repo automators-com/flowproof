@@ -1,0 +1,10 @@
+name: Probe - open a supplier, go back, open a different supplier
+app: web
+url: http://localhost:8081/index.html
+steps:
+  - Click the first supplier row in the table
+  - assert: page shows Supplier detail
+  - Click the back button
+  - assert: page shows Suppliers
+  - Click the second supplier row in the table
+  - assert: page shows Supplier detail

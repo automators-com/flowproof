@@ -1,0 +1,24 @@
+{
+  "attempts": [
+    {
+      "attempt": 1,
+      "category": "ambiguous-step",
+      "failing_intent": "Search for material ${MATERIAL}, supplier ${SUPPLIER}, plant ${PLANT}, purchasing org ${PURCHASING_ORG}",
+      "error_detail": "target '' is not one of the listed elements",
+      "rationale": "The original step bundled four values into a single vague 'Search for...' instruction without naming the fields, so the engine could not resolve which UI element to target (empty target string). Rewriting the step to explicitly name each field it should populate removes the ambiguity while preserving the same search intent and the downstream 'General Data' assertion.",
+      "applied": true
+    },
+    {
+      "attempt": 2,
+      "category": "page-not-ready-transient",
+      "failing_intent": "Open the Change Purchasing Info Record app",
+      "error_detail": "No interactable elements are present on the current screen",
+      "rationale": "The diagnosis category is page-not-ready-transient and the error ('No interactable elements are present on the current screen') occurred on the very first real step after login, with zero steps completed. This matches a launchpad/tile-loading race condition after sign-in rather than a wrong target - the app tile name itself hasn't been shown to be incorrect. The prior repair attempt addressed a different step entirely and didn't touch this one, so widening the wait window for the shell/tiles to render is the untried, targeted fix.",
+      "applied": false
+    }
+  ],
+  "outcome": {
+    "outcome": "budget-exhausted",
+    "last_error": "model did not return a usable patch: step has no `within Ns` wait window to widen"
+  }
+}
