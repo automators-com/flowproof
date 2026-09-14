@@ -537,6 +537,54 @@ which is the comparison this session's evidence argues for. Recorded here so
 whoever reviews the eventual PR does not have to re-derive this reasoning
 from scratch.
 
+## Implementation status: foundation landed, capture/resolution not yet built
+
+The trace-format commit above (new `A11y` tier, ranked first, schema+docs
+updated, tested) is landed. The part that would actually change FAA - the
+recorder capturing `a11y` selectors and replay resolving them - is not built
+yet. Confirmed ready to build on, so the next session doesn't have to
+re-derive this:
+
+**The CDP capability is real and reachable from this exact vendored
+`headless_chrome` fork** (`Cargo.toml`'s `[patch]`, pinned to
+`github.com/automators-com/flowproof@eed7bc1`). Verified by compiling a
+throwaway probe crate against it (not part of this repo, discarded after)
+that resolved every type needed:
+
+- `headless_chrome::protocol::cdp::Accessibility::{Enable, GetAXNodeAndAncestors, GetAXNodeAndAncestorsReturnObject, AXNode, AXValue}`
+- `headless_chrome::protocol::cdp::DOM::{ResolveNode, BackendNodeId, DescribeNode}`
+
+`GetAXNodeAndAncestors` (params: `backend_node_id: Option<DOM::BackendNodeId>`,
+or `object_id`/`node_id`) is exactly record-time-shaped: given the backend
+node id of an element the recorder already resolved through its existing
+CSS-based path, it returns that node **and its ancestor chain** in one call -
+no separate ancestor-walk needed. `AXNode.role`/`.name` are `Option<AXValue>`;
+`AXValue.value` (a generic `Value`) carries the actual computed string
+(`"link"`, `"Change Purchasing Info Record Tile"`) - confirmed against the
+JSON protocol spec's field shapes (`crates/flowproof-trace`'s vendored
+counterpart doesn't cover this; the shapes came from `json/browser_protocol.json`
+in the `headless_chrome` checkout itself, cross-checked against a compiled
+probe, not merely read off the spec).
+
+**Why this session stopped here rather than continuing into the actual
+integration**: capturing at record time means finding where `web.rs`
+resolves a target element for a click today (its existing CSS-based
+`semanticCss`/element-lookup path) and getting a `backend_node_id` out of
+that same resolution - which likely needs a new capability on the
+`AppDriver` trait (`flowproof-driver`) or a web-adapter-specific hook, since
+`a11y` is web-only and the recorder is adapter-agnostic. Replay needs the
+mirror: `Accessibility.getFullAXTree` (already confirmed available too) plus
+matching by role+name+ancestor, then `DOM.resolveNode` back to a live
+element. Both sides need real tests against a live Chromium page (matching
+the pattern of `web.rs`'s existing `web_round_trip_via_mock_uses_css_selectors`-
+style tests), not just unit tests of string matching. That is a real,
+multi-hour, multi-file piece of engineering on its own, and landing it
+carelessly at the tail of an already very long session risks exactly the
+"committed half-fix... a trap I will step in next week" the brief warns
+against. Stopping at a solid, tested foundation and naming the exact next
+step precisely serves the goal better than a rushed, undertested attempt at
+the rest.
+
 ## What would need to be true to resume
 
 - Free space at or above 15 GB (or the user says a build up to N GB is fine
