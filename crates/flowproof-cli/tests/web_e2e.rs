@@ -1468,6 +1468,50 @@ fn hover_reveals_a_submenu_the_next_step_can_click() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn soft_hyphenated_visible_text_resolves_for_waits_and_clicks() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web soft-hyphen E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-soft-hyphen-e2e");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("soft-hyphen.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Soft hyphen</title>
+<main>
+  <button onclick="document.getElementById('status').textContent = 'opened'">
+    Dis&shy;play Pur&shy;chas&shy;ing Info Record by Supplier
+  </button>
+  <div id="status"></div>
+</main>"#,
+    )
+    .expect("page written");
+
+    let spec = FlowSpec::parse(&format!(
+        "name: Soft hyphen text\napp: web\nurl: file://{}\nsteps:\n  \
+         - Wait until page shows Display Purchasing Info Record by Supplier within 5s\n  \
+         - Click \"Display Purchasing Info Record by Supplier\"\n  \
+         - assert: page shows opened\n",
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace_path = dir.join("soft-hyphen.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed, "soft-hyphen flow must replay: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Round-2 selector fixes against real Chromium, all three in one flow:
 /// a wrapping `<label>Name: <input/></label>` resolves as a label query,
 /// `Click "Close Account"` lands on a button whose DOM text is
@@ -2979,5 +3023,72 @@ fn a_label_forwards_a_click_only_where_the_browser_does() {
         );
     }
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Layout hints may be ignored when finding a control or matching its title,
+/// but captured input values must survive a round trip byte-for-byte. The
+/// fixture itself checks the typed values, so normalized assertions cannot
+/// conceal a corrupted capture.
+#[test]
+fn soft_hyphen_titles_frames_and_captures_record_and_replay() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping soft-hyphen roundtrip E2E: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "flowproof-web-soft-hyphen-roundtrip-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("roundtrip.html");
+    std::fs::write(
+        &page,
+        r##"<!doctype html><title>Soft&shy;hyphen</title>
+<input id="source" value="A&shy;B"><input id="copy">
+<iframe title="plain" srcdoc='<input id="source" value="F&shy;G"><label for="copy">Mate&shy;rial</label><input id="copy"><button id="act" onclick="this.dataset.clicked=1">Con&shy;firm</button>'></iframe>
+<button id="verify" onclick="verify()">Verify</button><p id="status"></p>
+<script>
+function verify() {
+  const inner = document.querySelector('iframe').contentDocument;
+  const shy = String.fromCharCode(173);
+  const good = document.getElementById('copy').value === 'A' + shy + 'B'
+    && inner.getElementById('copy').value === 'F' + shy + 'G'
+    && inner.getElementById('act').dataset.clicked === '1';
+  document.getElementById('status').textContent = good ? 'byte exact' : 'corrupted';
+}
+</script>"##,
+    )
+    .expect("fixture written");
+    let spec = FlowSpec::parse(&format!(
+        r#"name: Soft hyphen roundtrip
+app: web
+url: file://{}
+steps:
+  - assert: page title is Softhyphen
+  - assert: page title is Soft­hyphen
+  - Remember the "css:#source" as top
+  - Type ${{captured.top}} into the "css:#copy" field
+  - Remember the "css:#source" in the iframe "plain" as framed
+  - Type ${{captured.framed}} into the "Material" in the iframe "plain"
+  - assert: the "Material" in the iframe "plain" shows FG
+  - Click "Confirm" in the iframe "plain"
+  - Click "Verify"
+  - assert: page shows byte exact
+"#,
+        page.display()
+    ))
+    .expect("spec parses");
+    let trace = dir.join("roundtrip.trace.jsonl");
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace).expect("recording succeeds");
+    drop(driver);
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _) = flowproof_replay::run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "raw captures and frame actions replay: {report:#?}"
+    );
+    drop(driver);
     std::fs::remove_dir_all(&dir).ok();
 }
