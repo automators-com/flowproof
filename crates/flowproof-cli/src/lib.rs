@@ -3286,11 +3286,29 @@ fn cmd_heal(
 
 /// Run the CLI against `args` (excluding the program name) and return the
 /// process exit code. Never panics on user error.
+/// Force-terminates the shared Chromium process (if `web`-adapter code ever
+/// launched one via `flowproof_adapters::shared_browser`) when `run_cli`
+/// returns by any path. See `shutdown_shared_browser`'s own doc comment:
+/// holding the browser in a process-lifetime `static` means its own `Drop`
+/// never runs on a normal process exit, and even the underlying
+/// `headless_chrome` fork's `Drop` only asks Chrome to close gracefully
+/// over CDP and silently swallows failure - so without this, every
+/// `flowproof` invocation that touched the web adapter leaked a full
+/// Chrome process tree and its temp profile directory.
+struct SharedBrowserShutdown;
+
+impl Drop for SharedBrowserShutdown {
+    fn drop(&mut self) {
+        flowproof_adapters::shutdown_shared_browser();
+    }
+}
+
 pub fn run_cli<I, T>(args: I) -> u8
 where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
+    let _shared_browser_shutdown = SharedBrowserShutdown;
     let cli = match Cli::try_parse_from(
         std::iter::once(std::ffi::OsString::from("flowproof"))
             .chain(args.into_iter().map(Into::into)),

@@ -97,6 +97,9 @@ pub use vision::VisionAppDriver;
 #[cfg(feature = "web")]
 pub use web::WebAppDriver;
 
+#[cfg(feature = "web")]
+pub use web::shutdown_shared_browser;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
     #[error("adapter '{0}' is not implemented yet")]

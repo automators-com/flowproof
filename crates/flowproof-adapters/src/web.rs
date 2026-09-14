@@ -913,6 +913,13 @@ fn fresh_downloads_dir() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("flowproof-downloads-{}-{n}", std::process::id()))
 }
 
+/// Hold a keep-alive blank tab forever: headless Chrome exits when its LAST
+/// target closes, so as flows open and close their own tabs this one keeps
+/// the process — and its warm connection — alive (Playwright keeps the
+/// browser independent of pages the same way).
+type SharedCell = Mutex<Option<(Browser, Arc<Tab>)>>;
+static SHARED: OnceLock<SharedCell> = OnceLock::new();
+
 /// One Chromium process for the whole run, reused across flows. Each flow
 /// gets an isolated incognito CONTEXT (its own cookies/cache), so reuse is
 /// invisible to specs but the ~seconds-long cold start is paid ONCE per
@@ -920,12 +927,6 @@ fn fresh_downloads_dir() -> std::path::PathBuf {
 /// holding one in the static keeps the process alive until the test binary
 /// exits. Opt out with `FLOWPROOF_NO_SHARED_BROWSER=1`.
 fn shared_browser() -> Result<Browser, AdapterError> {
-    // Hold a keep-alive blank tab forever: headless Chrome exits when its
-    // LAST target closes, so as flows open and close their own tabs this
-    // one keeps the process — and its warm connection — alive (Playwright
-    // keeps the browser independent of pages the same way).
-    type SharedCell = Mutex<Option<(Browser, Arc<Tab>)>>;
-    static SHARED: OnceLock<SharedCell> = OnceLock::new();
     let cell = SHARED.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
     // Reuse only while the process is actually alive: a cheap CDP round
@@ -942,6 +943,60 @@ fn shared_browser() -> Result<Browser, AdapterError> {
         .map_err(|e| AdapterError::Web(format!("opening keep-alive tab: {e}")))?;
     *guard = Some((browser.clone(), keepalive));
     Ok(browser)
+}
+
+/// Terminate the shared browser's OS process, if `shared_browser` ever
+/// launched one in this process. Call exactly once, right before the whole
+/// `flowproof` CLI process exits (see `flowproof-cli`'s `run_cli`).
+///
+/// `shared_browser`'s own doc comment says holding a `Browser` in the
+/// static "keeps the process alive until the test binary exits" - that is
+/// only half true. A child process is not killed automatically when its
+/// parent exits on macOS or Linux; it is reparented to init and keeps
+/// running as an orphan. And even if it were, the underlying
+/// `headless_chrome` fork's own `Drop` only asks Chrome to close itself
+/// gracefully over CDP and silently ignores failure - it never force-kills
+/// the process. Combined with a `static` never running its destructor on
+/// a normal process exit, `shared_browser` alone gave zero cleanup
+/// attempts, graceful or otherwise: every invocation that used it leaked a
+/// full Chrome process tree and its temp profile directory. This closes
+/// that gap with an explicit, unconditional kill by PID.
+pub fn shutdown_shared_browser() {
+    let Some(cell) = SHARED.get() else {
+        return;
+    };
+    let taken = cell.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let Some((browser, keepalive)) = taken else {
+        return;
+    };
+    let pid = browser.get_process_id();
+    // Give the graceful path its normal chance first - closes tabs/cache
+    // cleanly when Chrome is responsive - then force-kill regardless of
+    // whether it worked, since silent failure is exactly the bug this
+    // function exists to cover.
+    drop(keepalive);
+    drop(browser);
+    if let Some(pid) = pid {
+        force_kill_pid(pid);
+    }
+}
+
+/// Send an unconditional, immediate kill to a process by OS PID. Best
+/// effort: a PID that is already gone is not an error, and there is
+/// nothing useful to do with one that resists a kill signal/call.
+fn force_kill_pid(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .status();
+    }
 }
 
 /// Browser-backed [`AppDriver`].
@@ -1163,6 +1218,14 @@ impl WebAppDriver {
                 .and_then(serde_json::Value::as_f64)
                 .unwrap_or_default(),
         ))
+    }
+
+    /// The OS PID of the Chromium process backing this driver - the shared
+    /// browser's PID when on that path, a private browser's own otherwise.
+    /// Exposed for diagnostics and for proving `shutdown_shared_browser`
+    /// actually terminates the process it claims to.
+    pub fn browser_process_id(&self) -> Option<u32> {
+        self.browser.get_process_id()
     }
 
     /// A driver on the shared browser (isolated context per flow), or a
