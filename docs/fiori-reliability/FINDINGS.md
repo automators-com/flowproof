@@ -160,6 +160,18 @@ update snapshots — both outside what the allowlist authorizes.
   rule 6's boundary exists to prevent. Reversal: trivial — a human runs
   `diskutil apfs list` and `diskutil info` on the other containers themselves
   in five minutes.
+- **Resumed below the 15GB gate, at the user's explicit direction.** After the
+  halt, the user freed some space by hand (6.5GB -> 9.3GB free) and asked
+  directly, mid-conversation, to proceed with what's currently available. This
+  is different from this session deciding on its own to ignore the halt
+  condition (which ground rule 6 forbids): the user is present, aware of the
+  15GB figure and the shortfall, and is overriding their own brief's gate for
+  their own machine in real time. Proceeding cautiously from here: building
+  without `--all-targets` first, checking free space before/after each heavy
+  step, and re-halting if it drops into risky territory (a build that starts
+  eating the low single digits of GB) rather than assuming 9.3GB is enough
+  headroom for the rest of Phase 0. Reversal: if disk pressure reappears, stop
+  and report the number again rather than pushing through silently.
 - **Left `examples/fiori/` untouched**, recorded the collision instead of
   guessing a resolution and building into it. Reason: the brief's own
   assumption about that path was wrong, and picking a new location for a
