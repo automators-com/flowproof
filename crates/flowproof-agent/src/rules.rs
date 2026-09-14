@@ -527,6 +527,33 @@ pub const ASSERT_TIMEOUT_MS: u64 = 10_000;
 /// operations (a data-generation job, a report build).
 pub const WAIT_STEP_TIMEOUT_MS: u64 = 60_000;
 
+/// Resolve the auto-wait timeout for a step from its own natural-language
+/// intent text: an explicit trailing `within <N>s` always wins, and absent
+/// one, an explicit `wait until …` step gets the same long default the
+/// deterministic grammar gives its own `wait until` forms (sized for slow
+/// backend operations), while every other assertion gets the short one.
+///
+/// Model-authored steps never carry their own timeout field (see
+/// `author.rs`'s `AuthoredAction` — there is no such field, by design: a
+/// number the model invented would be no more trustworthy than one it
+/// forgot), so this is the one place that decides it, reused by both the
+/// deterministic and model-authoring paths rather than each guessing on its
+/// own.
+pub(crate) fn timeout_ms_for_intent(intent: &str) -> u64 {
+    let (_, explicit) = split_within(intent.trim());
+    explicit.unwrap_or_else(|| {
+        if intent
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("wait until")
+        {
+            WAIT_STEP_TIMEOUT_MS
+        } else {
+            ASSERT_TIMEOUT_MS
+        }
+    })
+}
+
 /// Parse a trailing `within <N>s` / `within <N> seconds` qualifier off a
 /// step, returning (rest, timeout override).
 fn split_within(text: &str) -> (&str, Option<u64>) {

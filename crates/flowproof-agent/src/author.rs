@@ -937,7 +937,7 @@ fn ground_one(
                 target,
                 expected,
                 matcher,
-                timeout_ms: crate::rules::ASSERT_TIMEOUT_MS,
+                timeout_ms: crate::rules::timeout_ms_for_intent(intent),
             }])
         }
         other => Err(GroundingError::Rejected(format!(
@@ -2042,6 +2042,65 @@ mod tests {
                 expected: "Hello, Ada".into(),
                 matcher: crate::rules::TextMatch::Contains,
                 timeout_ms: crate::rules::ASSERT_TIMEOUT_MS,
+            }
+        );
+    }
+
+    #[test]
+    fn model_authored_wait_honors_an_explicit_within_clause() {
+        // Regression: the model never supplies its own timeout (see
+        // `AuthoredAction` - there is no such field), so this used to always
+        // ground to the short assert default regardless of what the step
+        // itself asked for - silently discarding an explicit `within 60s`
+        // and replacing it with 10s.
+        let mut client = Scripted {
+            replies: vec![
+                r##"{"action":"assert_text","target":"surface","expected":"Home","contains":true}"##
+                    .into(),
+            ],
+            calls: 0,
+        };
+        let intent_ctx = AuthorContext {
+            intent: "Wait until page shows Home within 60s",
+            ..ctx()
+        };
+        let action = author_step(&mut client, &intent_ctx).expect("authored");
+        assert_eq!(
+            action,
+            ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: "Home".into(),
+                matcher: crate::rules::TextMatch::Contains,
+                timeout_ms: 60_000,
+            }
+        );
+    }
+
+    #[test]
+    fn model_authored_wait_until_defaults_to_the_long_timeout() {
+        // No explicit `within Ns` on a `wait until` step: the model path
+        // must default the same way the deterministic grammar does for the
+        // identical phrasing (rules.rs's own `wait until page shows`
+        // arm), not to the short plain-assert default.
+        let mut client = Scripted {
+            replies: vec![
+                r##"{"action":"assert_text","target":"surface","expected":"Home","contains":true}"##
+                    .into(),
+            ],
+            calls: 0,
+        };
+        let intent_ctx = AuthorContext {
+            intent: "Wait until page shows Home",
+            ..ctx()
+        };
+        let action = author_step(&mut client, &intent_ctx).expect("authored");
+        assert_eq!(
+            action,
+            ResolvedAction::AssertText {
+                target: Target::Surface,
+                expected: "Home".into(),
+                matcher: crate::rules::TextMatch::Contains,
+                timeout_ms: crate::rules::WAIT_STEP_TIMEOUT_MS,
             }
         );
     }
