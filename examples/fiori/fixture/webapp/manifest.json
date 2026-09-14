@@ -72,12 +72,10 @@
             ],
             "targets": {
                 "worklist": {
-                    "viewName": "Worklist",
-                    "viewId": "worklist"
+                    "viewName": "Worklist"
                 },
                 "detail": {
-                    "viewName": "Detail",
-                    "viewId": "detail"
+                    "viewName": "Detail"
                 }
             }
         }
