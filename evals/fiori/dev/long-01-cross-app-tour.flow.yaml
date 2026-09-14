@@ -1,0 +1,74 @@
+# Phase 0c corpus - long flow #1 (30+ steps, crosses 4+ real screens,
+# includes a value-help dialog). Chains three of this corpus's proven
+# building blocks into one flow, the way a QA person doing an end-to-end
+# regression pass actually would: search with a wrong value first, correct
+# it via value help (Info Records per Supplier screen + the Supplier
+# field's F4 dialog), navigate back to the launchpad mid-flow ("Navigate
+# to <url>" - a real, deterministic mid-flow action, not a guess), then a
+# second, unrelated app (Change Purchasing Info Record) confirming the
+# same real record from a completely different UI path, closed out with
+# two independent out-of-band OData checks.
+#
+# Views crossed: Home (launchpad) -> Info Records per Supplier (search
+# screen) -> the Supplier field's value-help dialog -> Home again ->
+# Initial Screen (Change app) -> General Data (Change app, on a match).
+name: Cross-app tour - search, value help, then an independent second app
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  # -- Login --------------------------------------------------------
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 90s
+  - assert: page shows Display Purchasing Info Record by Supplier
+  - assert: page shows Change Purchasing Info Record
+
+  # -- App 1: Display, wrong search then corrected via value help ---
+  - Click "Display Purchasing Info Record by Supplier"
+  - "Wait until page shows Info Records per Supplier within 20s"
+  - Type DOES-NOT-EXIST into the "Supplier" in the iframe "Application"
+  - Type DOES-NOT-EXIST into the "Material" in the iframe "Application"
+  - Press Enter
+  - assert: page shows Info Records per Supplier
+  - Clear the "Supplier" field in the iframe "Application"
+  - Clear the "Material" field in the iframe "Application"
+  - Open the value help for the Supplier field in the iframe "Application"
+  - Select ${SUPPLIER} from the value help list
+  - Type ${MATERIAL} into the "Material" in the iframe "Application"
+  - Press Enter
+  - assert: the "Supplier" field in the iframe "Application" contains ${SUPPLIER}
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}
+
+  # -- Back to the launchpad, mid-flow -------------------------------
+  - Navigate to ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+  - Wait until page shows Home within 60s
+  - assert: page shows Change Purchasing Info Record
+
+  # -- App 2: Change, read only, an independent UI path to the same
+  #    real record ----------------------------------------------------
+  - Click "Change Purchasing Info Record"
+  - assert: page shows Initial Screen
+  - Type ${MATERIAL} into the "Material" field
+  - Type ${SUPPLIER} into the "Supplier" field
+  - Type ${PLANT} into the "Plant" field
+  # The screen hard-blocks with "Please also enter a purchasing
+  # organization" without this - confirmed live on this reference system.
+  - Type ${PURCHASING_ORG} into the "Purchasing Organization" field
+  - Press the "Go" button
+  - assert: page shows General Data
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}
+
+  # -- Out-of-band truth, twice ---------------------------------------
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_contains: ${MATERIAL}
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Supplier%20eq%20'${SUPPLIER}'
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_contains: ${MATERIAL}

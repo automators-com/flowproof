@@ -1,0 +1,22 @@
+# Phase 0c corpus - short flow #3. Read-only: login, then open the "PTP
+# Process Area BU Apps" group tile (confirmed clickable live - see
+# examples/fiori/purchase-info-records-report.flow.yaml) and confirm one of
+# its known sub-apps is listed. Never opens the sub-app itself - that is
+# exercised by the medium/long specs that navigate all the way in through
+# this same group.
+#
+# The group's exact sub-tile wording is unverified here (the sibling
+# example's own TODO notes three near-identical options with no single
+# named target) - "Manage Info Records" is the shortest, least ambiguous of
+# the three, chosen for that reason. Resolve exactly against the live
+# catalog at record time.
+name: PTP Process Area BU Apps group lists Manage Info Records
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  - Click "PTP Process Area BU Apps"
+  - assert: page shows Manage Info Records

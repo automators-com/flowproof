@@ -1,0 +1,30 @@
+# Phase 0c corpus - medium flow #5. Searches with a deliberately wrong
+# Material first (a real "no match" screen state, not a guessed error
+# message - see the comment below), then corrects it to the known real
+# record in the same flow. Distinct from medium-01/03/04: this is the
+# corpus's one search-retry pattern, exercising whatever real UI state the
+# classic ABAP selection screen shows for zero results.
+#
+# Deliberately does not assert on the exact wording of a "no results"
+# message - that text is unverified. What IS safe to assert without
+# guessing: the search screen is still the search screen (no navigation
+# away, no crash) after a wrong search, and after correcting the Material
+# field and re-searching, the real record's own field now shows it.
+name: Display info record by supplier - wrong search then corrected
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  - Click "Display Purchasing Info Record by Supplier"
+  - "Wait until page shows Info Records per Supplier within 20s"
+  - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
+  - Type DOES-NOT-EXIST into the "Material" in the iframe "Application"
+  - Press Enter
+  - assert: page shows Info Records per Supplier
+  - Clear the "Material" field in the iframe "Application"
+  - Type ${MATERIAL} into the "Material" in the iframe "Application"
+  - Press Enter
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}

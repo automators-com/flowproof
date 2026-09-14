@@ -1,0 +1,38 @@
+# Phase 0c corpus - medium flow #2. Adapted from the already-proven
+# examples/fiori/manage-info-records.flow.yaml, narrowed to read-only for
+# the exact reason that file documents: this app has no scratch/throwaway
+# record to create, so any Save permanently steers a real, shared
+# reference record with no undo. Navigate + search + read only, plus an
+# out-of-band OData cross-check at the end, same as the source flow.
+#
+# Uses ${SAP_USER}/${SAP_PASSWORD} (confirmed present in .env) rather than
+# the source flow's ${FIORI_USER}/${FIORI_PASSWORD}, and the "Home" wait
+# text confirmed live by login-smoke.flow.yaml rather than the source
+# flow's unconfirmed "My Apps" - both are the corpus's own convention, not
+# a claim the source flow is wrong.
+name: Change Purchasing Info Record - read only
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 90s
+  - assert: page shows Change Purchasing Info Record
+  - Click "Change Purchasing Info Record"
+  - assert: page shows Initial Screen
+  - Type ${MATERIAL} into the "Material" field
+  - Type ${SUPPLIER} into the "Supplier" field
+  - Type ${PLANT} into the "Plant" field
+  # The screen hard-blocks with "Please also enter a purchasing
+  # organization" without this - confirmed live on this reference system.
+  - Type ${PURCHASING_ORG} into the "Purchasing Organization" field
+  - Press the "Go" button
+  - assert: page shows General Data
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_contains: ${MATERIAL}

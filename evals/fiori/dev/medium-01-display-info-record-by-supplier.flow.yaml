@@ -1,0 +1,21 @@
+# Phase 0c corpus - medium flow #1. Adapted from the already-proven
+# examples/fiori/display-info-record-by-supplier.flow.yaml (real, live,
+# read-only) - the corpus's baseline "search and read" flow every other
+# medium/long spec either reuses directly or builds on: Home tile ->
+# classic ABAP selection screen embedded in a same-origin iframe named
+# "Application" -> search by Supplier + Material -> read the result.
+name: Display info record by supplier
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 90s
+  - Wait until page shows Display Purchasing Info Record by Supplier within 20s
+  - Click "Display Purchasing Info Record by Supplier"
+  - "Wait until page shows Info Records per Supplier within 20s"
+  - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
+  - Type ${MATERIAL} into the "Material" in the iframe "Application"
+  - Press Enter
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}

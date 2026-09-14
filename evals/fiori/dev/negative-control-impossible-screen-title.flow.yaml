@@ -1,0 +1,16 @@
+# Phase 0c corpus - negative control #2. A different failure shape from
+# the sibling negative control: asserts a screen title that will never
+# appear anywhere in this real launchpad, right after a correct login.
+# Must fail. Scored inverted by scripts/fiori-eval.py: this spec PASSES
+# the eval only when flowproof correctly reports it broken.
+name: Home page shows an impossible screen title (must fail)
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  # Wrong on purpose: no real screen in this tenant is titled this -
+  # this assertion must not hold.
+  - assert: page shows Nonexistent Report Configuration Screen XYZ123

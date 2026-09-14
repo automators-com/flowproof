@@ -1,0 +1,21 @@
+# Phase 0c corpus - short flow #2. Read-only: login, then confirm the two
+# real tiles this whole corpus depends on are actually on the account's
+# Home page - "Display Purchasing Info Record by Supplier" (used directly
+# from Home by several other corpus specs) and "PTP Process Area BU Apps"
+# (the group tile other specs navigate through instead). If either
+# disappears from this account's catalog, this is the one spec that says
+# so directly rather than every other spec failing downstream with a
+# confusing "tile not found".
+#
+# Login steps and "Home" wait text are the exact proven pattern from
+# examples/fiori/login-smoke.flow.yaml - confirmed live tonight.
+name: Home page shows the tiles this corpus depends on
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  - assert: page shows Display Purchasing Info Record by Supplier
+  - assert: page shows PTP Process Area BU Apps

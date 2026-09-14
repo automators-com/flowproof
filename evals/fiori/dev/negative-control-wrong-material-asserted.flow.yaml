@@ -1,0 +1,24 @@
+# Phase 0c corpus - negative control #1. A legitimate, otherwise-correct
+# search on the real system, with a deliberately WRONG final assertion:
+# claims the result shows a material number that is real but is not the
+# one actually searched for. This must fail - a passing run here would
+# mean the harness has stopped detecting real breakage, not that
+# flowproof is flawless. Scored inverted by scripts/fiori-eval.py
+# (`negative-control` in the filename): the harness counts this spec as
+# PASSING the eval only when flowproof correctly reports it broken.
+name: Display info record - deliberately wrong assertion (must fail)
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  - Click "Display Purchasing Info Record by Supplier"
+  - "Wait until page shows Info Records per Supplier within 20s"
+  - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
+  - Type ${MATERIAL} into the "Material" in the iframe "Application"
+  - Press Enter
+  # Wrong on purpose: the real material searched for is ${MATERIAL}
+  # ("TG10"), not this one - this assertion must not hold.
+  - assert: the "Material" field in the iframe "Application" contains DOES-NOT-MATCH-TG10

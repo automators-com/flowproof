@@ -1,0 +1,73 @@
+# Phase 0c corpus - long flow #2 (30+ steps, crosses 4+ real screens,
+# includes a value-help dialog). Same overall shape as
+# long-01-cross-app-tour.flow.yaml, deliberately varied: opens with an
+# out-of-band API canary before touching the browser at all (if the record
+# itself is gone, this fails in the first step instead of thirty steps in),
+# reaches BOTH apps through the "PTP Process Area BU Apps" group tile
+# instead of directly from Home (a distinct group-listing screen visited
+# twice), and exercises value help on the Material field instead of
+# Supplier.
+#
+# Views crossed: Home (launchpad) -> PTP group listing -> Info Records per
+# Supplier (search screen) -> the Material field's value-help dialog ->
+# Home again -> PTP group listing again -> Initial Screen (Change app) ->
+# General Data (Change app, on a match).
+name: PTP group tour with an API canary - value help on Material
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  # -- Canary: confirm the record exists before spending any UI steps -
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_contains: ${MATERIAL}
+
+  # -- Login ----------------------------------------------------------
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 90s
+
+  # -- App 1, via the PTP group: wrong search, then value help --------
+  - Click "PTP Process Area BU Apps"
+  - assert: page shows Display purchasing info records by Supplier
+  - assert: page shows Manage Info Records
+  - Click "Display purchasing info records by Supplier"
+  - "Wait until page shows Info Records per Supplier within 20s"
+  - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
+  - Type DOES-NOT-EXIST into the "Material" in the iframe "Application"
+  - Press Enter
+  - assert: page shows Info Records per Supplier
+  - Clear the "Material" field in the iframe "Application"
+  - Open the value help for the Material field in the iframe "Application"
+  - Select ${MATERIAL} from the value help list
+  - Press Enter
+  - assert: the "Supplier" field in the iframe "Application" contains ${SUPPLIER}
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}
+
+  # -- Back to the launchpad, mid-flow, through the group again -------
+  - Navigate to ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+  - Wait until page shows Home within 60s
+  - Click "PTP Process Area BU Apps"
+  - assert: page shows Manage Info Records
+
+  # -- App 2, via the same group: Change, read only --------------------
+  - Click "Manage Info Records"
+  - assert: page shows Initial Screen
+  - Type ${MATERIAL} into the "Material" field
+  - Type ${SUPPLIER} into the "Supplier" field
+  - Type ${PLANT} into the "Plant" field
+  - Type ${PURCHASING_ORG} into the "Purchasing Organization" field
+  - Press the "Go" button
+  - assert: page shows General Data
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}
+
+  # -- Out-of-band truth, again, from a different filter shape ---------
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Plant%20eq%20'${PLANT}'
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_contains: ${MATERIAL}

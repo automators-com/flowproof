@@ -1,0 +1,32 @@
+# Phase 0c corpus - short flow #4. No browser at all (`app: api`, same
+# UI-less flow kind examples/fiori/purchasing-info-record-api.flow.yaml
+# uses) - three independent read-only OData GETs against the real system,
+# confirming the same record three different ways: the full three-field
+# filter, material alone, and supplier alone. Purely a data-layer check,
+# useful as a fast canary that runs before anything UI-dependent: if this
+# fails, the record itself is gone or the OData service changed, not
+# flowproof's web adapter.
+#
+# Same Basic Auth pattern as the sibling api flow - only the ${VAR}
+# reference is ever written to the trace, never the raw credential.
+name: Purchasing info record - confirmed three ways via OData
+app: api
+steps:
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_contains: ${MATERIAL}
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'&$format=json
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_contains: ${SUPPLIER}
+  - assert_api:
+      request: GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Supplier%20eq%20'${SUPPLIER}'&$format=json
+      headers:
+        Authorization: Basic ${SAP_ODATA_BASIC_AUTH}
+      status: 200
+      body_contains: ${MATERIAL}

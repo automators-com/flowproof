@@ -1,0 +1,28 @@
+# Phase 0c corpus - medium flow #4. Exercises value-help (F4) on the
+# classic ABAP selection screen's Supplier field, a standard SAP GUI
+# possible-entries dialog - read-only (open it, pick the known real
+# supplier, never edit or create). This is the corpus's one direct
+# dialog+value-help interaction against the real system, distinct from
+# medium-01's plain typed search.
+#
+# The exact mechanics of opening/using the value-help popup are
+# deliberately left as plain language, not a guessed selector - like the
+# ambiguous steps in examples/fiori/purchase-info-records-report.flow.yaml,
+# resolve this against the live screen at record time rather than assuming
+# a specific control.
+name: Display info record by supplier - via value help
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  - Click "Display Purchasing Info Record by Supplier"
+  - "Wait until page shows Info Records per Supplier within 20s"
+  - Open the value help for the Supplier field in the iframe "Application"
+  - Select ${SUPPLIER} from the value help list
+  - Type ${MATERIAL} into the "Material" in the iframe "Application"
+  - Press Enter
+  - assert: the "Supplier" field in the iframe "Application" contains ${SUPPLIER}
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}
