@@ -5,6 +5,7 @@ mod agent_flow;
 mod capture;
 pub mod config;
 mod doctor;
+mod suite;
 mod update_check;
 
 // The falsifiability harness feeds committed fixture records through the
@@ -2106,9 +2107,10 @@ fn run_suite_with_author(
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
+    order_specs(&mut specs, dir, &manifest.order);
+    suite::select_specs(&mut specs, dir, &manifest)?;
     apply_env_from(&manifest, dir)?;
     apply_suite_env(&manifest);
-    order_specs(&mut specs, dir, &manifest.order);
 
     // Control-id uniqueness is a suite-level property, enforced at load: two
     // flows sharing a control id would corrupt the audit coverage map. Only
@@ -2122,7 +2124,21 @@ fn run_suite_with_author(
 
     let mut reports: Vec<flowproof_replay::RunReport> = Vec::new();
     let mut flows = Vec::new();
+    let mut blocked = 0usize;
     for spec_path in &specs {
+        if let Some(reason) = suite::blocked_reason(spec_path, dir, &manifest, &specs, &reports) {
+            blocked += 1;
+            let report =
+                flowproof_replay::RunReport::skipped(&spec_path.display().to_string(), &reason);
+            if !json {
+                println!("[SKIP] {} ({reason})", report.name);
+            }
+            flows.push(
+                serde_json::json!({"spec": spec_path, "report": report, "report_path": null}),
+            );
+            reports.push(report);
+            continue;
+        }
         let mut authoring = None;
         // The env-flag gate wins over everything (including --strict's
         // missing-trace error): a deliberately gated flow with no trace
@@ -2456,12 +2472,13 @@ fn run_suite_with_author(
     let errored = reports.iter().filter(|r| r.trace_id == "errored").count();
     let passed = reports.iter().filter(|r| r.passed).count() - skipped;
     let ran = reports.len() - skipped;
-    let all_passed = reports.iter().all(|r| r.passed);
+    let all_passed = blocked == 0 && reports.iter().all(|r| r.passed);
     if json {
         let payload = serde_json::json!({
             "flows": flows,
             "passed": all_passed,
             "skipped": skipped,
+            "blocked": blocked,
             "errored": errored,
             "junit_path": junit_path,
         });

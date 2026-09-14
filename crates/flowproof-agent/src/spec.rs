@@ -2385,6 +2385,18 @@ pub struct SuiteManifest {
     /// listed run after, in the default sorted order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<String>,
+    /// Explicit allowlist, in execution order. When present, unlisted files
+    /// never execute. Cannot be combined with `order`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flows: Option<Vec<String>>,
+    /// Prerequisite flow paths. Each prerequisite must be selected and
+    /// precede its dependent in the execution order.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub depends_on: std::collections::BTreeMap<String, Vec<String>>,
+    /// Skip remaining flows after a failure or harness error. Independent
+    /// suites keep their historical continue-on-failure default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop_on_failure: bool,
     /// Browser launch/emulation defaults for every flow in the suite
     /// (web): a flow's own `browser:` wins outright when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]

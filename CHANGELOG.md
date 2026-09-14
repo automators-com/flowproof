@@ -6,6 +6,13 @@ together).
 
 ## Unreleased
 
+- **A business workflow can now select exactly which flows may run and
+  prevent later operations from executing without their prerequisites.**
+  `order` was only a sort: candidate files still ran, and a failed creation
+  could be followed by a dependent posting. Opt-in `flows`, `depends_on`
+  and `stop_on_failure` make selection and failure policy explicit, validate
+  the graph before execution, and retain skipped stages in the suite report.
+
 ## 0.22.0
 
 ### Added

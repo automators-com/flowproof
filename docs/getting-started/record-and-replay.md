@@ -302,8 +302,36 @@ order:                                       # optional; unlisted specs run afte
 
 `env` is exported to every flow and hook; `before_each`/`after_each` run
 via `sh -c` with the current spec path in `$FLOWPROOF_SPEC`. A hook that
-exits non-zero aborts the suite; silent seed/cleanup failure is exactly
+exits non-zero errors that flow; silent seed/cleanup failure is exactly
 the fragility to avoid.
+
+**Business workflows: select and guard their stages.** `order` only sorts;
+it still runs unlisted files. Use `flows` when candidate or alternative
+operations must stay out of the run:
+
+```yaml
+flows:
+  - create-order.flow.yaml
+  - receive-order.flow.yaml
+  - invoice-order.flow.yaml
+depends_on:
+  receive-order.flow.yaml: [create-order.flow.yaml]
+  invoice-order.flow.yaml: [receive-order.flow.yaml]
+stop_on_failure: true
+```
+
+`flows` is a nonempty allowlist in execution order; it cannot be combined
+with `order`. Paths must be relative files inside the suite. Dependencies
+must name selected flows earlier in that order. Invalid names, exclusions,
+duplicates and cycles fail before any data command or flow runs.
+
+A prerequisite must actually pass. A failed, errored or skipped prerequisite
+skips its dependents without launching their hooks or drivers, and makes the
+suite fail. `stop_on_failure: true` also skips independent remaining flows
+after a failure or error. Both policies are opt-in; ordinary suites still
+continue through independent failures and write a complete merged report.
+These guards apply to directory runs; running one spec directly remains an
+explicit standalone operation.
 
 **Minted test data: `env_from`.** Hooks are for *effects*; their stdout
 is not captured. When flows need values an external CLI mints (DataMaker
