@@ -4,7 +4,18 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
-## Unreleased
+## 0.23.0
+
+- **Browser recordings preserve captured text exactly while matching visible
+  labels consistently.** Soft hyphens no longer make recorded and replayed
+  title assertions disagree, iframe label actions follow probe matching, and
+  accessibility hints must identify the intended control before promotion.
+  Redirects no longer leave the browser waiting on a completed request.
+
+- **Fiori regression controls distinguish assertion failures from broken
+  infrastructure.** A missing input, login failure, or unavailable target
+  cannot count as proof that a negative assertion worked. Evaluation runs
+  retain their own evidence without rewriting the source recordings.
 
 - **Agent conversations check every delivery, including a single user
   message.** Command agents receive later messages only after all model
