@@ -985,6 +985,96 @@ pub fn shutdown_shared_browser() {
     }
 }
 
+/// Reference count of live `SharedBrowserGuard`s. `cargo test` runs `#[test]`
+/// functions concurrently by default, and the shared browser is one
+/// process-global static (see `shared_browser`) - a guard in test A that
+/// unconditionally killed it on drop would race test B, still mid-launch on
+/// the very same browser, and that race is not hypothetical: it reproduced
+/// live the first time this existed (network_idle_e2e's two tests, run
+/// together, one killing the shared browser out from under the other -
+/// "Unable to make method calls because underlying connection is closed").
+/// Only the LAST guard to drop may actually shut anything down.
+static GUARD_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Hold one of these (via [`SharedBrowserGuard::new`]) for the lifetime of
+/// anything that might launch the shared browser. The last one dropped
+/// calls `shutdown_shared_browser` for you - including on an early return
+/// or a panic, unlike a plain call at the end of a function body.
+/// `flowproof-cli::run_cli` holds one for the whole CLI process (where
+/// there is only ever one); any test that constructs a `WebAppDriver` on
+/// the shared path (the default - see `should_share_browser`) should hold
+/// one too, or it leaks a full Chrome process tree exactly like the CLI
+/// used to before this existed. Concurrent tests each holding their own
+/// guard are safe BECAUSE of the reference count above: the browser
+/// outlives every guard still alive, not just the one that happens to drop
+/// first.
+#[must_use = "holds the shared browser's cleanup for as long as this value lives - binding it to `_` is correct (that is what runs the guard for the rest of the scope); dropping it immediately with `drop(SharedBrowserGuard::new())` defeats the point"]
+pub struct SharedBrowserGuard(());
+
+impl SharedBrowserGuard {
+    pub fn new() -> Self {
+        GUARD_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Default for SharedBrowserGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for SharedBrowserGuard {
+    fn drop(&mut self) {
+        if GUARD_COUNT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            shutdown_shared_browser();
+        }
+    }
+}
+
+#[cfg(test)]
+mod shared_browser_guard_tests {
+    use super::{SharedBrowserGuard, GUARD_COUNT};
+    use std::sync::atomic::Ordering;
+
+    /// The race this reference count exists to prevent, reproduced live the
+    /// first time `SharedBrowserGuard` existed without it: two concurrent
+    /// `cargo test` threads share the one process-global browser
+    /// (`network_idle_e2e`'s two tests, run together - one guard's
+    /// unconditional drop killed the shared browser mid-launch on the
+    /// other, "Unable to make method calls because underlying connection is
+    /// closed"). A held sibling guard must keep the count above zero, so a
+    /// guard going out of scope while another is still alive must NOT be
+    /// the one that triggers a shutdown.
+    #[test]
+    fn a_held_sibling_guard_keeps_the_count_above_zero() {
+        let before = GUARD_COUNT.load(Ordering::SeqCst);
+        let first = SharedBrowserGuard::new();
+        assert_eq!(GUARD_COUNT.load(Ordering::SeqCst), before + 1);
+        {
+            let _second = SharedBrowserGuard::new();
+            assert_eq!(
+                GUARD_COUNT.load(Ordering::SeqCst),
+                before + 2,
+                "two live guards must both be counted"
+            );
+        }
+        // The second guard is gone, but `first` is still held - the count
+        // must reflect exactly that, not have raced to zero.
+        assert_eq!(
+            GUARD_COUNT.load(Ordering::SeqCst),
+            before + 1,
+            "one guard still alive must leave the count above zero"
+        );
+        drop(first);
+        assert_eq!(
+            GUARD_COUNT.load(Ordering::SeqCst),
+            before,
+            "the last guard dropping must return the count to its starting point"
+        );
+    }
+}
+
 /// Send an unconditional, immediate kill to a process by OS PID. Best
 /// effort: a PID that is already gone is not an error, and there is
 /// nothing useful to do with one that resists a kill signal/call.
@@ -1908,6 +1998,82 @@ fn is_transport_fault(message: &str) -> bool {
     m.contains("connection is closed")
         || m.contains("the event waited for never came")
         || m.contains("unable to make method calls")
+}
+
+/// Retry a fallible operation exactly once if its first failure looks like
+/// a transient CDP transport fault - the same one-shot recovery
+/// `with_element` already gives element-scoped calls (re-finding the
+/// element and retrying its own op inline), generalized here for a call
+/// that talks to the tab directly and has nothing to re-resolve. Pure
+/// control flow, no CDP calls of its own, so it is unit-testable with a
+/// mock closure rather than only provable against a real, flaky browser.
+fn retry_once_on_transport_fault<T>(
+    mut attempt: impl FnMut() -> Result<T, String>,
+) -> Result<T, String> {
+    match attempt() {
+        Ok(value) => Ok(value),
+        Err(e) if is_transport_fault(&e) => {
+            std::thread::sleep(Duration::from_millis(300));
+            attempt()
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod transport_retry_tests {
+    use super::retry_once_on_transport_fault;
+    use std::cell::Cell;
+
+    /// docs/fiori-reliability/FINDINGS.md:
+    /// medium-02-change-info-record-readonly.flow.yaml failed live with
+    /// "probing an iframe: Unable to make method calls because underlying
+    /// connection is closed" - `probe_frame`'s CDP call had no retry at all,
+    /// unlike every `with_element`-routed call, so a single transient CDP
+    /// hiccup killed the whole flow with zero chance to recover.
+    #[test]
+    fn a_transport_fault_recovers_on_the_second_attempt() {
+        let calls = Cell::new(0);
+        let result = retry_once_on_transport_fault(|| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                Err("Unable to make method calls because underlying connection is closed".into())
+            } else {
+                Ok("recovered")
+            }
+        });
+        assert_eq!(result, Ok("recovered"));
+        assert_eq!(calls.get(), 2, "must retry exactly once, not loop");
+    }
+
+    #[test]
+    fn a_transport_fault_that_never_clears_still_fails_after_one_retry() {
+        let calls = Cell::new(0);
+        let result: Result<(), String> = retry_once_on_transport_fault(|| {
+            calls.set(calls.get() + 1);
+            Err("the event waited for never came".into())
+        });
+        assert_eq!(result, Err("the event waited for never came".to_string()));
+        assert_eq!(
+            calls.get(),
+            2,
+            "one retry, then give up - not an infinite loop"
+        );
+    }
+
+    /// A non-transport error (element genuinely missing, a real assertion
+    /// mismatch) must propagate immediately - this retry exists for a
+    /// flaky CONNECTION, not as a generic "try again" for any failure.
+    #[test]
+    fn a_non_transport_error_is_never_retried() {
+        let calls = Cell::new(0);
+        let result: Result<(), String> = retry_once_on_transport_fault(|| {
+            calls.set(calls.get() + 1);
+            Err("element not found".into())
+        });
+        assert_eq!(result, Err("element not found".to_string()));
+        assert_eq!(calls.get(), 1, "a non-transport error must not be retried");
+    }
 }
 
 /// How a [`UiaSelector`] resolves on a page: a CSS selector or a text
@@ -3839,13 +4005,23 @@ impl AppDriver for WebAppDriver {
             id = js(&query.inner_id),
             text = js(&query.inner_text),
         );
-        let status = self
-            .tab()?
-            .evaluate(&call, false)
-            .map_err(|e| web_err("probing an iframe", e))?
-            .value
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default();
+        // ONE retry on a transport fault, same recovery `with_element` gives
+        // element-scoped calls (see medium-02-change-info-record-readonly's
+        // real "probing an iframe: ... underlying connection is closed"
+        // failure in docs/fiori-reliability/FINDINGS.md): this call talks to
+        // the tab directly, with no element to re-resolve, so it never went
+        // through that retry at all - any transient CDP hiccup here killed
+        // the whole flow on the first blip, with zero chance to recover.
+        let status = retry_once_on_transport_fault(|| {
+            self.tab()
+                .map_err(|e| e.to_string())?
+                .evaluate(&call, false)
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| web_err("probing an iframe", e))?
+        .value
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
         if status == "cross_origin" {
             return Ok(FrameProbe::CrossOrigin);
         }
