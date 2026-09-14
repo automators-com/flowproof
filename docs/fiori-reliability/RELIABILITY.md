@@ -1,12 +1,14 @@
 # Fiori reliability — report
 
 **The goal was not reached — no gate was attempted, and no FAA number
-exists.** Say that plainly, first. One real fix did land and is proven
-correct end to end (H1: a regenerated `native_id` no longer breaks replay),
-but "a mechanism works on one fixture" is not "flowproof is reliable on
-Fiori" — that needs the harness and a real round, neither of which
-happened. What follows is a real, evidence-backed account of what was found
-and fixed, not a claimed win on the actual goal.
+exists.** Say that plainly, first. Two real fixes did land and are each
+proven correct end to end (H1: a regenerated `native_id` no longer breaks
+replay; H2/H5: the recorder and replay no longer act on a scene before its
+real network activity has settled), but "two mechanisms work on one
+fixture" is not "flowproof is reliable on Fiori" — that needs the harness
+and a real round, neither of which happened. What follows is a real,
+evidence-backed account of what was found and fixed, not a claimed win on
+the actual goal.
 
 ## 1. Gate status
 
@@ -28,22 +30,22 @@ frozen corpus, no generator.
 
 ## 4. Hypothesis verdicts
 
-All backed by evidence in `FINDINGS.md`; only H1/H2/H3/H3b are settled with
-real data, H4/H5 are code-level or explained-not-fixed.
+All backed by evidence in `FINDINGS.md`; H1/H2/H3/H3b/H5 are settled with
+real data, H4 is code-level only.
 
 | Hypothesis | Verdict | Evidence |
 |---|---|---|
 | H1 (native id harmful for UI5) | **CONFIRMED, live — AND FIXED** | A real `flowproof record` trace against the actual launchpad captured `#__xmlview1--detailPage-navButton` and `#__text6-__clone0` as tier-0 `native_id` selectors — the exact generated, unstable ids the brief predicted. The fix (an `a11y` selector tier, ranked above `native_id`) is landed and proven: a test that renames a button's id — the precise failure this hypothesis describes — replays successfully via the `a11y` rung instead. |
-| H2 (no UI5-aware idle signal) | **CONFIRMED, live, twice** | A genuine, naive first-attempt `flowproof record` against the real system failed on a post-login tile-loading race, diagnosed by flowproof's own repair engine and left unfixed (no `within Ns` clause to widen). Independently reproduced by hand: blank at 3s, tiles at ~13s on the same real page. |
+| H2 (no UI5-aware idle signal) | **CONFIRMED, live, twice — AND FIXED** | A genuine, naive first-attempt `flowproof record` against the real system failed on a post-login tile-loading race, diagnosed by flowproof's own repair engine and left unfixed (no `within Ns` clause to widen). Independently reproduced by hand: blank at 3s, tiles at ~13s on the same real page. The fix (a CDP `Network`-listener-backed `network_idle` check in `settled_scene`) is landed and proven against a real 2-second delayed HTTP response — the scene correctly waits for it rather than racing ahead. |
 | H3 (`sap.ui.test.RecordReplay`) | **Present but broken outside its own harness** | All 64 of its dependencies load (HTTP 200) on the real production launchpad, but calling it cold via CDP throws an uncaught `TypeError` and the `require` never completes. Real friction, not a theoretical risk. |
 | H3b (accessibility tree — proposed mid-session) | **CONFIRMED rich and usable, right now** | A live accessibility snapshot of the real Home page shows stable role+name pairs (`link "Change Purchasing Info Record Tile"`, etc.) on every interactive element, no page injection needed. Evidence favors this over H3. |
 | H4 (dialogs/popovers escape search root) | **Likely not reproducible, code-level only** | The adapter searches the whole document, not a scoped container. Not verified empirically against a real Fiori dialog. |
-| H5 (authoring is the bottleneck) | **Same mechanism as H2** | `driver.scene()` — the function the model grounds authoring against — is the identical settle heuristic replay waits on. One fix candidate closes both. |
+| H5 (authoring is the bottleneck) | **Same mechanism as H2 — AND FIXED** | `driver.scene()` — the function the model grounds authoring against — is the identical settle heuristic replay waits on, so H2's fix closes this too: the recorder's grounding scene now also waits for network-idle before it's handed to the model. |
 
 ## 5. What changed
 
-Three real, tested commits landed on `fiori-reliability/2026-09-14` that
-together close H1:
+Four real, tested commits landed on `fiori-reliability/2026-09-14` that
+close H1, then H2/H5:
 
 - **`trace: add the a11y selector tier, ranked above native_id`** — a new
   `SelectorTier::A11y`, ranked first in the ladder, with trace-format schema
@@ -72,13 +74,26 @@ role) turned out to collide with the structural tier, which already sets
 `control_type`+`name` together for web steps — caught by re-reading the
 existing conversion code before shipping, not by a live collision.
 
-**Proven end to end, not just unit-tested**: `a_renamed_native_id_still_replays_via_the_a11y_rung`
-records against the real fixture, then overwrites the same url's content so
-the button's id changes while its accessible name stays put — the exact
-failure H1 describes. The full replay still passes, resolved via the `a11y`
-rung, not a degraded fallback. Four live-Chromium tests total
-(`FLOWPROOF_E2E=1`), each seen failing for the right reason before being
-fixed.
+- **`web: settle on network-idle, not just DOM shape, closing H2 and H5`**
+  — `settled_scene()` (backs both replay's pre-action wait and the
+  recorder's authoring-time grounding) now requires a CDP `Network`-listener-
+  backed `network_idle` check alongside its existing shape/ready agreement.
+  Deliberately not "raise the timeout" (forbidden as a primary fix): a quiet
+  page still settles in ~200ms, unchanged; the round budget only extends to
+  a much longer ceiling (~30s) once a round actually observes a pending
+  request - a real signal decided the wait needed to be longer, not a
+  constant applied unconditionally to every page.
+
+**Both proven end to end, not just unit-tested**:
+`a_renamed_native_id_still_replays_via_the_a11y_rung` records against the
+real fixture, then overwrites the same url's content so the button's id
+changes while its accessible name stays put — the exact failure H1
+describes — and the full replay still passes, resolved via the `a11y` rung.
+`network_idle_e2e.rs::scene_waits_for_a_real_delayed_fetch_before_settling`
+serves a real 2-second delayed HTTP response and confirms the scene waits
+for it rather than racing ahead — the exact failure H2 describes. Five
+live-Chromium tests total (`FLOWPROOF_E2E=1`), each seen failing for the
+right reason before being fixed.
 
 Everything else committed tonight is documentation, evidence, and one small
 fixture-fidelity fix (`examples(fiori): stop pinning explicit view ids in
@@ -87,24 +102,18 @@ full sequence with root causes.
 
 ## 6. What is still broken
 
-H2/H3 are still unfixed — nothing shipped tonight moves the needle on the
-tile-loading race or the authoring-side settle mechanism. And H1 being fixed
-on one fixture is not the same as flowproof being reliable on Fiori at
-scale — that claim needs the harness and a real round, neither of which
+H3 is still unfixed as such (though H3b's accessibility-tree approach,
+which now backs the a11y tier, effectively supersedes it). And H1/H2 being
+fixed on one fixture is not the same as flowproof being reliable on Fiori
+at scale — that claim needs the harness and a real round, neither of which
 exists yet. Ranked by what would unblock the most, cheapest first:
 
-1. **A general, signal-driven settle/wait mechanism** (closes H2 and H5
-   together, per FINDINGS.md — this ranking moved up now that H1 is done).
-   Explicitly not "raise the timeout": the real system needed up to 120s in
-   one hand-tuned expert spec, so no fixed value is both fast on a healthy
-   day and safe on a slow one; needs a real busy/pending-request signal.
-2. **H4, empirically.** Cheap to check once there's a way to reach a real
+1. **H4, empirically.** Cheap to check once there's a way to reach a real
    dialog/popover in a test flow; still not done.
-3. **The harness, generator, and gate rounds** — none of Phase 0c/1
+2. **The harness, generator, and gate rounds** — none of Phase 0c/1
    (remaining)/2/3/4 happened. This is the bulk of the brief's actual scope
-   and none of it is started. A fixed selector-ladder mechanism, proven
-   correct on one fixture, is a necessary input to this — not a substitute
-   for it.
+   and none of it is started. Two fixed mechanisms, each proven correct on
+   one fixture, are a necessary input to this — not a substitute for it.
 
 ## 7. What I should not trust
 
@@ -144,9 +153,10 @@ exists yet. Ranked by what would unblock the most, cheapest first:
 git checkout fiori-reliability/2026-09-14
 cargo test -p flowproof-trace          # the new tier + ordering test
 cargo test -p flowproof-replay
-# The real H1 proof - needs a real Chromium, so opt-in:
+# The real H1/H2 proofs - need a real Chromium, so opt-in:
 FLOWPROOF_E2E=1 cargo test -p flowproof-adapters --all-features --test a11y_capture
 FLOWPROOF_E2E=1 cargo test -p flowproof-cli --all-features --test a11y_selector_e2e
+FLOWPROOF_E2E=1 cargo test -p flowproof-adapters --all-features --test network_idle_e2e
 ```
 
 The real-system probes are not scripted — they were interactive

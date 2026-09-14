@@ -241,20 +241,23 @@ strong leads, not closed verdicts.
   and resolves correctly at replay - proven end to end by a test where the
   native id changes (the exact failure this hypothesis describes) and replay
   still passes via `a11y`, never touching the dead `native_id` rung.
-- **H2 — no UI5-aware idle signal: CONFIRMED, and it's the same mechanism as
-  H5.** [`web.rs:788`](../../crates/flowproof-adapters/src/web.rs)
-  `settled_scene()`: waits for two DOM-shape reads 100ms apart to agree,
-  capped at 20 rounds (~2s), then proceeds regardless. No concept of a UI5
+- **H2 — no UI5-aware idle signal: CONFIRMED, same mechanism as H5, AND
+  FIXED.** [`web.rs:788`](../../crates/flowproof-adapters/src/web.rs)
+  `settled_scene()`: waited for two DOM-shape reads 100ms apart to agree,
+  capped at 20 rounds (~2s), then proceeded regardless. No concept of a
   busy indicator or an in-flight OData batch. **The same function backs
   authoring**: `driver.scene()` in
   [`recorder.rs:2327`](../../crates/flowproof-agent/src/recorder.rs) is called
   directly before handing the scene to the model for grounding, with no
-  additional UI5-specific wait. So H5's "the model grounds against a
-  half-rendered DOM" and H2's "replay acts on a control about to be
-  destroyed" are **one root cause wearing two symptoms**, not two separate
-  defects — fixing the settle/idle mechanism address both the authoring
-  quality problem and the replay race at once. This raises its rank on the
-  fix list: one change, two classes of failure closed.
+  additional wait — so H5's "the model grounds against a half-rendered DOM"
+  and H2's "replay acts on a control about to be destroyed" are one root
+  cause wearing two symptoms, not two separate defects. **Fixed generically**:
+  a CDP `Network` event listener tracks in-flight requests; `settled_scene`
+  now requires `network_idle()` alongside shape/ready agreement, with the
+  round budget only extending once a round actually observes a pending
+  request (a quiet page still settles in ~200ms, unchanged). See "Implementation
+  status" below for the full mechanism and its live-Chromium proof (a real
+  2-second delayed fetch, the scene correctly waits for it).
 - **H3 — missing UI5 selector rung: CONFIRMED ABSENT.** No reference to
   `sap.ui.test.RecordReplay` or `waitForUI5` anywhere in the codebase
   (`grep -rn` across `crates/`). The brief's proposed fix — a `ui5` selector
@@ -606,6 +609,47 @@ real specs, at scale, against the real Fiori system. That needs the harness
 (Phase 2, still unbuilt) and a real round (the acceptance gate, still
 unattempted) - a fixed mechanism proven correct on one fixture is necessary,
 not sufficient, for the brief's actual goal.
+
+## Implementation status: H2/H5 closed - network-idle settle, generically
+
+`WebAppDriver` gained a CDP `Network` event listener (registered at launch,
+reset to zero each launch): `Network.requestWillBeSent` increments an
+in-flight counter, `Network.loadingFinished`/`Network.loadingFailed`
+decrement it (saturating at zero, so a response for a request the listener
+missed the start of can't drive the counter permanently negative).
+`settled_scene()` now requires `network_idle()` (the counter reads zero)
+alongside the existing `ready` + shape-agreement checks.
+
+**The budget itself is signal-driven, not raised unconditionally** - this is
+the distinction ground rule 3 cares about. Two round budgets exist:
+`SCENE_SETTLE_ROUNDS` (20, ~2s - unchanged from before) for a page NEVER
+observed busy, and `SCENE_SETTLE_BUSY_ROUNDS` (300, ~30s) that only applies
+once some round in THIS call actually saw a pending request. A quiet page's
+behavior is identical to before this commit; a busy one now gets real
+patience instead of a blind 2-second cap, and a page whose network never
+truly quiets (websocket, polling widget) still gives up at the (much larger)
+ceiling rather than hanging forever - same philosophy as the pre-existing
+carousel/ticker bound, just calibrated to a real observed number: a live
+login against the actual system took ~13s to render tiles after the DOM
+itself reported ready, and the account's own hand-tuned expert spec budgeted
+up to 120s as a safety margin.
+
+**Proven at two levels**: two new unit tests on the pure settle logic
+(`a_pending_request_is_not_settled_even_when_the_shape_already_agrees` -
+shape agrees from the very first reading, but must keep polling until
+`network_idle` reports true, which the OLD code had no way to check at all;
+`a_request_that_never_finishes_is_still_bounded` - busy forever still gives
+up at the busy ceiling) and one live-Chromium test
+(`network_idle_e2e.rs::scene_waits_for_a_real_delayed_fetch_before_settling`)
+against a real 2-second delayed HTTP response: the scene read after launch
+contains the content that only exists after the fetch resolves, and the
+total elapsed time actually spans the real delay - a real CDP listener
+proven against a real page, not only the synthetic unit tests.
+
+**Not Fiori-specific, deliberately** - same reasoning as H3b over H3: this is
+a generic CDP capability, available for every `app: web` target, not
+`sap.ui.test.autowaiter` or anything tied to UI5's own test infrastructure
+(which H3's probe already showed is fragile outside its intended harness).
 
 ## What would need to be true to resume
 
