@@ -117,6 +117,10 @@ fn protocol_is_default(protocol: &str) -> bool {
     protocol == "openai"
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 /// One request/response exchange at the model boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Turn {
@@ -131,6 +135,28 @@ pub struct Turn {
     pub protocol: String,
     pub request: TurnRequest,
     pub response: TurnResponse,
+    /// Which delivery (a `conversation:` user message and the trajectory it
+    /// provoked) produced this turn. A "delivery" is a coarser, separate
+    /// unit from a `Turn`: a `Turn` is one model call/response, a delivery
+    /// is one user message plus every `Turn` it produced before the agent
+    /// settled. Defaults to `0` and is omitted from the JSON when zero, so
+    /// every existing single-delivery trace round-trips byte-identical.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub delivery_index: usize,
+}
+
+/// Metadata about one delivery in a multi-delivery `conversation:` flow.
+/// Not matched against on replay - the wire never re-sends this - it exists
+/// for reporting and diffing, so a cassette or `heal` diff reads as an
+/// actual transcript instead of a bare turn count.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryMeta {
+    /// The user message as recorded, verbatim. Not a secret and not
+    /// redacted: it is the operator's own flow-file content, already
+    /// visible in the `.flow.yaml`.
+    pub user: String,
+    /// How many `Turn`s this delivery produced.
+    pub turn_count: usize,
 }
 
 /// A recorded trajectory: every model call the system under test made,
@@ -138,6 +164,12 @@ pub struct Turn {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cassette {
     pub turns: Vec<Turn>,
+    /// Per-delivery metadata for a multi-delivery `conversation:` flow, one
+    /// entry per delivery in order. Empty (and omitted from the JSON) for
+    /// every single-delivery trace, including every trace recorded before
+    /// this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deliveries: Vec<DeliveryMeta>,
 }
 
 /// The comparable shape of a request, without any message bodies. Two
@@ -531,6 +563,7 @@ mod tests {
                 message,
                 stop_reason: None,
             },
+            delivery_index: 0,
         }
     }
 
@@ -581,7 +614,10 @@ mod tests {
             vec![task.clone(), title.clone()],
             vec![title.clone(), task.clone()],
         ] {
-            let cassette = Cassette { turns };
+            let cassette = Cassette {
+                turns,
+                ..Default::default()
+            };
             assert_eq!(
                 cassette.reply(),
                 Some("Paris"),
@@ -613,6 +649,7 @@ mod tests {
                     said("goodbye"),
                 ),
             ],
+            ..Default::default()
         };
         assert_eq!(cassette.reply(), Some("goodbye"));
     }
@@ -632,6 +669,7 @@ mod tests {
         );
         let cassette = Cassette {
             turns: vec![a.clone(), b.clone()],
+            ..Default::default()
         };
         let mut consumed = Vec::new();
 
@@ -741,6 +779,7 @@ mod tests {
                     Message::new("assistant", "Booked KQ311 to Nairobi."),
                 ),
             ],
+            ..Default::default()
         }
     }
 
@@ -923,6 +962,7 @@ mod tests {
         );
         let cassette = Cassette {
             turns: vec![anthropic, openai],
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&cassette).expect("serializes");
@@ -932,9 +972,82 @@ mod tests {
         // present exactly once - on the turn that needs it.
         assert_eq!(json.matches("\"protocol\"").count(), 1, "{json}");
         assert_eq!(json.matches("\"stop_reason\"").count(), 1, "{json}");
+        // Every turn here is delivery 0 (single-delivery cassette), and no
+        // `deliveries` metadata was set, so both new fields must be fully
+        // absent - a pre-existing trace round-trips byte-identical.
+        assert!(!json.contains("delivery_index"), "{json}");
+        assert!(!json.contains("deliveries"), "{json}");
 
         let back: Cassette = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(back, cassette);
         assert_eq!(back.turns[1].protocol, "openai");
+    }
+
+    /// A pre-existing (pre-`delivery_index`) cassette, hand-written as the
+    /// JSON it would already have on disk, still deserializes with every
+    /// turn defaulting to delivery 0 and no `deliveries` metadata - the
+    /// backward-compatibility guarantee plan 12 makes explicit.
+    #[test]
+    fn a_pre_existing_cassette_deserializes_at_delivery_zero() {
+        let json = serde_json::json!({
+            "turns": [{
+                "request": {"model": "gpt-4o", "messages": [], "tools": []},
+                "response": {"message": {"role": "assistant", "content": "hi"}}
+            }]
+        })
+        .to_string();
+        let cassette: Cassette = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(cassette.turns[0].delivery_index, 0);
+        assert!(cassette.deliveries.is_empty());
+    }
+
+    /// A multi-delivery cassette round-trips: `delivery_index` and
+    /// `deliveries` survive serialization exactly, and stay present only
+    /// where they carry real information.
+    #[test]
+    fn a_multi_delivery_cassette_round_trips() {
+        let mut first = openai_turn(
+            request(
+                vec![Message::new("user", "cancel A-4471")],
+                &["cancel_order"],
+            ),
+            Message::new("assistant", "Are you sure?"),
+        );
+        first.delivery_index = 0;
+        let mut second = openai_turn(
+            request(
+                vec![
+                    Message::new("user", "cancel A-4471"),
+                    Message::new("user", "yes, confirm"),
+                ],
+                &["cancel_order"],
+            ),
+            Message::new("assistant", "Cancelled."),
+        );
+        second.delivery_index = 1;
+
+        let cassette = Cassette {
+            turns: vec![first, second],
+            deliveries: vec![
+                DeliveryMeta {
+                    user: "cancel A-4471".to_string(),
+                    turn_count: 1,
+                },
+                DeliveryMeta {
+                    user: "yes, confirm".to_string(),
+                    turn_count: 1,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&cassette).expect("serializes");
+        assert!(json.contains("\"delivery_index\":1"), "{json}");
+        // Delivery 0 is the default and stays omitted, even in a cassette
+        // that DOES use delivery_index elsewhere.
+        assert_eq!(json.matches("\"delivery_index\"").count(), 1, "{json}");
+        assert!(json.contains("\"deliveries\""), "{json}");
+
+        let back: Cassette = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back, cassette);
     }
 }

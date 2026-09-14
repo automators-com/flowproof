@@ -367,6 +367,7 @@ mod tests {
                 },
                 stop_reason: None,
             },
+            delivery_index: 0,
         }
     }
 
@@ -383,6 +384,7 @@ mod tests {
                 ),
                 turn("Book a flight", vec![], Some("Booked.")),
             ],
+            ..Default::default()
         }
     }
 
@@ -502,9 +504,11 @@ mod tests {
     fn added_and_removed_arguments_are_named() {
         let before = Cassette {
             turns: vec![turn("go", vec![call("book", r#"{"seat":"12A"}"#)], None)],
+            ..Default::default()
         };
         let after = Cassette {
             turns: vec![turn("go", vec![call("book", r#"{"meal":"veg"}"#)], None)],
+            ..Default::default()
         };
         let rendered = diff(&before, &after, &[]).to_string();
         assert!(rendered.contains("book.meal (absent) -> veg"), "{rendered}");
@@ -517,9 +521,11 @@ mod tests {
     fn unparseable_arguments_are_reported_whole() {
         let before = Cassette {
             turns: vec![turn("go", vec![call("book", "{broken")], None)],
+            ..Default::default()
         };
         let after = Cassette {
             turns: vec![turn("go", vec![call("book", "{also broken")], None)],
+            ..Default::default()
         };
         let diff = diff(&before, &after, &[]);
         assert_eq!(diff.behavior.len(), 1, "{diff}");

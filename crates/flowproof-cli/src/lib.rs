@@ -290,6 +290,14 @@ enum Command {
         /// edits anything other than the failing `steps:` entry.
         #[arg(long)]
         no_repair: bool,
+        /// `app: agent` only: drive a live, interactive terminal
+        /// conversation with the real agent instead of a one-shot recording.
+        /// The spec's `steps:` must contain exactly one `conversation:
+        /// interactive` placeholder; this replaces just that line with the
+        /// deliveries you typed (plan 12 / issue #375). `command:` driver
+        /// only for now.
+        #[arg(long)]
+        agent_conversation: bool,
     },
     /// Deterministically replay a recorded flow (zero LLM calls). Point it
     /// at a DIRECTORY to run every *.flow.yaml under it as a suite with one
@@ -588,6 +596,7 @@ struct RecordOptions {
     verify: bool,
     recording: flowproof_driver::RecordingOptions,
     no_repair: bool,
+    agent_conversation: bool,
 }
 
 /// Load a flow spec and apply the same suite/values/identity context
@@ -623,6 +632,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
         verify,
         recording,
         no_repair,
+        agent_conversation,
     } = options;
     let (spec, _env_overlay) = load_prepared_spec(spec_path, &values)?;
     if let Some(reason) = spec.skip_reason() {
@@ -645,6 +655,24 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
         eprintln!(
             "WARNING: no authoring model is configured; plain steps will try deterministic grammar fallback"
         );
+    }
+
+    if agent_conversation {
+        if spec.app.id() != "agent" {
+            return Err("--agent-conversation is only for app: agent flows".to_string());
+        }
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        let mut output = std::io::stdout();
+        let deliveries =
+            agent_flow::record_interactive(&spec, spec_path, &out, &mut input, &mut output)?;
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({ "recorded": out, "app": "agent", "deliveries": deliveries })
+            );
+        }
+        return Ok(EXIT_PASS);
     }
 
     // An agent flow does not use the record/replay driver at all: its
@@ -3510,6 +3538,7 @@ where
             video,
             highlight_cursor,
             no_repair,
+            agent_conversation,
         } => with_headed_mode(resolve_headed(headed, headless, true), || {
             with_keep_browser_open(keep_open, || {
                 cmd_record(
@@ -3526,6 +3555,7 @@ where
                         verify,
                         recording: recording_options(recording_detail, video, highlight_cursor),
                         no_repair,
+                        agent_conversation,
                     },
                 )
             })

@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use flowproof_adapters::agent_proxy::AgentProxy;
-use flowproof_adapters::agent_runner::{run_against, run_against_contained, run_http, AgentRun};
+use flowproof_adapters::agent_runner::{
+    run_against, run_against_contained, run_against_conversation, run_http, AgentRun,
+};
 use flowproof_adapters::egress::{AllowSet, Containment};
 use flowproof_adapters::mcp_http::McpHttpServer;
 use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan, McpServerEvent};
@@ -548,14 +550,24 @@ fn mocks_of(spec: &FlowSpec) -> Mocks {
         .collect()
 }
 
-/// The prompt handed to the agent: every `prompt:` step, in order, joined
-/// by newlines. Validation already guaranteed at least one exists.
+/// The prompt handed to the agent in one shot: every `prompt:` step and
+/// every `conversation:` delivery's `user:` text, in order, joined by
+/// newlines. Validation already guaranteed at least one exists.
+///
+/// Plain prompt flows retain their original joined text. Explicit
+/// conversations use `drive_plan`, which replaces this value with the
+/// first delivery at spawn and sends subsequent deliveries only on settle.
 fn prompt_of(spec: &FlowSpec) -> String {
     spec.steps
         .iter()
-        .filter_map(|s| match s {
-            SpecStep::Prompt { prompt } => Some(prompt.as_str()),
-            _ => None,
+        .flat_map(|s| -> Box<dyn Iterator<Item = &str> + '_> {
+            match s {
+                SpecStep::Prompt { prompt } => Box::new(std::iter::once(prompt.as_str())),
+                SpecStep::Conversation { conversation } => {
+                    Box::new(conversation.iter().map(|d| d.user.as_str()))
+                }
+                _ => Box::new(std::iter::empty()),
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -587,6 +599,35 @@ enum Driver {
         headers: BTreeMap<String, String>,
         proxy_port: u16,
     },
+}
+
+/// One delivery's own assertions, parsed once from its `DeliverySpec` the
+/// same way `Plan`'s whole-trajectory fields are parsed from top-level
+/// steps. Checked against just the turns that delivery produced - see
+/// `check_delivery_assertions` (plan 12 / issue #375).
+struct DeliveryPlan {
+    user: String,
+    tool_calls: Vec<ToolCallExpectation>,
+    forbidden: Vec<ToolCallExpectation>,
+    reply_contains: Vec<String>,
+}
+
+/// Parse an agent `assert:` step's text: v1 supports only `reply contains
+/// <text>` (or `reply is <text>`, an alias). Shared by whole-trajectory and
+/// delivery-local assertion parsing so both give the identical error for an
+/// unsupported form.
+fn parse_reply_contains(assert: &str) -> Result<String, String> {
+    let trimmed = assert.trim();
+    let rest = trimmed
+        .strip_prefix("reply contains ")
+        .or_else(|| trimmed.strip_prefix("reply is "));
+    match rest {
+        Some(text) => Ok(text.trim().to_string()),
+        None => Err(format!(
+            "an agent flow's `assert:` only supports `reply contains <text>` in v1; got \
+             `{trimmed}`"
+        )),
+    }
 }
 
 /// Everything a phase needs pulled off the spec once.
@@ -627,6 +668,10 @@ struct Plan {
     /// failure message). Only the variable NAMES travel here - never a value.
     /// The shared type web and api flows also build their scan from.
     secret_leaks: Vec<flowproof_trace::secret_scan::LeakAssertion>,
+    /// Every delivery from every `conversation:` step, in encounter order,
+    /// with its own assertions parsed. Empty for a flow with no
+    /// `conversation:` step - today's single-delivery flows are unaffected.
+    deliveries: Vec<DeliveryPlan>,
 }
 
 impl Plan {
@@ -772,6 +817,7 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
     let mut tool_calls = Vec::new();
     let mut forbidden = Vec::new();
     let mut reply_contains = Vec::new();
+    let mut deliveries = Vec::new();
     let mut no_side_effects = Vec::new();
     // The secret-leak assertions come from the shared spec accessor, the same
     // source web and api flows build their scan from.
@@ -790,23 +836,60 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
                 assert_no_side_effect,
             } => no_side_effects.push(assert_no_side_effect.clone()),
             SpecStep::Assert { assert } => {
-                // v1 reply assertion: `reply contains <text>`.
-                let trimmed = assert.trim();
-                let rest = trimmed
-                    .strip_prefix("reply contains ")
-                    .or_else(|| trimmed.strip_prefix("reply is "));
-                match rest {
-                    Some(text) => reply_contains.push(text.trim().to_string()),
-                    None => {
-                        return Err(format!(
-                            "an agent flow's `assert:` only supports `reply contains <text>` \
-                             in v1; got `{trimmed}`"
-                        ))
-                    }
+                reply_contains.push(parse_reply_contains(assert)?);
+            }
+            SpecStep::Conversation { conversation } => {
+                for delivery in conversation {
+                    deliveries.push(DeliveryPlan {
+                        user: delivery.user.clone(),
+                        tool_calls: delivery
+                            .assert_tool_call
+                            .as_deref()
+                            .map(parse_expectation)
+                            .transpose()?
+                            .into_iter()
+                            .collect(),
+                        forbidden: delivery
+                            .assert_no_tool_call
+                            .as_deref()
+                            .map(parse_expectation)
+                            .transpose()?
+                            .into_iter()
+                            .collect(),
+                        reply_contains: delivery
+                            .assert
+                            .as_deref()
+                            .map(parse_reply_contains)
+                            .transpose()?
+                            .into_iter()
+                            .collect(),
+                    });
                 }
             }
             _ => {}
         }
+    }
+
+    let has_placeholder = spec
+        .steps
+        .iter()
+        .any(|s| matches!(s, SpecStep::ConversationPlaceholder));
+    let has_conversation = has_placeholder || !deliveries.is_empty();
+    if has_conversation
+        && spec
+            .steps
+            .iter()
+            .any(|s| matches!(s, SpecStep::Prompt { .. }))
+    {
+        return Err("conversation steps cannot be mixed with top-level prompt steps; put each prompt in its own delivery".into());
+    }
+    if has_placeholder && !deliveries.is_empty() {
+        return Err(
+            "an interactive conversation cannot be mixed with predefined deliveries".into(),
+        );
+    }
+    if has_conversation && (engages_egress(spec) || engages_observation(spec)) {
+        return Err("conversations do not yet support egress containment or side-effect observation; refusing to start an unprotected process".into());
     }
 
     Ok(Plan {
@@ -818,6 +901,7 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
         tool_calls,
         forbidden,
         reply_contains,
+        deliveries,
         allow,
         allow_unresolved,
         assert_no_egress,
@@ -1397,6 +1481,175 @@ fn check_assertions(plan: &Plan, cassette: &Cassette) -> Result<(), String> {
     Ok(())
 }
 
+/// Drive a `url:` service through MULTIPLE deliveries in order, waiting for
+/// each POST's response (settle) before sending the next - the `url:`
+/// driver's delivery gating (plan 12 / issue #375). Each delivery's window
+/// into the eventual cassette is `[turns served before that POST, turns
+/// served after it)`, using the proxy's own cumulative count rather than
+/// re-deriving it, so record (a live cassette) and replay (a fixed one)
+/// share this one loop.
+///
+/// Stops after the delivery that diverges or times out, rather than sending
+/// a conversation that has already left its recording further - the same
+/// "fail at the first divergent turn" rule `cassette.rs` applies within one
+/// delivery, extended across them. The returned run is the LAST delivery
+/// attempted; its `served`/`divergence` reflect the proxy's cumulative state,
+/// so `AgentRun::reproduced` still judges the whole conversation correctly
+/// with no changes of its own.
+fn drive_deliveries_http(
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    deliveries: &[DeliveryPlan],
+    proxy: &AgentProxy,
+    timeout: Duration,
+) -> Result<(AgentRun, Vec<(usize, usize)>), String> {
+    let mut windows = Vec::new();
+    let mut last: Option<AgentRun> = None;
+    for delivery in deliveries {
+        let before = proxy.log().served;
+        let run =
+            run_http(proxy, url, headers, &delivery.user, timeout).map_err(|e| e.to_string())?;
+        windows.push((before, run.served));
+        let stop = run.divergence.is_some() || run.timed_out;
+        last = Some(run);
+        if stop {
+            break;
+        }
+    }
+    let run = last.ok_or_else(|| "a conversation: step needs at least one delivery".to_string())?;
+    Ok((run, windows))
+}
+
+/// Every explicit conversation, including a single delivery, uses the
+/// gated path and produces assertion windows. Plain prompt flows keep
+/// their existing single-shot driver. Unsupported protected conversations
+/// are rejected by `plan` before any process or MCP server starts.
+fn drive_plan(plan: &Plan, proxy: &AgentProxy) -> Result<(AgentRun, Vec<(usize, usize)>), String> {
+    let (run, windows) = match &plan.driver {
+        Driver::Http { url, headers, .. } if !plan.deliveries.is_empty() => {
+            drive_deliveries_http(url, headers, &plan.deliveries, proxy, AGENT_TIMEOUT)
+        }
+        Driver::Command(command) if !plan.deliveries.is_empty() => {
+            // Delivery 0 goes out via FLOWPROOF_PROMPT, same as always -
+            // but as JUST its own text, not `plan.env`'s joined-all-
+            // deliveries fallback (that fallback is for the single-shot
+            // path only; here it would hand the agent everything up front
+            // and defeat gating before it starts).
+            let mut env = plan.env.clone();
+            env.insert(PROMPT_VAR.to_string(), plan.deliveries[0].user.clone());
+            let texts: Vec<String> = plan.deliveries.iter().map(|d| d.user.clone()).collect();
+            run_against_conversation(proxy, command, &env, &texts, AGENT_TIMEOUT)
+                .map_err(|e| e.to_string())
+        }
+        _ => plan.drive(proxy).map(|run| (run, Vec::new())),
+    }?;
+    if !plan.deliveries.is_empty() {
+        if run.timed_out {
+            return Err("conversation did not settle and finish before the timeout".into());
+        }
+        if run.divergence.is_none() {
+            validate_delivery_windows(plan.deliveries.len(), &windows, run.served)?;
+        }
+    }
+    Ok((run, windows))
+}
+
+/// Check each delivery's own assertions against just the turns it produced
+/// (plan 12's delivery-local scope), using the same primitives whole-
+/// trajectory assertions use, just windowed. Every declared delivery must
+/// complete with nonempty, contiguous progress covering the entire run.
+fn check_delivery_assertions(
+    deliveries: &[DeliveryPlan],
+    windows: &[(usize, usize)],
+    turns: &[flowproof_trace::cassette::Turn],
+) -> Result<(), String> {
+    if deliveries.is_empty() {
+        return Ok(());
+    }
+    validate_delivery_windows(deliveries.len(), windows, turns.len())?;
+    for (i, (delivery, &(start, end))) in deliveries.iter().zip(windows).enumerate() {
+        let slice = Cassette {
+            turns: turns[start..end].to_vec(),
+            ..Default::default()
+        };
+        let calls = slice.tool_calls();
+        let label = |e: String| format!("delivery {} (`{}`): {e}", i + 1, delivery.user);
+        toolcalls::check_trajectory(&delivery.tool_calls, &calls, false)
+            .map_err(|e| label(e.to_string()))?;
+        for forbidden in &delivery.forbidden {
+            toolcalls::check_absent(forbidden, &calls).map_err(|e| label(e.to_string()))?;
+        }
+        if !delivery.reply_contains.is_empty() {
+            let reply = slice.reply().unwrap_or("");
+            for want in &delivery.reply_contains {
+                if !reply.contains(want.as_str()) {
+                    return Err(label(format!(
+                        "reply does not contain `{want}`; the agent's reply for this delivery \
+                         was `{reply}`"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_delivery_windows(
+    count: usize,
+    windows: &[(usize, usize)],
+    turns: usize,
+) -> Result<(), String> {
+    if windows.len() != count {
+        return Err(format!(
+            "conversation completed {} of {count} declared deliveries",
+            windows.len()
+        ));
+    }
+    let mut previous_end = 0;
+    for (i, &(start, end)) in windows.iter().enumerate() {
+        if start != previous_end || end <= start || end > turns {
+            return Err(format!(
+                "delivery {} has no complete, valid model-call window",
+                i + 1
+            ));
+        }
+        previous_end = end;
+    }
+    if previous_end != turns {
+        return Err("model calls arrived outside the completed delivery windows".into());
+    }
+    Ok(())
+}
+
+/// Apply the same validated transcript metadata to scripted and interactive
+/// recordings. Plain prompt traces retain their existing byte shape.
+fn stamp_deliveries(
+    cassette: &mut Cassette,
+    users: &[String],
+    windows: &[(usize, usize)],
+) -> Result<(), String> {
+    if users.is_empty() {
+        return Ok(());
+    }
+    validate_delivery_windows(users.len(), windows, cassette.turns.len())?;
+    for (index, &(start, end)) in windows.iter().enumerate() {
+        for turn in &mut cassette.turns[start..end] {
+            turn.delivery_index = index;
+        }
+    }
+    cassette.deliveries = users
+        .iter()
+        .zip(windows)
+        .map(
+            |(user, &(start, end))| flowproof_trace::cassette::DeliveryMeta {
+                user: user.clone(),
+                turn_count: end - start,
+            },
+        )
+        .collect();
+    Ok(())
+}
+
 /// Fail a run that did not actually exercise the agent, so an empty
 /// trajectory cannot pass by making zero assertions true.
 fn require_progress(run: &AgentRun, cassette: &Cassette, plan: &Plan) -> Result<(), String> {
@@ -1494,7 +1747,9 @@ pub fn cmd_doctor_agent(command: &str, timeout_secs: u64, prompt: &str) -> Resul
                 },
                 stop_reason: None,
             },
+            delivery_index: 0,
         }],
+        ..Default::default()
     };
 
     let proxy = AgentProxy::start(probe, Mocks::new(), 0)
@@ -1674,6 +1929,227 @@ pub fn record(spec: &FlowSpec, out: &Path) -> (Containment, Result<(), String>) 
     (achieved.unwrap_or_else(|| containment(spec)), outcome)
 }
 
+/// Print one delivery's settle outcome to the operator's terminal. The
+/// reply shown is the model-boundary reply (see `ConversationSession`'s
+/// doc), never the process's own stdout.
+fn report_settle(
+    output: &mut impl std::io::Write,
+    outcome: &flowproof_adapters::agent_runner::SettleOutcome,
+) -> Result<(), String> {
+    match &outcome.reply {
+        Some(reply) => writeln!(output, "Agent> {reply}"),
+        None => writeln!(output, "Agent> (no reply)"),
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// `flowproof record --agent-conversation`: a live, interactive terminal
+/// session against the real `agent.command` process, replacing the flow's
+/// ONE `conversation: interactive` placeholder with the deliveries the
+/// operator actually typed - plan 12's "authoring model is live, not
+/// scripted" decision (issue #375).
+///
+/// `input`/`output` are injected so this is testable without a real
+/// terminal: the CLI passes real stdin/stdout, a test an in-memory buffer
+/// pair. Returns the number of deliveries recorded.
+///
+/// The `.flow.yaml` is edited by TEXT SUBSTITUTION, not a full-spec
+/// reserialize: the placeholder line is found and replaced, and nothing
+/// else in the file - comments included - is touched. This is why exactly
+/// one placeholder, written exactly as `- conversation: interactive`, is
+/// required rather than merely one `SpecStep::ConversationPlaceholder` in
+/// the parsed spec: the text search is the actual write mechanism, so it is
+/// checked directly, not inferred from the parse.
+pub fn record_interactive(
+    spec: &FlowSpec,
+    spec_path: &Path,
+    out: &Path,
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+) -> Result<usize, String> {
+    let raw = std::fs::read_to_string(spec_path)
+        .map_err(|e| format!("reading {}: {e}", spec_path.display()))?;
+    let placeholder_lines: Vec<usize> = raw
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.trim() == "- conversation: interactive")
+        .map(|(i, _)| i)
+        .collect();
+    let placeholder_line = match placeholder_lines.as_slice() {
+        [i] => *i,
+        [] => {
+            return Err(
+                "--agent-conversation needs exactly one `- conversation: interactive` step \
+                 in the flow file, written on its own line; none found"
+                    .to_string(),
+            )
+        }
+        many => {
+            return Err(format!(
+                "--agent-conversation needs exactly one `- conversation: interactive` step; \
+                 found {}",
+                many.len()
+            ))
+        }
+    };
+    let placeholder_count = spec
+        .steps
+        .iter()
+        .filter(|s| matches!(s, SpecStep::ConversationPlaceholder))
+        .count();
+    if placeholder_count != 1 {
+        return Err(format!(
+            "--agent-conversation needs exactly one `conversation: interactive` step in the \
+             parsed spec; found {placeholder_count}"
+        ));
+    }
+
+    let plan = plan(spec)?;
+    if !spec.mcp.is_empty() {
+        return Err("interactive conversations do not yet support MCP interception; refusing to start without the declared MCP boundary".into());
+    }
+    let Driver::Command(command) = &plan.driver else {
+        return Err(
+            "--agent-conversation only supports agent.command today, not agent.url".to_string(),
+        );
+    };
+
+    let read_line = |input: &mut dyn std::io::BufRead,
+                     output: &mut dyn std::io::Write|
+     -> Result<Option<String>, String> {
+        write!(output, "You> ").map_err(|e| e.to_string())?;
+        output.flush().map_err(|e| e.to_string())?;
+        let mut line = String::new();
+        let n = input.read_line(&mut line).map_err(|e| e.to_string())?;
+        let typed = line.trim().to_string();
+        if n == 0 || typed.is_empty() || typed.eq_ignore_ascii_case("done") {
+            return Ok(None);
+        }
+        Ok(Some(typed))
+    };
+
+    // Read the operator's first line BEFORE requiring a real model or
+    // spawning anything: an empty session is refused with the file and
+    // environment both untouched, not after paying for a real upstream call.
+    let Some(first) = read_line(input, output)? else {
+        return Err("--agent-conversation needs at least one delivery".to_string());
+    };
+
+    let upstream = upstream()?;
+    let auth = upstream_auth();
+    let proxy = AgentProxy::record(&upstream, auth, plan.mocks.clone(), 0)
+        .map_err(|e| format!("starting the record proxy: {e}"))?;
+
+    let mut deliveries: Vec<String> = Vec::new();
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+
+    let mut env = plan.env.clone();
+    env.insert(PROMPT_VAR.to_string(), first.clone());
+    let served_before = proxy.log().served;
+    let (mut session, outcome) = flowproof_adapters::agent_runner::ConversationSession::start(
+        &proxy,
+        command,
+        &env,
+        AGENT_TIMEOUT,
+    )
+    .map_err(|e| e.to_string())?;
+    windows.push((served_before, proxy.log().served));
+    deliveries.push(first);
+    report_settle(output, &outcome)?;
+    if !outcome.settled {
+        return Err("delivery 1 did not settle before the timeout".to_string());
+    }
+
+    while let Some(typed) = read_line(input, output)? {
+        let before = proxy.log().served;
+        let outcome = session.send(&typed).map_err(|e| e.to_string())?;
+        windows.push((before, proxy.log().served));
+        deliveries.push(typed);
+        report_settle(output, &outcome)?;
+        if !outcome.settled {
+            return Err(format!(
+                "delivery {} did not settle before the timeout",
+                deliveries.len()
+            ));
+        }
+    }
+
+    let run = session.finish();
+    // Same reasoning as `record_inner`'s own quiesce: the agent has exited,
+    // which is not the same as the proxy being done with an in-flight call.
+    proxy.quiesce(Duration::from_millis(300), Duration::from_secs(15));
+    let mut cassette = proxy.captured();
+    drop(proxy);
+
+    require_progress(&run, &cassette, &plan)?;
+    if run.timed_out {
+        return Err("interactive conversation did not complete every delivery".into());
+    }
+    validate_delivery_windows(deliveries.len(), &windows, cassette.turns.len())?;
+    check_assertions(&plan, &cassette)?;
+
+    stamp_deliveries(&mut cassette, &deliveries, &windows)?;
+
+    report_fs(&run);
+    let side_effects =
+        check_side_effects(&plan, &run, &std::env::current_dir().unwrap_or_default())?;
+    check_secret_leak(&plan, &cassette, &BTreeMap::new(), side_effects.as_ref())?;
+
+    let trace = AgentTrace {
+        app: "agent".into(),
+        mocks: plan.mocks.into_iter().collect(),
+        cassette,
+        mcp: BTreeMap::new(),
+        egress: None,
+        side_effects,
+    };
+    let trace_json = serde_json::to_string_pretty(&trace).map_err(|e| e.to_string())?;
+    std::fs::write(out, trace_json).map_err(|e| format!("writing {}: {e}", out.display()))?;
+
+    let indent: String = raw
+        .lines()
+        .nth(placeholder_line)
+        .expect("counted above")
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect();
+    let item_indent = format!("{indent}    ");
+    let mut new_lines: Vec<String> = Vec::new();
+    for (i, l) in raw.lines().enumerate() {
+        if i == placeholder_line {
+            new_lines.push(format!("{indent}- conversation:"));
+            for d in &deliveries {
+                let one = vec![flowproof_agent::DeliverySpec {
+                    user: d.clone(),
+                    assert: None,
+                    assert_tool_call: None,
+                    assert_no_tool_call: None,
+                }];
+                let yaml = serde_yaml::to_string(&one).map_err(|e| e.to_string())?;
+                for yline in yaml.lines() {
+                    new_lines.push(format!("{item_indent}{yline}"));
+                }
+            }
+        } else {
+            new_lines.push(l.to_string());
+        }
+    }
+    let new_text = format!("{}\n", new_lines.join("\n"));
+    std::fs::write(spec_path, new_text)
+        .map_err(|e| format!("writing {}: {e}", spec_path.display()))?;
+
+    writeln!(
+        output,
+        "[record] wrote {} ({} deliveries) - add assert lines under each delivery, then \
+         `flowproof run` to confirm",
+        spec_path.display(),
+        deliveries.len()
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(deliveries.len())
+}
+
 /// The body. Takes `achieved` as an out-parameter rather than returning the
 /// tier, because the tier becomes known PART WAY THROUGH and every `?` before
 /// that point would otherwise have to name a tier it does not have yet. A run
@@ -1696,7 +2172,7 @@ fn record_inner(
     let auth = upstream_auth();
     let proxy = AgentProxy::record(&upstream, auth, plan.mocks.clone(), plan.proxy_port())
         .map_err(|e| format!("starting the record proxy: {e}"))?;
-    let run = plan.drive(&proxy)?;
+    let (run, delivery_windows) = drive_plan(&plan, &proxy)?;
     // The agent has exited, which is not the same as the proxy being done:
     // a call the agent fired without waiting for is still in flight, and
     // reading the cassette now would drop it whenever the upstream is slow.
@@ -1705,7 +2181,7 @@ fn record_inner(
         std::time::Duration::from_millis(300),
         std::time::Duration::from_secs(15),
     );
-    let cassette = proxy.captured();
+    let mut cassette = proxy.captured();
     drop(proxy);
 
     require_progress(&run, &cassette, &plan)?;
@@ -1717,6 +2193,13 @@ fn record_inner(
     };
     // Recording asserts: no trace for a trajectory that fails the spec.
     check_assertions(&plan, &cassette)?;
+    check_delivery_assertions(&plan.deliveries, &delivery_windows, &cassette.turns)?;
+    let users: Vec<String> = plan
+        .deliveries
+        .iter()
+        .map(|delivery| delivery.user.clone())
+        .collect();
+    stamp_deliveries(&mut cassette, &users, &delivery_windows)?;
     // Egress asserts too: a failing `assert_no_egress` (or a blocked
     // undeclared attempt when the step is present) mints NO trace, beside the
     // trajectory assertions. The returned lane is the audit record written
@@ -1785,7 +2268,7 @@ fn replay_inner(
     let mocks: Mocks = trace.mocks.into_iter().collect();
     let proxy = AgentProxy::start(trace.cassette, mocks, plan.proxy_port())
         .map_err(|e| format!("starting the replay proxy: {e}"))?;
-    let run = plan.drive(&proxy)?;
+    let (run, delivery_windows) = drive_plan(&plan, &proxy)?;
     let cassette = proxy.captured(); // empty in replay
     drop(proxy);
     let _ = cassette;
@@ -1796,6 +2279,7 @@ fn replay_inner(
     // the proxy consumed it.
     let trace: AgentTrace = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     check_assertions(&plan, &trace.cassette)?;
+    check_delivery_assertions(&plan.deliveries, &delivery_windows, &trace.cassette.turns)?;
     // The MCP lanes reproduced: a divergence, or fewer served than recorded,
     // fails the run the same way the cassette's `reproduced` does.
     if let Some(ctx) = &mcp {
@@ -1935,7 +2419,9 @@ mod tests {
                     message: Message::new("assistant", reply),
                     stop_reason: None,
                 },
+                delivery_index: 0,
             }],
+            ..Default::default()
         }
     }
 
@@ -2425,6 +2911,7 @@ mod tests {
             no_side_effects: Vec::new(),
             observes: false,
             secret_leaks: Vec::new(),
+            deliveries: Vec::new(),
         }
     }
 
@@ -3074,6 +3561,637 @@ mod tests {
             .1
             .expect("driver-blind replay via url passes");
         handle.join().ok();
+    }
+
+    // ---- multi-delivery conversations over url: (plan 12 / issue #375) ----
+
+    /// A two-delivery cassette: delivery 0's request is just the first
+    /// user message, delivery 1's carries the accumulated history (the
+    /// growing-message-list shape a real stateful service produces).
+    fn conversation_cassette(
+        first_user: &str,
+        first_reply: &str,
+        second_user: &str,
+        second_reply: &str,
+    ) -> Cassette {
+        Cassette {
+            turns: vec![
+                Turn {
+                    protocol: flowproof_trace::cassette::default_protocol(),
+                    request: TurnRequest {
+                        model: "gpt-4o".into(),
+                        messages: vec![Message::new("user", first_user)],
+                        tools: vec![],
+                    },
+                    response: TurnResponse {
+                        message: Message::new("assistant", first_reply),
+                        stop_reason: None,
+                    },
+                    delivery_index: 0,
+                },
+                Turn {
+                    protocol: flowproof_trace::cassette::default_protocol(),
+                    request: TurnRequest {
+                        model: "gpt-4o".into(),
+                        messages: vec![
+                            Message::new("user", first_user),
+                            Message::new("assistant", first_reply),
+                            Message::new("user", second_user),
+                        ],
+                        tools: vec![],
+                    },
+                    response: TurnResponse {
+                        message: Message::new("assistant", second_reply),
+                        stop_reason: None,
+                    },
+                    delivery_index: 1,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// Send the growing message history to the proxy and return the
+    /// assistant's reply text, or `None` on a non-200 (a divergence).
+    fn call_proxy_with_history(proxy_port: u16, messages: &[serde_json::Value]) -> Option<String> {
+        let addr = format!("127.0.0.1:{proxy_port}");
+        let payload = serde_json::json!({
+            "model": "gpt-4o",
+            "messages": messages,
+            "tools": [],
+        })
+        .to_string();
+        let mut stream = TcpStream::connect(&addr).ok()?;
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nhost: {addr}\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{payload}",
+            payload.len()
+        );
+        stream.write_all(request.as_bytes()).ok()?;
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).ok()?;
+        let status: u16 = raw.split_whitespace().nth(1)?.parse().ok()?;
+        if status != 200 {
+            return None;
+        }
+        let body = raw.split("\r\n\r\n").nth(1)?;
+        let json: serde_json::Value = serde_json::from_str(body).ok()?;
+        json["choices"][0]["message"]["content"]
+            .as_str()
+            .map(str::to_string)
+    }
+
+    /// A fake STATEFUL service: accepts `deliveries` sequential trigger
+    /// POSTs on separate connections (what `run_http` makes, one per
+    /// delivery), appending each to its own growing history and making one
+    /// model call per delivery - the `url:` contract plan 12 documents for
+    /// a `conversation:` flow.
+    fn spawn_conversational_service(
+        proxy_port: u16,
+        deliveries: usize,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind service");
+        let addr = listener.local_addr().expect("addr");
+        let url = format!("http://{addr}/run");
+        let handle = std::thread::spawn(move || {
+            let mut history: Vec<serde_json::Value> = Vec::new();
+            for _ in 0..deliveries {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let prompt = read_prompt(&mut stream);
+                history.push(serde_json::json!({"role": "user", "content": prompt}));
+                if let Some(reply) = call_proxy_with_history(proxy_port, &history) {
+                    history.push(serde_json::json!({"role": "assistant", "content": reply}));
+                }
+                answer_trigger(&mut stream, "{\"ok\":true}");
+            }
+        });
+        (url, handle)
+    }
+
+    /// The headline case: a `conversation:` flow replays over `url:` with
+    /// each delivery sent only after the previous one settles, and its
+    /// delivery-local assertions are checked against just that delivery's
+    /// turn - proving `assert_no_tool_call` on delivery 0 is a real, live
+    /// check and not a check against the whole trajectory.
+    #[test]
+    fn a_conversation_replays_delivery_by_delivery_over_url() {
+        let trace = write_trace(conversation_cassette(
+            "Please cancel my order A-4471.",
+            "Are you sure? This can't be undone.",
+            "Yes, I confirm - go ahead and cancel it.",
+            "Done - order A-4471 is cancelled.",
+        ));
+        let proxy_port = free_port();
+        let (url, handle) = spawn_conversational_service(proxy_port, 2);
+        let spec = FlowSpec::parse(&format!(
+            "name: cancel with confirmation\napp: agent\nagent:\n  url: {url}\n  \
+             proxy_port: {proxy_port}\nsteps:\n  - conversation:\n      - user: Please cancel \
+             my order A-4471.\n        assert: reply contains sure\n      - user: \
+             Yes, I confirm - go ahead and cancel it.\n        assert: reply contains cancelled\n"
+        ))
+        .expect("spec parses");
+
+        replay(&spec, &trace)
+            .1
+            .expect("delivery-gated conversation replay passes");
+        handle.join().ok();
+    }
+
+    /// A delivery-local assertion fails against JUST its own delivery, even
+    /// though the WHOLE trajectory (both deliveries together) would satisfy
+    /// it - proving the scope is real, not accidentally whole-cassette.
+    #[test]
+    fn a_delivery_local_assertion_is_checked_against_only_its_delivery() {
+        let trace = write_trace(conversation_cassette(
+            "Please cancel my order A-4471.",
+            "Are you sure? This can't be undone.",
+            "Yes, confirm.",
+            "Done - order A-4471 is cancelled.",
+        ));
+        let proxy_port = free_port();
+        let (url, handle) = spawn_conversational_service(proxy_port, 2);
+        // "cancelled" is only in delivery 1's reply; asserting it on
+        // delivery 0 must fail, even though the flow-wide reply (delivery
+        // 1's) does contain it.
+        let spec = FlowSpec::parse(&format!(
+            "name: cancel with confirmation\napp: agent\nagent:\n  url: {url}\n  \
+             proxy_port: {proxy_port}\nsteps:\n  - conversation:\n      - user: Please cancel \
+             my order A-4471.\n        assert: reply contains cancelled\n      - user: Yes, \
+             confirm.\n"
+        ))
+        .expect("spec parses");
+
+        let why = replay(&spec, &trace)
+            .1
+            .expect_err("delivery 0's own reply never says cancelled");
+        handle.join().ok();
+        assert!(why.contains("delivery 1"), "{why}");
+        assert!(why.contains("does not contain"), "{why}");
+    }
+
+    struct ConversationTestDir(std::path::PathBuf);
+    impl ConversationTestDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "conversation-safety-{}-{}",
+                std::process::id(),
+                mcp_nonce()
+            ));
+            std::fs::create_dir_all(&path).expect("conversation fixture");
+            Self(path)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for ConversationTestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_single_conversation_delivery_checks_its_assertions() {
+        let mut cassette = neutral_cassette("hi", "hello");
+        cassette.turns[0].request.tools.clear();
+        let trace = write_trace(cassette);
+        let proxy_port = free_port();
+        let (url, handle) = spawn_conversational_service(proxy_port, 1);
+        let spec = FlowSpec::parse(&format!(
+            "name: single\napp: agent\nagent:\n  url: {url}\n  proxy_port: {proxy_port}\nsteps:\n  - conversation:\n      - user: hi\n        assert: reply contains impossible\n"
+        )).expect("conversation fixture");
+        let err = replay(&spec, &trace)
+            .1
+            .expect_err("must check the only delivery");
+        handle.join().expect("conversation fixture");
+        assert!(
+            err.contains("delivery 1") && err.contains("does not contain"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn conversation_windows_require_every_delivery_and_every_call() {
+        for windows in [
+            vec![],
+            vec![(0, 1)],
+            vec![(0, 1), (1, 1)],
+            vec![(0, 1), (0, 2)],
+            vec![(0, 1), (2, 3)],
+            vec![(0, 1), (1, 3)],
+        ] {
+            assert!(
+                validate_delivery_windows(2, &windows, 2).is_err(),
+                "{windows:?}"
+            );
+        }
+        assert!(
+            validate_delivery_windows(1, &[(0, 1)], 2).is_err(),
+            "late call outside delivery"
+        );
+        validate_delivery_windows(2, &[(0, 1), (1, 2)], 2).expect("conversation fixture");
+    }
+
+    #[test]
+    fn unsupported_conversations_fail_before_spawning_any_process() {
+        let dir = ConversationTestDir::new();
+        let marker = dir.path().join("started");
+        let command = format!(
+            "python3 -c \"open('{}','w').write('started')\"",
+            marker.display()
+        );
+        for extra in [
+            "  - assert_no_egress\n",
+            "  - assert_no_side_effect: fs_write\n",
+            "  - prompt: hidden\n",
+        ] {
+            let spec = FlowSpec::parse(&format!("name: guarded\napp: agent\nagent:\n  command: {command}\nsteps:\n  - conversation:\n      - user: hi\n{extra}")).expect("conversation fixture");
+            let err = record(&spec, &dir.path().join("trace.json"))
+                .1
+                .expect_err("unsafe conversation must fail");
+            assert!(err.contains("conversation"), "{err}");
+            assert!(!marker.exists());
+        }
+        for extra in [
+            "  - assert_no_egress\n",
+            "  - assert_no_side_effect: fs_write\n",
+            "  - prompt: hidden\n",
+        ] {
+            let text = format!("name: guarded\napp: agent\nagent:\n  command: {command}\nsteps:\n  - conversation: interactive\n{extra}");
+            let path = dir.path().join("interactive.flow.yaml");
+            std::fs::write(&path, &text).expect("conversation fixture");
+            let spec = FlowSpec::parse(&text).expect("conversation fixture");
+            let err = record_interactive(
+                &spec,
+                &path,
+                &dir.path().join("trace.json"),
+                &mut std::io::Cursor::new(b"hi\ndone\n"),
+                &mut Vec::new(),
+            )
+            .expect_err("unsafe conversation must fail");
+            assert!(err.contains("conversation"), "{err}");
+            assert!(!marker.exists());
+        }
+        let text = format!("name: guarded\napp: agent\nagent:\n  command: {command}\nmcp:\n  - name: server\n    command: {command}\nsteps:\n  - conversation: interactive\n");
+        let path = dir.path().join("mcp.flow.yaml");
+        std::fs::write(&path, &text).expect("conversation fixture");
+        let spec = FlowSpec::parse(&text).expect("conversation fixture");
+        let err = record_interactive(
+            &spec,
+            &path,
+            &dir.path().join("trace.json"),
+            &mut std::io::Cursor::new(b"hi\ndone\n"),
+            &mut Vec::new(),
+        )
+        .expect_err("unsafe conversation must fail");
+        assert!(err.contains("MCP interception"), "{err}");
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn an_agent_exiting_after_the_first_delivery_cannot_mint_a_trace() {
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = ConversationTestDir::new();
+        let agent = dir.path().join("early.py");
+        let first_only = FAKE_INTERACTIVE_AGENT
+            .split("for line in sys.stdin:")
+            .next()
+            .expect("conversation fixture");
+        std::fs::write(&agent, first_only).expect("conversation fixture");
+        let (url, handle) = spawn_fake_upstream(vec!["hello"]);
+        std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", url);
+        let spec = FlowSpec::parse(&format!("name: early\napp: agent\nagent:\n  command: python3 \"{}\"\nsteps:\n  - conversation:\n      - user: hi\n      - user: bye\n        assert: reply contains goodbye\n", agent.display())).expect("conversation fixture");
+        let out = dir.path().join("trace.json");
+        let err = record(&spec, &out)
+            .1
+            .expect_err("early exit must not mint a truncated trace");
+        std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+        handle.join().expect("conversation fixture");
+        assert!(err.contains("declared deliveries"), "{err}");
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn interactive_top_level_assertions_run_before_writing_files() {
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = ConversationTestDir::new();
+        let agent = write_fake_interactive_agent();
+        let (url, handle) = spawn_fake_upstream(vec!["hello"]);
+        std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", url);
+        let text = format!("name: assertion\napp: agent\nagent:\n  command: python3 \"{}\"\nsteps:\n  - conversation: interactive\n  - assert: reply contains impossible\n", agent.display());
+        let path = dir.path().join("flow.yaml");
+        let out = dir.path().join("trace.json");
+        std::fs::write(&path, &text).expect("conversation fixture");
+        let spec = FlowSpec::parse(&text).expect("conversation fixture");
+        let err = record_interactive(
+            &spec,
+            &path,
+            &out,
+            &mut std::io::Cursor::new(b"hi\ndone\n"),
+            &mut Vec::new(),
+        )
+        .expect_err("unsafe conversation must fail");
+        std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+        handle.join().expect("conversation fixture");
+        assert!(err.contains("does not contain"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(path).expect("conversation fixture"),
+            text
+        );
+        assert!(!out.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_terminal_error_reaps_the_process_and_preserves_files() {
+        struct BrokenOutput;
+        impl std::io::Write for BrokenOutput {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if bytes.starts_with(b"Agent>") {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "terminal closed",
+                    ))
+                } else {
+                    Ok(bytes.len())
+                }
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = ConversationTestDir::new();
+        let agent = dir.path().join("hang.py");
+        let pid_path = dir.path().join("pid");
+        let first_only = FAKE_INTERACTIVE_AGENT
+            .split("for line in sys.stdin:")
+            .next()
+            .expect("conversation fixture");
+        std::fs::write(&agent, format!("import os, time\nopen({:?}, 'w').write(str(os.getpid()))\n{first_only}\ntime.sleep(30)\n", pid_path.to_str().expect("conversation fixture"))).expect("conversation fixture");
+        let (url, handle) = spawn_fake_upstream(vec!["hello"]);
+        std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", url);
+        let text = format!("name: terminal\napp: agent\nagent:\n  command: python3 \"{}\"\nsteps:\n  - conversation: interactive\n", agent.display());
+        let path = dir.path().join("flow.yaml");
+        let out = dir.path().join("trace.json");
+        std::fs::write(&path, &text).expect("conversation fixture");
+        let spec = FlowSpec::parse(&text).expect("conversation fixture");
+        let err = record_interactive(
+            &spec,
+            &path,
+            &out,
+            &mut std::io::Cursor::new(b"hi\ndone\n"),
+            &mut BrokenOutput,
+        )
+        .expect_err("unsafe conversation must fail");
+        std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+        handle.join().expect("conversation fixture");
+        assert!(err.contains("terminal closed"), "{err}");
+        let pid = std::fs::read_to_string(pid_path).expect("conversation fixture");
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .output()
+                .expect("conversation fixture")
+                .status
+                .success(),
+            "terminal error left agent running"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path).expect("conversation fixture"),
+            text
+        );
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn scripted_conversation_records_delivery_metadata_and_replays() {
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = ConversationTestDir::new();
+        let agent = write_fake_interactive_agent();
+        let (url, handle) = spawn_fake_upstream(vec!["hello", "goodbye"]);
+        std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", url);
+        let spec = FlowSpec::parse(&format!("name: scripted\napp: agent\nagent:\n  command: python3 \"{}\"\nsteps:\n  - conversation:\n      - user: hi\n        assert: reply contains hello\n      - user: bye\n        assert: reply contains goodbye\n", agent.display())).expect("spec");
+        let out = dir.path().join("trace.json");
+        record(&spec, &out).1.expect("records both deliveries");
+        std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+        handle.join().expect("upstream completed");
+        let trace: AgentTrace =
+            serde_json::from_str(&std::fs::read_to_string(&out).expect("read trace"))
+                .expect("trace");
+        assert_eq!(
+            trace
+                .cassette
+                .turns
+                .iter()
+                .map(|turn| turn.delivery_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            trace
+                .cassette
+                .deliveries
+                .iter()
+                .map(|delivery| (delivery.user.as_str(), delivery.turn_count))
+                .collect::<Vec<_>>(),
+            vec![("hi", 1), ("bye", 1)]
+        );
+        replay(&spec, &out)
+            .1
+            .expect("same script replays without an upstream");
+    }
+
+    // ---- interactive record: --agent-conversation (plan 12 / issue #375) ----
+
+    /// Env-var mutation (`FLOWPROOF_AGENT_UPSTREAM`) is process-global;
+    /// serialize the tests that touch it, the same pattern
+    /// `doctor_ai_e2e.rs` uses for the same reason.
+    static INTERACTIVE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A fake multi-turn `command:` agent: handles delivery 0 via
+    /// `FLOWPROOF_PROMPT`, then adopts the stdin-line contract
+    /// `ConversationSession`/`record_interactive` speak - one JSON line per
+    /// later delivery, EOF meaning "no more input coming."
+    const FAKE_INTERACTIVE_AGENT: &str = r#"
+import json, os, sys, urllib.request
+
+base = os.environ["OPENAI_BASE_URL"]
+messages = [{"role": "user", "content": os.environ["FLOWPROOF_PROMPT"]}]
+
+def call():
+    payload = json.dumps({"model": "gpt-4o", "messages": messages, "tools": []}).encode()
+    request = urllib.request.Request(
+        base + "/chat/completions", data=payload,
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(request) as response:
+        body = json.load(response)
+    message = body["choices"][0]["message"]
+    messages.append({"role": "assistant", "content": message.get("content") or ""})
+
+call()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    delivery = json.loads(line)
+    messages.append({"role": "user", "content": delivery["prompt"]})
+    call()
+"#;
+
+    fn write_fake_interactive_agent() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("flowproof-agent-flow");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!(
+            "interactive_agent-{}-{}.py",
+            std::process::id(),
+            mcp_nonce()
+        ));
+        std::fs::write(&path, FAKE_INTERACTIVE_AGENT).expect("write agent");
+        path
+    }
+
+    /// A fake real model upstream: answers each POST with the next reply in
+    /// `replies`, in the OpenAI chat-completions shape `record` reads.
+    fn spawn_fake_upstream(replies: Vec<&'static str>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind upstream");
+        let addr = listener.local_addr().expect("addr");
+        let url = format!("http://{addr}");
+        let handle = std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let _ = read_prompt(&mut stream);
+                let body = serde_json::json!({
+                    "choices": [{"message": {"role": "assistant", "content": reply}}]
+                })
+                .to_string();
+                answer_trigger(&mut stream, &body);
+            }
+        });
+        (url, handle)
+    }
+
+    /// The headline case: a real interactive session against a real
+    /// spawned process and a fake real-model upstream (record mode, not
+    /// replay) - proving the whole loop end to end. The operator types two
+    /// deliveries then "done"; the placeholder is replaced with exactly
+    /// what was typed, and the trace carries correct delivery_index/
+    /// deliveries metadata.
+    #[test]
+    fn record_interactive_writes_a_trace_and_substitutes_the_placeholder() {
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let agent = write_fake_interactive_agent();
+        let (upstream_url, upstream_handle) =
+            spawn_fake_upstream(vec!["Are you sure?", "Cancelled."]);
+        std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", &upstream_url);
+
+        let dir = std::env::temp_dir().join("flowproof-agent-flow");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let nonce = format!("{}-{}", std::process::id(), mcp_nonce());
+        let spec_path = dir.join(format!("interactive-{nonce}.flow.yaml"));
+        let out_path = dir.join(format!("interactive-{nonce}.trace.json"));
+        std::fs::write(
+            &spec_path,
+            format!(
+                "name: Cancel with confirmation\napp: agent\nagent:\n  command: python3 \"{}\"\n\
+                 steps:\n  - conversation: interactive\n",
+                agent.display()
+            ),
+        )
+        .expect("write spec");
+
+        let spec = FlowSpec::parse(&std::fs::read_to_string(&spec_path).expect("read spec"))
+            .expect("parses");
+        let mut input = std::io::BufReader::new(std::io::Cursor::new(
+            b"Please cancel my order A-4471.\nYes, confirm.\ndone\n".to_vec(),
+        ));
+        let mut output: Vec<u8> = Vec::new();
+
+        let n = record_interactive(&spec, &spec_path, &out_path, &mut input, &mut output)
+            .expect("records interactively");
+        std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+        upstream_handle.join().ok();
+
+        assert_eq!(n, 2);
+
+        let transcript = String::from_utf8(output).expect("utf8 transcript");
+        assert!(transcript.contains("Agent> Are you sure?"), "{transcript}");
+        assert!(transcript.contains("Agent> Cancelled."), "{transcript}");
+
+        let rewritten = std::fs::read_to_string(&spec_path).expect("read back");
+        assert!(
+            !rewritten.contains("conversation: interactive"),
+            "{rewritten}"
+        );
+        assert!(rewritten.contains("- conversation:"), "{rewritten}");
+        assert!(
+            rewritten.contains("user: Please cancel my order A-4471."),
+            "{rewritten}"
+        );
+        assert!(rewritten.contains("user: Yes, confirm."), "{rewritten}");
+        let reparsed = FlowSpec::parse(&rewritten).expect("rewritten spec still parses");
+        assert!(matches!(reparsed.steps[0], SpecStep::Conversation { .. }));
+
+        let trace_json = std::fs::read_to_string(&out_path).expect("read trace");
+        let trace: AgentTrace = serde_json::from_str(&trace_json).expect("parses trace");
+        assert_eq!(trace.cassette.turns.len(), 2);
+        assert_eq!(trace.cassette.turns[0].delivery_index, 0);
+        assert_eq!(trace.cassette.turns[1].delivery_index, 1);
+        assert_eq!(trace.cassette.deliveries.len(), 2);
+        assert_eq!(
+            trace.cassette.deliveries[0].user,
+            "Please cancel my order A-4471."
+        );
+        assert_eq!(trace.cassette.deliveries[1].user, "Yes, confirm.");
+    }
+
+    /// Zero deliveries (immediate "done"/EOF) is refused, not silently
+    /// accepted as an empty recording.
+    #[test]
+    fn record_interactive_refuses_zero_deliveries() {
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join("flowproof-agent-flow");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let nonce = format!("{}-{}", std::process::id(), mcp_nonce());
+        let spec_path = dir.join(format!("interactive-empty-{nonce}.flow.yaml"));
+        let out_path = dir.join(format!("interactive-empty-{nonce}.trace.json"));
+        std::fs::write(
+            &spec_path,
+            "name: n\napp: agent\nagent:\n  command: python3 -c pass\nsteps:\n  \
+             - conversation: interactive\n",
+        )
+        .expect("write spec");
+        let spec = FlowSpec::parse(&std::fs::read_to_string(&spec_path).expect("read spec"))
+            .expect("parses");
+        let mut input = std::io::BufReader::new(std::io::Cursor::new(b"done\n".to_vec()));
+        let mut output: Vec<u8> = Vec::new();
+
+        let err = record_interactive(&spec, &spec_path, &out_path, &mut input, &mut output)
+            .expect_err("zero deliveries must be refused");
+        assert!(err.contains("at least one delivery"), "{err}");
+        // Refusing before spawning anything means the file is untouched.
+        let unchanged = std::fs::read_to_string(&spec_path).expect("read back");
+        assert!(
+            unchanged.contains("conversation: interactive"),
+            "{unchanged}"
+        );
     }
 
     /// A mispointed service (never calls the proxy) fails replay, and the
