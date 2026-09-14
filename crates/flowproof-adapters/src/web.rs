@@ -14,7 +14,7 @@ use flowproof_driver::{
 };
 use headless_chrome::browser::tab::{ModifierKey, Tab};
 use headless_chrome::protocol::cdp::Target::CreateTarget;
-use headless_chrome::protocol::cdp::{Accessibility, Emulation, Input, Network, Page};
+use headless_chrome::protocol::cdp::{Accessibility, Emulation, Input, Network, Page, DOM};
 use headless_chrome::types::Bounds;
 use headless_chrome::{Browser, LaunchOptions};
 
@@ -605,6 +605,25 @@ impl headless_chrome::protocol::cdp::types::Method for GetAxNodeAndAncestorsRaw 
 /// just means no accessibility hint for that node, not an error.
 fn ax_node_value_string(node: &serde_json::Value, field: &str) -> Option<String> {
     node.get(field)?.get("value")?.as_str().map(str::to_string)
+}
+
+/// `Accessibility.getFullAXTree`, decoded loosely - the replay-side mirror
+/// of `GetAxNodeAndAncestorsRaw`, same reason (the crate's typed `AXNode`
+/// fails on a real `AXPropertyName` value Chrome sends).
+#[derive(Debug, Clone, serde::Serialize)]
+struct GetFullAxTreeRaw {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    depth: Option<i64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct GetFullAxTreeRawReturnObject {
+    nodes: Vec<serde_json::Value>,
+}
+
+impl headless_chrome::protocol::cdp::types::Method for GetFullAxTreeRaw {
+    const NAME: &'static str = "Accessibility.getFullAXTree";
+    type ReturnObject = GetFullAxTreeRawReturnObject;
 }
 
 fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
@@ -1249,6 +1268,7 @@ impl WebAppDriver {
                 nth: None,
                 cell: Some(cell.clone()),
                 scope: None,
+                role: None,
             });
         }
         if let Some(scope) = &selector.scope {
@@ -1258,6 +1278,27 @@ impl WebAppDriver {
                 nth: None,
                 cell: None,
                 scope: Some(scope.clone()),
+                role: None,
+            });
+        }
+        // The `a11y` tier: its own dedicated `role` field (not
+        // `control_type`, which the structural rung already sets for web
+        // steps too), paired with `name`. Checked before the css/
+        // automation_id fallback below, since an a11y selector's payload
+        // never sets `css`/`automation_id` anyway — order here is about
+        // clarity, not precedence.
+        if let (Some(role), Some(name)) = (&selector.role, &selector.name) {
+            return Some(WebLocator {
+                css: None,
+                text: None,
+                nth,
+                cell: None,
+                scope: None,
+                role: Some(A11yLocator {
+                    role: role.clone(),
+                    name: name.clone(),
+                    ancestor_name: selector.ancestor_name.clone(),
+                }),
             });
         }
         if let Some(css) = selector.css_selector() {
@@ -1267,6 +1308,7 @@ impl WebAppDriver {
                 nth,
                 cell: None,
                 scope: None,
+                role: None,
             });
         }
         // Text anchor: find by visible text / accessible label / placeholder
@@ -1278,6 +1320,7 @@ impl WebAppDriver {
             nth,
             cell: None,
             scope: None,
+            role: None,
         })
     }
 
@@ -1338,6 +1381,7 @@ impl WebAppDriver {
                     nth: None,
                     cell: None,
                     scope: None,
+                    role: None,
                 })
             }
             // A miss is a miss - the auto-wait loop will retry, and the
@@ -1411,6 +1455,7 @@ impl WebAppDriver {
                         nth: None,
                         cell: None,
                         scope: None,
+                        role: None,
                     });
                 }
                 let Some(text) = &scope.inner_text else {
@@ -1451,6 +1496,115 @@ impl WebAppDriver {
         }
     }
 
+    /// Resolve an `a11y`-tier target: read the whole accessibility tree,
+    /// find the node matching `role`+`name` (narrowed by `ancestor_name`
+    /// when that pair alone matches more than one node), then turn its
+    /// `backendDOMNodeId` into a live `Element` the same way
+    /// `headless_chrome::Element::new` does internally (`DOM.describeNode`
+    /// for `node_id`/`attributes`/`tag_name`, `DOM.resolveNode` for the
+    /// remote object id) - built by hand here because `Element::new` only
+    /// takes a `node_id` (the querySelector-style kind), and the only
+    /// identifier the accessibility tree hands back is a `backendDOMNodeId`.
+    fn resolve_a11y(
+        &self,
+        wanted: &A11yLocator,
+        nth: Option<u32>,
+    ) -> Result<Option<headless_chrome::Element<'_>>, DriverError> {
+        let tab = self.tab()?;
+        let _ = tab.call_method(Accessibility::Enable(None));
+        let nodes = tab
+            .call_method(GetFullAxTreeRaw { depth: None })
+            .map_err(|e| web_err("reading the accessibility tree", e))?
+            .nodes;
+
+        let by_id: std::collections::HashMap<&str, &serde_json::Value> = nodes
+            .iter()
+            .filter_map(|n| Some((n.get("nodeId")?.as_str()?, n)))
+            .collect();
+        // A candidate's ancestor chain matches when SOME ancestor's own
+        // accessible name equals `ancestor_name` - walking parentId links
+        // rather than assuming any particular depth, and bounded so a
+        // malformed/cyclic chain can't spin forever.
+        let ancestor_matches = |node: &serde_json::Value| -> bool {
+            let Some(wanted_ancestor) = &wanted.ancestor_name else {
+                return true;
+            };
+            let mut current = node;
+            for _ in 0..64 {
+                let Some(parent_id) = current.get("parentId").and_then(|v| v.as_str()) else {
+                    return false;
+                };
+                let Some(parent) = by_id.get(parent_id) else {
+                    return false;
+                };
+                if ax_node_value_string(parent, "name").as_deref() == Some(wanted_ancestor.as_str())
+                {
+                    return true;
+                }
+                current = parent;
+            }
+            false
+        };
+
+        let matches: Vec<&serde_json::Value> = nodes
+            .iter()
+            .filter(|node| {
+                ax_node_value_string(node, "role").as_deref() == Some(wanted.role.as_str())
+                    && ax_node_value_string(node, "name").as_deref() == Some(wanted.name.as_str())
+                    && ancestor_matches(node)
+            })
+            .collect();
+        let chosen = match nth {
+            Some(n) => matches.get(n.saturating_sub(1) as usize),
+            None => matches.first(),
+        };
+        let Some(node) = chosen else {
+            return Ok(None);
+        };
+        let Some(backend_node_id) = node.get("backendDOMNodeId").and_then(|v| v.as_u64()) else {
+            // An AX node with no DOM counterpart (a pure accessibility-tree
+            // construct) can't become a clickable element - not a resolution
+            // failure, just nothing this tier can act on for this node.
+            return Ok(None);
+        };
+        let backend_node_id = backend_node_id as headless_chrome::protocol::cdp::DOM::BackendNodeId;
+
+        let described = tab
+            .call_method(DOM::DescribeNode {
+                node_id: None,
+                backend_node_id: Some(backend_node_id),
+                object_id: None,
+                depth: None,
+                pierce: None,
+            })
+            .map_err(|e| web_err("describing the accessibility-matched node", e))?
+            .node;
+        let object = tab
+            .call_method(DOM::ResolveNode {
+                node_id: None,
+                backend_node_id: Some(backend_node_id),
+                object_group: None,
+                execution_context_id: None,
+            })
+            .map_err(|e| web_err("resolving the accessibility-matched node", e))?
+            .object;
+        let Some(remote_object_id) = object.object_id else {
+            return Ok(None);
+        };
+        Ok(Some(headless_chrome::Element {
+            remote_object_id,
+            backend_node_id: described.backend_node_id,
+            node_id: described.node_id,
+            parent: tab,
+            attributes: described.attributes,
+            tag_name: described.node_name,
+            value: object
+                .value
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        }))
+    }
+
     /// One resolution attempt, in preference order: css, then exact text
     /// anchor, then prefix text anchor (Playwright's name matching accepts
     /// a leading match when the accessible name carries trailing detail —
@@ -1465,6 +1619,9 @@ impl WebAppDriver {
         }
         if let Some(scope) = &locator.scope {
             return self.resolve_scope(scope);
+        }
+        if let Some(role) = &locator.role {
+            return self.resolve_a11y(role, locator.nth);
         }
         if let Some(css) = &locator.css {
             return Ok(match locator.nth {
@@ -1596,6 +1753,17 @@ struct WebLocator {
     nth: Option<u32>,
     cell: Option<flowproof_driver::CellQuery>,
     scope: Option<flowproof_driver::ScopeQuery>,
+    /// The `a11y` tier: role + accessible name (+ optional nearest named
+    /// ancestor), resolved via the browser's own accessibility tree rather
+    /// than css/text. `None` for every other locator shape.
+    role: Option<A11yLocator>,
+}
+
+#[derive(Debug, Clone)]
+struct A11yLocator {
+    role: String,
+    name: String,
+    ancestor_name: Option<String>,
 }
 
 /// Root every union branch of a text-anchor XPath under the tagged
@@ -1638,6 +1806,13 @@ impl std::fmt::Display for WebLocator {
                 "the \"{inner}\" in the {} containing \"{}\"",
                 scope.container, scope.anchor
             );
+        }
+        if let Some(role) = &self.role {
+            write!(f, "a11y role '{}' name '{}'", role.role, role.name)?;
+            if let Some(ancestor) = &role.ancestor_name {
+                write!(f, " inside '{ancestor}'")?;
+            }
+            return Ok(());
         }
         match (&self.css, &self.text) {
             (Some(css), _) => write!(f, "css '{css}'")?,
@@ -4506,6 +4681,7 @@ mod tests {
             nth: Some(2),
             cell: None,
             scope: None,
+            role: None,
         };
         let resolver = super::WebAppDriver::js_resolver(&css).expect("css is fast-path");
         assert!(resolver.contains("\"#order\""));
@@ -4517,6 +4693,7 @@ mod tests {
             nth: None,
             cell: None,
             scope: None,
+            role: None,
         };
         let resolver = super::WebAppDriver::js_resolver(&text).expect("text is fast-path");
         // The SAME xpath ladder the element-handle path walks.
@@ -4539,6 +4716,7 @@ mod tests {
                 row_id: None,
             }),
             scope: None,
+            role: None,
         };
         assert!(
             super::WebAppDriver::js_resolver(&cell).is_none(),

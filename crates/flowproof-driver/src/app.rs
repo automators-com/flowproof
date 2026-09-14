@@ -40,6 +40,20 @@ pub struct UiaSelector {
     /// inner target is looked up in THAT document; a frame scope is a hard
     /// fence, never a hint that falls back to the main document.
     pub frame: Option<FrameQuery>,
+    /// The `a11y` tier's accessible role (e.g. `"button"`), read from the
+    /// browser's own accessibility tree. Deliberately NOT `control_type`:
+    /// the structural tier already sets `control_type`+`name` together for
+    /// web steps too (UIA-style names like `"Button"`), and conflating the
+    /// two would make a structural selector's payload look like an a11y one
+    /// to the web adapter's locator dispatch. Paired with `name` (the
+    /// accessible name, the same field every other tier already uses for
+    /// "what it's called"). Web-only; `None` on every other tier and every
+    /// non-web adapter.
+    pub role: Option<String>,
+    /// The `a11y` tier's disambiguator: the nearest named ancestor's
+    /// accessible name, when `role`+`name` alone might not be unique on the
+    /// page. Web-only; `None` on every other tier.
+    pub ancestor_name: Option<String>,
 }
 
 /// A table cell to resolve by IDENTITY, not position (#58). `column` is the

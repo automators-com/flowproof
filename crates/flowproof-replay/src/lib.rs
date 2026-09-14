@@ -168,6 +168,8 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
                     container_id: get("container_id"),
                 }
             }),
+            role: None,
+            ancestor_name: None,
         },
         // A text anchor resolves by visible label (UIA Name / element
         // text / OCR line). `relation` rides along for pixels-only
@@ -179,19 +181,23 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             relation: get("relation"),
             ..UiaSelector::default()
         },
+        // `a11y` resolves through the browser's accessibility tree (CDP
+        // `Accessibility.getFullAXTree` + `DOM.resolveNode`), not by css/
+        // automation-id lookup — `role` (its own field, not `control_type`:
+        // see `UiaSelector::role`'s doc comment for why) + `name` carry the
+        // accessible role/name, `ancestor_name` disambiguates when that
+        // pair alone isn't unique on the page.
+        SelectorTier::A11y => UiaSelector {
+            role: get("role"),
+            name: get("name"),
+            ancestor_name: get("ancestor_name"),
+            nth,
+            ..UiaSelector::default()
+        },
         // Visual matching needs the vision mode (not yet built); AI
         // relocation NEVER runs at replay time by design — it is the heal
-        // workflow, which proposes a reviewable diff instead. `a11y`
-        // resolves through the browser's accessibility tree (CDP
-        // `Accessibility` domain + `DOM.resolveNode`), not through this
-        // generic CSS/automation-id-shaped `UiaSelector` — that capture and
-        // resolution path is not implemented yet (docs/fiori-reliability/
-        // FINDINGS.md, "design note: the a11y selector tier"); the recorder
-        // does not produce this tier yet either, so this arm is unreached
-        // in practice today, not a silent downgrade of a real selector.
-        SelectorTier::A11y | SelectorTier::VisualTemplate | SelectorTier::AiRelocation => {
-            return None
-        }
+        // workflow, which proposes a reviewable diff instead.
+        SelectorTier::VisualTemplate | SelectorTier::AiRelocation => return None,
     };
     (!uia.is_empty()).then_some(uia)
 }
