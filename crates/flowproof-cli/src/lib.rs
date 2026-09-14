@@ -3383,7 +3383,25 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(
+    run_cli_for_engine(args, None)
+}
+
+/// Embeddings identify their loaded native engine image for checkpoint
+/// compatibility checks. Ordinary binaries use `run_cli` and current_exe.
+pub fn run_cli_with_engine<I, T>(args: I, engine_path: PathBuf) -> u8
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    run_cli_for_engine(args, Some(engine_path))
+}
+
+fn run_cli_for_engine<I, T>(args: I, engine_path: Option<PathBuf>) -> u8
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let mut cli = match Cli::try_parse_from(
         std::iter::once(std::ffi::OsString::from("flowproof"))
             .chain(args.into_iter().map(Into::into)),
     ) {
@@ -3400,6 +3418,9 @@ where
         }
     };
 
+    if let Command::Run { recovery, .. } = &mut cli.command {
+        recovery.engine_path = engine_path;
+    }
     let is_mcp_stdio = matches!(cli.command, Command::McpStdio { .. });
     let result = match cli.command {
         Command::Config { action } => match action {

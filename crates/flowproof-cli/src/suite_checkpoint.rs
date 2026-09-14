@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default, clap::Args)]
 pub(crate) struct RecoveryArgs {
+    /// Set by the embedding library only; never a CLI override.
+    #[arg(skip)]
+    pub engine_path: Option<PathBuf>,
     /// Suite only: persist confirmed stages and exports to a private local file.
     #[arg(long)]
     pub checkpoint: Option<PathBuf>,
@@ -70,7 +73,8 @@ impl Checkpoint {
         let Some(path) = &args.checkpoint else {
             return Ok(None);
         };
-        let pinned = suite_inputs::fingerprint(dir, specs, manifest, values)?;
+        let pinned =
+            suite_inputs::fingerprint(dir, specs, manifest, values, args.engine_path.as_deref())?;
         let names: Vec<_> = specs
             .iter()
             .map(|p| {

@@ -364,7 +364,9 @@ after checking that its process has stopped. Removing a stale lock does not
 clear an uncertain operation.
 
 Recovery pins the suite directory, exact suite/spec/trace/values bytes,
-parsed specs, engine binary, referenced inputs and adapter environment.
+parsed specs, engine binary (the native extension for Python installs),
+referenced inputs and adapter environment. The engine image is pinned once
+per invocation; business input files are rechecked at every stage boundary.
 Changed inputs are refused before replay, and each pending stage rechecks the
 pinned files and effective inputs immediately before starting. Exports must have unique producers,
 consumers must declare their prerequisites, and suite env/values cannot

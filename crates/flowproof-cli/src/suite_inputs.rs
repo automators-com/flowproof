@@ -12,6 +12,7 @@ pub(crate) fn fingerprint(
     paths: &[PathBuf],
     manifest: &SuiteManifest,
     values: &ValuesArgs,
+    engine_path: Option<&Path>,
 ) -> Result<PinnedInputs, String> {
     let mut files = BTreeMap::new();
     for path in paths
@@ -26,10 +27,7 @@ pub(crate) fn fingerprint(
                     .unwrap_or_else(|| default_values_path(path)),
             ]
         })
-        .chain([
-            dir.join("suite.yaml"),
-            std::env::current_exe().map_err(|e| e.to_string())?,
-        ])
+        .chain([dir.join("suite.yaml")])
     {
         let parent = path
             .parent()
@@ -52,8 +50,14 @@ pub(crate) fn fingerprint(
         std::fs::read(dir.join("suite.yaml")).map_err(|e| e.to_string())?,
     ];
     // The release version alone does not identify an unreleased binary.
-    let mut binary = File::open(std::env::current_exe().map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    // Python embeddings supply the actual loaded extension image, not the
+    // Python host executable. This identity is pinned on every invocation;
+    // the running image does not need to be rehashed at each stage boundary.
+    let engine_path = match engine_path {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_exe().map_err(|e| e.to_string())?,
+    };
+    let mut binary = File::open(engine_path).map_err(|e| e.to_string())?;
     let mut engine = Sha256::new();
     let mut buffer = [0; 65536];
     loop {
@@ -314,9 +318,32 @@ mod tests {
             vars_file: None,
             vars: vec!["PIN_INPUT_UNIT=0010".into()],
         };
-        let pinned =
-            fingerprint(&dir, std::slice::from_ref(&spec), &manifest, &values).expect("preflight");
+        let pinned = fingerprint(&dir, std::slice::from_ref(&spec), &manifest, &values, None)
+            .expect("preflight");
         assert_eq!(pinned.digest.len(), 64);
+        let engine = dir.join("embedded-engine");
+        std::fs::write(&engine, "first native image").expect("engine fixture");
+        let first = fingerprint(
+            &dir,
+            std::slice::from_ref(&spec),
+            &manifest,
+            &values,
+            Some(&engine),
+        )
+        .expect("embedded identity");
+        std::fs::write(&engine, "changed native image").expect("updated engine fixture");
+        let changed = fingerprint(
+            &dir,
+            std::slice::from_ref(&spec),
+            &manifest,
+            &values,
+            Some(&engine),
+        )
+        .expect("new embedded identity");
+        assert_ne!(
+            first.digest, changed.digest,
+            "an updated Python extension invalidates resume even when Python itself is unchanged"
+        );
         let _overlay = apply_values_context(&spec, &values).expect("same overlay replay uses");
         pinned.verify_stage(&spec).expect("unchanged inputs");
         std::env::set_var("PIN_INPUT_UNIT", "0099");
