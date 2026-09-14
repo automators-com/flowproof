@@ -1,0 +1,46 @@
+name: Deploy centralized docs site
+
+# docs.automators.com (automators-com/docs) renders this repo's docs/
+# folder at BUILD time via scripts/sync.ts. When docs change on main, poke
+# that project's deploy hook so it rebuilds with the latest content.
+#
+# This runs alongside rebuild-website-docs.yml (the old automators.ai
+# renderer) until the cutover to docs.automators.com happens — see
+# docs-improvements.md's "Out of scope: Cutover" section. Both stay wired
+# up in the meantime so neither published copy falls behind.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+  # So a human can republish without an empty docs commit — after setting
+  # the secret, or when the docs site was rebuilt from an older commit for
+  # its own reasons.
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger docs site deploy hook
+        env:
+          HOOK_URL: ${{ secrets.DOCS_SITE_DEPLOY_HOOK_URL }}
+        run: |
+          # A deploy that did not happen must not look like one that did —
+          # see rebuild-website-docs.yml's own history of this exact bug.
+          if [ -z "$HOOK_URL" ]; then
+            echo "::error::DOCS_SITE_DEPLOY_HOOK_URL is not set, so docs.automators.com was NOT rebuilt."
+            echo "The value is a Vercel deploy hook for the automators-com/docs project:"
+            echo "  Vercel -> the docs project -> Settings -> Git -> Deploy Hooks"
+            echo "Then, from a checkout of this repository:"
+            echo "  gh secret set DOCS_SITE_DEPLOY_HOOK_URL"
+            exit 1
+          fi
+          # -f turns a non-2xx into a failure; without it curl prints the error
+          # body and still exits 0, which is the same silence in a new costume.
+          # The retries cover a blip between GitHub and the hook, not a hook
+          # that is rejecting us.
+          status="$(curl -fsS -X POST "$HOOK_URL" \
+                      --retry 3 --retry-connrefused --retry-delay 5 \
+                      -o /dev/null -w '%{http_code}')"
+          echo "deploy hook accepted the rebuild request (HTTP $status)"

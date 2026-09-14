@@ -7,7 +7,7 @@ decided silently.
 
 It is **not** a restatement of the product vision — that already lives in
 [`CHARTER.md`](../CHARTER.md) (mission, invariants, out-of-scope list, priority
-ordering) and [`docs/design.md`](../docs/design.md) (architecture). A plan here
+ordering) and [`internal/design.md`](../internal/design.md) (architecture). A plan here
 takes those as given and works out one feature against them. `docs/` itself
 already holds a few documents written in this exact register —
 [`docs/multi-surface.md`](../docs/multi-surface.md) is effectively plan 0 of
@@ -24,7 +24,11 @@ instead so they're easy to find as a set.
 | 4 | [004-single-flow-shareability.md](004-single-flow-shareability.md) | Closing the loop on "one `.flow.yaml` + one `flowproof config` + one `flowproof run`, no `suite.yaml`": a stale-naming inventory fix and a missing-var error that now names the fix — issue #534 |
 | 5 | [005-fiori-field-commit.md](005-fiori-field-commit.md) | Make Fiori/SAP WebGUI framed input typing pass only after the field value is committed and read back, preventing prefilled values from silently restoring |
 | 6 | [006-sap-gui-fiori-excel-config-demo.md](006-sap-gui-fiori-excel-config-demo.md) | Release-demo walkthrough for issue #536: one flow starts in SAP GUI, continues in Fiori using `flowproof config` instead of `.env`, exports data, and ends in Excel |
+| 7 | [007-autonomous-flow-repair-loop.md](007-autonomous-flow-repair-loop.md) | `record` grows a bounded, unattended repair loop: on failure, diagnose against the live app, patch the `.flow.yaml` (never source code), and rerun without requiring a human to re-record or approve each edit |
 | 8 | [008-ai-authoring-config.md](008-ai-authoring-config.md) | Add `flowproof config ai` for provider-neutral model authoring settings, storing one AI key and seeding `FLOWPROOF_AI_*` plus compatibility env vars — issue #541 |
+| 9 | [009-docs-product-alignment-audit.md](009-docs-product-alignment-audit.md) | Audit docs against the actual CLI/config surface: README's quickstart still shows the pre-`flowproof config` credential pattern, `docs/adopting.md` never mentions `config ai`, and the `documented_flags.rs` ratchet's blind spots that let this class of gap through |
+| 10 | [010-release-registry-smoke.md](010-release-registry-smoke.md) | A human-dispatched, protected `release-smoke.yml` workflow that validates an exact released version installs and runs from PyPI and npm on Linux x64, Windows x64, and macOS ARM64 with no checkout — issue #382 |
+| 11 | [011-fiori-values-example.md](011-fiori-values-example.md) | Replace the Fiori examples' `suite.yaml`/`mint-test-data.sh` business-data minting with a checked-in `examples/fiori/values.yaml` that demonstrates `--vars` while keeping credentials in config or secrets |
 
 ## How to read and amend these
 

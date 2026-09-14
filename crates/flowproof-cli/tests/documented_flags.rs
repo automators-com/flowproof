@@ -7,14 +7,28 @@
 //! --prompt` all reached a release that way.
 //!
 //! So the docs are checked the way the schema is: mechanically, against the
-//! definition. The corpus is `docs/*.md` plus `README.md` — what the website
-//! renders and what the repository greets you with. Mentioning a flag is a
-//! low bar deliberately; this catches *absent*, not *badly explained*.
+//! definition. The corpus is every `docs/**/*.md` plus `README.md` — what
+//! the website renders (topic pages now live in per-topic folders, e.g.
+//! `docs/getting-started/*.md`) and what the repository greets you with.
+//! Mentioning a flag is a low bar deliberately; this catches *absent*, not
+//! *badly explained*.
 
 use clap::CommandFactory;
 use flowproof_cli::Cli;
 
-/// `docs/*.md` + `README.md`, concatenated. These are the pages a user can
+/// Collects every `.md` file under `dir`, recursing into subfolders.
+fn collect_md_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("readable docs dir").flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_md_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "md") {
+            out.push(path);
+        }
+    }
+}
+
+/// `docs/**/*.md` + `README.md`, concatenated. These are the pages a user can
 /// actually reach: automators.ai renders `docs/` at build time.
 fn documentation() -> String {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -24,17 +38,13 @@ fn documentation() -> String {
 
     let mut corpus = std::fs::read_to_string(root.join("README.md")).expect("README.md");
 
-    let mut pages: Vec<_> = std::fs::read_dir(root.join("docs"))
-        .expect("docs/")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
-        .collect();
+    let mut pages = Vec::new();
+    collect_md_files(&root.join("docs"), &mut pages);
     // Read in a stable order so a failure names the same corpus every run.
     pages.sort();
     assert!(
         !pages.is_empty(),
-        "no docs/*.md found under {}",
+        "no docs/**/*.md found under {}",
         root.display()
     );
 

@@ -1,0 +1,21 @@
+{
+  "title": "Flowproof",
+  "pages": [
+    "---Introduction---",
+    "getting-started",
+    "authoring",
+    "recording",
+    "self-help",
+    "---Testing agents---",
+    "agent-testing",
+    "multi-surface",
+    "capture",
+    "---Guides---",
+    "adopting",
+    "comparison",
+    "---Reference---",
+    "trace-format",
+    "compatibility",
+    "threat-model"
+  ]
+}

@@ -151,6 +151,12 @@ pub struct AgentRun {
     /// mechanism, which is everywhere the egress log is empty for the same
     /// reason: the traps are installed together or not at all.
     pub fs: FsLog,
+    /// Whether the seccomp observation mechanism ran: true only on the
+    /// Linux contained path. Distinct from `containment` - observing side
+    /// effects is not containing egress - and load-bearing for the trace's
+    /// side-effect lane, ABSENT when this is false: an unobserved run's
+    /// empty `fs` is silence, not evidence.
+    pub observed: bool,
     /// The containment tier this RUN achieved, when the run itself is what
     /// decides it.
     ///
@@ -385,6 +391,7 @@ pub fn run_http(
         upstream_error: log.upstream_error.clone(),
         egress: EgressLog::default(),
         fs: FsLog::default(),
+        observed: false,
         containment: None,
     };
     drop(log);
@@ -647,6 +654,7 @@ pub fn run_against(
         upstream_error: log.upstream_error.clone(),
         egress: EgressLog::default(),
         fs: FsLog::default(),
+        observed: false,
         containment: None,
     };
     drop(log);
@@ -660,6 +668,10 @@ pub fn run_against(
 /// other platform it is exactly [`run_against`] with an empty egress log,
 /// since the mechanism is Linux-only and the tier is reported "not
 /// contained" independently.
+///
+/// `egress_engaged` says whether the FLOW declared an egress policy, or is
+/// supervised for side-effect observation only under an allow-all set nobody
+/// declared - and the latter must never report `Enforced`.
 #[cfg(target_os = "linux")]
 pub fn run_against_contained(
     proxy: &AgentProxy,
@@ -667,6 +679,7 @@ pub fn run_against_contained(
     env: &BTreeMap<String, String>,
     timeout: Duration,
     allow: &AllowSet,
+    egress_engaged: bool,
 ) -> Result<AgentRun, RunError> {
     let base = proxy.base_url();
     let mut cmd = configure(command, &base, env)?;
@@ -711,10 +724,19 @@ pub fn run_against_contained(
         upstream_error: log.upstream_error.clone(),
         egress,
         fs,
-        // Reaching here means the filter installed: it goes in via `pre_exec`
-        // and a failure aborts the spawn, so there is no path to a finished
-        // run with no filter behind it.
-        containment: Some(Containment::Enforced),
+        // The filter that enforced is the filter that watched, so `fs`
+        // above is evidence here and silence everywhere else.
+        observed: true,
+        containment: Some(if egress_engaged {
+            // Reaching here means the filter installed (it goes in via
+            // `pre_exec`; a failure aborts the spawn) - and it enforced the
+            // DECLARED policy.
+            Containment::Enforced
+        } else {
+            // An allow-all policy nobody declared: observing side effects is
+            // not containing egress, and the tier must not blur the two.
+            Containment::observation_only()
+        }),
     };
     drop(log);
     Ok(run)
@@ -734,7 +756,13 @@ pub fn run_against_contained(
     env: &BTreeMap<String, String>,
     timeout: Duration,
     allow: &AllowSet,
+    egress_engaged: bool,
 ) -> Result<AgentRun, RunError> {
+    // Defense in depth: no caller passes `false` here today, but a future
+    // one must get the plain path, never WFP filters from a wildcard set.
+    if !egress_engaged {
+        return run_against(proxy, command, env, timeout);
+    }
     let command = command.trim();
     if command.is_empty() {
         return Err(RunError::NoCommand);
@@ -763,9 +791,11 @@ pub fn run_against_contained(
         egress: EgressLog {
             blocked: outcome.blocked,
             faults: outcome.faults,
+            observed: Vec::new(),
         },
         // Filesystem observation is a seccomp mechanism; Windows has none.
         fs: FsLog::default(),
+        observed: false,
         containment: Some(match outcome.not_contained {
             None => Containment::Enforced,
             Some(why) => Containment::NotContained(why),
@@ -782,9 +812,13 @@ pub fn run_against_contained(
     env: &BTreeMap<String, String>,
     timeout: Duration,
     _allow: &AllowSet,
+    egress_engaged: bool,
 ) -> Result<AgentRun, RunError> {
-    // No mechanism on this platform; the plain path, and the tier line says
-    // "not contained".
+    // Defense in depth, mirroring the Windows variant.
+    if !egress_engaged {
+        return run_against(proxy, command, env, timeout);
+    }
+    // No mechanism here; the plain path, and the tier says "not contained".
     run_against(proxy, command, env, timeout)
 }
 

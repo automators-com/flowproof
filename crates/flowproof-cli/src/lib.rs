@@ -5,6 +5,15 @@ mod agent_flow;
 mod capture;
 pub mod config;
 mod doctor;
+mod suite;
+mod suite_checkpoint;
+mod suite_inputs;
+mod suite_journal;
+mod update_check;
+
+// The falsifiability harness feeds committed fixture records through the
+// SAME reader and verdict record and replay execute, so they are public.
+pub use agent_flow::{side_effect_verdict, side_effects_of};
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -274,6 +283,13 @@ enum Command {
         /// Draw a visible cursor and prominent click halo into recordings.
         #[arg(long)]
         highlight_cursor: bool,
+        /// Disable the autonomous repair loop: on a failure, stop and report
+        /// it immediately instead of asking the configured model to patch
+        /// the `.flow.yaml` and retry (bounded, default 3 attempts). Repair
+        /// only engages when an authoring model is configured; it never
+        /// edits anything other than the failing `steps:` entry.
+        #[arg(long)]
+        no_repair: bool,
     },
     /// Deterministically replay a recorded flow (zero LLM calls). Point it
     /// at a DIRECTORY to run every *.flow.yaml under it as a suite with one
@@ -298,6 +314,8 @@ enum Command {
         /// it failed — absorbs infra flakiness (default 0, no retries).
         #[arg(long, default_value_t = 0)]
         retries: u8,
+        #[command(flatten)]
+        recovery: suite_checkpoint::RecoveryArgs,
         /// Suite runs only: record any spec whose trace is missing, then
         /// replay it (default: traceless specs are reported as skipped).
         #[arg(long)]
@@ -569,6 +587,30 @@ struct RecordOptions {
     reuse: bool,
     verify: bool,
     recording: flowproof_driver::RecordingOptions,
+    no_repair: bool,
+}
+
+/// Load a flow spec and apply the same suite/values/identity context
+/// `record` always applies. Factored out so the repair loop (which reloads
+/// the spec after patching the `.flow.yaml` on disk) stays in lockstep with
+/// the initial load instead of drifting.
+///
+/// Returns the [`EnvOverlay`] guard alongside the spec: it restores the
+/// environment on drop, so the caller MUST keep it alive for as long as the
+/// spec's `${VAR}`s need to resolve (i.e. through the `record` call itself),
+/// not just through this function.
+fn load_prepared_spec(
+    spec_path: &Path,
+    values: &ValuesArgs,
+) -> Result<(FlowSpec, EnvOverlay), String> {
+    let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    let manifest = apply_suite_context(spec_path)?;
+    let overlay = apply_values_context(spec_path, values)?;
+    if spec.browser.is_none() {
+        spec.browser = manifest.as_ref().and_then(|m| m.browser.clone());
+    }
+    dereference_identity(&mut spec, manifest.as_ref())?;
+    Ok((spec, overlay))
 }
 
 fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
@@ -580,20 +622,9 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
         reuse,
         verify,
         recording,
+        no_repair,
     } = options;
-    let mut spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
-    // The suite's data (env_from) and env govern recording too — the
-    // ${VAR}s a spec references must resolve the same here as in `run`.
-    let manifest = apply_suite_context(spec_path)?;
-    let _values = apply_values_context(spec_path, &values)?;
-    // Suite-level browser defaults apply only when the spec has none —
-    // recording bakes the result into the trace header.
-    if spec.browser.is_none() {
-        spec.browser = manifest.as_ref().and_then(|m| m.browser.clone());
-    }
-    // A `session: <name>` ref is dereferenced against the suite's identities
-    // now, so record copies the identity's inline setup into the trace.
-    dereference_identity(&mut spec, manifest.as_ref())?;
+    let (spec, _env_overlay) = load_prepared_spec(spec_path, &values)?;
     if let Some(reason) = spec.skip_reason() {
         if json {
             println!("{}", serde_json::json!({ "skipped": reason }));
@@ -680,19 +711,142 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
     let summary = match result {
         Ok(summary) => summary,
         Err(err) => {
-            // A clarification is data, not just a message: with --json the
-            // payload goes to stdout so the driving agent can enumerate the
-            // live screen and rewrite the vague step before re-recording.
-            if json {
-                if let Some(payload) = record_failure_json(&err) {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
-                    );
-                    return Ok(EXIT_ERROR);
+            // `--reuse` re-records against an existing trace's steps; the
+            // repair loop rewrites the spec file itself, which would desync
+            // that reuse cursor, so repair does not engage on top of it.
+            if !no_repair && !reuse {
+                match run_repair_loop(spec_path, &values, &out, author, recording, err) {
+                    RepairLoopOutcome::Passed { summary, report } => {
+                        write_repair_report(&out, &report)?;
+                        if !json {
+                            print_repair_report(&report);
+                        }
+                        summary
+                    }
+                    RepairLoopOutcome::NotRepaired(err) => {
+                        return record_failure_result(&err, json);
+                    }
+                    RepairLoopOutcome::GaveUp(err, report) => {
+                        // An engine_gap verdict is a judgment call on
+                        // whatever the live app happened to show that
+                        // instant — not a proven, reproducible fact. Give
+                        // the whole flow one independent, fresh attempt
+                        // before treating that verdict as final; a
+                        // budget-exhausted verdict already tried several
+                        // real fixes, so it does not get a freebie retry.
+                        let is_engine_gap = matches!(
+                            report.outcome,
+                            flowproof_agent::RepairOutcome::EngineGap { .. }
+                        );
+                        if !is_engine_gap {
+                            write_repair_report(&out, &report)?;
+                            return emit_repair_failure(&err, &report, &report, json);
+                        }
+                        if !json {
+                            eprintln!(
+                                "Repair called this an engine gap; giving the flow one fresh, \
+                                 independent attempt before reporting a final failure..."
+                            );
+                        }
+                        match fresh_record_attempt(spec_path, &values, &out, author, recording) {
+                            Ok(summary) => {
+                                let combined = RepairReportWithFreshRetry {
+                                    first_attempt: &report,
+                                    fresh_retry: FreshRetryOutcome::Passed,
+                                };
+                                write_json_report(&out, &combined)?;
+                                if !json {
+                                    println!(
+                                        "Fresh retry passed without needing repair — the first \
+                                         failure was a one-off, not a real problem."
+                                    );
+                                }
+                                summary
+                            }
+                            Err(FreshRetryError::Setup(setup_err)) => {
+                                let combined = RepairReportWithFreshRetry {
+                                    first_attempt: &report,
+                                    fresh_retry: FreshRetryOutcome::FailedAgain {
+                                        report: flowproof_agent::RepairReport {
+                                            attempts: Vec::new(),
+                                            outcome:
+                                                flowproof_agent::RepairOutcome::NotApplicable {
+                                                    reason: setup_err.clone(),
+                                                },
+                                        },
+                                    },
+                                };
+                                write_json_report(&out, &combined)?;
+                                return Err(setup_err);
+                            }
+                            Err(FreshRetryError::Record(retry_err)) => {
+                                match run_repair_loop(
+                                    spec_path, &values, &out, author, recording, retry_err,
+                                ) {
+                                    RepairLoopOutcome::Passed {
+                                        summary,
+                                        report: retry_report,
+                                    } => {
+                                        let combined = RepairReportWithFreshRetry {
+                                            first_attempt: &report,
+                                            fresh_retry: FreshRetryOutcome::Repaired {
+                                                report: retry_report.clone(),
+                                            },
+                                        };
+                                        write_json_report(&out, &combined)?;
+                                        if !json {
+                                            print_repair_report(&retry_report);
+                                        }
+                                        summary
+                                    }
+                                    RepairLoopOutcome::NotRepaired(final_err) => {
+                                        let combined = RepairReportWithFreshRetry {
+                                            first_attempt: &report,
+                                            fresh_retry: FreshRetryOutcome::FailedAgain {
+                                                report: flowproof_agent::RepairReport {
+                                                    attempts: Vec::new(),
+                                                    outcome:
+                                                        flowproof_agent::RepairOutcome::NotApplicable {
+                                                            reason: final_err.to_string(),
+                                                        },
+                                                },
+                                            },
+                                        };
+                                        write_json_report(&out, &combined)?;
+                                        return emit_repair_failure(
+                                            &final_err, &combined, &report, json,
+                                        );
+                                    }
+                                    RepairLoopOutcome::GaveUp(final_err, final_report) => {
+                                        let combined = RepairReportWithFreshRetry {
+                                            first_attempt: &report,
+                                            fresh_retry: FreshRetryOutcome::FailedAgain {
+                                                report: final_report.clone(),
+                                            },
+                                        };
+                                        write_json_report(&out, &combined)?;
+                                        if !json {
+                                            eprintln!(
+                                                "Fresh retry did not recover either — two \
+                                                 independent failures agree, this looks like a \
+                                                 real problem, not a flake."
+                                            );
+                                        }
+                                        return emit_repair_failure(
+                                            &final_err,
+                                            &combined,
+                                            &final_report,
+                                            json,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
+            } else {
+                return record_failure_result(&err, json);
             }
-            return Err(err.to_string());
         }
     };
     if json {
@@ -734,6 +888,484 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
     Ok(EXIT_PASS)
 }
 
+/// Emit a `record` failure the way this CLI always has, when the repair
+/// loop did not run at all (no model configured, or `--reuse`/`--no-repair`).
+fn record_failure_result(err: &flowproof_agent::RecordError, json: bool) -> Result<u8, String> {
+    // A clarification is data, not just a message: with --json the payload
+    // goes to stdout so the driving agent can enumerate the live screen and
+    // rewrite the vague step before re-recording.
+    if json {
+        if let Some(payload) = record_failure_json(err) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+            );
+            return Ok(EXIT_ERROR);
+        }
+    }
+    Err(err.to_string())
+}
+
+/// Either half of what [`fresh_record_attempt`] can fail with: a setup
+/// problem (can't even load the spec or open a driver — not something a
+/// second repair loop pass could address) or a genuine [`RecordError`] from
+/// actually running the flow, which the caller can feed back into
+/// [`run_repair_loop`] as it would any other failure.
+enum FreshRetryError {
+    Setup(String),
+    Record(flowproof_agent::RecordError),
+}
+
+/// One completely fresh `record` attempt: reload the spec, rebuild the
+/// driver from scratch (new browser session, new login), and run once. Used
+/// to give an `engine_gap` verdict a second, independent roll of the dice —
+/// see [`cmd_record`]'s handling of [`RepairLoopOutcome::GaveUp`] for why
+/// that verdict is treated as provisional rather than final.
+fn fresh_record_attempt(
+    spec_path: &Path,
+    values: &ValuesArgs,
+    out: &Path,
+    author: AuthorArg,
+    recording: flowproof_driver::RecordingOptions,
+) -> Result<flowproof_agent::RecordSummary, FreshRetryError> {
+    let (spec, _env_overlay) =
+        load_prepared_spec(spec_path, values).map_err(FreshRetryError::Setup)?;
+    let mut driver = record_driver(&spec).map_err(FreshRetryError::Setup)?;
+    flowproof_agent::record_with_author_and_options(
+        &spec,
+        &mut driver,
+        out,
+        author.into(),
+        recording,
+    )
+    .map_err(FreshRetryError::Record)
+}
+
+/// Report a final repair failure, in whichever shape the caller has:
+/// `repair_payload` is whatever gets embedded in the `--json` output's
+/// `repair` field (a plain [`flowproof_agent::RepairReport`] or, after a
+/// fresh retry, a [`RepairReportWithFreshRetry`]); `human_report` is the
+/// most relevant single report for the human-readable printout.
+fn emit_repair_failure(
+    err: &flowproof_agent::RecordError,
+    repair_payload: &impl serde::Serialize,
+    human_report: &flowproof_agent::RepairReport,
+    json: bool,
+) -> Result<u8, String> {
+    if json {
+        let mut payload = record_failure_json(err)
+            .unwrap_or_else(|| serde_json::json!({ "error": err.to_string() }));
+        payload["repair"] = serde_json::to_value(repair_payload).map_err(|e| e.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+        );
+        return Ok(EXIT_ERROR);
+    }
+    print_repair_report(human_report);
+    Err(err.to_string())
+}
+
+enum RepairLoopOutcome {
+    Passed {
+        summary: flowproof_agent::RecordSummary,
+        report: flowproof_agent::RepairReport,
+    },
+    /// Repair never engaged: no authoring model is configured. The original
+    /// failure is reported exactly as it would be without plan 007.
+    NotRepaired(flowproof_agent::RecordError),
+    GaveUp(flowproof_agent::RecordError, flowproof_agent::RepairReport),
+}
+
+/// Plan 007's autonomous repair loop: on a `record` failure, diagnose it,
+/// ask the configured authoring model for a minimal `.flow.yaml` edit,
+/// apply it directly (no approval prompt — see the plan's "what's different
+/// from proposing-and-approving"), and rerun. Bounded by
+/// [`flowproof_agent::RepairOptions::max_attempts`]; stops early if the same
+/// diagnosis category repeats against the same step with no progress, which
+/// this treats as an engine gap rather than something more patching can fix.
+fn run_repair_loop(
+    spec_path: &Path,
+    values: &ValuesArgs,
+    out: &Path,
+    author: AuthorArg,
+    recording: flowproof_driver::RecordingOptions,
+    first_err: flowproof_agent::RecordError,
+) -> RepairLoopOutcome {
+    let Some(mut client) = flowproof_agent::HttpModelClient::from_env() else {
+        return RepairLoopOutcome::NotRepaired(first_err);
+    };
+    let budget = flowproof_agent::RepairOptions::default();
+    let mut attempts = Vec::new();
+    let mut err = first_err;
+    let mut previous_rationales: Vec<String> = Vec::new();
+    let mut last_signature: Option<(String, String)> = None;
+
+    for attempt in 1..=budget.max_attempts {
+        let ctx = flowproof_agent::diagnose(&err);
+        let Some(failing_intent) = ctx.failing_intent.clone() else {
+            attempts.push(flowproof_agent::RepairAttempt {
+                attempt,
+                category: ctx.category.to_string(),
+                failing_intent: None,
+                error_detail: ctx.detail.clone(),
+                rationale: None,
+                applied: false,
+            });
+            return RepairLoopOutcome::GaveUp(
+                err,
+                flowproof_agent::RepairReport {
+                    attempts,
+                    outcome: flowproof_agent::RepairOutcome::EngineGap {
+                        reason: ctx.detail.clone(),
+                    },
+                },
+            );
+        };
+
+        let signature = (ctx.category.to_string(), failing_intent.clone());
+        if last_signature.as_ref() == Some(&signature) {
+            attempts.push(flowproof_agent::RepairAttempt {
+                attempt,
+                category: ctx.category.to_string(),
+                failing_intent: Some(failing_intent.clone()),
+                error_detail: ctx.detail.clone(),
+                rationale: None,
+                applied: false,
+            });
+            return RepairLoopOutcome::GaveUp(
+                err,
+                flowproof_agent::RepairReport {
+                    attempts,
+                    outcome: flowproof_agent::RepairOutcome::EngineGap {
+                        reason: format!(
+                            "the same '{}' failure recurred on the same step without \
+                             progress; treating this as an engine gap rather than a flow bug",
+                            ctx.category
+                        ),
+                    },
+                },
+            );
+        }
+        last_signature = Some(signature);
+
+        let raw = match std::fs::read_to_string(spec_path) {
+            Ok(raw) => raw,
+            Err(e) => {
+                return RepairLoopOutcome::GaveUp(
+                    err,
+                    flowproof_agent::RepairReport {
+                        attempts,
+                        outcome: flowproof_agent::RepairOutcome::BudgetExhausted {
+                            last_error: format!("cannot read {}: {e}", spec_path.display()),
+                        },
+                    },
+                )
+            }
+        };
+        let (spec, _env_overlay) = match load_prepared_spec(spec_path, values) {
+            Ok(result) => result,
+            Err(e) => {
+                return RepairLoopOutcome::GaveUp(
+                    err,
+                    flowproof_agent::RepairReport {
+                        attempts,
+                        outcome: flowproof_agent::RepairOutcome::BudgetExhausted { last_error: e },
+                    },
+                )
+            }
+        };
+        let completed_steps = match &err {
+            flowproof_agent::RecordError::NeedsClarification(c) => c.completed_steps.clone(),
+            _ => Vec::new(),
+        };
+
+        let patch = match flowproof_agent::propose_patch(
+            &mut client,
+            &raw,
+            &ctx,
+            &completed_steps,
+            attempt,
+            &previous_rationales,
+        ) {
+            Ok(patch) => patch,
+            Err(e) => {
+                attempts.push(flowproof_agent::RepairAttempt {
+                    attempt,
+                    category: ctx.category.to_string(),
+                    failing_intent: Some(failing_intent.clone()),
+                    error_detail: ctx.detail.clone(),
+                    rationale: None,
+                    applied: false,
+                });
+                return RepairLoopOutcome::GaveUp(
+                    err,
+                    flowproof_agent::RepairReport {
+                        attempts,
+                        outcome: flowproof_agent::RepairOutcome::BudgetExhausted {
+                            last_error: e.to_string(),
+                        },
+                    },
+                );
+            }
+        };
+
+        if let Some(reason) = &patch.engine_gap {
+            attempts.push(flowproof_agent::RepairAttempt {
+                attempt,
+                category: ctx.category.to_string(),
+                failing_intent: Some(failing_intent.clone()),
+                error_detail: ctx.detail.clone(),
+                rationale: Some(patch.rationale.clone()),
+                applied: false,
+            });
+            return RepairLoopOutcome::GaveUp(
+                err,
+                flowproof_agent::RepairReport {
+                    attempts,
+                    outcome: flowproof_agent::RepairOutcome::EngineGap {
+                        reason: reason.clone(),
+                    },
+                },
+            );
+        }
+
+        let Some(step_index) = flowproof_agent::find_step_index(&spec, &failing_intent) else {
+            attempts.push(flowproof_agent::RepairAttempt {
+                attempt,
+                category: ctx.category.to_string(),
+                failing_intent: Some(failing_intent.clone()),
+                error_detail: ctx.detail.clone(),
+                rationale: Some(patch.rationale.clone()),
+                applied: false,
+            });
+            return RepairLoopOutcome::GaveUp(
+                err,
+                flowproof_agent::RepairReport {
+                    attempts,
+                    outcome: flowproof_agent::RepairOutcome::BudgetExhausted {
+                        last_error: format!(
+                            "no step in the flow matches the failing intent '{failing_intent}'"
+                        ),
+                    },
+                },
+            );
+        };
+
+        // Prefer widen_timeout_seconds when the model set it: it's the
+        // narrower edit (only the wait window, not the step's wording), and
+        // is how a load-timing race — the target was right, the page just
+        // hadn't settled — gets fixed without risking a wrong-target rewrite.
+        let apply_result = match (&patch.step_yaml, patch.widen_timeout_seconds) {
+            (_, Some(seconds)) => flowproof_agent::widen_timeout(&raw, step_index, seconds),
+            (Some(step_yaml), None) => flowproof_agent::apply_patch(&raw, step_index, step_yaml),
+            (None, None) => Err(flowproof_agent::RepairError::BadModelOutput(
+                "model proposed neither a patch, a timeout widen, nor an engine-gap reason"
+                    .to_string(),
+            )),
+        };
+        let patched_yaml = match apply_result {
+            Ok(yaml) => yaml,
+            Err(e) => {
+                attempts.push(flowproof_agent::RepairAttempt {
+                    attempt,
+                    category: ctx.category.to_string(),
+                    failing_intent: Some(failing_intent.clone()),
+                    error_detail: ctx.detail.clone(),
+                    rationale: Some(patch.rationale.clone()),
+                    applied: false,
+                });
+                return RepairLoopOutcome::GaveUp(
+                    err,
+                    flowproof_agent::RepairReport {
+                        attempts,
+                        outcome: flowproof_agent::RepairOutcome::BudgetExhausted {
+                            last_error: e.to_string(),
+                        },
+                    },
+                );
+            }
+        };
+        if let Err(e) = std::fs::write(spec_path, &patched_yaml) {
+            attempts.push(flowproof_agent::RepairAttempt {
+                attempt,
+                category: ctx.category.to_string(),
+                failing_intent: Some(failing_intent.clone()),
+                error_detail: ctx.detail.clone(),
+                rationale: Some(patch.rationale.clone()),
+                applied: false,
+            });
+            return RepairLoopOutcome::GaveUp(
+                err,
+                flowproof_agent::RepairReport {
+                    attempts,
+                    outcome: flowproof_agent::RepairOutcome::BudgetExhausted {
+                        last_error: format!("cannot write {}: {e}", spec_path.display()),
+                    },
+                },
+            );
+        }
+        previous_rationales.push(patch.rationale.clone());
+        attempts.push(flowproof_agent::RepairAttempt {
+            attempt,
+            category: ctx.category.to_string(),
+            failing_intent: Some(failing_intent.clone()),
+            error_detail: ctx.detail.clone(),
+            rationale: Some(patch.rationale.clone()),
+            applied: true,
+        });
+
+        let (rerun_spec, _rerun_env_overlay) = match load_prepared_spec(spec_path, values) {
+            Ok(result) => result,
+            Err(e) => {
+                return RepairLoopOutcome::GaveUp(
+                    err,
+                    flowproof_agent::RepairReport {
+                        attempts,
+                        outcome: flowproof_agent::RepairOutcome::BudgetExhausted { last_error: e },
+                    },
+                )
+            }
+        };
+        let mut driver = match record_driver(&rerun_spec) {
+            Ok(driver) => driver,
+            Err(e) => {
+                return RepairLoopOutcome::GaveUp(
+                    err,
+                    flowproof_agent::RepairReport {
+                        attempts,
+                        outcome: flowproof_agent::RepairOutcome::BudgetExhausted { last_error: e },
+                    },
+                )
+            }
+        };
+        match flowproof_agent::record_with_author_and_options(
+            &rerun_spec,
+            &mut driver,
+            out,
+            author.into(),
+            recording,
+        ) {
+            Ok(summary) => {
+                return RepairLoopOutcome::Passed {
+                    summary,
+                    report: flowproof_agent::RepairReport {
+                        attempts,
+                        outcome: flowproof_agent::RepairOutcome::Passed,
+                    },
+                }
+            }
+            Err(new_err) => err = new_err,
+        }
+    }
+
+    let last_error = err.to_string();
+    RepairLoopOutcome::GaveUp(
+        err,
+        flowproof_agent::RepairReport {
+            attempts,
+            outcome: flowproof_agent::RepairOutcome::BudgetExhausted { last_error },
+        },
+    )
+}
+
+/// Sibling report path for a trace, e.g. `flow.trace.jsonl` ->
+/// `flow.repair.json`. `Path::with_extension` only strips the last
+/// component of a `.trace.jsonl`-style compound suffix, which would give
+/// `flow.trace.repair.json` — strip both known suffixes first.
+fn repair_report_path(out: &Path) -> PathBuf {
+    let name = out
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("flow.trace.jsonl");
+    let stem = name
+        .strip_suffix(".trace.jsonl")
+        .or_else(|| name.strip_suffix(".jsonl"))
+        .unwrap_or(name);
+    out.with_file_name(format!("{stem}.repair.json"))
+}
+
+fn write_repair_report(out: &Path, report: &flowproof_agent::RepairReport) -> Result<(), String> {
+    write_json_report(out, report)
+}
+
+fn write_json_report(out: &Path, report: &impl serde::Serialize) -> Result<(), String> {
+    let path = repair_report_path(out);
+    let json = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// What happened when an `engine_gap` verdict got one fresh, independent
+/// attempt before being treated as final — see [`cmd_record`]'s handling of
+/// [`RepairLoopOutcome::GaveUp`] for why that verdict is provisional rather
+/// than immediate.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "retry_outcome", rename_all = "kebab-case")]
+enum FreshRetryOutcome {
+    /// The fresh attempt just worked — no repair needed at all the second
+    /// time, meaning the first failure really was a one-off flake.
+    Passed,
+    /// The fresh attempt failed too, but this time the repair loop found a
+    /// real fix.
+    Repaired {
+        report: flowproof_agent::RepairReport,
+    },
+    /// The fresh attempt failed again and repair gave up again — two
+    /// independent failures agreeing is real evidence, not a flake.
+    FailedAgain {
+        report: flowproof_agent::RepairReport,
+    },
+}
+
+/// The full record of an `engine_gap` verdict plus what its fresh retry did.
+#[derive(Debug, serde::Serialize)]
+struct RepairReportWithFreshRetry<'a> {
+    #[serde(flatten)]
+    first_attempt: &'a flowproof_agent::RepairReport,
+    fresh_retry: FreshRetryOutcome,
+}
+
+fn print_repair_report(report: &flowproof_agent::RepairReport) {
+    for attempt in &report.attempts {
+        let status = if attempt.applied {
+            "patched"
+        } else {
+            "stopped"
+        };
+        println!(
+            "  [REPAIR {}] {} ({status}): {}",
+            attempt.attempt,
+            attempt
+                .failing_intent
+                .as_deref()
+                .unwrap_or("<no specific step>"),
+            attempt
+                .rationale
+                .as_deref()
+                .unwrap_or(&attempt.error_detail)
+        );
+    }
+    match &report.outcome {
+        flowproof_agent::RepairOutcome::Passed => {
+            println!(
+                "Repair loop: patched and passed after {} attempt(s).",
+                report.attempts.len()
+            );
+        }
+        flowproof_agent::RepairOutcome::EngineGap { reason } => {
+            eprintln!("Repair loop stopped — looks like an engine gap, not a flow bug: {reason}");
+        }
+        flowproof_agent::RepairOutcome::BudgetExhausted { last_error } => {
+            eprintln!(
+                "Repair loop exhausted its attempt budget without a passing run: {last_error}"
+            );
+        }
+        flowproof_agent::RepairOutcome::NotApplicable { reason } => {
+            eprintln!("Repair loop did not run: {reason}");
+        }
+    }
+}
+
 /// Replay a just-written trace once, and refuse the recording if it cannot
 /// reproduce itself.
 ///
@@ -767,6 +1399,7 @@ fn verify_recording(
             author: AuthorArg::Rules,
             values,
             recording,
+            recovery: suite_checkpoint::RecoveryArgs::default(),
         },
     )?;
     if replayed == EXIT_PASS {
@@ -1444,24 +2077,30 @@ fn run_agent_flow_in_suite(
 pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> Result<u8, String> {
     run_suite_with_author(
         dir,
-        json,
-        retries,
-        missing,
-        AuthorArg::Auto,
-        ValuesArgs::default(),
-        flowproof_driver::RecordingOptions::default(),
+        RunOptions {
+            trace: None,
+            json,
+            retries,
+            missing,
+            author: AuthorArg::Auto,
+            values: ValuesArgs::default(),
+            recording: flowproof_driver::RecordingOptions::default(),
+            recovery: suite_checkpoint::RecoveryArgs::default(),
+        },
     )
 }
 
-fn run_suite_with_author(
-    dir: &Path,
-    json: bool,
-    retries: u8,
-    missing: MissingTrace,
-    author: AuthorArg,
-    values: ValuesArgs,
-    recording: flowproof_driver::RecordingOptions,
-) -> Result<u8, String> {
+fn run_suite_with_author(dir: &Path, options: RunOptions) -> Result<u8, String> {
+    let RunOptions {
+        trace,
+        json,
+        retries,
+        missing,
+        author,
+        values,
+        recording,
+        recovery,
+    } = options;
     // Same fill-gaps-only seed `apply_suite_context` does for a single flow
     // (plans/001-credential-config.md, "How it reaches the flow") — this is
     // the other entry point that reaches a driver, and it built its own
@@ -1480,9 +2119,11 @@ fn run_suite_with_author(
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
+    order_specs(&mut specs, dir, &manifest.order);
+    suite::select_specs(&mut specs, dir, &manifest)?;
+    suite_checkpoint::validate_mode(&recovery, &manifest, retries, missing, trace.as_deref())?;
     apply_env_from(&manifest, dir)?;
     apply_suite_env(&manifest);
-    order_specs(&mut specs, dir, &manifest.order);
 
     // Control-id uniqueness is a suite-level property, enforced at load: two
     // flows sharing a control id would corrupt the audit coverage map. Only
@@ -1496,7 +2137,50 @@ fn run_suite_with_author(
 
     let mut reports: Vec<flowproof_replay::RunReport> = Vec::new();
     let mut flows = Vec::new();
+    let mut checkpoint =
+        suite_checkpoint::Checkpoint::open(dir, &specs, &manifest, &values, &recovery)?;
+    let mut blocked = 0usize;
+    let mut paused = false;
     for spec_path in &specs {
+        if let Some(checkpoint) = checkpoint.as_ref() {
+            if let Some(report) = checkpoint.completed(spec_path) {
+                if !json {
+                    println!(
+                        "[RESUMED] {} (previously confirmed; not executed)",
+                        report.name
+                    );
+                }
+                flows.push(serde_json::json!({"spec": spec_path, "report": report, "report_path": null, "resumed": true}));
+                reports.push(report.clone());
+                checkpoint.restore_exports(spec_path);
+                continue;
+            }
+        }
+        if paused {
+            blocked += 1;
+            let report = flowproof_replay::RunReport::skipped(
+                &spec_path.display().to_string(),
+                "paused at the requested checkpoint boundary",
+            );
+            flows.push(
+                serde_json::json!({"spec": spec_path, "report": report, "report_path": null}),
+            );
+            reports.push(report);
+            continue;
+        }
+        if let Some(reason) = suite::blocked_reason(spec_path, dir, &manifest, &specs, &reports) {
+            blocked += 1;
+            let report =
+                flowproof_replay::RunReport::skipped(&spec_path.display().to_string(), &reason);
+            if !json {
+                println!("[SKIP] {} ({reason})", report.name);
+            }
+            flows.push(
+                serde_json::json!({"spec": spec_path, "report": report, "report_path": null}),
+            );
+            reports.push(report);
+            continue;
+        }
         let mut authoring = None;
         // The env-flag gate wins over everything (including --strict's
         // missing-trace error): a deliberately gated flow with no trace
@@ -1618,6 +2302,9 @@ fn run_suite_with_author(
                     continue;
                 }
             }
+        }
+        if let Some(checkpoint) = checkpoint.as_mut() {
+            checkpoint.begin(spec_path)?;
         }
         // Agent flows replay their CASSETTE, not the step trace, exactly as
         // the single-spec path at `run_one` does.
@@ -1749,6 +2436,15 @@ fn run_suite_with_author(
         // The visible line names WHAT was exported, never what it held: a
         // captured value stays out of CI logs the same way it stays out of
         // the trace.
+        if report.passed {
+            if let Some(checkpoint) = checkpoint.as_mut() {
+                checkpoint.complete(spec_path, &report, &exported)?;
+                paused = recovery
+                    .stop_after
+                    .as_ref()
+                    .is_some_and(|path| dir.join(path) == *spec_path);
+            }
+        }
         let export_names: Vec<&str> = exported.iter().map(|(n, _)| n.as_str()).collect();
         drop(values_overlay);
         if report.passed {
@@ -1812,6 +2508,9 @@ fn run_suite_with_author(
     let flow_records: Vec<flowproof_replay::FlowRecord> = flows
         .iter()
         .zip(&reports)
+        // Resumed stages are historical evidence. Re-dating their passing
+        // control verdicts would manufacture a fresh successful audit read.
+        .filter(|(entry, _)| entry.get("resumed") != Some(&serde_json::Value::Bool(true)))
         .map(|(entry, report)| {
             let spec_path = entry
                 .get("spec")
@@ -1824,18 +2523,21 @@ fn run_suite_with_author(
             flow_record_from_report(&spec_path, dir, spec, report)
         })
         .collect();
-    write_run_record(dir, flow_records);
+    if !flow_records.is_empty() {
+        write_run_record(dir, flow_records);
+    }
 
     let skipped = reports.iter().filter(|r| r.trace_id == "skipped").count();
     let errored = reports.iter().filter(|r| r.trace_id == "errored").count();
     let passed = reports.iter().filter(|r| r.passed).count() - skipped;
     let ran = reports.len() - skipped;
-    let all_passed = reports.iter().all(|r| r.passed);
+    let all_passed = blocked == 0 && reports.iter().all(|r| r.passed);
     if json {
         let payload = serde_json::json!({
             "flows": flows,
             "passed": all_passed,
             "skipped": skipped,
+            "blocked": blocked,
             "errored": errored,
             "junit_path": junit_path,
         });
@@ -1940,6 +2642,13 @@ fn build_control_record(
     let mut lanes = Vec::new();
     if agent_flow::engages_egress(spec) {
         lanes.push("egress".to_string());
+    }
+    if spec
+        .steps
+        .iter()
+        .any(|s| matches!(s, flowproof_agent::SpecStep::AssertNoSideEffect { .. }))
+    {
+        lanes.push("side_effects".to_string());
     }
     if !secrets_checked.is_empty() {
         lanes.push("secret_leak".to_string());
@@ -2055,20 +2764,24 @@ struct RunOptions {
     author: AuthorArg,
     values: ValuesArgs,
     recording: flowproof_driver::RecordingOptions,
+    recovery: suite_checkpoint::RecoveryArgs,
 }
 
 fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
+    if spec_path.is_dir() {
+        return run_suite_with_author(spec_path, options);
+    }
     let RunOptions {
         trace,
         json,
         retries,
-        missing,
-        author,
         values,
         recording,
+        recovery,
+        ..
     } = options;
-    if spec_path.is_dir() {
-        return run_suite_with_author(spec_path, json, retries, missing, author, values, recording);
+    if recovery.checkpoint.is_some() || recovery.resume || recovery.stop_after.is_some() {
+        return Err("checkpoint options require a suite directory".into());
     }
     // A single flow gets its suite's env/data too — replay resolves ${VAR}
     // at moment-of-use, so the same values must be present as at record.
@@ -2336,7 +3049,8 @@ struct AuditControl {
     verdict: flowproof_replay::ControlVerdict,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
-    /// Which control lanes the flow asserted (`egress`, `secret_leak`).
+    /// Which control lanes the flow asserted (`egress`, `secret_leak`,
+    /// `side_effects`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     lanes: Vec<String>,
     /// The containment tier the run actually ran under. An `egress` lane
@@ -2396,6 +3110,7 @@ fn secret_scan_corpus_report(app: &str) -> (Vec<String>, Vec<String>) {
             vec![
                 "model-boundary trajectory (cassette request and response bodies)".to_string(),
                 "MCP lanes".to_string(),
+                "the side-effects lane, when the run was observed".to_string(),
             ],
             vec!["channels the engine never observed (server logs, third-party sinks)".to_string()],
         ),
@@ -2668,7 +3383,25 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(
+    run_cli_for_engine(args, None)
+}
+
+/// Embeddings identify their loaded native engine image for checkpoint
+/// compatibility checks. Ordinary binaries use `run_cli` and current_exe.
+pub fn run_cli_with_engine<I, T>(args: I, engine_path: PathBuf) -> u8
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    run_cli_for_engine(args, Some(engine_path))
+}
+
+fn run_cli_for_engine<I, T>(args: I, engine_path: Option<PathBuf>) -> u8
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let mut cli = match Cli::try_parse_from(
         std::iter::once(std::ffi::OsString::from("flowproof"))
             .chain(args.into_iter().map(Into::into)),
     ) {
@@ -2685,6 +3418,10 @@ where
         }
     };
 
+    if let Command::Run { recovery, .. } = &mut cli.command {
+        recovery.engine_path = engine_path;
+    }
+    let is_mcp_stdio = matches!(cli.command, Command::McpStdio { .. });
     let result = match cli.command {
         Command::Config { action } => match action {
             ConfigAction::Sap {
@@ -2754,6 +3491,7 @@ where
             recording_detail,
             video,
             highlight_cursor,
+            no_repair,
         } => with_headed_mode(resolve_headed(headed, headless, true), || {
             with_keep_browser_open(keep_open, || {
                 cmd_record(
@@ -2769,6 +3507,7 @@ where
                         reuse,
                         verify,
                         recording: recording_options(recording_detail, video, highlight_cursor),
+                        no_repair,
                     },
                 )
             })
@@ -2781,6 +3520,7 @@ where
             json,
             retries,
             record_missing,
+            recovery,
             author,
             strict,
             keep_open,
@@ -2813,6 +3553,7 @@ where
                                 retries,
                                 missing,
                                 author,
+                                recovery,
                                 values: ValuesArgs {
                                     vars_file: vars,
                                     vars: var,
@@ -2876,6 +3617,12 @@ where
             flowproof_adapters::mcp_stdio::run_stand_in(&server).map(|()| EXIT_PASS)
         }
     };
+    // Skipped for mcp-stdio: that command's contract is stdout speaks
+    // JSON-RPC and nothing else, and its stderr is read by an orchestrator
+    // that has no use for a human upgrade notice.
+    if !is_mcp_stdio {
+        update_check::notify_if_outdated(env!("CARGO_PKG_VERSION"));
+    }
     match result {
         Ok(code) => code,
         Err(message) => {

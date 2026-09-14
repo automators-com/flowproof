@@ -95,7 +95,7 @@ they are needed — without a written boundary, that is unbounded.
 - **No new `app:` target.** Six adapters ship (`web`, Windows desktop, `sap`,
   `vision`, `api`, `agent`). A seventh is a product decision, not a gap fix.
 - **No Node or Python sidecar in the engine.** flowproof stays a single Rust
-  binary. (See `docs/design.md` on why the recording agent is not an opencode
+  binary. (See `internal/design.md` on why the recording agent is not an opencode
   wrapper.)
 - **No dependency on DataMaker.** Sibling product, not a component.
 - **No selector-engine growth to match another framework's idioms.** If a
@@ -463,7 +463,7 @@ Additional exit criteria, all testable:
    CHANGELOG record: streaming replay buffered-body equivalence; agent
    cassette replay inoperative; MCP stand-in recording lost on kill;
    concurrent-call order wrongly asserted.
-8. A docs page `docs/how-flowproof-tests-flowproof.md` describing 6–7,
+8. A docs page `internal/how-flowproof-tests-flowproof.md` describing 6–7,
    held true by the docs-truth lens.
 
 Constraint (this extension relaxes nothing in §2/§3): the falsifiability

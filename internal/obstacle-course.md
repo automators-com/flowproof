@@ -1,4 +1,7 @@
-# What a deliberately awkward page taught us
+---
+title: "What a deliberately awkward page taught us"
+description: "Findings from running flowproof against a 40-page obstacle course built to be hard to automate."
+---
 
 A public obstacle web page — 40 pages, each built to be hard to automate,
 each scoring itself by calling its own `obstacleCompleted()` — was used as a
@@ -80,7 +83,7 @@ grammar reaches.
 three times running. What unblocked it was not the API the notes twice named
 but two structural defects in the dispatch — the two midpoints were read in
 different layouts, and the moves named no held button. Measured 20/20; see
-`docs/design.md`.
+`design.md`.
 
 ## Taken by `repeat:` and `when:` (2 of 3)
 

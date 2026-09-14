@@ -1,4 +1,7 @@
-# flowproof design
+---
+title: "flowproof design"
+description: "The design decisions behind the engine: core principles and the reasoning fixed so far."
+---
 
 > Status: skeleton. The full design doc will be pasted in here; the sections
 > below capture the decisions already fixed so the scaffold has a home for
@@ -102,7 +105,7 @@ See [`trace-format.md`](trace-format.md) and the JSON Schema in
 Deterministic testing of AI-based systems — assert a prompt's tool-call
 trajectory against a mocked model boundary, record→replay applied to
 the model API instead of the UI. Full design in
-[agent-testing.md](agent-testing.md).
+[agent-testing.md](agent-testing/index.md).
 
 ## Design notes from the Actual migration (round 2, P2)
 
@@ -112,7 +115,7 @@ first two are tracked as issues; the third is a decision, recorded here.
 
 ### Computed assertions (`expect.poll`-style)
 
-**Shipped:** the named-capture form landed; see [authoring.md](authoring.md)
+**Shipped:** the named-capture form landed; see [authoring.md](authoring/index.md)
 ("Computed assertions"). The design reasoning below is kept for context.
 
 Playwright suites often read a value, act, then assert the NEW value
@@ -131,7 +134,7 @@ language), and how a captured value interacts with healing.
 ### Table-cell addressing
 
 **Shipped:** cells are addressed by column-header text and a row anchor;
-see [authoring.md](authoring.md#scoped-targets-table-cells-and-list-items-by-identity). The shipped
+see [authoring.md](authoring/assertions.md#scoped-targets-table-cells-and-list-items-by-identity). The shipped
 locator reads `the "<column>" column of the row containing "<anchor>"`
 (the sketch below said `of the "<row>" row`). The design reasoning is kept
 for context.

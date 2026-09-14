@@ -23,9 +23,11 @@ use flowproof_adapters::agent_runner::{run_against, run_against_contained, run_h
 use flowproof_adapters::egress::{AllowSet, Containment};
 use flowproof_adapters::mcp_http::McpHttpServer;
 use flowproof_adapters::mcp_stdio::{McpCall, McpOut, McpPlan, McpServerEvent};
+use flowproof_adapters::FsEvent;
 use flowproof_agent::{FlowSpec, SpecStep};
 use flowproof_trace::cassette::Cassette;
 use flowproof_trace::egress::EgressEvent;
+use flowproof_trace::side_effect::{SideEffect, KIND_FS_WRITE, KIND_HTTP_REQUEST};
 use flowproof_trace::substitution::Mocks;
 use flowproof_trace::toolcalls::{self, ToolCallExpectation};
 
@@ -94,6 +96,12 @@ struct AgentTrace {
     /// authority: enforcement always uses the CURRENT spec's set).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     egress: Option<EgressTrace>,
+    /// The side-effect audit lane, written at record when the run was
+    /// observed. ADDITIVE and OMITTED when the mechanism never ran, so an
+    /// unsupervised flow serializes BYTE-IDENTICAL to today; absence means
+    /// "no observation mechanism", never "nothing happened".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    side_effects: Option<SideEffectsTrace>,
 }
 
 /// The trace's egress lane: the containment tier the recording ran under, the
@@ -109,6 +117,21 @@ struct EgressTrace {
     /// Undeclared destinations the agent attempted and containment denied.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     blocked: Vec<EgressEvent>,
+}
+
+/// The trace's side-effect lane. The tag speaks OBSERVATION vocabulary
+/// (`observed`, never `enforced`) - nothing here was prevented. `faults`
+/// is kept beside `effects` because an empty effects list under a blind
+/// supervisor is silence, not evidence, and the lane must not launder one
+/// into the other.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct SideEffectsTrace {
+    /// The observation tag, e.g. `observed (linux seccomp)`.
+    observation: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    effects: Vec<SideEffect>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    faults: Vec<String>,
 }
 
 /// One MCP server's recorded lane: its mocks, snapshotted (travel-in-trace,
@@ -594,6 +617,11 @@ struct Plan {
     /// contained - identical in record and replay, so both install (or skip)
     /// the seccomp filter the same way.
     engages_egress: bool,
+    /// The kinds `assert_no_side_effect` steps forbid, in step order.
+    no_side_effects: Vec<String>,
+    /// [`engages_observation`]: routes a Linux `command:` driver through
+    /// the supervised path.
+    observes: bool,
     /// The `assert_no_secret_leak` steps, each naming one or more `${VAR}`
     /// selectors and its 1-based position in the flow's `steps:` (for the
     /// failure message). Only the variable NAMES travel here - never a value.
@@ -631,9 +659,28 @@ impl Plan {
     /// service flowproof did not start is never contained.
     fn drive(&self, proxy: &AgentProxy) -> Result<AgentRun, String> {
         match &self.driver {
-            Driver::Command(command) if self.engages_egress => {
-                run_against_contained(proxy, command, &self.env, AGENT_TIMEOUT, &self.allow)
-                    .map_err(|e| e.to_string())
+            Driver::Command(command) if self.engages_egress => run_against_contained(
+                proxy,
+                command,
+                &self.env,
+                AGENT_TIMEOUT,
+                &self.allow,
+                /* egress_engaged: */ true,
+            )
+            .map_err(|e| e.to_string()),
+            // Observation-only supervision, Linux-gated BY CONSTRUCTION
+            // (seccomp exists nowhere else): elsewhere the flow takes the
+            // plain path below and the assertion fails "cannot certify".
+            Driver::Command(command) if cfg!(target_os = "linux") && self.observes => {
+                run_against_contained(
+                    proxy,
+                    command,
+                    &self.env,
+                    AGENT_TIMEOUT,
+                    &AllowSet::allow_all(),
+                    /* egress_engaged: */ false,
+                )
+                .map_err(|e| e.to_string())
             }
             Driver::Command(command) => {
                 run_against(proxy, command, &self.env, AGENT_TIMEOUT).map_err(|e| e.to_string())
@@ -710,7 +757,13 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
         resolved_allow
             .push(flowproof_trace::secret::resolve_refs(entry).map_err(|e| e.to_string())?);
     }
-    let allow = AllowSet::resolve(&resolved_allow)?;
+    // The set keeps each entry's UNRESOLVED spelling beside its resolved
+    // form, so an observed destination a `${VAR}` entry admits is recorded
+    // by spelling - the value never reaches the trace.
+    let spelled: Vec<(&str, &str)> = (allow_unresolved.iter().map(String::as_str))
+        .zip(resolved_allow.iter().map(String::as_str))
+        .collect();
+    let allow = AllowSet::resolve_spelled(&spelled)?;
     let assert_no_egress = spec
         .steps
         .iter()
@@ -719,6 +772,7 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
     let mut tool_calls = Vec::new();
     let mut forbidden = Vec::new();
     let mut reply_contains = Vec::new();
+    let mut no_side_effects = Vec::new();
     // The secret-leak assertions come from the shared spec accessor, the same
     // source web and api flows build their scan from.
     let secret_leaks = spec.secret_leak_assertions();
@@ -732,6 +786,9 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
             } => {
                 forbidden.push(parse_expectation(assert_no_tool_call)?);
             }
+            SpecStep::AssertNoSideEffect {
+                assert_no_side_effect,
+            } => no_side_effects.push(assert_no_side_effect.clone()),
             SpecStep::Assert { assert } => {
                 // v1 reply assertion: `reply contains <text>`.
                 let trimmed = assert.trim();
@@ -765,6 +822,8 @@ fn plan(spec: &FlowSpec) -> Result<Plan, String> {
         allow_unresolved,
         assert_no_egress,
         engages_egress: engages_egress(spec),
+        no_side_effects,
+        observes: engages_observation(spec),
         secret_leaks,
     })
 }
@@ -786,6 +845,17 @@ pub fn engages_egress(spec: &FlowSpec) -> bool {
         .iter()
         .any(|s| matches!(s, SpecStep::AssertNoEgress));
     declares_allow || asserts_no_egress
+}
+
+/// Whether a flow ENGAGES side-effect observation: it engages egress (one
+/// filter contains and watches) or carries an `assert_no_side_effect` step.
+/// PURE over the spec, like [`engages_egress`], for the same determinism.
+pub fn engages_observation(spec: &FlowSpec) -> bool {
+    engages_egress(spec)
+        || spec
+            .steps
+            .iter()
+            .any(|s| matches!(s, SpecStep::AssertNoSideEffect { .. }))
 }
 
 /// The egress destinations containment DENIED during the recorded run, read
@@ -818,6 +888,13 @@ pub fn egress_blocked(trace_path: &Path) -> Vec<String> {
 /// egress installs no filter and claims no tier.
 pub fn containment(spec: &FlowSpec) -> Containment {
     if !engages_egress(spec) {
+        // An observation-only Linux `command:` flow WILL run supervised, so
+        // the prediction says what the run will: observed, not contained -
+        // never `enforced` for a wildcard policy nobody declared.
+        let command = spec.agent.as_ref().is_some_and(|a| a.command.is_some());
+        if cfg!(target_os = "linux") && command && engages_observation(spec) {
+            return Containment::observation_only();
+        }
         return Containment::not_engaged();
     }
     match spec.agent.as_ref() {
@@ -897,7 +974,9 @@ fn check_egress(
     // that never touches egress serializes byte-identical to today. This is
     // the SAME pure predicate that gated containment (`plan.engages_egress`);
     // `run.egress.blocked` can only be non-empty when it was already true, so
-    // the two decisions never disagree.
+    // the two decisions never disagree. Observation-only supervision keeps
+    // the claim: allow-all reaches no denied branch, so `blocked` stays
+    // empty and no egress lane is minted for a flow that engaged none.
     let engaged = plan.engages_egress || !run.egress.blocked.is_empty();
     if !engaged {
         return Ok(None);
@@ -952,6 +1031,265 @@ fn report_fs(run: &AgentRun) {
     }
 }
 
+/// The first 12 hex of sha256 over the raw captured path: stable, so "the
+/// same file every run" correlates without literal disclosure.
+fn short_hash(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(raw.as_bytes());
+    digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
+}
+
+/// TOTAL over any capture-side subject: `(target fragment, note)`, the one
+/// constructor of a trace-side fs target. Property-tested POSTCONDITION: a
+/// `Some` target is `./`-prefixed, `..`-free, never absolute, byte-for-byte
+/// the captured path minus workspace prefix and `.` components; every
+/// other input redacts.
+fn hygiene(
+    raw: Option<&str>,
+    capture_note: Option<&str>,
+    workspace: &Path,
+) -> (Option<String>, Option<String>) {
+    use std::path::Component;
+    // No path at all: the trap proved the syscall; there is no claim to clean.
+    let Some(raw) = raw else {
+        return (None, capture_note.map(str::to_string));
+    };
+    let path = Path::new(raw);
+    // Not absolute (the unreadable-cwd fallback): neither provably inside
+    // nor outside the workspace, so never kept.
+    if !path.is_absolute() {
+        let hash = short_hash(raw);
+        let extra = capture_note.map(|n| format!("; {n}")).unwrap_or_default();
+        let note = format!("unanchored relative path (sha256:{hash}){extra}");
+        return (None, Some(note));
+    }
+    // REDACT on traversal, never normalize-and-keep: popping `a/..` is only
+    // valid when `a` is not a symlink, which lexical processing cannot know
+    // (`.` components, dropped by `components()` below, are lexically safe).
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        let note = format!("traversal path (sha256:{})", short_hash(raw));
+        return (None, Some(note));
+    }
+    // Component-wise strip, never a string prefix, so `/ws-evil` cannot
+    // match `/ws`; a non-absolute root (unreadable cwd) vouches for nothing.
+    let cleaned: PathBuf = path.components().collect();
+    match cleaned.strip_prefix(workspace) {
+        Ok(rel) if workspace.is_absolute() => (
+            Some(format!("./{}", rel.display())),
+            capture_note.map(str::to_string),
+        ),
+        _ => {
+            let note = format!("outside workspace (sha256:{})", short_hash(raw));
+            (None, Some(note))
+        }
+    }
+}
+
+/// One captured [`FsEvent`] as the trace record, every path through
+/// [`hygiene`]. A rename runs it per side and joins only the OUTPUTS - a
+/// redacted side renders `[redacted]`, both redacted leaves no target.
+fn fs_effect(event: &FsEvent, workspace: &Path) -> SideEffect {
+    let (target, target_note) = if event.op.starts_with("rename") {
+        let (src, src_note) = hygiene(event.path.as_deref(), None, workspace);
+        let (dst, dst_note) = hygiene(event.path2.as_deref(), None, workspace);
+        let target = (src.is_some() || dst.is_some()).then(|| {
+            format!(
+                "{} -> {}",
+                src.as_deref().unwrap_or("[redacted]"),
+                dst.as_deref().unwrap_or("[redacted]")
+            )
+        });
+        let notes: Vec<String> = (event.path_note.clone().into_iter())
+            .chain(src_note.map(|n| format!("src: {n}")))
+            .chain(dst_note.map(|n| format!("dst: {n}")))
+            .collect();
+        (target, (!notes.is_empty()).then(|| notes.join("; ")))
+    } else {
+        hygiene(event.path.as_deref(), event.path_note.as_deref(), workspace)
+    };
+    SideEffect {
+        kind: KIND_FS_WRITE.into(),
+        target,
+        target_note,
+        op: Some(event.op.clone()),
+        flags: event.flags.clone(),
+        at_ms: event.at_ms,
+        before: None,
+        after: None,
+        diff: None,
+    }
+}
+
+/// One observed egress event as the trace record. The target is value-free
+/// (`ip:port`) unless a `${VAR}`-bearing allow entry admits it - then the
+/// UNRESOLVED spelling is recorded, since the resolved address would
+/// disclose what the variable held. The port sits after the LAST colon.
+fn http_effect(event: &EgressEvent, allow: &AllowSet) -> SideEffect {
+    let target = (event.destination.rsplit_once(':'))
+        .and_then(|(ip, port)| allow.allowed_as(ip.parse().ok()?, port.parse().ok()?))
+        .filter(|spelling| spelling.contains("${"))
+        .map_or_else(|| event.destination.clone(), str::to_string);
+    SideEffect {
+        kind: KIND_HTTP_REQUEST.into(),
+        target: Some(target),
+        target_note: None,
+        op: Some(event.protocol.clone()),
+        flags: None,
+        at_ms: event.at_ms,
+        before: None,
+        after: None,
+        diff: None,
+    }
+}
+
+/// The trace's side-effect lane, or `None` when the observation mechanism
+/// never ran - absence keeps meaning "not observed", and a present lane
+/// with no effects stays positive evidence: observed, and clean.
+fn side_effects_lane(
+    run: &AgentRun,
+    allow: &AllowSet,
+    workspace: &Path,
+) -> Option<SideEffectsTrace> {
+    if !run.observed {
+        return None;
+    }
+    // Canonicalized once, so a symlinked cwd still prefix-matches the
+    // `/proc`-resolved absolutes; a chdir'd-away agent's paths redact.
+    let root = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let mut effects: Vec<SideEffect> = (run.fs.destructive.iter())
+        .map(|e| fs_effect(e, &root))
+        .chain(run.egress.observed.iter().map(|e| http_effect(e, allow)))
+        .collect();
+    // One lane, one clock: merged by when it happened (a stable sort).
+    effects.sort_by_key(|e| e.at_ms);
+    // Either half going blind makes an empty effects list silence rather
+    // than evidence, so the faults are the UNION of both, deduped.
+    let mut faults = run.fs.distinct_faults();
+    for fault in run.egress.distinct_faults() {
+        if !faults.contains(&fault) {
+            faults.push(fault);
+        }
+    }
+    Some(SideEffectsTrace {
+        observation: "observed (linux seccomp)".into(),
+        effects,
+        faults,
+    })
+}
+
+/// Why observation did not run here, for the capability failure.
+fn observation_unavailable_reason(plan: &Plan) -> &'static str {
+    match &plan.driver {
+        Driver::Http { .. } => "a url: service is not observed; flowproof does not own it",
+        Driver::Command(_) if cfg!(target_os = "linux") => {
+            "the seccomp observation mechanism did not run"
+        }
+        Driver::Command(_) => "side-effect observation is Linux-only (seccomp)",
+    }
+}
+
+/// The `assert_no_side_effect` verdict, pure over platform-neutral data so
+/// the falsifiability harness feeds fixture records through the SAME code
+/// record and replay execute. Order copies `check_egress`: capability
+/// honesty, then faults, then the set predicate.
+pub fn side_effect_verdict(
+    asserted_kinds: &[String],
+    effects: &[SideEffect],
+    faults: &[String],
+    observed: bool,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    if asserted_kinds.is_empty() {
+        return Ok(());
+    }
+    if !observed {
+        return Err(format!(
+            "side effects are not observable on this platform/driver ({}); \
+             assert_no_side_effect cannot certify",
+            reason.unwrap_or("the observation mechanism did not run")
+        ));
+    }
+    // A blind supervisor makes an empty effects list silence, not evidence.
+    if !faults.is_empty() {
+        return Err(format!(
+            "side-effect observation ran but could not adjudicate {} trapped \
+             syscall(s) ({}); assert_no_side_effect cannot certify",
+            faults.len(),
+            faults.join("; ")
+        ));
+    }
+    // Deduped by (kind, target). The message embeds the AGENT-chosen
+    // target, which is why it starts with the sentinel: classification
+    // hangs on a prefix only this function mints, never on target words.
+    let mut seen = std::collections::BTreeSet::new();
+    let violations: Vec<String> = effects
+        .iter()
+        .filter(|e| asserted_kinds.contains(&e.kind))
+        .filter(|e| seen.insert((e.kind.clone(), e.target.clone())))
+        .map(|e| {
+            format!(
+                "{} {} ({}) at {}ms",
+                e.kind,
+                e.target.as_deref().unwrap_or("[redacted]"),
+                e.op.as_deref().unwrap_or("?"),
+                e.at_ms
+            )
+        })
+        .collect();
+    if violations.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{}{}; assert_no_side_effect: {} forbids it",
+        flowproof_replay::runrecord::SIDE_EFFECT_VIOLATION,
+        violations.join(", "),
+        asserted_kinds.join(", ")
+    ))
+}
+
+/// Build the lane and judge THIS run's live log. Returns the lane whenever
+/// the run was observed, assertion or not (the egress-lane precedent); a
+/// failure means record mints no trace and replay fails the flow.
+fn check_side_effects(
+    plan: &Plan,
+    run: &AgentRun,
+    workspace: &Path,
+) -> Result<Option<SideEffectsTrace>, String> {
+    let lane = side_effects_lane(run, &plan.allow, workspace);
+    // Only faults RELEVANT to the asserted kinds can blind them.
+    let mut faults = Vec::new();
+    if plan.no_side_effects.iter().any(|k| k == KIND_FS_WRITE) {
+        faults.extend(run.fs.distinct_faults());
+    }
+    if plan.no_side_effects.iter().any(|k| k == KIND_HTTP_REQUEST) {
+        for fault in run.egress.distinct_faults() {
+            if !faults.contains(&fault) {
+                faults.push(fault);
+            }
+        }
+    }
+    let effects = lane.as_ref().map(|l| l.effects.as_slice()).unwrap_or(&[]);
+    side_effect_verdict(
+        &plan.no_side_effects,
+        effects,
+        &faults,
+        run.observed,
+        Some(observation_unavailable_reason(plan)),
+    )?;
+    Ok(lane)
+}
+
+/// The recorded side-effect lane's records and faults, read off any agent
+/// trace - the `egress_blocked` precedent, and the REAL serde path the
+/// falsifiability harness feeds back through [`side_effect_verdict`].
+pub fn side_effects_of(trace_path: &Path) -> Option<(Vec<SideEffect>, Vec<String>)> {
+    let raw = std::fs::read_to_string(trace_path).ok()?;
+    let trace: AgentTrace = serde_json::from_str(&raw).ok()?;
+    trace.side_effects.map(|lane| (lane.effects, lane.faults))
+}
+
 /// The short containment tag stored in the trace lane (the parenthetical of
 /// the report line): `enforced (linux seccomp)` or `not contained (<reason>)`.
 /// The run record stores the SAME string, so the trace and the artifact an
@@ -987,6 +1325,7 @@ fn egress_failure_message(undeclared: &[EgressEvent]) -> String {
 fn secret_corpus(
     cassette: &Cassette,
     mcp: &BTreeMap<String, McpServerTrace>,
+    side_effects: Option<&SideEffectsTrace>,
 ) -> Vec<(String, String)> {
     let mut corpus = Vec::new();
     // The cassette element is always present on an agent flow (a run with an
@@ -1003,6 +1342,13 @@ fn secret_corpus(
             serde_json::to_string(lane).unwrap_or_default(),
         ));
     }
+    // And the side-effect lane, when the run minted one.
+    if let Some(lane) = side_effects {
+        corpus.push((
+            "the side-effects lane".to_string(),
+            serde_json::to_string(lane).unwrap_or_default(),
+        ));
+    }
     corpus
 }
 
@@ -1016,11 +1362,12 @@ fn check_secret_leak(
     plan: &Plan,
     cassette: &Cassette,
     mcp: &BTreeMap<String, McpServerTrace>,
+    side_effects: Option<&SideEffectsTrace>,
 ) -> Result<(), String> {
     if plan.secret_leaks.is_empty() {
         return Ok(());
     }
-    let corpus = secret_corpus(cassette, mcp);
+    let corpus = secret_corpus(cassette, mcp, side_effects);
     flowproof_trace::secret_scan::scan_corpus(&plan.secret_leaks, &corpus)
 }
 
@@ -1381,10 +1728,12 @@ fn record_inner(
     report_fs(&run);
     *achieved = Some(achieved_tier(&run, &tier));
     let egress = check_egress(&plan, &run, &tier)?;
-    // The secret-leak scan runs BEFORE the trace is minted: a leak fails the
-    // run so NO trace is written. That doubles as a store-guard - a secret
-    // leaked into a cassette body never reaches disk.
-    check_secret_leak(&plan, &cassette, &mcp_trace)?;
+    // The side-effect lane (workspace root = the agent's spawn cwd), built
+    // and JUDGED, then scanned with the cassette below BEFORE the trace is
+    // minted - a violating record mints no trace, the same store-guard.
+    let workspace = std::env::current_dir().unwrap_or_default();
+    let side_effects = check_side_effects(&plan, &run, &workspace)?;
+    check_secret_leak(&plan, &cassette, &mcp_trace, side_effects.as_ref())?;
 
     let trace = AgentTrace {
         app: "agent".into(),
@@ -1392,6 +1741,7 @@ fn record_inner(
         cassette,
         mcp: mcp_trace,
         egress,
+        side_effects,
     };
     let json = serde_json::to_string_pretty(&trace).map_err(|e| e.to_string())?;
     std::fs::write(out, json).map_err(|e| format!("writing {}: {e}", out.display()))?;
@@ -1461,10 +1811,19 @@ fn replay_inner(
     report_fs(&run);
     *achieved = Some(achieved_tier(&run, &tier));
     check_egress(&plan, &run, &tier)?;
+    // The side-effect assertion judges THIS phase's LIVE log too; the
+    // recomputed lane is discarded - the lane is audit, never authority.
+    check_side_effects(&plan, &run, &std::env::current_dir().unwrap_or_default())?;
     // Re-scan the recorded corpus for declared secrets by the SAME mechanism
     // as record, so an unchanged system replays the same verdict. The corpus
-    // is the recorded cassette + MCP lanes (the proxy consumed the live one).
-    check_secret_leak(&plan, &trace.cassette, &trace.mcp)?;
+    // is the recorded cassette + MCP lanes + side-effect lane (the proxy
+    // consumed the live cassette, and the recorded lane is the one on disk).
+    check_secret_leak(
+        &plan,
+        &trace.cassette,
+        &trace.mcp,
+        trace.side_effects.as_ref(),
+    )?;
     Ok(())
 }
 
@@ -1599,6 +1958,7 @@ mod tests {
             cassette,
             mcp: BTreeMap::new(),
             egress: None,
+            side_effects: None,
         };
         std::fs::write(
             &path,
@@ -1761,6 +2121,7 @@ mod tests {
             cassette: neutral_cassette("hi", "there"),
             mcp: BTreeMap::new(),
             egress: None,
+            side_effects: None,
         };
         let json = serde_json::to_string_pretty(&trace).expect("serialize");
         // The `mcp` and `egress` keys are skipped when empty, so the bytes
@@ -1800,6 +2161,7 @@ mod tests {
                     at_ms: 42,
                 }],
             }),
+            side_effects: None,
         };
         let json = serde_json::to_string(&trace).expect("serialize");
         assert!(json.contains("\"egress\""), "egress present: {json}");
@@ -1810,6 +2172,237 @@ mod tests {
         assert_eq!(lane.allowed.len(), 2);
         assert_eq!(lane.blocked[0].destination, "198.51.100.9:443");
         assert_eq!(lane.blocked[0].protocol, "tcp");
+    }
+
+    /// The side-effect lane round-trips, and unset record fields (the
+    /// reserved ones in particular) leave no key.
+    #[test]
+    fn a_side_effect_lane_survives_the_round_trip() {
+        let trace = AgentTrace {
+            app: "agent".into(),
+            mocks: BTreeMap::new(),
+            cassette: neutral_cassette("hi", "there"),
+            mcp: BTreeMap::new(),
+            egress: None,
+            side_effects: Some(SideEffectsTrace {
+                observation: "observed (linux seccomp)".into(),
+                effects: vec![SideEffect {
+                    kind: flowproof_trace::side_effect::KIND_FS_WRITE.into(),
+                    target: None,
+                    target_note: Some("outside workspace (sha256:9f1c22ab04e1)".into()),
+                    op: Some("openat".into()),
+                    flags: Some("O_WRONLY|O_TRUNC".into()),
+                    at_ms: 412,
+                    before: None,
+                    after: None,
+                    diff: None,
+                }],
+                faults: vec!["openat2: could not read open_how: EPERM".into()],
+            }),
+        };
+        let json = serde_json::to_string(&trace).expect("serialize");
+        assert!(json.contains("\"side_effects\""), "lane present: {json}");
+        for absent in ["\"target\"", "\"before\"", "\"after\"", "\"diff\""] {
+            assert!(!json.contains(absent), "no `{absent}` key: {json}");
+        }
+        let back: AgentTrace = serde_json::from_str(&json).expect("deserialize");
+        let lane = back.side_effects.expect("lane present");
+        assert_eq!(lane.observation, "observed (linux seccomp)");
+        assert_eq!(lane.effects.len(), 1);
+        assert_eq!(lane.effects[0].op.as_deref(), Some("openat"));
+        assert_eq!(lane.faults.len(), 1);
+    }
+
+    /// A side-effect-free trace serializes WITHOUT the key, and a trace
+    /// written before the lane existed still deserializes. A NEW sibling
+    /// of the existing byte-identity test rather than an edit to it.
+    #[test]
+    fn a_side_effect_free_trace_serializes_without_the_key() {
+        let trace = AgentTrace {
+            app: "agent".into(),
+            mocks: BTreeMap::new(),
+            cassette: neutral_cassette("hi", "there"),
+            mcp: BTreeMap::new(),
+            egress: None,
+            side_effects: None,
+        };
+        let json = serde_json::to_string_pretty(&trace).expect("serialize");
+        assert!(
+            !json.contains("side_effects"),
+            "no side_effects key on an unobserved trace: {json}"
+        );
+
+        // A hand-built pre-lane trace (no `side_effects` field at all)
+        // deserializes, the field defaulting to None.
+        let old = r#"{"app":"agent","mocks":{},"cassette":{"turns":[]}}"#;
+        let back: AgentTrace = serde_json::from_str(old).expect("pre-lane trace deserializes");
+        assert!(
+            back.side_effects.is_none(),
+            "absent side_effects defaults to None"
+        );
+    }
+
+    // ---- path hygiene and the side-effect lane (unix-gated: capture is
+    // a Linux mechanism, so every input is a Unix path) ----
+
+    #[cfg(unix)]
+    fn ws() -> &'static Path {
+        Path::new("/ws")
+    }
+
+    /// The kept form is `./`-prefixed, byte-for-byte the captured name
+    /// minus the workspace prefix and `.` components - the kernel's
+    /// ` (deleted)` marker included, anywhere it sits - and the workspace
+    /// root itself is `./` (pinned: "empty target" and "no target" must not
+    /// blur). Everything doubtful redacts to a hash of the RAW string,
+    /// saying why - `/ws/a/../b` is NEVER normalized to a kept `./b`.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_names_are_kept_and_everything_doubtful_redacts() {
+        for (raw, kept) in [
+            ("/ws/./exports/./2025.csv", "./exports/2025.csv"),
+            ("/ws", "./"),
+            ("/ws/tmp.csv (deleted)", "./tmp.csv (deleted)"),
+            ("/ws/dir (deleted)/f.csv", "./dir (deleted)/f.csv"),
+        ] {
+            assert_eq!(hygiene(Some(raw), None, ws()), (Some(kept.into()), None));
+        }
+        // A capture-side note travels with a kept target untouched.
+        assert_eq!(
+            hygiene(Some("/ws/a"), Some("weak evidence"), ws()),
+            (Some("./a".into()), Some("weak evidence".into()))
+        );
+        for (raw, why) in [
+            ("/home/alice/tokens.csv", "outside workspace (sha256:"),
+            ("/ws/a/../b", "traversal path (sha256:"),
+            ("gone.txt", "unanchored relative path (sha256:"),
+        ] {
+            let (target, note) = hygiene(Some(raw), None, ws());
+            assert_eq!(target, None, "{raw}");
+            assert!(note.expect("says why").starts_with(why), "{raw}");
+        }
+    }
+
+    /// The postconditions over generated inputs: ANY `..` input yields no
+    /// target; a kept target is `./`-prefixed, never absolute, `..`-free,
+    /// and rejoins to the captured path modulo dropped `.` components.
+    #[cfg(unix)]
+    #[test]
+    fn hygiene_postconditions_hold_over_generated_paths() {
+        use std::path::Component;
+        const PARTS: [&str; 7] = ["ws", "a", "..", ".", "exports", "x (deleted)", "ws-evil"];
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move |bound: usize| {
+            state = state.wrapping_mul(0x5851_F42D_4C95_7F2D).wrapping_add(1);
+            (state >> 33) as usize % bound
+        };
+        for _ in 0..4000 {
+            let parts: Vec<&str> = (0..next(6)).map(|_| PARTS[next(7)]).collect();
+            let raw = format!("{}{}", ["", "/"][usize::from(next(4) > 0)], parts.join("/"));
+            let Some(target) = hygiene(Some(&raw), None, ws()).0 else {
+                continue;
+            };
+            assert!(!parts.contains(&".."), "`..` in {raw:?} must redact");
+            let rel = target
+                .strip_prefix("./")
+                .expect("a kept target is ./-prefixed");
+            let clean = !rel.starts_with('/')
+                && !Path::new(rel)
+                    .components()
+                    .any(|c| matches!(c, Component::ParentDir));
+            assert!(clean, "{target:?} from {raw:?}");
+            let cleaned: PathBuf = Path::new(&raw).components().collect();
+            assert_eq!(ws().join(rel), cleaned, "{target:?} rejoins to {raw:?}");
+        }
+    }
+
+    /// The lane: absent unobserved (silence, never laundered into "clean"),
+    /// faults deduped, every path in it a hygiene OUTPUT - a rename joining
+    /// the two outputs, `[redacted]` standing in for a redacted side.
+    #[cfg(unix)]
+    #[test]
+    fn the_lane_records_hygiene_outputs_never_raw_paths() {
+        let mut run = egress_run(vec![]);
+        let unobserved = side_effects_lane(&run, &AllowSet::default(), ws());
+        assert!(unobserved.is_none(), "not observed");
+
+        run.observed = true;
+        run.fs.faults = vec!["openat2: EPERM".into(), "openat2: EPERM".into()];
+        let event = |op: &str, path: &str, path2: Option<&str>| flowproof_adapters::FsEvent {
+            op: op.into(),
+            path: Some(path.into()),
+            path2: path2.map(Into::into),
+            path_note: None,
+            flags: None,
+            at_ms: 412,
+        };
+        run.fs.destructive = vec![
+            event("unlinkat", "/ws/gone.csv", None),
+            event("renameat2", "/ws/a", Some("/home/u/b.csv")),
+            event("rename", "/home/u/a", Some("/home/u/b")),
+        ];
+        let lane =
+            side_effects_lane(&run, &AllowSet::default(), ws()).expect("observed mints the lane");
+        assert_eq!(lane.observation, "observed (linux seccomp)");
+        assert_eq!(lane.faults.len(), 1, "one mechanism, one finding");
+        assert_eq!(lane.effects[0].target.as_deref(), Some("./gone.csv"));
+        assert_eq!(lane.effects[1].target.as_deref(), Some("./a -> [redacted]"));
+        assert_eq!(lane.effects[2].target, None, "both sides redacted");
+        let note = lane.effects[1].target_note.as_deref().expect("says why");
+        assert!(note.starts_with("dst: outside workspace"), "{note}");
+        let json = serde_json::to_string(&lane).expect("serialize");
+        assert!(!json.contains("/home"), "no raw path in the lane: {json}");
+
+        // The store-guard scans the lane, as a named corpus element.
+        let corpus = secret_corpus(&neutral_cassette("hi", "x"), &BTreeMap::new(), Some(&lane));
+        assert!(corpus.iter().any(|(n, _)| n == "the side-effects lane"));
+    }
+
+    /// The http half: observed egress joins the lane ordered by `at_ms` (the
+    /// clock the fs records share), a `${VAR}`-admitted destination is named
+    /// by its UNRESOLVED spelling, and the faults are the UNION of both
+    /// supervisor halves - egress faults must not be silently dropped.
+    #[cfg(unix)]
+    #[test]
+    fn the_lane_merges_observed_egress_and_folds_in_its_faults() {
+        let observed = |destination: &str, protocol: &str, at_ms: u64| EgressEvent {
+            destination: destination.into(),
+            protocol: protocol.into(),
+            at_ms,
+        };
+        let mut run = egress_run(vec![]);
+        run.observed = true;
+        run.fs.faults = vec!["openat2: EPERM".into()];
+        run.egress.observed = vec![
+            observed("198.51.100.9:443", "tcp", 610),
+            observed("203.0.113.9:53", "udp", 100),
+        ];
+        run.egress.faults = vec!["sendto: pidfd_getfd: EPERM".into(), "openat2: EPERM".into()];
+        // BOTH a concrete and a `${VAR}` entry admit the tcp destination:
+        // redaction-first, the unresolved spelling must win.
+        let allow = AllowSet::resolve_spelled(&[
+            ("198.51.100.9:443", "198.51.100.9:443"),
+            ("${SERVICE_HOST}:443", "198.51.100.9:443"),
+        ])
+        .expect("resolves");
+        let lane = side_effects_lane(&run, &allow, ws()).expect("observed mints the lane");
+
+        // Sorted by at_ms: the udp send first, keeping its `ip:port`.
+        assert_eq!(lane.effects[0].kind, "http_request");
+        assert_eq!(lane.effects[0].target.as_deref(), Some("203.0.113.9:53"));
+        assert_eq!(lane.effects[0].op.as_deref(), Some("udp"));
+        let spelled = lane.effects[1].target.as_deref();
+        assert_eq!(spelled, Some("${SERVICE_HOST}:443"));
+        let json = serde_json::to_string(&lane).expect("serialize");
+        assert!(
+            !json.contains("198.51.100.9"),
+            "resolved value leaked: {json}"
+        );
+        // The union, deduped: the shared fault is one finding.
+        assert_eq!(
+            lane.faults,
+            ["openat2: EPERM", "sendto: pidfd_getfd: EPERM"]
+        );
     }
 
     // ---- egress containment verdict (cross-platform) ----
@@ -1829,6 +2422,8 @@ mod tests {
             engages_egress: !allow_unresolved.is_empty() || assert_no_egress,
             allow_unresolved,
             assert_no_egress,
+            no_side_effects: Vec::new(),
+            observes: false,
             secret_leaks: Vec::new(),
         }
     }
@@ -1849,8 +2444,13 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             upstream_error: None,
-            egress: flowproof_adapters::egress::EgressLog { blocked, faults },
+            egress: flowproof_adapters::egress::EgressLog {
+                blocked,
+                faults,
+                observed: Vec::new(),
+            },
             fs: flowproof_adapters::FsLog::default(),
+            observed: false,
             containment: None,
         }
     }
@@ -1868,6 +2468,7 @@ mod tests {
         run.fs.destructive.push(flowproof_adapters::FsEvent {
             op: "unlinkat".into(),
             path: Some("/home/u/prod.db".into()),
+            path2: None,
             path_note: None,
             flags: None,
             at_ms: 12,
@@ -2077,6 +2678,89 @@ mod tests {
         );
     }
 
+    // ---- the side-effect assertion (cross-platform) ----
+
+    /// Capability and fault failures read `cannot certify`; a violation
+    /// classifies Fail even when its target spells a capability keyword.
+    #[test]
+    fn the_side_effect_verdict_is_honest_in_all_three_directions() {
+        use flowproof_replay::runrecord::is_capability_error;
+        let kinds = vec![KIND_FS_WRITE.to_string()];
+        // Capability: not observed, no bypass, never a vacuous pass.
+        let err = side_effect_verdict(&kinds, &[], &[], false, Some("Linux-only"))
+            .expect_err("cannot certify unobserved");
+        assert!(
+            err.contains("cannot certify") && err.contains("Linux-only"),
+            "{err}"
+        );
+        assert!(is_capability_error(&err), "{err}");
+        // Fault: an empty effects list under a blind supervisor is silence.
+        let err = side_effect_verdict(&kinds, &[], &["openat2: EPERM".into()], true, None)
+            .expect_err("a blind supervisor cannot certify");
+        assert!(
+            err.contains("could not adjudicate") && err.contains("openat2"),
+            "{err}"
+        );
+        assert!(is_capability_error(&err), "{err}");
+        // Violation: named, and NEVER relabeled by its own target.
+        let unlink = SideEffect {
+            kind: KIND_FS_WRITE.into(),
+            target: Some("./cannot certify.txt".into()),
+            target_note: None,
+            op: Some("unlinkat".into()),
+            flags: None,
+            at_ms: 412,
+            before: None,
+            after: None,
+            diff: None,
+        };
+        let err =
+            side_effect_verdict(&kinds, &[unlink], &[], true, None).expect_err("a violation fails");
+        assert!(
+            err.contains("unlinkat") && err.contains("./cannot certify.txt"),
+            "{err}"
+        );
+        assert!(!is_capability_error(&err), "the sentinel wins: {err}");
+        // And falsifiable in the other direction: clean and observed passes.
+        side_effect_verdict(&kinds, &[], &[], true, None).expect("clean and observed");
+    }
+
+    /// Observation-only supervision mints NO egress lane: allow-all
+    /// reaches no denied branch, so the presence disjunct never fires.
+    #[test]
+    fn an_observation_only_run_mints_no_egress_lane() {
+        let plan = egress_plan(false, vec![]);
+        let mut run = egress_run(vec![]);
+        run.observed = true;
+        let lane = check_egress(&plan, &run, &Containment::observation_only())
+            .expect("observation is not an egress verdict");
+        assert!(
+            lane.is_none(),
+            "no egress lane for a flow that engaged none"
+        );
+    }
+
+    /// The tier-line pin: an observation-only flow's PREDICTION equals its
+    /// run's achieved tier, and neither ever says `enforced`.
+    #[test]
+    fn an_observation_only_flow_predicts_the_tier_its_run_achieves() {
+        let spec = FlowSpec::parse(
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_side_effect: fs_write\n",
+        )
+        .expect("parses");
+        assert!(engages_observation(&spec) && !engages_egress(&spec));
+        let predicted = containment(&spec);
+        assert!(!predicted.is_enforced(), "{predicted:?}");
+        if cfg!(target_os = "linux") {
+            // The run constructor pins the same tier (adapters e2e).
+            assert_eq!(predicted, Containment::observation_only());
+        } else {
+            assert_eq!(predicted, Containment::not_engaged());
+        }
+        // An uncontained path decides no tier, so the prediction stands.
+        assert_eq!(achieved_tier(&egress_run(vec![]), &predicted), predicted);
+    }
+
     /// A spec whose only shape that matters here is its tools/mcp blocks.
     fn tool_spec(yaml: &str) -> FlowSpec {
         FlowSpec::parse(yaml).expect("spec parses")
@@ -2177,6 +2861,7 @@ mod tests {
             upstream_error: None,
             egress: Default::default(),
             fs: Default::default(),
+            observed: false,
             divergence: None,
             timed_out: false,
             containment: None,
@@ -2357,6 +3042,7 @@ mod tests {
             cassette: neutral_cassette("hi", "there"),
             mcp,
             egress: None,
+            side_effects: None,
         };
         let json = serde_json::to_string(&trace).expect("serialize");
         assert!(json.contains("\"mcp\""), "mcp present: {json}");
@@ -3063,6 +3749,7 @@ mod tests {
             cassette: neutral_cassette("hi", "there"),
             mcp,
             egress: None,
+            side_effects: None,
         };
         let json = serde_json::to_string_pretty(&trace).expect("serialize");
         assert!(

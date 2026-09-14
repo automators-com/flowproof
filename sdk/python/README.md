@@ -43,7 +43,7 @@ The wheel bundles the Rust engine; no separate install. Targets: `web`
 (SAP GUI Scripting), `vision` (pixels-only for Citrix/RDP), and `api`
 (no UI — HTTP/SQL assertion flows, any OS).
 
-**Status: pre-alpha, in active development.** Record→replay,
+**Status: alpha, in active development.** Record→replay,
 model-grounded authoring, healing with reviewable diffs, suites, run
 recordings, and the MCP server all work and are tested in CI.
 

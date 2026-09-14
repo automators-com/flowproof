@@ -768,6 +768,7 @@ fn handle_connect(
             let ip = normalize(ip);
             if allow.allows(ip, port) {
                 dbg_egress(&format!("connect: ALLOWED {ip}:{port}, performing"));
+                record_observed(log, spawn, ip, port, "tcp");
                 perform_connect(req.pid, sockfd, &buf[..n], log)
             } else {
                 dbg_egress(&format!("connect: DENIED by policy {ip}:{port}"));
@@ -830,6 +831,7 @@ fn handle_sendto(
                     record(log, spawn, &format!("{ip}:{port}"), "udp");
                     return errno_resp(libc::ECONNREFUSED);
                 }
+                record_observed(log, spawn, ip, port, "udp");
                 Some((addr, n))
             }
             Some(Dest::Unix) => Some((addr, n)),
@@ -875,6 +877,7 @@ fn handle_sendmsg(
     }
     let (name_ptr, name_len, control_len) = msghdr_fields(&hdr);
 
+    let mut vetted = None;
     if name_ptr != 0 && name_len != 0 {
         let mut addr = [0u8; 128];
         let read = read_child(req.pid, name_ptr, &mut addr, name_len as usize);
@@ -894,12 +897,17 @@ fn handle_sendmsg(
                 record(log, spawn, &format!("{ip}:{port}"), "udp");
                 return errno_resp(libc::ECONNREFUSED);
             }
+            vetted = Some((ip, port));
         }
     }
     // Control data (e.g. SCM_RIGHTS) is not marshalled in v1: refuse rather
     // than forward something we did not fully copy.
     if control_len != 0 {
         return errno_resp(libc::EPERM);
+    }
+    // AFTER the refusal, so a refused message is never reported as performed.
+    if let Some((ip, port)) = vetted {
+        record_observed(log, spawn, ip, port, "udp");
     }
     // On-host / connected: re-perform on the child's own socket. sendmmsg is
     // serviced as its first message; the child sees one message sent.
@@ -1175,17 +1183,21 @@ fn observe(
     let (a, pid) = (req.data.args, req.pid);
     // Where each call keeps the thing it destroys. Wrong indices make a wrong
     // REPORT, never a wrong verdict - the trap already happened.
-    let (subject, flags) = match op {
-        "unlink" | "rmdir" | "truncate" | "creat" => (at(pid, None, a[0]), None),
-        "open" => (at(pid, None, a[0]), open_flags(a[1])),
-        "openat" => (at(pid, Some(a[0]), a[1]), open_flags(a[2])),
-        "unlinkat" => (at(pid, Some(a[0]), a[1]), at_flags(a[2])),
-        "rename" => (pair(at(pid, None, a[0]), at(pid, None, a[1])), None),
+    let (subject, subject2, flags) = match op {
+        "unlink" | "rmdir" | "truncate" | "creat" => (at(pid, None, a[0]), None, None),
+        "open" => (at(pid, None, a[0]), None, open_flags(a[1])),
+        "openat" => (at(pid, Some(a[0]), a[1]), None, open_flags(a[2])),
+        "unlinkat" => (at(pid, Some(a[0]), a[1]), None, at_flags(a[2])),
+        // The rename family keeps its two subjects STRUCTURED (`path2`):
+        // ` -> ` is a legal filename substring nothing could split back
+        // safely; `FsEvent::line` joins for the report.
+        "rename" => (at(pid, None, a[0]), Some(at(pid, None, a[1])), None),
         "renameat" | "renameat2" => (
-            pair(at(pid, Some(a[0]), a[1]), at(pid, Some(a[2]), a[3])),
+            at(pid, Some(a[0]), a[1]),
+            Some(at(pid, Some(a[2]), a[3])),
             None,
         ),
-        "ftruncate" => (fd_subject(pid, a[0] as RawFd), None),
+        "ftruncate" => (fd_subject(pid, a[0] as RawFd), None, None),
         // `openat2` hides its flags in a pointed-to `open_how` that cBPF
         // cannot see, so the filter trapped it unconditionally and the
         // destructiveness test lands here. An unreadable struct is the one
@@ -1193,7 +1205,7 @@ fn observe(
         // what a FAULT means; a bad pointer from the child is not, because the
         // syscall was going to fail anyway.
         "openat2" => match open_how_flags(pid, a[2], a[3] as usize) {
-            Ok(Some(flags)) => (at(pid, Some(a[0]), a[1]), Some(flags)),
+            Ok(Some(flags)) => (at(pid, Some(a[0]), a[1]), None, Some(flags)),
             Ok(None) => return continue_resp(),
             Err(e) if !is_supervisor_fault(&e) => return continue_resp(),
             Err(e) => return fs_fault(fs, &format!("openat2: could not read open_how: {e}")),
@@ -1203,13 +1215,24 @@ fn observe(
         // reads as a clean run - which is what makes it a fault.
         _ => return fs_fault(fs, &format!("no handler for trapped syscall {op}")),
     };
-    let (path, path_note) = subject;
+    let (path, note) = subject;
+    let (path2, path_note) = match subject2 {
+        // A rename's one note field carries both sides, attributed by prefix.
+        Some((path2, note2)) => {
+            let src = note.map(|n| format!("src: {n}"));
+            let dst = note2.map(|n| format!("dst: {n}"));
+            let merged: Vec<String> = src.into_iter().chain(dst).collect();
+            (path2, (!merged.is_empty()).then(|| merged.join("; ")))
+        }
+        None => (None, note),
+    };
     fs.lock()
         .unwrap_or_else(|e| e.into_inner())
         .destructive
         .push(FsEvent {
             op: op.to_string(),
             path,
+            path2,
             path_note,
             flags,
             at_ms: spawn.elapsed().as_millis() as u64,
@@ -1247,13 +1270,6 @@ fn fd_subject(pid: u32, fd: RawFd) -> Subject {
         Ok(path) => (Some(path.display().to_string()), None),
         Err(e) => (None, Some(format!("unresolved: {link}: {e}"))),
     }
-}
-
-/// The rename family clobbers its DESTINATION and moves its source: name both.
-fn pair(from: Subject, to: Subject) -> Subject {
-    let note = from.1.clone().or_else(|| to.1.clone());
-    let show = |s: &Subject| s.0.clone().unwrap_or_else(|| "?".to_string());
-    (Some(format!("{} -> {}", show(&from), show(&to))), note)
 }
 
 /// The `O_*` bits worth naming, or `None` when `O_TRUNC` is absent - which is
@@ -1507,6 +1523,26 @@ fn record(log: &Mutex<EgressLog>, spawn: Instant, destination: &str, protocol: &
     log.lock()
         .unwrap_or_else(|e| e.into_inner())
         .blocked
+        .push(event);
+}
+
+/// Record an ALLOWED destination into the shared log's `observed` list - the
+/// `http_request` half of the side-effect lane. Loopback is filtered HERE, at
+/// the capture point: connects to flowproof's own proxy and MCP listeners are
+/// already first-class trace data, and re-emitting them would double-count
+/// flowproof's boundaries as agent behavior (and pay a push per model call).
+fn record_observed(log: &Mutex<EgressLog>, spawn: Instant, ip: IpAddr, port: u16, protocol: &str) {
+    if is_loopback(ip) {
+        return;
+    }
+    let event = EgressEvent {
+        destination: format!("{ip}:{port}"),
+        protocol: protocol.to_string(),
+        at_ms: spawn.elapsed().as_millis() as u64,
+    };
+    log.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .observed
         .push(event);
 }
 
@@ -1795,5 +1831,47 @@ mod tests {
         assert_eq!(errno_resp(libc::ECONNREFUSED).error, -libc::ECONNREFUSED);
         assert_eq!(ok_resp(5).val, 5);
         assert_eq!(ok_resp(5).error, 0);
+    }
+
+    /// The narrowed observation-only pin: the POLICY path under allow-all
+    /// admits every parseable inet destination - deliberately NOT "denies
+    /// nothing", since the structural refusals are independent of any
+    /// `AllowSet`. The capture point records an allowed destination into
+    /// `observed` - never `blocked` - loopback filtered wholesale, and the
+    /// tier such a run reports never says enforced.
+    #[test]
+    fn allow_all_admits_every_parseable_inet_destination_and_observation_records_it() {
+        let all = AllowSet::allow_all();
+        assert!(!all.is_empty());
+        let destinations: [(IpAddr, u16); 4] = [
+            ("198.51.100.9".parse().expect("ipv4"), 443),
+            ("10.1.2.3".parse().expect("ipv4"), 8080),
+            ("2001:db8::1".parse().expect("ipv6"), 65535),
+            // v4-mapped, as `normalize` would hand it to the policy.
+            (normalize("::ffff:203.0.113.9".parse().expect("ipv6")), 53),
+        ];
+        for (ip, port) in destinations {
+            assert!(all.allows(ip, port), "{ip}:{port} must be admitted");
+        }
+
+        let log = Mutex::new(EgressLog::default());
+        let spawn = Instant::now();
+        let tcp_dest: IpAddr = "198.51.100.9".parse().expect("ipv4");
+        record_observed(&log, spawn, tcp_dest, 443, "tcp");
+        record_observed(&log, spawn, "203.0.113.9".parse().expect("ipv4"), 53, "udp");
+        for loopback in ["127.0.0.1", "127.9.9.9", "::1"] {
+            record_observed(&log, spawn, loopback.parse().expect("loopback"), 443, "tcp");
+        }
+        let log = log.into_inner().expect("unpoisoned");
+        assert!(log.blocked.is_empty(), "observation is not a denial");
+        assert_eq!(log.observed.len(), 2, "loopback never appears");
+        assert_eq!(log.observed[0].destination, "198.51.100.9:443");
+        assert_eq!(log.observed[0].protocol, "tcp");
+        assert_eq!(log.observed[1].destination, "203.0.113.9:53");
+        assert_eq!(log.observed[1].protocol, "udp");
+
+        let line = Containment::observation_only().report_line();
+        assert!(line.contains("not contained"), "{line}");
+        assert!(!line.contains("enforced"), "{line}");
     }
 }

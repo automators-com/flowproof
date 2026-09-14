@@ -282,7 +282,7 @@ fn page_shows_matches_case_insensitively_at_record_and_replay() {
     // against a rendered "Close account" before the fallback existed, and
     // mirroring here would start failing a trace that used to pass.
     // Symmetry is the lesser property - see the design ruling in
-    // docs/design.md.
+    // internal/design.md.
     let spec = FlowSpec::parse(
         "name: CI negative\napp: web\nurl: https://e.test/x\nsteps:\n  - assert: page does not show CLOSE ACCOUNT\n",
     )

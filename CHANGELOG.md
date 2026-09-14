@@ -6,6 +6,98 @@ together).
 
 ## Unreleased
 
+- **A stopped business workflow can retain confirmed IDs without repeating
+  its completed stages.** Opt-in suite checkpoints persist passing reports
+  and exports, and resume checks the reviewed inputs before doing anything.
+  A failed or interrupted stage stays uncertain and blocks automatic resume;
+  a lost acknowledgement is never treated as proof that a write did not happen.
+  `--stop-after` provides a deliberate pause at a confirmed boundary.
+
+- **A business workflow can now select exactly which flows may run and
+  prevent later operations from executing without their prerequisites.**
+  `order` was only a sort: candidate files still ran, and a failed creation
+  could be followed by a dependent posting. Opt-in `flows`, `depends_on`
+  and `stop_on_failure` make selection and failure policy explicit, validate
+  the graph before execution, and retain skipped stages in the suite report.
+
+## 0.22.0
+
+### Added
+
+- **`record` now diagnoses a live-recording failure, asks the configured
+  authoring model for a minimal `.flow.yaml` edit, applies it, and reruns in a
+  bounded loop (default 3 attempts) instead of just reporting the first
+  failure.** It stops early as an engine gap when the same failure category
+  recurs on the same step with no progress, or when the model itself says the
+  failure isn't fixable by a flow edit. The loop only ever writes the target
+  `.flow.yaml` and its `trace/repair.json` sidecar report; `--no-repair`
+  restores the original single-attempt behavior. Verified live against a real
+  Fiori tenant: a deliberately malformed step failed `record`, the model
+  correctly diagnosed and rewrote it, and the rerun passed with zero manual
+  edits. See `plans/007-autonomous-flow-repair-loop.md`.
+
+- **The repair loop recognizes a load-timing race as its own category,
+  distinct from a wrong target.** Previously it had two moves — rewrite a
+  step's text, or declare an engine gap — so a genuine timing race (the
+  target was right, the page just hadn't settled yet) burned an attempt
+  guessing new, wrong text instead of just waiting longer. A new
+  `widen_timeout_seconds` patch only regex-replaces a step's `within Ns`
+  window (capped at 120s), so a timing-race fix can't also change what the
+  step is waiting for.
+
+- **An `engine_gap` verdict gets one fresh retry before it's treated as
+  final.** Live testing against a real Fiori tenant found the same symptom
+  (a wait target briefly resolving to empty text) diagnosed as an unfixable
+  engine gap once and a fixable timing race twice, across otherwise-identical
+  runs — a verdict driven by one ambiguous read of a flaky moment was ending
+  the whole record attempt immediately. `record` now starts the flow over
+  completely fresh (new driver session, new login) once before reporting a
+  hard failure; if that also fails, both failures are recorded together in
+  `<flow>.repair.json` as agreeing evidence of a real problem, not a coin
+  flip. A budget-exhausted verdict (repair genuinely tried real fixes and
+  none stuck) doesn't get this free retry.
+
+- **Every command now checks, at most once every 24h, whether a newer
+  flowproof release exists, and prints a colored notice to stderr.** Nothing
+  told a user they were on an outdated CLI short of checking manually. The
+  check can never affect a command's outcome — any failure (offline, API
+  down, malformed response) is swallowed silently, bounded by a 1.5s timeout
+  — and never writes to stdout, so `--json` output and the mcp-stdio protocol
+  stay clean. Since distribution is split across pip and npm with no
+  reliable way for the binary to know which channel installed it, the
+  message shows both upgrade commands plus a release-notes link rather than
+  guessing. `FLOWPROOF_NO_UPDATE_CHECK` opts out entirely (CI, air-gapped
+  machines); `NO_COLOR` and a non-terminal stderr both fall back to the
+  plain, colorless form.
+
+- **Traces carry a first-class `side_effect` record and lane, and `record`
+  now populates it with observed filesystem writes.** Assertions about what
+  an agent changed on disk previously had nothing to bind to in the trace
+  format itself.
+
+- **What an agent destroys is now evidence, and evidence you can assert
+  on.** A run that deleted a customer file printed the fact to stderr and
+  passed every check there was: the destruction lived in a channel nobody
+  reviews, no diff records, and no assertion could reach. An observed run
+  now records a `side_effects` lane - workspace-relative names only,
+  everything doubtful hash-redacted, scanned by the secret store-guard
+  before the trace is minted - and `assert_no_side_effect` turns it into a
+  verdict with the egress honesty rules: where observation cannot run it
+  fails "cannot certify" rather than passing vacuously, a blind supervisor
+  cannot certify either, and a violating record mints no trace. Observation
+  is still not containment: a run supervised only to watch reports its own
+  tier and never claims `enforced` for a policy nobody declared.
+
+### Changed
+
+- **The package now calls itself alpha, not pre-alpha.** The PyPI classifier
+  said `2 - Pre-Alpha` since the first publish, which reads as "nothing works
+  yet" to anyone evaluating the package from the outside — and that reading
+  has been wrong for a while: record and replay, model-grounded authoring,
+  healing, suites, run recordings and the MCP server all ship and are tested
+  in CI. Alpha is the honest word for "works, interfaces may still move".
+  Classifier and the Python SDK README moved together.
+
 ## 0.21.0
 
 ### Added
