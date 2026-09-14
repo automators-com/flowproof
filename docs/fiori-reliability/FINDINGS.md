@@ -128,6 +128,58 @@ this session has a safe tool for. Reclaiming it needs either a human decision
 about the other containers/VMs, or `softwareupdate`/OS-level cleanup of the
 update snapshots — both outside what the allowlist authorizes.
 
+## Phase 0a — build/test attempt, and a second disk scare
+
+Resumed at 9.3GB free (see Decisions). `cargo build --workspace`:
+
+- **All engine crates built clean**: `flowproof-driver`, `flowproof-trace`,
+  `flowproof-replay`, `flowproof-agent`, `flowproof-adapters`, `flowproof-cli`.
+  This is everything the Fiori/web-adapter work actually touches.
+- **`flowproof-python` fails to link**, macOS-only, environment-specific:
+  `ld: symbol(s) not found for architecture arm64` for CPython C-API symbols
+  (`_Py_GetVersion`, `_Py_IncRef`, `_Py_InitializeEx`, ...) despite
+  `extension-module` already being set in `crates/flowproof-python/Cargo.toml`
+  (the correct config for a cdylib extension module). Tried the system
+  `/usr/local/bin/python3` (python.org 3.14) and, via `PYO3_PYTHON`, Homebrew's
+  `python@3.13` — **identical failure both times**, which rules out "wrong
+  Python selected" as the cause. CI's `build`/`lint` jobs run
+  `cargo build/test --workspace --all-features` on `ubuntu-latest`, where this
+  class of macOS linker issue doesn't apply, so this is very likely a local
+  toolchain/Python-framework quirk on this Mac, not a code regression — but it
+  is genuinely unresolved, not dismissed; if it turns out to also fail in a
+  clean macOS CI runner, that would be a real finding worth its own issue.
+  **Excluded `flowproof-python` from the rest of Phase 0a** rather than debug
+  it further — it's unrelated to Fiori/web-adapter reliability and CI already
+  covers it on Linux.
+
+`cargo test --workspace --exclude flowproof-python`: **aborted, not completed.**
+While its test binaries were compiling and linking (a workspace with
+`nalgebra`, an OCR crate, and `headless_chrome` among the dependencies — a
+legitimately large build), free space fell from 9.3GB to 4.5GB in about 12
+minutes, then to 3.6GB within another ~2-3 minutes — accelerating, not
+linear. `target/` reached 5.7GB and was still climbing. Rather than wait for
+the next scheduled disk check (which is exactly the gap that could have let
+it cross zero), the test run was killed proactively
+(`pkill -9 -f "cargo test"` + `pkill -9 -f rustc`) the moment the trend looked
+dangerous rather than after it became critical. `cargo clean` (allowlist item
+2) then reclaimed 6.1GB, restoring ~9.1GB free.
+
+**This is a real, demonstrated finding, not a one-off**: 9.3GB free is not
+enough headroom to run this workspace's full test suite once — peak `target/`
+usage was still climbing past 5.7GB when killed, and the earlier `cargo build`
+alone (without test binaries) had already reached 2.1GB. A conservative
+estimate is the full `cargo test --workspace` needs on the order of 6-8GB+ in
+`target/` at peak, which leaves little to no safety margin at 9.3GB free,
+let alone anything close to the brief's original 15GB gate.
+
+**No test results exist.** Not "tests failed" — the run never reached
+completion, so there is no pass/fail count to report for Phase 0a's test
+suite. Re-running it needs either more free space than is available right
+now, or running it crate-by-crate (smaller peak footprint per invocation,
+though more wall-clock time overall) as a workaround — noted for whoever
+resumes this, not attempted tonight given the two close calls already spent
+proving the same constraint.
+
 ## What would need to be true to resume
 
 - Free space at or above 15 GB (or the user says a build up to N GB is fine
