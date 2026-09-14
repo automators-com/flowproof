@@ -267,14 +267,18 @@ strong leads, not closed verdicts.
   jointly point at. Not yet designed in code; this needs the design-note
   treatment the brief calls for (new selector tier = trace-format-adjacent
   change) before implementation, not a quick patch.
-- **H4 — dialogs/popovers escape the search root: LIKELY NOT REPRODUCIBLE AS
-  STATED, unverified.** The adapter's element search (`web.rs`, scene-building
-  and `try_find`) operates against `document.querySelectorAll(...)` — the
-  whole top-level document — with special-case handling only for iframes.
-  `#sap-ui-static` is a sibling div in the *same* document, not a separate
-  frame, so nothing in the code as read scopes search away from it. This is a
-  lean from reading the code, not a proof; killing it for real needs an actual
-  UI5 app with a `sap.m.Dialog` running through the adapter (Phase 0b).
+- **H4 — dialogs/popovers escape the search root: KILLED, verified live.**
+  The adapter's element search (`web.rs`, scene-building and `try_find`)
+  operates against `document.querySelectorAll(...)` — the whole top-level
+  document — with special-case handling only for iframes. `#sap-ui-static`
+  is a sibling div in the *same* document, not a separate frame, so nothing
+  in the code scopes search away from it. Confirmed live, not just read:
+  `crates/flowproof-adapters/tests/static_area_e2e.rs` reproduces the exact
+  DOM shape (an element appended as a SIBLING of the app root, not a
+  descendant - the same relationship `#sap-ui-static` has to a UI5 app's
+  root) generically, without needing the full UI5 fixture. Both css/
+  native-id lookup and the `a11y` tier's own resolution reach it correctly.
+  Kept as a permanent regression test, not just a one-off measurement.
 - **H5 — see H2.** Not a separate mechanism; folded in above.
 
 **H3b — user-proposed, not yet evaluated: the accessibility tree, not a

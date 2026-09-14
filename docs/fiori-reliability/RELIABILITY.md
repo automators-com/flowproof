@@ -30,8 +30,8 @@ frozen corpus, no generator.
 
 ## 4. Hypothesis verdicts
 
-All backed by evidence in `FINDINGS.md`; H1/H2/H3/H3b/H5 are settled with
-real data, H4 is code-level only.
+All six hypotheses are now settled with real, live data - none left at
+"code-level only".
 
 | Hypothesis | Verdict | Evidence |
 |---|---|---|
@@ -39,7 +39,7 @@ real data, H4 is code-level only.
 | H2 (no UI5-aware idle signal) | **CONFIRMED, live, twice — AND FIXED** | A genuine, naive first-attempt `flowproof record` against the real system failed on a post-login tile-loading race, diagnosed by flowproof's own repair engine and left unfixed (no `within Ns` clause to widen). Independently reproduced by hand: blank at 3s, tiles at ~13s on the same real page. The fix (a CDP `Network`-listener-backed `network_idle` check in `settled_scene`) is landed and proven against a real 2-second delayed HTTP response — the scene correctly waits for it rather than racing ahead. |
 | H3 (`sap.ui.test.RecordReplay`) | **Present but broken outside its own harness** | All 64 of its dependencies load (HTTP 200) on the real production launchpad, but calling it cold via CDP throws an uncaught `TypeError` and the `require` never completes. Real friction, not a theoretical risk. |
 | H3b (accessibility tree — proposed mid-session) | **CONFIRMED rich and usable, right now** | A live accessibility snapshot of the real Home page shows stable role+name pairs (`link "Change Purchasing Info Record Tile"`, etc.) on every interactive element, no page injection needed. Evidence favors this over H3. |
-| H4 (dialogs/popovers escape search root) | **Likely not reproducible, code-level only** | The adapter searches the whole document, not a scoped container. Not verified empirically against a real Fiori dialog. |
+| H4 (dialogs/popovers escape search root) | **KILLED, verified live** | The adapter searches the whole document, not a scoped container - confirmed with a live test reproducing the exact "appended as a sibling of the app root" shape UI5's static UIArea has, not just read from source. Both css/native-id and the `a11y` tier reach it. |
 | H5 (authoring is the bottleneck) | **Same mechanism as H2 — AND FIXED** | `driver.scene()` — the function the model grounds authoring against — is the identical settle heuristic replay waits on, so H2's fix closes this too: the recorder's grounding scene now also waits for network-idle before it's handed to the model. |
 
 ## 5. What changed
@@ -103,17 +103,17 @@ full sequence with root causes.
 ## 6. What is still broken
 
 H3 is still unfixed as such (though H3b's accessibility-tree approach,
-which now backs the a11y tier, effectively supersedes it). And H1/H2 being
-fixed on one fixture is not the same as flowproof being reliable on Fiori
-at scale — that claim needs the harness and a real round, neither of which
-exists yet. Ranked by what would unblock the most, cheapest first:
+which now backs the a11y tier, effectively supersedes it). And every
+hypothesis being resolved on the fixtures used tonight is not the same as
+flowproof being reliable on Fiori at scale — that claim needs the harness
+and a real round, neither of which exists yet.
 
-1. **H4, empirically.** Cheap to check once there's a way to reach a real
-   dialog/popover in a test flow; still not done.
-2. **The harness, generator, and gate rounds** — none of Phase 0c/1
-   (remaining)/2/3/4 happened. This is the bulk of the brief's actual scope
-   and none of it is started. Two fixed mechanisms, each proven correct on
-   one fixture, are a necessary input to this — not a substitute for it.
+**The harness, generator, and gate rounds** are what remains — none of
+Phase 0c/1 (remaining)/2/3/4 happened. This is the entire bulk of the
+brief's actual scope, and none of it is started. Two fixed mechanisms
+(H1, H2/H5) plus one killed hypothesis (H4), each proven correct on the
+fixtures used tonight, are a necessary input to this — not a substitute
+for it.
 
 ## 7. What I should not trust
 
@@ -157,6 +157,7 @@ cargo test -p flowproof-replay
 FLOWPROOF_E2E=1 cargo test -p flowproof-adapters --all-features --test a11y_capture
 FLOWPROOF_E2E=1 cargo test -p flowproof-cli --all-features --test a11y_selector_e2e
 FLOWPROOF_E2E=1 cargo test -p flowproof-adapters --all-features --test network_idle_e2e
+FLOWPROOF_E2E=1 cargo test -p flowproof-adapters --all-features --test static_area_e2e
 ```
 
 The real-system probes are not scripted — they were interactive
