@@ -6,9 +6,8 @@ mod capture;
 pub mod config;
 mod doctor;
 mod suite;
-#[cfg(test)]
+mod suite_checkpoint;
 mod suite_inputs;
-#[cfg(test)]
 mod suite_journal;
 mod update_check;
 
@@ -315,6 +314,8 @@ enum Command {
         /// it failed — absorbs infra flakiness (default 0, no retries).
         #[arg(long, default_value_t = 0)]
         retries: u8,
+        #[command(flatten)]
+        recovery: suite_checkpoint::RecoveryArgs,
         /// Suite runs only: record any spec whose trace is missing, then
         /// replay it (default: traceless specs are reported as skipped).
         #[arg(long)]
@@ -1398,6 +1399,7 @@ fn verify_recording(
             author: AuthorArg::Rules,
             values,
             recording,
+            recovery: suite_checkpoint::RecoveryArgs::default(),
         },
     )?;
     if replayed == EXIT_PASS {
@@ -2075,24 +2077,30 @@ fn run_agent_flow_in_suite(
 pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> Result<u8, String> {
     run_suite_with_author(
         dir,
-        json,
-        retries,
-        missing,
-        AuthorArg::Auto,
-        ValuesArgs::default(),
-        flowproof_driver::RecordingOptions::default(),
+        RunOptions {
+            trace: None,
+            json,
+            retries,
+            missing,
+            author: AuthorArg::Auto,
+            values: ValuesArgs::default(),
+            recording: flowproof_driver::RecordingOptions::default(),
+            recovery: suite_checkpoint::RecoveryArgs::default(),
+        },
     )
 }
 
-fn run_suite_with_author(
-    dir: &Path,
-    json: bool,
-    retries: u8,
-    missing: MissingTrace,
-    author: AuthorArg,
-    values: ValuesArgs,
-    recording: flowproof_driver::RecordingOptions,
-) -> Result<u8, String> {
+fn run_suite_with_author(dir: &Path, options: RunOptions) -> Result<u8, String> {
+    let RunOptions {
+        trace,
+        json,
+        retries,
+        missing,
+        author,
+        values,
+        recording,
+        recovery,
+    } = options;
     // Same fill-gaps-only seed `apply_suite_context` does for a single flow
     // (plans/001-credential-config.md, "How it reaches the flow") — this is
     // the other entry point that reaches a driver, and it built its own
@@ -2113,6 +2121,7 @@ fn run_suite_with_author(
     manifest.check_min_version(env!("CARGO_PKG_VERSION"))?;
     order_specs(&mut specs, dir, &manifest.order);
     suite::select_specs(&mut specs, dir, &manifest)?;
+    suite_checkpoint::validate_mode(&recovery, &manifest, retries, missing, trace.as_deref())?;
     apply_env_from(&manifest, dir)?;
     apply_suite_env(&manifest);
 
@@ -2128,8 +2137,37 @@ fn run_suite_with_author(
 
     let mut reports: Vec<flowproof_replay::RunReport> = Vec::new();
     let mut flows = Vec::new();
+    let mut checkpoint =
+        suite_checkpoint::Checkpoint::open(dir, &specs, &manifest, &values, &recovery)?;
     let mut blocked = 0usize;
+    let mut paused = false;
     for spec_path in &specs {
+        if let Some(checkpoint) = checkpoint.as_ref() {
+            if let Some(report) = checkpoint.completed(spec_path) {
+                if !json {
+                    println!(
+                        "[RESUMED] {} (previously confirmed; not executed)",
+                        report.name
+                    );
+                }
+                flows.push(serde_json::json!({"spec": spec_path, "report": report, "report_path": null, "resumed": true}));
+                reports.push(report.clone());
+                checkpoint.restore_exports(spec_path);
+                continue;
+            }
+        }
+        if paused {
+            blocked += 1;
+            let report = flowproof_replay::RunReport::skipped(
+                &spec_path.display().to_string(),
+                "paused at the requested checkpoint boundary",
+            );
+            flows.push(
+                serde_json::json!({"spec": spec_path, "report": report, "report_path": null}),
+            );
+            reports.push(report);
+            continue;
+        }
         if let Some(reason) = suite::blocked_reason(spec_path, dir, &manifest, &specs, &reports) {
             blocked += 1;
             let report =
@@ -2265,6 +2303,9 @@ fn run_suite_with_author(
                 }
             }
         }
+        if let Some(checkpoint) = checkpoint.as_mut() {
+            checkpoint.begin(spec_path)?;
+        }
         // Agent flows replay their CASSETTE, not the step trace, exactly as
         // the single-spec path at `run_one` does.
         //
@@ -2395,6 +2436,15 @@ fn run_suite_with_author(
         // The visible line names WHAT was exported, never what it held: a
         // captured value stays out of CI logs the same way it stays out of
         // the trace.
+        if report.passed {
+            if let Some(checkpoint) = checkpoint.as_mut() {
+                checkpoint.complete(spec_path, &report, &exported)?;
+                paused = recovery
+                    .stop_after
+                    .as_ref()
+                    .is_some_and(|path| dir.join(path) == *spec_path);
+            }
+        }
         let export_names: Vec<&str> = exported.iter().map(|(n, _)| n.as_str()).collect();
         drop(values_overlay);
         if report.passed {
@@ -2458,6 +2508,9 @@ fn run_suite_with_author(
     let flow_records: Vec<flowproof_replay::FlowRecord> = flows
         .iter()
         .zip(&reports)
+        // Resumed stages are historical evidence. Re-dating their passing
+        // control verdicts would manufacture a fresh successful audit read.
+        .filter(|(entry, _)| entry.get("resumed") != Some(&serde_json::Value::Bool(true)))
         .map(|(entry, report)| {
             let spec_path = entry
                 .get("spec")
@@ -2470,7 +2523,9 @@ fn run_suite_with_author(
             flow_record_from_report(&spec_path, dir, spec, report)
         })
         .collect();
-    write_run_record(dir, flow_records);
+    if !flow_records.is_empty() {
+        write_run_record(dir, flow_records);
+    }
 
     let skipped = reports.iter().filter(|r| r.trace_id == "skipped").count();
     let errored = reports.iter().filter(|r| r.trace_id == "errored").count();
@@ -2709,20 +2764,24 @@ struct RunOptions {
     author: AuthorArg,
     values: ValuesArgs,
     recording: flowproof_driver::RecordingOptions,
+    recovery: suite_checkpoint::RecoveryArgs,
 }
 
 fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
+    if spec_path.is_dir() {
+        return run_suite_with_author(spec_path, options);
+    }
     let RunOptions {
         trace,
         json,
         retries,
-        missing,
-        author,
         values,
         recording,
+        recovery,
+        ..
     } = options;
-    if spec_path.is_dir() {
-        return run_suite_with_author(spec_path, json, retries, missing, author, values, recording);
+    if recovery.checkpoint.is_some() || recovery.resume || recovery.stop_after.is_some() {
+        return Err("checkpoint options require a suite directory".into());
     }
     // A single flow gets its suite's env/data too — replay resolves ${VAR}
     // at moment-of-use, so the same values must be present as at record.
@@ -3440,6 +3499,7 @@ where
             json,
             retries,
             record_missing,
+            recovery,
             author,
             strict,
             keep_open,
@@ -3472,6 +3532,7 @@ where
                                 retries,
                                 missing,
                                 author,
+                                recovery,
                                 values: ValuesArgs {
                                     vars_file: vars,
                                     vars: var,

@@ -6,6 +6,13 @@ together).
 
 ## Unreleased
 
+- **A stopped business workflow can retain confirmed IDs without repeating
+  its completed stages.** Opt-in suite checkpoints persist passing reports
+  and exports, and resume checks the reviewed inputs before doing anything.
+  A failed or interrupted stage stays uncertain and blocks automatic resume;
+  a lost acknowledgement is never treated as proof that a write did not happen.
+  `--stop-after` provides a deliberate pause at a confirmed boundary.
+
 - **A business workflow can now select exactly which flows may run and
   prevent later operations from executing without their prerequisites.**
   `order` was only a sort: candidate files still ran, and a failed creation
