@@ -412,6 +412,131 @@ user's architectural instinct did: nothing to inject, nothing that can crash
 outside a harness it wasn't built for, and one mechanism instead of two
 (Fiori/UI5 plus everything else) if it measures comparably on real specs.
 
+## Design note: the `a11y` selector tier
+
+Required by the brief before touching the trace format ("a new selector-
+ladder rung is [a design change]... interface, provenance ordering, trace-
+format implications, backwards compatibility, migration path"). Written
+before any implementation commit.
+
+### Interface
+
+A new `Selector.payload` shape, carried under the existing generic
+`Params = Map<String, Value>` field - **no change to the `Selector` struct
+itself**, since `payload`'s shape already varies by tier (`{"css": "..."}`
+for `native_id`/`structural`/`text_anchor` today). Proposed shape:
+
+```json
+{
+  "tier": "a11y",
+  "provenance": "web",
+  "confidence": 1.0,
+  "payload": {
+    "role": "link",
+    "name": "Change Purchasing Info Record Tile",
+    "ancestor_role": "list",
+    "ancestor_name": "My Apps"
+  }
+}
+```
+
+- `role`/`name`: from Chrome's `Accessibility.getFullAXTree` (CDP), the same
+  data this session's own `read_page` calls surfaced live against the real
+  launchpad - not something that needs inventing, Chrome already computes it
+  per the browser's own accessibility-tree algorithm (ARIA-aware, works
+  whether or not the page authored ARIA explicitly).
+- `ancestor_role`/`ancestor_name`: the nearest named ancestor (a landmark,
+  a list, a heading region), optional - included when `role`+`name` alone
+  isn't unique on the page, same spirit as the existing CSS-selector
+  fallback-to-scoped-container logic already in `web.rs`'s `relativeCss`.
+- **Capture** (record time): after a click/type resolves a target DOM node,
+  fetch the accessibility node for that `backendNodeId` (CDP
+  `Accessibility.getAXNodeAndAncestors` or an equivalent walk of
+  `getFullAXTree`), extract role+name+ancestor.
+- **Resolution** (replay time): fetch the current AX tree, find the node
+  whose role+name (+ ancestor, if the selector carries one) matches, resolve
+  its `backendNodeId`/`objectId` back to a DOM element via CDP
+  `DOM.resolveNode`. No page-side injection - both directions are CDP calls
+  the driver already makes (it already calls other CDP domains for
+  screenshots, box models, dialog handling).
+
+### Provenance ordering
+
+Placed **above** `native_id` - tier 0, pushing the existing five down by one:
+
+```
+a11y (0) -> native_id (1) -> structural (2) -> text_anchor (3) -> visual_template (4) -> ai_relocation (5)
+```
+
+Justification, from this session's own evidence, not just the general
+argument: `native_id` tier-0 was empirically shown capturing
+`__clone0`/`__xmlview1`-style generated ids (probe #1) - exactly the least
+stable identifiers in a UI5 app - while the accessibility tree on the same
+real system carried stable, human-legible names for the same elements
+(probe #2). Ordering the ladder to prefer the more stable signal first is
+the fix H1 actually calls for; every other tier keeps its relative order.
+
+### Trace-format implications
+
+- **Wire compatible, not wire-breaking.** `SelectorTier` already serializes
+  by name (`"native_id"`, `"structural"`, ...), not by its Rust discriminant
+  - confirmed by reading `crates/flowproof-trace/src/lib.rs` and this
+  session's own recorded traces. Renumbering the Rust `enum` discriminants
+  (needed so `LADDER`'s array order and `Ord` stay meaningful) changes
+  nothing about how `SelectorTier` values already on disk deserialize.
+  **Every existing committed trace keeps validating and replaying exactly as
+  before** - this addition changes what *new* recordings may contain, not
+  what old ones mean.
+- **One real compatibility risk, and it needs a decision from whoever
+  implements this, not a guess from this session**: an *older*
+  `flowproof-replay` binary reading a *newer* trace that contains
+  `"tier": "a11y"` will hit an unrecognized enum variant. Whether that should
+  be a hard parse error (current likely `serde` default, given no `#[serde(other)]`
+  fallback on `SelectorTier` today) or a graceful "unknown tier, fall through
+  to the next one in the trace" is a real forward-compatibility policy
+  question the trace format doesn't currently have to answer (every tier
+  added before this one shipped in the same commit as the readers that
+  understand it, that same-commit constraint doesn't hold across independent
+  installs of the CLI and old cassettes/new cassettes crossing paths).
+  Flagging rather than deciding: this is exactly the kind of trace-format
+  policy question CHARTER.md §8 lists under "any change to... the trace
+  format" as something to label `needs-human`, not resolve unilaterally in a
+  patch commit.
+- **Schema and docs update in the same commit as the enum change** -
+  `crates/flowproof-trace/schema/` and `docs/trace-format.md` - per
+  `CLAUDE.md`'s own stated rule, mechanically enforced by the `adversary`
+  gate.
+
+### Backwards compatibility / migration path
+
+- **Additive only.** No existing tier is removed, renamed, or reordered
+  relative to each other - only inserted above. A replayer that has never
+  seen `a11y` continues to correctly replay every trace that predates it.
+- **No re-recording required for existing cassettes.** They keep whatever
+  tier they were recorded with; `a11y` only appears in traces recorded after
+  this ships, and only for elements where an accessible name/role could
+  actually be captured.
+- **Graceful degradation, matching the existing ladder's own philosophy**:
+  when the current page's target has no meaningful accessible name (a bare
+  `<div>` with no ARIA and no text, for instance), the recorder should
+  simply not produce an `a11y` selector for that step and fall through to
+  `native_id` as today - this is not a replacement for the rest of the
+  ladder, it's a better tier-0.
+
+### Scope check against CHARTER.md §3
+
+CHARTER.md forbids "selector-engine growth to match another framework's
+idioms." Read literally this could look adjacent to that line, so it is
+worth being explicit: this is not adopting jQuery/Cypress-style selector
+syntax, and it is not UI5-specific machinery either (unlike H3's
+`sap.ui.test.RecordReplay`, which *would* be framework-specific). It is a
+single, generic CDP capability (`Accessibility.getFullAXTree`) available on
+every page Chromium renders, regardless of what UI framework built it. If
+anything it *reduces* Fiori-specific surface area relative to H3's design,
+which is the comparison this session's evidence argues for. Recorded here so
+whoever reviews the eventual PR does not have to re-derive this reasoning
+from scratch.
+
 ## What would need to be true to resume
 
 - Free space at or above 15 GB (or the user says a build up to N GB is fine
