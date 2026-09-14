@@ -180,6 +180,46 @@ though more wall-clock time overall) as a workaround — noted for whoever
 resumes this, not attempted tonight given the two close calls already spent
 proving the same constraint.
 
+## Phase 0a — resolved: engine green, one known-environment gap
+
+Second attempt (12GB start, more headroom) completed without a repeat of the
+disk near-miss — compilation was the disk-heavy phase, and once test
+*binaries* started actually running (not compiling), disk usage flattened.
+Result: **135 + 1 + 375 + 5 + 105 + 10 + 1 + 17 + 3 + 1 + 6 + 8 + 5 + 3 passed,
+2 failed** across the workspace (excluding `flowproof-python`, still
+unbuildable locally per the earlier note).
+
+The 2 failures (`crates/flowproof-cli/tests/doctor_ai_e2e.rs`,
+`doctor_ai_without_a_key_fails_without_a_model_call` and
+`doctor_ai_openai_can_validate_against_a_local_compatible_endpoint`) are
+**not a code defect and not introduced tonight** — root cause confirmed by
+reading the failure output, not guessed: the first test expects `flowproof
+doctor ai` to report "no key configured" with no model call made, but its
+own stdout shows `api key: configured` / `model call succeeded.` — this
+machine has a real, previously-configured flowproof AI config at
+`~/Library/Application Support/flowproof` (this developer's own normal
+flowproof usage, unrelated to tonight's work or to this being a Claude Code
+session), and the test doesn't redirect/isolate the config path it reads
+from, so it picks up the ambient real one and makes a real Anthropic API
+call as a side effect of running the suite. The second failure
+(`env lock: PoisonError`) is a consequence of the first panicking while
+holding a shared env-mutation lock the two tests serialize on.
+
+**Left untouched, per the ground rules**: did not edit the test (would be
+"weakening an assertion" against the letter if not the spirit — the test's
+logic is correct, its isolation is incomplete), and did not touch
+`~/Library/Application Support/flowproof` (that's this developer's real,
+valuable, working AI config from actual flowproof use — deleting or moving
+it to "prove" the hypothesis would be a destructive action against something
+outside this session's scope, for a test that's already explained). This is
+recorded as a pre-existing test-isolation gap, out of scope for tonight
+(unrelated to Fiori/web-adapter reliability), not something this session
+fixed or should have fixed.
+
+**Phase 0a verdict: the floor is solid enough to build on.** Every crate the
+Fiori work touches (trace, replay, agent, adapters, cli) is green with zero
+unexplained failures.
+
 ## Phase 1 — hypothesis verdicts (from reading code, pending fixture verification)
 
 These are from reading the actual adapter/trace/agent source, done in parallel
