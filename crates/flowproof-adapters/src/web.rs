@@ -799,12 +799,27 @@ struct SceneSample {
     entries: Vec<serde_json::Value>,
 }
 
-/// How many settling rounds before the inventory is captured regardless. A
-/// page with a ticker, a carousel, or a spinner never truly stops changing,
-/// so settling is best-effort with a bound: past this, the newest reading is
-/// used and the step proceeds rather than hanging on a page that will never
-/// go quiet.
+/// How many settling rounds before the inventory is captured regardless when
+/// the page is quiet (no request in flight): a ticker, a carousel, or a
+/// spinner never truly stops changing, so settling is best-effort with a
+/// bound even then. Deliberately small - a page with nothing pending that
+/// still hasn't agreed on its own shape after 2 seconds is one of those, not
+/// one that's still loading, and `SCENE_SETTLE_BUSY_ROUNDS` is what covers
+/// the "still loading" case.
 const SCENE_SETTLE_ROUNDS: usize = 20;
+
+/// The bound while a request IS in flight (H2's fix): 30 seconds, not 2.
+/// This is a safety ceiling, not the operative wait - the loop exits the
+/// instant the network goes quiet and the shape agrees, same as it always
+/// has for a fast page. It only gets used for a page that is GENUINELY still
+/// loading, which `SCENE_SETTLE_ROUNDS` was never long enough to see through
+/// (a real login observed taking ~13s to render its first tiles; the
+/// account's own hand-tuned spec budgeted up to 120s for a slow day - see
+/// docs/fiori-reliability/FINDINGS.md). Not raising the timeout as the fix
+/// (forbidden as a *primary* fix) - the fix is `network_idle`; this is the
+/// ceiling a real signal-driven wait needs to be allowed to reach before it
+/// means anything.
+const SCENE_SETTLE_BUSY_ROUNDS: usize = 300;
 
 /// Gap between readings. Long enough for a framework's show/hide pass to land
 /// between two of them, short enough that an already-settled page pays one
@@ -834,26 +849,48 @@ fn scene_shape(entries: &[serde_json::Value]) -> Vec<&str> {
 /// the recorder then fails to find an element the model was entitled to
 /// choose — blaming the model for the scene's mistake.
 ///
-/// Two readings agreeing on their shape, with the document loaded, is the
-/// signal that the rearranging is done.
+/// Two readings agreeing on their shape, with the document loaded AND no
+/// request in flight, is the signal that the rearranging is done. That third
+/// condition, `network_idle`, is H2's actual fix: `document.readyState` says
+/// the initial HTML parsed, not that the OData batch it then kicks off has
+/// come back - a growing table or a just-logged-in shell can report `ready`
+/// while its real content hasn't arrived yet.
+///
+/// `quiet_rounds` bounds a page that was NEVER seen busy (a ticker, a
+/// carousel - something that will never agree with itself regardless of the
+/// network) at the original, short budget. The instant a round observes a
+/// request in flight, the budget switches to the much longer `busy_rounds`
+/// for the rest of this call: a page caught actually loading earns the
+/// patience to be waited for, properly, rather than a blind bigger number
+/// applied to every page whether it needed it or not.
 fn settled_scene(
     mut sample: impl FnMut() -> Result<SceneSample, DriverError>,
     mut pause: impl FnMut(),
-    rounds: usize,
+    mut network_idle: impl FnMut() -> bool,
+    quiet_rounds: usize,
+    busy_rounds: usize,
 ) -> Result<Vec<serde_json::Value>, DriverError> {
     let mut previous = sample()?;
-    for _ in 0..rounds {
+    let mut ever_busy = !network_idle();
+    let mut round = 0usize;
+    loop {
         pause();
         let current = sample()?;
+        let idle = network_idle();
+        ever_busy |= !idle;
         if previous.ready
             && current.ready
+            && idle
             && scene_shape(&previous.entries) == scene_shape(&current.entries)
         {
             return Ok(current.entries);
         }
         previous = current;
+        round += 1;
+        if round >= if ever_busy { busy_rounds } else { quiet_rounds } {
+            return Ok(previous.entries);
+        }
     }
-    Ok(previous.entries)
 }
 
 /// Launch a fresh Chromium (`CHROME` env var overrides the binary), optionally
@@ -952,6 +989,11 @@ pub struct WebAppDriver {
     /// call is still correctly seen as new (see #489: a call-time baseline
     /// snapshot loses that race for fast downloads).
     claimed_downloads: std::collections::HashSet<std::path::PathBuf>,
+    /// In-flight request count, maintained by a CDP `Network` event listener
+    /// registered at launch — the settle signal H2 was missing (see
+    /// `settled_scene`). Never negative in practice; an `Ordering::SeqCst`
+    /// load/store is plenty for a counter read a handful of times a second.
+    network_inflight: Arc<std::sync::atomic::AtomicI64>,
 }
 
 /// Shared state between the driver and the flow-wide dialog listener.
@@ -1144,6 +1186,7 @@ impl WebAppDriver {
                 dialogs: Default::default(),
                 downloads_dir: None,
                 claimed_downloads: Default::default(),
+                network_inflight: Default::default(),
             });
         }
         let browser = shared_browser()?;
@@ -1163,6 +1206,7 @@ impl WebAppDriver {
             dialogs: Default::default(),
             downloads_dir: None,
             claimed_downloads: Default::default(),
+            network_inflight: Default::default(),
         })
     }
 
@@ -1257,6 +1301,16 @@ impl WebAppDriver {
         self.tab
             .as_ref()
             .ok_or_else(|| DriverError::Browser("no page open: call launch first".into()))
+    }
+
+    /// No request is currently in flight, per the `Network` listener
+    /// registered at launch. `settled_scene`'s real signal for H2: `ready`
+    /// (`document.readyState`) says the initial HTML parsed; this says the
+    /// OData batch it then kicks off has actually come back.
+    fn network_idle(&self) -> bool {
+        self.network_inflight
+            .load(std::sync::atomic::Ordering::SeqCst)
+            <= 0
     }
 
     fn locator_of(selector: &UiaSelector) -> Option<WebLocator> {
@@ -2480,6 +2534,47 @@ impl AppDriver for WebAppDriver {
                 },
             ))
             .map_err(|e| web_err("installing network mocks", e))?;
+        }
+        // In-flight request tracking (H2's fix): subscribe BEFORE navigation
+        // so a request that starts during boot is counted from the start.
+        // Reset to zero on every launch - a prior flow's count must not leak
+        // into this one's settle checks. Best-effort, matching every other
+        // listener here: a page whose Network domain can't be enabled just
+        // means `network_idle()` always reads true, degrading to the old
+        // DOM-shape-only behaviour rather than failing the launch.
+        self.network_inflight
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        if tab
+            .call_method(Network::Enable {
+                max_total_buffer_size: None,
+                max_resource_buffer_size: None,
+                max_post_data_size: None,
+                report_direct_socket_traffic: None,
+                enable_durable_messages: None,
+            })
+            .is_ok()
+        {
+            let inflight = self.network_inflight.clone();
+            let listener = move |event: &headless_chrome::protocol::cdp::types::Event| {
+                use headless_chrome::protocol::cdp::types::Event;
+                use std::sync::atomic::Ordering;
+                match event {
+                    Event::NetworkRequestWillBeSent(_) => {
+                        inflight.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Event::NetworkLoadingFinished(_) | Event::NetworkLoadingFailed(_) => {
+                        // Saturating: a response for a request that started
+                        // before this listener attached (or that CDP never
+                        // reported the start of) must not drive the counter
+                        // negative and permanently defeat `network_idle()`.
+                        let _ = inflight.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                            Some((n - 1).max(0))
+                        });
+                    }
+                    _ => {}
+                }
+            };
+            tab.add_event_listener(Arc::new(listener)).ok();
         }
         // Console tail: subscribe BEFORE navigation so boot-time errors are
         // captured too. Best-effort — a page without console history still
@@ -4511,7 +4606,9 @@ impl AppDriver for WebAppDriver {
         let entries = settled_scene(
             sample,
             || std::thread::sleep(SCENE_SETTLE_INTERVAL),
+            || self.network_idle(),
             SCENE_SETTLE_ROUNDS,
+            SCENE_SETTLE_BUSY_ROUNDS,
         )?;
         let json = serde_json::to_string(&entries)
             .map_err(|e| DriverError::Browser(format!("re-serialising scene: {e}")))?;
@@ -4594,9 +4691,14 @@ mod tests {
             sample(true, &["css:#make", "css:#payload"]),
         ]);
         let mut pauses = 0;
-        let entries =
-            super::settled_scene(|| Ok(readings.borrow_mut().remove(0)), || pauses += 1, 20)
-                .expect("settles");
+        let entries = super::settled_scene(
+            || Ok(readings.borrow_mut().remove(0)),
+            || pauses += 1,
+            || true,
+            20,
+            20,
+        )
+        .expect("settles");
         assert_eq!(targets_of(&entries), vec!["css:#make", "css:#payload"]);
     }
 
@@ -4611,9 +4713,78 @@ mod tests {
             sample(true, &["css:#payload"]),
             sample(true, &["css:#payload"]),
         ]);
-        let entries = super::settled_scene(|| Ok(readings.borrow_mut().remove(0)), || {}, 20)
-            .expect("settles");
+        let entries = super::settled_scene(
+            || Ok(readings.borrow_mut().remove(0)),
+            || {},
+            || true,
+            20,
+            20,
+        )
+        .expect("settles");
         assert_eq!(targets_of(&entries), vec!["css:#payload"]);
+    }
+
+    /// H2's actual fix: a page whose SHAPE already agrees (a static tile
+    /// grid, say) must NOT be treated as settled while a request is still in
+    /// flight - the request is what a growing table's rows, or a launchpad's
+    /// tiles, are waiting on. Before `network_idle` existed, this returned
+    /// after the first two readings (identical shape, both `ready`); now it
+    /// must keep polling through every busy round and only return once
+    /// `network_idle` reports true.
+    #[test]
+    fn a_pending_request_is_not_settled_even_when_the_shape_already_agrees() {
+        let round = std::cell::Cell::new(0usize);
+        let mut pauses = 0;
+        // Busy for the first 4 readings (rounds 0-3 inclusive of the initial
+        // sample), idle from the 5th on - same shape throughout, so shape
+        // agreement was never the obstacle.
+        let entries = super::settled_scene(
+            || {
+                let n = round.get();
+                round.set(n + 1);
+                Ok(super::SceneSample {
+                    ready: true,
+                    entries: vec![serde_json::json!({"target": "css:#row"})],
+                })
+            },
+            || pauses += 1,
+            || round.get() > 4,
+            2,
+            20,
+        )
+        .expect("settles once idle");
+        assert_eq!(targets_of(&entries), vec!["css:#row"]);
+        assert!(
+            pauses > 2,
+            "must keep polling past the quiet-page bound while a request is in flight, \
+             got only {pauses} pauses"
+        );
+    }
+
+    /// The other half of the same fix: busy forever still gives up, bounded
+    /// by `busy_rounds` rather than hanging indefinitely on a page whose
+    /// network truly never quiets (a live websocket, a polling widget).
+    #[test]
+    fn a_request_that_never_finishes_is_still_bounded() {
+        let mut pauses = 0;
+        let entries = super::settled_scene(
+            || {
+                Ok(super::SceneSample {
+                    ready: true,
+                    entries: vec![serde_json::json!({"target": "css:#row"})],
+                })
+            },
+            || pauses += 1,
+            || false,
+            2,
+            5,
+        )
+        .expect("gives up cleanly");
+        assert_eq!(
+            pauses, 5,
+            "bounded by busy_rounds, not left to hang forever"
+        );
+        assert_eq!(targets_of(&entries), vec!["css:#row"]);
     }
 
     /// A page that never goes quiet must still yield a scene. Recording it is
@@ -4637,6 +4808,8 @@ mod tests {
                 })
             },
             || pauses += 1,
+            || true,
+            3,
             3,
         )
         .expect("gives up cleanly");
@@ -4660,9 +4833,14 @@ mod tests {
             },
         ]);
         let mut pauses = 0;
-        let entries =
-            super::settled_scene(|| Ok(readings.borrow_mut().remove(0)), || pauses += 1, 20)
-                .expect("settles");
+        let entries = super::settled_scene(
+            || Ok(readings.borrow_mut().remove(0)),
+            || pauses += 1,
+            || true,
+            20,
+            20,
+        )
+        .expect("settles");
         assert_eq!(pauses, 1, "settles on the first comparison");
         assert_eq!(entries[0]["text"], "12:00:02");
     }
