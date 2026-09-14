@@ -989,16 +989,26 @@ pub fn shutdown_shared_browser() {
 /// effort: a PID that is already gone is not an error, and there is
 /// nothing useful to do with one that resists a kill signal/call.
 fn force_kill_pid(pid: u32) {
+    // Both this process's stdout/stderr are inherited by default, and the
+    // common case here is a PID that is already gone (the graceful CDP
+    // close above usually worked) - `kill`/`taskkill` printing "No such
+    // process" to OUR stderr on every routine success was real noise,
+    // observed leaking into flowproof's own error reports when this ran
+    // from inside a record/run invocation. Discard both explicitly.
     #[cfg(unix)]
     {
         let _ = std::process::Command::new("kill")
             .args(["-9", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
     }
     #[cfg(windows)]
     {
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
     }
 }
