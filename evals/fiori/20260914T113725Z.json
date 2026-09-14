@@ -1,0 +1,404 @@
+{
+  "timestamp": "20260914T125156Z",
+  "corpus": "evals/fiori/dev",
+  "runs_required": 3,
+  "latency_ms": null,
+  "faa": 0.16666666666666666,
+  "faa_numerator": 2,
+  "faa_denominator": 12,
+  "negative_controls_held": true,
+  "specs": [
+    {
+      "spec": "evals/fiori/dev/long-01-cross-app-tour.flow.yaml",
+      "negative_control": false,
+      "sha256": "982f64760f8418231c208815e55ee7989c2c69ba9b2f984ebfc340f658419055",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'Wait until page shows Info Records per Supplier within 20s' does not hold while recording: expected 'Info Records per Supplier', element shows 'Menu\nSave as Variant...\nDynamic Selections\n\u00a0\nExit\nSupplier\n\t\nto\n\u00a0\nMaterial\nto\n\u00a0\nMaterial Group\nto\n\u00a0\nSupplier Material Number\nto\n\u00a0\nSupplier Subrange\n\t\nto\n\u00a0\nSupplier Material Group\nto\n\u00a0\nPurchasing Organization\nto\n\u00a0\nInfo Category\nto\n\u00a0\nPlant\nto\n\u00a0\nPurchasing Group\nto\n\u00a0\nPrice Calculations\n\n:\nInclude Discounts\n:\nInclude Delivery Costs\n:\nDetermine Effective Price\nRestrictions\n\n:\nOnly Those that are Relevant\n:\nOnly Plant-Specific\n:\nOnly Those Flagged f. Deletion\n:\nOnly with Purchasing Org. Data\nExecute\n\u00a0Emphasized'"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/long-02-ptp-group-tour-with-canary.flow.yaml",
+      "negative_control": false,
+      "sha256": "f1b6dd5783795c5cf3a6f1fef2b31a334d5725b171986b51bad9805b0583e78a",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'Click \"PTP Process Area BU Apps\"' does not hold while recording: expected the step to finish within                                    its continuations, it still had more to do after 3 of them;                              the last reply asked for another screen"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/long-03-double-value-help-tour.flow.yaml",
+      "negative_control": false,
+      "sha256": "432c1043edc66e9461d0e86c1144cba6ca5de02a99040432acfe12d26246cbaf",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'page shows PTP Process Area BU Apps' does not hold while recording: expected 'PTP Process Area BU Apps', page shows 'Home\nApps\nApps\n\ue1c4\n\ue23a\nVO\nMy Home\nPurchasing\nSourcing and Contracting\nMy Apps\nChange Purchasing Info Record\nDisplay Purchasing Info Record by Supplier\nProcurement Overview\nShell Bar\nHome\nHome - Show All My Apps\nNavigation menu\nOpen Help\nNotifications\nProfile of Valentin Ober\nPersonalize Navigation Bar\nSpace Page\nMore\nMore\nShell Content\nPage Sections\n\nMy Apps Section\nChange Purchasing Info Record\nTile\nF0343\nDisplay Purchasing Info Record by Supplier\nTile\nProcurement Overview\nTile\nF0674\nIn-App Help\nClose Help\nHelp Topics\nLearning\nShow Process Model\nShow/Hide In-App Help'"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-01-display-info-record-by-supplier.flow.yaml",
+      "negative_control": false,
+      "sha256": "53a21eeaca2291161cb104c9dc8d578e7a7a102724395d2de641986ce4b9ffbd",
+      "record": {
+        "ok": false,
+        "reason": "error: backend configuration error: model call failed (anthropic): timeout: global"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-02-change-info-record-readonly.flow.yaml",
+      "negative_control": false,
+      "sha256": "7da37f7544f0acbe7df70342ed73af7c7590310262e5d6d738cc007d24f17400",
+      "record": {
+        "ok": true,
+        "steps": 15
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": false,
+          "detail": "error: driver error: driver transport fault: probing an iframe: Unable to make method calls because underlying connection is closed",
+          "steps": null
+        }
+      ],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-03-display-via-ptp-group.flow.yaml",
+      "negative_control": false,
+      "sha256": "43c311b72ed154f96228d1c152a059dbf232e9818d17c65d78a9e90f8ac69160",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'page shows Display purchasing info records by Supplier' does not hold while recording: expected 'Display purchasing info records by Supplier', page shows 'All My Apps\nPurchasing - Procurement Overview Page\nEinkauf - Bezugsquellenzuordnung\nGeneral Ledger - Review of Purchase Order Accruals\nMaster Data - Product Display\nMaterials Management - Supplier Evaluation\nPurchasing - Analytics\nPurchasing - Condition Contract Business Analysis\nPurchasing - Condition Contract Detailed Statement\nPurchasing - Condition Contract Settlement Dates\nPurchasing - Contract Management\nPurchasing - Create or Extend Condition Contracts\nPurchasing - Manage Condition Contracts for Supplier Rebates\nPurchasing - Model Product Specification Processing\nPurchasing - Monitor Settlement Documents\nPurchasing - Monitor Supplier Condition Contracts\nPurchasing - Operational Purchasing Analytics\nPurchasing - Purchase Order Processing\nPurchasing - Requirement Processing\nPurchasing - Service Entry Sheet Processing\nPurchasing - Supplier Confirmation Processing\nPurchasing - Supplier Lists\nPurchasing - Update Supplier Rebate Contract Settlement Calendar Scheduling\nSupplier and Category Management - Activity Management\nSupplier and Category Management - Category Management\nSupplier and Category Management - Questionnaire Management\nSupplier and Category Management - Translation\nValue Chain Monitoring Framework - Monitoring\nPurchasing - Procurement Overview Page\nProcurement Overview\nHome\n\ue00d\n\ue1c4\n\ue23a\nVO\nMy Home\nPurchasing\nSourcing and Contracting\nMy Apps\nChange Purchasing Info Record\nDisplay Purchasing Info Record by Supplier\nProcurement Overview\nAll My Apps\nList of Catalogs\nList of Applications in the Catalog\nShell Bar\nHome\nHome - Show All My Apps\nNavigation menu\nOpen Search\nOpen Help\nNotifications\nProfile of Valentin Ober\nPersonalize Navigation Bar\nSpace Page\nMore\nMore\nShell Content\nPage Sections\n\nMy Apps Section\nChange Purchasing Info Record\nTile\nF0343\nDisplay Purchasing Info Record by Supplier\nTile\nProcurement Overview\nTile\nF0674\nIn-App Help\nClose Help\nHelp Topics\nLearning\nShow Process Model\nShow/Hide In-App Help'"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-04-supplier-value-help.flow.yaml",
+      "negative_control": false,
+      "sha256": "3c90bd25e659c390d2ed532e44b57766d1d5cd5dccbc2d1db5e55d23388c72b5",
+      "record": {
+        "ok": true,
+        "steps": 15
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit",
+          "steps": null
+        }
+      ],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-05-search-retry-after-no-match.flow.yaml",
+      "negative_control": false,
+      "sha256": "eee9f1ffaf52e90c14fd50758b5d3994dcbac2f6dbc6a758254be08b7660034b",
+      "record": {
+        "ok": false,
+        "reason": "exit 2"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/negative-control-impossible-screen-title.flow.yaml",
+      "negative_control": true,
+      "sha256": "aa11921a694435e103f72d235fbe88381b99ec6bb8f61a27a307a3ce408ba133",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'page shows Nonexistent Report Configuration Screen XYZ123' does not hold while recording: expected 'Nonexistent Report Configuration Screen XYZ123', page shows 'Home\n\ue00d\n\ue1c4\n\ue23a\nVO\nMy Home\nPurchasing\nSourcing and Contracting\nMy Apps\nChange Purchasing Info Record\nDisplay Purchasing Info Record by Supplier\nProcurement Overview\nShell Bar\nHome\nHome - Show All My Apps\nNavigation menu\nOpen Search\nOpen Help\nNotifications\nProfile of Valentin Ober\nPersonalize Navigation Bar\nSpace Page\nMore\nMore\nShell Content\nPage Sections\n\nMy Apps Section\nChange Purchasing Info Record\nTile\nF0343\nDisplay Purchasing Info Record by Supplier\nTile\nProcurement Overview\nTile\nF0674\nIn-App Help\nClose Help\nHelp Topics\nLearning\nShow Process Model\nShow/Hide In-App Help'"
+      },
+      "run_results": [],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/negative-control-wrong-material-asserted.flow.yaml",
+      "negative_control": true,
+      "sha256": "db66eb3a266bc18c6562bee1b4e8511f6f4510e739e3a4c252ce3c0014ef582f",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'the \"Material\" field in the iframe \"Application\" contains DOES-NOT-MATCH-TG10' does not hold while recording: expected 'DOES-NOT-MATCH-TG10', element shows 'TG10'"
+      },
+      "run_results": [],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/short-01-login-smoke.flow.yaml",
+      "negative_control": false,
+      "sha256": "647798aadabe364251079e95546e64d29d1d99e4ffc3d5658561aeae6d5c58d2",
+      "record": {
+        "ok": true,
+        "steps": 5
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 296,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3116,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 263,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4100,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 81,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 5007,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3922,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "a11y",
+              "started_ms": 5957,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 10106,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 299,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3057,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 279,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4060,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 95,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 5014,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 33203,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "a11y",
+              "started_ms": 5962,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 51,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 39392,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 3,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 290,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3175,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 259,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4145,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 102,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 5345,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3412,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "a11y",
+              "started_ms": 6824,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 11429,
+              "status": "passed"
+            }
+          ]
+        }
+      ],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/short-02-home-shows-info-record-tiles.flow.yaml",
+      "negative_control": false,
+      "sha256": "c8816151a9396796c4b52c427071e69c98ca4ff9767353b6e427e1da0ff281ac",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'page shows PTP Process Area BU Apps' does not hold while recording: expected 'PTP Process Area BU Apps', page shows 'Home\nApps\nApps\n\ue1c4\n\ue23a\nVO\nMy Home\nPurchasing\nSourcing and Contracting\nMy Apps\nChange Purchasing Info Record\nDisplay Purchasing Info Record by Supplier\nProcurement Overview\nShell Bar\nHome\nHome - Show All My Apps\nNavigation menu\nOpen Help\nNotifications\nProfile of Valentin Ober\nPersonalize Navigation Bar\nSpace Page\nMore\nMore\nShell Content\nPage Sections\n\nMy Apps Section\nChange Purchasing Info Record\nTile\nF0343\nDisplay Purchasing Info Record by Supplier\nTile\nProcurement Overview\nTile\nF0674\nIn-App Help\nClose Help\nHelp Topics\nLearning\nShow Process Model\nShow/Hide In-App Help'"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/short-03-ptp-group-opens.flow.yaml",
+      "negative_control": false,
+      "sha256": "9c8b45495eea05cd09a34cf48fea9615eca72de6f49a79901b5ef0c9c46c3224",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'page shows Manage Info Records' does not hold while recording: expected 'Manage Info Records', page shows 'Overview\nSource of Supply Management\nSourcing\nSupplier Management\nSupplier Evaluation\nHome\nApps\nApps\n\ue1c4\n\ue23a\nVO\nMy Home\nPurchasing\nSourcing and Contracting\nMy Apps\nChange Purchasing Info Record\nDisplay Purchasing Info Record by Supplier\nProcurement Overview\nShell Bar\nHome\nHome - Show All My Apps\nNavigation menu\nOpen Help\nNotifications\nProfile of Valentin Ober\nPersonalize Navigation Bar\nSpace Page\nMore\nMore\nShell Content\nPage Sections\n\nMy Apps Section\nChange Purchasing Info Record\nTile\nF0343\nDisplay Purchasing Info Record by Supplier\nTile\nProcurement Overview\nTile\nF0674\nIn-App Help\nClose Help\nHelp Topics\nLearning\nShow Process Model\nShow/Hide In-App Help'"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/short-04-info-record-exists-via-api.flow.yaml",
+      "negative_control": false,
+      "sha256": "da24ee45b7e3db7bd688994eb469e5d151c1d429361869838aef55334c58df7d",
+      "record": {
+        "ok": true,
+        "steps": 3
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 1116,
+              "id": "s0001",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 0,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1099,
+              "id": "s0002",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'&$format=json",
+              "started_ms": 1116,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1683,
+              "id": "s0003",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 2216,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 1039,
+              "id": "s0001",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 0,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1093,
+              "id": "s0002",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'&$format=json",
+              "started_ms": 1039,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1632,
+              "id": "s0003",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 2133,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 3,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 1023,
+              "id": "s0001",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 0,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1064,
+              "id": "s0002",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'&$format=json",
+              "started_ms": 1023,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1638,
+              "id": "s0003",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 2088,
+              "status": "passed"
+            }
+          ]
+        }
+      ],
+      "passed": true
+    }
+  ]
+}
