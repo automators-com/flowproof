@@ -1,27 +1,46 @@
 # Fiori reliability — report
 
-**The goal was not reached — no gate was attempted, and no FAA number
+**The goal was not reached — no gate was attempted, and no FAA baseline
 exists.** Say that plainly, first. Two real fixes did land and are each
 proven correct end to end (H1: a regenerated `native_id` no longer breaks
 replay; H2/H5: the recorder and replay no longer act on a scene before its
-real network activity has settled), but "two mechanisms work on one
-fixture" is not "flowproof is reliable on Fiori" — that needs the harness
-and a real round, neither of which happened. What follows is a real,
-evidence-backed account of what was found and fixed, not a claimed win on
-the actual goal.
+real network activity has settled), and the Phase 2 harness now exists and
+has run twice for real against the live system — but a 2-spec smoke run of
+the harness is not a Phase 0c corpus, is not a gate attempt, and "two
+mechanisms work on one fixture, plus one small harness run" is still not
+"flowproof is reliable on Fiori." What follows is a real, evidence-backed
+account of what was found and fixed, not a claimed win on the actual goal.
 
 ## 1. Gate status
 
-Not attempted. No round exists, no FAA baseline was established, and Gate A
-was never approached. This is the honest headline, not a caveat buried
-later.
+Not attempted. No round exists against a real corpus, no FAA baseline was
+established, and Gate A was never approached. The harness that a round
+would run on now exists and works (see §2), but running it on 2 hand-picked
+specs is not a gate. This is the honest headline, not a caveat buried later.
 
 ## 2. The numbers
 
-None exist. No harness was built (Phase 2 never started), so there is no
-dev/holdout FAA, no latency comparison, no determinism variance band.
-Reporting a number here would be fabrication — see `FINDINGS.md` for exactly
-why the night went to investigation instead.
+No Phase 0c corpus, no gate baseline. What does exist: the Phase 2 harness
+(`scripts/fiori-eval.py`) ran twice against a 2-spec validation corpus
+(`evals/fiori/dev/`), scoring **FAA 0/2 both times** — for two unrelated,
+real reasons the second time (see `FINDINGS.md`'s "Phase 2" section for the
+full account):
+- `probe-real-info-record-lookup.flow.yaml` — the spec's own final
+  assertion doesn't hold; the flow doesn't reach the screen it asserts on.
+  A real first-attempt authoring failure, exactly what FAA is meant to
+  catch — not a flowproof defect.
+- `short-01-login-smoke.flow.yaml` — passed record and run 1, then failed
+  run 2 on a "Home" text assertion against a live launchpad whose Spaces
+  feature titles its landing page `"My Home"`. A new, unexplained,
+  reproducing-with-evidence intermittent gap, not yet understood, not
+  papered over.
+
+Two full scoreboards are committed (`evals/fiori/20260914T094750Z.json`,
+`evals/fiori/20260914T095421Z.json`) as the actual evidence behind these
+numbers. This is a harness smoke-test result, not a dev/holdout FAA
+baseline — reading "0%" as "flowproof's reliability score on Fiori" would be
+wrong in both directions: too small a sample, and one of the two failures
+is a spec-authoring problem, not a product one.
 
 ## 3. Control results
 
@@ -108,12 +127,14 @@ hypothesis being resolved on the fixtures used tonight is not the same as
 flowproof being reliable on Fiori at scale — that claim needs the harness
 and a real round, neither of which exists yet.
 
-**The harness, generator, and gate rounds** are what remains — none of
-Phase 0c/1 (remaining)/2/3/4 happened. This is the entire bulk of the
-brief's actual scope, and none of it is started. Two fixed mechanisms
-(H1, H2/H5) plus one killed hypothesis (H4), each proven correct on the
-fixtures used tonight, are a necessary input to this — not a substitute
-for it.
+**The generator and gate rounds, plus the Phase 0c corpus itself (12+ dev
+specs, negative controls, a holdout set), are what remains.** The harness
+that runs a corpus now exists and works (§2), but it has only ever been
+pointed at 2 hand-picked specs, not the corpus the brief actually asks for.
+Two fixed mechanisms (H1, H2/H5) plus one killed hypothesis (H4), plus one
+newly-found-but-unfixed intermittent gap (the "Home"/"My Home" finding in
+§2), each proven correct or reproduced on real data, are a necessary input
+to the corpus/gate work — not a substitute for it.
 
 ## 7. What I should not trust
 

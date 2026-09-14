@@ -664,8 +664,96 @@ a generic CDP capability, available for every `app: web` target, not
   as originally scoped, with the `examples/fiori/` collision decision above
   applied.
 
+## Phase 2 — the harness exists now and ran for real, twice
+
+`scripts/fiori-eval.py` is built: it drives `flowproof record --no-repair`
+then `flowproof run` three times per spec, refuses to touch a failing spec's
+file, and writes a scoreboard JSON (FAA numerator/denominator, per-spec
+record/run detail, sha256 of the spec at time of scoring). It was pointed at
+a 2-spec validation corpus (`evals/fiori/dev/`) — not the Phase 0c corpus
+(12+ specs, negative controls, holdout), which does not exist yet — as a
+smoke test of the harness itself, and to see, for the first time, whether
+tonight's H1/H2/H5 fixes actually move a real number.
+
+**First run: FAA 0/2, but one bug was the harness's own.**
+`probe-real-info-record-lookup.flow.yaml` failed at `record` with
+`secret ${PURCHASING_ORG} is not set in the environment` — not a flowproof
+defect. The harness never passed `--vars evals/fiori/dev/values.yaml` to
+`record`/`run`, so every `${VAR}` sourced from that file (not `.env`) was
+simply absent. Root cause: `flowproof record --var KEY=VALUE` is an
+*override*, not a base source — `--vars <file>` is the one that loads a
+values file, and the harness only ever built the former. Fixed by having
+`score_spec` look for a `values.yaml` next to the spec (this repo's existing
+convention — see `examples/fiori/*.flow.yaml` headers) and pass
+`--vars <that file>` to both `record` and every `run` call.
+
+**Second run, after the fix: FAA still 0/2 — for two real, different, honest
+reasons, not the same bug twice.**
+
+1. `probe-real-info-record-lookup.flow.yaml` now records past the missing-
+   secret error and fails on its own merits: the spec's final assertion
+   (`page shows General Data`) does not hold — recording captured the page
+   still on `Change Info Record: Initial Screen`, meaning the search step
+   never actually reached a result. This is exactly what FAA is designed to
+   catch: a naive first-attempt spec whose author (human or model) wrote an
+   assertion for a screen the flow doesn't reach. Nothing to fix in
+   flowproof here — the spec itself needs rework, which is the harness
+   working as intended, not a flowproof bug.
+2. `short-01-login-smoke.flow.yaml` (the known-good smoke spec) recorded
+   fine and passed run 1, then failed run 2 on
+   `Wait until page shows Home within 60s` —
+   `expected element text 'Home', got '<element not found>'`. This is a
+   **new, unresolved, genuinely intermittent finding**, not the same failure
+   as the pre-fix baseline (which failed on run *3*, not run 2 — ruling out
+   a fixed off-by-one and pointing at real non-determinism). The captured
+   `debug/dom.html` for both the pre-fix and post-fix failures shows the
+   real launchpad shell genuinely loaded (`spacesMyhome: true`, a `"My
+   Home"` Spaces page assigned to this user) — this tenant has the Spaces
+   feature on, and its landing page's title is `"My Home"`, not the plain
+   `"Home"` the smoke spec asserts on. The passing runs presumably matched a
+   different, still-present `"Home"` labelled element (a shell icon or
+   breadcrumb) that this session did not track down. **Not claiming this is
+   understood** — only that it reproduces, is captured with real evidence,
+   and is a legitimate H2-adjacent gap the settle-mechanism fix from earlier
+   tonight does not by itself close. Worth a dedicated look, not a guess
+   fixed under time pressure here.
+
+Both scoreboards are committed (`evals/fiori/20260914T094750Z.json`
+pre-fix, `evals/fiori/20260914T095421Z.json` post-fix) so the harness bug
+and its fix are each backed by a real, reproducible before/after, not
+described from memory.
+
+**Still true, unchanged from Section 6 of `RELIABILITY.md`**: this is a
+2-spec validation run of the harness machinery, not a Phase 0c corpus, not a
+gate attempt, and not an FAA baseline anyone should read as "flowproof's
+real number on Fiori." It is evidence the harness itself works and already
+surfaced one real spec-authoring problem and one real intermittent replay
+gap — which is what a working harness is supposed to do on its first real
+data.
+
 ## Decisions
 
+- **Opened the harness's first real runs against the live corporate system
+  rather than waiting to build the full Phase 0c corpus first.** Reason:
+  the user's explicit instruction was to "start the harness" now, on the
+  same branch, to show colleagues real progress — a 2-spec smoke run
+  proves the harness's mechanics (record → 3x run → scoreboard, `--vars`
+  wiring, negative-control inversion logic though untested here since
+  neither spec is one) without waiting on the much larger generator/corpus
+  work. Reversal: if the user wants the full corpus built next, that is
+  unstarted and explicitly flagged as the brief's largest remaining scope.
+- **Did not chase the `short-01-login-smoke` run-2 "Home" vs "My Home"
+  finding down to a fix tonight.** Reason: H1-H5 already consumed the
+  night's live-system investigation budget, the finding was only just
+  captured with real evidence, and guessing a fix under time pressure for
+  something not yet understood risks exactly the "cheating toward green"
+  the brief forbids — patching this one assertion string would fix the
+  symptom on this one spec without knowing if the real cause (Spaces-
+  dependent shell text) affects every other spec that asserts on shell
+  chrome text. Recorded as a new open finding instead. Reversal: if this
+  turns out to be a five-minute fix once someone looks at the accessibility
+  tree at the moment of failure, it should be picked up next, not deferred
+  indefinitely.
 - **Halted before Phase 0a/0b/0c.** Rejected: proceeding with a disk-diet
   version of the fixture (e.g., skip the GIF captures, cap trace sizes) to
   route around the threshold. Reason for rejecting: the halt condition is
