@@ -1,0 +1,12 @@
+{
+  "name": "flowproof-fiori-fixture",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local, offline SAPUI5 fixture app used to evaluate flowproof's web-adapter reliability against UI5 idioms (growing tables, routing, dialogs/popovers, F4 value help). Not part of the flowproof product - a test fixture only. Framework libraries are resolved by ui5.yaml / the UI5 tooling framework cache, not npm - do not add @openui5/* here (ui5 tooling refuses to start if a framework library is also a direct npm dependency).",
+  "scripts": {
+    "start": "ui5 serve --port 8081"
+  },
+  "devDependencies": {
+    "@ui5/cli": "^4.0.66"
+  }
+}

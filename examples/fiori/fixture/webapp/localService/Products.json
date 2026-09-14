@@ -1,0 +1,62 @@
+[
+  {
+    "ProductID": "PRD001",
+    "Name": "Widget 1",
+    "Category": "Raw Material"
+  },
+  {
+    "ProductID": "PRD002",
+    "Name": "Adapter 2",
+    "Category": "Packaging"
+  },
+  {
+    "ProductID": "PRD003",
+    "Name": "Cable 3",
+    "Category": "Raw Material"
+  },
+  {
+    "ProductID": "PRD004",
+    "Name": "Fastener 4",
+    "Category": "Chemicals"
+  },
+  {
+    "ProductID": "PRD005",
+    "Name": "Cable 5",
+    "Category": "Packaging"
+  },
+  {
+    "ProductID": "PRD006",
+    "Name": "Panel 6",
+    "Category": "Packaging"
+  },
+  {
+    "ProductID": "PRD007",
+    "Name": "Widget 7",
+    "Category": "Electronics"
+  },
+  {
+    "ProductID": "PRD008",
+    "Name": "Fastener 8",
+    "Category": "Raw Material"
+  },
+  {
+    "ProductID": "PRD009",
+    "Name": "Fastener 9",
+    "Category": "Packaging"
+  },
+  {
+    "ProductID": "PRD010",
+    "Name": "Adapter 10",
+    "Category": "Packaging"
+  },
+  {
+    "ProductID": "PRD011",
+    "Name": "Adapter 11",
+    "Category": "Raw Material"
+  },
+  {
+    "ProductID": "PRD012",
+    "Name": "Fastener 12",
+    "Category": "Chemicals"
+  }
+]

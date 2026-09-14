@@ -1,0 +1,6 @@
+<mvc:View
+    controllerName="fixture.controller.App"
+    xmlns="sap.m"
+    xmlns:mvc="sap.ui.core.mvc">
+    <App id="appNavContainer" busy="{app>/busy}" busyIndicatorDelay="0"/>
+</mvc:View>

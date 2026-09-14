@@ -1,0 +1,53 @@
+<mvc:View
+    controllerName="fixture.controller.Detail"
+    xmlns="sap.m"
+    xmlns:l="sap.ui.layout.form"
+    xmlns:mvc="sap.ui.core.mvc">
+    <Page id="detailPage" title="Supplier detail" showNavButton="true" navButtonPress="onNavBack" busy="{app>/busy}" busyIndicatorDelay="0">
+        <content>
+            <l:SimpleForm id="supplierForm" editable="true" layout="ResponsiveGridLayout">
+                <Label text="Name"/>
+                <Input id="nameInput" value="{Name}"/>
+
+                <Label text="Email"/>
+                <Input id="emailInput" value="{Email}" type="Email"/>
+
+                <Label text="Status"/>
+                <Select id="statusSelect" selectedKey="{Status}">
+                    <core:Item xmlns:core="sap.ui.core" key="Active" text="Active"/>
+                    <core:Item xmlns:core="sap.ui.core" key="Blocked" text="Blocked"/>
+                    <core:Item xmlns:core="sap.ui.core" key="On Hold" text="On Hold"/>
+                </Select>
+
+                <Label text="Country"/>
+                <ComboBox id="countryComboBox" selectedKey="{Country}">
+                    <core:Item xmlns:core="sap.ui.core" key="South Africa" text="South Africa"/>
+                    <core:Item xmlns:core="sap.ui.core" key="Germany" text="Germany"/>
+                    <core:Item xmlns:core="sap.ui.core" key="Netherlands" text="Netherlands"/>
+                    <core:Item xmlns:core="sap.ui.core" key="France" text="France"/>
+                    <core:Item xmlns:core="sap.ui.core" key="Italy" text="Italy"/>
+                    <core:Item xmlns:core="sap.ui.core" key="Poland" text="Poland"/>
+                </ComboBox>
+
+                <Label text="Founded on"/>
+                <DatePicker id="foundedOnDatePicker" value="{path: 'FoundedOn', type: 'sap.ui.model.type.Date'}"/>
+
+                <Label text="Active"/>
+                <CheckBox id="activeCheckBox" selected="{Active}"/>
+
+                <Label text="Preferred product"/>
+                <Input id="preferredProductInput"
+                    value="{PreferredProductID}"
+                    showValueHelp="true"
+                    valueHelpRequest="onProductValueHelpRequest"/>
+            </l:SimpleForm>
+        </content>
+        <footer>
+            <Bar>
+                <contentRight>
+                    <Button id="saveButton" text="Save" type="Emphasized" press="onSavePress"/>
+                </contentRight>
+            </Bar>
+        </footer>
+    </Page>
+</mvc:View>

@@ -1,0 +1,85 @@
+{
+    "_version": "1.32.0",
+    "sap.app": {
+        "id": "fixture",
+        "type": "application",
+        "title": "flowproof Fiori fixture",
+        "applicationVersion": { "version": "0.1.0" },
+        "dataSources": {
+            "mainService": {
+                "uri": "/sap/opu/odata/sap/FLOWPROOF_FIXTURE_SRV/",
+                "type": "OData",
+                "settings": {
+                    "odataVersion": "2.0",
+                    "localUri": "localService/metadata.xml"
+                }
+            }
+        }
+    },
+    "sap.ui": {
+        "technology": "UI5",
+        "deviceTypes": { "desktop": true, "tablet": true, "phone": true }
+    },
+    "sap.ui5": {
+        "rootView": {
+            "viewName": "fixture.view.App",
+            "type": "XML",
+            "id": "app"
+        },
+        "dependencies": {
+            "minUI5Version": "1.120.20",
+            "libs": {
+                "sap.ui.core": {},
+                "sap.m": {},
+                "sap.ui.layout": {}
+            }
+        },
+        "models": {
+            "i18n": {
+                "type": "sap.ui.model.resource.ResourceModel",
+                "settings": { "bundleName": "fixture.i18n.i18n" }
+            },
+            "": {
+                "dataSource": "mainService",
+                "preload": true,
+                "settings": {
+                    "defaultBindingMode": "TwoWay",
+                    "defaultCountMode": "Inline"
+                }
+            }
+        },
+        "routing": {
+            "config": {
+                "routerClass": "sap.m.routing.Router",
+                "viewType": "XML",
+                "viewPath": "fixture.view",
+                "controlId": "appNavContainer",
+                "controlAggregation": "pages",
+                "transition": "slide",
+                "async": true
+            },
+            "routes": [
+                {
+                    "pattern": "",
+                    "name": "worklist",
+                    "target": "worklist"
+                },
+                {
+                    "pattern": "supplier/{supplierId}",
+                    "name": "detail",
+                    "target": "detail"
+                }
+            ],
+            "targets": {
+                "worklist": {
+                    "viewName": "Worklist",
+                    "viewId": "worklist"
+                },
+                "detail": {
+                    "viewName": "Detail",
+                    "viewId": "detail"
+                }
+            }
+        }
+    }
+}

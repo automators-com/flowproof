@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>flowproof Fiori fixture</title>
+    <script
+        id="sap-ui-bootstrap"
+        src="/resources/sap-ui-core.js"
+        data-sap-ui-theme="sap_horizon"
+        data-sap-ui-resourceroots='{"fixture": "./"}'
+        data-sap-ui-compatVersion="edge"
+        data-sap-ui-async="true"
+        data-sap-ui-frameOptions="allow"
+        data-sap-ui-libs="sap.m,sap.ui.layout">
+    </script>
+    <script>
+        // ComponentSupport's declarative auto-init (the div below) is only
+        // required once the MockServer's promise has resolved - requiring
+        // it any earlier races the manifest's OData model against the mock
+        // routes still being registered. See webapp/model/mockserver.js.
+        sap.ui.getCore().attachInit(function () {
+            sap.ui.require(["fixture/model/mockserver"], function (mockserver) {
+                mockserver.init().then(function () {
+                    sap.ui.require(["sap/ui/core/ComponentSupport"]);
+                });
+            });
+        });
+    </script>
+</head>
+<body class="sapUiBody" id="content">
+    <div data-sap-ui-component data-name="fixture" data-id="container" data-settings='{"id" : "fixture"}'></div>
+</body>
+</html>

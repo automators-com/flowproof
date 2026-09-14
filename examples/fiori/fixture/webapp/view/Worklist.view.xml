@@ -1,0 +1,53 @@
+<mvc:View
+    controllerName="fixture.controller.Worklist"
+    xmlns="sap.m"
+    xmlns:mvc="sap.ui.core.mvc">
+    <Page id="worklistPage" title="Suppliers">
+        <headerContent>
+            <Button id="infoButton" icon="sap-icon://hint" press="onInfoPress"/>
+        </headerContent>
+        <subHeader>
+            <Bar>
+                <contentLeft>
+                    <SearchField id="supplierSearch" width="20rem" search="onSearch" placeholder="Search suppliers"/>
+                </contentLeft>
+            </Bar>
+        </subHeader>
+        <content>
+            <Table
+                id="supplierTable"
+                items="{path: '/Suppliers', sorter: {path: 'SupplierID'}}"
+                growing="true"
+                growingThreshold="20"
+                growingScrollToLoad="true"
+                noDataText="No suppliers found">
+                <columns>
+                    <Column><Text text="ID"/></Column>
+                    <Column><Text text="Name"/></Column>
+                    <Column><Text text="City"/></Column>
+                    <Column><Text text="Status"/></Column>
+                    <Column hAlign="End"><Text text="Balance"/></Column>
+                </columns>
+                <items>
+                    <ColumnListItem type="Navigation" press="onSupplierPress">
+                        <cells>
+                            <Text text="{SupplierID}"/>
+                            <Text text="{Name}"/>
+                            <Text text="{City}"/>
+                            <ObjectStatus text="{Status}"
+                                state="{= ${Status} === 'Blocked' ? 'Error' : (${Status} === 'On Hold' ? 'Warning' : 'Success') }"/>
+                            <ObjectNumber number="{path: 'Balance', type: 'sap.ui.model.type.Float', formatOptions: {decimals: 2}}"/>
+                        </cells>
+                    </ColumnListItem>
+                </items>
+            </Table>
+        </content>
+        <footer>
+            <Bar>
+                <contentRight>
+                    <Button id="deleteSelectedButton" text="Delete selected" type="Reject" press="onDeletePress"/>
+                </contentRight>
+            </Bar>
+        </footer>
+    </Page>
+</mvc:View>

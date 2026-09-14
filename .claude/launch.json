@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fiori-fixture",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "examples/fiori/fixture", "run", "start"],
+      "port": 8081
+    }
+  ]
+}
