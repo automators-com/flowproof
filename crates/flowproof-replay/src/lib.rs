@@ -2316,8 +2316,9 @@ pub type ResolvedExports = Vec<(String, String)>;
 /// resolves its `${captured.<name>}` references from THIS run's captures
 /// once every step has passed, then plain `${VAR}` refs from the
 /// environment (the same resolution suite `env` gets). The resolved pairs
-/// are RETURNED, never persisted: like a capture, an exported order number
-/// or balance lives only in the memory of the run — the suite runner turns
+/// are RETURNED, never persisted by the replay engine. Ordinary runs keep
+/// them in memory; an opt-in CLI suite checkpoint may persist them privately.
+/// The suite runner turns
 /// the pairs into env vars for the remaining flows. An export that cannot
 /// resolve fails this run with its own result entry (the same shape the
 /// secret-leak scan uses), because a flow whose contract to its successors

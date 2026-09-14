@@ -186,8 +186,9 @@ without it would otherwise present another machine's blocks as evidence here.
 
 A flow that engages egress also carries `containment:` - the tier the run
 actually ran under (`enforced (linux seccomp)`, or the honest reason it was
-not). `lanes` says what the flow ASSERTED; `containment` says what was
-ENFORCED. On a host where the mechanism does not exist the flow can still
+not). `lanes` says what the flow ASSERTED - `egress`, `secret_leak`, and
+`side_effects` for a flow carrying `assert_no_side_effect`; `containment`
+says what was ENFORCED. On a host where the mechanism does not exist the flow can still
 pass, so without this field a passing row would imply a certification the
 run never made.
 

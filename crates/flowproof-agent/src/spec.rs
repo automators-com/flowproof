@@ -622,6 +622,7 @@ impl FlowSpec {
                     | SpecStep::AssertToolCall { .. }
                     | SpecStep::AssertNoToolCall { .. }
                     | SpecStep::AssertNoEgress
+                    | SpecStep::AssertNoSideEffect { .. }
             )
         });
 
@@ -1492,6 +1493,13 @@ pub enum SpecStep {
     /// phase, and a capability error on any platform where containment is
     /// not enforced.
     AssertNoEgress,
+    /// `app: agent`: assert the run OBSERVED no side effect of the named
+    /// kind (`fs_write` | `http_request`). Judged against the live
+    /// observation log of each phase, and a capability error on any
+    /// platform or driver where observation cannot run.
+    AssertNoSideEffect {
+        assert_no_side_effect: String,
+    },
     /// `app: agent`: assert NO declared secret appeared in the run's output
     /// corpus. The named-selector form: one or more `${VAR}` names, each a
     /// secret that must never surface. The `${VAR}` values resolve at
@@ -1630,6 +1638,7 @@ impl SpecStep {
          `prompt: <text>`, `conversation: [{user: <text>, ...}]`, `conversation: interactive`, \
          `assert_tool_call: <text>`, \
          `assert_no_tool_call: <text>`, `assert_no_egress`, \
+         `assert_no_side_effect: <kind>`, \
          `assert_no_secret_leak: ${VAR}`, `repeat: {...}`, `when: <cond>` with `steps:`, \
          `in: <surface>` with `steps:`, or `foreach: {...}`";
 
@@ -1718,6 +1727,39 @@ impl SpecStep {
                         }),
                         _ => Err("`assert_no_tool_call:` takes a string (a tool name)".into()),
                     },
+                    // `assert_no_side_effect:` takes ONE capturable kind,
+                    // read off the same list the capture mechanism emits, so
+                    // grammar and mechanism cannot drift; the schema's
+                    // reserved kinds earn their own message.
+                    Some("assert_no_side_effect") => {
+                        let kind = match inner {
+                            Value::String(s) => s.trim().to_string(),
+                            _ => {
+                                return Err(
+                                    "`assert_no_side_effect:` takes one kind (`fs_write` or \
+                                     `http_request`)"
+                                        .into(),
+                                )
+                            }
+                        };
+                        if ["db_change", "sap_transaction"].contains(&kind.as_str()) {
+                            return Err(format!(
+                                "`{kind}` is reserved for a later phase, not yet capturable; \
+                                 `assert_no_side_effect:` takes `fs_write` or `http_request`"
+                            ));
+                        }
+                        if !flowproof_trace::side_effect::capturable_kinds()
+                            .contains(&kind.as_str())
+                        {
+                            return Err(format!(
+                                "`{kind}` is not a capturable side-effect kind; \
+                                 `assert_no_side_effect:` takes `fs_write` or `http_request`"
+                            ));
+                        }
+                        Ok(SpecStep::AssertNoSideEffect {
+                            assert_no_side_effect: kind,
+                        })
+                    }
                     // `assert_no_secret_leak:` takes a single `${VAR}`
                     // selector or a LIST of them. Each is validated to be
                     // `${VAR}` syntax here, so a literal or a predicate is a
@@ -1890,6 +1932,9 @@ impl Serialize for SpecStep {
             SpecStep::AssertNoToolCall {
                 assert_no_tool_call,
             } => single(serializer, "assert_no_tool_call", assert_no_tool_call),
+            SpecStep::AssertNoSideEffect {
+                assert_no_side_effect,
+            } => single(serializer, "assert_no_side_effect", assert_no_side_effect),
             SpecStep::AssertSql { assert_sql } => single(serializer, "assert_sql", assert_sql),
             SpecStep::AssertApi { assert_api } => single(serializer, "assert_api", assert_api),
             SpecStep::AssertSpreadsheet { assert_spreadsheet } => {
@@ -2116,6 +2161,9 @@ impl SpecStep {
                 format!("assert_no_tool_call: {assert_no_tool_call}")
             }
             SpecStep::AssertNoEgress => "assert_no_egress".to_string(),
+            SpecStep::AssertNoSideEffect {
+                assert_no_side_effect,
+            } => format!("assert_no_side_effect: {assert_no_side_effect}"),
             SpecStep::AssertNoSecretLeak {
                 assert_no_secret_leak,
             } => {
@@ -2424,6 +2472,18 @@ pub struct SuiteManifest {
     /// listed run after, in the default sorted order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<String>,
+    /// Explicit allowlist, in execution order. When present, unlisted files
+    /// never execute. Cannot be combined with `order`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flows: Option<Vec<String>>,
+    /// Prerequisite flow paths. Each prerequisite must be selected and
+    /// precede its dependent in the execution order.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub depends_on: std::collections::BTreeMap<String, Vec<String>>,
+    /// Skip remaining flows after a failure or harness error. Independent
+    /// suites keep their historical continue-on-failure default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop_on_failure: bool,
     /// Browser launch/emulation defaults for every flow in the suite
     /// (web): a flow's own `browser:` wins outright when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3447,6 +3507,37 @@ steps:
             .expect_err("assert_no_egress on calc");
         assert!(err.to_string().contains("agent step"), "{err}");
         assert!(err.to_string().contains("assert_no_egress"), "{err}");
+    }
+
+    /// `assert_no_side_effect` takes only the CAPTURABLE kinds and
+    /// round-trips as its keyed mapping. A reserved kind is refused with
+    /// its own message - "reserved", never "unknown" - and the step is
+    /// agent-only like the rest of the agent vocabulary.
+    #[test]
+    fn assert_no_side_effect_takes_only_capturable_kinds() {
+        let flow = spec(
+            "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_side_effect: fs_write\n  - assert_no_side_effect: http_request\n",
+        )
+        .expect("parses");
+        let yaml = serde_yaml::to_string(&flow.steps).expect("serializes");
+        let back: Vec<SpecStep> = serde_yaml::from_str(&yaml).expect("round-trips");
+        assert_eq!(back, flow.steps);
+
+        for (kind, why) in [
+            ("db_change", "reserved for a later phase"),
+            ("exec", "not a capturable"),
+        ] {
+            let err = spec(&format!(
+                "name: n\napp: agent\nagent:\n  command: x\nsteps:\n  - prompt: hi\n  - assert_no_side_effect: {kind}\n"
+            ))
+            .expect_err(why);
+            assert!(err.to_string().contains(why), "{err}");
+        }
+
+        let err =
+            spec("name: n\napp: calc\nsteps:\n  - Type 5\n  - assert_no_side_effect: fs_write\n")
+                .expect_err("assert_no_side_effect on calc");
+        assert!(err.to_string().contains("agent step"), "{err}");
     }
 
     /// A full `mcp:` block parses: servers, commands, and per-server tool
