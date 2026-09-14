@@ -1,0 +1,33 @@
+# Phase 0c corpus - medium flow #3. Touches the "Procurement Overview" tile
+# first (read only - open it, confirm its own title, navigate straight
+# back to Home via the mid-flow "Navigate to <url>" action), THEN does the
+# same real search as medium-01 - a cross-navigation pattern (visit one
+# app, leave it, land cleanly on a second) that medium-01/02/04/05 don't
+# individually cover, without depending on any group tile.
+#
+# CORRECTED after the corpus's first baseline run: originally reached the
+# Display app through a "PTP Process Area BU Apps" group tile that does
+# not exist on this account's real Home page (see short-02's own
+# correction note and docs/fiori-reliability/FINDINGS.md). Rewritten
+# around tiles confirmed real rather than patched to guess at a group
+# structure that was never there - and repurposed rather than just
+# duplicating medium-01's direct-tile search, since that coverage already
+# exists.
+name: Procurement Overview, then display info record by supplier
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  - Click "Procurement Overview"
+  - Wait until page shows Procurement Overview within 20s
+  - Navigate to ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+  - Wait until page shows Home within 60s
+  - Click "Display Purchasing Info Record by Supplier"
+  - "Wait until page shows Info Records per Supplier within 20s"
+  - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
+  - Type ${MATERIAL} into the "Material" in the iframe "Application"
+  - Press Enter
+  - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}

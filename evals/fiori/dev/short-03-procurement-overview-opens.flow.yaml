@@ -1,0 +1,26 @@
+# Phase 0c corpus - short flow #3. Read-only: login, then open the
+# "Procurement Overview" tile - the one real Home-page tile this corpus
+# had not yet exercised anywhere else - and confirm the screen it opens is
+# self-titled. Deliberately minimal: this account's Procurement Overview
+# app has not been explored beyond its own tile name, so the assertion
+# only checks the one thing safe to assume of any Fiori app (the shell
+# shows the app's own title after navigation, the same pattern already
+# proven for Change/Display) rather than guessing at its content.
+#
+# CORRECTED after the corpus's first baseline run: this spec originally
+# opened a "PTP Process Area BU Apps" group tile and asserted one of its
+# sub-tiles - that group tile does not exist on this account's real Home
+# page (see short-02's own correction note and
+# docs/fiori-reliability/FINDINGS.md for the full account). Rewritten to
+# use a tile that IS confirmed real, rather than patched to guess at a
+# group structure that was never there.
+name: Procurement Overview tile opens and is self-titled
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+steps:
+  - Type ${SAP_USER} into the "User" field
+  - Type ${SAP_PASSWORD} into the "Password" field
+  - Press the "Log On" button
+  - Wait until page shows Home within 60s
+  - Click "Procurement Overview"
+  - Wait until page shows Procurement Overview within 20s

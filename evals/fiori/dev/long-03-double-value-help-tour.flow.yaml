@@ -7,8 +7,19 @@
 #
 # Views crossed: Home (launchpad) -> Info Records per Supplier (search
 # screen) -> the Supplier field's value-help dialog -> the Material
-# field's value-help dialog -> Home again -> PTP group listing -> Initial
-# Screen (Change app) -> General Data (Change app, on a match).
+# field's value-help dialog -> Home again -> Initial Screen (Change app)
+# -> General Data (Change app, on a match).
+#
+# CORRECTED after the corpus's first baseline run: originally reached the
+# Change app through a "PTP Process Area BU Apps" group tile that does not
+# exist on this account's real Home page (see short-02's own correction
+# note and docs/fiori-reliability/FINDINGS.md). Rewritten to use the
+# direct Home tile instead. Also dropped the two explicit "Clear the ...
+# field" steps before opening value help - the same baseline run separately
+# found that phrasing loses its iframe scope in the deterministic
+# rule_step path (medium-05-search-retry-after-no-match.flow.yaml carries
+# that finding on its own now); opening value help directly over an
+# already-wrong value needs no prior clear.
 name: Double value-help tour - both search fields, then Change read only
 app: web
 url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
@@ -19,7 +30,7 @@ steps:
   - Press the "Log On" button
   - Wait until page shows Home within 90s
   - assert: page shows Display Purchasing Info Record by Supplier
-  - assert: page shows PTP Process Area BU Apps
+  - assert: page shows Change Purchasing Info Record
 
   # -- App 1: Display, wrong search then BOTH fields via value help ---
   - Click "Display Purchasing Info Record by Supplier"
@@ -28,8 +39,6 @@ steps:
   - Type DOES-NOT-EXIST into the "Material" in the iframe "Application"
   - Press Enter
   - assert: page shows Info Records per Supplier
-  - Clear the "Supplier" field in the iframe "Application"
-  - Clear the "Material" field in the iframe "Application"
   - Open the value help for the Supplier field in the iframe "Application"
   - Select ${SUPPLIER} from the value help list
   - Open the value help for the Material field in the iframe "Application"
@@ -38,14 +47,13 @@ steps:
   - assert: the "Supplier" field in the iframe "Application" contains ${SUPPLIER}
   - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}
 
-  # -- Back to the launchpad, mid-flow, via the PTP group this time ---
+  # -- Back to the launchpad, mid-flow ---------------------------------
   - Navigate to ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
   - Wait until page shows Home within 60s
-  - Click "PTP Process Area BU Apps"
-  - assert: page shows Manage Info Records
+  - assert: page shows Change Purchasing Info Record
 
   # -- App 2: Change, read only ----------------------------------------
-  - Click "Manage Info Records"
+  - Click "Change Purchasing Info Record"
   - assert: page shows Initial Screen
   - Type ${MATERIAL} into the "Material" field
   - Type ${SUPPLIER} into the "Supplier" field

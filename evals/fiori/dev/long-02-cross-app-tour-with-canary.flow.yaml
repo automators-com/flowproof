@@ -3,16 +3,23 @@
 # long-01-cross-app-tour.flow.yaml, deliberately varied: opens with an
 # out-of-band API canary before touching the browser at all (if the record
 # itself is gone, this fails in the first step instead of thirty steps in),
-# reaches BOTH apps through the "PTP Process Area BU Apps" group tile
-# instead of directly from Home (a distinct group-listing screen visited
-# twice), and exercises value help on the Material field instead of
-# Supplier.
+# exercises value help on the Material field instead of Supplier, and adds
+# a third real app (Procurement Overview) between the other two purely as
+# navigation - touched, confirmed self-titled, then left.
 #
-# Views crossed: Home (launchpad) -> PTP group listing -> Info Records per
-# Supplier (search screen) -> the Material field's value-help dialog ->
-# Home again -> PTP group listing again -> Initial Screen (Change app) ->
+# Views crossed: Home (launchpad) -> Info Records per Supplier (search
+# screen) -> the Material field's value-help dialog -> Home again ->
+# Procurement Overview -> Home again -> Initial Screen (Change app) ->
 # General Data (Change app, on a match).
-name: PTP group tour with an API canary - value help on Material
+#
+# CORRECTED after the corpus's first baseline run: originally reached both
+# apps through a "PTP Process Area BU Apps" group tile that does not exist
+# on this account's real Home page (see short-02's own correction note and
+# docs/fiori-reliability/FINDINGS.md). Rewritten around tiles confirmed
+# real, using the same direct-tile-plus-mid-flow-Navigate pattern
+# long-01/03 already prove works, with Procurement Overview standing in
+# for the extra navigation depth the group tile would have added.
+name: Cross-app tour with an API canary - value help on Material
 app: web
 url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
 steps:
@@ -29,32 +36,33 @@ steps:
   - Type ${SAP_PASSWORD} into the "Password" field
   - Press the "Log On" button
   - Wait until page shows Home within 90s
+  - assert: page shows Display Purchasing Info Record by Supplier
+  - assert: page shows Procurement Overview
 
-  # -- App 1, via the PTP group: wrong search, then value help --------
-  - Click "PTP Process Area BU Apps"
-  - assert: page shows Display purchasing info records by Supplier
-  - assert: page shows Manage Info Records
-  - Click "Display purchasing info records by Supplier"
+  # -- App 1: Display, wrong search then value help on Material -------
+  - Click "Display Purchasing Info Record by Supplier"
   - "Wait until page shows Info Records per Supplier within 20s"
   - Type ${SUPPLIER} into the "Supplier" in the iframe "Application"
   - Type DOES-NOT-EXIST into the "Material" in the iframe "Application"
   - Press Enter
   - assert: page shows Info Records per Supplier
-  - Clear the "Material" field in the iframe "Application"
   - Open the value help for the Material field in the iframe "Application"
   - Select ${MATERIAL} from the value help list
   - Press Enter
   - assert: the "Supplier" field in the iframe "Application" contains ${SUPPLIER}
   - assert: the "Material" field in the iframe "Application" contains ${MATERIAL}
 
-  # -- Back to the launchpad, mid-flow, through the group again -------
+  # -- App 2, purely navigation: touch it, confirm it, leave -----------
   - Navigate to ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
   - Wait until page shows Home within 60s
-  - Click "PTP Process Area BU Apps"
-  - assert: page shows Manage Info Records
+  - Click "Procurement Overview"
+  - Wait until page shows Procurement Overview within 20s
 
-  # -- App 2, via the same group: Change, read only --------------------
-  - Click "Manage Info Records"
+  # -- App 3: Change, read only -----------------------------------------
+  - Navigate to ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+  - Wait until page shows Home within 60s
+  - assert: page shows Change Purchasing Info Record
+  - Click "Change Purchasing Info Record"
   - assert: page shows Initial Screen
   - Type ${MATERIAL} into the "Material" field
   - Type ${SUPPLIER} into the "Supplier" field

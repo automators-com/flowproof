@@ -9,6 +9,14 @@
 # same real record from a completely different UI path, closed out with
 # two independent out-of-band OData checks.
 #
+# CORRECTED after the corpus's first baseline run: dropped two explicit
+# "Clear the ... field" steps before opening value help - that same
+# baseline run found this phrasing loses its iframe scope in the
+# deterministic rule_step path
+# (medium-05-search-retry-after-no-match.flow.yaml carries that finding on
+# its own now). Opening value help directly over an already-wrong value
+# needs no prior clear.
+#
 # Views crossed: Home (launchpad) -> Info Records per Supplier (search
 # screen) -> the Supplier field's value-help dialog -> Home again ->
 # Initial Screen (Change app) -> General Data (Change app, on a match).
@@ -31,8 +39,6 @@ steps:
   - Type DOES-NOT-EXIST into the "Material" in the iframe "Application"
   - Press Enter
   - assert: page shows Info Records per Supplier
-  - Clear the "Supplier" field in the iframe "Application"
-  - Clear the "Material" field in the iframe "Application"
   - Open the value help for the Supplier field in the iframe "Application"
   - Select ${SUPPLIER} from the value help list
   - Type ${MATERIAL} into the "Material" in the iframe "Application"

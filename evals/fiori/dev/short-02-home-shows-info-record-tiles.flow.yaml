@@ -1,11 +1,19 @@
-# Phase 0c corpus - short flow #2. Read-only: login, then confirm the two
-# real tiles this whole corpus depends on are actually on the account's
-# Home page - "Display Purchasing Info Record by Supplier" (used directly
-# from Home by several other corpus specs) and "PTP Process Area BU Apps"
-# (the group tile other specs navigate through instead). If either
-# disappears from this account's catalog, this is the one spec that says
-# so directly rather than every other spec failing downstream with a
-# confusing "tile not found".
+# Phase 0c corpus - short flow #2. Read-only: login, then confirm the real
+# tiles this whole corpus depends on are actually on the account's Home
+# page - "Display Purchasing Info Record by Supplier" (used directly from
+# Home by several other corpus specs) and "Change Purchasing Info Record"
+# (likewise). If either disappears from this account's catalog, this is the
+# one spec that says so directly rather than every other spec failing
+# downstream with a confusing "tile not found".
+#
+# CORRECTED after the corpus's first baseline run: this spec originally
+# also asserted a "PTP Process Area BU Apps" tile, inherited unverified
+# from examples/fiori/purchase-info-records-report.flow.yaml (which never
+# confirmed it live either - see that file's own TODO). The real baseline
+# run proved that tile does not exist on this account's Home page at all;
+# the actual My Apps section only has three tiles: Change Purchasing Info
+# Record, Display Purchasing Info Record by Supplier, and Procurement
+# Overview. See docs/fiori-reliability/FINDINGS.md for the full account.
 #
 # Login steps and "Home" wait text are the exact proven pattern from
 # examples/fiori/login-smoke.flow.yaml - confirmed live tonight.
@@ -18,4 +26,4 @@ steps:
   - Press the "Log On" button
   - Wait until page shows Home within 60s
   - assert: page shows Display Purchasing Info Record by Supplier
-  - assert: page shows PTP Process Area BU Apps
+  - assert: page shows Change Purchasing Info Record
