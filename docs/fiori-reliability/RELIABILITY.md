@@ -39,15 +39,31 @@ real data, H4/H5 are code-level or explained-not-fixed.
 
 ## 5. What changed
 
-One real, tested commit landed on `fiori-reliability/2026-09-14`:
+Two real, tested commits landed on `fiori-reliability/2026-09-14`:
 
 - **`trace: add the a11y selector tier, ranked above native_id`** — a new
   `SelectorTier::A11y`, ranked first in the ladder, with trace-format schema
   and docs updated in the same commit, and a test proving the ordering.
-  Purely foundational: the recorder does not produce this tier yet, and
-  replay's resolution path for it is a documented no-op. No FAA change from
-  this alone — it doesn't do anything yet, it makes the format ready for the
-  thing that will.
+  Purely foundational on its own — the recorder didn't yet produce this
+  tier at this point.
+- **`web: capture a11y-tier selectors via the browser's real accessibility
+  tree`** — the recorder now actually captures an `a11y` selector at record
+  time, reading Chrome's own computed role + accessible name (+ nearest
+  named ancestor) via CDP, prepended first in the ladder. Two real bugs
+  found and fixed while getting this to work live (not assumed): the
+  vendored `headless_chrome` fork's `AXPropertyName` enum is missing a
+  variant real Chrome sends (worked around with a small custom raw-JSON
+  CDP method call), and two driver wrappers (`Box<dyn AppDriver>`,
+  `SurfaceRegistry`) were each missing `a11y_hint` from their manual
+  per-method delegation lists, silently no-op'ing instead of erroring —
+  caught only by testing the full `record()` pipeline, not the driver
+  method in isolation. Three live-Chromium tests prove it
+  (`FLOWPROOF_E2E=1`), each seen failing for the right reason before being
+  fixed.
+  **Still no FAA change**: replay's resolution side for this tier remains
+  the documented no-op from the first commit, so a recorded `a11y` selector
+  is not yet USED at replay — that is the next commit, named precisely in
+  `FINDINGS.md`.
 
 Everything else committed tonight is documentation, evidence, and one small
 fixture-fidelity fix (`examples(fiori): stop pinning explicit view ids in
