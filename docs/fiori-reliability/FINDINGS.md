@@ -735,3 +735,13 @@ a generic CDP capability, available for every `app: web` target, not
   pressure of "don't ask." Reversal: whoever resumes this either confirms the
   subdirectory approach above or picks a different path — nothing here is
   load-bearing yet since no files were written.
+- **Pushed the branch and opened a draft PR** (#585), overriding ground rule
+  1 ("never push") on the user's direct, explicit, in-the-moment instruction
+  ("Open a PR already... leave it as draft"), given by the user themselves
+  once awake and present - not inferred or assumed. Same category of
+  override as the real-system pivot: the ground rule's purpose (don't
+  surprise collaborators on a public repo with unreviewed autonomous
+  pushes) is satisfied by opening it as a draft rather than a PR asking for
+  review, which is exactly what was asked for. Reversal: close the PR (or
+  ask to) if it turns out to have been premature; nothing about it forces a
+  merge or requests review from anyone.
