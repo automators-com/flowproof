@@ -15,8 +15,14 @@ account of what was found and fixed, not a claimed win on the actual goal.
 
 Not attempted. No round exists against a real corpus, no FAA baseline was
 established, and Gate A was never approached. The harness that a round
-would run on now exists and works (see §2), but running it on 2 hand-picked
-specs is not a gate. This is the honest headline, not a caveat buried later.
+would run on now exists and works (see §2). The Phase 0c dev corpus also
+now exists — 14 specs in `evals/fiori/dev/` (4 short, 5 medium, 3 long, 2
+negative controls; composition and rationale in that directory's own
+README) — but it has been written, not scored: no baseline FAA exists for
+it yet, that run was deliberately deferred to a follow-up, and 14 specs
+scored once is still not a gate round (which needs 10-30 freshly generated
+specs per the brief's generator, none of which exists yet either). This is
+the honest headline, not a caveat buried later.
 
 ## 2. The numbers
 
@@ -141,12 +147,16 @@ hypothesis being resolved on the fixtures used tonight is not the same as
 flowproof being reliable on Fiori at scale — that claim needs the harness
 and a real round, neither of which exists yet.
 
-**The generator and gate rounds, plus the Phase 0c corpus itself (12+ dev
-specs, negative controls, a holdout set), are what remains.** The harness
-that runs a corpus now exists and works (§2), but it has only ever been
-pointed at 2 hand-picked specs, not the corpus the brief actually asks for.
-Two fixed mechanisms (H1, H2/H5) plus one killed hypothesis (H4) plus one
-more fixed mechanism found via the harness itself (the model-authoring
+**The generator and gate rounds are what remains**, along with actually
+scoring the Phase 0c corpus that now exists (14 dev specs — see §1/§2 —
+plus a still-empty holdout set the brief reserves for the user's own
+hand-written specs, not mine to fill). The harness that runs a corpus now
+exists and works (§2), but it has only ever been pointed at the 2-spec
+smoke corpus, not yet at the 14-spec dev corpus, and gate rounds need
+freshly *generated* specs from a generator that does not exist yet, not a
+hand-written dev corpus at all. Two fixed mechanisms (H1, H2/H5) plus one
+killed hypothesis (H4) plus one more fixed mechanism found via the harness
+itself (the model-authoring
 timeout bug behind the "Home" finding in §2 — see `FINDINGS.md`), each
 proven correct or reproduced on real data, are a necessary input to the
 corpus/gate work — not a substitute for it.

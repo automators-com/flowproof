@@ -804,8 +804,76 @@ Spaces-related issue could ever occur on a different assertion phrased
 differently — only that it was not needed to explain what was actually
 seen here.
 
+## Phase 0c — the dev corpus, written (not yet scored)
+
+14 `.flow.yaml` specs now exist in `evals/fiori/dev/` — 4 short (3–6
+steps), 5 medium (10–20 steps), 3 long (30+ steps, crossing 4+ real
+screens, each including a value-help dialog), and 2 negative controls —
+matching the brief's Phase 0c composition rule (4/5/3, plus at least 2
+negative controls). Full composition, the read-only/single-app-family
+rationale, and which steps are unverified guesses versus proven-live text
+are documented in `evals/fiori/dev/README.md` rather than repeated here.
+
+**Real system, not the mock fixture** — consistent with the pivot recorded
+earlier in this log. **Read-only, everywhere** — the corpus works almost
+entirely within the one app family (Purchasing Info Records, reached
+directly from Home or through the "PTP Process Area BU Apps" group tile)
+because that is the only family with confirmed-safe navigation as of
+tonight; variety comes from varying navigation path and interaction
+pattern (direct tile vs. group, one value-help field vs. two, a wrong
+search before the real one, cross-app confirmation, out-of-band OData
+checks at different filter shapes), not from different business data —
+there remains exactly one confirmed-real test record.
+
+`probe-real-info-record-lookup.flow.yaml` (the Phase 1 naive-first-attempt
+diagnostic, already known broken and already written up above) was moved
+into `_probes/` alongside the other historical diagnostics — it was never
+a considered Phase 0c corpus member, and leaving a known-broken file
+sitting in the scored corpus directory would be misleading.
+
+**Written now, scored in a follow-up** — the user's own explicit choice,
+given the real-system time cost of authoring across 14 specs (record + up
+to 3 runs each, several of them 30+ steps). No baseline FAA exists for
+this corpus yet, and per the brief's Verification §2, the per-spec sha256
+freeze happens at that first scoring run, not before. Several steps
+(value-help mechanics, the exact wording of two of the PTP group's
+sub-tiles, whether "Navigate to `<url>`" cleanly returns to the launchpad
+mid-flow from inside an app) are honest, flagged guesses — consistent with
+the existing real examples' own TODOs for the same kind of ambiguity, and
+consistent with the brief's own instruction to write specs before seeing
+why they break. Some of these are expected to need correction on their
+first live `record` attempt; that is the FAA experiment working, not a
+mistake in how the corpus was written.
+
+**Not done**: `evals/fiori/holdout/` remains empty. Per the brief, holdout
+specs are hand-written by the person running the brief, in their own
+words, never inspected or tuned against during the fix loop — writing them
+myself would defeat the point of a holdout set entirely.
+
 ## Decisions
 
+- **Composed the corpus's variety from navigation path and interaction
+  pattern rather than from different business records.** Reason: exactly
+  one real record combination (Material `TG10` / Supplier `10300001` /
+  Plant `1010` / Purchasing Org `1010`) has been confirmed to exist and
+  resolve correctly tonight; inventing plausible-looking alternate business
+  data for "variety" would risk specs that fail for the wrong reason (a
+  nonexistent record) rather than the reason under test (flowproof's
+  authoring reliability). Reversal: if more real records are confirmed
+  later, later corpus revisions can add genuine data variety on top of
+  this.
+- **Kept every corpus spec read-only, including the three long flows that
+  the brief's own long-flow language ("crossing multiple views, including
+  a dialog and a value help") most naturally suggests a real edit-and-save
+  path for.** Reason: the only confirmed-navigable app for a "Change"-style
+  flow (`examples/fiori/manage-info-records.flow.yaml`) was itself
+  deliberately narrowed to read-only earlier tonight because this
+  particular app has no scratch/throwaway record to create — any edit
+  permanently steers a real, shared reference record with no undo. The
+  user's own choice, asked directly this turn, confirmed staying read-only
+  over allowing edits to shared data. Reversal: if a real app with a
+  create-your-own-scratch-record path is found later, a future long spec
+  could legitimately add a write.
 - **Went back and chased the "Home" vs "My Home" finding down after all,
   once the user asked directly whether it was universal or test-specific.**
   Reason for reopening a decision made just above (not chasing it "tonight"):
