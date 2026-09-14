@@ -6,6 +6,8 @@ mod capture;
 pub mod config;
 mod doctor;
 mod suite;
+#[cfg(test)]
+mod suite_journal;
 mod update_check;
 
 // The falsifiability harness feeds committed fixture records through the
