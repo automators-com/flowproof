@@ -2349,13 +2349,21 @@ impl WebAppDriver {
             op = serde_json::Value::from(op),
             arg = arg,
         );
-        let status = self
-            .tab()?
-            .evaluate(&call, false)
-            .map_err(|e| web_err("acting inside an iframe", e))?
-            .value
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default();
+        // Same gap `probe_frame` had (see docs/fiori-reliability/FINDINGS.md):
+        // this talks to the tab directly, with no element to re-resolve, so
+        // it never went through with_element's retry either - one transient
+        // CDP hiccup here (this is the exact call `type_text`'s framed path
+        // uses for every field inside an iframe) killed the whole flow.
+        let status = retry_once_on_transport_fault(|| {
+            self.tab()
+                .map_err(|e| e.to_string())?
+                .evaluate(&call, false)
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| web_err("acting inside an iframe", e))?
+        .value
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
         let frame = &query.frame;
         match status.as_str() {
             "cross_origin" => Err(cross_origin(frame)),

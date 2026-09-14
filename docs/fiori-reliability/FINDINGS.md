@@ -850,6 +850,136 @@ specs are hand-written by the person running the brief, in their own
 words, never inspected or tuned against during the fix loop — writing them
 myself would defeat the point of a holdout set entirely.
 
+## Branch continuity: a colleague's automated PR-review fixes landed on the
+## same branch, mid-session
+
+Partway through this session, a colleague's automated PR-review-and-fix
+workflow (real commits, author Amin Chirazi) merged onto the same
+`fiori-reliability/2026-09-14` branch this session had been treating as its
+own, then that merge landed on `main` and shipped as v0.23.0 - none of it
+in conflict with this session's own work (`d28265d`, the last commit this
+session had pushed, is an ancestor of `main`'s tip), but a real collision
+of two independent workstreams sharing one branch name. On the user's
+instruction, this session opened a fresh branch,
+`fiori-reliability/2026-09-14-v2`, based on `origin/main`, and cherry-picked
+its own pending commits onto it - both applied with zero conflicts, full
+test suites green. Everything from here lives on that branch. Amin's own
+merged work (a real, independent-of-this-session fix for the redirect
+double-counting bug in `network_inflight`, plus xpath soft-hyphen
+normalization and an `ancestor_role`/ambiguous-match tightening in the a11y
+selector) is now the floor this session's own fixes build on, not
+something this session authored or should take credit for.
+
+## Real-system checkpoint #2: root-causing the corrected corpus's own
+## remaining failures
+
+With the leak fixed and the corpus's PTP-tile mistake corrected, a clean
+re-baseline (`evals/fiori/20260914T185311Z.json`, taken after confirming
+network connectivity - the corporate host had also been down for about two
+hours mid-session, an unrelated VPN/routing drop, not an application
+issue) scored **FAA 33.33% (4/12)**, the first number free of both earlier
+confounds. All four short specs passed, including the two that directly
+exercise the corrected tiles - clean confirmation the corpus fix worked.
+Negative controls held.
+
+The user then authorized fully autonomous continuation overnight: keep
+polling for the corporate system (which started returning `503 Service
+Unavailable` at the HTTP level partway through - a third, independent
+infrastructure interruption tonight, after the VPN drop and an Anthropic
+API `529 Overloaded`), work through the remaining findings without asking,
+document every decision, and use judgment about whether a fix generalizes
+rather than patching one spec. Three findings were root-caused and fixed
+this way, all live-verified against real evidence (a real trace, a real
+error message) even though the corporate system itself was unreachable for
+the fixing work - only the final live re-confirmation is still pending.
+
+**Finding: `medium-05`'s `rule_step` grammar cannot follow its own prompt's
+instruction for a framed/scoped target.** The system prompt tells the
+model to "copy listed target tokens into quoted targets" for `rule_step`.
+A framed element's own scene token is a compound string containing its own
+embedded quote marks (`framed:"<frame>" > <inner>`), and `rule_step`'s
+quoting is naive - `quoted_label` (rules.rs) takes the substring up to the
+FIRST `"`, not a balanced pair. Pasting the real token verbatim therefore
+mis-parses into garbage, and dropping the scope clause instead (which is
+what the actual model reply for this spec did) resolves to an unscoped
+target the flat top-level scene never lists. This is not one model's
+mistake or one spec's bad luck: it is a structural incompatibility between
+the prompt's generic advice and the grammar's quoting, for every
+framed/scoped token, universally. **Fixed**: the prompt now carves out an
+explicit exception - use `scope.inner` in quotes plus the natural clause
+the deterministic grammar already parses correctly (`in the iframe
+"<frame>"` / `in the item containing "<anchor>"`), with a worked example.
+Two new tests in `crates/flowproof-agent/src/author.rs` prove the
+mechanism the new guidance points to actually resolves correctly end to
+end, and that pasting the raw compound token fails loudly rather than
+silently mis-resolving - a live model's own phrasing choice can't be
+asserted by a scripted-backend test, so that is the honest limit of what
+these tests claim to prove until a live re-record confirms the model
+actually follows the new instruction in practice.
+
+**Finding: `probe_frame` had no transport-fault retry at all.**
+`medium-02`'s real failure - "driver transport fault: probing an iframe:
+Unable to make method calls because underlying connection is closed" -
+happened on a genuinely clean run (network confirmed, leak fixed, no
+resource contention). `is_transport_fault` already recognized this exact
+error string, and `with_element`-routed calls already get one automatic
+retry on it, but `probe_frame`'s CDP call talks to the tab directly and
+had never been wired into that retry at all - any transient CDP hiccup
+during an iframe probe killed the whole flow immediately, with zero chance
+to recover, while the identical hiccup during an element-scoped call
+already recovered fine. **Fixed**: extracted the retry decision into
+`retry_once_on_transport_fault`, a small pure function `probe_frame` now
+uses. Deliberately did NOT touch `with_element`'s own inline version - far
+more heavily relied upon, and this session had no live-system access
+available to validate a change there tonight, so the fix stayed scoped to
+the one call site with actual evidence behind it. Three new unit tests
+prove the retry logic itself (recovers once, gives up after one retry, and
+crucially never retries a non-transport error).
+
+**Finding, found only because the fix above was tested properly: every
+e2e test that touches the web adapter was independently leaking its own
+Chrome process, and fixing that with a naive per-test guard immediately
+introduced a NEW race.** Adding tests for the `probe_frame` fix meant
+constructing real `WebAppDriver`s, which surfaced that no test file ever
+called `shutdown_shared_browser()` - unlike `flowproof-cli`'s own
+invocations (fixed earlier tonight), so every e2e run leaked a full Chrome
+tree and profile dir independent of the CLI leak already closed (18
+orphaned processes found after one ordinary test run). Exporting
+`SharedBrowserGuard` from `flowproof-adapters` and adding it to each
+affected test file looked like the fix - until running the new tests
+repeatedly reproduced a second, genuinely new bug: `cargo test`'s default
+parallelism runs `network_idle_e2e`'s two tests concurrently, both sharing
+the one process-global browser, and the first test's guard unconditionally
+killed it while the second was still mid-launch - the exact "connection is
+closed" error, a third independent way of hitting it tonight. **Fixed**:
+`SharedBrowserGuard` now reference-counts; only the last live guard
+actually shuts anything down. Confirmed by running the previously-racing
+test three consecutive times, clean each time, plus a new unit test proving
+a held sibling guard keeps the count above zero. This is the kind of
+self-correction the discipline of "run the fix, don't assume it from a
+diff" is supposed to catch, and it did.
+
+**Still open, honestly**: the value-help "accepted a different value after
+commit" failure (hits `long-01`, `long-03`, `medium-04`, and a differently-
+shaped variant in `long-02`) is the highest-count remaining failure and is
+NOT yet root-caused - a live-system investigation is needed and the
+corporate host has been unreachable for it all night. `medium-02`'s own
+replay-time connection drop may or may not be closed by the `probe_frame`
+fix above (it fires from `type_text`'s framed path too, a different call
+site not yet checked for the same gap). `medium-03`'s "the title element
+exists but shows ''" was checked against the actual polling loop
+(`crates/flowproof-agent/src/recorder.rs`'s `AssertText` handling) and the
+loop itself is correct - it keeps polling `element_exists` + `read_text`
+against the real deadline, so this is either a genuine render-time
+variance longer than 20s for this specific, previously-unexplored app, or
+the recorded selector resolves to a structurally different (permanently
+empty) element - which of the two it is cannot be told without a live
+re-record, and guessing "just raise the timeout" without that evidence
+would be exactly the kind of primary-fix-is-a-timeout-bump the brief
+forbids. `long-02`'s "the previous step left a problem behind - the page
+reports: Find Objects in Classe[s]" is unexplained; it needs to be seen
+live before it can be explained at all.
+
 ## Decisions
 
 - **Composed the corpus's variety from navigation path and interaction
