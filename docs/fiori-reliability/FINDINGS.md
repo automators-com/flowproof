@@ -270,6 +270,27 @@ strong leads, not closed verdicts.
   UI5 app with a `sap.m.Dialog` running through the adapter (Phase 0b).
 - **H5 — see H2.** Not a separate mechanism; folded in above.
 
+**H3b — user-proposed, not yet evaluated: the accessibility tree, not a
+UI5-specific rung.** Chrome exposes role/name/state over CDP
+(`Accessibility.getFullAXTree`). UI5 emits ARIA, so controls carry stable
+semantic identity that survives re-render, routing, and version bumps -
+without needing anything UI5-specific. Proposed: an `a11y` provenance rung
+(role + name + ancestor scope) placed **above** `native_id`, evaluated against
+H3's `sap.ui.test.RecordReplay`-based design rather than assumed inferior to
+it. Advantages if it performs comparably: nothing injected into the page, no
+dependency on `sap.ui.test` being present/enabled in a production (non-debug)
+build - a real open risk H3 itself flags and this session has not yet
+verified either way - and it generalizes to every `app: web` target, not only
+Fiori. **Both designs need to be measured before choosing one**, not decided
+by architectural taste. Not yet investigated; next concrete step once back in
+investigation mode.
+
+**Explicit constraint carried forward from here on, restated because it
+matters more than any single finding**: every fix this session proposes must
+address the general mechanism, not make one spec pass. A `within Ns` added to
+a single flow, or any change scoped to one test case's shape, is not a fix
+under this rule even if it turns that one spec green.
+
 **Ranked implication for Phase 3** (specs unblocked ÷ risk, per the brief):
 1. A UI5-aware idle/settle primitive (`waitForUI5` via CDP `Runtime.evaluate`)
    — closes H2 and H5 together, is additive (new wait path, doesn't touch the
@@ -283,6 +304,58 @@ strong leads, not closed verdicts.
 3. Confirm or kill H4 empirically once the fixture exists — likely a
    non-issue, but cheap to verify and worth doing before spending effort on
    it.
+
+## Real-system probe #1 - a genuine, honest first-attempt failure
+
+Per the pivot above, ran a naive QA-style spec (never seen by anyone, not
+copied from the existing expert-tuned `manage-info-records.flow.yaml`)
+against the real launchpad, reusing only the already-known-safe read-only
+search values from `values.yaml`. Originally written as:
+
+```yaml
+steps:
+  - Log in with ${FIORI_USER} and ${FIORI_PASSWORD}
+  - Open the Change Purchasing Info Record app
+  - Search for material ${MATERIAL}, supplier ${SUPPLIER}, plant ${PLANT}, purchasing org ${PURCHASING_ORG}
+  - assert: page shows General Data
+```
+
+**`flowproof record` has a live self-repair mechanism this session did not
+know about going in.** It auto-rewrote the ambiguous "Search for
+material X, supplier Y..." step into an explicit per-field version (naming
+the mechanism: "the original step bundled four values into a single vague
+instruction without naming the fields") - and **it mutated the `.flow.yaml`
+file on disk while doing it.** This is a genuine, important nuance the brief
+does not address: the FAA definition is "zero edits to the spec **between**
+record and green" - a tool-driven in-flight rewrite during `record` itself is
+arguably not the same thing as a human going back afterward to fix a
+failure, but it does mean the file a user re-reads after `record` is not the
+file they wrote, without them asking for that. Recorded here rather than
+picked a side on it: whoever scores the actual FAA rounds needs to decide
+whether an auto-repaired-but-still-failing recording counts as "zero edits"
+before Phase 2's harness can score anything consistently.
+
+**The real, unrepaired failure**: the very next step, "Open the Change
+Purchasing Info Record app," failed immediately after login with "No
+interactable elements are present on the current screen." The repair engine
+correctly diagnosed this as `page-not-ready-transient` - "a launchpad/tile-
+loading race condition after sign-in" - but could not apply a fix:
+`"model did not return a usable patch: step has no `within Ns` wait window to
+widen"`. Outcome: `budget-exhausted`. **This is a real, live, first-attempt
+FAA failure on the actual production system**, and it is exactly the
+mechanism H2 predicted (no UI5/shell-aware idle signal) manifesting exactly
+where the brief's Mission section says it does: a competent user who has
+never seen flowproof internals has no reason to write a `within Ns` clause
+on their very first step, so the one repair path that could have saved this
+recording was never reachable from an honest first attempt.
+
+**What this session will NOT do about it**: patch this one spec with a wait
+clause and call it fixed. Per the correction above, the only fix worth
+making here is a **general** post-login/shell-settle wait in the adapter
+(or recorder) that doesn't depend on the user having written a widenable
+wait clause at all - closing the actual mechanism, not this one symptom.
+That is now the top candidate for Phase 3, empirically confirmed on the
+real system rather than only inferred from source.
 
 ## What would need to be true to resume
 

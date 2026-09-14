@@ -1,0 +1,8 @@
+name: Probe - look up a purchasing info record (naive first attempt)
+app: web
+url: ${FIORI_BASE_URL}?sap-client=${FIORI_CLIENT}&sap-language=${FIORI_LANGUAGE}#Shell-home
+steps:
+- Log in with ${FIORI_USER} and ${FIORI_PASSWORD}
+- Open the Change Purchasing Info Record app
+- Enter ${MATERIAL} in the Material field, ${SUPPLIER} in the Supplier field, ${PLANT} in the Plant field, and ${PURCHASING_ORG} in the Purchasing Organization field, then execute the search
+- assert: page shows General Data
