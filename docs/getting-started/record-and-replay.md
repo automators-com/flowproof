@@ -302,8 +302,87 @@ order:                                       # optional; unlisted specs run afte
 
 `env` is exported to every flow and hook; `before_each`/`after_each` run
 via `sh -c` with the current spec path in `$FLOWPROOF_SPEC`. A hook that
-exits non-zero aborts the suite; silent seed/cleanup failure is exactly
+exits non-zero errors that flow; silent seed/cleanup failure is exactly
 the fragility to avoid.
+
+**Business workflows: select and guard their stages.** `order` only sorts;
+it still runs unlisted files. Use `flows` when candidate or alternative
+operations must stay out of the run:
+
+```yaml
+flows:
+  - create-order.flow.yaml
+  - receive-order.flow.yaml
+  - invoice-order.flow.yaml
+depends_on:
+  receive-order.flow.yaml: [create-order.flow.yaml]
+  invoice-order.flow.yaml: [receive-order.flow.yaml]
+stop_on_failure: true
+```
+
+`flows` is a nonempty allowlist in execution order; it cannot be combined
+with `order`. Paths must be relative files inside the suite. Dependencies
+must name selected flows earlier in that order. Invalid names, exclusions,
+duplicates and cycles fail before any data command or flow runs.
+
+A prerequisite must actually pass. A failed, errored or skipped prerequisite
+skips its dependents without launching their hooks or drivers, and makes the
+suite fail. `stop_on_failure: true` also skips independent remaining flows
+after a failure or error. Both policies are opt-in; ordinary suites still
+continue through independent failures and write a complete merged report.
+These guards apply to directory runs; running one spec directly remains an
+explicit standalone operation.
+
+**Checkpoint a reviewed business boundary.** For a selected workflow with
+`stop_on_failure: true`, use a new local checkpoint file for each intended
+business run:
+
+```bash
+flowproof run specs --vars inputs.values.yaml \
+  --checkpoint ./j45-progress.json --stop-after create-order.flow.yaml
+flowproof run specs --vars inputs.values.yaml \
+  --checkpoint ./j45-progress.json --resume
+```
+
+The first command runs through the named stage and pauses. Pending stages
+remain visible as skipped, and the incomplete suite exits nonzero. The
+second restores each confirmed stage's exports, reports it as `resumed`
+(previous evidence, not a fresh execution), and runs only unstarted stages.
+A fully completed checkpoint performs no target operations on another resume.
+Resumed stages do not mint new control-audit records or refresh their evidence
+timestamps; only stages evaluated by this invocation enter its audit record.
+An existing checkpoint requires `--resume`; it is never silently overwritten.
+
+Before an operation starts, its claim is written and synced. Only a passing
+report with all declared exports clears that claim. A failed or interrupted
+flow therefore blocks resume even if the underlying system later recovers:
+its writes may already have happened. Reconcile the business system and run
+evidence first; prepare a new reviewed continuation using the confirmed IDs.
+There is no flag that automatically retries or declares an uncertain stage
+successful. A crash can also leave `<checkpoint>.lock`: remove that lock only
+after checking that its process has stopped. Removing a stale lock does not
+clear an uncertain operation.
+
+Recovery pins the suite directory, exact suite/spec/trace/values bytes,
+parsed specs, engine binary (the native extension for Python installs),
+referenced inputs and adapter environment. The engine image is pinned once
+per invocation; business input files are rechecked at every stage boundary.
+Changed inputs are refused before replay, and each pending stage rechecks the
+pinned files and effective inputs immediately before starting. Exports must have unique producers,
+consumers must declare their prerequisites, and suite env/values cannot
+override them. All selected flows need valid traces and enabled gates.
+Checkpoint mode rejects retries, `--record-missing`, trace overrides,
+`env_from`, shell hooks, external launch commands, agent flows and
+multi-surface flows. Prepare data separately with native `--vars`.
+
+The checkpoint intentionally contains resolved business IDs and previous
+reports. Keep it in a private local directory, outside version control and
+shared CI artifacts; Unix files are mode 0600. Its checksum detects corruption,
+not tampering by somebody who can rewrite the file. Keep credentials out of
+`exports`. This is conservative orchestration, not business-level idempotency:
+recording, polling/retries inside an existing step, another checkpoint file,
+or a standalone flow can still repeat an external operation. Review the
+recorded flow and reconcile external state when an outcome is uncertain.
 
 **Minted test data: `env_from`.** Hooks are for *effects*; their stdout
 is not captured. When flows need values an external CLI mints (DataMaker

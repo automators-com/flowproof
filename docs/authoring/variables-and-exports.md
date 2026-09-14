@@ -181,3 +181,9 @@ What holds, and why:
 The suite's existing machinery composes: `env_from` mints the data the
 FIRST flow needs, `order:` in `suite.yaml` pins who runs before whom, and
 `exports:` carries what a flow LEARNED to whoever follows.
+
+For a business workflow, use an explicit `flows` allowlist and `depends_on`
+instead of relying on ordering alone. Optional [suite checkpoints](../getting-started/record-and-replay.md)
+persist confirmed exports across CLI invocations and refuse to repeat a stage
+whose outcome is uncertain. These private checkpoint files contain resolved
+values; ordinary traces and suite JSON still contain only export names.

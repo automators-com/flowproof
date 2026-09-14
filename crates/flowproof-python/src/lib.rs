@@ -61,7 +61,11 @@ fn recording_options(
 #[pyfunction]
 fn cli_main(py: Python<'_>, args: Vec<String>) -> PyResult<u8> {
     // The engine drives a UI and blocks; let other Python threads run.
-    Ok(py.detach(|| flowproof_cli::run_cli(args)))
+    let engine_path = py
+        .import("flowproof._native")?
+        .getattr("__file__")?
+        .extract::<PathBuf>()?;
+    Ok(py.detach(|| flowproof_cli::run_cli_with_engine(args, engine_path)))
 }
 
 /// Record `spec`. Returns JSON with the trace path, step counts, and per-step

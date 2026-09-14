@@ -6,6 +6,20 @@ together).
 
 ## Unreleased
 
+- **A stopped business workflow can retain confirmed IDs without repeating
+  its completed stages.** Opt-in suite checkpoints persist passing reports
+  and exports, and resume checks the reviewed inputs before doing anything.
+  A failed or interrupted stage stays uncertain and blocks automatic resume;
+  a lost acknowledgement is never treated as proof that a write did not happen.
+  `--stop-after` provides a deliberate pause at a confirmed boundary.
+
+- **A business workflow can now select exactly which flows may run and
+  prevent later operations from executing without their prerequisites.**
+  `order` was only a sort: candidate files still ran, and a failed creation
+  could be followed by a dependent posting. Opt-in `flows`, `depends_on`
+  and `stop_on_failure` make selection and failure policy explicit, validate
+  the graph before execution, and retain skipped stages in the suite report.
+
 ## 0.22.0
 
 ### Added
@@ -60,6 +74,19 @@ together).
   now populates it with observed filesystem writes.** Assertions about what
   an agent changed on disk previously had nothing to bind to in the trace
   format itself.
+
+- **What an agent destroys is now evidence, and evidence you can assert
+  on.** A run that deleted a customer file printed the fact to stderr and
+  passed every check there was: the destruction lived in a channel nobody
+  reviews, no diff records, and no assertion could reach. An observed run
+  now records a `side_effects` lane - workspace-relative names only,
+  everything doubtful hash-redacted, scanned by the secret store-guard
+  before the trace is minted - and `assert_no_side_effect` turns it into a
+  verdict with the egress honesty rules: where observation cannot run it
+  fails "cannot certify" rather than passing vacuously, a blind supervisor
+  cannot certify either, and a violating record mints no trace. Observation
+  is still not containment: a run supervised only to watch reports its own
+  tier and never claims `enforced` for a policy nobody declared.
 
 ### Changed
 

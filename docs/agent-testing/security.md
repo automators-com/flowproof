@@ -145,15 +145,50 @@ having reached whatever it liked. Since 0.11 that run prints a warning naming
 the allow-list, the reason it was not applied, and the step to add - but a
 warning is what it is, and the assertion is what makes it a control.
 
+## Side-effect assertion (`assert_no_side_effect`)
+
+The recorded `side_effects` lane (below) can be asserted on directly, one
+step per kind: `- assert_no_side_effect: fs_write` (and/or `http_request`).
+It certifies what was OBSERVED, on the observation tier the lane names: no
+destructive filesystem syscall was observed attempted, no off-loopback
+network attempt was observed. Attempts, not outcomes - the observation
+punts below apply unchanged. The honesty rules are `assert_no_egress`'s:
+wherever observation cannot run (macOS, Windows, any `url:` service) the
+step fails "cannot certify" with no bypass, and a supervisor fault relevant
+to an asserted kind fails the same way, because an empty effects list under
+a blind supervisor is silence, not evidence.
+
+A flow asserting this WITHOUT engaging egress is supervised on Linux under
+an allow-all policy nobody declared. Its one tier line therefore reads `not
+contained (flow engages side-effect observation only; ...)` - observation is
+not containment, and replay under allow-all still PERFORMS the agent's
+connects before the verdict fails. Engaging observation also buys the
+supervisor's structural refusals, policy or none: fd-passing over trapped
+`sendmsg` is refused `EPERM`, and a non-loopback `listen()` is denied
+`EACCES` - visible to the agent as errno, recorded in no lane.
+
+Two readings to keep straight. `assert_no_side_effect: http_request` in a
+flow that also declares `allow_egress` fails BY CONSTRUCTION - every allowed
+and performed destination is an observed side effect; a flow wanting bounded
+egress wants `allow_egress` + `assert_no_egress` instead. And DNS: on a host
+whose resolver is off-loopback, the resolver's own UDP send is admitted
+under allow-all, observed, and fails the assertion - consistent with
+`assert_no_egress`, which denies the same send. The failure names your
+resolver, not a flowproof bug.
+
 ## Filesystem observation
 
-**This is not a control.** It asserts nothing, fails nothing, and has no
-spec surface at all - there is no step to add and no key to declare. It is a
-report, and it exists because a `command:` agent is a black-box process that
-can delete a file without asking anyone.
+**The observation itself is not a control.** It prevents nothing, and it
+began with no spec surface at all. Since #465 the observations can carry a
+verdict - `assert_no_side_effect` is the step that turns them into one -
+but without that step this remains what it always was: a report,
+existing because a `command:` agent is a black-box process that can delete
+a file without asking anyone.
 
 Any flow that already engages containment gets it for free, because it is the
-same seccomp filter. On Linux the report prints to stderr when, and only
+same seccomp filter; a flow carrying only `assert_no_side_effect` engages the
+same filter in its observation-only form, under an allow-all policy that
+contains nothing. On Linux the report prints to stderr when, and only
 when, a run destroyed something:
 
 ```
@@ -210,7 +245,8 @@ was not there reads exactly like one that removed a tree. `open(path,
 O_WRONLY)` without `O_TRUNC` followed by a write at offset 0 corrupts a file
 and fires nothing; catching it needs a trap on every `write`, which would put
 a supervisor round-trip on every log line. Nothing is observed on macOS or
-Windows, or on a flow that engages no containment. The recorded lane
+Windows, or on a flow that engages neither egress containment nor
+side-effect observation. The recorded lane
 inherits every one of these limits plus one of its own: a kept `./` target
 is the NAME the syscall used, never a resolution claim - a symlinked
 component can carry the actual victim elsewhere.
