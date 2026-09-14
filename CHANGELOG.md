@@ -6,6 +6,14 @@ together).
 
 ## Unreleased
 
+- **Agent conversations check every delivery, including a single user
+  message.** Command agents receive later messages only after all model
+  activity settles; incomplete, empty, or timed-out delivery windows cannot
+  produce a successful recording. Interactive recording checks flow-wide
+  assertions and reaps its process when the terminal fails. Conversation
+  modes that cannot preserve declared containment or observation are rejected
+  before execution; interactive MCP interception is not yet supported.
+
 - **A stopped business workflow can retain confirmed IDs without repeating
   its completed stages.** Opt-in suite checkpoints persist passing reports
   and exports, and resume checks the reviewed inputs before doing anything.

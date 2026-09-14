@@ -194,6 +194,13 @@ impl AgentProxy {
         })
     }
 
+    pub(crate) fn activity_snapshot(&self) -> (usize, usize) {
+        (
+            self.activity.load(Ordering::SeqCst),
+            self.in_flight.load(Ordering::SeqCst),
+        )
+    }
+
     /// Wait until the proxy has been idle for `grace`, or `cap` elapses.
     ///
     /// An agent process exiting does NOT mean the proxy is done: an agent

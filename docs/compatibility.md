@@ -54,8 +54,10 @@ consumer sees a change coming before it lands.
 blocker (see §8):**
 - `agent.url` services and the MCP boundary over streamable HTTP (README
   says "thinner coverage" today)
-- multi-turn agent conversations: a v1 agent flow is one turn, not a
-  conversation ([#375](https://github.com/automators-com/flowproof/issues/375))
+- multi-turn agent conversations: opt-in `conversation:` supports command
+  and URL drivers; interactive authoring supports command drivers. Containment
+  and side-effect observation combinations are rejected; interactive MCP is
+  not yet supported ([#375](https://github.com/automators-com/flowproof/issues/375))
 - egress containment outside Linux (macOS, Windows, kernels <5.6 report
   "not contained" rather than enforcing, per
   [#303](https://github.com/automators-com/flowproof/issues/303))

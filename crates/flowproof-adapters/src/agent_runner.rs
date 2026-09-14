@@ -605,7 +605,7 @@ impl PipeDrain {
     /// it is blocked on a pipe held open by a process flowproof does not own,
     /// it holds nothing but its own buffer, and the process exits shortly
     /// after. Killing it is not possible in safe Rust and not worth it.
-    fn collect(self, grace: Duration) -> String {
+    fn collect(&self, grace: Duration) -> String {
         let _ = self.finished.recv_timeout(grace);
         self.buffer
             .lock()
@@ -681,6 +681,7 @@ const SETTLE_QUIET: Duration = Duration::from_millis(150);
 /// recording.
 fn wait_for_settle(proxy: &AgentProxy, served_before: usize, deadline: Instant) -> (usize, bool) {
     loop {
+        let activity = proxy.activity_snapshot();
         let log = proxy.log();
         let served = log.served;
         let pending_tool = log.last_tool_call;
@@ -689,10 +690,13 @@ fn wait_for_settle(proxy: &AgentProxy, served_before: usize, deadline: Instant) 
         if diverged {
             return (served, true);
         }
-        if served > served_before && !pending_tool {
+        if served > served_before && !pending_tool && activity.1 == 0 {
+            if deadline.saturating_duration_since(Instant::now()) < SETTLE_QUIET {
+                return (served, false);
+            }
             std::thread::sleep(SETTLE_QUIET);
             let after = proxy.log().served;
-            if after == served {
+            if after == served && proxy.activity_snapshot() == activity {
                 return (after, true);
             }
             // Another call landed during the quiet window; keep polling.
@@ -717,12 +721,11 @@ fn wait_for_settle(proxy: &AgentProxy, served_before: usize, deadline: Instant) 
 /// An agent that only understands the old single-shot contract still gets
 /// its first delivery normally and simply never reads the lines that
 /// follow, which is why this path is only taken when the flow actually has
-/// more than one delivery (see `drive_plan` in flowproof-cli).
+/// an explicit conversation (see `drive_plan` in flowproof-cli).
 ///
 /// UNcontained, matching [`run_against`]: a `conversation:` flow that also
-/// engages egress containment falls back to the ordinary single-shot path
-/// today (see plan 12's open questions) rather than a half-built contained
-/// multi-delivery run.
+/// engages egress containment or side-effect observation must be rejected
+/// by the caller rather than falling back to an unprotected process.
 pub fn run_against_conversation(
     proxy: &AgentProxy,
     command: &str,
@@ -733,6 +736,7 @@ pub fn run_against_conversation(
     let base = proxy.base_url();
     let mut cmd = configure(command, &base, env)?;
     cmd.stdin(Stdio::piped());
+    let mut served_before = proxy.log().served;
     let mut child = cmd.spawn().map_err(|source| RunError::Spawn {
         command: command.trim().to_string(),
         source,
@@ -745,7 +749,6 @@ pub fn run_against_conversation(
     let err_drain = PipeDrain::start(child.stderr.take());
 
     let mut windows = Vec::with_capacity(deliveries.len());
-    let mut served_before = proxy.log().served;
     let mut timed_out = false;
     for (i, delivery) in deliveries.iter().enumerate() {
         // Delivery 0 already went out via FLOWPROOF_PROMPT in `env`, at
@@ -844,6 +847,7 @@ impl<'a> ConversationSession<'a> {
         let base = proxy.base_url();
         let mut cmd = configure(command, &base, env)?;
         cmd.stdin(Stdio::piped());
+        let served_before = proxy.log().served;
         let mut child = cmd.spawn().map_err(|source| RunError::Spawn {
             command: command.trim().to_string(),
             source,
@@ -851,7 +855,6 @@ impl<'a> ConversationSession<'a> {
         let stdin = child.stdin.take();
         let out_drain = PipeDrain::start(child.stdout.take());
         let err_drain = PipeDrain::start(child.stderr.take());
-        let served_before = proxy.log().served;
 
         let mut session = Self {
             proxy,
@@ -925,6 +928,16 @@ impl<'a> ConversationSession<'a> {
         };
         drop(log);
         run
+    }
+}
+
+impl Drop for ConversationSession<'_> {
+    fn drop(&mut self) {
+        // Every early return (timeout, terminal read/write error, failed
+        // assertion) closes stdin and reaps the direct child. Pipe drains
+        // remain bounded independently of any grandchildren's lifetime.
+        drop(self.stdin.take());
+        let _ = wait_to_deadline(&mut self.child, Duration::from_millis(100));
     }
 }
 
@@ -2079,6 +2092,96 @@ for line in sys.stdin:
             started.elapsed() >= Duration::from_millis(600),
             "settle must have waited for both delayed calls: {:?}",
             started.elapsed()
+        );
+    }
+    #[test]
+    fn settle_waits_for_a_second_in_flight_call_before_next_delivery() {
+        let listener =
+            TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("conversation fixture");
+        let upstream = format!(
+            "http://{}",
+            listener.local_addr().expect("conversation fixture")
+        );
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            for i in 0..3 {
+                let (mut stream, _) = listener.accept().expect("conversation fixture");
+                read_prompt(&mut stream);
+                if i == 1 {
+                    started_tx.send(()).expect("conversation fixture");
+                    release_rx
+                        .recv_timeout(Duration::from_secs(15))
+                        .expect("conversation fixture");
+                }
+                answer_trigger(
+                    &mut stream,
+                    r#"{"choices":[{"message":{"role":"assistant","content":"okay"}}]}"#,
+                );
+            }
+        });
+        let proxy =
+            AgentProxy::record(&upstream, None, Mocks::new(), 0).expect("conversation fixture");
+        let script =
+            FAKE_CONVERSATIONAL_AGENT.replace("call()\nfor line", "call()\ncall()\nfor line");
+        let agent = write_fake_agent_content("agent_second_inflight.py", &script);
+        let command = format!("python3 \"{}\"", agent.display());
+        let env = env(&[("FLOWPROOF_PROMPT", "first")]);
+        std::thread::scope(|scope| {
+            let run = scope.spawn(|| {
+                run_against_conversation(
+                    &proxy,
+                    &command,
+                    &env,
+                    &["first".into(), "second".into()],
+                    Duration::from_secs(15),
+                )
+                .expect("conversation fixture")
+            });
+            started_rx
+                .recv_timeout(Duration::from_secs(15))
+                .expect("conversation fixture");
+            // A completed reply followed by a pending call used to be
+            // declared settled after 150ms; keep that call pending longer.
+            std::thread::sleep(SETTLE_QUIET * 3);
+            release_tx.send(()).expect("conversation fixture");
+            let (run, windows) = run.join().expect("conversation fixture");
+            assert!(!run.timed_out, "{run:?}");
+            assert_eq!(
+                windows,
+                vec![(0, 2), (2, 3)],
+                "the slow call belongs to delivery one"
+            );
+        });
+        server.join().expect("conversation fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_timed_out_interactive_session_reaps_the_process() {
+        let proxy = AgentProxy::start(cassette(1), Mocks::new(), 0).expect("conversation fixture");
+        let agent =
+            write_fake_agent_content("agent_session_hang.py", "import time\ntime.sleep(30)\n");
+        let (session, outcome) = ConversationSession::start(
+            &proxy,
+            &format!("python3 \"{}\"", agent.display()),
+            &BTreeMap::new(),
+            Duration::from_millis(100),
+        )
+        .expect("conversation fixture");
+        assert!(!outcome.settled);
+        let pid = session.child.id();
+        let start = Instant::now();
+        drop(session);
+        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .output()
+                .expect("conversation fixture")
+                .status
+                .success(),
+            "session left its direct child running"
         );
     }
 }

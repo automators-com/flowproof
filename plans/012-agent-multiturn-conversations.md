@@ -411,7 +411,7 @@ assumption breaks.
 
 ## Shipped
 
-Every decision above is implemented and tested, in four commits: the trace
+The implemented core covers: the trace
 schema (`delivery_index`/`deliveries`), the `conversation:` grammar, `url:`
 delivery gating, `command:` delivery gating, and the interactive `record
 --agent-conversation` authoring loop (the `conversation: interactive`
@@ -429,3 +429,21 @@ served-count/tool-call-presence signals `cassette.rs` already tracks
 uniformly — so there is no known reason Anthropic or streaming would behave
 differently, but that is confidence, not a fixture. Left as follow-up
 coverage rather than a blocker.
+
+## Release safety limits
+
+Every declared delivery must produce a nonempty contiguous model-call window.
+A timeout, early process exit, or calls outside those windows fails the run;
+partial trajectories never mint a successful conversation recording. A reply
+settles only after the proxy has no in-flight request and remains quiet for
+150 ms. This is a bounded boundary observation, not proof the agent will never
+schedule later work.
+
+Conversation steps cannot be mixed with top-level prompt steps. Conversation
+recording and replay currently reject egress containment and side-effect
+observation before starting a process, rather than silently ignoring the
+policy. Interactive recording also rejects MCP declarations because it does
+not yet install that boundary; predefined command conversations retain normal
+MCP setup. Interactive terminal failures and timeouts close stdin and reap the
+direct child with a bounded wait; this does not supervise a detached process
+tree. Top-level assertions are checked before interactive spec/trace writes.
