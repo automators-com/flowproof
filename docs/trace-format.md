@@ -340,7 +340,10 @@ already follows.
      accessible name for the same control (see
      `docs/fiori-reliability/FINDINGS.md`). Payload:
      `{"role", "name"}` required, `{"ancestor_role", "ancestor_name"}`
-     optional.
+     optional. Promotion requires a unique match to the originally selected
+     DOM node. Replay checks both ancestor name and role when recorded; an
+     ambiguous accessibility match falls through to the remaining selectors
+     instead of choosing the first control with that name.
   2. `native_id`: UIA AutomationId, SAP GUI Scripting ID, DOM id/CSS.
   3. `structural`: path through the accessibility/DOM tree.
   4. `text_anchor`: OCR text anchor + spatial relation

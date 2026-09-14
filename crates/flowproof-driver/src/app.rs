@@ -54,6 +54,8 @@ pub struct UiaSelector {
     /// accessible name, when `role`+`name` alone might not be unique on the
     /// page. Web-only; `None` on every other tier.
     pub ancestor_name: Option<String>,
+    /// Accessible role of the same ancestor, when recorded.
+    pub ancestor_role: Option<String>,
 }
 
 /// A table cell to resolve by IDENTITY, not position (#58). `column` is the

@@ -1003,6 +1003,36 @@ fn force_kill_pid(pid: u32) {
     }
 }
 
+/// CDP reuses one request ID through an HTTP redirect chain. Counting start
+/// events loses that identity and never returns to idle after the final finish.
+#[derive(Default)]
+struct NetworkActivity {
+    active: Mutex<std::collections::HashSet<String>>,
+}
+
+impl NetworkActivity {
+    fn started(&self, id: &str) {
+        self.active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.into());
+    }
+
+    fn finished(&self, id: &str) {
+        self.active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+    }
+
+    fn idle(&self) -> bool {
+        self.active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+    }
+}
+
 /// Browser-backed [`AppDriver`].
 pub struct WebAppDriver {
     browser: Browser,
@@ -1048,11 +1078,9 @@ pub struct WebAppDriver {
     /// call is still correctly seen as new (see #489: a call-time baseline
     /// snapshot loses that race for fast downloads).
     claimed_downloads: std::collections::HashSet<std::path::PathBuf>,
-    /// In-flight request count, maintained by a CDP `Network` event listener
-    /// registered at launch — the settle signal H2 was missing (see
-    /// `settled_scene`). Never negative in practice; an `Ordering::SeqCst`
-    /// load/store is plenty for a counter read a handful of times a second.
-    network_inflight: Arc<std::sync::atomic::AtomicI64>,
+    /// Active request identities, maintained by CDP. Redirects reuse their
+    /// request ID and must not leave a phantom in-flight request behind.
+    network_inflight: Arc<NetworkActivity>,
 }
 
 /// Shared state between the driver and the flow-wide dialog listener.
@@ -1375,9 +1403,7 @@ impl WebAppDriver {
     /// (`document.readyState`) says the initial HTML parsed; this says the
     /// OData batch it then kicks off has actually come back.
     fn network_idle(&self) -> bool {
-        self.network_inflight
-            .load(std::sync::atomic::Ordering::SeqCst)
-            <= 0
+        self.network_inflight.idle()
     }
 
     fn locator_of(selector: &UiaSelector) -> Option<WebLocator> {
@@ -1419,6 +1445,7 @@ impl WebAppDriver {
                     role: role.clone(),
                     name: name.clone(),
                     ancestor_name: selector.ancestor_name.clone(),
+                    ancestor_role: selector.ancestor_role.clone(),
                 }),
             });
         }
@@ -1659,6 +1686,9 @@ impl WebAppDriver {
                     return false;
                 };
                 if ax_node_value_string(parent, "name").as_deref() == Some(wanted_ancestor.as_str())
+                    && wanted.ancestor_role.as_ref().is_none_or(|role| {
+                        ax_node_value_string(parent, "role").as_ref() == Some(role)
+                    })
                 {
                     return true;
                 }
@@ -1670,14 +1700,18 @@ impl WebAppDriver {
         let matches: Vec<&serde_json::Value> = nodes
             .iter()
             .filter(|node| {
-                ax_node_value_string(node, "role").as_deref() == Some(wanted.role.as_str())
+                node.get("ignored").and_then(|v| v.as_bool()) != Some(true)
+                    && ax_node_value_string(node, "role").as_deref() == Some(wanted.role.as_str())
                     && ax_node_value_string(node, "name").as_deref() == Some(wanted.name.as_str())
                     && ancestor_matches(node)
             })
             .collect();
         let chosen = match nth {
             Some(n) => matches.get(n.saturating_sub(1) as usize),
-            None => matches.first(),
+            // A hint may fall back to a precise recorded selector; guessing
+            // the first duplicate can click a different business record.
+            None if matches.len() == 1 => matches.first(),
+            None => None,
         };
         let Some(node) = chosen else {
             return Ok(None);
@@ -1885,6 +1919,7 @@ struct A11yLocator {
     role: String,
     name: String,
     ancestor_name: Option<String>,
+    ancestor_role: Option<String>,
 }
 
 /// Root every union branch of a text-anchor XPath under the tagged
@@ -2368,7 +2403,7 @@ impl AppDriver for WebAppDriver {
         &mut self,
         selector: &UiaSelector,
     ) -> Result<Option<flowproof_driver::A11yHints>, DriverError> {
-        if selector.cell.is_some() || selector.scope.is_some() {
+        if selector.cell.is_some() || selector.scope.is_some() || selector.frame.is_some() {
             return Ok(None);
         }
         let Some(locator) = Self::locator_of(selector) else {
@@ -2418,12 +2453,27 @@ impl AppDriver for WebAppDriver {
             let name = ax_node_value_string(node, "name").filter(|n| !n.is_empty())?;
             Some((role, name))
         });
-        Ok(Some(flowproof_driver::A11yHints {
+        let hints = flowproof_driver::A11yHints {
             role,
             name,
             ancestor_role: ancestor.as_ref().map(|(r, _)| r.clone()),
             ancestor_name: ancestor.map(|(_, n)| n),
-        }))
+        };
+        // Promotion must preserve the element selected by the original CSS,
+        // id, or ordinal. An accessibility name alone is not proof of identity.
+        let wanted = A11yLocator {
+            role: hints.role.clone(),
+            name: hints.name.clone(),
+            ancestor_name: hints.ancestor_name.clone(),
+            ancestor_role: hints.ancestor_role.clone(),
+        };
+        if self
+            .resolve_a11y(&wanted, None)?
+            .is_none_or(|resolved| resolved.backend_node_id != element.backend_node_id)
+        {
+            return Ok(None);
+        }
+        Ok(Some(hints))
     }
 
     /// `command` is the URL to open; `window_name` is unused for web.
@@ -2624,8 +2674,8 @@ impl AppDriver for WebAppDriver {
         // listener here: a page whose Network domain can't be enabled just
         // means `network_idle()` always reads true, degrading to the old
         // DOM-shape-only behaviour rather than failing the launch.
-        self.network_inflight
-            .store(0, std::sync::atomic::Ordering::SeqCst);
+        // New state also isolates late events from a previous launch's tab.
+        self.network_inflight = Arc::default();
         if tab
             .call_method(Network::Enable {
                 max_total_buffer_size: None,
@@ -2639,19 +2689,15 @@ impl AppDriver for WebAppDriver {
             let inflight = self.network_inflight.clone();
             let listener = move |event: &headless_chrome::protocol::cdp::types::Event| {
                 use headless_chrome::protocol::cdp::types::Event;
-                use std::sync::atomic::Ordering;
                 match event {
-                    Event::NetworkRequestWillBeSent(_) => {
-                        inflight.fetch_add(1, Ordering::SeqCst);
+                    Event::NetworkRequestWillBeSent(event) => {
+                        inflight.started(&event.params.request_id);
                     }
-                    Event::NetworkLoadingFinished(_) | Event::NetworkLoadingFailed(_) => {
-                        // Saturating: a response for a request that started
-                        // before this listener attached (or that CDP never
-                        // reported the start of) must not drive the counter
-                        // negative and permanently defeat `network_idle()`.
-                        let _ = inflight.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                            Some((n - 1).max(0))
-                        });
+                    Event::NetworkLoadingFinished(event) => {
+                        inflight.finished(&event.params.request_id);
+                    }
+                    Event::NetworkLoadingFailed(event) => {
+                        inflight.finished(&event.params.request_id);
                     }
                     _ => {}
                 }

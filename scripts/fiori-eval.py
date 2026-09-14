@@ -22,8 +22,8 @@ wrong would silently invalidate the number:
 - It does not touch the spec files themselves, ever - a spec that fails
   stays exactly as written, for the archive and for the next round.
 
-Requires the current environment to already have real credentials sourced
-(this repo's convention: `set -a; source .env; set +a`) if any spec targets
+Requires credentials from `flowproof config` or the current environment
+if any spec targets
 the real Fiori system, and a built `flowproof` binary (`cargo build -p
 flowproof-cli --all-features`, or point `--bin` at a release build).
 """
@@ -32,9 +32,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -58,7 +60,8 @@ def trace_path_for(spec: Path) -> Path:
 def is_negative_control(spec: Path) -> bool:
     """A spec whose id names it as a deliberately-wrong assertion (Phase 0c:
     "at least 2 flows that must legitimately FAIL"). Scored inverted: this
-    spec PASSES the harness when record or run correctly reports it broken."""
+    spec passes only when its first recording reaches the terminal assertion
+    and reports that intended mismatch. Setup and transport faults are failures."""
     return "negative-control" in spec.stem
 
 
@@ -116,20 +119,61 @@ def values_file_for(spec: Path) -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def score_spec(
-    binary: Path, spec: Path, runs: int, latency_ms: int | None
-) -> dict:
+def terminal_assertion(spec: Path) -> str | None:
+    """Negative controls must end in an explicit, nonempty assertion."""
+    try:
+        doc = yaml.safe_load(spec.read_text())
+        step = doc["steps"][-1]
+    except (OSError, yaml.YAMLError, KeyError, IndexError, TypeError):
+        return None
+    intent = step.get("assert") if isinstance(step, dict) else None
+    return intent if isinstance(intent, str) and intent.strip() else None
+
+
+def intended_record_mismatch(spec: Path, reason: str) -> bool:
+    """Match the recorder's assertion verdict, not any nonzero process exit.
+
+    Fail closed on missing variables, login/transport failures, an earlier
+    assertion, or a target that could not be read. The exact terminal assertion
+    and observed page/element value must both be present in the diagnostic.
+    """
+    intent = terminal_assertion(spec)
+    if not intent:
+        return False
+    pattern = (r"(?:error: )?assertion '" + re.escape(intent)
+               + r"' does not hold while recording: expected '[^']*', "
+               + r"(?:page|element) shows '.+'")
+    return re.fullmatch(pattern, reason, re.DOTALL) is not None
+
+
+def score_spec(binary: Path, spec: Path, runs: int, latency_ms: int | None) -> dict:
+    if runs < 1:
+        raise ValueError("runs must be at least 1")
+    # Recording writes a trace and recordings beside its input. Never unlink
+    # or replace a committed cassette when measuring a fresh first attempt.
+    evidence_root = REPO / ".flowproof" / "evals"
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    execution_dir = Path(tempfile.mkdtemp(prefix="fiori-", dir=evidence_root))
+    execution_spec = execution_dir / spec.name
+    shutil.copyfile(spec, execution_spec)
+    sibling = spec.with_name(spec.name.removesuffix(".flow.yaml") + ".values.yaml")
+    if sibling.exists():
+        shutil.copyfile(sibling, execution_spec.with_name(sibling.name))
+    result = score_isolated_spec(binary, spec, execution_spec, runs, latency_ms)
+    result["evidence_dir"] = str(execution_dir.relative_to(REPO))
+    return result
+
+
+def score_isolated_spec(binary: Path, source_spec: Path, spec: Path,
+                        runs: int, latency_ms: int | None) -> dict:
     negative = is_negative_control(spec)
     result: dict = {
-        "spec": str(spec.relative_to(REPO)),
+        "spec": str(source_spec.relative_to(REPO)),
         "negative_control": negative,
-        "sha256": sha256_of(spec),
+        "sha256": sha256_of(source_spec),
     }
 
-    trace = trace_path_for(spec)
-    trace.unlink(missing_ok=True)
-
-    vars_file = values_file_for(spec)
+    vars_file = values_file_for(source_spec)
     vars_args = ["--vars", str(vars_file)] if vars_file else []
 
     record_args = ["record", str(spec), "--no-repair", *vars_args]
@@ -154,13 +198,22 @@ def score_spec(
 
     if not record_ok:
         result["run_results"] = []
-        result["passed"] = negative  # record correctly failed a negative control
+        result["passed"] = negative and intended_record_mismatch(
+            source_spec, str(result["record"]["reason"])
+        )
+        return result
+
+    if negative:
+        # A deliberately wrong assertion already passed recording. A later
+        # replay failure cannot erase that false positive.
+        result["run_results"] = []
+        result["passed"] = False
         return result
 
     run_results = []
     for i in range(runs):
         code, run_json, run_err = run_flowproof(
-            binary, ["run", str(spec), *vars_args], REPO
+            binary, ["run", str(spec), "--retries", "0", *vars_args], REPO
         )
         report = (run_json or {}).get("report") if run_json else None
         ok = code == 0 and report is not None and report.get("passed") is True
@@ -179,7 +232,7 @@ def score_spec(
     result["run_results"] = run_results
 
     all_runs_passed = len(run_results) == runs and all(r["ok"] for r in run_results)
-    result["passed"] = (not all_runs_passed) if negative else all_runs_passed
+    result["passed"] = all_runs_passed
     return result
 
 
@@ -207,6 +260,9 @@ def main() -> int:
         help="scoreboard path (default: evals/fiori/<timestamp>.json)",
     )
     args = parser.parse_args()
+
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
 
     if not args.bin.exists():
         print(f"error: {args.bin} does not exist - build it first ", file=sys.stderr)
@@ -254,7 +310,7 @@ def main() -> int:
     print()
     print(f"FAA: {faa:.2%}" if faa is not None else "FAA: n/a (no non-control specs)")
     if negative:
-        state = "held (all still red)" if negative_controls_held else "BROKEN - a negative control passed"
+        state = "held (all still red)" if negative_controls_held else "BROKEN - an intended assertion failure was not observed"
         print(f"Negative controls: {state}")
     print(f"scoreboard: {out_path.relative_to(REPO)}")
     return 0 if (negative_controls_held is not False) else 1

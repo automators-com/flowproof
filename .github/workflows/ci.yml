@@ -246,6 +246,16 @@ jobs:
         env:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome
+      - name: Accessibility identities survive native-id changes and duplicates
+        run: cargo test -p flowproof-cli --test a11y_selector_e2e -- --nocapture --test-threads=1
+        env:
+          FLOWPROOF_E2E: "1"
+          CHROME: /usr/bin/google-chrome
+      - name: Browser network, accessibility, and lifecycle fixtures
+        run: cargo test -p flowproof-adapters --features web --test network_idle_e2e --test a11y_capture --test shared_browser_shutdown_e2e --test static_area_e2e -- --nocapture --test-threads=1
+        env:
+          FLOWPROOF_E2E: "1"
+          CHROME: /usr/bin/google-chrome
       - name: LLM-author a freeform flow (local fake model server, zero tokens)
         run: cargo test -p flowproof-cli --test llm_author_e2e -- --nocapture --test-threads=1
         env:
@@ -305,3 +315,6 @@ jobs:
           uv run --group dev ruff format --check .
       - name: pytest
         run: uv run --group dev pytest
+      - name: Fiori evaluation verdicts preserve evidence
+        working-directory: .
+        run: uv run --no-project --with pyyaml python scripts/test_fiori_eval.py

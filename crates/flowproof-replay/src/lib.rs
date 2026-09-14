@@ -170,6 +170,7 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             }),
             role: None,
             ancestor_name: None,
+            ancestor_role: None,
         },
         // A text anchor resolves by visible label (UIA Name / element
         // text / OCR line). `relation` rides along for pixels-only
@@ -191,6 +192,7 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
             role: get("role"),
             name: get("name"),
             ancestor_name: get("ancestor_name"),
+            ancestor_role: get("ancestor_role"),
             nth,
             ..UiaSelector::default()
         },

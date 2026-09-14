@@ -79,3 +79,56 @@ fn scene_waits_for_a_real_delayed_fetch_before_settling() {
         "settling in {elapsed:?} means the fetch was never actually waited for"
     );
 }
+
+/// Redirects emit another start for the same request ID, but only one finish.
+/// A failed fetch must also leave the active set, without hiding other requests.
+#[test]
+fn scene_settles_after_redirects_and_a_failed_fetch() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping redirect network E2E: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    use flowproof_driver::AppDriver;
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("address"));
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = [0; 2048];
+            let n = stream.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..n]);
+            let path = request.split_whitespace().nth(1).unwrap_or("");
+            if path == "/fail" {
+                continue; // A closed response exercises Network.loadingFailed.
+            }
+            let response = match path {
+                "/" | "/middle" => format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    if path == "/" { "/middle" } else { "/page" }
+                ),
+                _ => {
+                    let body = r#"<!doctype html><script>fetch('/fail').catch(() => {
+                        document.body.innerHTML = '<button id="failed-fetch-settled">Ready</button>';
+                    });</script><body></body>"#;
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                }
+            };
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    let mut driver = flowproof_adapters::WebAppDriver::new().expect("browser launches");
+    driver
+        .launch(&url, "", std::time::Duration::from_secs(30))
+        .expect("page opens");
+    let started = std::time::Instant::now();
+    let scene = driver.scene().expect("scene reads").unwrap_or_default();
+    assert!(
+        scene.contains("failed-fetch-settled"),
+        "failed fetch completed: {scene}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(8),
+        "redirect leaked an active request"
+    );
+}

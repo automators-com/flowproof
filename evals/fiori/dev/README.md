@@ -69,3 +69,17 @@ corrected corpus (and the process-leak fix) has not been run yet.
 the brief, holdout specs are hand-written by the person running the brief,
 in their own words, and never read, debugged against, or tuned for during
 the fix loop. Nothing here should populate it.
+
+## Interpreting negative controls
+
+A control passes only when its first recording reaches the deliberately wrong
+terminal assertion and reports the expected mismatch against a readable page
+or element. Missing credentials, login failures, outages, earlier assertions,
+and unreadable targets remain failures. A successful recording is a false
+positive and cannot be rescued by a later replay error. Historical scoreboards
+created before this rule need a fresh run to establish that their controls held.
+
+The harness records copies in unique retained `.flowproof/evals/fiori-*`
+directories and returns each `evidence_dir` in the scoreboard. Fresh cassettes,
+filmstrips, and replay reports remain available there; the original corpus and
+committed cassettes are untouched. Replays use zero retries.
