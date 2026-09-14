@@ -7,6 +7,8 @@ pub mod config;
 mod doctor;
 mod suite;
 #[cfg(test)]
+mod suite_inputs;
+#[cfg(test)]
 mod suite_journal;
 mod update_check;
 
