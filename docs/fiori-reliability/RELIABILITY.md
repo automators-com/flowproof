@@ -1,9 +1,12 @@
 # Fiori reliability — report
 
 **The goal was not reached — no gate was attempted, and no FAA number
-exists.** Say that plainly, first: this was an investigation-and-foundation
-night, not a gate-passing one. What follows is a real, evidence-backed
-account of what was found and what's ready to build on, not a claimed win.
+exists.** Say that plainly, first. One real fix did land and is proven
+correct end to end (H1: a regenerated `native_id` no longer breaks replay),
+but "a mechanism works on one fixture" is not "flowproof is reliable on
+Fiori" — that needs the harness and a real round, neither of which
+happened. What follows is a real, evidence-backed account of what was found
+and fixed, not a claimed win on the actual goal.
 
 ## 1. Gate status
 
@@ -30,7 +33,7 @@ real data, H4/H5 are code-level or explained-not-fixed.
 
 | Hypothesis | Verdict | Evidence |
 |---|---|---|
-| H1 (native id harmful for UI5) | **CONFIRMED, live** | A real `flowproof record` trace against the actual launchpad captured `#__xmlview1--detailPage-navButton` and `#__text6-__clone0` as tier-0 `native_id` selectors — the exact generated, unstable ids the brief predicted. |
+| H1 (native id harmful for UI5) | **CONFIRMED, live — AND FIXED** | A real `flowproof record` trace against the actual launchpad captured `#__xmlview1--detailPage-navButton` and `#__text6-__clone0` as tier-0 `native_id` selectors — the exact generated, unstable ids the brief predicted. The fix (an `a11y` selector tier, ranked above `native_id`) is landed and proven: a test that renames a button's id — the precise failure this hypothesis describes — replays successfully via the `a11y` rung instead. |
 | H2 (no UI5-aware idle signal) | **CONFIRMED, live, twice** | A genuine, naive first-attempt `flowproof record` against the real system failed on a post-login tile-loading race, diagnosed by flowproof's own repair engine and left unfixed (no `within Ns` clause to widen). Independently reproduced by hand: blank at 3s, tiles at ~13s on the same real page. |
 | H3 (`sap.ui.test.RecordReplay`) | **Present but broken outside its own harness** | All 64 of its dependencies load (HTTP 200) on the real production launchpad, but calling it cold via CDP throws an uncaught `TypeError` and the `require` never completes. Real friction, not a theoretical risk. |
 | H3b (accessibility tree — proposed mid-session) | **CONFIRMED rich and usable, right now** | A live accessibility snapshot of the real Home page shows stable role+name pairs (`link "Change Purchasing Info Record Tile"`, etc.) on every interactive element, no page injection needed. Evidence favors this over H3. |
@@ -39,7 +42,8 @@ real data, H4/H5 are code-level or explained-not-fixed.
 
 ## 5. What changed
 
-Two real, tested commits landed on `fiori-reliability/2026-09-14`:
+Three real, tested commits landed on `fiori-reliability/2026-09-14` that
+together close H1:
 
 - **`trace: add the a11y selector tier, ranked above native_id`** — a new
   `SelectorTier::A11y`, ranked first in the ladder, with trace-format schema
@@ -47,61 +51,60 @@ Two real, tested commits landed on `fiori-reliability/2026-09-14`:
   Purely foundational on its own — the recorder didn't yet produce this
   tier at this point.
 - **`web: capture a11y-tier selectors via the browser's real accessibility
-  tree`** — the recorder now actually captures an `a11y` selector at record
-  time, reading Chrome's own computed role + accessible name (+ nearest
-  named ancestor) via CDP, prepended first in the ladder. Two real bugs
-  found and fixed while getting this to work live (not assumed): the
-  vendored `headless_chrome` fork's `AXPropertyName` enum is missing a
-  variant real Chrome sends (worked around with a small custom raw-JSON
-  CDP method call), and two driver wrappers (`Box<dyn AppDriver>`,
-  `SurfaceRegistry`) were each missing `a11y_hint` from their manual
-  per-method delegation lists, silently no-op'ing instead of erroring —
-  caught only by testing the full `record()` pipeline, not the driver
-  method in isolation. Three live-Chromium tests prove it
-  (`FLOWPROOF_E2E=1`), each seen failing for the right reason before being
-  fixed.
-  **Still no FAA change**: replay's resolution side for this tier remains
-  the documented no-op from the first commit, so a recorded `a11y` selector
-  is not yet USED at replay — that is the next commit, named precisely in
-  `FINDINGS.md`.
+  tree`** — the recorder now captures an `a11y` selector at record time,
+  reading Chrome's own computed role + accessible name (+ nearest named
+  ancestor) via CDP, prepended first in the ladder.
+- **`replay: resolve the a11y tier via the accessibility tree, closing H1`**
+  — replay now resolves a recorded `a11y` selector back to a live element
+  (`Accessibility.getFullAXTree` + `DOM.describeNode`/`resolveNode`), so the
+  capture from the previous commit finally has an effect.
+
+Three real bugs found and fixed while getting this to work live, not
+assumed from reading code: the vendored `headless_chrome` fork's
+`AXPropertyName` enum is missing a variant real Chrome sends (worked around
+with small custom raw-JSON CDP method calls on both the capture and
+resolution sides); two driver wrappers (`Box<dyn AppDriver>`,
+`SurfaceRegistry`) were each missing the new trait method from their manual
+per-method delegation lists, silently no-op'ing instead of erroring — caught
+only by testing the full `record()` pipeline, not the driver method in
+isolation; and an early design choice (reusing `control_type` for the a11y
+role) turned out to collide with the structural tier, which already sets
+`control_type`+`name` together for web steps — caught by re-reading the
+existing conversion code before shipping, not by a live collision.
+
+**Proven end to end, not just unit-tested**: `a_renamed_native_id_still_replays_via_the_a11y_rung`
+records against the real fixture, then overwrites the same url's content so
+the button's id changes while its accessible name stays put — the exact
+failure H1 describes. The full replay still passes, resolved via the `a11y`
+rung, not a degraded fallback. Four live-Chromium tests total
+(`FLOWPROOF_E2E=1`), each seen failing for the right reason before being
+fixed.
 
 Everything else committed tonight is documentation, evidence, and one small
 fixture-fidelity fix (`examples(fiori): stop pinning explicit view ids in
 the fixture's routing targets`) — see the commit list on the branch for the
 full sequence with root causes.
 
-**Also confirmed, not yet built**: the exact CDP API surface needed to
-actually capture and resolve `a11y` selectors
-(`Accessibility::{Enable, GetAXNodeAndAncestors}`, `DOM::{ResolveNode,
-BackendNodeId}`), verified by compiling a throwaway probe against the
-project's own vendored `headless_chrome` fork. This is real, load-bearing
-reconnaissance for whoever picks this up next — see `FINDINGS.md`'s
-"Implementation status" section for exact type names and field shapes.
-
 ## 6. What is still broken
 
-Everything H1/H2/H3 point at is still broken in the product — nothing shipped
-tonight moves the needle on a real user's first-attempt authoring yet. Ranked
-by what would unblock the most, cheapest first:
+H2/H3 are still unfixed — nothing shipped tonight moves the needle on the
+tile-loading race or the authoring-side settle mechanism. And H1 being fixed
+on one fixture is not the same as flowproof being reliable on Fiori at
+scale — that claim needs the harness and a real round, neither of which
+exists yet. Ranked by what would unblock the most, cheapest first:
 
-1. **The a11y selector tier's actual capture + resolution.** Foundation
-   landed; the integration (finding a `backend_node_id` from the web
-   adapter's existing element resolution, wiring a driver-boundary hook for
-   this web-only capability, replay-side matching + `DOM.resolveNode`, and
-   real live-Chromium tests on both sides) is unbuilt. Multi-hour effort,
-   scoped and ready to start.
-2. **A general, signal-driven settle/wait mechanism** (closes H2 and H5
-   together). Explicitly **not** "raise the timeout" — ground rule 3
-   forbids that as a primary fix, and a user gave the same correction mid-
-   session for a different near-miss. The real system needed up to 120s in
-   one hand-tuned expert spec; no single fixed value is right for both a
-   healthy day and a slow one. Needs a real busy/pending-request signal, not
-   a bigger clock.
-3. **H4, empirically.** Cheap to check once there's a way to reach a real
-   dialog/popover in a test flow; not done tonight.
-4. **The harness, generator, and gate rounds** — none of Phase 0c/1(remaining)/2/3/4
-   happened. This is the bulk of the brief's actual scope and none of it is
-   started.
+1. **A general, signal-driven settle/wait mechanism** (closes H2 and H5
+   together, per FINDINGS.md — this ranking moved up now that H1 is done).
+   Explicitly not "raise the timeout": the real system needed up to 120s in
+   one hand-tuned expert spec, so no fixed value is both fast on a healthy
+   day and safe on a slow one; needs a real busy/pending-request signal.
+2. **H4, empirically.** Cheap to check once there's a way to reach a real
+   dialog/popover in a test flow; still not done.
+3. **The harness, generator, and gate rounds** — none of Phase 0c/1
+   (remaining)/2/3/4 happened. This is the bulk of the brief's actual scope
+   and none of it is started. A fixed selector-ladder mechanism, proven
+   correct on one fixture, is a necessary input to this — not a substitute
+   for it.
 
 ## 7. What I should not trust
 
@@ -141,6 +144,9 @@ by what would unblock the most, cheapest first:
 git checkout fiori-reliability/2026-09-14
 cargo test -p flowproof-trace          # the new tier + ordering test
 cargo test -p flowproof-replay
+# The real H1 proof - needs a real Chromium, so opt-in:
+FLOWPROOF_E2E=1 cargo test -p flowproof-adapters --all-features --test a11y_capture
+FLOWPROOF_E2E=1 cargo test -p flowproof-cli --all-features --test a11y_selector_e2e
 ```
 
 The real-system probes are not scripted — they were interactive

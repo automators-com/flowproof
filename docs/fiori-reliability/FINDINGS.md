@@ -228,7 +228,7 @@ speculation — but per the brief, "verify or kill, do not assume" ultimately
 means running it against a fixture, which hasn't happened yet. Treat these as
 strong leads, not closed verdicts.
 
-- **H1 — native-id selector is harmful for UI5: CONFIRMED.**
+- **H1 — native-id selector is harmful for UI5: CONFIRMED, AND FIXED.**
   [`web.rs:3867`](../../crates/flowproof-adapters/src/web.rs) `semanticCss()`
   returns `'#' + CSS.escape(el.id)` unconditionally whenever `el.id` is
   non-empty — checked *before* `data-testid`/`aria-label`/`name`, and before
@@ -236,7 +236,11 @@ strong leads, not closed verdicts.
   view-instance-counter-bearing id the brief describes
   (`__xmlview0--idTable-listUl`), and it becomes the recorded `native_id`-tier
   selector — [`lib.rs:36`](../../crates/flowproof-trace/src/lib.rs), tier 0,
-  tried first at replay.
+  tried first at replay. **Fixed, not just diagnosed**: the `a11y` tier (see
+  "Implementation status" below) is now captured, ranked above `native_id`,
+  and resolves correctly at replay - proven end to end by a test where the
+  native id changes (the exact failure this hypothesis describes) and replay
+  still passes via `a11y`, never touching the dead `native_id` rung.
 - **H2 — no UI5-aware idle signal: CONFIRMED, and it's the same mechanism as
   H5.** [`web.rs:788`](../../crates/flowproof-adapters/src/web.rs)
   `settled_scene()`: waits for two DOM-shape reads 100ms apart to agree,
@@ -537,63 +541,71 @@ which is the comparison this session's evidence argues for. Recorded here so
 whoever reviews the eventual PR does not have to re-derive this reasoning
 from scratch.
 
-## Implementation status: capture landed and tested; replay resolution next
+## Implementation status: H1 closed end to end, capture AND replay resolution
 
-**Capture is real, working, and tested against live Chromium** - not just an
-API-surface confirmation anymore. `WebAppDriver::a11y_hint` (a new
-`AppDriver` trait method, following the exact `cell_hints`/`scope_hints`
-pattern) resolves the already-found element's `backend_node_id` and calls
-CDP `Accessibility.getAXNodeAndAncestors` to read the browser's own computed
-role + accessible name (+ nearest named ancestor). Wired into the recorder
-right where `cell_hints`/`scope_hints` already are, prepending an `a11y`
-selector so the ladder-ordering decision (tier 0) actually takes effect at
-replay time (`flowproof-replay::resolve_target` tries `step.selectors` in
-STORED order, not sorted by tier).
+**Both halves are real, working, and tested against live Chromium.** Capture:
+`WebAppDriver::a11y_hint` (a new `AppDriver` trait method, following the
+exact `cell_hints`/`scope_hints` pattern) resolves the already-found
+element's `backend_node_id` and calls CDP `Accessibility.getAXNodeAndAncestors`
+to read the browser's own computed role + accessible name (+ nearest named
+ancestor), prepending an `a11y` selector first in the ladder. Resolution:
+`WebAppDriver::resolve_a11y` reads the WHOLE accessibility tree (CDP
+`Accessibility.getFullAXTree`), finds the node matching role+name (narrowed
+by the nearest named ancestor when that pair alone isn't unique), and turns
+its `backendDOMNodeId` into a live `headless_chrome::Element` by hand -
+`DOM.describeNode` for `node_id`/`attributes`/`tag_name`, `DOM.resolveNode`
+for the remote object id, the same two calls the crate's own `Element::new`
+makes internally, just starting from a backend id rather than the
+querySelector-style node id `Element::new` requires.
 
-**Two real bugs found by testing this live, not assumed from reading code**:
+**Three real bugs found by testing this live, not assumed from reading
+code**:
 
 1. The vendored `headless_chrome` fork's `AXPropertyName` enum is missing a
-   variant real Chrome actually sends (`"uninteresting"` - shows up in
-   `ignoredReasons` on every ignored ancestor node), which failed strict
-   deserialization of the crate's own typed `Accessibility::GetAXNodeAndAncestors`
-   response before this code ever saw a role or name. Fixed by defining a
-   small custom `Method` impl (`GetAxNodeAndAncestorsRaw`) that decodes
-   `nodes` as raw `serde_json::Value` and reads only `role.value`/
-   `name.value` - same wire call and params, no dependency on the crate's
+   variant real Chrome actually sends (`"uninteresting"`), which failed
+   strict deserialization of the crate's own typed accessibility responses
+   before this code ever saw a role or name. Fixed by defining small custom
+   `Method` impls (`GetAxNodeAndAncestorsRaw`, `GetFullAxTreeRaw`) that
+   decode `nodes` as raw `serde_json::Value` and read only `role.value`/
+   `name.value` - same wire calls and params, no dependency on the crate's
    incomplete enum for fields this method never reads.
 2. `Box<dyn AppDriver>` and `SurfaceRegistry` (`flowproof-driver`) each
    manually delegate every `AppDriver` trait method to their inner driver -
    both already carry a comment warning that a method missing from that
    list silently falls back to the trait's DEFAULT (`Ok(None)`) instead of
-   erroring. `a11y_hint` was missing from both. The isolated driver test
-   (`flowproof-adapters/tests/a11y_capture.rs`) passed the whole time; the
-   bug only showed up testing through `flowproof_cli::driver_for("web")`
-   (the `Box<dyn AppDriver>` real code path), which is exactly why the
-   second test (`a11y_selector_e2e.rs`, the full `record()` pipeline) exists
-   rather than stopping at the first.
+   erroring. `a11y_hint` was missing from both, caught only by testing
+   through `flowproof_cli::driver_for("web")` rather than the driver method
+   in isolation.
+3. `UiaSelector` initially reused `control_type` for the a11y role (matching
+   the design note's stated plan) - wrong, caught before it shipped: the
+   structural tier already sets `control_type`+`name` together for web steps
+   too (UIA-style role names like `"Button"`), so a structural selector's
+   payload would have looked like an a11y one to the web adapter's locator
+   dispatch and been misrouted into accessibility-tree lookup with the wrong
+   casing (`"Button"` vs the real `"button"`). Fixed by giving `a11y` its own
+   `role` field instead of overloading an existing one - caught by re-reading
+   `flowproof-replay`'s existing `NativeId | Structural` conversion arm
+   before wiring the new one in, not by a test catching a live collision.
 
-**Explicitly not done yet: replay-side resolution.** `selector_to_uia` in
-`flowproof-replay` still returns `None` for `SelectorTier::A11y` (the
-documented no-op from the trace-format commit) - so a11y selectors are now
-correctly recorded, first in the ladder, but replay still falls through to
-`native_id` exactly as before. **This means zero FAA effect so far**: H1 is
-not yet fixed end-to-end, only half of it (capture) is. The mirror needed
-is `Accessibility.getFullAXTree` (confirmed available, same enum-gap
-workaround will be needed) plus matching by role+name+ancestor, then
-`DOM.resolveNode` back to a live element - the next commit, with its own
-live-Chromium test proving a renamed/regenerated `native_id` still resolves
-via the `a11y` rung.
+**H1 is now closed end to end, not just its foundation**: a real, honest
+proof that a `native_id` regenerating (the exact failure H1 describes) no
+longer breaks a recorded flow. `flowproof-cli/tests/a11y_selector_e2e.rs`'s
+`a_renamed_native_id_still_replays_via_the_a11y_rung` records against the
+real fixture, then overwrites the SAME url's content (matching a real app
+redeploy, not a different environment) so the button's id changes while its
+visible text - and so its accessible name - stays put. `native_id`
+(css `#greet`) is dead on arrival; the full replay still passes, and the
+report's `selector_tier` for that step is `"a11y"`, not a degraded fallback
+through `structural`/`text_anchor`. Combined with the capture-side tests
+(`a11y_capture.rs`'s two tests, `a11y_selector_e2e.rs`'s first test) - four
+tests total, all against live Chromium, `FLOWPROOF_E2E=1` required, each
+seen failing for the right reason at least once before being fixed.
 
-Evidence for the capture side: `flowproof-adapters/tests/a11y_capture.rs`
-(an ARIA-labelled button yields role=button, name="Save the current order",
-ancestor_name="Main" - the nearest NAMED ancestor, not the unnamed root; an
-unlabelled `<div>` yields no hint) and `flowproof-cli/tests/a11y_selector_e2e.rs`
-(the full `record()` pipeline puts `a11y` first for an ordinary
-`<button id="greet">Greet</button>` - role=button, name="Greet" from its own
-text content, no ARIA authored - the common case, not only the labelled
-one). Both required `FLOWPROOF_E2E=1` and a real browser; both failed first
-on the `AXPropertyName` bug and passed once it was fixed - seen failing for
-the right reason before being fixed, per the brief's own commit checklist.
+**What this does NOT yet establish**: whether this actually moves FAA on
+real specs, at scale, against the real Fiori system. That needs the harness
+(Phase 2, still unbuilt) and a real round (the acceptance gate, still
+unattempted) - a fixed mechanism proven correct on one fixture is necessary,
+not sufficient, for the brief's actual goal.
 
 ## What would need to be true to resume
 
