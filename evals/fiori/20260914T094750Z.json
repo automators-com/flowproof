@@ -1,0 +1,174 @@
+{
+  "timestamp": "20260914T094750Z",
+  "corpus": "evals/fiori/dev",
+  "runs_required": 3,
+  "latency_ms": null,
+  "faa": 0.0,
+  "faa_numerator": 0,
+  "faa_denominator": 2,
+  "negative_controls_held": null,
+  "specs": [
+    {
+      "spec": "evals/fiori/dev/probe-real-info-record-lookup.flow.yaml",
+      "negative_control": false,
+      "sha256": "88d0bb2a0509c59fb0e4fda713335fbdc8eb12f3ca4019d1244e815bdfd2d85d",
+      "record": {
+        "ok": false,
+        "reason": "error: secret ${PURCHASING_ORG} is not set in the environment"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/short-01-login-smoke.flow.yaml",
+      "negative_control": false,
+      "sha256": "647798aadabe364251079e95546e64d29d1d99e4ffc3d5658561aeae6d5c58d2",
+      "record": {
+        "ok": true,
+        "steps": 5
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 469,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3696,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 388,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 5490,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 100,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 7270,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3290,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 9059,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 27,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 12972,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 525,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3867,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 357,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 5701,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 120,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 7420,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3443,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 8920,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 6,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 12877,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 3,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/evals/fiori/dev/.flowproof/runs/2026-09-14T09-47-50Z-a992/report.json",
+          "steps": [
+            {
+              "duration_ms": 473,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 8096,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 448,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 9294,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 102,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 10355,
+              "status": "passed"
+            },
+            {
+              "detail": "expected element text 'Home', got '<element not found>' (captured: debug/dom.html, debug/console.log)",
+              "duration_ms": 10032,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "started_ms": 19373,
+              "status": "failed"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 0,
+              "status": "skipped"
+            }
+          ]
+        }
+      ],
+      "passed": false
+    }
+  ]
+}

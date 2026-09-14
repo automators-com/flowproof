@@ -1,0 +1,128 @@
+{
+  "timestamp": "20260914T095421Z",
+  "corpus": "evals/fiori/dev",
+  "runs_required": 3,
+  "latency_ms": null,
+  "faa": 0.0,
+  "faa_numerator": 0,
+  "faa_denominator": 2,
+  "negative_controls_held": null,
+  "specs": [
+    {
+      "spec": "evals/fiori/dev/probe-real-info-record-lookup.flow.yaml",
+      "negative_control": false,
+      "sha256": "88d0bb2a0509c59fb0e4fda713335fbdc8eb12f3ca4019d1244e815bdfd2d85d",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'page shows General Data' does not hold while recording: expected 'General Data', page shows '\ue1eb\nChange Info Record: Initial Screen\n\ue00d\n\ue1c4\n\ue23a\nVO\nShell Bar\nBack\nHome\nChange Info Record: Initial Screen - Show Navigation Menu\nNavigation menu\nOpen Search\nOpen Help\nNotifications\nProfile of Valentin Ober\nShell Content'"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/short-01-login-smoke.flow.yaml",
+      "negative_control": false,
+      "sha256": "647798aadabe364251079e95546e64d29d1d99e4ffc3d5658561aeae6d5c58d2",
+      "record": {
+        "ok": true,
+        "steps": 5
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 278,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3118,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 248,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4038,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 88,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4938,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3640,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 5890,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 9741,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/evals/fiori/dev/.flowproof/runs/2026-09-14T09-54-21Z-b7ad/report.json",
+          "steps": [
+            {
+              "duration_ms": 278,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3121,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 267,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4055,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 87,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4972,
+              "status": "passed"
+            },
+            {
+              "detail": "expected element text 'Home', got '<element not found>' (captured: debug/dom.html, debug/console.log)",
+              "duration_ms": 10009,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "started_ms": 8144,
+              "status": "failed"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 0,
+              "status": "skipped"
+            }
+          ]
+        }
+      ],
+      "passed": false
+    }
+  ]
+}
