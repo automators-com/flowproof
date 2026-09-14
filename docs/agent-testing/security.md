@@ -147,13 +147,17 @@ warning is what it is, and the assertion is what makes it a control.
 
 ## Filesystem observation
 
-**This is not a control.** It asserts nothing, fails nothing, and has no
-spec surface at all - there is no step to add and no key to declare. It is a
-report, and it exists because a `command:` agent is a black-box process that
-can delete a file without asking anyone.
+**The observation itself is not a control.** It prevents nothing, and it
+began with no spec surface at all. Since #465 the observations can carry a
+verdict - `assert_no_side_effect` is the step that turns them into one -
+but without that step this remains what it always was: a report,
+existing because a `command:` agent is a black-box process that can delete
+a file without asking anyone.
 
 Any flow that already engages containment gets it for free, because it is the
-same seccomp filter. On Linux the report prints to stderr when, and only
+same seccomp filter; a flow carrying only `assert_no_side_effect` engages the
+same filter in its observation-only form, under an allow-all policy that
+contains nothing. On Linux the report prints to stderr when, and only
 when, a run destroyed something:
 
 ```
@@ -210,7 +214,8 @@ was not there reads exactly like one that removed a tree. `open(path,
 O_WRONLY)` without `O_TRUNC` followed by a write at offset 0 corrupts a file
 and fires nothing; catching it needs a trap on every `write`, which would put
 a supervisor round-trip on every log line. Nothing is observed on macOS or
-Windows, or on a flow that engages no containment. The recorded lane
+Windows, or on a flow that engages neither egress containment nor
+side-effect observation. The recorded lane
 inherits every one of these limits plus one of its own: a kept `./` target
 is the NAME the syscall used, never a resolution claim - a symlinked
 component can carry the actual victim elsewhere.
