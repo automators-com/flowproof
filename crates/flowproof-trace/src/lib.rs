@@ -32,21 +32,34 @@ pub const FORMAT_VERSION: u32 = 1;
 )]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorTier {
+    /// Accessibility-tree identity: role + accessible name (+ nearest named
+    /// ancestor when that pair alone isn't unique on the page). Sourced from
+    /// the browser's own computed accessibility tree (Chrome DevTools
+    /// Protocol `Accessibility.getFullAXTree`), not from anything the page
+    /// author had to opt into - works whether or not ARIA was authored
+    /// explicitly, because the browser computes it either way. Ranked above
+    /// `native_id` on evidence, not just argument: a live probe against a
+    /// real SAPUI5 app (docs/fiori-reliability/FINDINGS.md, "real-system
+    /// probe #1") showed `native_id` capturing generated, view-instance- and
+    /// clone-index-bearing ids (`__xmlview1--...`, `__text6-__clone0`) for
+    /// controls whose accessible name was stable across the same session.
+    A11y = 0,
     /// Native stable ID (UIA AutomationId, SAP GUI Scripting ID, CSS/DOM id).
-    NativeId = 0,
+    NativeId = 1,
     /// Structural path through the accessibility/DOM tree.
-    Structural = 1,
+    Structural = 2,
     /// OCR/text anchor plus a spatial relation.
-    TextAnchor = 2,
+    TextAnchor = 3,
     /// Visual template match.
-    VisualTemplate = 3,
+    VisualTemplate = 4,
     /// AI relocation from the recorded intent (never silent: proposes a diff).
-    AiRelocation = 4,
+    AiRelocation = 5,
 }
 
 impl SelectorTier {
     /// All tiers, in the order replay attempts them.
-    pub const LADDER: [SelectorTier; 5] = [
+    pub const LADDER: [SelectorTier; 6] = [
+        SelectorTier::A11y,
         SelectorTier::NativeId,
         SelectorTier::Structural,
         SelectorTier::TextAnchor,
@@ -57,6 +70,7 @@ impl SelectorTier {
     /// The tier's wire name (matches the serde/schema encoding).
     pub fn name(self) -> &'static str {
         match self {
+            SelectorTier::A11y => "a11y",
             SelectorTier::NativeId => "native_id",
             SelectorTier::Structural => "structural",
             SelectorTier::TextAnchor => "text_anchor",
@@ -75,8 +89,26 @@ mod tests {
         let mut sorted = SelectorTier::LADDER;
         sorted.sort();
         assert_eq!(sorted, SelectorTier::LADDER);
-        assert_eq!(sorted[0], SelectorTier::NativeId);
-        assert_eq!(sorted[4], SelectorTier::AiRelocation);
+        assert_eq!(sorted[0], SelectorTier::A11y);
+        assert_eq!(sorted[5], SelectorTier::AiRelocation);
+    }
+
+    /// The fix this tier exists for: on a real SAPUI5 app, a generated
+    /// `native_id` proved less stable than the accessible name for the same
+    /// control (FINDINGS.md, "real-system probe #1"). A ladder that doesn't
+    /// try `a11y` before `native_id` doesn't get that benefit no matter how
+    /// good the a11y selector is.
+    #[test]
+    fn a11y_is_tried_before_native_id() {
+        let a11y_index = SelectorTier::LADDER
+            .iter()
+            .position(|t| *t == SelectorTier::A11y)
+            .expect("a11y is in the ladder");
+        let native_id_index = SelectorTier::LADDER
+            .iter()
+            .position(|t| *t == SelectorTier::NativeId)
+            .expect("native_id is in the ladder");
+        assert!(a11y_index < native_id_index);
     }
 
     #[test]

@@ -880,6 +880,7 @@
       "properties": {
         "tier": {
           "enum": [
+            "a11y",
             "native_id",
             "structural",
             "text_anchor",
@@ -900,6 +901,39 @@
         }
       },
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "tier": {
+                "const": "a11y"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "required": [
+                  "role",
+                  "name"
+                ],
+                "properties": {
+                  "role": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "ancestor_role": {
+                    "type": "string"
+                  },
+                  "ancestor_name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
         {
           "if": {
             "properties": {

@@ -203,6 +203,8 @@ already follows.
  "intent":"Enter order type ZOR in the Order Type field",
  "action":{"type":"type_text","params":{"text":"ZOR","submit":false}},
  "selectors":[
+   {"tier":"a11y","provenance":"web","confidence":1.0,
+    "payload":{"role":"textbox","name":"Order Type","ancestor_role":"group","ancestor_name":"Header"}},
    {"tier":"native_id","provenance":"sap-com","confidence":1.0,
     "payload":{"id":"wnd[0]/usr/ctxtVBAK-AUART"}},
    {"tier":"structural","provenance":"uia",
@@ -328,16 +330,28 @@ already follows.
   reject a step carrying `dialog`, since a native desktop message box is a
   real window driven by ordinary steps.
 - `selectors`: the ladder, ordered deterministic-first. Tiers:
-  1. `native_id`: UIA AutomationId, SAP GUI Scripting ID, DOM id/CSS.
-  2. `structural`: path through the accessibility/DOM tree.
-  3. `text_anchor`: OCR text anchor + spatial relation
+  1. `a11y`: role + accessible name (+ nearest named ancestor when that pair
+     alone isn't unique), read from the browser's own computed
+     accessibility tree (Chrome DevTools Protocol
+     `Accessibility.getFullAXTree`) rather than anything the page had to opt
+     into. Web-only for now. Ranked above `native_id`: on a real SAPUI5 app,
+     a generated `native_id` (view-instance- and clone-index-bearing,
+     e.g. `__xmlview1--...`) proved less stable across a session than the
+     accessible name for the same control (see
+     `docs/fiori-reliability/FINDINGS.md`). Payload:
+     `{"role", "name"}` required, `{"ancestor_role", "ancestor_name"}`
+     optional.
+  2. `native_id`: UIA AutomationId, SAP GUI Scripting ID, DOM id/CSS.
+  3. `structural`: path through the accessibility/DOM tree.
+  4. `text_anchor`: OCR text anchor + spatial relation
      (`left_of|right_of|above|below|inside`).
-  4. `visual_template`: content-addressed image patch + expected region.
-  5. `ai_relocation`: NL context for model-assisted relocation. Replay
+  5. `visual_template`: content-addressed image patch + expected region.
+  6. `ai_relocation`: NL context for model-assisted relocation. Replay
      treats reaching this tier as a **failure that proposes a heal diff**,
      never a silent fix.
   A step records only the tiers its perception sources could produce (a
-  Citrix recording may have tiers 3–5 only). `confidence` is optional,
+  Citrix recording may have tiers 4–6 only, and never `a11y`, which is
+  web-only). `confidence` is optional,
   `[0.0, 1.0]`. Any rung's payload may carry `nth` (1-based) to address
   the nth matching element when a selector legitimately matches several
   (`Type email into the 2nd "Field Name" field`). `nth` indexes the
@@ -468,3 +482,13 @@ already follows.
 `version` bumps only on breaking changes; additive optional fields may land
 within v1 (the schema allows unknown extra fields on `payload` and `params`
 but nowhere else). Replayers must refuse newer major versions.
+
+**Open forward-compat question, flagged rather than resolved**: `selectors[].tier`
+is a closed schema enum, unlike `payload`/`params`. Adding `a11y` to it (see
+above) is safe for every *existing* trace (they never contain it), but an
+*older* engine reading a *newer* trace that does contain `"tier":"a11y"` will
+fail schema validation on that selector, unlike the `dialog` object above
+(which an old engine can simply ignore). Whether that should instead degrade
+gracefully — skip the one unrecognized selector and try the next tier in the
+list — is a real policy decision this repository has not made yet; see
+`docs/fiori-reliability/FINDINGS.md`'s design note for the `a11y` tier.

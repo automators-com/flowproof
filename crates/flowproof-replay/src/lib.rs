@@ -181,8 +181,17 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
         },
         // Visual matching needs the vision mode (not yet built); AI
         // relocation NEVER runs at replay time by design — it is the heal
-        // workflow, which proposes a reviewable diff instead.
-        SelectorTier::VisualTemplate | SelectorTier::AiRelocation => return None,
+        // workflow, which proposes a reviewable diff instead. `a11y`
+        // resolves through the browser's accessibility tree (CDP
+        // `Accessibility` domain + `DOM.resolveNode`), not through this
+        // generic CSS/automation-id-shaped `UiaSelector` — that capture and
+        // resolution path is not implemented yet (docs/fiori-reliability/
+        // FINDINGS.md, "design note: the a11y selector tier"); the recorder
+        // does not produce this tier yet either, so this arm is unreached
+        // in practice today, not a silent downgrade of a real selector.
+        SelectorTier::A11y | SelectorTier::VisualTemplate | SelectorTier::AiRelocation => {
+            return None
+        }
     };
     (!uia.is_empty()).then_some(uia)
 }
