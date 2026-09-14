@@ -26,12 +26,15 @@ dependency definition(s)").
 
 ## UI5 version
 
-Pinned to **OpenUI5 1.120.20** in `ui5.yaml`. This is a reasonable, current
-LTS-adjacent choice, **not a confirmed match for the real corporate
-environment** - nobody working on this had credentials or access to check
-what version the actual launchpad serves. If the real version becomes known,
-change `framework.version` in `ui5.yaml`; nothing else should need to change
-for a same-major-line bump.
+Pinned to **OpenUI5 1.120.20** in `ui5.yaml`, chosen before the real version
+was known. **The real system's version is now confirmed: 1.114.11**
+(`sap.ui.version` read directly from the live launchpad - see
+`docs/fiori-reliability/FINDINGS.md`, "Real-system probe #2"). This fixture's
+pin has not been updated to match yet - this session pivoted to testing
+against the real system directly instead (per the same findings doc) rather
+than continuing to invest in the fixture. Whoever picks this back up: change
+`framework.version` to `1.114.11` in `ui5.yaml` before treating this fixture
+as representative of anything version-sensitive.
 
 ## What's here vs. what the full brief asked for
 

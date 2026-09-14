@@ -357,6 +357,61 @@ wait clause at all - closing the actual mechanism, not this one symptom.
 That is now the top candidate for Phase 3, empirically confirmed on the
 real system rather than only inferred from source.
 
+## Real-system probe #2 - H3 vs H3b, decided empirically
+
+Logged into the real launchpad directly (same credentials flowproof itself
+uses, via its `~/Library/Application Support/flowproof/config.yaml` `fiori:`
+profile - confirmed by reading `crates/flowproof-cli/src/config.rs:296`,
+which injects `FIORI_USER`/`FIORI_PASSWORD`/etc. as real process env vars at
+startup; this is also what explains probe #1's login succeeding without
+`.env` defining those names - not a mistake, a different, legitimate
+credential source than assumed at first).
+
+**Real UI5 version confirmed: 1.114.11** (`sap.ui.version` in-browser), not
+the 1.120.20 guessed for the mock fixture's `ui5.yaml`. Corrected there.
+
+**Independently reproduced the tile-loading race** found in probe #1: the
+Home page was blank at 3s after login, tiles rendered by ~13s. Consistent
+with, and independent confirmation of, H2/the general-settle-mechanism
+finding - this was observed by direct browser inspection, not only through
+flowproof's own error message.
+
+**H3 (`sap.ui.test.RecordReplay`) - real friction, not just a theoretical
+risk.** All 64 of `RecordReplay`'s transitive dependencies load with HTTP 200
+from this production instance (so the brief's "verify it's exposed in
+production, non-debug builds" concern is not what bites here - it's genuinely
+deployed). But calling `sap.ui.require(["sap/ui/test/RecordReplay"], ...)`
+from an external, CDP-injected script **never completes** - the require
+callback fires neither success nor error. Console shows the actual cause:
+`Uncaught TypeError: Cannot read properties of undefined (reading
+'findControlSelectorByDOMElement')`, thrown from inside
+`sap/ui/test/autowaiter/_timeoutWaiter.js`. Reading this as: `RecordReplay`'s
+own module body (or a dependency) expects state that OPA5's own test harness
+normally sets up before anything touches it (its iframe-launcher wiring,
+most likely) - it is not designed to be invoked cold from outside that
+context, which is exactly how flowproof's CDP-based web adapter would have to
+call it.
+
+**H3b (accessibility tree via CDP) - confirmed rich and immediately usable,
+right now, on the real system.** A full-page accessibility snapshot of the
+real, live Home page (via this session's own `read_page`, which reads the
+same class of data `Accessibility.getFullAXTree` would) shows every
+interactive element with a stable, semantic role+name pair:
+`link "Change Purchasing Info Record Tile"`, `button "Home - Show All My
+Apps"`, `tab "Purchasing"`, `heading "My Apps"`. No page injection, no
+dependency on a fragile module that crashes outside its intended harness,
+and this generalizes to every `app: web` target the way H3b's proposer
+argued, not only Fiori.
+
+**Verdict on H3 vs H3b, from this evidence: H3b is the stronger candidate.**
+Not a final decision - a real design comparison still needs writing (per the
+brief's own rule that a new selector-ladder rung needs a design note before
+implementation, given trace-format implications) - but the empirical
+evidence from the actual production system points the same direction the
+user's architectural instinct did: nothing to inject, nothing that can crash
+outside a harness it wasn't built for, and one mechanism instead of two
+(Fiori/UI5 plus everything else) if it measures comparably on real specs.
+
 ## What would need to be true to resume
 
 - Free space at or above 15 GB (or the user says a build up to N GB is fine
