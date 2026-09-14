@@ -180,6 +180,70 @@ though more wall-clock time overall) as a workaround — noted for whoever
 resumes this, not attempted tonight given the two close calls already spent
 proving the same constraint.
 
+## Phase 1 — hypothesis verdicts (from reading code, pending fixture verification)
+
+These are from reading the actual adapter/trace/agent source, done in parallel
+with the Phase 0 build/test cycle. They are real code citations, not
+speculation — but per the brief, "verify or kill, do not assume" ultimately
+means running it against a fixture, which hasn't happened yet. Treat these as
+strong leads, not closed verdicts.
+
+- **H1 — native-id selector is harmful for UI5: CONFIRMED.**
+  [`web.rs:3867`](../../crates/flowproof-adapters/src/web.rs) `semanticCss()`
+  returns `'#' + CSS.escape(el.id)` unconditionally whenever `el.id` is
+  non-empty — checked *before* `data-testid`/`aria-label`/`name`, and before
+  any class-based fallback. For a UI5 control this is exactly the generated,
+  view-instance-counter-bearing id the brief describes
+  (`__xmlview0--idTable-listUl`), and it becomes the recorded `native_id`-tier
+  selector — [`lib.rs:36`](../../crates/flowproof-trace/src/lib.rs), tier 0,
+  tried first at replay.
+- **H2 — no UI5-aware idle signal: CONFIRMED, and it's the same mechanism as
+  H5.** [`web.rs:788`](../../crates/flowproof-adapters/src/web.rs)
+  `settled_scene()`: waits for two DOM-shape reads 100ms apart to agree,
+  capped at 20 rounds (~2s), then proceeds regardless. No concept of a UI5
+  busy indicator or an in-flight OData batch. **The same function backs
+  authoring**: `driver.scene()` in
+  [`recorder.rs:2327`](../../crates/flowproof-agent/src/recorder.rs) is called
+  directly before handing the scene to the model for grounding, with no
+  additional UI5-specific wait. So H5's "the model grounds against a
+  half-rendered DOM" and H2's "replay acts on a control about to be
+  destroyed" are **one root cause wearing two symptoms**, not two separate
+  defects — fixing the settle/idle mechanism address both the authoring
+  quality problem and the replay race at once. This raises its rank on the
+  fix list: one change, two classes of failure closed.
+- **H3 — missing UI5 selector rung: CONFIRMED ABSENT.** No reference to
+  `sap.ui.test.RecordReplay` or `waitForUI5` anywhere in the codebase
+  (`grep -rn` across `crates/`). The brief's proposed fix — a `ui5` selector
+  tier above `native_id`, using `RecordReplay.findControlSelectorByDOMElement`
+  / `findDOMElementByControlSelector`, plus `waitForUI5` as the inter-step
+  barrier (subsuming H2/H5's fix) — is architecturally exactly what H1+H2
+  jointly point at. Not yet designed in code; this needs the design-note
+  treatment the brief calls for (new selector tier = trace-format-adjacent
+  change) before implementation, not a quick patch.
+- **H4 — dialogs/popovers escape the search root: LIKELY NOT REPRODUCIBLE AS
+  STATED, unverified.** The adapter's element search (`web.rs`, scene-building
+  and `try_find`) operates against `document.querySelectorAll(...)` — the
+  whole top-level document — with special-case handling only for iframes.
+  `#sap-ui-static` is a sibling div in the *same* document, not a separate
+  frame, so nothing in the code as read scopes search away from it. This is a
+  lean from reading the code, not a proof; killing it for real needs an actual
+  UI5 app with a `sap.m.Dialog` running through the adapter (Phase 0b).
+- **H5 — see H2.** Not a separate mechanism; folded in above.
+
+**Ranked implication for Phase 3** (specs unblocked ÷ risk, per the brief):
+1. A UI5-aware idle/settle primitive (`waitForUI5` via CDP `Runtime.evaluate`)
+   — closes H2 and H5 together, is additive (new wait path, doesn't touch the
+   trace format), and is the highest-leverage single change.
+2. A `ui5` selector tier above `native_id`
+   (`findControlSelectorByDOMElement`/`findDOMElementByControlSelector`) —
+   closes H1, but touches the trace format (new provenance tier) and needs
+   the design-note + migration-path treatment the brief requires before
+   landing, so it's higher-risk and comes second despite being the most
+   "obviously right" fix.
+3. Confirm or kill H4 empirically once the fixture exists — likely a
+   non-issue, but cheap to verify and worth doing before spending effort on
+   it.
+
 ## What would need to be true to resume
 
 - Free space at or above 15 GB (or the user says a build up to N GB is fine
