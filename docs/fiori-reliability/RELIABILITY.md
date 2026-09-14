@@ -30,17 +30,31 @@ full account):
   A real first-attempt authoring failure, exactly what FAA is meant to
   catch — not a flowproof defect.
 - `short-01-login-smoke.flow.yaml` — passed record and run 1, then failed
-  run 2 on a "Home" text assertion against a live launchpad whose Spaces
-  feature titles its landing page `"My Home"`. A new, unexplained,
-  reproducing-with-evidence intermittent gap, not yet understood, not
-  papered over.
+  run 2 on a "Home" text assertion. **Root cause found and fixed since**
+  (see `FINDINGS.md`): the model-authoring path was silently discarding a
+  step's own explicit `within 60s` and substituting a hardcoded 10-second
+  default — a universal bug, not Fiori-specific, now fixed in
+  `flowproof-agent` with two regression tests. A live re-verification after
+  the fix passed all 3 runs, with one run's wait genuinely taking 18.7s —
+  well past the old 10s ceiling, comfortably inside the corrected 60s one.
+  The initial "Spaces titles the page 'My Home', not 'Home'" hypothesis for
+  this failure was investigated and **not needed** to explain what was
+  actually observed; the simpler timeout cause fully accounts for it.
 
 Two full scoreboards are committed (`evals/fiori/20260914T094750Z.json`,
 `evals/fiori/20260914T095421Z.json`) as the actual evidence behind these
-numbers. This is a harness smoke-test result, not a dev/holdout FAA
+numbers, plus the timeout-fix commit and its own live re-verification
+(described in `FINDINGS.md`, not re-scored into a third dev-corpus
+scoreboard since it targeted a temporary single-spec copy, not the tracked
+corpus). This is a harness smoke-test result, not a dev/holdout FAA
 baseline — reading "0%" as "flowproof's reliability score on Fiori" would be
 wrong in both directions: too small a sample, and one of the two failures
-is a spec-authoring problem, not a product one.
+is a spec-authoring problem, not a product one. With the timeout fix,
+re-running the original 2-spec corpus would likely now score 1/2 rather
+than 0/2 — untested as of this writing, since the fix was verified against
+an isolated single-spec copy rather than the committed corpus, to avoid
+re-exercising `probe-real-info-record-lookup`'s already-understood, separate
+failure needlessly against the real system.
 
 ## 3. Control results
 
@@ -131,10 +145,11 @@ and a real round, neither of which exists yet.
 specs, negative controls, a holdout set), are what remains.** The harness
 that runs a corpus now exists and works (§2), but it has only ever been
 pointed at 2 hand-picked specs, not the corpus the brief actually asks for.
-Two fixed mechanisms (H1, H2/H5) plus one killed hypothesis (H4), plus one
-newly-found-but-unfixed intermittent gap (the "Home"/"My Home" finding in
-§2), each proven correct or reproduced on real data, are a necessary input
-to the corpus/gate work — not a substitute for it.
+Two fixed mechanisms (H1, H2/H5) plus one killed hypothesis (H4) plus one
+more fixed mechanism found via the harness itself (the model-authoring
+timeout bug behind the "Home" finding in §2 — see `FINDINGS.md`), each
+proven correct or reproduced on real data, are a necessary input to the
+corpus/gate work — not a substitute for it.
 
 ## 7. What I should not trust
 

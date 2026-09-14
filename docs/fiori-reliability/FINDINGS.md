@@ -731,8 +731,93 @@ surfaced one real spec-authoring problem and one real intermittent replay
 gap — which is what a working harness is supposed to do on its first real
 data.
 
+### The `short-01-login-smoke` intermittency: root cause found, and it was
+### simpler than the "Home vs My Home" hypothesis above
+
+The paragraph above guessed the failure might be semantic — this tenant's
+Spaces feature titling the landing page `"My Home"`, not the plain `"Home"`
+the spec asserts on. That guess was never confirmed, and a closer look at
+the actual grounding shows a simpler, fully explaining cause instead:
+**the recorder's own timeout for this step was wrong, cut to a sixth of
+what the spec asked for.**
+
+`s0004` ("Wait until page shows Home within 60s") is a **model**-authored
+step (the harness records with the default `Author::Auto`, and with a model
+configured every plain natural-language step routes through the LLM
+grounding path — `crates/flowproof-agent/src/recorder.rs`'s `use_model`
+branch — never the deterministic rules grammar). The model-grounding code
+path that turns an `assert_text` action into a `ResolvedAction::AssertText`
+(`crates/flowproof-agent/src/author.rs`, the `"assert_text" =>` arm) hard-
+coded `timeout_ms: crate::rules::ASSERT_TIMEOUT_MS` — **10 seconds,
+always** — regardless of what the step's own natural-language text said.
+The deterministic rules grammar (`rules.rs`) has always parsed an explicit
+`within <N>s` (or defaulted to a 60-second `WAIT_STEP_TIMEOUT_MS` for
+`wait until` phrasing specifically) — but that logic was never reused by
+the model path, because a model-authored `assert_text` action carries no
+timeout field to begin with (`AuthoredAction` in `author.rs` has none, by
+design — a number the model invented would be no more trustworthy than one
+it forgot). The recorded trace confirms it exactly: `s0004` was captured
+with `"timeout_ms":10000`, silently discarding the spec's own "within 60s".
+`s0005` (the very next step, `"page shows Home"`, no `wait until`, no
+explicit `within`) was *correctly* `10000` by the same grammar's own
+default for a plain assert — so the two steps side by side look like a
+1/6th-of-what-was-asked bug on one line and correct behavior on the next.
+
+This is a **universal flowproof bug**, not specific to this spec or to
+Fiori: any spec, on any target, whose plain-language step includes an
+explicit `within Ns` — recorded with a model configured — had that number
+silently replaced by 10 seconds. It explains both prior failures without
+needing any Spaces-related hypothesis: run 3 of the first harness run and
+run 2 of the second each failed elsewhere, but always at *some* point past
+10 seconds, well within a real 60-second budget for this shell element to
+render.
+
+**Fixed** in `crates/flowproof-agent/src/rules.rs` (a new
+`pub(crate) fn timeout_ms_for_intent(intent: &str) -> u64`, reusing the
+existing `split_within` parser and the same `wait until` vs. plain-assert
+default split the deterministic grammar already had) and
+`crates/flowproof-agent/src/author.rs` (the `assert_text` grounding arm now
+calls it against the step's own `intent` instead of hardcoding
+`ASSERT_TIMEOUT_MS`). Two new regression tests prove it:
+`model_authored_wait_honors_an_explicit_within_clause` (an explicit
+`within 60s` on a model-authored step grounds to `60_000`, not `10_000`)
+and `model_authored_wait_until_defaults_to_the_long_timeout` (a bare
+`wait until` with no explicit qualifier still gets the long default via
+the model path, matching what the deterministic grammar already gave that
+phrasing). All 377 `flowproof-agent` lib tests pass; `fmt`/`clippy` clean.
+
+**Re-verified live, not just unit-tested.** Re-recording
+`short-01-login-smoke.flow.yaml` against the real system now captures
+`s0004` with `"timeout_ms":60000`, and a 3-run replay against the real
+system passed all three times — run 2 of that replay took **18.7 seconds**
+on `s0004` (well past the old 10-second budget, comfortably inside the new
+60-second one) and still passed. That single data point is close to direct
+proof: this exact scenario — the shell taking noticeably longer than 10s,
+well under 60s — is what silently failed before, and the fix closes it.
+
+**What this does and does not settle**: the timeout-honoring bug is
+confirmed and fixed, and it fully explains the two failures actually
+observed so far — there is no remaining evidence for a distinct "Home vs
+My Home" semantic problem; that was an untested hypothesis, now superseded
+by a cause that explains the same data more simply. It is not proof no
+Spaces-related issue could ever occur on a different assertion phrased
+differently — only that it was not needed to explain what was actually
+seen here.
+
 ## Decisions
 
+- **Went back and chased the "Home" vs "My Home" finding down after all,
+  once the user asked directly whether it was universal or test-specific.**
+  Reason for reopening a decision made just above (not chasing it "tonight"):
+  the user's question was itself the signal that this was worth a bounded
+  look before building anything further on top of it — and the actual root
+  cause (the model-authoring path dropping an explicit `within Ns`, detailed
+  above) turned out to be both real and universal, not Fiori-specific, and
+  cheap to fix once found (two files, ~15 lines, two tests). This is the
+  reversal the original decision explicitly left open for. Confirms the
+  original caution was right too: guessing a fix without investigating
+  first would likely have "fixed" the wrong thing (the assertion text, not
+  the timeout) and left the real bug live for every other spec.
 - **Opened the harness's first real runs against the live corporate system
   rather than waiting to build the full Phase 0c corpus first.** Reason:
   the user's explicit instruction was to "start the harness" now, on the
