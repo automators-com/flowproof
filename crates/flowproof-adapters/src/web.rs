@@ -281,6 +281,7 @@ fn cross_origin(frame: &str) -> DriverError {
 /// `call_js_fn` does not reach Rust as an `Err`, which has produced a
 /// silent green in this adapter before.
 const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
+  function norm(s){ return String(s || '').replace(/\u00ad/g, '').trim(); }
   function nameOf(f){
     return f.getAttribute('title') || f.getAttribute('name') || f.getAttribute('id')
       || f.getAttribute('aria-label') || '';
@@ -316,17 +317,18 @@ const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
     // textContent instead finds the label element itself, not the field it
     // labels - fine for read-only text, wrong for every value-driving op
     // this function performs, so those look for the control FIRST.
+    var want = norm(TEXT);
     var fields = Array.prototype.slice.call(doc.querySelectorAll('input, select, textarea'));
     var byLabel = fields.filter(function(f){
-      var lbl = f.labels && f.labels[0] ? f.labels[0].textContent.trim() : '';
-      return lbl === TEXT || f.getAttribute('aria-label') === TEXT
-        || f.getAttribute('placeholder') === TEXT;
+      var lbl = f.labels && f.labels[0] ? norm(f.labels[0].textContent) : '';
+      return lbl === want || norm(f.getAttribute('aria-label')) === want
+        || norm(f.getAttribute('placeholder')) === want;
     });
     if (byLabel.length) {
       el = byLabel[0];
     } else {
       var all = Array.prototype.slice.call(doc.querySelectorAll('*'));
-      el = all.filter(function(n){ return (n.textContent||'').trim() === TEXT; })[0] || null;
+      el = all.filter(function(n){ return norm(n.textContent) === want; })[0] || null;
     }
   }
   if (!el) { return 'no_element'; }
@@ -2470,12 +2472,10 @@ impl AppDriver for WebAppDriver {
             .tab()?
             .evaluate("document.title", false)
             .map_err(|e| web_err("reading page title", e))?;
-        Ok(flowproof_driver::normalize_visible_text(
-            &value
-                .value
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default(),
-        ))
+        Ok(value
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
@@ -2499,12 +2499,10 @@ impl AppDriver for WebAppDriver {
                 false,
             )
             .map_err(|e| web_err("reading page text", e))?;
-        Ok(flowproof_driver::normalize_visible_text(
-            &value
-                .value
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default(),
-        ))
+        Ok(value
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
     }
 
     fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError> {
@@ -3379,12 +3377,11 @@ impl AppDriver for WebAppDriver {
                 .get("present")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
-            text: flowproof_driver::normalize_visible_text(
-                parsed
-                    .get("text")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default(),
-            ),
+            text: parsed
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
         })
     }
 
@@ -3410,6 +3407,8 @@ impl AppDriver for WebAppDriver {
         let locator = Self::locator(selector)?;
         // Inner text covers most elements; inputs expose their VALUE — the
         // text a user sees in the box (Playwright's toHaveValue reading).
+        // Preserve the raw value for captures that are typed back into the
+        // application. Layout normalization belongs to text comparisons.
         let value = self.with_element(
             &locator,
             &format!("reading text of [{selector}]"),
@@ -3427,12 +3426,10 @@ impl AppDriver for WebAppDriver {
                 )
             },
         )?;
-        Ok(flowproof_driver::normalize_visible_text(
-            &value
-                .value
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default(),
-        ))
+        Ok(value
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default())
     }
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {

@@ -139,7 +139,7 @@ Fiori iframe if the generic labels do not replay reliably.
 
   The values are non-secret SAP business identifiers and can be committed in the
   example values file. If the reference tenant changes, refresh them with the
-  same OData shape used by `examples/fiori/mint-test-data.sh`, keeping
+  same plant-scoped `C_PurInfoRecordWithOrg` OData query, keeping
   credentials in `flowproof config` or the operator's environment, not in the
   example package.
 - Fiori should use the Purchasing work area's `Monitor Supplier Confirmation`

@@ -1,10 +1,11 @@
 # SAP GUI to Fiori to Excel release walkthrough
 
-A several-minute proof that one recorded flow can cross SAP GUI, SAP Fiori,
-and Excel, and that setup for it needs no repo-local `.env` file — answering
+A draft walkthrough for recording one flow across SAP GUI, SAP Fiori,
+and Excel with no repo-local `.env` file — answering
 [issue #536](https://github.com/automators-com/flowproof/issues/536). See
 [`plans/006-sap-gui-fiori-excel-config-demo.md`](../../plans/006-sap-gui-fiori-excel-config-demo.md)
-for the design.
+for the design. The example parses, but its tenant-specific report selectors
+and exported columns still need verification during a live recording.
 
 The flow, `sap-gui-fiori-excel.flow.yaml`, is a single multi-surface test
 case:
@@ -43,7 +44,7 @@ $ flowproof doctor --fiori
 defaults for this machine once; `flowproof config show` prints them back
 with the password masked. `flowproof doctor --sap`/`--fiori` confirm the
 seeded config actually reaches something live — see
-[`docs/getting-started.md`](../../docs/getting-started.md#flowproof-doctor---sap----fiori-is-any-of-this-reachable)
+[the configuration guide](../../docs/getting-started/secrets-and-config.md)
 for what each check does.
 
 Then copy the business data template:
@@ -69,8 +70,9 @@ passing recording is proof the setup story in this README actually works.
 
 ## Replay
 
-No model calls, no live SAP/Fiori/Excel connection needed once a trace is
-committed:
+Replay makes no model calls. It drives the recorded UI steps against live SAP
+GUI and Fiori and opens the exported file in Excel, so those applications and
+their network connections must still be available:
 
 ```console
 $ env -u SAP_USER -u SAP_PASSWORD -u SAP_CLIENT -u SAP_LANGUAGE -u SAP_CONNECTION \

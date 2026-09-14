@@ -826,7 +826,8 @@ where
     loop {
         if let Some(title) = tolerate(read(), &mut fault)? {
             let hit = if exact {
-                title.trim() == expected.trim()
+                flowproof_driver::normalize_visible_text(&title).trim()
+                    == flowproof_driver::normalize_visible_text(&expected).trim()
             } else {
                 flowproof_driver::text_contains(&title, &expected)
             };

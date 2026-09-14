@@ -11,7 +11,7 @@
 # Pulled live from MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg,
 # a plant-scoped row (plans/006-sap-gui-fiori-excel-config-demo.md
 # "Resolved workflow choices"). If the reference tenant changes, refresh
-# with the same OData shape examples/fiori/mint-test-data.sh uses —
+# by querying the same plant-scoped OData entity —
 # credentials for that query come from flowproof config or the operator's
 # environment, never from this file.
 SUPPLIER: "10300001"
