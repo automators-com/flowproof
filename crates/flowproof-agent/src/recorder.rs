@@ -493,6 +493,33 @@ fn enrich_scope_hints(step: &mut Step, hints: &flowproof_driver::ScopeHints) {
     }
 }
 
+/// Prepend an `a11y` selector built from record-time accessibility hints
+/// (docs/fiori-reliability/FINDINGS.md's design note). Prepended, not
+/// pushed: `SelectorTier::A11y` is tier 0, and replay tries `step.selectors`
+/// in STORED order (`flowproof-replay::resolve_target`), not sorted by
+/// tier - the ordering decision only takes effect if the array itself
+/// reflects it.
+fn enrich_a11y_hint(step: &mut Step, hints: &flowproof_driver::A11yHints) {
+    let mut payload = serde_json::Map::new();
+    payload.insert("role".into(), hints.role.as_str().into());
+    payload.insert("name".into(), hints.name.as_str().into());
+    if let Some(role) = &hints.ancestor_role {
+        payload.insert("ancestor_role".into(), role.as_str().into());
+    }
+    if let Some(name) = &hints.ancestor_name {
+        payload.insert("ancestor_name".into(), name.as_str().into());
+    }
+    step.selectors.insert(
+        0,
+        Selector {
+            tier: SelectorTier::A11y,
+            provenance: flowproof_trace::format::Adapter::Web,
+            confidence: Some(1.0),
+            payload,
+        },
+    );
+}
+
 /// Encode a trigger action's optional folded-in dialog into its params bag.
 /// STRICTLY ADDITIVE: with no dialog the bag stays empty, so the action
 /// serializes byte-identically to before the feature (the `dialog` key never
@@ -3956,6 +3983,16 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 if let Ok(Some(hints)) = driver.scope_hints(&scope_uia) {
                     if let Some(step) = steps.last_mut() {
                         enrich_scope_hints(step, &hints);
+                    }
+                }
+            }
+            // H1's fix: an a11y-tier selector alongside whatever rung the
+            // ladder already recorded, web-only and best-effort - absent
+            // when the target has no meaningful accessible name.
+            if let Some(uia) = action_selector(&action) {
+                if let Ok(Some(hints)) = driver.a11y_hint(&uia) {
+                    if let Some(step) = steps.last_mut() {
+                        enrich_a11y_hint(step, &hints);
                     }
                 }
             }

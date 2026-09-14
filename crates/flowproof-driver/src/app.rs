@@ -70,6 +70,21 @@ pub struct CellHints {
     pub row_id: Option<String>,
 }
 
+/// Record-time accessibility identity for a resolved element: role and
+/// accessible name from the browser's own computed accessibility tree, plus
+/// the nearest named ancestor when that pair alone might not be unique.
+/// Web-only (docs/fiori-reliability/FINDINGS.md's design note for the
+/// `a11y` selector tier) - `role`/`name` are required because a selector
+/// with neither identifies nothing; the ancestor pair is optional because
+/// most elements don't need it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct A11yHints {
+    pub role: String,
+    pub name: String,
+    pub ancestor_role: Option<String>,
+    pub ancestor_name: Option<String>,
+}
+
 /// An element addressed inside a CONTAINER identified by an anchor. The
 /// container is either the bare word `item` (a closed list of list-ish
 /// roles) or an explicit `css:`/`id:` selector, written exactly as the spec
@@ -533,6 +548,16 @@ pub trait AppDriver {
     /// a DOM concept. The default harvests nothing, which is valid - a
     /// text-only scoped payload still resolves by identity.
     fn scope_hints(&mut self, _selector: &UiaSelector) -> Result<Option<ScopeHints>, DriverError> {
+        Ok(None)
+    }
+
+    /// Record-time accessibility identity for the just-resolved `selector`
+    /// (docs/fiori-reliability/FINDINGS.md's design note for the `a11y`
+    /// selector tier). Web-only - only the web adapter has a browser
+    /// accessibility tree to read - and best-effort even there: `Ok(None)`
+    /// when the target has no meaningful role/name, which the recorder
+    /// treats the same as "no hint available", not an error.
+    fn a11y_hint(&mut self, _selector: &UiaSelector) -> Result<Option<A11yHints>, DriverError> {
         Ok(None)
     }
 
@@ -1765,6 +1790,10 @@ impl AppDriver for Box<dyn AppDriver> {
     // falls back to the DEFAULT body, which no mock-driver test can catch.
     fn scope_hints(&mut self, selector: &UiaSelector) -> Result<Option<ScopeHints>, DriverError> {
         (**self).scope_hints(selector)
+    }
+
+    fn a11y_hint(&mut self, selector: &UiaSelector) -> Result<Option<A11yHints>, DriverError> {
+        (**self).a11y_hint(selector)
     }
 
     fn probe_frame(&mut self, query: &FrameQuery) -> Result<FrameProbe, DriverError> {

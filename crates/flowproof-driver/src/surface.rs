@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::app::{
-    AppDriver, AppTarget, CellHints, CookieProbe, DebugBundle, DialogArm, FiredDialog, FrameProbe,
-    FrameQuery, KeyMod, PixelRect, ScopeHints, ScrollTo, UiaSelector, WebBrowserConfig, WebMock,
-    WebSession,
+    A11yHints, AppDriver, AppTarget, CellHints, CookieProbe, DebugBundle, DialogArm, FiredDialog,
+    FrameProbe, FrameQuery, KeyMod, PixelRect, ScopeHints, ScrollTo, UiaSelector, WebBrowserConfig,
+    WebMock, WebSession,
 };
 use crate::DriverError;
 
@@ -170,6 +170,7 @@ impl AppDriver for SurfaceRegistry {
     route_to_active! {
         fn cell_hints(&mut self, selector: &UiaSelector) -> Result<Option<CellHints>, DriverError>;
         fn scope_hints(&mut self, selector: &UiaSelector) -> Result<Option<ScopeHints>, DriverError>;
+        fn a11y_hint(&mut self, selector: &UiaSelector) -> Result<Option<A11yHints>, DriverError>;
         fn probe_frame(&mut self, query: &FrameQuery) -> Result<FrameProbe, DriverError>;
         fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError>;
         fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError>;

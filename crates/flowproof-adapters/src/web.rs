@@ -14,7 +14,7 @@ use flowproof_driver::{
 };
 use headless_chrome::browser::tab::{ModifierKey, Tab};
 use headless_chrome::protocol::cdp::Target::CreateTarget;
-use headless_chrome::protocol::cdp::{Emulation, Input, Network, Page};
+use headless_chrome::protocol::cdp::{Accessibility, Emulation, Input, Network, Page};
 use headless_chrome::types::Bounds;
 use headless_chrome::{Browser, LaunchOptions};
 
@@ -573,6 +573,38 @@ fn unclaimed_downloads<'a>(
     claimed: &std::collections::HashSet<std::path::PathBuf>,
 ) -> Vec<&'a std::path::PathBuf> {
     current.iter().filter(|p| !claimed.contains(*p)).collect()
+}
+
+/// `Accessibility.getAXNodeAndAncestors`, decoded loosely (see the call
+/// site's comment on why the crate's own typed `AXNode` can't be used here).
+/// Same method name and params shape as the generated
+/// `Accessibility::GetAXNodeAndAncestors` - this only changes how the
+/// RESPONSE is decoded.
+#[derive(Debug, Clone, serde::Serialize)]
+struct GetAxNodeAndAncestorsRaw {
+    #[serde(rename = "backendNodeId")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backend_node_id: Option<headless_chrome::protocol::cdp::DOM::BackendNodeId>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct GetAxNodeAndAncestorsRawReturnObject {
+    nodes: Vec<serde_json::Value>,
+}
+
+impl headless_chrome::protocol::cdp::types::Method for GetAxNodeAndAncestorsRaw {
+    const NAME: &'static str = "Accessibility.getAXNodeAndAncestors";
+    type ReturnObject = GetAxNodeAndAncestorsRawReturnObject;
+}
+
+/// An `AXNode`'s `role.value`/`name.value` as a string, read from the raw
+/// JSON node without decoding the rest of the node's shape. `value` is
+/// CDP's deliberately untyped "any" (role/name values are always strings in
+/// practice, but the protocol doesn't promise it), so this is a narrowing
+/// read, not a decode that can fail loudly - an absent or non-string value
+/// just means no accessibility hint for that node, not an error.
+fn ax_node_value_string(node: &serde_json::Value, field: &str) -> Option<String> {
+    node.get(field)?.get("value")?.as_str().map(str::to_string)
 }
 
 fn web_err(context: &str, err: impl std::fmt::Display) -> DriverError {
@@ -2012,6 +2044,74 @@ impl AppDriver for WebAppDriver {
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
             anchor_without_container: false,
+        }))
+    }
+
+    /// Read the browser's own computed accessibility identity for
+    /// `selector`'s target (docs/fiori-reliability/FINDINGS.md's design
+    /// note for the `a11y` tier). `cell`/`scope` targets are addressed by
+    /// container/anchor identity already, not by a single element's
+    /// accessible name, so this only applies to a plain css/text locator -
+    /// same split `cell_hints`/`scope_hints` make in the other direction.
+    fn a11y_hint(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<Option<flowproof_driver::A11yHints>, DriverError> {
+        if selector.cell.is_some() || selector.scope.is_some() {
+            return Ok(None);
+        }
+        let Some(locator) = Self::locator_of(selector) else {
+            return Ok(None);
+        };
+        let Some(element) = self.try_find(&locator)? else {
+            return Ok(None);
+        };
+        let tab = self.tab()?;
+        // Idempotent: enabling twice is a documented no-op on the CDP side,
+        // cheaper than tracking an "already enabled" flag per tab.
+        let _ = tab.call_method(Accessibility::Enable(None));
+        // Raw JSON, not the crate's typed `Accessibility::GetAXNodeAndAncestors`
+        // / `AXNode`: a live measurement against real Chrome found its
+        // `AXPropertyName` enum missing a variant Chrome actually sends
+        // (`"uninteresting"`), which fails strict deserialization of every
+        // node's `properties`/`ignoredReasons` - fields this method never
+        // reads. Same wire call, `nodes` decoded as `serde_json::Value` so
+        // an unknown property name is just data, not a hard error.
+        let nodes = tab
+            .call_method(GetAxNodeAndAncestorsRaw {
+                backend_node_id: Some(element.backend_node_id),
+            })
+            .map_err(|e| web_err("reading the accessibility tree", e))?
+            .nodes;
+        // The target itself, then its ancestors up to the root, per the
+        // command's own documented order ("a node and all ancestors up to
+        // and including the root").
+        let Some(target) = nodes.first() else {
+            return Ok(None);
+        };
+        let Some(role) = ax_node_value_string(target, "role") else {
+            return Ok(None);
+        };
+        let Some(name) = ax_node_value_string(target, "name") else {
+            return Ok(None);
+        };
+        if name.is_empty() {
+            // A role with no accessible name identifies nothing more
+            // specific than "some element of this role" - not useful as a
+            // tier-0 selector, and every other rung already covers this
+            // element by css/structural path.
+            return Ok(None);
+        }
+        let ancestor = nodes.iter().skip(1).find_map(|node| {
+            let role = ax_node_value_string(node, "role")?;
+            let name = ax_node_value_string(node, "name").filter(|n| !n.is_empty())?;
+            Some((role, name))
+        });
+        Ok(Some(flowproof_driver::A11yHints {
+            role,
+            name,
+            ancestor_role: ancestor.as_ref().map(|(r, _)| r.clone()),
+            ancestor_name: ancestor.map(|(_, n)| n),
         }))
     }
 
