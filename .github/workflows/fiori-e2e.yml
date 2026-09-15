@@ -33,13 +33,80 @@ jobs:
     runs-on: [self-hosted, sap]
     timeout-minutes: 30
     steps:
+      # Cheap outage gate: if the shared reference SAP/Fiori system is down,
+      # stop before checkout/build/replay and report a named green skip rather
+      # than spending the whole live-suite timeout against a 503ing target.
+      - name: check Fiori launchpad reachability
+        id: fiori_reachability
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:FIORI_BASE_URL)) {
+            Write-Host "::error::FIORI_BASE_URL is not configured"
+            exit 1
+          }
+
+          $statusLabel = "unknown"
+          $statusCode = $null
+          try {
+            $request = [System.Net.HttpWebRequest]::Create($env:FIORI_BASE_URL)
+            $request.Method = "GET"
+            $request.Timeout = 10000
+            $request.ReadWriteTimeout = 10000
+            $request.AllowAutoRedirect = $true
+            $request.UserAgent = "flowproof-ci-reachability"
+
+            $response = $request.GetResponse()
+            $statusCode = [int]$response.StatusCode
+            $statusLabel = [string]$statusCode
+            $response.Close()
+          } catch [System.Net.WebException] {
+            if ($_.Exception.Response -ne $null) {
+              $statusCode = [int]$_.Exception.Response.StatusCode
+              $statusLabel = [string]$statusCode
+              $_.Exception.Response.Close()
+            } else {
+              $statusLabel = $_.Exception.Status.ToString()
+            }
+          }
+
+          $reachable = $false
+          if ($statusCode -ne $null) {
+            $reachable = ($statusCode -ge 200 -and $statusCode -lt 400) -or $statusCode -eq 401 -or $statusCode -eq 403
+            $retryableOutage = $statusCode -eq 408 -or $statusCode -eq 429 -or ($statusCode -ge 500 -and $statusCode -lt 600)
+
+            if (-not $reachable -and -not $retryableOutage) {
+              Write-Host "::error::FIORI_BASE_URL returned unexpected http_code=$statusLabel"
+              exit 1
+            }
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "http_code=$statusLabel"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "reachable=$($reachable.ToString().ToLowerInvariant())"
+
+          if ($reachable) {
+            Write-Host "FIORI_BASE_URL reachable, http_code=$statusLabel"
+          } else {
+            Write-Host "::notice title=Live SAP/Fiori target skipped::FIORI_BASE_URL unreachable, http_code=$statusLabel"
+            if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Live SAP/Fiori target skipped"
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "FIORI_BASE_URL was unreachable during the pre-check (http_code=$statusLabel), so the live Fiori E2E suite was skipped."
+            }
+          }
+        env:
+          FIORI_BASE_URL: ${{ secrets.FIORI_BASE_URL }}
+
       - uses: actions/checkout@v4
+        if: steps.fiori_reachability.outputs.reachable == 'true'
 
       # Same rationale as sap-e2e.yml's pre-build step: get the multi-minute
       # compile out of the way before any Fiori-touching step, so a slow
       # first `cargo run` doesn't read as the launchpad or the browser being
       # unresponsive.
       - name: pre-build flowproof CLI
+        if: steps.fiori_reachability.outputs.reachable == 'true'
         run: cargo build -p flowproof-cli --bin flowproof
 
       # Two flows (login-smoke, display-info-record-by-supplier) still read
@@ -49,6 +116,7 @@ jobs:
       # regardless of which generation it's from — see the next real
       # re-record for retiring the SAP_* half.
       - name: replay Fiori example flows (live launchpad)
+        if: steps.fiori_reachability.outputs.reachable == 'true'
         run: cargo run -p flowproof-cli --bin flowproof -- run examples/fiori/ --vars examples/fiori/values.yaml --retries 2
         env:
           FIORI_BASE_URL: ${{ secrets.FIORI_BASE_URL }}
@@ -71,7 +139,7 @@ jobs:
       # already writes per-step frames and report.html into the suite's run
       # dir, so keep that bundle past the job on failure.
       - name: upload Fiori flow diagnostics
-        if: always()
+        if: always() && steps.fiori_reachability.outputs.reachable == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: fiori-e2e-run-${{ github.run_id }}
