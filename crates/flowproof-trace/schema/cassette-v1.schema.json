@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/automators-com/flowproof/blob/main/crates/flowproof-trace/schema/cassette-v1.schema.json",
+  "title": "flowproof agent-trace cassette lane v1",
+  "description": "The `cassette` lane an `app: agent` trace document carries: the recorded model-boundary trajectory, and the per-delivery metadata a multi-turn `conversation:` flow adds. Deliberately describes the lane only, not the whole agent-trace document.",
+  "$ref": "#/$defs/cassette",
+  "$defs": {
+    "cassette": {
+      "type": "object",
+      "description": "A recorded trajectory: every model call the system under test made, in order.",
+      "required": ["turns"],
+      "additionalProperties": false,
+      "properties": {
+        "turns": {
+          "type": "array",
+          "description": "The model-boundary exchanges, in the order they happened. Matched strictly by position at replay.",
+          "items": { "$ref": "#/$defs/turn" }
+        },
+        "deliveries": {
+          "type": "array",
+          "description": "Per-delivery metadata for a multi-delivery `conversation:` flow, one entry per delivery in order. Absent for every single-delivery trace, including every trace recorded before this field existed.",
+          "items": { "$ref": "#/$defs/delivery_meta" }
+        }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "description": "One request/response exchange at the model boundary.",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "description": "The API dialect this exchange was recorded in. Absent when it equals the `openai` default, so every v1 trace round-trips byte-identical.",
+          "enum": ["openai", "anthropic"]
+        },
+        "request": { "$ref": "#/$defs/turn_request" },
+        "response": { "$ref": "#/$defs/turn_response" },
+        "delivery_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Which delivery produced this turn. A delivery is one `conversation:` user message plus every turn it provoked before the agent settled - a coarser unit than a turn. Absent when zero, so every single-delivery trace round-trips byte-identical."
+        }
+      }
+    },
+    "turn_request": {
+      "type": "object",
+      "description": "What the system under test sent to the model.",
+      "required": ["model", "messages"],
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string" },
+        "messages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/message" }
+        },
+        "tools": {
+          "type": "array",
+          "description": "Tool names offered, in the order the request listed them. Absent when empty.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "turn_response": {
+      "type": "object",
+      "description": "What the model answered.",
+      "required": ["message"],
+      "additionalProperties": false,
+      "properties": {
+        "message": { "$ref": "#/$defs/message" },
+        "stop_reason": {
+          "type": "string",
+          "description": "The wire-level stop reason (`end_turn`, `tool_use`, ...). SERVED but NEVER MATCHED: it is an output of the turn, not part of the request identity."
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "description": "One message in a chat completion, in the shape the OpenAI-compatible wire format uses.",
+      "required": ["role"],
+      "additionalProperties": false,
+      "properties": {
+        "role": { "type": "string" },
+        "content": { "type": "string" },
+        "tool_calls": {
+          "type": "array",
+          "description": "Calls the model asked for. Assistant messages only; absent when empty.",
+          "items": { "$ref": "#/$defs/tool_call" }
+        },
+        "tool_call_id": {
+          "type": "string",
+          "description": "Which call this message answers. Tool messages only."
+        }
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "description": "A tool invocation the model asked for.",
+      "required": ["id", "name", "arguments"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "arguments": {
+          "type": "string",
+          "description": "Stays a STRING because that is what the wire carries: re-encoding it as JSON would silently reorder keys and lose the exact bytes an assertion may care about."
+        }
+      }
+    },
+    "delivery_meta": {
+      "type": "object",
+      "description": "Metadata about one delivery in a multi-delivery `conversation:` flow. NOT matched against at replay - the wire never re-sends it - it exists so a cassette or `heal` diff reads as an actual transcript instead of a bare turn count.",
+      "required": ["user", "turn_count"],
+      "additionalProperties": false,
+      "properties": {
+        "user": {
+          "type": "string",
+          "description": "The user message as recorded, verbatim. Not redacted: it is the operator's own flow-file content, already visible in the `.flow.yaml`."
+        },
+        "turn_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many turns this delivery produced."
+        }
+      }
+    }
+  }
+}
