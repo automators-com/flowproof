@@ -44,6 +44,7 @@ and "covered by a test that would fail if it broke" are different claims:
 | Anthropic Messages | full: CLI record -> trace -> replay against a Messages-dialect upstream, agent as a real subprocess, on every PR |
 | http-target (`agent.url`) | full: a service flowproof did not start, pointed at the fixed `proxy_port`, driven through CLI record -> trace -> replay with no model reachable |
 | `assert_no_tool_call` | full, both directions: the passing case, plus a red-path proof in which a model asks for the forbidden tool and an obedient agent calls it, so the record is refused and no trace is minted |
+| `conversation:` (multi-turn) | full, both dialects and both drivers, buffered and streaming: CLI record -> trace -> replay of a two-delivery conversation, plus four red paths (a changed later user turn, a missing delivery, an extra delivery, a tool-set divergence after turn one) that each assert WHERE the run failed, not only that it did |
 
 Every row above is now a CLI round trip with a real agent, not an assertion
 about one. That list was for a long time a list of things believed to work; it
@@ -71,22 +72,21 @@ authored live with `flowproof record <spec> --agent-conversation`
 (`agent.command` only for now), rather than typed into the YAML by hand. See
 [Running agent flows](running-agent-flows) for the full runtime contract.
 
-Two things this does not cover yet:
+Covered end to end, record leg included: the OpenAI wire shape and the
+Anthropic Messages dialect, buffered and streaming, across both drivers.
+The streaming fixture asserts the FRAME BOUNDARIES each delivery received
+rather than the assembled text, because a conversation whose streams were
+collapsed into buffered bodies - or cut short by releasing the next
+delivery early - would still assemble the same replies and satisfy every
+`assert: reply contains` in the spec.
 
-- **Dialect and streaming fixtures.** The issue's acceptance criteria ask for
-  OpenAI-compatible and Anthropic dialects, buffered and streaming - four
-  combinations. The delivery-gating code is dialect-agnostic by construction
-  (it gates on delivery settle, never inspects `Turn.protocol` or the proxy's
-  streaming path), so there is no known reason Anthropic or streaming
-  conversations would behave differently, but every `conversation:` test
-  shipped so far uses the OpenAI wire shape, non-streaming. That is
-  confidence, not a fixture, and is tracked as follow-up coverage rather than
-  a blocker.
+One thing this does not cover yet:
+
 - **Egress containment.** A `conversation:` flow that also engages
   `allow_egress`/`assert_no_egress` still falls back to the ordinary
   single-shot path for now.
 
-A useful workaround for either gap today: for a system whose conversation is
+A useful workaround for that gap today: for a system whose conversation is
 driven by an outer loop you control, test that loop's single-shot entry
 point, or record one flow per turn with the conversation state seeded
 through `agent.env`.
