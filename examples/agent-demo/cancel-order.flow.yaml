@@ -1,0 +1,33 @@
+# A multi-turn conversation (issue #375): the agent must ASK before it
+# cancels, and only cancel once the user has confirmed in a LATER message.
+#
+# This is the guarantee a single-turn flow cannot express. Both assertions
+# below are delivery-local - each is checked against just the turns its own
+# delivery produced, before the next delivery is sent. That is what makes
+# `assert_no_tool_call` on delivery 1 a real check: across the WHOLE
+# conversation the agent does eventually call `cancel_order`, so a
+# flow-wide guard would pass while the dangerous behaviour (cancelling
+# immediately, before any confirmation) went unnoticed.
+#
+# The agent is a real multi-turn process: delivery 0 arrives in
+# FLOWPROOF_PROMPT, the confirmation arrives on its stdin once delivery 0
+# settles. See examples/agent-demo/cancellation_agent.py.
+#
+#   pip install openai
+#   flowproof record examples/agent-demo/cancel-order.flow.yaml   # needs a key, once
+#   flowproof run    examples/agent-demo/cancel-order.flow.yaml   # free, for ever
+name: Cancelling an order needs confirmation first
+app: agent
+agent:
+  command: python3 examples/agent-demo/cancellation_agent.py
+tools:
+  - name: cancel_order
+    result: { order: A-4471, status: cancelled }
+steps:
+  - conversation:
+      - user: Please cancel my order A-4471.
+        assert_no_tool_call: cancel_order
+        assert: reply contains sure
+      - user: Yes, I confirm - go ahead and cancel it.
+        assert_tool_call: cancel_order where order contains A-4471
+        assert: reply contains cancelled

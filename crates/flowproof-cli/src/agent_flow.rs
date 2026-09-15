@@ -3731,6 +3731,171 @@ mod tests {
         assert!(why.contains("does not contain"), "{why}");
     }
 
+    // ---- red paths: the four ways a conversation stops matching (#375) ----
+    //
+    // Each of these edits the FLOW FILE against a fixed recording, which is
+    // what a real regression looks like: the cassette is ground truth and
+    // the spec drifted. The point is not only that they fail - it is that
+    // they fail AT the delivery that drifted, so the report names the turn
+    // a human has to look at. A test that only asserted `is_err()` would
+    // pass just as happily if every one of them failed at delivery 1.
+
+    /// The recorded two-delivery conversation these red paths drift from.
+    fn cancellation_trace() -> std::path::PathBuf {
+        write_trace(conversation_cassette(
+            "Please cancel my order A-4471.",
+            "Are you sure? This can't be undone.",
+            "Yes, I confirm - go ahead and cancel it.",
+            "Done - order A-4471 is cancelled.",
+        ))
+    }
+
+    fn conversation_spec(url: &str, proxy_port: u16, users: &[&str]) -> FlowSpec {
+        let mut spec = format!(
+            "name: cancel with confirmation\napp: agent\nagent:\n  url: {url}\n  \
+             proxy_port: {proxy_port}\nsteps:\n  - conversation:\n"
+        );
+        for user in users {
+            spec.push_str(&format!("      - user: {user}\n"));
+        }
+        FlowSpec::parse(&spec).expect("conversation fixture")
+    }
+
+    /// A LATER user turn was edited after recording. Delivery 0 still
+    /// matches byte for byte, so the run must get past it and fail on
+    /// delivery 1 - the delivery that actually changed.
+    #[test]
+    fn a_changed_later_user_turn_fails_at_that_delivery() {
+        let trace = cancellation_trace();
+        let proxy_port = free_port();
+        let (url, handle) = spawn_conversational_service(proxy_port, 2);
+        let spec = conversation_spec(
+            &url,
+            proxy_port,
+            &[
+                "Please cancel my order A-4471.",
+                // Recorded as "Yes, I confirm - go ahead and cancel it."
+                "Actually, cancel the OTHER one instead.",
+            ],
+        );
+
+        let why = replay(&spec, &trace)
+            .1
+            .expect_err("an edited later user turn must not replay");
+        handle.join().ok();
+        // `turn 2`, not turn 1: delivery 0 was untouched and must have
+        // replayed cleanly before the drift was reached.
+        assert!(
+            why.starts_with("turn 2:"),
+            "must fail at the turn that drifted, not an earlier one: {why}"
+        );
+        assert!(
+            why.contains("(user) content changed"),
+            "must name the edited user message: {why}"
+        );
+    }
+
+    /// The flow file dropped a delivery the cassette still has. The
+    /// recording is not reproduced, so the run must fail rather than pass
+    /// on a prefix of the conversation.
+    #[test]
+    fn a_missing_later_delivery_cannot_pass_on_a_prefix() {
+        let trace = cancellation_trace();
+        let proxy_port = free_port();
+        let (url, handle) = spawn_conversational_service(proxy_port, 1);
+        let spec = conversation_spec(&url, proxy_port, &["Please cancel my order A-4471."]);
+
+        let why = replay(&spec, &trace)
+            .1
+            .expect_err("a conversation that stops early must not pass");
+        handle.join().ok();
+        // The count is the evidence: a prefix of the recording is not the
+        // recording, and the report says so in both numbers.
+        assert!(
+            why.contains("1 model calls") && why.contains("the recording has 2"),
+            "must report the shortfall against the recording: {why}"
+        );
+    }
+
+    /// The flow file added a delivery the cassette never recorded. There is
+    /// nothing to serve it, so the extra delivery must fail rather than be
+    /// quietly answered from an exhausted cassette.
+    #[test]
+    fn an_extra_delivery_has_nothing_to_replay() {
+        let trace = cancellation_trace();
+        let proxy_port = free_port();
+        let (url, handle) = spawn_conversational_service(proxy_port, 3);
+        let spec = conversation_spec(
+            &url,
+            proxy_port,
+            &[
+                "Please cancel my order A-4471.",
+                "Yes, I confirm - go ahead and cancel it.",
+                "And cancel A-4472 as well.",
+            ],
+        );
+
+        let why = replay(&spec, &trace)
+            .1
+            .expect_err("a delivery with no recording must not replay");
+        handle.join().ok();
+        // Turn 3 is the one with no recording behind it; the first two
+        // deliveries matched, so the failure must point past them.
+        assert!(
+            why.starts_with("turn 3:"),
+            "must fail at the unrecorded delivery: {why}"
+        );
+        assert!(
+            why.contains("3 model calls") && why.contains("the recording has 2"),
+            "must report the overshoot against the recording: {why}"
+        );
+    }
+
+    /// The tool set offered DIVERGED on the second delivery only: delivery
+    /// 0's request matches the recording exactly, and delivery 1's recorded
+    /// request offered `cancel_order` while the replayed one offers nothing.
+    /// This is the shape of "someone changed the agent's tools" and it must
+    /// be caught after turn one, not swallowed because turn one was fine.
+    #[test]
+    fn a_tool_divergence_after_turn_one_is_caught() {
+        let mut cassette = conversation_cassette(
+            "Please cancel my order A-4471.",
+            "Are you sure? This can't be undone.",
+            "Yes, I confirm - go ahead and cancel it.",
+            "Done - order A-4471 is cancelled.",
+        );
+        // Only the SECOND turn's envelope carries a tool; the fake service
+        // sends an empty tool list on every call, so delivery 0 matches and
+        // delivery 1 cannot.
+        cassette.turns[1].request.tools = vec!["cancel_order".into()];
+        let trace = write_trace(cassette);
+        let proxy_port = free_port();
+        let (url, handle) = spawn_conversational_service(proxy_port, 2);
+        let spec = conversation_spec(
+            &url,
+            proxy_port,
+            &[
+                "Please cancel my order A-4471.",
+                "Yes, I confirm - go ahead and cancel it.",
+            ],
+        );
+
+        let why = replay(&spec, &trace)
+            .1
+            .expect_err("a tool-set divergence on delivery 1 must fail the run");
+        handle.join().ok();
+        // Envelope-first reporting: the tool set is named on its own line,
+        // at turn 2, rather than buried in a diff of the message bodies.
+        assert!(
+            why.starts_with("turn 2:"),
+            "must locate the divergence after turn one: {why}"
+        );
+        assert!(
+            why.contains("tools offered changed"),
+            "must name the tool set as the thing that diverged: {why}"
+        );
+    }
+
     struct ConversationTestDir(std::path::PathBuf);
     impl ConversationTestDir {
         fn new() -> Self {
