@@ -200,9 +200,22 @@ for line in sys.stdin:
     messages.append({"role": "user", "content": json.loads(line)["prompt"]})
     settle()
 
-with open("__LOG__", "a") as fh:
+with open(__LOG__, "a") as fh:
     fh.write(json.dumps(log) + "\n")
 "#;
+
+/// The agent source with its frame-log path substituted in.
+///
+/// The path goes in as a JSON string literal, not raw. A raw Windows path is
+/// not a valid Python string: `C:\\Users\\...` opens with `\\U`, which Python
+/// reads as a unicode escape and rejects at compile time, so the agent dies
+/// before its first model call and the record leg times out instead of
+/// failing for a legible reason. JSON string syntax is a subset of Python's,
+/// so a serialized path is always a literal Python accepts.
+fn agent_source(log: &Path) -> String {
+    let literal = serde_json::to_string(log.to_str().expect("utf8")).expect("a JSON string");
+    STREAMING_CONVERSATION_AGENT.replace("__LOG__", &literal)
+}
 
 /// The frames a well-formed synthetic stream delivers for this conversation:
 /// one complete, terminated stream per model call - delivery 0's single text
@@ -272,11 +285,7 @@ fn records_and_replays_a_streaming_conversation() {
     let dir = work_dir("streaming");
     let agent_py = dir.join("agent.py");
     let log = dir.join("frames.jsonl");
-    std::fs::write(
-        &agent_py,
-        STREAMING_CONVERSATION_AGENT.replace("__LOG__", log.to_str().expect("utf8")),
-    )
-    .expect("agent");
+    std::fs::write(&agent_py, agent_source(&log)).expect("agent");
     let spec = write_conversation_spec(&dir, &agent_py);
 
     // RECORD.
@@ -342,4 +351,23 @@ fn records_and_replays_a_streaming_conversation() {
     );
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The escaping above, pinned on every platform. Without it this path
+/// substitutes into the agent as `open("C:\\Users\\...")`, and the agent
+/// never reaches the model at all.
+#[test]
+fn a_windows_log_path_is_escaped_into_a_literal_python_accepts() {
+    let source = agent_source(Path::new(
+        r"C:\Users\runneradmin\AppData\Local\Temp\frames.jsonl",
+    ));
+    assert!(
+        source
+            .contains(r#"open("C:\\Users\\runneradmin\\AppData\\Local\\Temp\\frames.jsonl", "a")"#),
+        "each backslash must reach Python doubled: {source}"
+    );
+    assert!(
+        !source.contains(r"C:\Users\runneradmin"),
+        "the raw path must not survive: a bare \\U is the escape Python rejects: {source}"
+    );
 }
