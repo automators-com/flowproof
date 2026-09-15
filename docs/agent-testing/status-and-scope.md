@@ -1,6 +1,6 @@
 ---
 title: "Status and scope"
-description: "Implementation status, why an agent flow is single-turn, and why model-output evals are out of scope."
+description: "Implementation status, what multi-turn conversation testing covers today, and why model-output evals are out of scope."
 ---
 
 Built and tested, each independently:
@@ -20,10 +20,11 @@ Built and tested, each independently:
 | Anthropic Messages | built and covered end to end, record leg included: a flow records against a Messages-dialect upstream and replays it with no model at all |
 | Streaming | built and covered end to end in both dialects, record leg included: a `stream: true` agent is served SSE at record and at replay, and the test asserts the FRAME BOUNDARIES, not the assembled text - a replay that collapsed the stream into one buffered body would still produce the same reply |
 | http-target | `agent.url` services are built, and covered end to end including the record leg: a service started independently and pointed at the proxy is triggered, recorded, and replayed offline |
+| `conversation:` (multi-turn) | built (#375): a list of deliveries, each a `user:` message plus its own delivery-local assertions, checked against just the turns that delivery produced before the next one is sent. Both drivers gate on it - `agent.url` sends each delivery as its own sequential POST, `agent.command` sends delivery 0 via `FLOWPROOF_PROMPT` and later deliveries over the child's stdin. A bare `prompt:` step still reduces to a single-delivery conversation internally, so existing cassettes replay unchanged. See [Multi-turn conversations](#multi-turn-conversations) below for what is and is not covered yet |
 
-Not built yet: per-call result sequences (one static result per tool),
-the structured `args:` / `args_exact:` assertion forms, and multi-turn
-conversations. The `matches` argument matcher shipped in 0.3.x. The MCP tool
+Not built yet: per-call result sequences (one static result per tool), and
+the structured `args:` / `args_exact:` assertion forms. The `matches`
+argument matcher shipped in 0.3.x. The MCP tool
 boundary is BUILT (v3.1 stdio, v3.2 streamable-HTTP) - an earlier revision of
 this paragraph listed it as unbuilt, contradicting the Phasing section. v1's
 acceptance bar (a real external agent recording and replaying through the
@@ -54,40 +55,41 @@ saying "covered" means a test exists, and
 each assertion is proven able to FAIL. Coverage that cannot fail is not
 coverage.
 
-## Single-turn, and what multi-turn would cost
+## Multi-turn conversations
 
-A flow delivers one task and observes what follows. For a conversational
-system under test, that means a flow can assert what ONE task produces, and
-cannot express "the user replies, then the agent should ...".
+A flow can now express "the user replies, then the agent should ...".
+`conversation:` (issue #375; see `plans/012-agent-multiturn-conversations.md`)
+is a list of deliveries, each a `user:` message plus its own delivery-local
+`assert:`/`assert_tool_call:`/`assert_no_tool_call:`, checked against just the
+turns that delivery produced before the next one is sent. Both drivers gate
+delivery N+1 on delivery N's settle condition; the cassette carries
+`delivery_index`/`deliveries` metadata so replay serves the right recorded
+response to each turn rather than the whole trajectory, and existing
+single-delivery cassettes are unaffected since a bare `prompt:` reduces to a
+one-delivery conversation internally. A `conversation:` block can also be
+authored live with `flowproof record <spec> --agent-conversation`
+(`agent.command` only for now), rather than typed into the YAML by hand. See
+[Running agent flows](running-agent-flows) for the full runtime contract.
 
-The limit is not in the spec grammar, which is why it is worth being precise
-about the cost. It is in the runtime contract. flowproof hands the task to
-the agent in one shot - an environment variable for a `command:` agent, a
-single POST body for a `url:` one - and thereafter only observes the model
-boundary. The agent runs its own loop; flowproof never drives it. A second
-user turn has nowhere to go: there is no channel back into a process that
-was given its instructions at startup and is now running.
+Two things this does not cover yet:
 
-So multi-turn is not a step type; it is a new driver contract. Roughly what
-it needs:
+- **Dialect and streaming fixtures.** The issue's acceptance criteria ask for
+  OpenAI-compatible and Anthropic dialects, buffered and streaming - four
+  combinations. The delivery-gating code is dialect-agnostic by construction
+  (it gates on delivery settle, never inspects `Turn.protocol` or the proxy's
+  streaming path), so there is no known reason Anthropic or streaming
+  conversations would behave differently, but every `conversation:` test
+  shipped so far uses the OpenAI wire shape, non-streaming. That is
+  confidence, not a fixture, and is tracked as follow-up coverage rather than
+  a blocker.
+- **Egress containment.** A `conversation:` flow that also engages
+  `allow_egress`/`assert_no_egress` still falls back to the ordinary
+  single-shot path for now.
 
-1. **A conversational interface the SUT opts into** - a stdio protocol, or a
-   `url:` service that accepts a conversation id and returns between turns.
-   Every existing agent would need to adopt it, which cuts against the design
-   rule that flowproof starts the same command a developer would, with one
-   environment variable changed.
-2. **Turn-scoped cassette matching**, so replay serves the right recorded
-   response to turn 2 rather than the whole trajectory.
-3. **A spec surface** for interleaving assertions between turns, which the
-   positional-blind joining above would have to stop discarding.
-
-(1) is the expensive one and it is a compatibility decision, not an
-implementation detail. Until it is settled, this is a real limit on testing
-conversational agents, stated here rather than discovered mid-page.
-
-A useful workaround today: for a system whose conversation is driven by an
-outer loop you control, test that loop's single-shot entry point, or record
-one flow per turn with the conversation state seeded through `agent.env`.
+A useful workaround for either gap today: for a system whose conversation is
+driven by an outer loop you control, test that loop's single-shot entry
+point, or record one flow per turn with the conversation state seeded
+through `agent.env`.
 
 ## Decision: model-output evals are out of scope
 
