@@ -100,6 +100,9 @@ pub use web::WebAppDriver;
 #[cfg(feature = "web")]
 pub use web::shutdown_shared_browser;
 
+#[cfg(feature = "web")]
+pub use web::SharedBrowserGuard;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
     #[error("adapter '{0}' is not implemented yet")]

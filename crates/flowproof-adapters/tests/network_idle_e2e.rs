@@ -57,6 +57,10 @@ fn scene_waits_for_a_real_delayed_fetch_before_settling() {
     use flowproof_driver::AppDriver;
 
     let url = serve(PAGE, "{}", 2000);
+    // The shared browser this launches has no destructor on normal process
+    // exit (see SharedBrowserGuard's own doc comment) - without this, every
+    // e2e test run leaked its own Chrome process tree and profile dir.
+    let _guard = flowproof_adapters::SharedBrowserGuard::new();
     let mut driver = flowproof_adapters::WebAppDriver::new().expect("browser launches");
     // Measured from before `launch` itself, not just around `scene()`: the
     // page's script fires the fetch as soon as it parses, which can happen
@@ -117,6 +121,10 @@ fn scene_settles_after_redirects_and_a_failed_fetch() {
             let _ = stream.write_all(response.as_bytes());
         }
     });
+    // The shared browser this launches has no destructor on normal process
+    // exit (see SharedBrowserGuard's own doc comment) - without this, every
+    // e2e test run leaked its own Chrome process tree and profile dir.
+    let _guard = flowproof_adapters::SharedBrowserGuard::new();
     let mut driver = flowproof_adapters::WebAppDriver::new().expect("browser launches");
     driver
         .launch(&url, "", std::time::Duration::from_secs(30))

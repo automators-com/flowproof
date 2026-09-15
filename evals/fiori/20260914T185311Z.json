@@ -1,0 +1,731 @@
+{
+  "timestamp": "20260914T202044Z",
+  "corpus": "evals/fiori/dev",
+  "runs_required": 3,
+  "latency_ms": null,
+  "faa": 0.3333333333333333,
+  "faa_numerator": 4,
+  "faa_denominator": 12,
+  "negative_controls_held": true,
+  "specs": [
+    {
+      "spec": "evals/fiori/dev/long-01-cross-app-tour.flow.yaml",
+      "negative_control": false,
+      "sha256": "419d8236187509b955d066518329f02406e4e6164a90e33f30a7cebf926af276",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/long-02-cross-app-tour-with-canary.flow.yaml",
+      "negative_control": false,
+      "sha256": "877e1988447575bb16ffbcf5a9dd1d23ec22d8e20f3f34442c755cde12799e02",
+      "record": {
+        "ok": false,
+        "reason": "error: cannot record 'Select ${MATERIAL} from the value help list': the previous step left a problem behind \u2014 the page reports: Find Objects in Classes"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/long-03-double-value-help-tour.flow.yaml",
+      "negative_control": false,
+      "sha256": "75db2f8aa83a127aa984f421cbb2ffe6b340277b736f91f08ef702c61c08b0a1",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-01-display-info-record-by-supplier.flow.yaml",
+      "negative_control": false,
+      "sha256": "53a21eeaca2291161cb104c9dc8d578e7a7a102724395d2de641986ce4b9ffbd",
+      "record": {
+        "ok": false,
+        "reason": "error: backend configuration error: model call failed (anthropic): http status 529: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"},\"request_id\":\"req_011Cf3sSGUZm7huMrfPTzL5v\"}"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-02-change-info-record-readonly.flow.yaml",
+      "negative_control": false,
+      "sha256": "7da37f7544f0acbe7df70342ed73af7c7590310262e5d6d738cc007d24f17400",
+      "record": {
+        "ok": true,
+        "steps": 15
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": false,
+          "detail": "error: driver error: driver transport fault: probing an iframe: Unable to make method calls because underlying connection is closed\nkill: 97234: No such process",
+          "steps": null
+        }
+      ],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-03-procurement-overview-then-display-search.flow.yaml",
+      "negative_control": false,
+      "sha256": "608ae958b0d2b6c2f56f59d8133db3d07f7783e1692dbebaad95d6f22db38d7b",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'Wait until page shows Procurement Overview within 20s' does not hold while recording: expected 'Procurement Overview', element shows ''"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-04-supplier-value-help.flow.yaml",
+      "negative_control": false,
+      "sha256": "3c90bd25e659c390d2ed532e44b57766d1d5cd5dccbc2d1db5e55d23388c72b5",
+      "record": {
+        "ok": true,
+        "steps": 15
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit\nkill: 98236: No such process",
+          "steps": null
+        }
+      ],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-05-search-retry-after-no-match.flow.yaml",
+      "negative_control": false,
+      "sha256": "eee9f1ffaf52e90c14fd50758b5d3994dcbac2f6dbc6a758254be08b7660034b",
+      "record": {
+        "ok": false,
+        "reason": "exit 2"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/negative-control-impossible-screen-title.flow.yaml",
+      "negative_control": true,
+      "sha256": "aa11921a694435e103f72d235fbe88381b99ec6bb8f61a27a307a3ce408ba133",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'page shows Nonexistent Report Configuration Screen XYZ123' does not hold while recording: expected 'Nonexistent Report Configuration Screen XYZ123', page shows 'Home\n\ue00d\n\ue1c4\n\ue23a\nVO\nMy Home\nPurchasing\nSourcing and Contracting\nMy Apps\nChange Purchasing Info Record\nDisplay Purchasing Info Record by Supplier\nProcurement Overview\nShell Bar\nHome\nHome - Show All My Apps\nNavigation menu\nOpen Search\nOpen Help\nNotifications\nProfile of Valentin Ober\nPersonalize Navigation Bar\nSpace Page\nMore\nMore\nShell Content\nPage Sections\n\nMy Apps Section\nChange Purchasing Info Record\nTile\nF0343\nDisplay Purchasing Info Record by Supplier\nTile\nProcurement Overview\nTile\nF0674\nIn-App Help\nClose Help\nHelp Topics\nLearning\nShow Process Model\nShow/Hide In-App Help'"
+      },
+      "run_results": [],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/negative-control-wrong-material-asserted.flow.yaml",
+      "negative_control": true,
+      "sha256": "db66eb3a266bc18c6562bee1b4e8511f6f4510e739e3a4c252ce3c0014ef582f",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'the \"Material\" field in the iframe \"Application\" contains DOES-NOT-MATCH-TG10' does not hold while recording: expected 'DOES-NOT-MATCH-TG10', element shows 'TG10'"
+      },
+      "run_results": [],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/short-01-login-smoke.flow.yaml",
+      "negative_control": false,
+      "sha256": "647798aadabe364251079e95546e64d29d1d99e4ffc3d5658561aeae6d5c58d2",
+      "record": {
+        "ok": true,
+        "steps": 5
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 302,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3087,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 259,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4046,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 88,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4941,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 5143,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 5880,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 0,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 11244,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 298,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3104,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 262,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4059,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 85,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4961,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3675,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 5879,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 0,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 9794,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 3,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 297,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3145,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 265,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4080,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 85,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4985,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3815,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 5919,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 0,
+              "id": "s0005",
+              "intent": "page shows Home",
+              "started_ms": 9933,
+              "status": "passed"
+            }
+          ]
+        }
+      ],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/short-02-home-shows-info-record-tiles.flow.yaml",
+      "negative_control": false,
+      "sha256": "a14ab318da10d901b0457a97942dd006d2787c7eb5850f257526ca4951f40ea5",
+      "record": {
+        "ok": true,
+        "steps": 6
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 287,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3105,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 242,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4035,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 85,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4917,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 4127,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 5902,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 206,
+              "id": "s0005",
+              "intent": "page shows Display Purchasing Info Record by Supplier",
+              "started_ms": 10251,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1,
+              "id": "s0006",
+              "intent": "page shows Change Purchasing Info Record",
+              "started_ms": 10776,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 298,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3127,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 259,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4097,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 88,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4993,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3636,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 5963,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 206,
+              "id": "s0005",
+              "intent": "page shows Display Purchasing Info Record by Supplier",
+              "started_ms": 9796,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 0,
+              "id": "s0006",
+              "intent": "page shows Change Purchasing Info Record",
+              "started_ms": 10323,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 3,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 288,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3159,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 262,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4116,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 95,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 5029,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3840,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 5967,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 206,
+              "id": "s0005",
+              "intent": "page shows Display Purchasing Info Record by Supplier",
+              "started_ms": 9998,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1,
+              "id": "s0006",
+              "intent": "page shows Change Purchasing Info Record",
+              "started_ms": 10521,
+              "status": "passed"
+            }
+          ]
+        }
+      ],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/short-03-procurement-overview-opens.flow.yaml",
+      "negative_control": false,
+      "sha256": "41baecf8fd73693573601b83468bbc6da7ca5da4855eeb412cbe2cbc28bfe7c7",
+      "record": {
+        "ok": true,
+        "steps": 6
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 309,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3123,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 248,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4081,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 92,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4966,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3357,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 6317,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1319,
+              "id": "s0005",
+              "intent": "Click \"Procurement Overview\"",
+              "selector_tier": "a11y",
+              "started_ms": 9884,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 18850,
+              "id": "s0006",
+              "intent": "Wait until page shows Procurement Overview within 20s",
+              "selector_tier": "a11y",
+              "started_ms": 11633,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 277,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3145,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 266,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4077,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 89,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4978,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3512,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 6430,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1161,
+              "id": "s0005",
+              "intent": "Click \"Procurement Overview\"",
+              "selector_tier": "a11y",
+              "started_ms": 10276,
+              "status": "passed"
+            },
+            {
+              "degraded": true,
+              "duration_ms": 4340,
+              "id": "s0006",
+              "intent": "Wait until page shows Procurement Overview within 20s",
+              "selector_tier": "native_id",
+              "started_ms": 11850,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 3,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 291,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3131,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 248,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4061,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 89,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4960,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3989,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "selector_tier": "native_id",
+              "started_ms": 5898,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1289,
+              "id": "s0005",
+              "intent": "Click \"Procurement Overview\"",
+              "selector_tier": "a11y",
+              "started_ms": 10096,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 9781,
+              "id": "s0006",
+              "intent": "Wait until page shows Procurement Overview within 20s",
+              "selector_tier": "a11y",
+              "started_ms": 11805,
+              "status": "passed"
+            }
+          ]
+        }
+      ],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/short-04-info-record-exists-via-api.flow.yaml",
+      "negative_control": false,
+      "sha256": "da24ee45b7e3db7bd688994eb469e5d151c1d429361869838aef55334c58df7d",
+      "record": {
+        "ok": true,
+        "steps": 3
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 1029,
+              "id": "s0001",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 0,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1071,
+              "id": "s0002",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'&$format=json",
+              "started_ms": 1029,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1616,
+              "id": "s0003",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 2100,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 1029,
+              "id": "s0001",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 0,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1071,
+              "id": "s0002",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'&$format=json",
+              "started_ms": 1029,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1615,
+              "id": "s0003",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 2101,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 3,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 1036,
+              "id": "s0001",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 0,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1065,
+              "id": "s0002",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'&$format=json",
+              "started_ms": 1036,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1633,
+              "id": "s0003",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Supplier%20eq%20'${SUPPLIER}'&$format=json",
+              "started_ms": 2101,
+              "status": "passed"
+            }
+          ]
+        }
+      ],
+      "passed": true
+    }
+  ]
+}
