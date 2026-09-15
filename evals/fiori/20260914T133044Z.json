@@ -1,0 +1,423 @@
+{
+  "timestamp": "20260914T143050Z",
+  "corpus": "evals/fiori/dev",
+  "runs_required": 3,
+  "latency_ms": null,
+  "faa": 0.0,
+  "faa_numerator": 0,
+  "faa_denominator": 12,
+  "negative_controls_held": true,
+  "specs": [
+    {
+      "spec": "evals/fiori/dev/long-01-cross-app-tour.flow.yaml",
+      "negative_control": false,
+      "sha256": "419d8236187509b955d066518329f02406e4e6164a90e33f30a7cebf926af276",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/long-02-cross-app-tour-with-canary.flow.yaml",
+      "negative_control": false,
+      "sha256": "877e1988447575bb16ffbcf5a9dd1d23ec22d8e20f3f34442c755cde12799e02",
+      "record": {
+        "ok": false,
+        "reason": "error: cannot record 'Select ${MATERIAL} from the value help list': the previous step left a problem behind \u2014 the page reports: Find Objects in Classes"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/long-03-double-value-help-tour.flow.yaml",
+      "negative_control": false,
+      "sha256": "75db2f8aa83a127aa984f421cbb2ffe6b340277b736f91f08ef702c61c08b0a1",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-01-display-info-record-by-supplier.flow.yaml",
+      "negative_control": false,
+      "sha256": "53a21eeaca2291161cb104c9dc8d578e7a7a102724395d2de641986ce4b9ffbd",
+      "record": {
+        "ok": false,
+        "reason": "error: backend configuration error: model call failed (anthropic): timeout: global"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-02-change-info-record-readonly.flow.yaml",
+      "negative_control": false,
+      "sha256": "7da37f7544f0acbe7df70342ed73af7c7590310262e5d6d738cc007d24f17400",
+      "record": {
+        "ok": true,
+        "steps": 15
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null,
+          "steps": [
+            {
+              "duration_ms": 288,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 3147,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 262,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4080,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 89,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 4994,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 4147,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 90s",
+              "selector_tier": "native_id",
+              "started_ms": 5930,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 204,
+              "id": "s0005",
+              "intent": "page shows Change Purchasing Info Record",
+              "started_ms": 10280,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 644,
+              "id": "s0006",
+              "intent": "Click \"Change Purchasing Info Record\"",
+              "selector_tier": "native_id",
+              "started_ms": 10807,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3842,
+              "id": "s0007",
+              "intent": "page shows Initial Screen",
+              "started_ms": 11681,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 616,
+              "id": "s0008",
+              "intent": "Type ${MATERIAL} into the \"Material\" field",
+              "selector_tier": "structural",
+              "started_ms": 16508,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 11221,
+              "id": "s0009",
+              "intent": "Type ${SUPPLIER} into the \"Supplier\" field",
+              "selector_tier": "structural",
+              "started_ms": 17535,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 404,
+              "id": "s0010",
+              "intent": "Type ${PLANT} into the \"Plant\" field",
+              "selector_tier": "structural",
+              "started_ms": 29193,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 424,
+              "id": "s0011",
+              "intent": "Type ${PURCHASING_ORG} into the \"Purchasing Organization\" field",
+              "selector_tier": "structural",
+              "started_ms": 30259,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 9,
+              "id": "s0012",
+              "intent": "Press the \"Go\" button",
+              "started_ms": 31259,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 4,
+              "id": "s0013",
+              "intent": "page shows General Data",
+              "started_ms": 32424,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 3,
+              "id": "s0014",
+              "intent": "the \"Material\" field in the iframe \"Application\" contains ${MATERIAL}",
+              "selector_tier": "structural",
+              "started_ms": 32984,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 1041,
+              "id": "s0015",
+              "intent": "api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'",
+              "started_ms": 33546,
+              "status": "passed"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "ok": false,
+          "detail": "error: driver error: driver transport fault: probing an iframe: Unable to make method calls because underlying connection is closed\nkill: 88722: No such process",
+          "steps": null
+        }
+      ],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-03-procurement-overview-then-display-search.flow.yaml",
+      "negative_control": false,
+      "sha256": "608ae958b0d2b6c2f56f59d8133db3d07f7783e1692dbebaad95d6f22db38d7b",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: driver transport fault: waiting for page load: The event waited for never came"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-04-supplier-value-help.flow.yaml",
+      "negative_control": false,
+      "sha256": "3c90bd25e659c390d2ed532e44b57766d1d5cd5dccbc2d1db5e55d23388c72b5",
+      "record": {
+        "ok": true,
+        "steps": 15
+      },
+      "run_results": [
+        {
+          "attempt": 1,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/evals/fiori/dev/.flowproof/runs/2026-09-14T14-29-02Z-7617/report.json\npruned 1 old run record(s), keeping the most recent 10: 2026-09-14T09-47-50Z-a992\nkill: 89288: No such process",
+          "steps": [
+            {
+              "duration_ms": 335,
+              "id": "s0001",
+              "intent": "Type ${SAP_USER} into the \"User\" field",
+              "selector_tier": "a11y",
+              "started_ms": 4535,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 282,
+              "id": "s0002",
+              "intent": "Type ${SAP_PASSWORD} into the \"Password\" field",
+              "selector_tier": "a11y",
+              "started_ms": 5210,
+              "status": "passed"
+            },
+            {
+              "duration_ms": 97,
+              "id": "s0003",
+              "intent": "Press the \"Log On\" button",
+              "selector_tier": "native_id",
+              "started_ms": 5854,
+              "status": "passed"
+            },
+            {
+              "detail": "expected element text 'Home', got '<element not found>' (captured: debug/dom.html, debug/console.log)",
+              "duration_ms": 60059,
+              "id": "s0004",
+              "intent": "Wait until page shows Home within 60s",
+              "started_ms": 11497,
+              "status": "failed"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0005",
+              "intent": "Click \"Display Purchasing Info Record by Supplier\"",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0006",
+              "intent": "Wait until page shows Info Records per Supplier within 20s",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0007",
+              "intent": "Open the value help for the Supplier field in the iframe \"Application\"",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0008",
+              "intent": "Open the value help for the Supplier field in the iframe \"Application\"",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0009",
+              "intent": "Select ${SUPPLIER} from the value help list",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0010",
+              "intent": "Select ${SUPPLIER} from the value help list",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0011",
+              "intent": "Select ${SUPPLIER} from the value help list",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0012",
+              "intent": "Type ${MATERIAL} into the \"Material\" in the iframe \"Application\"",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0013",
+              "intent": "Press Enter",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0014",
+              "intent": "the \"Supplier\" field in the iframe \"Application\" contains ${SUPPLIER}",
+              "started_ms": 0,
+              "status": "skipped"
+            },
+            {
+              "detail": "previous step failed",
+              "duration_ms": 0,
+              "id": "s0015",
+              "intent": "the \"Material\" field in the iframe \"Application\" contains ${MATERIAL}",
+              "started_ms": 0,
+              "status": "skipped"
+            }
+          ]
+        }
+      ],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/medium-05-search-retry-after-no-match.flow.yaml",
+      "negative_control": false,
+      "sha256": "eee9f1ffaf52e90c14fd50758b5d3994dcbac2f6dbc6a758254be08b7660034b",
+      "record": {
+        "ok": false,
+        "reason": "error: cannot record 'Wait until page shows Home within 60s': the previous step left a problem behind \u2014 the page reports: This site can\u2019t be reached https://fiorits3.cnt-online.at/sap/bc/ui5_ui5/ui2/ushell/shells/abap/FioriLaunchpad.html?_sap-hash=JTIzU2hlbGwtaG9tZQ is unreachable. ERR_ADDRESS_UNREACHABLE"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/negative-control-impossible-screen-title.flow.yaml",
+      "negative_control": true,
+      "sha256": "aa11921a694435e103f72d235fbe88381b99ec6bb8f61a27a307a3ce408ba133",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: browser driver failed: navigating to https://fiorits3.cnt-online.at/sap/bc/ui5_ui5/ui2/ushell/shells/abap/FioriLaunchpad.html?sap-client=100&sap-language=EN#Shell-home: Navigate failed: net::ERR_ADDRESS_UNREACHABLE"
+      },
+      "run_results": [],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/negative-control-wrong-material-asserted.flow.yaml",
+      "negative_control": true,
+      "sha256": "db66eb3a266bc18c6562bee1b4e8511f6f4510e739e3a4c252ce3c0014ef582f",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: browser driver failed: navigating to https://fiorits3.cnt-online.at/sap/bc/ui5_ui5/ui2/ushell/shells/abap/FioriLaunchpad.html?sap-client=100&sap-language=EN#Shell-home: Navigate failed: net::ERR_ADDRESS_UNREACHABLE"
+      },
+      "run_results": [],
+      "passed": true
+    },
+    {
+      "spec": "evals/fiori/dev/short-01-login-smoke.flow.yaml",
+      "negative_control": false,
+      "sha256": "647798aadabe364251079e95546e64d29d1d99e4ffc3d5658561aeae6d5c58d2",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: browser driver failed: navigating to https://fiorits3.cnt-online.at/sap/bc/ui5_ui5/ui2/ushell/shells/abap/FioriLaunchpad.html?sap-client=100&sap-language=EN#Shell-home: Navigate failed: net::ERR_ADDRESS_UNREACHABLE"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/short-02-home-shows-info-record-tiles.flow.yaml",
+      "negative_control": false,
+      "sha256": "a14ab318da10d901b0457a97942dd006d2787c7eb5850f257526ca4951f40ea5",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: browser driver failed: navigating to https://fiorits3.cnt-online.at/sap/bc/ui5_ui5/ui2/ushell/shells/abap/FioriLaunchpad.html?sap-client=100&sap-language=EN#Shell-home: Navigate failed: net::ERR_ADDRESS_UNREACHABLE"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/short-03-procurement-overview-opens.flow.yaml",
+      "negative_control": false,
+      "sha256": "41baecf8fd73693573601b83468bbc6da7ca5da4855eeb412cbe2cbc28bfe7c7",
+      "record": {
+        "ok": false,
+        "reason": "error: driver error: browser driver failed: navigating to https://fiorits3.cnt-online.at/sap/bc/ui5_ui5/ui2/ushell/shells/abap/FioriLaunchpad.html?sap-client=100&sap-language=EN#Shell-home: Navigate failed: net::ERR_ADDRESS_UNREACHABLE"
+      },
+      "run_results": [],
+      "passed": false
+    },
+    {
+      "spec": "evals/fiori/dev/short-04-info-record-exists-via-api.flow.yaml",
+      "negative_control": false,
+      "sha256": "da24ee45b7e3db7bd688994eb469e5d151c1d429361869838aef55334c58df7d",
+      "record": {
+        "ok": false,
+        "reason": "error: assertion 'api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json' does not hold while recording: expected api GET ${SAP_ODATA_BASE}/MM_PUR_INFO_RECORDS_MANAGE_SRV/C_PurInfoRecordWithOrg?$filter=Material%20eq%20'${MATERIAL}'%20and%20Plant%20eq%20'${PLANT}'%20and%20Supplier%20eq%20'${SUPPLIER}'&$format=json, request failed: io: Network is unreachable (os error 51)"
+      },
+      "run_results": [],
+      "passed": false
+    }
+  ]
+}

@@ -188,8 +188,12 @@ def score_isolated_spec(binary: Path, source_spec: Path, spec: Path,
             # applies.
 
     code, record_json, record_err = run_flowproof(binary, record_args, REPO)
-    if code != 0 or record_json is None or "error" in (record_json or {}):
-        reason = (record_json or {}).get("error") if record_json else record_err
+    if code != 0 or record_json is None or "error" in (record_json or {}) or "needs_clarification" in (record_json or {}):
+        if record_json and "needs_clarification" in record_json:
+            clarify = record_json["needs_clarification"]
+            reason = f"needs_clarification: {clarify.get('reason')} ({clarify.get('hint')})"
+        else:
+            reason = (record_json or {}).get("error") if record_json else record_err
         record_ok = False
         result["record"] = {"ok": False, "reason": reason or f"exit {code}"}
     else:
