@@ -43,6 +43,10 @@ fn an_aria_labelled_button_yields_role_and_name_with_its_named_ancestor() {
         eprintln!("skipping a11y capture measurement: set FLOWPROOF_E2E=1 to run it");
         return;
     }
+    // The shared browser this launches has no destructor on normal process
+    // exit (see SharedBrowserGuard's own doc comment) - without this, every
+    // e2e test run leaked its own Chrome process tree and profile dir.
+    let _guard = flowproof_adapters::SharedBrowserGuard::new();
     let mut driver = flowproof_adapters::WebAppDriver::new().expect("browser launches");
     driver
         .launch(&serve(FIXTURE), "", std::time::Duration::from_secs(30))
@@ -67,6 +71,10 @@ fn an_element_with_no_accessible_name_yields_no_hint() {
         eprintln!("skipping a11y capture measurement: set FLOWPROOF_E2E=1 to run it");
         return;
     }
+    // The shared browser this launches has no destructor on normal process
+    // exit (see SharedBrowserGuard's own doc comment) - without this, every
+    // e2e test run leaked its own Chrome process tree and profile dir.
+    let _guard = flowproof_adapters::SharedBrowserGuard::new();
     let mut driver = flowproof_adapters::WebAppDriver::new().expect("browser launches");
     driver
         .launch(&serve(FIXTURE), "", std::time::Duration::from_secs(30))

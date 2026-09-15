@@ -50,6 +50,50 @@ these fields existed) is byte-identical:
   (Two further fields, `id` and `answer`, are reserved for the v3.4
   server-initiated REQUEST slice and stay absent until then.)
 
+### Cassette lane (`app: agent`)
+
+The `cassette` key is the recorded trajectory itself: `{"turns":[…]}`, one
+entry per model-boundary exchange, matched strictly by position at replay.
+Schema:
+[`crates/flowproof-trace/schema/cassette-v1.schema.json`](../crates/flowproof-trace/schema/cassette-v1.schema.json).
+
+A multi-turn [`conversation:`](agent-testing/status-and-scope.md#multi-turn-conversations)
+flow adds two ADDITIVE fields, both omitted at their defaults so every
+single-delivery cassette - including every one recorded before these fields
+existed - serializes byte-identical:
+
+```json
+"cassette": {
+  "turns": [
+    {"request": {…}, "response": {…}},
+    {"request": {…}, "response": {…}, "delivery_index": 1}
+  ],
+  "deliveries": [
+    {"user": "Cancel order A-4471.", "turn_count": 1},
+    {"user": "Yes, go ahead.", "turn_count": 1}
+  ]
+}
+```
+
+- `delivery_index` on a turn (omitted when `0`) is which **delivery**
+  produced it. A delivery is a coarser unit than a turn: one `conversation:`
+  user message plus every turn it provoked before the agent settled. The
+  windows **tile the turn list exactly**: each delivery's turns are
+  contiguous, each delivery has at least one turn, indexes are dense and
+  ascending, and no turn falls outside a window. A recording that violates
+  any of those is refused rather than written, which is what stops a timeout
+  or an agent that exited early from minting a passing cassette.
+- `deliveries` (omitted when empty) is one entry per delivery in order,
+  each `{"user":…,"turn_count":…}`. The `user` text is stored verbatim and
+  is NOT redacted: it is the operator's own flow-file content, already
+  visible in the `.flow.yaml`.
+
+**`deliveries` is reporting, not authority.** It is never matched against at
+replay - the wire never re-sends it - and exists so a cassette or `heal`
+diff reads as an actual transcript instead of a bare turn count. What replay
+enforces is the turns and their `delivery_index` grouping; editing a
+`turn_count` changes what a diff *says*, not what a run *verdicts*.
+
 ### Side-effect lane (`app: agent`)
 
 A run the seccomp observation mechanism ran for (Linux, `command:` driver,
