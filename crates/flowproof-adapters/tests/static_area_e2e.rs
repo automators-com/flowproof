@@ -50,6 +50,10 @@ fn search_reaches_content_outside_the_app_root() {
     }
     use flowproof_driver::{AppDriver, UiaSelector};
 
+    // The shared browser this launches has no destructor on normal process
+    // exit (see SharedBrowserGuard's own doc comment) - without this, every
+    // e2e test run leaked its own Chrome process tree and profile dir.
+    let _guard = flowproof_adapters::SharedBrowserGuard::new();
     let mut driver = flowproof_adapters::WebAppDriver::new().expect("browser launches");
     driver
         .launch(&serve(FIXTURE), "", std::time::Duration::from_secs(30))

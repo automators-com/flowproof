@@ -77,6 +77,12 @@ fn the_drag_dispatch_lands_every_time() {
         eprintln!("skipping drag measurement: set FLOWPROOF_E2E=1 to run it");
         return;
     }
+    // The shared browser every trial below reuses has no destructor on
+    // normal process exit (see SharedBrowserGuard's own doc comment) -
+    // without this, every e2e test run leaked its own Chrome process tree
+    // and profile dir. One guard covers every trial's reuse of the same
+    // shared browser.
+    let _guard = flowproof_adapters::SharedBrowserGuard::new();
     let live = std::env::var("FLOWPROOF_DRAG_URL").ok();
     let url = live.clone().unwrap_or_else(|| serve(FIXTURE));
     let source = std::env::var("FLOWPROOF_DRAG_SOURCE").unwrap_or_else(|_| "#src".into());
