@@ -35,7 +35,74 @@ jobs:
     # wall-clock time to finish legitimate work.
     timeout-minutes: 45
     steps:
+      # The SAP GUI and Fiori workflows hit the same backend reference
+      # system. If its Fiori launchpad is down, stop before checkout/build/SAP
+      # login and report a named green skip rather than adding load to an
+      # already-unreachable system.
+      - name: check Fiori launchpad reachability
+        id: fiori_reachability
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:FIORI_BASE_URL)) {
+            Write-Host "::error::FIORI_BASE_URL is not configured"
+            exit 1
+          }
+
+          $statusLabel = "unknown"
+          $statusCode = $null
+          try {
+            $request = [System.Net.HttpWebRequest]::Create($env:FIORI_BASE_URL)
+            $request.Method = "GET"
+            $request.Timeout = 10000
+            $request.ReadWriteTimeout = 10000
+            $request.AllowAutoRedirect = $true
+            $request.UserAgent = "flowproof-ci-reachability"
+
+            $response = $request.GetResponse()
+            $statusCode = [int]$response.StatusCode
+            $statusLabel = [string]$statusCode
+            $response.Close()
+          } catch [System.Net.WebException] {
+            if ($_.Exception.Response -ne $null) {
+              $statusCode = [int]$_.Exception.Response.StatusCode
+              $statusLabel = [string]$statusCode
+              $_.Exception.Response.Close()
+            } else {
+              $statusLabel = $_.Exception.Status.ToString()
+            }
+          }
+
+          $reachable = $false
+          if ($statusCode -ne $null) {
+            $reachable = ($statusCode -ge 200 -and $statusCode -lt 400) -or $statusCode -eq 401 -or $statusCode -eq 403
+            $retryableOutage = $statusCode -eq 408 -or $statusCode -eq 429 -or ($statusCode -ge 500 -and $statusCode -lt 600)
+
+            if (-not $reachable -and -not $retryableOutage) {
+              Write-Host "::error::FIORI_BASE_URL returned unexpected http_code=$statusLabel"
+              exit 1
+            }
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "http_code=$statusLabel"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "reachable=$($reachable.ToString().ToLowerInvariant())"
+
+          if ($reachable) {
+            Write-Host "FIORI_BASE_URL reachable, http_code=$statusLabel"
+          } else {
+            Write-Host "::notice title=Live SAP/Fiori target skipped::FIORI_BASE_URL unreachable, http_code=$statusLabel"
+            if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Live SAP/Fiori target skipped"
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "FIORI_BASE_URL was unreachable during the pre-check (http_code=$statusLabel), so the live SAP GUI E2E suite was skipped."
+            }
+          }
+        env:
+          FIORI_BASE_URL: ${{ secrets.FIORI_BASE_URL }}
+
       - uses: actions/checkout@v4
+        if: steps.fiori_reachability.outputs.reachable == 'true'
 
       # Warm target/ before any SAP-touching step, so the later `cargo run`
       # in "replay SAP example flows" starts near-instantly instead of
@@ -47,12 +114,14 @@ jobs:
       # failing fast, and the whole step hangs to the job timeout with zero
       # output (#501). No SAP interaction here, so it's safe to run first.
       - name: pre-build flowproof CLI
+        if: steps.fiori_reachability.outputs.reachable == 'true'
         run: cargo build -p flowproof-cli --bin flowproof
 
       # Nightly runs have nobody at the keyboard: make sure SAP Logon is up
       # and clear the handful of modal dialogs known to block scripting
       # (multiple-logon prompts, license info) before they can stall the job.
       - name: session bootstrap
+        if: steps.fiori_reachability.outputs.reachable == 'true'
         shell: powershell
         run: ./scripts/sap-session-bootstrap.ps1
         env:
@@ -66,7 +135,7 @@ jobs:
       # diagnostics" step, which only fires from `flowproof run` and would
       # never catch a bootstrap-stage failure.
       - name: upload bootstrap diagnostics (initial)
-        if: failure()
+        if: failure() && steps.fiori_reachability.outputs.reachable == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: sap-bootstrap-diagnostics-initial-${{ github.run_id }}
@@ -75,6 +144,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: cargo test sap_e2e (real COM engine, live SAP GUI)
+        if: steps.fiori_reachability.outputs.reachable == 'true'
         run: cargo test -p flowproof-cli --test sap_e2e -- --nocapture
         env:
           FLOWPROOF_E2E_SAP: "1"
@@ -97,13 +167,14 @@ jobs:
       # gaps can still open up. Bootstrap again right before the suite runs,
       # not just once at job start, rather than assume nothing changed.
       - name: session bootstrap (pre-replay)
+        if: steps.fiori_reachability.outputs.reachable == 'true'
         shell: powershell
         run: ./scripts/sap-session-bootstrap.ps1
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
 
       - name: upload bootstrap diagnostics (pre-replay)
-        if: failure()
+        if: failure() && steps.fiori_reachability.outputs.reachable == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: sap-bootstrap-diagnostics-prereplay-${{ github.run_id }}
@@ -120,6 +191,7 @@ jobs:
       # against, not guaranteed elsewhere. --retries absorbs the odd flake
       # (stock-overview's screen has been the least reliable of the four).
       - name: replay SAP example flows (live SAP GUI)
+        if: steps.fiori_reachability.outputs.reachable == 'true'
         run: cargo run -p flowproof-cli --bin flowproof -- run examples/sap/ --retries 2
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
@@ -138,7 +210,7 @@ jobs:
       # gets captured. Short retention: these frames are real screens off
       # the reference SAP system and may show live order/material data.
       - name: upload SAP flow diagnostics
-        if: always()
+        if: always() && steps.fiori_reachability.outputs.reachable == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: sap-e2e-run-${{ github.run_id }}
@@ -149,14 +221,14 @@ jobs:
       # Leave the session clean for whichever run is next, whether that's
       # tonight's schedule or a manual dispatch during the working day.
       - name: session reset
-        if: always()
+        if: always() && steps.fiori_reachability.outputs.reachable == 'true'
         shell: powershell
         run: ./scripts/sap-session-bootstrap.ps1
         env:
           SAP_CONNECTION: ${{ secrets.SAP_CONNECTION }}
 
       - name: upload bootstrap diagnostics (reset)
-        if: failure()
+        if: failure() && steps.fiori_reachability.outputs.reachable == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: sap-bootstrap-diagnostics-reset-${{ github.run_id }}
