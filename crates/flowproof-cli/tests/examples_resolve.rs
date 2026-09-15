@@ -17,6 +17,10 @@ const CONN_TEST_SPEC: &str = include_str!("../../../examples/api/connection-test
 const AGENT_NODE_SPEC: &str = include_str!("../../../examples/agent-demo/weather-node.flow.yaml");
 const AGENT_PY_SPEC: &str = include_str!("../../../examples/agent-demo/weather.flow.yaml");
 const DEMO_SPEC: &str = include_str!("../../../scripts/demo/order-status.flow.yaml");
+/// The multi-turn example (#375). It is the only shipped flow that uses
+/// `conversation:`, so if the grammar drifts nothing else would catch it.
+const AGENT_CONVERSATION_SPEC: &str =
+    include_str!("../../../examples/agent-demo/cancel-order.flow.yaml");
 
 #[test]
 fn connection_test_example_resolves_with_body_and_headers() {
@@ -167,6 +171,59 @@ fn both_agent_demos_resolve_and_assert_the_same_thing() {
     assert!(
         !command.contains("python"),
         "the npm-path demo must not need Python: {command}"
+    );
+}
+
+/// The multi-turn example has to keep parsing, and - more than that - keep
+/// demonstrating the thing it exists to demonstrate. The guard on delivery
+/// 1 is the whole point: across the WHOLE conversation this agent does call
+/// `cancel_order`, so an `assert_no_tool_call` that had drifted out of the
+/// delivery and up to the flow level would fail loudly, while one that
+/// silently became conversation-wide would certify nothing. Pinning the
+/// SHAPE is what keeps the example from quietly becoming a worse example.
+#[test]
+fn the_conversation_example_keeps_its_delivery_local_guard() {
+    let spec = FlowSpec::parse(AGENT_CONVERSATION_SPEC).expect("conversation example parses");
+    assert_eq!(spec.app.id(), "agent");
+
+    let deliveries = spec
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            flowproof_agent::SpecStep::Conversation { conversation } => Some(conversation),
+            _ => None,
+        })
+        .expect("the example uses a conversation: block");
+    assert_eq!(deliveries.len(), 2, "confirmation needs a second turn");
+
+    // Delivery 0 asks and must NOT cancel; delivery 1 confirms and must.
+    assert_eq!(
+        deliveries[0].assert_no_tool_call.as_deref(),
+        Some("cancel_order"),
+        "the pre-confirmation guard is the point of the example"
+    );
+    assert!(
+        deliveries[0].assert_tool_call.is_none(),
+        "delivery 0 must not expect the cancellation it is guarding against"
+    );
+    assert!(
+        deliveries[1]
+            .assert_tool_call
+            .as_deref()
+            .is_some_and(|a| a.starts_with("cancel_order")),
+        "delivery 1 must prove the confirmed cancellation happened"
+    );
+
+    // A destructive tool in an example should still be mocked, or recording
+    // the example would be the one run that really cancels something.
+    let mocked = spec
+        .tools
+        .iter()
+        .find(|t| t.name == "cancel_order")
+        .expect("cancel_order declared");
+    assert!(
+        !mocked.result.is_null(),
+        "cancel_order must carry a result:"
     );
 }
 

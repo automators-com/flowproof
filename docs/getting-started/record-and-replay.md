@@ -63,9 +63,10 @@ What just happened, and why it is worth having:
 Two limits worth knowing before you build on this, rather than discovering
 them later:
 
-- **A flow is one turn, not a conversation.** Every `prompt:` step is joined
-  into a single task delivered up front; there is no follow-up user turn.
-  See [agent-testing.md](../agent-testing/index.md).
+- **A bare `prompt:` flow is one turn, not a conversation.** Every `prompt:`
+  step is joined into a single task delivered up front. For a real
+  back-and-forth, use `conversation:` instead. See
+  [agent-testing.md](../agent-testing/index.md).
 - **The model boundary is not the tool boundary.** A `tools:` mock changes
   what the model is TOLD a tool returned; the agent still ran its own tool.
   Only the `mcp:` boundary stops a tool executing. flowproof warns at

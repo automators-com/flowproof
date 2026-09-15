@@ -83,7 +83,18 @@ For another action, use rule_step with \"step\" containing exact \
 deterministic grammar and copy listed target tokens into quoted targets, for \
 example `Clear the \"css:#name\" field`, `Check the \"css:#terms\" checkbox`, \
 `Select Canada from the \"css:#country\" field`, `Press Enter`, \
-`Hover over \"css:#menu\"`, or `Go to /settings`.
+`Hover over \"css:#menu\"`, or `Go to /settings`. \
+EXCEPTION: for an element whose listed entry carries a \"scope\" (a \
+`framed:\"<frame>\" > <inner>` or `scoped:...` token), do NOT paste that \
+compound token into quotes - its own embedded quote marks cannot be \
+nested inside rule_step's quoting and will not parse. Instead write the \
+scope.inner token (or the element's plain label) in quotes and add the \
+matching clause: ` in the iframe \"<frame>\"` for a `scope.frame`, or \
+` in the item containing \"<anchor>\"` for a `scope.container`. For \
+example, an entry `{\"target\":\"framed:\\\"checkout\\\" > css:#coupon\", \
+\"scope\":{\"frame\":\"checkout\",\"inner\":\"css:#coupon\"}}` is \
+`Clear the \"css:#coupon\" field in the iframe \"checkout\"`, never \
+`Clear the \"framed:\\\"checkout\\\" > css:#coupon\" field`.
 - capture_text reads the listed target's visible text into its name. A safe \
 name starts with a lowercase letter and then contains only lowercase letters, \
 digits, or underscores.
@@ -2355,6 +2366,86 @@ mod tests {
         assert!(err
             .to_string()
             .contains("not one of the listed scene targets"));
+    }
+
+    /// The `evals/fiori/dev/medium-05-search-retry-after-no-match.flow.yaml`
+    /// finding: a rule_step naming an iframe-scoped element failed because
+    /// the model's authored step lost the frame scope, resolving to a bare
+    /// `Text("Material")` that the flat top-level scene never lists. The
+    /// system prompt's own generic advice ("copy listed target tokens into
+    /// quoted targets") cannot be followed correctly for a compound
+    /// `framed:"<frame>" > <inner>` token either - its embedded quote marks
+    /// cannot be nested inside rule_step's own `"..."` quoting
+    /// (`quoted_label` finds the FIRST `"`, not a balanced one), so pasting
+    /// it verbatim silently mis-parses instead of failing loudly. This
+    /// proves the correct, already-working escape hatch end to end:
+    /// `scope.inner` in quotes plus an explicit `in the iframe "<frame>"`
+    /// clause resolves to the properly framed target the scene actually
+    /// offers, using the exact iframe-scoped fixture already in
+    /// HUMAN_PRIMITIVE_SCENE.
+    #[test]
+    fn rule_step_grounds_a_framed_target_via_the_scope_clause_not_the_raw_token() {
+        let mut client = Scripted {
+            replies: vec![
+                r##"{"action":"rule_step","step":"Clear the \"css:#textfield\" field in the iframe \"container\""}"##
+                    .into(),
+            ],
+            calls: 0,
+        };
+        let action = author_step(
+            &mut client,
+            &AuthorContext {
+                today: None,
+                page_text: None,
+                intent: "Empty the text field inside the frame",
+                scene: HUMAN_PRIMITIVE_SCENE,
+                ..ctx()
+            },
+        )
+        .expect("the scope clause resolves to a listed, correctly framed target");
+        assert_eq!(
+            action,
+            ResolvedAction::Clear {
+                target: Target::Framed {
+                    frame: "container".into(),
+                    inner: Box::new(Target::css("#textfield")),
+                }
+            }
+        );
+    }
+
+    /// The failure mode this whole finding is about: pasting the scene's own
+    /// compound `framed:"..."` token verbatim into rule_step's quotes, per a
+    /// literal (but, for this one token shape, unfollowable) reading of the
+    /// generic "copy listed target tokens" advice. `quoted_label` finds the
+    /// FIRST `"` - inside `framed:`'s own embedded quote, not a balanced
+    /// one - so the label comes out as just `framed:` and everything after
+    /// is leftover garbage that cannot match any known step shape. This must
+    /// fail loudly and cleanly (a grammar parse error), not silently
+    /// misresolve to whatever `framed:` alone would mean.
+    #[test]
+    fn rule_step_rejects_a_raw_framed_token_pasted_into_quotes() {
+        let reply = r##"{"action":"rule_step","step":"Clear the \"framed:\\\"container\\\" > css:#textfield\" field"}"##;
+        let mut client = Scripted {
+            replies: vec![reply.into(), reply.into()],
+            calls: 0,
+        };
+        let err = author_step(
+            &mut client,
+            &AuthorContext {
+                today: None,
+                page_text: None,
+                intent: "Empty the text field inside the frame",
+                scene: HUMAN_PRIMITIVE_SCENE,
+                ..ctx()
+            },
+        )
+        .expect_err("a raw compound token pasted into quotes must not silently resolve");
+        assert!(
+            err.to_string()
+                .contains("expected 'Clear the [2nd ]\"<label>\" field' or 'Clear the <id> field'"),
+            "{err}"
+        );
     }
 
     #[test]
