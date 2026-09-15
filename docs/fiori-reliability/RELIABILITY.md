@@ -1,71 +1,93 @@
 # Fiori reliability — report
 
-**The goal was not reached — no gate was attempted, and no FAA baseline
-exists.** Say that plainly, first. Two real fixes did land and are each
-proven correct end to end (H1: a regenerated `native_id` no longer breaks
-replay; H2/H5: the recorder and replay no longer act on a scene before its
-real network activity has settled), and the Phase 2 harness now exists and
-has run twice for real against the live system — but a 2-spec smoke run of
-the harness is not a Phase 0c corpus, is not a gate attempt, and "two
-mechanisms work on one fixture, plus one small harness run" is still not
-"flowproof is reliable on Fiori." What follows is a real, evidence-backed
-account of what was found and fixed, not a claimed win on the actual goal.
+**The goal was not reached — no gate was attempted, and 33.33% is a long
+way from the 90% a gate round requires.** Say that plainly, first. What
+changed since the first draft of this report: the Phase 0c dev corpus (14
+specs) is now written, corrected, and scored — a clean **FAA 33.33%
+(4/12)**, the first number free of the confounds that made two earlier
+runs (a resource leak, a network outage) unreliable — and five more real,
+proven-correct-end-to-end fixes have landed since H1/H2, each with a test
+that failed before and passed after. None of that is the gate. The
+generator the gate ladder needs (`scripts/gen-fiori-spec.py`) still does
+not exist, Gate A was never attempted, and the honest read of "33.33% on a
+hand-written corpus with no retries" is: real, measured progress, on the
+mechanism the whole brief depends on (find a real failure, root-cause it,
+fix it, prove it, watch the number move) — not a claim that flowproof is
+reliable on Fiori.
 
 ## 1. Gate status
 
 Not attempted. No round exists against a real corpus, no FAA baseline was
 established, and Gate A was never approached. The harness that a round
-would run on now exists and works (see §2). The Phase 0c dev corpus also
-now exists — 14 specs in `evals/fiori/dev/` (4 short, 5 medium, 3 long, 2
-negative controls; composition and rationale in that directory's own
-README) — but it has been written, not scored: no baseline FAA exists for
-it yet, that run was deliberately deferred to a follow-up, and 14 specs
-scored once is still not a gate round (which needs 10-30 freshly generated
-specs per the brief's generator, none of which exists yet either). This is
-the honest headline, not a caveat buried later.
+would run on now exists and works (see §2), and the Phase 0c dev corpus
+(14 specs — 4 short, 5 medium, 3 long, 2 negative controls; composition
+and rationale in `evals/fiori/dev/README.md`) has been scored, not just
+written. But a hand-written 12-spec dev corpus, scored with no retry
+penalty, is not a gate round: a gate round needs 10-30 **freshly
+generated** specs (per the brief's generator, which does not exist yet),
+scored single-shot, at ≥90%. This is the honest headline, not a caveat
+buried later.
 
 ## 2. The numbers
 
-No Phase 0c corpus, no gate baseline. What does exist: the Phase 2 harness
-(`scripts/fiori-eval.py`) ran twice against a 2-spec validation corpus
-(`evals/fiori/dev/`), scoring **FAA 0/2 both times** — for two unrelated,
-real reasons the second time (see `FINDINGS.md`'s "Phase 2" section for the
-full account):
+The Phase 2 harness (`scripts/fiori-eval.py`) has now been run five times
+against the real system, in this order: a 2-spec smoke corpus (0/2, twice,
+for two unrelated real reasons — see below), then the 14-spec Phase 0c dev
+corpus three times (16.67% — contaminated by a since-fixed Chrome-process
+leak and a corpus mistake; 0.00% — the corporate network was entirely down
+for about two hours, not a real measurement; **33.33% (4/12) — the first
+clean one**, past both the leak fix and the corpus correction, network
+confirmed working).
+
+**The 2-spec smoke run** (`evals/fiori/20260914T094750Z.json`,
+`...095421Z.json`), scoring 0/2 both times, for two unrelated real reasons:
 - `probe-real-info-record-lookup.flow.yaml` — the spec's own final
   assertion doesn't hold; the flow doesn't reach the screen it asserts on.
   A real first-attempt authoring failure, exactly what FAA is meant to
-  catch — not a flowproof defect.
-- `short-01-login-smoke.flow.yaml` — passed record and run 1, then failed
-  run 2 on a "Home" text assertion. **Root cause found and fixed since**
-  (see `FINDINGS.md`): the model-authoring path was silently discarding a
-  step's own explicit `within 60s` and substituting a hardcoded 10-second
-  default — a universal bug, not Fiori-specific, now fixed in
-  `flowproof-agent` with two regression tests. A live re-verification after
-  the fix passed all 3 runs, with one run's wait genuinely taking 18.7s —
-  well past the old 10s ceiling, comfortably inside the corrected 60s one.
-  The initial "Spaces titles the page 'My Home', not 'Home'" hypothesis for
-  this failure was investigated and **not needed** to explain what was
-  actually observed; the simpler timeout cause fully accounts for it.
+  catch — not a flowproof defect. Later retired to `_probes/`, not part of
+  the scored corpus.
+- `short-01-login-smoke.flow.yaml` — failed on a "Home" text assertion.
+  Root cause found and fixed: the model-authoring path was silently
+  discarding a step's own explicit `within 60s` and substituting a
+  hardcoded 10-second default — universal, not Fiori-specific. Fixed with
+  two regression tests; live re-verification passed all 3 runs, one wait
+  genuinely taking 18.7s (past the old 10s ceiling, inside the corrected
+  60s one).
 
-Two full scoreboards are committed (`evals/fiori/20260914T094750Z.json`,
-`evals/fiori/20260914T095421Z.json`) as the actual evidence behind these
-numbers, plus the timeout-fix commit and its own live re-verification
-(described in `FINDINGS.md`, not re-scored into a third dev-corpus
-scoreboard since it targeted a temporary single-spec copy, not the tracked
-corpus). This is a harness smoke-test result, not a dev/holdout FAA
-baseline — reading "0%" as "flowproof's reliability score on Fiori" would be
-wrong in both directions: too small a sample, and one of the two failures
-is a spec-authoring problem, not a product one. With the timeout fix,
-re-running the original 2-spec corpus would likely now score 1/2 rather
-than 0/2 — untested as of this writing, since the fix was verified against
-an isolated single-spec copy rather than the committed corpus, to avoid
-re-exercising `probe-real-info-record-lookup`'s already-understood, separate
-failure needlessly against the real system.
+**The 14-spec Phase 0c dev corpus**, scored three times
+(`evals/fiori/20260914T113725Z.json` 16.67%,
+`...20260914T133044Z.json` 0.00%, `...20260914T185311Z.json` 33.33%):
+- Run 1 (16.67%) was contaminated by a Chrome-process leak (28 orphaned
+  processes, 3.5GB of temp profile directories, found and fixed mid-run —
+  `shared_browser`'s process-lifetime static never runs its destructor on
+  a normal process exit) and by a corpus mistake (5 specs assumed a "PTP
+  Process Area BU Apps" tile that does not exist on this account's real
+  Home page, inherited from an example file that never confirmed it live
+  either). Both fixed.
+- Run 2 (0.00%) failed because the corporate Fiori host itself was
+  unreachable at the OS routing level ("Network is unreachable") for
+  roughly two hours — a VPN/network-path drop, confirmed with `curl`/
+  `traceroute` against a still-healthy general internet connection, not
+  an application issue. Not a flowproof measurement at all; kept as
+  archived evidence rather than discarded.
+- Run 3 (33.33%, 4/12) is the first clean number: all four short specs
+  passed, including the two that directly exercise the corrected tiles —
+  direct confirmation the corpus fix worked. Negative controls held (both
+  stayed red) in every one of the three runs.
+
+Every scoreboard above is committed under `evals/fiori/`, alongside the
+traces each run produced, as the actual evidence behind these numbers —
+not described from memory. See `docs/fiori-reliability/FINDINGS.md`'s
+"Phase 0c" and "Real-system checkpoint #2" sections for the full,
+per-spec account of what's still failing in the 33.33% run and why.
 
 ## 3. Control results
 
-Not applicable — no harness, no negative controls, no mutation checks, no
-frozen corpus, no generator.
+Negative controls held in all three scored runs against the real corpus
+(both specs stayed red every time) — the harness's own oracle is
+trustworthy. No mutation check, no frozen-corpus hash comparison across
+runs, and no generator exist yet; those remain unstarted, same as the
+gate itself.
 
 ## 4. Hypothesis verdicts
 
@@ -147,18 +169,34 @@ hypothesis being resolved on the fixtures used tonight is not the same as
 flowproof being reliable on Fiori at scale — that claim needs the harness
 and a real round, neither of which exists yet.
 
-**The generator and gate rounds are what remains**, along with actually
-scoring the Phase 0c corpus that now exists (14 dev specs — see §1/§2 —
-plus a still-empty holdout set the brief reserves for the user's own
-hand-written specs, not mine to fill). The harness that runs a corpus now
-exists and works (§2), but it has only ever been pointed at the 2-spec
-smoke corpus, not yet at the 14-spec dev corpus, and gate rounds need
-freshly *generated* specs from a generator that does not exist yet, not a
-hand-written dev corpus at all. Two fixed mechanisms (H1, H2/H5) plus one
-killed hypothesis (H4) plus one more fixed mechanism found via the harness
-itself (the model-authoring
-timeout bug behind the "Home" finding in §2 — see `FINDINGS.md`), each
-proven correct or reproduced on real data, are a necessary input to the
+**The generator and gate rounds are what remains.** The Phase 0c dev corpus
+(14 specs) is now written, corrected, and scored three times against the
+real system (§1/§2) — a still-empty holdout set (the brief reserves that
+for the user's own hand-written specs, not mine to fill) is the one piece
+of the dev/holdout split not done. Gate rounds need freshly *generated*
+specs from a generator that does not exist yet, not a hand-written dev
+corpus at all — 33.33% on 12 hand-picked specs with no retry penalty is a
+real number, but it answers a different question than "would this pass
+Gate A."
+
+Of the 8 specs still failing in the 33.33% run: one root-caused and fixed
+this session (`medium-05`'s `rule_step` scope-clause prompt fix), two more
+fixed as directly-related infrastructure gaps found while testing that fix
+(`probe_frame` and `frame_act` both had no transport-fault retry, unlike
+every element-scoped call — the exact error `medium-02` failed with), one
+is pure Anthropic API flakiness (`medium-01`, a `529 Overloaded`, not
+ours), and three remain genuinely open pending live re-verification: the
+value-help "accepted a different value after commit" mismatch (hits 3-4
+specs, the highest-count remaining failure, mechanism still unconfirmed),
+`medium-03`'s empty-title-at-deadline (the polling loop itself was read
+and is correct, so this is either real render-time variance past 20s or a
+structurally wrong element — undetermined without a live re-record), and
+`long-02`'s unexplained "Find Objects in Classes" page. Two fixed
+mechanisms from earlier (H1, H2/H5) plus one killed hypothesis (H4) plus
+four more fixed mechanisms found via the harness itself since (the
+model-authoring timeout bug, the Chrome-process leak, the `rule_step`
+scope-clause gap, and the missing transport-fault retries), each proven
+correct or reproduced on real data, are a necessary input to the
 corpus/gate work — not a substitute for it.
 
 ## 7. What I should not trust

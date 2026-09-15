@@ -157,9 +157,11 @@ every commit, for free.
 
 ## Known limits, so you do not design around them blind
 
-- **A flow is ONE turn.** All `prompt:` steps are joined into a single task
-  delivered up front. No follow-up user turn. A conversational guarantee
-  can only be tested for what one task produces.
+- **A bare `prompt:` flow is ONE turn.** All `prompt:` steps are joined into
+  a single task delivered up front. For a real back-and-forth, use
+  `conversation:`, a list of deliveries each with its own delivery-local
+  assertions - see
+  [Multi-turn conversations](agent-testing/status-and-scope#multi-turn-conversations).
 - **`assert_no_egress` is Linux-only.** Elsewhere it fails as a capability
   error rather than passing vacuously, so keep it out of flows that must
   pass on a developer Mac.
