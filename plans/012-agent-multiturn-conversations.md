@@ -420,15 +420,28 @@ section calls for). All tested end to end with fakes — a real spawned
 process, a fake real-model upstream, a fake stateful `url:` service — never
 a real model or API key.
 
-**Known gap, not blocking:** the dialect/streaming coverage this plan asked
+**Known gap, now closed:** the dialect/streaming coverage this plan asked
 for ("exercised as fixtures... flagged if that assumption breaks") was not
-built out. Every test here uses the OpenAI wire shape, non-streaming. The
-delivery-gating code added is dialect-agnostic by construction — it never
-inspects `Turn.protocol` or touches the proxy's streaming path, only the
+built out in the original change — every test then used the OpenAI wire
+shape, non-streaming, and the argument for why that was safe was an
+argument from construction: the delivery-gating code never inspects
+`Turn.protocol` or touches the proxy's streaming path, only the
 served-count/tool-call-presence signals `cassette.rs` already tracks
-uniformly — so there is no known reason Anthropic or streaming would behave
-differently, but that is confidence, not a fixture. Left as follow-up
-coverage rather than a blocker.
+uniformly. That reasoning held, but it was confidence rather than a
+fixture.
+
+Both fixtures now exist, and the assumption did not break:
+
+- `agent_conversation_anthropic_e2e.rs` — a Messages-dialect conversation
+  recorded and replayed end to end.
+- `agent_conversation_streaming_e2e.rs` — a `stream: true` conversation,
+  asserting the FRAME BOUNDARIES per delivery rather than assembled text.
+
+Both use an asymmetric trajectory on purpose (delivery 0 produces one turn,
+delivery 1 produces two), so the per-delivery turn counts are the assertion.
+A grouping bug that closed a delivery at its first response rather than at
+settle would still assemble the same replies and satisfy every reply
+assertion; it would not reproduce `[1, 2]`.
 
 ## Release safety limits
 
