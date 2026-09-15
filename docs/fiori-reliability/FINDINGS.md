@@ -963,22 +963,54 @@ diff" is supposed to catch, and it did.
 commit" failure (hits `long-01`, `long-03`, `medium-04`, and a differently-
 shaped variant in `long-02`) is the highest-count remaining failure and is
 NOT yet root-caused - a live-system investigation is needed and the
-corporate host has been unreachable for it all night. `medium-02`'s own
-replay-time connection drop may or may not be closed by the `probe_frame`
-fix above (it fires from `type_text`'s framed path too, a different call
-site not yet checked for the same gap). `medium-03`'s "the title element
-exists but shows ''" was checked against the actual polling loop
-(`crates/flowproof-agent/src/recorder.rs`'s `AssertText` handling) and the
-loop itself is correct - it keeps polling `element_exists` + `read_text`
-against the real deadline, so this is either a genuine render-time
-variance longer than 20s for this specific, previously-unexplored app, or
-the recorded selector resolves to a structurally different (permanently
-empty) element - which of the two it is cannot be told without a live
-re-record, and guessing "just raise the timeout" without that evidence
-would be exactly the kind of primary-fix-is-a-timeout-bump the brief
-forbids. `long-02`'s "the previous step left a problem behind - the page
-reports: Find Objects in Classe[s]" is unexplained; it needs to be seen
-live before it can be explained at all.
+corporate host has been unreachable for it all night.
+
+A refined, still-unconfirmed hypothesis worth checking first when it comes
+back: `type_text`'s SAP-WebGUI commit-verify (`frame_act`'s
+`native_input:sap_webgui` branch) is the only wait mechanism found
+anywhere near this failure - a fixed 300ms sleep before reading the field
+back, itself now understood to be a real gap the same way H2 was (a fixed
+delay instead of a real settle-wait), but that is a DIFFERENT gap from
+this one. Searching for what happens BETWEEN individual actions within one
+authored step (or across consecutive steps) during LIVE recording found
+nothing: `settled_scene` (the H2 fix) is called only from `scene()`, i.e.
+once per grounding round when the model is shown a fresh screen - never
+between the individual actions a single reply then executes in sequence.
+`wait_actionable` (the closest thing to an inter-action wait) exists only
+in `flowproof-replay`, not in the recorder's live path at all. If a
+value-help selection triggers its own classic-GUI backend round-trip (SAP
+WebGUI screens commonly POST back to refresh dependent fields on a
+selection), and the VERY NEXT action - a `type_text` into a different
+field - fires immediately with no wait for that round-trip to finish, the
+screen could still be mid-refresh when the type commits, which would
+present exactly as "the field accepted a different value after commit."
+Not yet acted on: this is a real, structurally-supported hypothesis found
+by reading code, not a confirmed cause, and a genuine fix here would be a
+new mechanism (an iframe-scoped inter-action settle wait), not a small
+extension of something already proven - exactly the kind of change that
+should not be built on a guess. Needs to be watched for directly, live,
+before deciding whether it explains what's actually happening.
+
+`medium-02`'s own replay-time connection drop is very likely closed by the
+`frame_act` fix two commits after `probe_frame`'s (it is exactly the call
+`type_text`'s framed path uses, and `medium-02` types into several framed
+fields) - "very likely," not confirmed, since this too needs a live
+re-run to actually prove.
+
+`medium-03`'s "the title element exists but shows ''" was checked against
+the actual polling loop (`crates/flowproof-agent/src/recorder.rs`'s
+`AssertText` handling) and the loop itself is correct - it keeps polling
+`element_exists` + `read_text` against the real deadline, so this is
+either a genuine render-time variance longer than 20s for this specific,
+previously-unexplored app, or the recorded selector resolves to a
+structurally different (permanently empty) element - which of the two it
+is cannot be told without a live re-record, and guessing "just raise the
+timeout" without that evidence would be exactly the kind of
+primary-fix-is-a-timeout-bump the brief forbids.
+
+`long-02`'s "the previous step left a problem behind - the page reports:
+Find Objects in Classe[s]" is unexplained; it needs to be seen live before
+it can be explained at all.
 
 ## Decisions
 
