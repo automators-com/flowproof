@@ -30,6 +30,7 @@ instead so they're easy to find as a set.
 | 10 | [010-release-registry-smoke.md](010-release-registry-smoke.md) | A human-dispatched, protected `release-smoke.yml` workflow that validates an exact released version installs and runs from PyPI and npm on Linux x64, Windows x64, and macOS ARM64 with no checkout — issue #382 |
 | 11 | [011-fiori-values-example.md](011-fiori-values-example.md) | Replace the Fiori examples' `suite.yaml`/`mint-test-data.sh` business-data minting with a checked-in `examples/fiori/values.yaml` that demonstrates `--vars` while keeping credentials in config or secrets |
 | 12 | [012-agent-multiturn-conversations.md](012-agent-multiturn-conversations.md) | Interactive multi-turn `record`: a human converses live with the running agent, flowproof captures each delivery only after the prior trajectory settles, and writes a `conversation:` block with delivery-local and conversation-wide assertions added afterward — issue #375, `CHARTER.md` Milestone 3 |
+| 13 | [013-fiori-ci-outage-resilience.md](013-fiori-ci-outage-resilience.md) | A fast-fail `FIORI_BASE_URL` reachability pre-check for `fiori-e2e.yml`/`sap-e2e.yml`, with shared concurrency and dedicated CI credentials deferred to separate follow-ups |
 
 ## How to read and amend these
 
