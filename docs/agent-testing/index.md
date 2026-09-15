@@ -235,12 +235,12 @@ rather than passing vacuously, so it will not silently certify nothing. See
 **Two limits to know before you start**, because they shape what a flow can
 express rather than being details you hit later:
 
-- **A flow is ONE turn, not a conversation.** Every `prompt:` step is joined
-  into a single task string delivered up front; flowproof then observes the
-  trajectory the agent produces on its own. There is no follow-up user turn,
-  and no step that replies to the agent mid-run. A conversational system can
-  be tested this way only for what one task produces. See
-  [Single-turn, and what multi-turn would cost](#single-turn-and-what-multi-turn-would-cost).
+- **A bare `prompt:` flow is still ONE turn, not a conversation.** Every
+  `prompt:` step is joined into a single task string delivered up front;
+  flowproof then observes the trajectory the agent produces on its own. For a
+  real back-and-forth, use `conversation:` instead - a list of deliveries,
+  each with its own delivery-local assertions. See
+  [Multi-turn conversations](status-and-scope#multi-turn-conversations).
 - **The model boundary is not the tool boundary.** A `tools:` mock rewrites
   what the model is TOLD a tool returned; the system under test still ran
   that tool. Only the `mcp:` boundary keeps a tool from executing. Flows that
