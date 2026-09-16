@@ -3112,6 +3112,7 @@ fn top_level_sap_fields_commit_before_recording_and_replay_continue() {
         onkeydown="if(event.key==='Enter') document.getElementById('command').textContent='Command invoked'">
       <div id="command"></div>
       <label for="plant">Plant</label><input id="plant" value="OLD"
+        onfocus="if(!window.replaced){window.replaced=true;setTimeout(()=>{const fresh=this.cloneNode(true);fresh.value='OLD';this.replaceWith(fresh);fresh.focus()},25)}"
         onkeydown="if(event.key==='Enter') document.getElementById('validation').textContent='Plant validated'"
         onblur="document.getElementById('accepted').textContent='Committed plant: '+this.value">
       <div id="validation"></div>
@@ -3214,7 +3215,9 @@ fn sap_grid_scrolls_through_its_scrollbar_and_edits_both_ends() {
       <div id="items_hscroll-bar" style="position:relative;width:240px;height:20px;background:#ddd">
         <div id="items_hscroll-hdl" style="position:absolute;left:0;top:0;width:48px;height:20px;background:#777"></div>
       </div><button>Next</button>
+      <button onclick="replaceAfterScroll=true">Refresh on next scroll</button>
     </div><script>
+      let replaceAfterScroll=false;
       const pane=document.getElementById('items-mrss-cont-none'),thumb=document.getElementById('items_hscroll-hdl');
       let start=null,offset=0;
       thumb.onmousedown=e=>{start={x:e.clientX,offset};e.preventDefault()};
@@ -3225,12 +3228,18 @@ fn sap_grid_scrolls_through_its_scrollbar_and_edits_both_ends() {
         document.getElementById('shift').style.left=(-offset)+'px';
         document.getElementById('header').style.left=(-offset)+'px';
       });
-      window.addEventListener('mouseup',()=>start=null);
+      window.addEventListener('mouseup',()=>{
+        const dragged=!!start;start=null;
+        if(dragged && replaceAfterScroll){
+          replaceAfterScroll=false;
+          setTimeout(()=>pane.replaceWith(pane.cloneNode(true)),10);
+        }
+      });
       function edit(cell,id,label){
         // Native scrollIntoView moves the clipped body, not the grid's model.
         // Such a click cannot activate the intended editor.
         if(pane.scrollLeft!==0)return;
-        if(!document.getElementById(id))cell.innerHTML='<label for="'+id+'">'+label+'</label><input id="'+id+'" style="width:80px">';
+        if(!document.getElementById(id))cell.innerHTML='<label for="'+id+'">'+label+'</label><input id="'+id+'" style="width:200px" oninput="if(pane.scrollLeft!==0)this.value=String()">';
       }
     </script>"#).expect("parse or write browser fixture");
     let spec = FlowSpec::parse(&format!(
@@ -3244,7 +3253,11 @@ steps:
   - Double-click "css:#material-cell"
   - Type 3306 into the "Material" field
   - assert: the "Material" field contains 3306
+  - Click "Plant"
   - assert: the "Plant" field contains 1010
+  - Click "Refresh on next scroll"
+  - Scroll "css:#material-cell" into view
+  - assert: the "Material" field contains 3306
 "#,
         page.display()
     ))
