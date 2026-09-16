@@ -16,6 +16,15 @@ together).
   `capture` keeps handling its own interrupt (it never touches the shared
   browser) and now also stops cleanly on `SIGTERM`, not just Ctrl-C.
 
+- **A CDP transport fault gets more than one chance to clear before a web
+  step fails.** A single fixed ~300ms retry was not enough against a real
+  Fiori system under load: a clean live re-verification still hit "underlying
+  connection is closed" 3 of 6 runs, including a call that already had that
+  one retry failing twice in a row. Every transport-faulting call
+  (`with_element`, `frame_act`, `probe_frame`) now shares one retry policy —
+  three retries with growing backoff (300ms, 600ms, 900ms) — instead of each
+  giving up after its own single attempt.
+
 ## 0.23.5
 
 - **AI authoring can double-click a grounded control directly.** Requests to

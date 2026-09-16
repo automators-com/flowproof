@@ -2091,27 +2091,21 @@ impl WebAppDriver {
         ))
     }
 
-    /// Run an element operation with ONE retry on a CDP transport fault:
-    /// re-resolve the element (its object id may be gone with the dead
-    /// connection) and try again before failing the step.
+    /// Run an element operation with the shared transport-fault retry
+    /// policy (see [`retry_on_transport_fault`]): re-resolve the element
+    /// (its object id may be gone with the dead connection) and try again
+    /// before failing the step.
     fn with_element<T>(
         &self,
         locator: &WebLocator,
         context: &str,
         op: impl Fn(&headless_chrome::Element<'_>) -> Result<T, anyhow::Error>,
     ) -> Result<T, DriverError> {
-        let mut retried = false;
-        loop {
-            let element = self.find(locator)?;
-            match op(&element) {
-                Ok(value) => return Ok(value),
-                Err(e) if !retried && is_transport_fault(&e.to_string()) => {
-                    retried = true;
-                    std::thread::sleep(Duration::from_millis(300));
-                }
-                Err(e) => return Err(web_err(context, e)),
-            }
-        }
+        retry_on_transport_fault(|| {
+            let element = self.find(locator).map_err(|e| e.to_string())?;
+            op(&element).map_err(|e| e.to_string())
+        })
+        .map_err(|e| web_err(context, e))
     }
 }
 
@@ -2133,30 +2127,63 @@ fn is_transport_fault(message: &str) -> bool {
         || m.contains("unable to make method calls")
 }
 
-/// Retry a fallible operation exactly once if its first failure looks like
-/// a transient CDP transport fault - the same one-shot recovery
-/// `with_element` already gives element-scoped calls (re-finding the
-/// element and retrying its own op inline), generalized here for a call
-/// that talks to the tab directly and has nothing to re-resolve. Pure
-/// control flow, no CDP calls of its own, so it is unit-testable with a
-/// mock closure rather than only provable against a real, flaky browser.
-fn retry_once_on_transport_fault<T>(
+/// Attempts allowed beyond the first for a transport-faulting operation.
+/// Was 1 (a single fixed ~300ms retry) until issue #608: a clean live
+/// re-verification of `medium-02-change-info-record-readonly.flow.yaml`
+/// still hit "underlying connection is closed" 3 of 6 runs, including
+/// `frame_act` failing *twice in a row* even though it already had that one
+/// retry - proof a single ~300ms retry does not reliably bridge a real CDP
+/// outage.
+const TRANSPORT_FAULT_RETRIES: u32 = 3;
+
+/// Backoff base: the wait before retry N is `N * TRANSPORT_FAULT_BACKOFF`
+/// (300ms, 600ms, 900ms), so the delay grows instead of hammering a
+/// connection that needs a moment to recover.
+const TRANSPORT_FAULT_BACKOFF: Duration = Duration::from_millis(300);
+
+/// Retry a fallible operation on a transient CDP transport fault, backing
+/// off a little more between each attempt - the same recovery
+/// `with_element` gives element-scoped calls (re-finding the element and
+/// retrying its own op), generalized here for a call that talks to the tab
+/// directly and has nothing to re-resolve. Pure control flow, no CDP calls
+/// of its own, so it is unit-testable with a mock closure rather than only
+/// provable against a real, flaky browser.
+fn retry_on_transport_fault<T>(
     mut attempt: impl FnMut() -> Result<T, String>,
 ) -> Result<T, String> {
-    match attempt() {
-        Ok(value) => Ok(value),
-        Err(e) if is_transport_fault(&e) => {
-            std::thread::sleep(Duration::from_millis(300));
-            attempt()
+    retry_on_transport_fault_with(TRANSPORT_FAULT_RETRIES, &mut attempt, |backoff| {
+        std::thread::sleep(backoff)
+    })
+}
+
+/// The retry loop itself, with the attempt budget and the sleep both
+/// injectable: production always calls it via [`retry_on_transport_fault`]
+/// with the real constants and a real sleep; tests inject a smaller budget
+/// and a no-op sleep so the backoff schedule is provable without paying
+/// seconds of real wall-clock time per test.
+fn retry_on_transport_fault_with<T>(
+    max_retries: u32,
+    attempt: &mut impl FnMut() -> Result<T, String>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<T, String> {
+    let mut retries = 0;
+    loop {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(e) if retries < max_retries && is_transport_fault(&e) => {
+                retries += 1;
+                sleep(TRANSPORT_FAULT_BACKOFF * retries);
+            }
+            Err(e) => return Err(e),
         }
-        Err(e) => Err(e),
     }
 }
 
 #[cfg(test)]
 mod transport_retry_tests {
-    use super::retry_once_on_transport_fault;
-    use std::cell::Cell;
+    use super::{retry_on_transport_fault, retry_on_transport_fault_with};
+    use std::cell::{Cell, RefCell};
+    use std::time::Duration;
 
     /// docs/fiori-reliability/FINDINGS.md:
     /// medium-02-change-info-record-readonly.flow.yaml failed live with
@@ -2167,7 +2194,7 @@ mod transport_retry_tests {
     #[test]
     fn a_transport_fault_recovers_on_the_second_attempt() {
         let calls = Cell::new(0);
-        let result = retry_once_on_transport_fault(|| {
+        let result = retry_on_transport_fault(|| {
             calls.set(calls.get() + 1);
             if calls.get() == 1 {
                 Err("Unable to make method calls because underlying connection is closed".into())
@@ -2176,21 +2203,51 @@ mod transport_retry_tests {
             }
         });
         assert_eq!(result, Ok("recovered"));
-        assert_eq!(calls.get(), 2, "must retry exactly once, not loop");
+        assert_eq!(calls.get(), 2);
+    }
+
+    /// issue #608: a live run saw `frame_act` fail twice in a row on the
+    /// same connection-closed fault even though it already had one retry -
+    /// this proves the policy now survives that exact shape of failure by
+    /// recovering on the third attempt (second retry).
+    #[test]
+    fn a_transport_fault_recovers_on_the_third_attempt() {
+        let calls = Cell::new(0);
+        let result = retry_on_transport_fault_with(
+            3,
+            &mut || {
+                calls.set(calls.get() + 1);
+                if calls.get() < 3 {
+                    Err(
+                        "Unable to make method calls because underlying connection is closed"
+                            .into(),
+                    )
+                } else {
+                    Ok("recovered")
+                }
+            },
+            |_| {},
+        );
+        assert_eq!(result, Ok("recovered"));
+        assert_eq!(calls.get(), 3, "must survive two consecutive faults");
     }
 
     #[test]
-    fn a_transport_fault_that_never_clears_still_fails_after_one_retry() {
+    fn a_transport_fault_that_never_clears_still_fails_after_all_retries() {
         let calls = Cell::new(0);
-        let result: Result<(), String> = retry_once_on_transport_fault(|| {
-            calls.set(calls.get() + 1);
-            Err("the event waited for never came".into())
-        });
+        let result: Result<(), String> = retry_on_transport_fault_with(
+            3,
+            &mut || {
+                calls.set(calls.get() + 1);
+                Err("the event waited for never came".into())
+            },
+            |_| {},
+        );
         assert_eq!(result, Err("the event waited for never came".to_string()));
         assert_eq!(
             calls.get(),
-            2,
-            "one retry, then give up - not an infinite loop"
+            4,
+            "one first attempt plus three retries, then give up - not an infinite loop"
         );
     }
 
@@ -2200,12 +2257,33 @@ mod transport_retry_tests {
     #[test]
     fn a_non_transport_error_is_never_retried() {
         let calls = Cell::new(0);
-        let result: Result<(), String> = retry_once_on_transport_fault(|| {
+        let result: Result<(), String> = retry_on_transport_fault(|| {
             calls.set(calls.get() + 1);
             Err("element not found".into())
         });
         assert_eq!(result, Err("element not found".to_string()));
         assert_eq!(calls.get(), 1, "a non-transport error must not be retried");
+    }
+
+    /// The wait between attempts grows (300ms, 600ms, 900ms) instead of
+    /// staying fixed - issue #608's "and/or backoff that scales" direction.
+    #[test]
+    fn backoff_grows_with_each_retry() {
+        let waits = RefCell::new(Vec::new());
+        let result: Result<(), String> = retry_on_transport_fault_with(
+            3,
+            &mut || Err("connection is closed".into()),
+            |backoff| waits.borrow_mut().push(backoff),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            waits.into_inner(),
+            vec![
+                Duration::from_millis(300),
+                Duration::from_millis(600),
+                Duration::from_millis(900),
+            ]
+        );
     }
 }
 
@@ -2486,8 +2564,10 @@ impl WebAppDriver {
         // this talks to the tab directly, with no element to re-resolve, so
         // it never went through with_element's retry either - one transient
         // CDP hiccup here (this is the exact call `type_text`'s framed path
-        // uses for every field inside an iframe) killed the whole flow.
-        let status = retry_once_on_transport_fault(|| {
+        // uses for every field inside an iframe) killed the whole flow. A
+        // single retry was also not enough on its own (issue #608) - this
+        // is the call site that failed twice in a row live.
+        let status = retry_on_transport_fault(|| {
             self.tab()
                 .map_err(|e| e.to_string())?
                 .evaluate(&call, false)
@@ -4178,14 +4258,14 @@ impl AppDriver for WebAppDriver {
             id = js(&query.inner_id),
             text = js(&query.inner_text),
         );
-        // ONE retry on a transport fault, same recovery `with_element` gives
+        // Retry on a transport fault, same recovery `with_element` gives
         // element-scoped calls (see medium-02-change-info-record-readonly's
         // real "probing an iframe: ... underlying connection is closed"
         // failure in docs/fiori-reliability/FINDINGS.md): this call talks to
         // the tab directly, with no element to re-resolve, so it never went
         // through that retry at all - any transient CDP hiccup here killed
         // the whole flow on the first blip, with zero chance to recover.
-        let status = retry_once_on_transport_fault(|| {
+        let status = retry_on_transport_fault(|| {
             self.tab()
                 .map_err(|e| e.to_string())?
                 .evaluate(&call, false)
@@ -4304,7 +4384,7 @@ impl AppDriver for WebAppDriver {
                     // its own retry: confirmed live, a dropped CDP event here
                     // failed the whole flow on a field that would have typed
                     // fine a moment later.
-                    retry_once_on_transport_fault(|| {
+                    retry_on_transport_fault(|| {
                         self.tab()
                             .map_err(|e| e.to_string())?
                             .type_str(text)
@@ -4341,7 +4421,7 @@ impl AppDriver for WebAppDriver {
                     // it - the same click -> select -> keystrokes contract the
                     // top-level path below uses, not an append.
                     self.frame_act(&query, "select_all", serde_json::Value::Null)?;
-                    retry_once_on_transport_fault(|| {
+                    retry_on_transport_fault(|| {
                         self.tab()
                             .map_err(|e| e.to_string())?
                             .type_str(text)
@@ -4741,7 +4821,7 @@ impl AppDriver for WebAppDriver {
         // re-resolve, so with_element's retry never covered it either -
         // confirmed live, a dropped CDP event on a bare keypress (Tab to
         // commit a field, Ctrl+A to select) failed the whole flow.
-        retry_once_on_transport_fault(|| {
+        retry_on_transport_fault(|| {
             self.tab()
                 .map_err(|e| e.to_string())?
                 .press_key_with_modifiers(
