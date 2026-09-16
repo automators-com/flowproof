@@ -13,6 +13,15 @@ against the real system, run after run?
 
     python3 scripts/fiori-replay-reliability.py evals/fiori/dev
     python3 scripts/fiori-replay-reliability.py evals/fiori/dev --runs 20
+    python3 scripts/fiori-replay-reliability.py evals/fiori/dev --baseline evals/fiori/replay-reliability-baseline.json
+
+Pass `--baseline` (a prior run's own `--out` scoreboard) to compare against
+instead of just reporting a number in isolation - a single run on a live
+system is noisy, so a regression is a drop of more than
+`--regression-threshold` (default 10 percentage points) versus the
+baseline's rate for the same spec, not any drop at all. Exits 3 if a
+regression is found, distinct from 0 (measured, no regression) and 2
+(setup error), so this can gate a CI step once wired up.
 
 Only specs with an already-committed `.trace.jsonl` are included - this is
 a replay-only measurement, it never calls `record` and never touches an
@@ -132,6 +141,39 @@ def measure_spec(binary: Path, spec: Path, runs: int) -> dict:
     }
 
 
+def load_baseline(path: Path) -> dict:
+    data = json.loads(path.read_text())
+    by_spec = {s["spec"]: s["pass_rate"] for s in data.get("specs", []) if s.get("pass_rate") is not None}
+    return {"overall_pass_rate": data.get("overall_pass_rate"), "specs": by_spec}
+
+
+def compare_to_baseline(results: list[dict], overall_rate: float | None, baseline: dict, threshold: float) -> dict:
+    """A regression is a drop of more than `threshold` (a fraction, e.g. 0.10
+    for 10 percentage points) versus the baseline's own rate for the same
+    spec - not "any drop at all", since single-run pass rates on a live
+    system are noisy by nature (see FINDINGS.md on concurrent-load
+    contamination) and a one-attempt wobble must not look identical to a
+    real regression."""
+    regressions = []
+    comparisons = []
+    baseline_overall = baseline.get("overall_pass_rate")
+    if baseline_overall is not None and overall_rate is not None:
+        delta = overall_rate - baseline_overall
+        comparisons.append({"spec": "OVERALL", "baseline": baseline_overall, "current": overall_rate, "delta": delta})
+        if delta < -threshold:
+            regressions.append(comparisons[-1])
+    baseline_specs = baseline.get("specs", {})
+    for r in results:
+        base_rate = baseline_specs.get(r["spec"])
+        if base_rate is None or r["pass_rate"] is None:
+            continue
+        delta = r["pass_rate"] - base_rate
+        comparisons.append({"spec": r["spec"], "baseline": base_rate, "current": r["pass_rate"], "delta": delta})
+        if delta < -threshold:
+            regressions.append(comparisons[-1])
+    return {"threshold": threshold, "comparisons": comparisons, "regressions": regressions}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("corpus", type=Path, help="directory of *.flow.yaml specs")
@@ -143,6 +185,20 @@ def main() -> int:
         help="path to the flowproof binary (default: target/debug/flowproof)",
     )
     parser.add_argument("--out", type=Path, default=None, help="scoreboard JSON output path")
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        help="a prior scoreboard JSON (this script's own --out) to compare against - "
+        "flags a regression instead of just reporting a number in isolation",
+    )
+    parser.add_argument(
+        "--regression-threshold",
+        type=float,
+        default=0.10,
+        help="drop in pass rate (fraction, default 0.10 = 10 percentage points) vs --baseline "
+        "that counts as a regression rather than ordinary run-to-run noise",
+    )
     args = parser.parse_args()
 
     if args.runs < 1:
@@ -180,6 +236,14 @@ def main() -> int:
         {str(k): pass_at_k(overall_rate, k) for k in (1, 2, 3)} if overall_rate is not None else None
     )
 
+    comparison = None
+    if args.baseline is not None:
+        if not args.baseline.exists():
+            print(f"error: --baseline {args.baseline} does not exist", file=sys.stderr)
+            return 2
+        baseline = load_baseline(args.baseline)
+        comparison = compare_to_baseline(results, overall_rate, baseline, args.regression_threshold)
+
     timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     out_path = args.out or (REPO / "evals" / "fiori" / f"replay-reliability-{timestamp}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +257,7 @@ def main() -> int:
         "total_passes": total_passes,
         "skipped_no_trace": [str(s.relative_to(REPO)) for s in skipped],
         "specs": results,
+        "baseline_comparison": comparison,
     }
     out_path.write_text(json.dumps(scoreboard, indent=2) + "\n")
 
@@ -214,6 +279,18 @@ def main() -> int:
         print(f"scoreboard: {out_path.relative_to(REPO)}")
     except ValueError:
         print(f"scoreboard: {out_path}")
+
+    if comparison is not None:
+        print()
+        print(f"Baseline comparison ({args.baseline}, regression threshold {args.regression_threshold:.0%}):")
+        for c in comparison["comparisons"]:
+            arrow = "!!" if c in comparison["regressions"] else "  "
+            print(f"  {arrow} {c['spec']}: {c['baseline']:.0%} -> {c['current']:.0%} ({c['delta']:+.0%})")
+        if comparison["regressions"]:
+            print(f"REGRESSION: {len(comparison['regressions'])} spec(s) dropped more than "
+                  f"{args.regression_threshold:.0%} versus the baseline")
+            return 3
+        print("No regression versus baseline")
     return 0
 
 
