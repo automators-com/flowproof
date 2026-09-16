@@ -6,6 +6,12 @@ together).
 
 ## Unreleased
 
+## 0.23.6
+
+- **SAP redraws no longer fail readiness checks when a dialog disappears or a control temporarily loses its box.** Visibility is read atomically for CSS/text targets, and scoped pre-click checks wait for a renderable control without retrying the click.
+- **SAP value-help inputs keep their entered value.** Popup search fields no longer receive the ordinary screen-field blur/commit sequence.
+- **Framed typing uses the shared CDP transport recovery policy.**
+
 - **A killed `flowproof` process no longer leaves its shared browser
   running.** `SharedBrowserGuard`'s cleanup is a `Drop`, which only runs on a
   normal unwind — a `SIGTERM` (a CI job's timeout, a stuck-process cleanup
