@@ -4709,9 +4709,20 @@ impl AppDriver for WebAppDriver {
             "Space" | "Spacebar" => " ",
             _ => key,
         };
-        self.tab()?
-            .press_key_with_modifiers(browser_key, (!mods.is_empty()).then_some(mods.as_slice()))
-            .map_err(|e| web_err(&format!("pressing key '{key}'"), e))?;
+        // Same direct-tab gap type_text's framed path had: no element to
+        // re-resolve, so with_element's retry never covered it either -
+        // confirmed live, a dropped CDP event on a bare keypress (Tab to
+        // commit a field, Ctrl+A to select) failed the whole flow.
+        retry_once_on_transport_fault(|| {
+            self.tab()
+                .map_err(|e| e.to_string())?
+                .press_key_with_modifiers(
+                    browser_key,
+                    (!mods.is_empty()).then_some(mods.as_slice()),
+                )
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| web_err(&format!("pressing key '{key}'"), e))?;
         Ok(())
     }
 
