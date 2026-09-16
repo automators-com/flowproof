@@ -3547,6 +3547,36 @@ impl AppDriver for WebAppDriver {
 
     fn element_visible(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
         let locator = Self::locator(selector)?;
+        // A dialog can disappear between element_exists and this probe.
+        // Resolve and read in one page operation: absence is a visibility
+        // answer, while browser/transport failures must still propagate.
+        if selector.frame.is_none() {
+            if let Some(resolver) = Self::js_resolver(&locator) {
+                let expression = format!(
+                    "((element) => {{
+                        if (!element) return false;
+                        if (typeof element.checkVisibility === 'function' &&
+                            !element.checkVisibility({{
+                                contentVisibilityAuto: true,
+                                opacityProperty: true,
+                                visibilityProperty: true
+                            }})) return false;
+                        return element.getClientRects().length > 0;
+                    }})({resolver})"
+                );
+                let value = self
+                    .tab()?
+                    .evaluate(&expression, false)
+                    .map_err(|e| web_err(&format!("reading visibility of [{selector}]"), e))?;
+                return value
+                    .value
+                    .and_then(|v| v.as_bool())
+                    .map(Some)
+                    .ok_or_else(|| {
+                        DriverError::Browser("visibility probe did not return a boolean".into())
+                    });
+            }
+        }
         let value = self.with_element(
             &locator,
             &format!("reading visibility of [{selector}]"),
