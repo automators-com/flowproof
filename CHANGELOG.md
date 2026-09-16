@@ -4,7 +4,7 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
-## Unreleased
+## 0.23.3
 
 - **AI authoring can reveal a grid cell without treating a row collection as a
   scroll container.** Invalid collection scrolls are rejected for reauthoring,
