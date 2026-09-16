@@ -30,6 +30,11 @@ fn fixture() -> PathBuf {
         .join("../../tests/falsifiability/fixtures/url-target-service.py")
 }
 
+fn conversation_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/falsifiability/fixtures/url-conversation-streaming-service.py")
+}
+
 fn work_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("flowproof-url-e2e-{name}"));
     std::fs::remove_dir_all(&dir).ok();
@@ -212,5 +217,262 @@ fn an_agent_url_service_records_and_replays() {
     );
 
     drop(service);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- streaming, multi-turn, over `url:` (#375) ----
+
+/// The confirmation-gate upstream, answered BUFFERED on purpose: `stream` is
+/// transport, so the proxy strips it before forwarding and synthesizes the
+/// stream back to the caller itself.
+///
+/// Both JSON spacings of the tool role are matched. Matching only one leaves
+/// the model asking for the tool for ever, which surfaces as a timeout rather
+/// than a legible failure - the same trap #600 fixed on the Windows path.
+fn fake_conversation_model() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(24) {
+            let Ok(mut stream) = stream else { continue };
+            let req = read_http_request(&mut stream);
+            let saw_tool_result =
+                req.contains("\"role\":\"tool\"") || req.contains("\"role\": \"tool\"");
+            let message = if saw_tool_result {
+                serde_json::json!({"role": "assistant", "content": "Order A-4471 is cancelled."})
+            } else if req.contains("confirm") {
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": serde_json::Value::Null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "cancel_order", "arguments": "{\"order\":\"A-4471\"}"}
+                    }]
+                })
+            } else {
+                serde_json::json!({
+                    "role": "assistant", "content": "Are you sure? This cannot be undone."
+                })
+            };
+            let finish = if message.get("tool_calls").is_some() {
+                "tool_calls"
+            } else {
+                "stop"
+            };
+            let reply = serde_json::json!({
+                "id": "chatcmpl-fake",
+                "object": "chat.completion",
+                "model": "gpt-4o",
+                "choices": [{"index": 0, "finish_reason": finish, "message": message}],
+            })
+            .to_string();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            );
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        }
+    });
+    format!("http://127.0.0.1:{port}/v1")
+}
+
+/// Start the stateful streaming service, pointed at the proxy port the spec
+/// fixes. Returned alive; the caller drops it to stop it.
+fn start_conversation_service(
+    script: &Path,
+    service_port: u16,
+    proxy_port: u16,
+    log: &Path,
+) -> Service {
+    let service = Service(
+        std::process::Command::new("python3")
+            .arg(script)
+            .arg(service_port.to_string())
+            .arg(log)
+            .env(
+                "OPENAI_BASE_URL",
+                format!("http://127.0.0.1:{proxy_port}/v1"),
+            )
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start the url conversation service"),
+    );
+    assert!(
+        wait_for_port(service_port),
+        "the service must be listening before flowproof triggers it"
+    );
+    service
+}
+
+/// Every model call the service logged, one entry per call, in order.
+fn logged_frames(log: &Path) -> Vec<serde_json::Value> {
+    let contents = std::fs::read_to_string(log).unwrap_or_default();
+    contents
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("each line is a JSON list of frames"))
+        .collect()
+}
+
+/// The frames a well-formed synthetic stream delivers for this conversation:
+/// one complete, separately terminated stream per model call.
+fn expected_frames() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!([
+            "content-type:text/event-stream",
+            "role:assistant",
+            "content:Are you sure? This cannot be undone.",
+            "finish:stop",
+            "DONE",
+        ]),
+        serde_json::json!([
+            "content-type:text/event-stream",
+            "role:assistant",
+            r#"tool:cancel_order:{"order":"A-4471"}"#,
+            "finish:tool_calls",
+            "DONE",
+        ]),
+        serde_json::json!([
+            "content-type:text/event-stream",
+            "role:assistant",
+            "content:Order A-4471 is cancelled.",
+            "finish:stop",
+            "DONE",
+        ]),
+    ]
+}
+
+/// The last uncovered cell of #375's dialect/transport matrix: a STREAMING
+/// conversation over `agent.url`.
+///
+/// It is not a redundant restatement of the `command:` streaming fixture.
+/// The two drivers release the next delivery by different mechanisms - a
+/// `command:` agent is handed a line on stdin, a `url:` service is handed a
+/// fresh HTTP POST - and in both cases flowproof must hold that release until
+/// the PREVIOUS delivery's SSE response has fully drained. This exercises the
+/// POST-shaped half of that, which nothing else does.
+///
+/// A service is spawned per leg because the conversation state lives in the
+/// service: flowproof's trigger carries only `{"prompt": ...}` with no
+/// delivery index, so a process reused across record and replay would answer
+/// the replay leg with the record leg's history still in memory.
+#[test]
+fn a_streaming_conversation_records_and_replays_over_url() {
+    let dir = work_dir("conversation-streaming");
+    let service_py = dir.join("service.py");
+    std::fs::copy(conversation_fixture(), &service_py).expect("stage service");
+
+    let proxy_port = free_port();
+    let spec = dir.join("cancel.flow.yaml");
+    std::fs::write(
+        &spec,
+        format!(
+            "name: Cancel with confirmation over a running service\n\
+             app: agent\n\
+             agent:\n  url: http://127.0.0.1:{{PORT}}/task\n  \
+             proxy_port: {proxy_port}\n\
+             tools:\n  - name: cancel_order\n    result: {{ order: A-4471, status: cancelled }}\n\
+             steps:\n\
+             \x20 - conversation:\n\
+             \x20     - user: Please cancel my order A-4471.\n\
+             \x20       assert_no_tool_call: cancel_order\n\
+             \x20       assert: reply contains sure\n\
+             \x20     - user: Yes, I confirm - go ahead and cancel it.\n\
+             \x20       assert_tool_call: cancel_order where order equals A-4471\n\
+             \x20       assert: reply contains cancelled\n",
+        ),
+    )
+    .expect("spec");
+
+    // --- RECORD ---
+    let record_port = free_port();
+    let record_log = dir.join("record-frames.jsonl");
+    let rewritten = std::fs::read_to_string(&spec)
+        .expect("spec readable")
+        .replace("{PORT}", &record_port.to_string());
+    std::fs::write(&spec, &rewritten).expect("spec");
+    let service = start_conversation_service(&service_py, record_port, proxy_port, &record_log);
+
+    let rec = std::process::Command::new(FLOWPROOF_BIN)
+        .arg("record")
+        .arg(&spec)
+        .current_dir(&dir)
+        .env("FLOWPROOF_AGENT_UPSTREAM", fake_conversation_model())
+        .env("FLOWPROOF_AGENT_KEY", "not-a-real-key")
+        .output()
+        .expect("record the streaming conversation");
+    assert!(
+        rec.status.success(),
+        "recording a streaming url conversation must succeed; stdout={} stderr={}",
+        String::from_utf8_lossy(&rec.stdout),
+        String::from_utf8_lossy(&rec.stderr)
+    );
+    drop(service);
+
+    assert_eq!(
+        logged_frames(&record_log),
+        expected_frames(),
+        "every delivery must be served a complete stream at record"
+    );
+
+    // The delivery grouping survived the POST-per-delivery path: delivery 1
+    // owns both the tool call and the text that closed it.
+    let contents = std::fs::read_to_string(dir.join("cancel.trace.jsonl")).expect("trace readable");
+    let doc: serde_json::Value = serde_json::from_str(&contents).expect("trace is JSON");
+    let deliveries = doc["cassette"]["deliveries"]
+        .as_array()
+        .expect("conversation metadata is stamped");
+    assert_eq!(deliveries.len(), 2, "{contents}");
+    assert_eq!(deliveries[0]["turn_count"], 1, "{contents}");
+    assert_eq!(
+        deliveries[1]["turn_count"], 2,
+        "delivery 1 must own BOTH of its turns: {contents}"
+    );
+    assert!(
+        !contents.contains("event-stream") && !contents.contains("chat.completion.chunk"),
+        "chunk boundaries are synthesized, never recorded: {contents}"
+    );
+
+    // --- REPLAY: no model reachable at all. ---
+    let replay_port = free_port();
+    let replay_log = dir.join("replay-frames.jsonl");
+    let rewritten = rewritten.replace(
+        &format!("127.0.0.1:{record_port}"),
+        &format!("127.0.0.1:{replay_port}"),
+    );
+    std::fs::write(&spec, rewritten).expect("spec");
+    let service = start_conversation_service(&service_py, replay_port, proxy_port, &replay_log);
+
+    let run = std::process::Command::new(FLOWPROOF_BIN)
+        .arg("run")
+        .arg(&spec)
+        .current_dir(&dir)
+        .output()
+        .expect("replay the streaming conversation");
+    assert!(
+        run.status.success(),
+        "the whole conversation must replay with zero model calls; stdout={} stderr={}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    drop(service);
+
+    // The claim worth having: replay serves a stream per delivery, with the
+    // same boundaries, from a cassette holding no stream at all. Each list
+    // terminating in DONE is also the evidence that no delivery's POST was
+    // issued while the previous one's stream was still draining.
+    assert_eq!(
+        logged_frames(&replay_log),
+        expected_frames(),
+        "replay must serve a stream per delivery, not a buffered response"
+    );
+
     std::fs::remove_dir_all(&dir).ok();
 }

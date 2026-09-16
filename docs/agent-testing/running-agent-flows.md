@@ -28,9 +28,12 @@ Five facts about the runtime contract, all exercised by
   the process is spawned once and stays alive for the whole conversation,
   and its stdin is closed after the last delivery settles so a well-behaved
   multi-turn agent can finish and exit. A `conversation:` flow that also
-  engages egress containment still falls back to the ordinary single-shot
-  path for now. A bare `prompt:` step is unaffected either way; it is not
-  desugared into a one-delivery `conversation:` internally.
+  engages egress containment or side-effect observation is REFUSED before
+  anything is spawned - "conversations do not yet support egress containment
+  or side-effect observation; refusing to start an unprotected process" -
+  rather than quietly running the flow uncontained. A bare `prompt:` step is
+  unaffected either way; it is not desugared into a one-delivery
+  `conversation:` internally.
 
   A `conversation:` block is authored LIVE, not typed into the YAML by
   hand: write a placeholder step `- conversation: interactive` in the
