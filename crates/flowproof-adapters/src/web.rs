@@ -4287,9 +4287,17 @@ impl AppDriver for WebAppDriver {
                     // back the accepted value before passing.
                     self.press_key("A", &[KeyMod::Ctrl])?;
                     self.press_key("Backspace", &[])?;
-                    self.tab()?
-                        .type_str(text)
-                        .map_err(|e| web_err("typing into the framed SAP field", e))?;
+                    // Talks to the tab directly, same gap frame_act had before
+                    // its own retry: confirmed live, a dropped CDP event here
+                    // failed the whole flow on a field that would have typed
+                    // fine a moment later.
+                    retry_once_on_transport_fault(|| {
+                        self.tab()
+                            .map_err(|e| e.to_string())?
+                            .type_str(text)
+                            .map_err(|e| e.to_string())
+                    })
+                    .map_err(|e| web_err("typing into the framed SAP field", e))?;
                     self.press_key("Tab", &[])?;
                     std::thread::sleep(Duration::from_millis(300));
                     let accepted = self.frame_value(&query)?;
@@ -4305,9 +4313,13 @@ impl AppDriver for WebAppDriver {
                     // it - the same click -> select -> keystrokes contract the
                     // top-level path below uses, not an append.
                     self.frame_act(&query, "select_all", serde_json::Value::Null)?;
-                    self.tab()?
-                        .type_str(text)
-                        .map_err(|e| web_err("typing into the framed field", e))?;
+                    retry_once_on_transport_fault(|| {
+                        self.tab()
+                            .map_err(|e| e.to_string())?
+                            .type_str(text)
+                            .map_err(|e| e.to_string())
+                    })
+                    .map_err(|e| web_err("typing into the framed field", e))?;
                     // An Escape here was tried to dismiss the value-help popup
                     // real keystrokes can trigger on classic SAP GUI screens
                     // (confirmed live), but Escape on these fields REVERTS to
@@ -4697,9 +4709,20 @@ impl AppDriver for WebAppDriver {
             "Space" | "Spacebar" => " ",
             _ => key,
         };
-        self.tab()?
-            .press_key_with_modifiers(browser_key, (!mods.is_empty()).then_some(mods.as_slice()))
-            .map_err(|e| web_err(&format!("pressing key '{key}'"), e))?;
+        // Same direct-tab gap type_text's framed path had: no element to
+        // re-resolve, so with_element's retry never covered it either -
+        // confirmed live, a dropped CDP event on a bare keypress (Tab to
+        // commit a field, Ctrl+A to select) failed the whole flow.
+        retry_once_on_transport_fault(|| {
+            self.tab()
+                .map_err(|e| e.to_string())?
+                .press_key_with_modifiers(
+                    browser_key,
+                    (!mods.is_empty()).then_some(mods.as_slice()),
+                )
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| web_err(&format!("pressing key '{key}'"), e))?;
         Ok(())
     }
 
