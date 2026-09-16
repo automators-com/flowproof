@@ -225,20 +225,24 @@ impl HttpModelClient {
         if let Some(key) = &self.config.api_key {
             request = request.header("authorization", format!("Bearer {key}"));
         }
-        // `temperature` stays here: OpenAI's API and a local vLLM both accept
-        // it, and determinism is worth having where it is free. The
-        // deprecation that forced it out of the Anthropic request is specific
-        // to that API's current models.
+        let mut body = json!({
+            "model": self.model(),
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        });
+        if self.config.kind == BackendKind::OpenAi {
+            // Includes reasoning tokens. GPT-5 rejects legacy max_tokens and
+            // temperature=0; leave sampling at the model's supported default.
+            body["max_completion_tokens"] = json!(16_384);
+        } else {
+            // Preserve the contract of local OpenAI-compatible servers.
+            body["max_tokens"] = json!(OPENAI_COMPATIBLE_MAX_TOKENS);
+            body["temperature"] = json!(0);
+        }
         let mut response = request
-            .send_json(json!({
-                "model": self.model(),
-                "max_tokens": OPENAI_COMPATIBLE_MAX_TOKENS,
-                "temperature": 0,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-            }))
+            .send_json(body)
             .map_err(|e| Self::http_err("openai-compatible", e))?;
         let response: serde_json::Value = Self::json_or_error(
             "openai-compatible",

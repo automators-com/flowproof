@@ -132,3 +132,33 @@ fn an_echoed_key_is_redacted_from_the_error() {
         "and the redaction is visible: {text}"
     );
 }
+
+#[test]
+fn openai_reasoning_request_and_compatible_server_use_their_own_parameters() {
+    for kind in [BackendKind::OpenAi, BackendKind::OpenAiCompatible] {
+        let (base, rx) = serve_once(200, r#"{"choices":[{"message":{"content":"ok"}}]}"#);
+        let mut client = HttpModelClient::new(BackendConfig {
+            kind: kind.clone(),
+            base_url: Some(base),
+            model: Some("gpt-5".into()),
+            api_key: Some("test-key".into()),
+        });
+        assert_eq!(
+            client
+                .complete("system", "user")
+                .expect("completion succeeds"),
+            "ok"
+        );
+        let sent: serde_json::Value = serde_json::from_str(&rx.recv().expect("request captured"))
+            .expect("valid request JSON");
+        if kind == BackendKind::OpenAi {
+            assert_eq!(sent["max_completion_tokens"], 16384);
+            assert!(sent.get("max_tokens").is_none());
+            assert!(sent.get("temperature").is_none());
+        } else {
+            assert_eq!(sent["max_tokens"], 1024);
+            assert_eq!(sent["temperature"], 0);
+            assert!(sent.get("max_completion_tokens").is_none());
+        }
+    }
+}

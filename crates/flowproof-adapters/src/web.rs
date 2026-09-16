@@ -4691,8 +4691,14 @@ impl AppDriver for WebAppDriver {
                 KeyMod::Meta => ModifierKey::Meta,
             })
             .collect();
+        // CDP's key table uses the literal space as the key value; models
+        // and human-authored specs commonly use its code/name instead.
+        let browser_key = match key {
+            "Space" | "Spacebar" => " ",
+            _ => key,
+        };
         self.tab()?
-            .press_key_with_modifiers(key, (!mods.is_empty()).then_some(mods.as_slice()))
+            .press_key_with_modifiers(browser_key, (!mods.is_empty()).then_some(mods.as_slice()))
             .map_err(|e| web_err(&format!("pressing key '{key}'"), e))?;
         Ok(())
     }

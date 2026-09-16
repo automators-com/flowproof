@@ -4,6 +4,18 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## 0.23.3
+
+- **Browser key presses accept Space and Spacebar.** Both names now produce
+  the real space key event, so AI-authored keyboard activation reaches the app.
+
+- **AI authoring can reveal a grid cell without treating a row collection as a
+  scroll container.** Invalid collection scrolls are rejected for reauthoring,
+  and grounded scroll-into-view actions use the existing replay primitive.
+- **OpenAI authoring no longer rejects the default GPT-5 before it can act.**
+  Requests use completion-token budgets and model-default sampling; custom
+  OpenAI-compatible servers retain their existing request parameters.
+
 ## 0.23.0
 
 - **Browser recordings preserve captured text exactly while matching visible
