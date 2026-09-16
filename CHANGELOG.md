@@ -4,6 +4,13 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## 0.23.4
+
+- **Empty SAP item fields remain available to AI authoring.** Crowded toolbars
+  no longer crowd the first custom grid row out of the scene. Column labels
+  and row identity let the model distinguish Material, Quantity and Plant
+  before values have been entered.
+
 ## 0.23.3
 
 - **Browser key presses accept Space and Spacebar.** Both names now produce

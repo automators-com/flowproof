@@ -263,7 +263,7 @@ wheels = [
 
 [[package]]
 name = "flowproof"
-version = "0.23.3"
+version = "0.23.4"
 source = { editable = "." }
 
 [package.optional-dependencies]
