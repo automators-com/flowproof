@@ -6,6 +6,9 @@ together).
 
 ## 0.23.3
 
+- **Browser key presses accept Space and Spacebar.** Both names now produce
+  the real space key event, so AI-authored keyboard activation reaches the app.
+
 - **AI authoring can reveal a grid cell without treating a row collection as a
   scroll container.** Invalid collection scrolls are rejected for reauthoring,
   and grounded scroll-into-view actions use the existing replay primitive.

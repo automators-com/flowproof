@@ -32,6 +32,7 @@ fn serve(html: &'static str) -> String {
 }
 
 const FIXTURE: &str = r#"<!doctype html><html><body>
+    <input id="space-toggle" type="checkbox">
     <div id="app">
       <button id="open" onclick="
         var d = document.createElement('div');
@@ -68,6 +69,26 @@ fn search_reaches_content_outside_the_app_root() {
     driver
         .invoke(&UiaSelector::css("#open"))
         .expect("opening the dialog succeeds");
+
+    // Space aliases must produce real keyboard activation, not text insertion.
+    driver
+        .invoke(&UiaSelector::css("#space-toggle"))
+        .expect("focus checkbox");
+    assert!(driver
+        .element_exists(&UiaSelector::css("#space-toggle:checked"))
+        .expect("checked"));
+    for key in ["Space", "Spacebar", " "] {
+        driver
+            .press_key(key, &[])
+            .expect("space key activates checkbox");
+        assert!(driver
+            .element_exists(&UiaSelector::css("#space-toggle:not(:checked)"))
+            .expect("unchecked"));
+        driver.press_key(key, &[]).expect("space toggles back");
+        assert!(driver
+            .element_exists(&UiaSelector::css("#space-toggle:checked"))
+            .expect("checked again"));
+    }
 
     // Native-id (css) reach: the sibling div is appended to <body>, a
     // structural ancestor of neither #app nor anything inside it.
