@@ -40,6 +40,13 @@ together).
 
 ## 0.23.3
 
+- **A `--json` replay reports each step as it finishes.** The report is only
+  complete at the end, so a long SAP replay used to be silent for a minute
+  and then dump everything at once — fine for CI, useless for a person or a
+  desktop app watching it. Every finished step now prints one line to
+  stderr, in the shape of the verdict lines, while stdout stays the pure
+  JSON report it always was.
+
 - **Browser key presses accept Space and Spacebar.** Both names now produce
   the real space key event, so AI-authored keyboard activation reaches the app.
 
