@@ -1,5 +1,5 @@
 //! Visibility must tolerate a dialog disappearing after the existence probe.
-use flowproof_driver::{AppDriver, UiaSelector};
+use flowproof_driver::{AppDriver, ScopeQuery, UiaSelector};
 
 #[test]
 fn removed_element_is_not_visible_without_swallowing_browser_errors() {
@@ -7,7 +7,7 @@ fn removed_element_is_not_visible_without_swallowing_browser_errors() {
         return;
     }
     let _guard = flowproof_adapters::SharedBrowserGuard::new();
-    let html = "<html><body><div id='dialog'>Receipt checked</div><div id='hidden' style='display:none'>Hidden</div><button id='close' onclick=\"document.getElementById('dialog').remove()\">Close</button></body></html>";
+    let html = "<html><body><div id='dialog'>Receipt checked</div><div id='hidden' style='display:none'>Hidden</div><button id='close' onclick=\"document.getElementById('dialog').remove()\">Close</button><div id='scope'>Scope<button id='payment' style='display:none'>Payment</button></div><button id='reveal' onclick=\"document.getElementById('payment').style.display='block'\">Reveal</button></body></html>";
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("fixture listener");
     let port = listener.local_addr().expect("fixture address").port();
     std::thread::spawn(move || {
@@ -26,6 +26,26 @@ fn removed_element_is_not_visible_without_swallowing_browser_errors() {
             std::time::Duration::from_secs(30),
         )
         .expect("fixture loads");
+    let scoped = UiaSelector {
+        scope: Some(ScopeQuery {
+            container: "css:#scope".into(),
+            anchor: "Scope".into(),
+            inner_css: Some("#payment".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(driver
+        .actionability_gate(&scoped)
+        .expect("hidden target waits")
+        .is_some());
+    driver
+        .invoke(&UiaSelector::css("#reveal"))
+        .expect("reveal target");
+    assert!(driver
+        .actionability_gate(&scoped)
+        .expect("visible target ready")
+        .is_none());
     let dialog = UiaSelector::css("#dialog");
     assert!(driver.element_exists(&dialog).expect("dialog existence"));
     assert_eq!(
