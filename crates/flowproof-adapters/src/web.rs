@@ -22,6 +22,117 @@ use crate::AdapterError;
 
 const FIND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// WebGUI table controls use a separate draggable scrollbar. Native
+/// scrollIntoView scrolls their overflow:hidden body without updating the
+/// header or SAP's column position, so the next click edits the wrong cell.
+/// Move the rendered scrollbar instead; never call SAP application internals.
+fn scroll_element_into_view(element: &headless_chrome::Element<'_>) -> anyhow::Result<()> {
+    const PLAN: &str = r#"function() { return JSON.stringify((() => {
+        if (!document.querySelector('#webguiPage0, #webguiform0')) return {kind:'native'};
+        const pane=this.closest('[id$="-mrss-cont-none"]');
+        if (!pane) return {kind:'native'};
+        const prefix=pane.id.slice(0,-'-mrss-cont-none'.length);
+        const bar=document.getElementById(prefix+'_hscroll-bar');
+        const thumb=document.getElementById(prefix+'_hscroll-hdl');
+        const content=document.getElementById(pane.id+'-content');
+        if (!bar || !thumb || !content) return {kind:'native'};
+        pane.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
+        const p=pane.getBoundingClientRect(),r=this.getBoundingClientRect();
+        if (r.left>=p.left-1 && r.right<=p.right+1) return {kind:'ready'};
+        const b=bar.getBoundingClientRect(),h=thumb.getBoundingClientRect();
+        const width=content.getBoundingClientRect().width;
+        if (b.width<=h.width || h.width<=0 || h.height<=0 || width<=p.width)
+            return {kind:'unavailable'};
+        const travel=b.width-h.width;
+        const delta=(r.left+r.width/2)-(p.left+p.width/2);
+        const current=h.left-b.left;
+        const next=Math.max(0,Math.min(travel,current+delta*travel/(width-p.width)));
+        if (Math.abs(next-current)<1) return {kind:'unavailable'};
+        return {kind:'drag',x:h.left+h.width/2,y:h.top+h.height/2,
+            toX:b.left+next+h.width/2};
+    })()); }"#;
+    for _ in 0..6 {
+        let result = element.call_js_fn(PLAN, vec![], false)?;
+        let raw = result
+            .value
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .ok_or_else(|| anyhow::anyhow!("no grid scroll plan"))?;
+        let plan: serde_json::Value = serde_json::from_str(&raw)?;
+        match plan["kind"].as_str() {
+            Some("native") => {
+                element.scroll_into_view()?;
+                return Ok(());
+            }
+            Some("ready") => return Ok(()),
+            Some("drag") => {}
+            _ => anyhow::bail!("SAP grid's horizontal scrollbar cannot expose the target cell"),
+        }
+        let x = plan["x"]
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("no scrollbar x"))?;
+        let y = plan["y"]
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("no scrollbar y"))?;
+        let to_x = plan["toX"]
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("no scrollbar destination"))?;
+        let send = |kind, at_x, pressed| {
+            element.parent.call_method(Input::DispatchMouseEvent {
+                Type: kind,
+                x: at_x,
+                y,
+                button: Some(if pressed {
+                    Input::MouseButton::Left
+                } else {
+                    Input::MouseButton::None
+                }),
+                buttons: Some(if pressed { 1 } else { 0 }),
+                click_count: Some(1),
+                modifiers: None,
+                timestamp: None,
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: None,
+            })
+        };
+        send(Input::DispatchMouseEventTypeOption::MouseMoved, x, false)?;
+        send(Input::DispatchMouseEventTypeOption::MousePressed, x, true)?;
+        for step in 1..=8 {
+            send(
+                Input::DispatchMouseEventTypeOption::MouseMoved,
+                x + (to_x - x) * f64::from(step) / 8.0,
+                true,
+            )?;
+        }
+        // MouseReleased still names the released button, but no button is held.
+        element.parent.call_method(Input::DispatchMouseEvent {
+            Type: Input::DispatchMouseEventTypeOption::MouseReleased,
+            x: to_x,
+            y,
+            button: Some(Input::MouseButton::Left),
+            buttons: Some(0),
+            click_count: Some(1),
+            modifiers: None,
+            timestamp: None,
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })?;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    anyhow::bail!("SAP grid cell did not enter the viewport after scrolling")
+}
+
 /// Read a checkbox-like control's state from an element that may be the
 /// control itself OR a wrapper around it. Covers the three shapes real apps
 /// use: a native `input[type=checkbox|radio]`, an ARIA widget carrying
@@ -1325,7 +1436,7 @@ impl WebAppDriver {
         let locator = Self::locator(selector)?;
         let got = self.with_element(&locator, &format!("locating [{selector}]"), |element| {
             if scroll {
-                element.scroll_into_view()?;
+                scroll_element_into_view(element)?;
             }
             let v = element.call_js_fn(
                 r#"function() {
@@ -3253,6 +3364,11 @@ impl AppDriver for WebAppDriver {
                 if (!el) {{ return 'missing'; }}
                 if (el.disabled === true || el.getAttribute('aria-disabled') === 'true'
                     || el.closest('fieldset[disabled]')) {{ return 'disabled'; }}
+                // The composed gate uses the custom scrollbar-aware scroll
+                // path. Native scrolling here would corrupt SAP's grid before
+                // replay even dispatches its click.
+                if (document.querySelector('#webguiPage0, #webguiform0')
+                    && el.closest('[id$=\"-mrss-cont-none\"]')) {{ return 'sap_grid'; }}
                 const a = el.getBoundingClientRect();
                 await new Promise(tick => setTimeout(tick, {interval}));
                 const b = el.getBoundingClientRect();
@@ -3277,6 +3393,7 @@ impl AppDriver for WebAppDriver {
             .map_err(|e| web_err(&format!("actionability of [{target}]"), e))?;
         let verdict = value.value.and_then(|v| v.as_str().map(str::to_string));
         Ok(match verdict.as_deref() {
+            Some("sap_grid") => return flowproof_driver::composed_actionability_gate(self, target),
             Some("ok") => None,
             Some("disabled") => Some("disabled".into()),
             Some("unstable") => Some("unstable (still moving/animating)".into()),
@@ -3473,7 +3590,7 @@ impl AppDriver for WebAppDriver {
                             &locator,
                             &format!("scrolling [{sel}] into view"),
                             |element| {
-                                element.scroll_into_view()?;
+                                scroll_element_into_view(element)?;
                                 element.call_js_fn(
                                     r#"function() {
                                         const r = this.getBoundingClientRect();
@@ -3626,7 +3743,7 @@ impl AppDriver for WebAppDriver {
                 // returns null - and the gate blocks a click that would have
                 // worked. A whole settings form under the fold was
                 // untestable this way (field report, round 3).
-                element.scroll_into_view()?;
+                scroll_element_into_view(element)?;
                 // Playwright's obscured check: does elementFromPoint at the
                 // element's center resolve to it (or a relative)? A toast or
                 // modal backdrop on top makes the click land elsewhere.
@@ -3827,7 +3944,7 @@ impl AppDriver for WebAppDriver {
             &locator,
             &format!("right-clicking [{selector}]"),
             |element| {
-                element.scroll_into_view()?;
+                scroll_element_into_view(element)?;
                 let point = element.get_midpoint()?;
                 for kind in [
                     Input::DispatchMouseEventTypeOption::MousePressed,
@@ -3864,8 +3981,11 @@ impl AppDriver for WebAppDriver {
             &locator,
             &format!("double-clicking [{selector}]"),
             |element| {
-                element.scroll_into_view()?;
+                scroll_element_into_view(element)?;
                 let point = element.get_midpoint()?;
+                // Match a real pointer interaction (and ordinary click): grid
+                // editors may choose their active cell during pointer motion.
+                tab.move_mouse_to_point(point)?;
                 // A real `dblclick` is two full press/release pairs at the
                 // same point; Chromium raises the DOM `dblclick` on the
                 // SECOND release when its click_count reaches 2. Mirrors the
@@ -3909,7 +4029,7 @@ impl AppDriver for WebAppDriver {
         // even when the move landed on an occluder, so hover VERIFIES.
         let hovered =
             self.with_element(&locator, &format!("hovering [{selector}]"), |element| {
-                element.scroll_into_view()?;
+                scroll_element_into_view(element)?;
                 // NOT-OBSCURED gate: hovering an obscured element is
                 // meaningless because the occluder receives the `mouseover`,
                 // not our target. Same Playwright-style `elementFromPoint`
@@ -4182,6 +4302,11 @@ impl AppDriver for WebAppDriver {
         // The two cases are now different answers: `not_select` is the
         // genuine fall-through to typing, `no_option` is a failure.
         const SELECT_COMMIT_JS: &str = r#"function(wanted) {
+            if ((this.tagName === 'INPUT' || this.tagName === 'TEXTAREA')
+                && this.id !== 'ToolbarOkCode'
+                && document.querySelector('#webguiPage0, #webguiform0')) {
+                return 'sap_input';
+            }
             if (this.tagName !== 'SELECT') { return 'not_select'; }
             const w = String(wanted).trim();
             const options = Array.from(this.options);
@@ -4255,7 +4380,24 @@ impl AppDriver for WebAppDriver {
                 )
                 .map(|_| ())?;
             element.parent.type_str(text).map(|_| ())
-        })
+        })?;
+        if status == "sap_input" {
+            // WebGUI commits fields on blur. The next click can otherwise
+            // race the response that replaces the form and erase its input.
+            // Match the framed SAP path, then reuse the existing network and
+            // scene settling rather than adding a fixed sleep to every field.
+            self.press_key("Tab", &[])?;
+            self.scene()?;
+            // Type leaves the edited field focused. Otherwise a following
+            // Enter could activate the next toolbar/section button instead
+            // of validating the form. Re-resolve after SAP replaces controls.
+            self.with_element(
+                &locator,
+                "restoring the edited SAP field's focus",
+                |element| element.call_js_fn("function() { this.focus(); }", vec![], false),
+            )?;
+        }
+        Ok(())
     }
 
     fn click_at(
@@ -4275,7 +4417,7 @@ impl AppDriver for WebAppDriver {
             &locator,
             &format!("locating the click point in [{selector}]"),
             |element| {
-                element.scroll_into_view()?;
+                scroll_element_into_view(element)?;
                 let got = element.call_js_fn(
                     r#"function(xp, yp) {
                         const r = this.getBoundingClientRect();

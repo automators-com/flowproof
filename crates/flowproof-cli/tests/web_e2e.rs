@@ -3092,3 +3092,171 @@ steps:
     drop(driver);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// SAP's last edited field must be committed before assertions or the next
+/// operation. Reading the uncommitted input alone would report a false pass.
+#[test]
+fn top_level_sap_fields_commit_before_recording_and_replay_continue() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping SAP field E2E: set FLOWPROOF_E2E=1");
+        return;
+    }
+    let _browser_guard = flowproof_adapters::SharedBrowserGuard::new();
+    let dir = std::env::temp_dir().join("flowproof-top-level-sap-commit-e2e");
+    std::fs::create_dir_all(&dir).expect("create fixture directory");
+    let page = dir.join("sap.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><div id="webguiPage0">
+      <label for="ToolbarOkCode">Command</label><input id="ToolbarOkCode"
+        onkeydown="if(event.key==='Enter') document.getElementById('command').textContent='Command invoked'">
+      <div id="command"></div>
+      <label for="plant">Plant</label><input id="plant" value="OLD"
+        onkeydown="if(event.key==='Enter') document.getElementById('validation').textContent='Plant validated'"
+        onblur="document.getElementById('accepted').textContent='Committed plant: '+this.value">
+      <div id="validation"></div>
+      <button>Next</button><div id="accepted">No committed plant</div>
+    </div>"#,
+    )
+    .expect("parse or write browser fixture");
+    let spec = FlowSpec::parse(&format!(
+        r#"name: Commit SAP plant
+app: web
+url: file://{}
+steps:
+  - Type /nME21N into the "Command" field
+  - Press Enter
+  - assert: page shows Command invoked
+  - Type 1010 into the "Plant" field
+  - assert: 'page shows Committed plant: 1010'
+  - Press Enter
+  - assert: page shows Plant validated
+"#,
+        page.display()
+    ))
+    .expect("parse or write browser fixture");
+    let trace = dir.join("commit.trace.jsonl");
+    let mut driver = flowproof_cli::driver_for("web").expect("create browser driver");
+    flowproof_agent::record(&spec, &mut driver, &trace).expect("record commits the field");
+    drop(driver);
+    let mut driver = flowproof_cli::driver_for("web").expect("create browser driver");
+    let (report, _) = flowproof_replay::run_trace_with_options(
+        &trace,
+        &mut driver,
+        flowproof_driver::RecordingOptions::default(),
+    )
+    .expect("replay runs");
+    assert!(report.passed, "replay must commit the field: {report:#?}");
+    drop(driver);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn double_click_activates_an_offscreen_grid_editor_after_pointer_movement() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        return;
+    }
+    let _browser_guard = flowproof_adapters::SharedBrowserGuard::new();
+    let dir = std::env::temp_dir().join("flowproof-scrolled-grid-editor-e2e");
+    std::fs::create_dir_all(&dir).expect("create fixture directory");
+    let page = dir.join("grid.html");
+    std::fs::write(&page, r#"<!doctype html>
+      <div style="width:240px;overflow:auto;border:1px solid">
+        <div style="width:1200px;height:80px;position:relative">
+          <div id="plant-cell" style="position:absolute;left:900px;width:140px;height:60px;background:#eee"
+            onmousemove="this.dataset.pointer='ready'"
+            ondblclick="if(this.dataset.pointer==='ready'){this.innerHTML='<label for=plant>Plant</label><input id=plant>';}">Plant cell</div>
+        </div>
+      </div>"#).expect("parse or write browser fixture");
+    let spec = FlowSpec::parse(&format!(
+        r#"name: Edit scrolled grid
+app: web
+url: file://{}
+steps:
+  - Double-click "css:#plant-cell"
+  - Type 1010 into the "Plant" field
+  - assert: the "Plant" field contains 1010
+"#,
+        page.display()
+    ))
+    .expect("parse or write browser fixture");
+    let trace = dir.join("grid.trace.jsonl");
+    let mut driver = flowproof_cli::driver_for("web").expect("create browser driver");
+    flowproof_agent::record(&spec, &mut driver, &trace).expect("grid editor activates");
+    drop(driver);
+    let mut driver = flowproof_cli::driver_for("web").expect("create browser driver");
+    let (report, _) =
+        flowproof_replay::run_trace(&trace, &mut driver).expect("replay recorded trace");
+    assert!(report.passed, "grid editor replays: {report:#?}");
+    drop(driver);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn sap_grid_scrolls_through_its_scrollbar_and_edits_both_ends() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        return;
+    }
+    let _browser_guard = flowproof_adapters::SharedBrowserGuard::new();
+    let dir = std::env::temp_dir().join("flowproof-sap-linked-grid-e2e");
+    std::fs::create_dir_all(&dir).expect("create fixture directory");
+    let page = dir.join("grid.html");
+    std::fs::write(&page,r#"<!doctype html><div id="webguiPage0">
+      <div style="width:240px;overflow:hidden"><div id="header" style="width:1200px;position:relative">Material — Plant</div></div>
+      <div id="items-mrss-cont-none" style="position:relative;width:240px;height:80px;overflow:hidden">
+        <div id="shift" style="position:relative">
+          <div id="items-mrss-cont-none-content" style="position:relative;width:1200px;height:80px">
+            <div id="material-cell" style="position:absolute;left:0;width:120px;height:60px;background:#eee" ondblclick="edit(this,'material','Material')">Material</div>
+            <div id="plant-cell" style="position:absolute;left:900px;width:140px;height:60px;background:#eee" ondblclick="edit(this,'plant','Plant')">Plant</div>
+          </div>
+        </div>
+      </div>
+      <div id="items_hscroll-bar" style="position:relative;width:240px;height:20px;background:#ddd">
+        <div id="items_hscroll-hdl" style="position:absolute;left:0;top:0;width:48px;height:20px;background:#777"></div>
+      </div><button>Next</button>
+    </div><script>
+      const pane=document.getElementById('items-mrss-cont-none'),thumb=document.getElementById('items_hscroll-hdl');
+      let start=null,offset=0;
+      thumb.onmousedown=e=>{start={x:e.clientX,offset};e.preventDefault()};
+      window.addEventListener('mousemove',e=>{
+        if(!start)return;
+        offset=Math.max(0,Math.min(960,start.offset+(e.clientX-start.x)*5));
+        thumb.style.left=(offset/5)+'px';
+        document.getElementById('shift').style.left=(-offset)+'px';
+        document.getElementById('header').style.left=(-offset)+'px';
+      });
+      window.addEventListener('mouseup',()=>start=null);
+      function edit(cell,id,label){
+        // Native scrollIntoView moves the clipped body, not the grid's model.
+        // Such a click cannot activate the intended editor.
+        if(pane.scrollLeft!==0)return;
+        if(!document.getElementById(id))cell.innerHTML='<label for="'+id+'">'+label+'</label><input id="'+id+'" style="width:80px">';
+      }
+    </script>"#).expect("parse or write browser fixture");
+    let spec = FlowSpec::parse(&format!(
+        r#"name: Edit both ends of SAP grid
+app: web
+url: file://{}
+steps:
+  - Double-click "css:#plant-cell"
+  - Type 1010 into the "Plant" field
+  - assert: the "Plant" field contains 1010
+  - Double-click "css:#material-cell"
+  - Type 3306 into the "Material" field
+  - assert: the "Material" field contains 3306
+  - assert: the "Plant" field contains 1010
+"#,
+        page.display()
+    ))
+    .expect("parse or write browser fixture");
+    let trace = dir.join("linked-grid.trace.jsonl");
+    let mut driver = flowproof_cli::driver_for("web").expect("create browser driver");
+    flowproof_agent::record(&spec, &mut driver, &trace).expect("both grid editors record");
+    drop(driver);
+    let mut driver = flowproof_cli::driver_for("web").expect("create browser driver");
+    let (report, _) =
+        flowproof_replay::run_trace(&trace, &mut driver).expect("replay recorded trace");
+    assert!(report.passed, "linked grid replays: {report:#?}");
+    drop(driver);
+    std::fs::remove_dir_all(&dir).ok();
+}
