@@ -451,3 +451,8 @@ never parse the prose output.
 ```powershell
 flowproof run calc.flow.yaml --json
 ```
+
+While a `--json` replay runs, each finished step prints one line to stderr
+(`  [PASS] s0003 Type 3 (41 ms)`, or `[FAIL]`, `[SKIP]`, `[ERROR]`), so a
+caller that streams stderr can show progress before the report exists.
+stdout still carries only the JSON.

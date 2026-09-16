@@ -2354,6 +2354,23 @@ pub fn run_trace_with_exports<D: AppDriver>(
     recording: flowproof_driver::RecordingOptions,
     exports: &std::collections::BTreeMap<String, String>,
 ) -> Result<(RunReport, std::path::PathBuf, ResolvedExports), ReplayError> {
+    run_trace_with_progress(path, driver, scan, recording, exports, |_| {})
+}
+
+/// [`run_trace_with_exports`] that also reports each step's result the
+/// moment it is known, before the run report exists. A replay is silent
+/// until it finishes otherwise, which is fine for CI and useless for a
+/// person watching a 40-step SAP flow. The callback sees the same
+/// `StepResult` the report will hold, skipped steps included; it must not
+/// touch the driver.
+pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
+    path: &Path,
+    driver: &mut D,
+    scan: &SecretScan,
+    recording: flowproof_driver::RecordingOptions,
+    exports: &std::collections::BTreeMap<String, String>,
+    mut on_step: F,
+) -> Result<(RunReport, std::path::PathBuf, ResolvedExports), ReplayError> {
     let (header, steps) = load_trace(path)?;
 
     let base = path
@@ -2546,7 +2563,9 @@ pub fn run_trace_with_exports<D: AppDriver>(
     let mut configured_surfaces: std::collections::BTreeSet<String> = Default::default();
     for step in &steps {
         if failed {
-            results.push(StepResult::skipped(step));
+            let skipped = StepResult::skipped(step);
+            on_step(&skipped);
+            results.push(skipped);
             continue;
         }
         if let Some(surface) = &step.surface {
@@ -2603,6 +2622,7 @@ pub fn run_trace_with_exports<D: AppDriver>(
         };
         result.selector_tier = matched.tier.map(|t| t.name().to_string());
         result.degraded = matched.degraded;
+        on_step(&result);
         results.push(result);
     }
 
