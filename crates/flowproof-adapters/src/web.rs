@@ -2091,6 +2091,23 @@ impl WebAppDriver {
         ))
     }
 
+    // These probes run before dispatching any input. A control without a
+    // box during a redraw is not ready; let the bounded actionability wait
+    // re-resolve it, without retrying a click or masking transport errors.
+    fn composed_readiness(&mut self, target: &UiaSelector) -> Result<Option<String>, DriverError> {
+        match flowproof_driver::composed_actionability_gate(self, target) {
+            Err(DriverError::Browser(message))
+                if message.contains("box model of [")
+                    && message.contains("Could not compute box model") =>
+            {
+                Ok(Some(
+                    "not rendered (target has no box during redraw)".into(),
+                ))
+            }
+            result => result,
+        }
+    }
+
     /// Run an element operation with the shared transport-fault retry
     /// policy (see [`retry_on_transport_fault`]): re-resolve the element
     /// (its object id may be gone with the dead connection) and try again
@@ -3459,7 +3476,7 @@ impl AppDriver for WebAppDriver {
             })
             .flatten();
         let Some(resolver) = resolver else {
-            return flowproof_driver::composed_actionability_gate(self, target);
+            return self.composed_readiness(target);
         };
         let gate_js = format!(
             "(async el => {{
@@ -3495,7 +3512,7 @@ impl AppDriver for WebAppDriver {
             .map_err(|e| web_err(&format!("actionability of [{target}]"), e))?;
         let verdict = value.value.and_then(|v| v.as_str().map(str::to_string));
         Ok(match verdict.as_deref() {
-            Some("sap_grid") => return flowproof_driver::composed_actionability_gate(self, target),
+            Some("sap_grid") => return self.composed_readiness(target),
             Some("ok") => None,
             Some("disabled") => Some("disabled".into()),
             Some("unstable") => Some("unstable (still moving/animating)".into()),
@@ -3547,6 +3564,36 @@ impl AppDriver for WebAppDriver {
 
     fn element_visible(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
         let locator = Self::locator(selector)?;
+        // A dialog can disappear between element_exists and this probe.
+        // Resolve and read in one page operation: absence is a visibility
+        // answer, while browser/transport failures must still propagate.
+        if selector.frame.is_none() {
+            if let Some(resolver) = Self::js_resolver(&locator) {
+                let expression = format!(
+                    "((element) => {{
+                        if (!element) return false;
+                        if (typeof element.checkVisibility === 'function' &&
+                            !element.checkVisibility({{
+                                contentVisibilityAuto: true,
+                                opacityProperty: true,
+                                visibilityProperty: true
+                            }})) return false;
+                        return element.getClientRects().length > 0;
+                    }})({resolver})"
+                );
+                let value = self
+                    .tab()?
+                    .evaluate(&expression, false)
+                    .map_err(|e| web_err(&format!("reading visibility of [{selector}]"), e))?;
+                return value
+                    .value
+                    .and_then(|v| v.as_bool())
+                    .map(Some)
+                    .ok_or_else(|| {
+                        DriverError::Browser("visibility probe did not return a boolean".into())
+                    });
+            }
+        }
         let value = self.with_element(
             &locator,
             &format!("reading visibility of [{selector}]"),
