@@ -4917,7 +4917,7 @@ impl AppDriver for WebAppDriver {
                 standInHosts.add(host);
               }
               const interactive = el => el.matches(
-                'input, button, a, select, textarea, [role=button], [role=checkbox], [role=radio], [role=menuitem], [draggable], [ondrop], .draggable-row, .droparea'
+                'input, button, a, select, textarea, [role=textbox], [role=combobox], [role=button], [role=checkbox], [role=radio], [role=menuitem], [draggable], [ondrop], .draggable-row, .droparea'
               ) || (!!el.id && el.children.length === 0 && ['DIV', 'SPAN'].includes(el.tagName)) ||
                 styledLeaf(el) || standInHosts.has(el);
               const readableLeaf = el => {
@@ -4927,7 +4927,23 @@ impl AppDriver for WebAppDriver {
                   (child.textContent || '').trim()
                 ) && (semanticCss(el) || scopedReadable(el));
               };
-              const ordered = all.filter(interactive).concat(
+              // Empty custom grid editors are controls too. Keep the first
+              // editable row ahead of decorative toolbar leaves so the scene
+              // budget cannot remove the fields needed to create an item.
+              const firstGridRows = new Set();
+              for (const editor of all.filter(el => el.matches('[role=textbox], [role=combobox]'))) {
+                if (!isRendered(editor)) continue;
+                const cell = editor.closest('[role=gridcell]');
+                const row = cell && cell.closest('tr, [role=row]');
+                const grid = cell && cell.closest('table, [role=grid]');
+                if (row && grid && !Array.from(firstGridRows).some(r => r.closest('table, [role=grid]') === grid)) {
+                  firstGridRows.add(row);
+                }
+              }
+              const priorityField = el => el.matches('input, select, textarea') ||
+                (el.matches('[role=textbox], [role=combobox]') &&
+                  firstGridRows.has(el.closest('tr, [role=row]')));
+              const ordered = all.filter(priorityField).concat(all.filter(interactive),
                 all.filter(el => !interactive(el) && readableLeaf(el))
               );
               const seen = new Set();
@@ -4962,8 +4978,15 @@ impl AppDriver for WebAppDriver {
               const entries = chosen.map(el => {
                 const css = cssPath(el);
                 const scoped = !interactive(el) && !semanticCss(el) ? scopedReadable(el) : null;
+                const labelledBy = (el.getAttribute('aria-labelledby') || '').split(/\s+/)
+                  .map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
                 const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
-                    : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+                    : (el.getAttribute('aria-label') || labelledBy || el.getAttribute('placeholder') || '');
+                const gridCell = el.closest('[role=gridcell]');
+                const rowIndex = gridCell && (gridCell.getAttribute('aria-rowindex') ||
+                  gridCell.getAttribute('lsmatrixrowindex') ||
+                  gridCell.closest('[role=row]')?.getAttribute('aria-rowindex'));
+
                 const ticks = el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.type);
                 const isField = ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName);
                 const entry = {
@@ -4973,7 +4996,9 @@ impl AppDriver for WebAppDriver {
                     actionable: interactive(el),
                     type: el.getAttribute('type') || undefined,
                     text: (el.textContent || '').trim().slice(0, 80) || undefined,
-                    label: label || undefined,
+                    label: label.trim().slice(0, 160) || undefined,
+                    row: rowIndex || undefined,
+                    role: el.getAttribute('role') || undefined,
                     value: fieldValue(el),
                     checked: ticks ? el.checked : undefined,
                     required: el.required || undefined,
