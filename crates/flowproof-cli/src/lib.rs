@@ -3452,6 +3452,27 @@ where
         }
     };
 
+    // `SharedBrowserGuard`'s `Drop` above only runs on a normal unwind - a
+    // `SIGTERM` (a CI job's timeout, a user's `kill`, a stuck-process cleanup
+    // script) or a plain Ctrl-C's default disposition terminates the process
+    // immediately without one, so the guard never fires and the shared
+    // Chrome process tree leaks exactly as before #593/#594. Install an
+    // explicit handler for the ordinary standalone binary (not an embedding
+    // like the Python bindings, which own the host process's signal
+    // handling - see `engine_path`'s doc comment) skipping `capture`, which
+    // already installs its own Ctrl-C handler to drain its listener loop
+    // cleanly and never touches the shared browser at all; `ctrlc` allows
+    // only one handler per process, and capture's takes precedence when it
+    // runs.
+    if engine_path.is_none() && !matches!(cli.command, Command::Capture { .. }) {
+        let _ = ctrlc::set_handler(|| {
+            flowproof_adapters::shutdown_shared_browser();
+            // 128 + SIGTERM: ctrlc's handler API does not say which signal
+            // fired, and SIGTERM is this handler's primary target.
+            std::process::exit(143);
+        });
+    }
+
     if let Command::Run { recovery, .. } = &mut cli.command {
         recovery.engine_path = engine_path;
     }

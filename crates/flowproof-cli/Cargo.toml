@@ -20,8 +20,10 @@ chrono = { workspace = true }
 clap = { workspace = true }
 # Cross-platform Ctrl-C handling for the long-lived `capture` listener, so a
 # deliberate interrupt exits 0 cleanly on Windows and Unix alike. Light: no
-# async runtime, just a signal handler.
-ctrlc = "3"
+# async runtime, just a signal handler. `termination` additionally catches
+# SIGTERM/SIGHUP on Unix (a plain `kill` or a CI timeout, not just Ctrl-C) -
+# see `run_cli`'s shared-browser signal handler.
+ctrlc = { version = "3", features = ["termination"] }
 # `flowproof config`'s platform config directory (plans/001-credential-config.md,
 # "Where the file lives"): a single-purpose lookup, no multi-app namespacing
 # to justify `directories`' extra structure.
