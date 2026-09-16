@@ -65,9 +65,9 @@ when it already holds a value the step does not contradict.
 submit button behind mandatory fields - include the actions that supply it, then the \
 action that reaches the goal.
 - Respond with ONLY JSON, no prose, no code fences.
-- The JSON action is one of: \"click\", \"click_at\", \"drag\", \"type_text\", \
+- The JSON action is one of: \"click\", \"double_click\", \"click_at\", \"drag\", \"type_text\", \
 \"assert_text\", \"capture_text\", \"capture_count\", \"type_captured\", \
-\"select_option\", \"select_options\", \"scroll\", \"press_key\", \"rule_step\", or \
+\"select_option\", \"select_options\", \"scroll\", \"scroll_into_view\", \"press_key\", \"rule_step\", or \
 \"capture_ambiguity\".
 - UI actions MUST include \"target\": \"<target token of a listed element>\". \
 Clicking and typing require an entry whose \"actionable\" field is true. \
@@ -77,7 +77,11 @@ type_text also needs \"text\"; assert_text needs \"expected\" and optional \
 drag needs \"onto\" with a second listed actionable target. click_at needs \
 \"x_pct\" and \"y_pct\" from 0 through 100. capture_count needs a safe \"name\". \
 select_option needs one \"text\" value; select_options is only for a multi-select \
-and needs a non-empty \"values\" array. scroll needs \"to_px\". \
+and needs a non-empty \"values\" array. scroll needs \"to_px\" and means an exact \
+vertical offset inside a scroll container. To reveal a field or cell, use \
+scroll_into_view with that individual target instead; it needs no offset. \
+Never scroll a collection (tag=collection): it represents multiple rows for counting, \
+not a scroll container. For horizontal grids, reveal the desired cell, not a row collection. \
 press_key needs \"key\" and has no target. \
 For another action, use rule_step with \"step\" containing exact \
 deterministic grammar and copy listed target tokens into quoted targets, for \
@@ -741,14 +745,23 @@ fn ground_one(
         )));
     };
     match authored.action.as_str() {
-        "click" => {
+        "click" | "double_click" => {
             if !scene_token_is_actionable(scene, token) {
                 return Err("click target is readable but not actionable".into());
             }
-            Ok(vec![ResolvedAction::Press {
-                target,
-                label: scene_label(scene, token).unwrap_or_default(),
-                dialog: None,
+            let label = scene_label(scene, token).unwrap_or_default();
+            Ok(vec![if authored.action == "double_click" {
+                ResolvedAction::DoubleClick {
+                    target,
+                    label,
+                    dialog: None,
+                }
+            } else {
+                ResolvedAction::Press {
+                    target,
+                    label,
+                    dialog: None,
+                }
             }])
         }
         "click_at" => {
@@ -881,12 +894,32 @@ fn ground_one(
                 .ok_or("select_option needs a non-empty 'text'")?;
             Ok(vec![ResolvedAction::TypeText { target, text }])
         }
-        "scroll" => Ok(vec![ResolvedAction::Scroll {
-            target: Some(target),
-            to: crate::rules::ScrollTo::Offset(
-                authored.to_px.ok_or("scroll needs a 'to_px' offset")?,
-            ),
-        }]),
+        "scroll" | "scroll_into_view" => {
+            let entries: Vec<serde_json::Value> = serde_json::from_str(scene).unwrap_or_default();
+            if entries.iter().any(|entry| {
+                (entry["target"].as_str() == Some(token)
+                    || entry["css"]
+                        .as_str()
+                        .is_some_and(|css| token == css || token == format!("css:{css}")))
+                    && entry["tag"] == "collection"
+            }) {
+                return Err("cannot scroll a collection; choose an individual cell with scroll_into_view or a scroll container with scroll".into());
+            }
+            let to = if authored.action == "scroll_into_view" {
+                if authored.to_px.is_some() {
+                    return Err("scroll_into_view does not accept to_px".into());
+                }
+                crate::rules::ScrollTo::IntoView
+            } else {
+                crate::rules::ScrollTo::Offset(
+                    authored.to_px.ok_or("scroll needs a 'to_px' offset")?,
+                )
+            };
+            Ok(vec![ResolvedAction::Scroll {
+                target: Some(target),
+                to,
+            }])
+        }
         "type_captured" => {
             let name = authored
                 .capture
@@ -2225,6 +2258,15 @@ mod tests {
     fn human_language_primitives_ground_without_rules_in_the_input() {
         let cases = [
             (
+                "Double-click task 1 to activate its editor",
+                r#"{"action":"double_click","target":"css:#task-1"}"#,
+                ResolvedAction::DoubleClick {
+                    target: Target::css("#task-1"),
+                    label: "task 1".into(),
+                    dialog: None,
+                },
+            ),
+            (
                 "Drag task 1 into the todo drop area",
                 r#"{"action":"drag","target":"css:#task-1","onto":"css:#todo"}"#,
                 ResolvedAction::Drag {
@@ -2327,6 +2369,34 @@ mod tests {
             .unwrap_or_else(|error| panic!("{intent}: {error}"));
             assert_eq!(action, expected, "{intent}");
         }
+    }
+
+    #[test]
+    fn collection_scroll_is_rejected_and_reauthored_as_reveal_cell() {
+        let mut client = Scripted {
+            replies: vec![
+                r#"{"action":"scroll","target":"css:#rows tr","to_px":0}"#.into(),
+                r#"{"action":"scroll_into_view","target":"css:#task-1"}"#.into(),
+            ],
+            calls: 0,
+        };
+        let result = author_step(
+            &mut client,
+            &AuthorContext {
+                intent: "Bring the first task into view",
+                scene: HUMAN_PRIMITIVE_SCENE,
+                ..ctx()
+            },
+        )
+        .expect("collection rejection should reauthor an individual target");
+        assert_eq!(client.calls, 2);
+        assert_eq!(
+            result,
+            ResolvedAction::Scroll {
+                target: Some(Target::css("#task-1")),
+                to: crate::rules::ScrollTo::IntoView,
+            }
+        );
     }
 
     #[test]

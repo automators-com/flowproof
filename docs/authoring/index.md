@@ -114,3 +114,12 @@ other app-state fixture) is declared in the spec-level `session:` block,
 and network shaping in `mock:` - see
 [test-context seeding](../getting-started/test-context-seeding.md)
 before migrating a suite's setup helpers step by step.
+
+### Revealing controls while authoring
+
+The model can use `scroll_into_view` with a listed individual field or cell.
+This uses the same deterministic scroll-into-view primitive as rules authoring,
+including horizontal SAP grid handling. `scroll` with `to_px` instead requests
+an exact vertical offset inside a container. Collection targets represent sets
+of elements for counting; attempting to scroll one is rejected before execution
+and returned to the authoring loop for correction.

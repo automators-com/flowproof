@@ -4,6 +4,31 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## 0.23.5
+
+- **AI authoring can double-click a grounded control directly.** Requests to
+  activate a grid editor no longer reject the existing driver action or force
+  the model to substitute two separate clicks.
+
+## 0.23.4
+
+- **Empty SAP item fields remain available to AI authoring.** Crowded toolbars
+  no longer crowd the first custom grid row out of the scene. Column labels
+  and row identity let the model distinguish Material, Quantity and Plant
+  before values have been entered.
+
+## 0.23.3
+
+- **Browser key presses accept Space and Spacebar.** Both names now produce
+  the real space key event, so AI-authored keyboard activation reaches the app.
+
+- **AI authoring can reveal a grid cell without treating a row collection as a
+  scroll container.** Invalid collection scrolls are rejected for reauthoring,
+  and grounded scroll-into-view actions use the existing replay primitive.
+- **OpenAI authoring no longer rejects the default GPT-5 before it can act.**
+  Requests use completion-token budgets and model-default sampling; custom
+  OpenAI-compatible servers retain their existing request parameters.
+
 ## 0.23.0
 
 - **Browser recordings preserve captured text exactly while matching visible
