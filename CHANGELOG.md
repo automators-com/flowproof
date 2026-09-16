@@ -4,6 +4,18 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## Unreleased
+
+- **A killed `flowproof` process no longer leaves its shared browser
+  running.** `SharedBrowserGuard`'s cleanup is a `Drop`, which only runs on a
+  normal unwind — a `SIGTERM` (a CI job's timeout, a stuck-process cleanup
+  script, a plain `kill`) terminates the process before `Drop` ever fires,
+  reopening the exact orphaned-Chrome leak #593/#594 closed, just through a
+  different door. `run_cli` now installs a signal handler that force-kills
+  the shared browser on `SIGINT`/`SIGTERM` for the ordinary CLI process;
+  `capture` keeps handling its own interrupt (it never touches the shared
+  browser) and now also stops cleanly on `SIGTERM`, not just Ctrl-C.
+
 ## 0.23.5
 
 - **AI authoring can double-click a grounded control directly.** Requests to
