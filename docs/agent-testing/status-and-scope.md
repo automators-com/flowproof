@@ -82,9 +82,13 @@ delivery early - would still assemble the same replies and satisfy every
 
 One thing this does not cover yet:
 
-- **Egress containment.** A `conversation:` flow that also engages
-  `allow_egress`/`assert_no_egress` still falls back to the ordinary
-  single-shot path for now.
+- **Egress containment and side-effect observation.** A `conversation:` flow
+  that also engages `allow_egress`/`assert_no_egress` or
+  `assert_no_side_effect` is REFUSED before any process starts, rather than
+  running uncontained: "conversations do not yet support egress containment
+  or side-effect observation; refusing to start an unprotected process". The
+  combination is unavailable, not silently downgraded - a flow that believed
+  it was contained is the failure worth preventing here.
 
 A useful workaround for that gap today: for a system whose conversation is
 driven by an outer loop you control, test that loop's single-shot entry
