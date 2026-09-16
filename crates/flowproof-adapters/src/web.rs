@@ -459,10 +459,23 @@ const FRAME_ACT: &str = r#"function(FRAME, CSS, ID, TEXT, OP, ARG){
       + '.urMnu, .lsPOMNContainer, [id^="ARIA_"], [id*="SAPGUI"]'
     );
   }
+  // The classic value-help ("F4") popup's own filter input is a document-
+  // level match for isSapWebGui() too (it renders inside the same WebGUI
+  // frame), but it does NOT commit on blur like an ordinary screen field -
+  // it commits on an explicit Go/search button click, which the recorded
+  // flow already does as its own separate step. Confirmed live: typing a
+  // value then tabbing out of one of these (the sap_webgui path's blur+
+  // verify dance) left the field empty rather than reformatted, failing a
+  // spec that never asked for a Tab here at all. `NSH`-prefixed ids and
+  // `SHLP`/search-help markers are SAP's own standard naming for this popup
+  // across systems, not something specific to one client's screens.
+  function isValueHelpPopupField(){
+    return !!el.closest('[id^="NSH"], [id*="SHLP"], [id*="F4Help"], [class*="shlp"]');
+  }
   if (OP === 'kind'){
     var nativeInput = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
     return (nativeInput ? 'native_input' : 'other') + ':'
-      + (isSapWebGui() ? 'sap_webgui' : 'generic');
+      + (isSapWebGui() && !isValueHelpPopupField() ? 'sap_webgui' : 'generic');
   }
   if (OP === 'value'){
     var value = ('value' in el)
@@ -4299,11 +4312,26 @@ impl AppDriver for WebAppDriver {
                     })
                     .map_err(|e| web_err("typing into the framed SAP field", e))?;
                     self.press_key("Tab", &[])?;
-                    std::thread::sleep(Duration::from_millis(300));
-                    let accepted = self.frame_value(&query)?;
+                    // Some SAP WebGUI fields (a material number checked
+                    // against the current plant/org, for instance) validate
+                    // against the backend on commit, and read back empty for
+                    // a moment while that round trip is in flight - not
+                    // reverted, just not settled yet. A single fixed sleep
+                    // caught that transitional empty state and failed a
+                    // field that would have read back correctly moments
+                    // later (confirmed live). Poll instead of sampling once.
+                    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                    let accepted = loop {
+                        let value = self.frame_value(&query)?;
+                        if value == text || std::time::Instant::now() >= deadline {
+                            break value;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    };
                     if accepted != text {
                         return Err(DriverError::Browser(format!(
-                            "the field inside iframe '{}' accepted a different value after commit",
+                            "the field inside iframe '{}' accepted a different value after \
+                             commit: typed {text:?}, field now reads {accepted:?}",
                             query.frame
                         )));
                     }
