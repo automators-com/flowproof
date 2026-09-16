@@ -133,6 +133,15 @@ fn scroll_element_into_view(element: &headless_chrome::Element<'_>) -> anyhow::R
     anyhow::bail!("SAP grid cell did not enter the viewport after scrolling")
 }
 
+/// Element::click performs its own native scroll, even after an actionability
+/// check. Keep all click paths (including the click before typing) on the same
+/// scrollbar-aware path as double-click and explicit scrolling.
+fn click_element(element: &headless_chrome::Element<'_>) -> anyhow::Result<()> {
+    scroll_element_into_view(element)?;
+    element.parent.click_point(element.get_midpoint()?)?;
+    Ok(())
+}
+
 /// Read a checkbox-like control's state from an element that may be the
 /// control itself OR a wrapper around it. Covers the three shapes real apps
 /// use: a native `input[type=checkbox|radio]`, an ARIA widget carrying
@@ -3188,7 +3197,7 @@ impl AppDriver for WebAppDriver {
             // and clicking a zero-sized input does nothing - so the helper
             // hands back whichever ancestor is actually clickable.
             self.with_element(&locator, &format!("clicking [{selector}]"), |element| {
-                element.click().map(|_| ())
+                click_element(element)
             })?;
         }
         // Verify it took: a click that lands on a disabled or intercepted
@@ -3586,11 +3595,34 @@ impl AppDriver for WebAppDriver {
                 match to {
                     // Bring an in-DOM element into the viewport.
                     ScrollTo::IntoView => {
+                        let sap = self
+                            .tab()?
+                            .evaluate(
+                                "!!document.querySelector('#webguiPage0, #webguiform0')",
+                                false,
+                            )
+                            .map_err(|e| web_err("checking the scroll surface", e))?
+                            .value
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if sap {
+                            self.scene()?;
+                        }
+                        self.with_element(
+                            &locator,
+                            "scrolling the target",
+                            scroll_element_into_view,
+                        )?;
+                        // SAP may replace the table after scrolling/validation.
+                        // Settle that response and inspect a freshly resolved
+                        // element, not the detached pre-scroll handle.
+                        if sap {
+                            self.scene()?;
+                        }
                         let value = self.with_element(
                             &locator,
                             &format!("scrolling [{sel}] into view"),
                             |element| {
-                                scroll_element_into_view(element)?;
                                 element.call_js_fn(
                                     r#"function() {
                                         const r = this.getBoundingClientRect();
@@ -3872,7 +3904,7 @@ impl AppDriver for WebAppDriver {
         }
         let locator = Self::locator(selector)?;
         self.with_element(&locator, &format!("clicking [{selector}]"), |element| {
-            element.click().map(|_| ())
+            click_element(element)
         })
     }
 
@@ -4354,6 +4386,12 @@ impl AppDriver for WebAppDriver {
                  value, then by visible text; nothing was selected"
             )));
         }
+        if status == "sap_input" {
+            // Focusing a WebGUI editor can replace it asynchronously. Finish
+            // that transition before selecting/typing, then resolve it again.
+            self.with_element(&locator, "focusing the SAP editor", click_element)?;
+            self.scene()?;
+        }
         self.with_element(&locator, &format!("typing into [{selector}]"), |element| {
             // Select what the field holds before the keystrokes land: typing
             // over a selection replaces, so the field ends up reading `text`
@@ -4369,7 +4407,11 @@ impl AppDriver for WebAppDriver {
             // `type_into`, which clicks again and would collapse the
             // selection back to a caret - the keystrokes would append, which
             // is the accident this contract removes.
-            element.click()?;
+            if status == "sap_input" {
+                element.call_js_fn("function() { this.focus(); }", vec![], false)?;
+            } else {
+                click_element(element)?;
+            }
             element
                 .call_js_fn(
                     r#"function() {
