@@ -65,7 +65,7 @@ when it already holds a value the step does not contradict.
 submit button behind mandatory fields - include the actions that supply it, then the \
 action that reaches the goal.
 - Respond with ONLY JSON, no prose, no code fences.
-- The JSON action is one of: \"click\", \"click_at\", \"drag\", \"type_text\", \
+- The JSON action is one of: \"click\", \"double_click\", \"click_at\", \"drag\", \"type_text\", \
 \"assert_text\", \"capture_text\", \"capture_count\", \"type_captured\", \
 \"select_option\", \"select_options\", \"scroll\", \"scroll_into_view\", \"press_key\", \"rule_step\", or \
 \"capture_ambiguity\".
@@ -745,14 +745,23 @@ fn ground_one(
         )));
     };
     match authored.action.as_str() {
-        "click" => {
+        "click" | "double_click" => {
             if !scene_token_is_actionable(scene, token) {
                 return Err("click target is readable but not actionable".into());
             }
-            Ok(vec![ResolvedAction::Press {
-                target,
-                label: scene_label(scene, token).unwrap_or_default(),
-                dialog: None,
+            let label = scene_label(scene, token).unwrap_or_default();
+            Ok(vec![if authored.action == "double_click" {
+                ResolvedAction::DoubleClick {
+                    target,
+                    label,
+                    dialog: None,
+                }
+            } else {
+                ResolvedAction::Press {
+                    target,
+                    label,
+                    dialog: None,
+                }
             }])
         }
         "click_at" => {
@@ -2248,6 +2257,15 @@ mod tests {
     #[test]
     fn human_language_primitives_ground_without_rules_in_the_input() {
         let cases = [
+            (
+                "Double-click task 1 to activate its editor",
+                r#"{"action":"double_click","target":"css:#task-1"}"#,
+                ResolvedAction::DoubleClick {
+                    target: Target::css("#task-1"),
+                    label: "task 1".into(),
+                    dialog: None,
+                },
+            ),
             (
                 "Drag task 1 into the todo drop area",
                 r#"{"action":"drag","target":"css:#task-1","onto":"css:#todo"}"#,
