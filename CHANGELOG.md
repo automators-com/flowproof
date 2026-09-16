@@ -4,6 +4,12 @@ All notable changes to flowproof are recorded here. Versions follow the
 workspace version (Rust crates, the Python wheel, and the npm package move
 together).
 
+## 0.23.5
+
+- **AI authoring can double-click a grounded control directly.** Requests to
+  activate a grid editor no longer reject the existing driver action or force
+  the model to substitute two separate clicks.
+
 ## 0.23.4
 
 - **Empty SAP item fields remain available to AI authoring.** Crowded toolbars
