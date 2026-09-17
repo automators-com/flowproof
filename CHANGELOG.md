@@ -46,6 +46,13 @@ together).
 
 ## 0.23.3
 
+- **An organization-level Anthropic key works once it names its workspace.**
+  Anthropic rejects such a key with a 400 unless the request carries an
+  `anthropic-workspace-id` header, and the only advice was "make a different
+  key". `flowproof config ai --workspace-id` (or `FLOWPROOF_AI_WORKSPACE_ID`)
+  stores the id once and every model call sends it; a workspace-scoped key
+  is unaffected.
+
 - **A `--json` replay reports each step as it finishes.** The report is only
   complete at the end, so a long SAP replay used to be silent for a minute
   and then dump everything at once — fine for CI, useless for a person or a

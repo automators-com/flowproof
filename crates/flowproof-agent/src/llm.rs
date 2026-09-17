@@ -166,11 +166,17 @@ impl HttpModelClient {
         // Authoring does not need it: the model is handed the live scene and
         // must copy a target token from it verbatim, the result is recorded
         // for review, and replay never calls a model at all.
-        let mut response = self
+        let mut request = self
             .agent
             .post(format!("{base}/v1/messages"))
             .header("x-api-key", &key)
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", "2023-06-01");
+        // An organization-level key is rejected with a 400 unless the request
+        // names the workspace it bills to; a workspace-scoped key needs nothing.
+        if let Some(workspace) = &self.config.workspace_id {
+            request = request.header("anthropic-workspace-id", workspace);
+        }
+        let mut response = request
             .send_json(json!({
                 "model": self.model(),
                 "max_tokens": ANTHROPIC_MAX_TOKENS,
@@ -289,6 +295,7 @@ mod tests {
             base_url: None,
             model: None,
             api_key: Some("sk-ant".into()),
+            workspace_id: None,
         });
         assert_eq!(
             anthropic.identity(),
@@ -300,6 +307,7 @@ mod tests {
             base_url: Some("https://api.openai.com/v1".into()),
             model: None,
             api_key: Some("sk-openai".into()),
+            workspace_id: None,
         });
         assert_eq!(openai.identity(), ("openai".into(), "gpt-5".into()));
     }

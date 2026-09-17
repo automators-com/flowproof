@@ -336,6 +336,7 @@ fn one_natural_step_fills_a_whole_form_and_replays() {
         base_url: Some(base_url),
         model: Some("fake-local-model".into()),
         api_key: None,
+        workspace_id: None,
     };
     let mut client = flowproof_agent::HttpModelClient::new(config);
     let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
@@ -412,6 +413,7 @@ fn authors_via_openai_compatible_server() {
         base_url: Some(base_url),
         model: Some("fake-local-model".into()),
         api_key: None,
+        workspace_id: None,
     };
     let mut client = flowproof_agent::HttpModelClient::new(config);
 
@@ -503,6 +505,7 @@ fn authors_scoped_capture_from_human_language() {
         base_url: Some(base_url),
         model: Some("fake-local-model".into()),
         api_key: None,
+        workspace_id: None,
     };
     let mut client = flowproof_agent::HttpModelClient::new(config);
 
@@ -597,6 +600,7 @@ fn human_language_primitives_record_and_replay_without_rule_inputs() {
         base_url: Some(base_url),
         model: Some("fake-local-model".into()),
         api_key: None,
+        workspace_id: None,
     };
     let mut client = flowproof_agent::HttpModelClient::new(config);
     let mut driver = flowproof_cli::driver_for("web").expect("browser launches");

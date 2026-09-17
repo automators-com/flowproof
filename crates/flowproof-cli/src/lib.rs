@@ -186,10 +186,16 @@ enum ConfigAction {
         api_key: Option<String>,
         #[arg(long)]
         model: Option<String>,
+        /// Anthropic only: the workspace an organization-level key bills to
+        /// (sent as `anthropic-workspace-id`). A workspace-scoped key needs none.
+        #[arg(long = "workspace-id")]
+        workspace_id: Option<String>,
         #[arg(long = "clear-api-key")]
         clear_api_key: bool,
         #[arg(long = "clear-model")]
         clear_model: bool,
+        #[arg(long = "clear-workspace-id")]
+        clear_workspace_id: bool,
     },
     /// Print the config file's path and contents, password masked.
     Show,
@@ -3558,14 +3564,18 @@ where
                 provider,
                 api_key,
                 model,
+                workspace_id,
                 clear_api_key,
                 clear_model,
+                clear_workspace_id,
             } => config::cmd_ai(config::AiArgs {
                 provider,
                 api_key,
                 model,
+                workspace_id,
                 clear_api_key,
                 clear_model,
+                clear_workspace_id,
             }),
             ConfigAction::Show => config::cmd_show(),
             ConfigAction::Path => config::cmd_path(),

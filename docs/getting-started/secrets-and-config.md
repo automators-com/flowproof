@@ -118,6 +118,14 @@ rejected outright (`--clear-api-key` with `--api-key`, `--clear-model` with
 `ai.api_key` the same way it masks SAP/Fiori passwords. Design rationale
 lives in `plans/008-ai-authoring-config.md`.
 
+An Anthropic key created at the organization level, rather than inside a
+workspace, is rejected with a 400 until the request names the workspace it
+bills to. Store that once with `--workspace-id <id>` (the console shows the
+id next to the key; it is not a secret) and it is sent as the
+`anthropic-workspace-id` header on every model call. `FLOWPROOF_AI_WORKSPACE_ID`
+in the environment does the same, and `--clear-workspace-id` removes it. A
+key created inside a workspace needs none of this.
+
 ### Business data values
 
 Credentials belong in `flowproof config`; test-case business data belongs

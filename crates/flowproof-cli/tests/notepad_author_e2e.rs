@@ -101,6 +101,7 @@ fn authors_against_real_notepad() {
         base_url: Some(base_url),
         model: Some("fake-local-model".into()),
         api_key: None,
+        workspace_id: None,
     };
     let mut client = flowproof_agent::HttpModelClient::new(config);
 
