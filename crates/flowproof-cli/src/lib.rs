@@ -3360,6 +3360,8 @@ fn cmd_heal(
     json: bool,
     author: AuthorArg,
 ) -> Result<u8, String> {
+    // Like record and doctor, heal must see credentials saved by config ai.
+    config::seed_env();
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if author == AuthorArg::Auto
