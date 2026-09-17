@@ -19,10 +19,10 @@
 # examples/fiori/login-smoke.flow.yaml - confirmed live tonight.
 name: Home page shows the tiles this corpus depends on
 app: web
-url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+url: ${FIORI_BASE_URL}?sap-client=${FIORI_CLIENT}&sap-language=${FIORI_LANGUAGE}#Shell-home
 steps:
-  - Type ${SAP_USER} into the "User" field
-  - Type ${SAP_PASSWORD} into the "Password" field
+  - Type ${FIORI_USER} into the "User" field
+  - Type ${FIORI_PASSWORD} into the "Password" field
   - Press the "Log On" button
   - Wait until page shows Home within 60s
   - assert: page shows Display Purchasing Info Record by Supplier

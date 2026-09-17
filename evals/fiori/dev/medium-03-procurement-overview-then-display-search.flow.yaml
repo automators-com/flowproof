@@ -15,15 +15,15 @@
 # exists.
 name: Procurement Overview, then display info record by supplier
 app: web
-url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+url: ${FIORI_BASE_URL}?sap-client=${FIORI_CLIENT}&sap-language=${FIORI_LANGUAGE}#Shell-home
 steps:
-  - Type ${SAP_USER} into the "User" field
-  - Type ${SAP_PASSWORD} into the "Password" field
+  - Type ${FIORI_USER} into the "User" field
+  - Type ${FIORI_PASSWORD} into the "Password" field
   - Press the "Log On" button
   - Wait until page shows Home within 60s
   - Click "Procurement Overview"
   - Wait until page shows Procurement Overview within 20s
-  - Navigate to ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+  - Navigate to ${FIORI_BASE_URL}?sap-client=${FIORI_CLIENT}&sap-language=${FIORI_LANGUAGE}#Shell-home
   - Wait until page shows Home within 60s
   - Click "Display Purchasing Info Record by Supplier"
   - "Wait until page shows Info Records per Supplier within 20s"

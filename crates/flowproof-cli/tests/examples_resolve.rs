@@ -5,6 +5,8 @@
 
 use flowproof_agent::FlowSpec;
 
+use std::path::Path;
+
 const FIORI_SPEC: &str = include_str!("../../../examples/fiori/manage-info-records.flow.yaml");
 const PURCHASE_INFO_RECORDS_SPEC: &str =
     include_str!("../../../examples/fiori/purchase-info-records-report.flow.yaml");
@@ -21,6 +23,42 @@ const DEMO_SPEC: &str = include_str!("../../../scripts/demo/order-status.flow.ya
 /// `conversation:`, so if the grammar drifts nothing else would catch it.
 const AGENT_CONVERSATION_SPEC: &str =
     include_str!("../../../examples/agent-demo/cancel-order.flow.yaml");
+
+fn collect_fiori_sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display())) {
+        let path = entry.expect("directory entry").path();
+        if path.is_dir() {
+            collect_fiori_sources(&path, out);
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".flow.yaml") || name.ends_with(".trace.jsonl"))
+        {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn fiori_flows_and_active_traces_use_the_fiori_credential_namespace() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut sources = Vec::new();
+    collect_fiori_sources(&repo.join("examples/fiori"), &mut sources);
+    collect_fiori_sources(&repo.join("evals/fiori/dev"), &mut sources);
+    assert!(!sources.is_empty(), "expected shipped Fiori sources");
+
+    for path in sources {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        for legacy in ["SAP_USER", "SAP_PASSWORD", "SAP_CLIENT", "SAP_LANGUAGE"] {
+            assert!(
+                !text.contains(&format!("${{{legacy}}}")),
+                "{} uses legacy ${{{legacy}}}; Fiori credentials resolve through FIORI_*",
+                path.display()
+            );
+        }
+    }
+}
 
 #[test]
 fn connection_test_example_resolves_with_body_and_headers() {
