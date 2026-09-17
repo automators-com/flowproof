@@ -23,7 +23,8 @@ use crate::spec::FlowSpec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Author {
     /// Bare natural-language steps use the model when configured. Structured
-    /// and `rules:` steps stay deterministic; without a model, bare steps use
+    /// and `rules:` steps stay deterministic; unsupported check prose uses the
+    /// model for read-only assertions. Without a model, natural steps use
     /// a visible rules fallback.
     #[default]
     Auto,
@@ -2303,12 +2304,15 @@ fn author_actions<D: AppDriver, C: ModelClient>(
         }
     }
 
-    // Structured steps (`assert:`, `assert_api:`, ...) are already explicit
+    // Structured steps (`assert_api:`, ...) are already explicit
     // grammar. A `rules:` step opts a plain action into the same deterministic
     // path. Only a bare `Plain` step in Auto is natural-language model intent.
     let plain_natural =
         explicit_rules.is_none() && matches!(spec_step, crate::spec::SpecStep::Plain(_));
-    let plain_auto = author == Author::Auto && plain_natural;
+    let natural_check = matches!(spec_step, crate::spec::SpecStep::Assert { .. })
+        && resolve_step(app_id, spec_step).is_err();
+    let natural_intent = plain_natural || natural_check;
+    let plain_auto = author == Author::Auto && natural_intent;
 
     let clarify = |stage, reason: String, rules_err: Option<String>, scene: Vec<_>| {
         let ambiguity = serde_json::from_str::<crate::author::CaptureAmbiguity>(&reason)
@@ -2346,7 +2350,7 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     let explicit_step = explicit_rules.map(|text| crate::spec::SpecStep::Plain(text.to_string()));
     let rules_step = explicit_step.as_ref().unwrap_or(spec_step);
 
-    let use_model = plain_natural && (author == Author::Llm || (plain_auto && client.is_some()));
+    let use_model = natural_intent && (author == Author::Llm || (plain_auto && client.is_some()));
     if use_model {
         let Some(client) = client.as_mut() else {
             // Forced LLM mode never changes meaning because a key is absent.
@@ -2381,7 +2385,12 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             intent,
             scene: &scene,
         };
-        return match crate::author::author_steps_continuable(*client, &ctx) {
+        let authored = if natural_check {
+            crate::author::author_checks(*client, &ctx)
+        } else {
+            crate::author::author_steps_continuable(*client, &ctx)
+        };
+        return match authored {
             Ok((actions, continues)) => {
                 *llm_used = true;
                 Ok(AuthoredActions {
@@ -2949,7 +2958,11 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         // is re-authored against the screen as it now is. Rules-authored and
         // reused steps keep the old straight-line behaviour, which is what
         // their existing tests pin.
-        let closed_loop = authored.route == StepAuthoringRoute::Llm && client.is_some();
+        // A failed check must stay failed, not replan into actions that change
+        // the page or a weaker assertion that happens to pass.
+        let closed_loop = authored.route == StepAuthoringRoute::Llm
+            && client.is_some()
+            && !matches!(spec_step, crate::spec::SpecStep::Assert { .. });
         // `intent` is moved into `prior_intents` above; the cursor needs its
         // own copy to name the step in a continuation prompt.
         let step_intent = spec_step.intent().to_string();
@@ -5902,6 +5915,59 @@ steps:
         fn identity(&self) -> (String, String) {
             ("openai-compatible".into(), "test-model".into())
         }
+    }
+
+    #[test]
+    fn failing_natural_check_does_not_replan_or_change_the_page() {
+        let spec = FlowSpec::parse("name: False check\napp: web\nurl: https://example.test\nsteps:\n  - assert: The customer should see Success within 1s\n").expect("spec parses");
+        let mut driver = MockAppDriver::default().with_surface_text("Failure");
+        driver.scene = Some("[]".into());
+        let mut client = CountingClient {
+            reply: r##"{"action":"assert_text","target":"surface","expected":"Success"}"##.into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-false-natural-check.trace.jsonl");
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("false assertion fails");
+        assert_eq!(
+            client.calls, 1,
+            "never ask the model to make a false check pass"
+        );
+        assert!(driver.invoked.is_empty());
+    }
+
+    #[test]
+    fn existing_assertions_stay_deterministic_with_a_model() {
+        for author in [Author::Auto, Author::Llm, Author::Rules] {
+            let spec = FlowSpec::parse("name: Explicit check\napp: web\nurl: https://example.test\nsteps:\n  - assert: page shows Expected\n").expect("spec parses");
+            let mut driver = MockAppDriver::default().with_surface_text("Expected");
+            let mut client = CountingClient {
+                reply: "invalid model output".into(),
+                calls: 0,
+            };
+            let out = std::env::temp_dir().join("flowproof-existing-assertion.trace.jsonl");
+            let summary = record_with_client(&spec, &mut driver, &out, author, Some(&mut client))
+                .expect("existing check records");
+            assert_eq!(client.calls, 0);
+            assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
+            std::fs::remove_file(out).ok();
+        }
+    }
+
+    #[test]
+    fn natural_language_check_records_a_deterministic_assertion() {
+        let spec = FlowSpec::parse("name: Human check\napp: web\nurl: https://example.test\nsteps:\n  - assert: The task Prepare customer demo is visible.\n").expect("spec parses");
+        let mut driver = MockAppDriver::new(&["#task"]).with_surface_text("Prepare customer demo");
+        driver.scene = Some(r##"[{"target":"css:#task","tag":"label","text":"Prepare customer demo","actionable":false}]"##.into());
+        let mut client = CountingClient { reply: r##"{"action":"assert_text","target":"surface","expected":"Prepare customer demo"}"##.into(), calls: 0 };
+        let out = std::env::temp_dir().join("flowproof-natural-check.trace.jsonl");
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("natural check records");
+        assert_eq!(client.calls, 1);
+        assert_eq!(summary.steps, 1);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Llm);
+        assert!(driver.invoked.is_empty(), "a check must not click");
+        std::fs::remove_file(out).ok();
     }
 
     #[test]

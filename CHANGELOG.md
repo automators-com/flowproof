@@ -6,6 +6,11 @@ together).
 
 ## Unreleased
 
+- **Human-written checks reach the authoring agent.** Unsupported `assert:` prose
+  can now become grounded, read-only assertions during recording instead of
+  failing at the grammar parser. Checkbox actions have a structured model tool,
+  avoiding fragile rule-string generation. Replay still uses deterministic checks.
+
 - **Visible browser runs no longer start with an unused extra tab.** Private
   browsers reuse Chrome's blank startup page for the flow. Loaded pages are
   preserved, and shared-browser flows keep their isolated contexts.
