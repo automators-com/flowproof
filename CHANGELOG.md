@@ -6,6 +6,16 @@ together).
 
 ## Unreleased
 
+- **A stuck CDP connection now fails in seconds, not minutes.** `frame_act`
+  and `probe_frame` waited on the vendored transport's own `idle_browser_timeout`
+  (300s) for a single call's response - a value shared with two unrelated
+  purposes elsewhere in that fork, so raising or lowering it isn't safe to do
+  directly. Confirmed live: about a third of attempts on one spec spent 3-10
+  minutes on a single stuck call instead of the usual ~35-50s for the whole
+  flow. Both calls now bound their own wait to 30s from the caller's side
+  (the same fix browser-use applied for the identical failure shape), so a
+  dead connection is retried immediately instead of waited out.
+
 - **The AI doctor tests no longer borrow the developer's saved credentials.**
   Clearing shell variables still let `config.yaml` supply a real key, turning a
   missing-key check into a paid model call. The tests now use an empty, temporary
