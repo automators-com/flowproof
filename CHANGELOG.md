@@ -6,6 +6,11 @@ together).
 
 ## Unreleased
 
+- **Repair uses the model credentials already saved for recording.** A desktop
+  recording could succeed while `heal` claimed no model was configured, because
+  only recording loaded the saved config. Healing now loads those same settings,
+  including the Anthropic workspace, while explicit environment values still win.
+
 ## 0.23.6
 
 - **SAP redraws no longer fail readiness checks when a dialog disappears or a control temporarily loses its box.** Visibility is read atomically for CSS/text targets, and scoped pre-click checks wait for a renderable control without retrying the click.
