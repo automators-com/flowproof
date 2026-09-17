@@ -2144,6 +2144,55 @@ fn is_transport_fault(message: &str) -> bool {
         || m.contains("unable to make method calls")
 }
 
+/// How long a single CDP call is allowed to wait for a response before this
+/// side gives up on it (issue #616). The vendored `headless_chrome` fork
+/// bounds that wait with `idle_browser_timeout` - but that same field also
+/// sets the reader thread's own shutdown-poll interval and a separate
+/// browser-level idle-connection timer (three different jobs, one shared
+/// knob), and flowproof sets it to 300s for those other purposes. Lowering
+/// it directly would risk shortening the other two as a side effect.
+/// Wrapping the call from this side instead - the same fix browser-use
+/// applied for the identical failure shape in `_cdp_timeout.py` - needs no
+/// change to the vendored fork at all. 30s is well above every attempt's
+/// normal total duration observed live (~35-50s for an entire multi-step
+/// flow, not one call) and far below the 300s a stuck call currently costs.
+const CDP_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Waits at most [`CDP_CALL_TIMEOUT`] for `f`, running it on its own thread
+/// since Rust has no way to cancel a blocking call already in flight (`f`
+/// itself is still bound by the vendored fork's much longer wait and keeps
+/// running to completion on that thread regardless - this only stops THIS
+/// caller from waiting on it). Confirmed live: about a third of attempts on
+/// one spec spent 3-10 minutes on a single stuck call instead of the normal
+/// ~35-50s for the whole flow; retrying immediately instead of waiting out
+/// that stall gives a fresh attempt a chance to land well within the same
+/// wall-clock budget a client would tolerate.
+///
+/// The timeout's own error text matches `is_transport_fault`, so a caller
+/// that already retries on transport faults (`frame_act`, `probe_frame`)
+/// treats a fast timeout exactly like the slow error it now stands in for -
+/// no separate handling needed at the call site.
+fn with_cdp_timeout<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    with_cdp_timeout_after(CDP_CALL_TIMEOUT, f)
+}
+
+/// The actual wait, with the deadline injectable so tests can prove the
+/// timeout fires (and what it produces) in milliseconds instead of at the
+/// real 30s production value.
+fn with_cdp_timeout_after<T: Send + 'static>(
+    deadline: Duration,
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(deadline)
+        .unwrap_or_else(|_| Err("the event waited for never came".to_string()))
+}
+
 /// Attempts allowed beyond the first for a transport-faulting operation.
 /// Was 1 (a single fixed ~300ms retry) until issue #608: a clean live
 /// re-verification of `medium-02-change-info-record-readonly.flow.yaml`
@@ -2301,6 +2350,57 @@ mod transport_retry_tests {
                 Duration::from_millis(900),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod cdp_timeout_tests {
+    use super::with_cdp_timeout_after;
+    use std::time::Duration;
+
+    /// The common case: a call that returns well within the deadline is
+    /// unaffected by the wrapper.
+    #[test]
+    fn a_fast_call_returns_its_own_result() {
+        let result = with_cdp_timeout_after(Duration::from_millis(200), || Ok::<_, String>(42));
+        assert_eq!(result, Ok(42));
+    }
+
+    /// issue #616: a call still stuck past the deadline must not block the
+    /// caller - the timeout fires and hands back control, even though the
+    /// spawned thread (standing in for the real CDP wait) is still running.
+    #[test]
+    fn a_call_still_stuck_past_the_deadline_times_out_instead_of_blocking() {
+        let result = with_cdp_timeout_after(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(5));
+            Ok::<_, String>(())
+        });
+        assert_eq!(result, Err("the event waited for never came".to_string()));
+    }
+
+    /// The timeout's own error text must match `is_transport_fault`, so a
+    /// caller that already retries on transport faults treats a fast
+    /// timeout exactly like the slow error it now stands in for, with no
+    /// separate handling needed at the call site.
+    #[test]
+    fn the_timeout_error_is_itself_a_recognized_transport_fault() {
+        let result: Result<(), String> = with_cdp_timeout_after(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(5));
+            Ok(())
+        });
+        match result {
+            Err(e) => assert!(super::is_transport_fault(&e)),
+            Ok(()) => panic!("expected a timeout error"),
+        }
+    }
+
+    /// A genuine error from `f` (not a timeout) passes through unchanged -
+    /// the wrapper must not turn every real failure into "timed out".
+    #[test]
+    fn a_real_error_from_f_is_not_reported_as_a_timeout() {
+        let result: Result<(), String> =
+            with_cdp_timeout_after(Duration::from_millis(200), || Err("no_element".to_string()));
+        assert_eq!(result, Err("no_element".to_string()));
     }
 }
 
@@ -2584,11 +2684,14 @@ impl WebAppDriver {
         // uses for every field inside an iframe) killed the whole flow. A
         // single retry was also not enough on its own (issue #608) - this
         // is the call site that failed twice in a row live.
+        let tab = self.tab().map(Arc::clone).map_err(|e| e.to_string());
         let status = retry_on_transport_fault(|| {
-            self.tab()
-                .map_err(|e| e.to_string())?
-                .evaluate(&call, false)
-                .map_err(|e| e.to_string())
+            let tab = tab.clone()?;
+            let call = call.clone();
+            // issue #616: this call can stall for minutes on a dead
+            // connection before the vendored transport's own much larger
+            // timeout gives up - bound the wait from this side instead.
+            with_cdp_timeout(move || tab.evaluate(&call, false).map_err(|e| e.to_string()))
         })
         .map_err(|e| web_err("acting inside an iframe", e))?
         .value
@@ -4312,11 +4415,13 @@ impl AppDriver for WebAppDriver {
         // the tab directly, with no element to re-resolve, so it never went
         // through that retry at all - any transient CDP hiccup here killed
         // the whole flow on the first blip, with zero chance to recover.
+        let tab = self.tab().map(Arc::clone).map_err(|e| e.to_string());
         let status = retry_on_transport_fault(|| {
-            self.tab()
-                .map_err(|e| e.to_string())?
-                .evaluate(&call, false)
-                .map_err(|e| e.to_string())
+            let tab = tab.clone()?;
+            let call = call.clone();
+            // issue #616: bound this call's wait from the caller's side
+            // instead of the vendored transport's much larger one.
+            with_cdp_timeout(move || tab.evaluate(&call, false).map_err(|e| e.to_string()))
         })
         .map_err(|e| web_err("probing an iframe", e))?
         .value
