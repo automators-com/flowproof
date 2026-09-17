@@ -3,6 +3,11 @@ title: "Assertions"
 description: "The shared assertion grammar every app profile supports, including scoped targets for table cells and list items."
 ---
 
+With a configured authoring model, `assert:` also accepts everyday wording, such as
+`The task "Prepare customer demo" is visible.` The agent translates it against the
+live screen into read-only checks; replay executes the recorded checks without a model.
+The grammar below remains available without a model and with `--author rules`.
+
 All assertion forms **auto-wait** (default 10s, recorded into the trace);
 append `within <N>s` to any form to change the bound.
 
