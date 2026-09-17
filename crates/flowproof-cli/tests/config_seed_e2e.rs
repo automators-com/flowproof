@@ -309,6 +309,7 @@ fn ai_config_fills_neutral_and_anthropic_alias_gaps_only() {
                 provider: Some(flowproof_cli::config::AiProvider::Anthropic),
                 api_key: Some("sk-ant-config".into()),
                 model: Some("FROM_CONFIG".into()),
+                workspace_id: None,
             }),
         };
         flowproof_cli::config::save(&config).expect("fixture config writes");
@@ -370,6 +371,7 @@ fn ai_config_fills_openai_alias_when_openai_provider_is_set() {
                 provider: Some(flowproof_cli::config::AiProvider::Openai),
                 api_key: Some("sk-openai-config".into()),
                 model: None,
+                workspace_id: None,
             }),
         };
         flowproof_cli::config::save(&config).expect("fixture config writes");

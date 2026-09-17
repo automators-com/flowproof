@@ -32,7 +32,8 @@ Self-healing on failure proposes a reviewable diff — never a silent mutation.
   is performed and verified like any other before being recorded. Backends:
   Anthropic Messages API and OpenAI's API, configured via `flowproof config ai`
   or `FLOWPROOF_AI_PROVIDER`, `FLOWPROOF_AI_API_KEY` (falls back to
-  `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), and `FLOWPROOF_AI_MODEL` as an
+  `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), `FLOWPROOF_AI_WORKSPACE_ID` for an
+  organization-level Anthropic key, and `FLOWPROOF_AI_MODEL` as an
   advanced override. Custom OpenAI-compatible endpoints remain available via
   `FLOWPROOF_AI_PROVIDER=openai-compatible` plus `FLOWPROOF_AI_BASE_URL`.
   Scene-graph grounding is deliberate: it keeps
