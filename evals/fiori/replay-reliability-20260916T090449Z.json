@@ -1,0 +1,524 @@
+{
+  "timestamp": "20260916T090449Z",
+  "corpus": "evals/fiori/dev",
+  "runs_per_spec": 15,
+  "overall_pass_rate": 0.6888888888888889,
+  "total_runs": 90,
+  "total_passes": 62,
+  "skipped_no_trace": [
+    "evals/fiori/dev/long-01-cross-app-tour.flow.yaml",
+    "evals/fiori/dev/long-02-cross-app-tour-with-canary.flow.yaml",
+    "evals/fiori/dev/long-03-double-value-help-tour.flow.yaml",
+    "evals/fiori/dev/medium-01-display-info-record-by-supplier.flow.yaml",
+    "evals/fiori/dev/medium-03-procurement-overview-then-display-search.flow.yaml",
+    "evals/fiori/dev/medium-05-search-retry-after-no-match.flow.yaml",
+    "evals/fiori/dev/negative-control-impossible-screen-title.flow.yaml",
+    "evals/fiori/dev/negative-control-wrong-material-asserted.flow.yaml"
+  ],
+  "specs": [
+    {
+      "spec": "evals/fiori/dev/medium-02-change-info-record-readonly.flow.yaml",
+      "runs": 15,
+      "passes": 4,
+      "pass_rate": 0.26666666666666666,
+      "attempts": [
+        {
+          "attempt": 1,
+          "ok": false,
+          "detail": "error: driver error: driver transport fault: probing an iframe: Unable to make method calls because underlying connection is closed"
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 3,
+          "ok": false,
+          "detail": "error: driver error: driver transport fault: probing an iframe: Unable to make method calls because underlying connection is closed"
+        },
+        {
+          "attempt": 4,
+          "ok": false,
+          "detail": "error: driver error: driver transport fault: probing an iframe: Unable to make method calls because underlying connection is closed"
+        },
+        {
+          "attempt": 5,
+          "ok": false,
+          "detail": "error: driver error: driver transport fault: probing an iframe: Unable to make method calls because underlying connection is closed"
+        },
+        {
+          "attempt": 6,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 7,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-v56bp2jm/.flowproof/runs/2026-09-16T08-24-39Z-e212/report.json"
+        },
+        {
+          "attempt": 8,
+          "ok": false,
+          "detail": "error: driver error: driver transport fault: probing an iframe: Unable to make method calls because underlying connection is closed"
+        },
+        {
+          "attempt": 9,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-v56bp2jm/.flowproof/runs/2026-09-16T08-32-08Z-3497/report.json"
+        },
+        {
+          "attempt": 10,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-v56bp2jm/.flowproof/runs/2026-09-16T08-32-33Z-48a0/report.json"
+        },
+        {
+          "attempt": 11,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 12,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-v56bp2jm/.flowproof/runs/2026-09-16T08-33-38Z-97d6/report.json"
+        },
+        {
+          "attempt": 13,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 14,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-v56bp2jm/.flowproof/runs/2026-09-16T08-34-50Z-0a33/report.json"
+        },
+        {
+          "attempt": 15,
+          "ok": false,
+          "detail": "exit -15"
+        }
+      ],
+      "evidence_dir": ".flowproof/replay-reliability/fiori-replay-v56bp2jm"
+    },
+    {
+      "spec": "evals/fiori/dev/medium-04-supplier-value-help.flow.yaml",
+      "runs": 15,
+      "passes": 0,
+      "pass_rate": 0.0,
+      "attempts": [
+        {
+          "attempt": 1,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 2,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 3,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 4,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 5,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 6,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 7,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 8,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 9,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-aya8d53c/.flowproof/runs/2026-09-16T08-46-04Z-c0ba/report.json"
+        },
+        {
+          "attempt": 10,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 11,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-aya8d53c/.flowproof/runs/2026-09-16T08-47-14Z-0d78/report.json"
+        },
+        {
+          "attempt": 12,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 13,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        },
+        {
+          "attempt": 14,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-aya8d53c/.flowproof/runs/2026-09-16T08-48-55Z-298e/report.json"
+        },
+        {
+          "attempt": 15,
+          "ok": false,
+          "detail": "error: driver error: browser driver failed: the field inside iframe 'Application' accepted a different value after commit"
+        }
+      ],
+      "evidence_dir": ".flowproof/replay-reliability/fiori-replay-aya8d53c"
+    },
+    {
+      "spec": "evals/fiori/dev/short-01-login-smoke.flow.yaml",
+      "runs": 15,
+      "passes": 15,
+      "pass_rate": 1.0,
+      "attempts": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 3,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 4,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 5,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 6,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 7,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 8,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 9,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 10,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 11,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 12,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 13,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 14,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 15,
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "evidence_dir": ".flowproof/replay-reliability/fiori-replay-37yhl45i"
+    },
+    {
+      "spec": "evals/fiori/dev/short-02-home-shows-info-record-tiles.flow.yaml",
+      "runs": 15,
+      "passes": 14,
+      "pass_rate": 0.9333333333333333,
+      "attempts": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 3,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-o86v7_m1/.flowproof/runs/2026-09-16T08-54-52Z-24aa/report.json"
+        },
+        {
+          "attempt": 4,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 5,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 6,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 7,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 8,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 9,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 10,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 11,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 12,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 13,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 14,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 15,
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "evidence_dir": ".flowproof/replay-reliability/fiori-replay-o86v7_m1"
+    },
+    {
+      "spec": "evals/fiori/dev/short-03-procurement-overview-opens.flow.yaml",
+      "runs": 15,
+      "passes": 14,
+      "pass_rate": 0.9333333333333333,
+      "attempts": [
+        {
+          "attempt": 1,
+          "ok": false,
+          "detail": "wrote run record -> /Users/happymahlangu/dev/work/automators/flowproof/.flowproof/replay-reliability/fiori-replay-2yb_0ik5/.flowproof/runs/2026-09-16T08-59-14Z-4ad6/report.json"
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 3,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 4,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 5,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 6,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 7,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 8,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 9,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 10,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 11,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 12,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 13,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 14,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 15,
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "evidence_dir": ".flowproof/replay-reliability/fiori-replay-2yb_0ik5"
+    },
+    {
+      "spec": "evals/fiori/dev/short-04-info-record-exists-via-api.flow.yaml",
+      "runs": 15,
+      "passes": 15,
+      "pass_rate": 1.0,
+      "attempts": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 2,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 3,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 4,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 5,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 6,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 7,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 8,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 9,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 10,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 11,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 12,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 13,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 14,
+          "ok": true,
+          "detail": null
+        },
+        {
+          "attempt": 15,
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "evidence_dir": ".flowproof/replay-reliability/fiori-replay-vl_4v1fa"
+    }
+  ]
+}
