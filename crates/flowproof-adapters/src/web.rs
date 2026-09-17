@@ -1040,6 +1040,19 @@ fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
         .map_err(|e| AdapterError::Web(launch_failure_message(&e.to_string(), headed)))
 }
 
+/// Reuse Chromium's startup page in a privately owned browser. Never use
+/// this for shared contexts: each flow there must keep its isolated storage.
+fn private_flow_tab(browser: &Browser) -> anyhow::Result<Arc<Tab>> {
+    // This API is deprecated in favor of new_tab(), but waiting for and reusing
+    // the startup target is intentional: new_tab() leaves an extra visible tab.
+    #[allow(deprecated)]
+    let initial = browser.wait_for_initial_tab()?;
+    match initial.get_url().as_str() {
+        "about:blank" | "chrome://newtab/" | "chrome://new-tab-page/" => Ok(initial),
+        _ => browser.new_tab(),
+    }
+}
+
 /// A private per-launch downloads directory when the flow didn't pin one via
 /// `browser.downloads_dir`. Unique per launch (pid + a monotonic counter) so
 /// two flows sharing the same shared-browser process never race over the
@@ -1314,6 +1327,7 @@ pub struct WebAppDriver {
     /// Active request identities, maintained by CDP. Redirects reuse their
     /// request ID and must not leave a phantom in-flight request behind.
     network_inflight: Arc<NetworkActivity>,
+    observed_collections: Vec<serde_json::Value>,
 }
 
 /// Shared state between the driver and the flow-wide dialog listener.
@@ -1515,6 +1529,7 @@ impl WebAppDriver {
                 downloads_dir: None,
                 claimed_downloads: Default::default(),
                 network_inflight: Default::default(),
+                observed_collections: Vec::new(),
             });
         }
         let browser = shared_browser()?;
@@ -1535,6 +1550,7 @@ impl WebAppDriver {
             downloads_dir: None,
             claimed_downloads: Default::default(),
             network_inflight: Default::default(),
+            observed_collections: Vec::new(),
         })
     }
 
@@ -3000,6 +3016,7 @@ impl AppDriver for WebAppDriver {
         _window_name: &str,
         _timeout: Duration,
     ) -> Result<(), DriverError> {
+        self.observed_collections.clear();
         let staged_browser = self.staged_browser.take();
         // Extra Chrome flags only apply at process start: swap in a
         // PRIVATE browser for this flow (a plain tab on it is already
@@ -3028,7 +3045,7 @@ impl AppDriver for WebAppDriver {
                 for_tab: None,
                 hidden: None,
             }),
-            None => self.browser.new_tab(),
+            None => private_flow_tab(&self.browser),
         }
         .map_err(|e| web_err("opening tab", e))?;
         // A visible flow is the only Chrome window the user should have to
@@ -5229,6 +5246,14 @@ impl AppDriver for WebAppDriver {
               const ordered = all.filter(priorityField).concat(all.filter(interactive),
                 all.filter(el => !interactive(el) && readableLeaf(el))
               );
+              const hitTestableTick = el => {
+                if (!el.matches('input[type=checkbox], input[type=radio]')) return false;
+                const r = el.getBoundingClientRect();
+                // Transparent native controls often overlay a drawn checkbox.
+                // Include only controls that really receive the pointer here.
+                return r.width > 1 && r.height > 1 &&
+                  document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el;
+              };
               const seen = new Set();
               const chosen = ordered.filter(el => {
                 const r = el.getBoundingClientRect();
@@ -5238,7 +5263,7 @@ impl AppDriver for WebAppDriver {
                 // even when the field starts below the fold, and every web
                 // action already scrolls its target into view before acting.
                 const rendered = style.display !== 'none' && style.visibility !== 'hidden' &&
-                  Number(style.opacity) > 0 && r.width > 0 && r.height > 0;
+                  (Number(style.opacity) > 0 || hitTestableTick(el)) && r.width > 0 && r.height > 0;
                 if (!rendered || seen.has(el)) return false;
                 seen.add(el);
                 return true;
@@ -5313,6 +5338,22 @@ impl AppDriver for WebAppDriver {
               // final cell without naming one current row. Represent those
               // collection identities directly so the model can ground the
               // intent without inventing a selector from today's DOM.
+              // Keep empty list identities available for assertions. A model
+              // must not invent a selector just because the last item vanished.
+              for (const list of document.querySelectorAll('ul, ol, [role="list"]')) {
+                const listCss = semanticCss(list);
+                if (!listCss) continue;
+                const itemCss = listCss + ' > :is(li, [role="listitem"])';
+                entries.push({
+                  target: 'css:' + itemCss,
+                  css: itemCss,
+                  tag: 'collection',
+                  actionable: false,
+                  count: list.querySelectorAll(':scope > :is(li, [role="listitem"])').length,
+                  label: 'items in ' + (list.getAttribute('aria-label') || listCss),
+                });
+              }
+
               for (const table of document.querySelectorAll('table')) {
                 const tableCss = semanticCss(table);
                 if (!tableCss) continue;
@@ -5430,13 +5471,50 @@ impl AppDriver for WebAppDriver {
                 entries: parsed["entries"].as_array().cloned().unwrap_or_default(),
             })
         };
-        let entries = settled_scene(
+        let mut entries = settled_scene(
             sample,
             || std::thread::sleep(SCENE_SETTLE_INTERVAL),
             || self.network_idle(),
             SCENE_SETTLE_ROUNDS,
             SCENE_SETTLE_BUSY_ROUNDS,
         )?;
+        for entry in entries.iter().filter(|e| e["tag"] == "collection") {
+            if !self
+                .observed_collections
+                .iter()
+                .any(|old| old["target"] == entry["target"])
+                && self.observed_collections.len() < 50
+            {
+                self.observed_collections.push(entry.clone());
+            }
+        }
+        // Some apps remove the whole list when its last item is deleted.
+        // Retain only collection identities seen in this browser session,
+        // and re-count the DOM now; never infer absence from missing inventory.
+        let missing: Vec<_> = self
+            .observed_collections
+            .iter()
+            .filter(|old| !entries.iter().any(|e| e["target"] == old["target"]))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            let input =
+                serde_json::to_string(&missing).map_err(|e| DriverError::Browser(e.to_string()))?;
+            let script = format!("JSON.stringify(({input}).map(e => ({{...e, count: document.querySelectorAll(e.css).length, observed_before: true}})))");
+            let value = self
+                .tab()?
+                .evaluate(&script, false)
+                .map_err(|e| web_err("counting previously observed lists", e))?;
+            let previous: Vec<serde_json::Value> = serde_json::from_str(
+                value
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| DriverError::Browser("collection counts missing".into()))?,
+            )
+            .map_err(|e| DriverError::Browser(format!("collection counts: {e}")))?;
+            entries.extend(previous);
+        }
         let json = serde_json::to_string(&entries)
             .map_err(|e| DriverError::Browser(format!("re-serialising scene: {e}")))?;
         Ok(Some(json))
@@ -6021,5 +6099,44 @@ mod tests {
         let mut got = super::unclaimed_downloads(&current, &claimed);
         got.sort();
         assert_eq!(got, vec![&a, &b]);
+    }
+}
+
+#[cfg(test)]
+mod startup_tab_tests {
+    #[test]
+    fn private_browser_reuses_startup_tab_without_replacing_a_loaded_page() {
+        if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+            eprintln!("set FLOWPROOF_E2E=1 to run the real browser check");
+            return;
+        }
+        let browser = super::Browser::new(
+            super::launch_options_for(&[], true).expect("valid launch options"),
+        )
+        .expect("browser starts");
+        let first = super::private_flow_tab(&browser).expect("flow tab opens");
+        assert_eq!(
+            browser
+                .get_tabs()
+                .lock()
+                .expect("tab registry is available")
+                .len(),
+            1
+        );
+        first
+            .navigate_to("data:text/html,<title>Demo</title>Ready")
+            .expect("demo page loads");
+        first.wait_until_navigated().expect("demo page loads");
+        let second = super::private_flow_tab(&browser).expect("flow tab opens");
+        assert_ne!(first.get_target_id(), second.get_target_id());
+        assert!(first.get_url().starts_with("data:text/html,"));
+        assert_eq!(
+            browser
+                .get_tabs()
+                .lock()
+                .expect("tab registry is available")
+                .len(),
+            2
+        );
     }
 }
