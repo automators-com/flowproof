@@ -6,6 +6,11 @@ together).
 
 ## Unreleased
 
+- **The AI doctor tests no longer borrow the developer's saved credentials.**
+  Clearing shell variables still let `config.yaml` supply a real key, turning a
+  missing-key check into a paid model call. The tests now use an empty, temporary
+  config home and restore the inherited environment when each check finishes.
+
 - **Repair uses the model credentials already saved for recording.** A desktop
   recording could succeed while `heal` claimed no model was configured, because
   only recording loaded the saved config. Healing now loads those same settings,
