@@ -1040,6 +1040,19 @@ fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
         .map_err(|e| AdapterError::Web(launch_failure_message(&e.to_string(), headed)))
 }
 
+/// Reuse Chromium's startup page in a privately owned browser. Never use
+/// this for shared contexts: each flow there must keep its isolated storage.
+fn private_flow_tab(browser: &Browser) -> anyhow::Result<Arc<Tab>> {
+    // This API is deprecated in favor of new_tab(), but waiting for and reusing
+    // the startup target is intentional: new_tab() leaves an extra visible tab.
+    #[allow(deprecated)]
+    let initial = browser.wait_for_initial_tab()?;
+    match initial.get_url().as_str() {
+        "about:blank" | "chrome://newtab/" | "chrome://new-tab-page/" => Ok(initial),
+        _ => browser.new_tab(),
+    }
+}
+
 /// A private per-launch downloads directory when the flow didn't pin one via
 /// `browser.downloads_dir`. Unique per launch (pid + a monotonic counter) so
 /// two flows sharing the same shared-browser process never race over the
@@ -3028,7 +3041,7 @@ impl AppDriver for WebAppDriver {
                 for_tab: None,
                 hidden: None,
             }),
-            None => self.browser.new_tab(),
+            None => private_flow_tab(&self.browser),
         }
         .map_err(|e| web_err("opening tab", e))?;
         // A visible flow is the only Chrome window the user should have to
@@ -6016,5 +6029,27 @@ mod tests {
         let mut got = super::unclaimed_downloads(&current, &claimed);
         got.sort();
         assert_eq!(got, vec![&a, &b]);
+    }
+}
+
+#[cfg(test)]
+mod startup_tab_tests {
+    #[test]
+    fn private_browser_reuses_startup_tab_without_replacing_a_loaded_page() {
+        if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+            eprintln!("set FLOWPROOF_E2E=1 to run the real browser check");
+            return;
+        }
+        let browser = super::Browser::new(super::launch_options_for(&[], true).unwrap()).unwrap();
+        let first = super::private_flow_tab(&browser).unwrap();
+        assert_eq!(browser.get_tabs().lock().unwrap().len(), 1);
+        first
+            .navigate_to("data:text/html,<title>Demo</title>Ready")
+            .unwrap();
+        first.wait_until_navigated().unwrap();
+        let second = super::private_flow_tab(&browser).unwrap();
+        assert_ne!(first.get_target_id(), second.get_target_id());
+        assert!(first.get_url().starts_with("data:text/html,"));
+        assert_eq!(browser.get_tabs().lock().unwrap().len(), 2);
     }
 }
