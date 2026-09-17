@@ -827,6 +827,37 @@ fn assertions_wait_for_slow_uis_and_time_out_deterministically() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A Fiori navigation can leave the shell bar on a genuine intermediate
+/// title while the destination app is still loading. Text assertions ask the
+/// adapter for its network-aware settled scene before starting their own
+/// recorded poll budget, instead of spending that budget on the old screen.
+#[test]
+fn text_assertions_wait_for_the_scene_to_settle_before_reading() {
+    let dir = std::env::temp_dir().join("flowproof-replay-settle-before-text");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Settled title\napp: web\nurl: x\nsteps:\n  - assert: page shows Destination\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://example.test/destination".into()),
+        ..spec
+    };
+    let trace = dir.join("settled.trace.jsonl");
+
+    let mut recorder = MockAppDriver::new(&[]).with_surface_text("Destination");
+    record(&spec, &mut recorder, &trace).expect("recording succeeds");
+
+    let mut driver = MockAppDriver::new(&[]).with_surface_text("Destination");
+    driver.scene = Some("[]".into());
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(report.passed, "report: {report:?}");
+    assert_eq!(driver.scene_reads, 1, "text assertion must settle once");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn replay_skips_remaining_steps_after_a_missing_element() {
     let dir = std::env::temp_dir().join("flowproof-replay-skip");

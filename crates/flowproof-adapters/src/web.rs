@@ -5409,11 +5409,16 @@ impl AppDriver for WebAppDriver {
               });
             })()
         "#;
+        let tab = Arc::clone(self.tab()?);
         let sample = || {
-            let value = self
-                .tab()?
-                .evaluate(SCENE_JS, false)
-                .map_err(|e| web_err("evaluating scene script", e))?;
+            let tab = Arc::clone(&tab);
+            // Replay now asks for a settled scene before judging text after
+            // navigation. Keep that defensive wait from opening another
+            // unbounded direct-CDP path: if this read stalls, the assertion
+            // falls back to its ordinary recorded polling window.
+            let value =
+                with_cdp_timeout(move || tab.evaluate(SCENE_JS, false).map_err(|e| e.to_string()))
+                    .map_err(|e| web_err("evaluating scene script", e))?;
             let raw = value
                 .value
                 .and_then(|v| v.as_str().map(str::to_string))
