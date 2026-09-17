@@ -6,6 +6,10 @@ together).
 
 ## Unreleased
 
+- **Visible browser runs no longer start with an unused extra tab.** Private
+  browsers reuse Chrome's blank startup page for the flow. Loaded pages are
+  preserved, and shared-browser flows keep their isolated contexts.
+
 - **A stuck CDP connection now fails in seconds, not minutes.** `frame_act`
   and `probe_frame` waited on the vendored transport's own `idle_browser_timeout`
   (300s) for a single call's response - a value shared with two unrelated
