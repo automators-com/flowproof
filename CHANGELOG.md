@@ -6,6 +6,8 @@ together).
 
 ## Unreleased
 
+## 0.23.7
+
 - **Human-written checks reach the authoring agent.** Unsupported `assert:` prose
   can now become grounded, read-only assertions during recording instead of
   failing at the grammar parser. Checkbox actions have a structured model tool,
