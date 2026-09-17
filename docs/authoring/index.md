@@ -20,8 +20,10 @@ the deterministic grammar instead, mark it explicitly:
 
 `--author rules` remains the global opt-in when a whole flow already uses
 the deterministic grammar; `--author llm` forces model authoring for plain
-UI steps. Structured forms such as `assert:`, `assert_api:`, `repeat:` and
-`when:` retain their own semantics in every mode.
+UI steps. An `assert:` that already matches the deterministic grammar stays deterministic.
+Other check wording is translated by the model into read-only assertions in auto/LLM mode.
+The model cannot change the page to satisfy a check. Structured forms such as
+`assert_api:`, `repeat:` and `when:` retain their own semantics in every mode.
 
 If auto mode has no configured authoring model, recording says so visibly
 and falls back to deterministic rules for plain steps. It never silently

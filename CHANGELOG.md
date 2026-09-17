@@ -6,6 +6,11 @@ together).
 
 ## Unreleased
 
+- **Human-written checks reach the authoring agent.** Unsupported `assert:` prose
+  can now become grounded, read-only assertions during recording instead of
+  failing at the grammar parser. Checkbox actions have a structured model tool,
+  avoiding fragile rule-string generation. Replay still uses deterministic checks.
+
 - **A stuck CDP connection now fails in seconds, not minutes.** `frame_act`
   and `probe_frame` waited on the vendored transport's own `idle_browser_timeout`
   (300s) for a single call's response - a value shared with two unrelated
