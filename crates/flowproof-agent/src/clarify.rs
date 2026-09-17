@@ -4,7 +4,7 @@
 //! rules nor the model can turn a step into a grounded action, recording
 //! stops and the *driving* agent (a human, or an MCP caller like DataMaker's
 //! agent) resolves the ambiguity — by consulting an external source of
-//! truth, rewriting the vague step into concrete grammar, and re-recording.
+//! truth, clarifying the intended action or expected result, and re-recording.
 //! This module is the machine-readable half of that loop: everything the
 //! driving agent needs to know *what* was ambiguous and *what the live
 //! screen offered* at the moment authoring gave up.
@@ -96,10 +96,10 @@ pub struct Clarification {
 }
 
 impl Clarification {
-    pub const HINT: &'static str = "Rewrite the step using the grammar in docs/authoring.md, \
-         targeting a listed element (quote its label, or use its target token verbatim), \
-         then re-record. Consult your data source for domain questions the scene cannot \
-         answer (e.g. which fields are required).";
+    pub const HINT: &'static str = "Describe the intended action or expected result, including \
+         which item you mean when several match, then record again. Natural-language \
+         authoring needs a configured model. If required business information is missing, \
+         supply it rather than guessing.";
 }
 
 /// Parse a driver scene JSON into the structured inventory. Mirrors the

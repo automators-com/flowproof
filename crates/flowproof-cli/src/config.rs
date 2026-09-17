@@ -144,6 +144,10 @@ pub struct AiProfile {
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Anthropic only: the workspace an organization-level key bills to.
+    /// Not a secret; the console shows it next to the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 impl AiProfile {
@@ -159,6 +163,9 @@ impl AiProfile {
         }
         if let Some(v) = &self.model {
             pairs.push(("FLOWPROOF_AI_MODEL", v.clone()));
+        }
+        if let Some(v) = &self.workspace_id {
+            pairs.push(("FLOWPROOF_AI_WORKSPACE_ID", v.clone()));
         }
         pairs
     }
@@ -484,8 +491,10 @@ pub struct AiArgs {
     pub provider: Option<AiProvider>,
     pub api_key: Option<String>,
     pub model: Option<String>,
+    pub workspace_id: Option<String>,
     pub clear_api_key: bool,
     pub clear_model: bool,
+    pub clear_workspace_id: bool,
 }
 
 impl AiArgs {
@@ -493,8 +502,10 @@ impl AiArgs {
         self.provider.is_some()
             || self.api_key.is_some()
             || self.model.is_some()
+            || self.workspace_id.is_some()
             || self.clear_api_key
             || self.clear_model
+            || self.clear_workspace_id
     }
 }
 
@@ -531,6 +542,9 @@ pub fn cmd_ai(args: AiArgs) -> Result<u8, String> {
     if args.clear_model && args.model.is_some() {
         return Err("--clear-model cannot be combined with --model".to_string());
     }
+    if args.clear_workspace_id && args.workspace_id.is_some() {
+        return Err("--clear-workspace-id cannot be combined with --workspace-id".to_string());
+    }
 
     let any_flag = args.any_set();
     let mut config = load()?;
@@ -552,10 +566,16 @@ pub fn cmd_ai(args: AiArgs) -> Result<u8, String> {
         if let Some(v) = args.model {
             profile.model = Some(v);
         }
+        if args.clear_workspace_id {
+            profile.workspace_id = None;
+        }
+        if let Some(v) = args.workspace_id {
+            profile.workspace_id = Some(v);
+        }
     } else {
         require_tty(
             "flowproof config ai",
-            &["--provider", "--api-key", "--model"],
+            &["--provider", "--api-key", "--model", "--workspace-id"],
         )?;
         profile.provider = Some(prompt_ai_provider(profile.provider)?);
         profile.api_key =
@@ -712,6 +732,7 @@ mod tests {
                 provider: Some(AiProvider::Anthropic),
                 api_key: Some("sk-ant".into()),
                 model: Some("claude-sonnet-5".into()),
+                workspace_id: None,
             }),
         };
         let pairs = config.env_pairs();
@@ -731,6 +752,35 @@ mod tests {
         assert!(pairs.contains(&("ANTHROPIC_API_KEY", "sk-ant".to_string())));
         assert!(pairs.contains(&("FLOWPROOF_AI_MODEL", "claude-sonnet-5".to_string())));
         assert_eq!(pairs.len(), 14, "no extra, no missing: {pairs:?}");
+    }
+
+    #[test]
+    fn ai_workspace_id_seeds_its_var_and_nothing_else_changes() {
+        let config = Config {
+            ai: Some(AiProfile {
+                provider: Some(AiProvider::Anthropic),
+                api_key: Some("sk-ant".into()),
+                model: None,
+                workspace_id: Some("wrkspc_01ABC".into()),
+            }),
+            ..Config::default()
+        };
+        let pairs = config.env_pairs();
+        assert!(pairs.contains(&("FLOWPROOF_AI_WORKSPACE_ID", "wrkspc_01ABC".to_string())));
+        assert!(pairs.contains(&("FLOWPROOF_AI_API_KEY", "sk-ant".to_string())));
+        assert_eq!(
+            pairs.len(),
+            4,
+            "provider, key, compat key, workspace: {pairs:?}"
+        );
+        // Round-trips through the file untouched, and is absent when unset.
+        let yaml = serde_yaml::to_string(&config).expect("serializes");
+        assert!(yaml.contains("workspace_id: wrkspc_01ABC"));
+        let back: Config = serde_yaml::from_str(&yaml).expect("parses back");
+        assert_eq!(back, config);
+        assert!(!serde_yaml::to_string(&Config::default())
+            .expect("serializes")
+            .contains("workspace_id"));
     }
 
     #[test]
@@ -926,6 +976,7 @@ mod tests {
                 provider: Some(AiProvider::Openai),
                 api_key: Some("sk-openai".into()),
                 model: Some("gpt-5".into()),
+                workspace_id: None,
             }),
         };
         let pairs = config.env_pairs();

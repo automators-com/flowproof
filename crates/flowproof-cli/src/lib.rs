@@ -186,10 +186,16 @@ enum ConfigAction {
         api_key: Option<String>,
         #[arg(long)]
         model: Option<String>,
+        /// Anthropic only: the workspace an organization-level key bills to
+        /// (sent as `anthropic-workspace-id`). A workspace-scoped key needs none.
+        #[arg(long = "workspace-id")]
+        workspace_id: Option<String>,
         #[arg(long = "clear-api-key")]
         clear_api_key: bool,
         #[arg(long = "clear-model")]
         clear_model: bool,
+        #[arg(long = "clear-workspace-id")]
+        clear_workspace_id: bool,
     },
     /// Print the config file's path and contents, password masked.
     Show,
@@ -1632,12 +1638,44 @@ fn record_driver(spec: &FlowSpec) -> Result<Box<dyn AppDriver>, String> {
 
 /// fail the suite. Returns the first passing report, else the last
 /// failure, with the attempt count.
+/// One stderr line per finished step, in the shape of the human verdict
+/// lines but live. Only `--json` runs ask for it: their stdout is the
+/// report and must stay pure, and without this a long replay is silent
+/// until it ends.
+fn print_step_progress(step: &flowproof_replay::StepResult) {
+    let mark = match step.status {
+        flowproof_replay::StepStatus::Passed => "PASS",
+        flowproof_replay::StepStatus::Failed => "FAIL",
+        flowproof_replay::StepStatus::Skipped => "SKIP",
+        flowproof_replay::StepStatus::Errored => "ERROR",
+    };
+    if step.status == flowproof_replay::StepStatus::Skipped {
+        eprintln!("  [{mark}] {} {}", step.id, step.intent);
+    } else {
+        eprintln!(
+            "  [{mark}] {} {} ({} ms)",
+            step.id, step.intent, step.duration_ms
+        );
+    }
+}
+
+/// What a replay says while it runs. `Human` announces retries on stdout;
+/// `Json` keeps stdout for the report and streams step progress to stderr;
+/// `Quiet` is a suite flow under `--json`, whose verdict lines the suite
+/// prints itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplayOutput {
+    Human,
+    Json,
+    Quiet,
+}
+
 #[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
 fn replay_with_retries(
     trace_path: &Path,
     header: &flowproof_trace::Header,
     retries: u8,
-    announce: bool,
+    output: ReplayOutput,
     secret_scan: &flowproof_replay::SecretScan,
     recording: flowproof_driver::RecordingOptions,
     exports: &std::collections::BTreeMap<String, String>,
@@ -1664,18 +1702,23 @@ fn replay_with_retries(
                 .stage_credentials(login.resolved().map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
         }
-        let (report, run_dir, resolved) = flowproof_replay::run_trace_with_exports(
+        let (report, run_dir, resolved) = flowproof_replay::run_trace_with_progress(
             trace_path,
             &mut driver,
             secret_scan,
             recording,
             exports,
+            |step| {
+                if output == ReplayOutput::Json {
+                    print_step_progress(step);
+                }
+            },
         )
         .map_err(|e| e.to_string())?;
         if report.passed || attempt > u32::from(retries) {
             return Ok((report, run_dir, attempt, resolved));
         }
-        if announce {
+        if output == ReplayOutput::Human {
             println!(
                 "  retry {attempt}/{retries}: '{}' failed, re-running",
                 report.name
@@ -2414,7 +2457,11 @@ fn run_suite_with_author(dir: &Path, options: RunOptions) -> Result<u8, String> 
                     &trace_path,
                     &header,
                     retries,
-                    !json,
+                    if json {
+                        ReplayOutput::Quiet
+                    } else {
+                        ReplayOutput::Human
+                    },
                     &secret_scan,
                     recording,
                     &gated_spec.exports,
@@ -2960,7 +3007,11 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
         &trace_path,
         &header,
         retries,
-        !json,
+        if json {
+            ReplayOutput::Json
+        } else {
+            ReplayOutput::Human
+        },
         &secret_scan,
         recording,
         &spec.exports,
@@ -3309,6 +3360,8 @@ fn cmd_heal(
     json: bool,
     author: AuthorArg,
 ) -> Result<u8, String> {
+    // Like record and doctor, heal must see credentials saved by config ai.
+    config::seed_env();
     let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if author == AuthorArg::Auto
@@ -3513,14 +3566,18 @@ where
                 provider,
                 api_key,
                 model,
+                workspace_id,
                 clear_api_key,
                 clear_model,
+                clear_workspace_id,
             } => config::cmd_ai(config::AiArgs {
                 provider,
                 api_key,
                 model,
+                workspace_id,
                 clear_api_key,
                 clear_model,
+                clear_workspace_id,
             }),
             ConfigAction::Show => config::cmd_show(),
             ConfigAction::Path => config::cmd_path(),

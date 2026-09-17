@@ -64,11 +64,14 @@ when it already holds a value the step does not contradict.
 - If the step's goal cannot be reached without data the screen requires first - a \
 submit button behind mandatory fields - include the actions that supply it, then the \
 action that reaches the goal.
+- Use set_checked with a listed checkbox target and boolean checked to mark a task done or undone; do not generate rule grammar for checkbox actions.
+- For checks use assert_visible (boolean present), assert_checked (boolean checked), assert_count (integer count, including zero for an empty collection), or assert_text. assert_text with negate:true checks text is absent and may target surface. Every other assertion target must come from the inventory. Preserve the expected outcome, even when the current page contradicts it. Never invent a missing element selector.
+- Examples (replace targets with listed tokens): {\"action\":\"set_checked\",\"target\":\"css:#task\",\"checked\":true}; {\"action\":\"assert_visible\",\"target\":\"css:#task\",\"present\":true}; {\"action\":\"assert_checked\",\"target\":\"css:#task\",\"checked\":true}; {\"action\":\"assert_count\",\"target\":\"css:ul.tasks > li\",\"count\":0}; {\"action\":\"assert_text\",\"target\":\"surface\",\"expected\":\"Prepare customer demo\",\"negate\":true}.
 - Respond with ONLY JSON, no prose, no code fences.
 - The JSON action is one of: \"click\", \"double_click\", \"click_at\", \"drag\", \"type_text\", \
 \"assert_text\", \"capture_text\", \"capture_count\", \"type_captured\", \
 \"select_option\", \"select_options\", \"scroll\", \"scroll_into_view\", \"press_key\", \"rule_step\", or \
-\"capture_ambiguity\".
+\"capture_ambiguity\", \"set_checked\", \"assert_visible\", \"assert_checked\", or \"assert_count\".
 - UI actions MUST include \"target\": \"<target token of a listed element>\". \
 Clicking and typing require an entry whose \"actionable\" field is true. \
 Readable-only entries may be captured or asserted, never acted on. \
@@ -161,6 +164,14 @@ struct AuthoredAction {
     expected: Option<String>,
     #[serde(default)]
     contains: Option<bool>,
+    #[serde(default)]
+    negate: bool,
+    #[serde(default)]
+    checked: Option<bool>,
+    #[serde(default)]
+    present: Option<bool>,
+    #[serde(default)]
+    count: Option<u64>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -745,6 +756,45 @@ fn ground_one(
         )));
     };
     match authored.action.as_str() {
+        "set_checked" => {
+            if !scene_token_is_actionable(scene, token) {
+                return Err("checkbox target is readable but not actionable".into());
+            }
+            Ok(vec![ResolvedAction::SetChecked {
+                target,
+                checked: authored
+                    .checked
+                    .ok_or("set_checked needs boolean checked")?,
+            }])
+        }
+        "assert_checked" => Ok(vec![ResolvedAction::AssertChecked {
+            target,
+            checked: authored
+                .checked
+                .ok_or("assert_checked needs boolean checked")?,
+            timeout_ms: crate::rules::timeout_ms_for_intent(intent),
+        }]),
+        "assert_visible" => Ok(vec![ResolvedAction::AssertPresence {
+            target,
+            present: authored
+                .present
+                .ok_or("assert_visible needs boolean present")?,
+            timeout_ms: crate::rules::timeout_ms_for_intent(intent),
+        }]),
+        "assert_count" => {
+            let entries: Vec<serde_json::Value> = serde_json::from_str(scene).unwrap_or_default();
+            if !entries
+                .iter()
+                .any(|e| e["target"] == token && e["tag"] == "collection")
+            {
+                return Err("assert_count requires a listed collection target; do not count an unrelated control as evidence of an empty list".into());
+            }
+            Ok(vec![ResolvedAction::AssertCount {
+                target,
+                count: authored.count.ok_or("assert_count needs integer count")?,
+                timeout_ms: crate::rules::timeout_ms_for_intent(intent),
+            }])
+        }
         "click" | "double_click" => {
             if !scene_token_is_actionable(scene, token) {
                 return Err("click target is readable but not actionable".into());
@@ -972,7 +1022,9 @@ fn ground_one(
                 .expected
                 .filter(|t| !t.is_empty())
                 .ok_or("assert_text needs a non-empty 'expected'")?;
-            let matcher = if authored.contains.unwrap_or(true) {
+            let matcher = if authored.negate {
+                crate::rules::TextMatch::NotContains
+            } else if authored.contains.unwrap_or(true) {
                 crate::rules::TextMatch::Contains
             } else {
                 crate::rules::TextMatch::Equals
@@ -1162,7 +1214,7 @@ pub fn author_steps<C: ModelClient>(
     client: &mut C,
     ctx: &AuthorContext<'_>,
 ) -> Result<Vec<ResolvedAction>, AgentError> {
-    author_steps_inner(client, ctx).map(|(actions, _)| actions)
+    author_steps_inner(client, ctx, false).map(|(actions, _)| actions)
 }
 
 /// Author one step, reporting whether the model says it has more to do once
@@ -1171,12 +1223,35 @@ pub fn author_steps_continuable<C: ModelClient>(
     client: &mut C,
     ctx: &AuthorContext<'_>,
 ) -> Result<(Vec<ResolvedAction>, bool), AgentError> {
-    author_steps_inner(client, ctx)
+    author_steps_inner(client, ctx, false)
+}
+
+/// Translate a natural-language check without permitting side effects.
+pub fn author_checks<C: ModelClient>(
+    client: &mut C,
+    ctx: &AuthorContext<'_>,
+) -> Result<(Vec<ResolvedAction>, bool), AgentError> {
+    author_steps_inner(client, ctx, true)
+}
+
+fn is_read_only_check(action: &ResolvedAction) -> bool {
+    matches!(
+        action,
+        ResolvedAction::AssertText { .. }
+            | ResolvedAction::AssertPresence { .. }
+            | ResolvedAction::AssertChecked { .. }
+            | ResolvedAction::AssertCount { .. }
+            | ResolvedAction::AssertEnabled { .. }
+            | ResolvedAction::AssertAttribute { .. }
+            | ResolvedAction::AssertStyle { .. }
+            | ResolvedAction::AssertCaptured { .. }
+    )
 }
 
 fn author_steps_inner<C: ModelClient>(
     client: &mut C,
     ctx: &AuthorContext<'_>,
+    checks_only: bool,
 ) -> Result<(Vec<ResolvedAction>, bool), AgentError> {
     let targets = scene_targets(ctx.scene);
     if let Some(name) = ctx.captures.iter().find(|name| !valid_capture_name(name)) {
@@ -1187,7 +1262,10 @@ fn author_steps_inner<C: ModelClient>(
             ),
         });
     }
-    let prompt = user_prompt(ctx);
+    let mut prompt = user_prompt(ctx);
+    if checks_only {
+        prompt.push_str("\nThis is a CHECK, not an action. Translate the user's expected outcome into read-only assertions. Never change the page to make it pass. Never replace the user's expected value with the current value. Return only assert_text, assert_visible, assert_checked, or assert_count. No step_continues.");
+    }
     // Survives the retry: a value the model stands by after being
     // challenged is grounded, not challenged again.
     let mut challenged: std::collections::BTreeSet<(String, String)> =
@@ -1222,6 +1300,15 @@ fn author_steps_inner<C: ModelClient>(
             ctx.captures,
             &mut challenged,
         ) {
+            Ok(actions)
+                if checks_only
+                    && (continues
+                        || actions.is_empty()
+                        || !actions.iter().all(is_read_only_check)) =>
+            {
+                last_error = "a check must contain only read-only assertions, without actions or continuation".into();
+                kept = None;
+            }
             Ok(actions) => return Ok((actions, continues)),
             Err(GroundingError::CaptureAmbiguity(ambiguity)) => {
                 return Err(AgentError::Authoring {
@@ -1297,6 +1384,75 @@ mod tests {
         fn identity(&self) -> (String, String) {
             ("scripted".into(), "test".into())
         }
+    }
+
+    #[test]
+    fn empty_list_check_cannot_count_an_unrelated_input() {
+        let reply = r##"{"action":"assert_count","target":"css:#name","count":1}"##;
+        let mut client = Scripted {
+            replies: vec![reply.into(), reply.into()],
+            calls: 0,
+        };
+        let error =
+            author_checks(&mut client, &ctx()).expect_err("input count is not a list check");
+        assert!(error.to_string().contains("collection target"));
+    }
+
+    #[test]
+    fn natural_check_rejects_mutation_and_retries_as_assertion() {
+        let mut client = Scripted {
+            replies: vec![
+                r##"{"action":"click","target":"css:#greet"}"##.into(),
+                r##"{"action":"assert_visible","target":"css:#greet","present":true}"##.into(),
+            ],
+            calls: 0,
+        };
+        let (actions, continues) = author_checks(&mut client, &ctx()).expect("check authored");
+        assert_eq!(client.calls, 2);
+        assert!(!continues);
+        assert!(matches!(
+            actions[0],
+            ResolvedAction::AssertPresence { present: true, .. }
+        ));
+    }
+
+    #[test]
+    fn natural_check_never_accepts_actions_or_continuations() {
+        for reply in [
+            r##"{"action":"set_checked","target":"css:#greet","checked":true}"##,
+            r##"[{"action":"assert_text","target":"surface","expected":"Done"},{"action":"step_continues"}]"##,
+            r##"{"action":"rule_step","step":"Click \"css:#greet\""}"##,
+        ] {
+            let mut client = Scripted {
+                replies: vec![reply.into(), reply.into()],
+                calls: 0,
+            };
+            assert!(
+                author_checks(&mut client, &ctx()).is_err(),
+                "must refuse {reply}"
+            );
+        }
+    }
+
+    #[test]
+    fn natural_checkbox_and_negative_check_use_structured_actions() {
+        let mut client = Scripted { replies: vec![
+            r##"{"action":"set_checked","target":"css:#greet","checked":true}"##.into(),
+            r##"{"action":"assert_text","target":"surface","expected":"Prepare customer demo","negate":true}"##.into(),
+        ], calls: 0 };
+        let actions = author_steps(&mut client, &ctx()).expect("checkbox authored");
+        assert!(matches!(
+            actions[0],
+            ResolvedAction::SetChecked { checked: true, .. }
+        ));
+        let (actions, _) = author_checks(&mut client, &ctx()).expect("absence check authored");
+        assert!(matches!(
+            actions[0],
+            ResolvedAction::AssertText {
+                matcher: crate::rules::TextMatch::NotContains,
+                ..
+            }
+        ));
     }
 
     const SCENE: &str = r##"[

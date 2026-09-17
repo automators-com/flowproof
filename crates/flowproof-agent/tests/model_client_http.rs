@@ -28,6 +28,7 @@ fn anthropic_client(base: &str) -> HttpModelClient {
         base_url: Some(base.to_string()),
         model: Some("claude-opus-5".into()),
         api_key: Some("test-key-do-not-use".into()),
+        workspace_id: None,
     })
 }
 
@@ -142,6 +143,7 @@ fn openai_reasoning_request_and_compatible_server_use_their_own_parameters() {
             base_url: Some(base),
             model: Some("gpt-5".into()),
             api_key: Some("test-key".into()),
+            workspace_id: None,
         });
         assert_eq!(
             client

@@ -1040,6 +1040,19 @@ fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
         .map_err(|e| AdapterError::Web(launch_failure_message(&e.to_string(), headed)))
 }
 
+/// Reuse Chromium's startup page in a privately owned browser. Never use
+/// this for shared contexts: each flow there must keep its isolated storage.
+fn private_flow_tab(browser: &Browser) -> anyhow::Result<Arc<Tab>> {
+    // This API is deprecated in favor of new_tab(), but waiting for and reusing
+    // the startup target is intentional: new_tab() leaves an extra visible tab.
+    #[allow(deprecated)]
+    let initial = browser.wait_for_initial_tab()?;
+    match initial.get_url().as_str() {
+        "about:blank" | "chrome://newtab/" | "chrome://new-tab-page/" => Ok(initial),
+        _ => browser.new_tab(),
+    }
+}
+
 /// A private per-launch downloads directory when the flow didn't pin one via
 /// `browser.downloads_dir`. Unique per launch (pid + a monotonic counter) so
 /// two flows sharing the same shared-browser process never race over the
@@ -1314,6 +1327,7 @@ pub struct WebAppDriver {
     /// Active request identities, maintained by CDP. Redirects reuse their
     /// request ID and must not leave a phantom in-flight request behind.
     network_inflight: Arc<NetworkActivity>,
+    observed_collections: Vec<serde_json::Value>,
 }
 
 /// Shared state between the driver and the flow-wide dialog listener.
@@ -1515,6 +1529,7 @@ impl WebAppDriver {
                 downloads_dir: None,
                 claimed_downloads: Default::default(),
                 network_inflight: Default::default(),
+                observed_collections: Vec::new(),
             });
         }
         let browser = shared_browser()?;
@@ -1535,6 +1550,7 @@ impl WebAppDriver {
             downloads_dir: None,
             claimed_downloads: Default::default(),
             network_inflight: Default::default(),
+            observed_collections: Vec::new(),
         })
     }
 
@@ -2091,6 +2107,23 @@ impl WebAppDriver {
         ))
     }
 
+    // These probes run before dispatching any input. A control without a
+    // box during a redraw is not ready; let the bounded actionability wait
+    // re-resolve it, without retrying a click or masking transport errors.
+    fn composed_readiness(&mut self, target: &UiaSelector) -> Result<Option<String>, DriverError> {
+        match flowproof_driver::composed_actionability_gate(self, target) {
+            Err(DriverError::Browser(message))
+                if message.contains("box model of [")
+                    && message.contains("Could not compute box model") =>
+            {
+                Ok(Some(
+                    "not rendered (target has no box during redraw)".into(),
+                ))
+            }
+            result => result,
+        }
+    }
+
     /// Run an element operation with the shared transport-fault retry
     /// policy (see [`retry_on_transport_fault`]): re-resolve the element
     /// (its object id may be gone with the dead connection) and try again
@@ -2125,6 +2158,55 @@ fn is_transport_fault(message: &str) -> bool {
     m.contains("connection is closed")
         || m.contains("the event waited for never came")
         || m.contains("unable to make method calls")
+}
+
+/// How long a single CDP call is allowed to wait for a response before this
+/// side gives up on it (issue #616). The vendored `headless_chrome` fork
+/// bounds that wait with `idle_browser_timeout` - but that same field also
+/// sets the reader thread's own shutdown-poll interval and a separate
+/// browser-level idle-connection timer (three different jobs, one shared
+/// knob), and flowproof sets it to 300s for those other purposes. Lowering
+/// it directly would risk shortening the other two as a side effect.
+/// Wrapping the call from this side instead - the same fix browser-use
+/// applied for the identical failure shape in `_cdp_timeout.py` - needs no
+/// change to the vendored fork at all. 30s is well above every attempt's
+/// normal total duration observed live (~35-50s for an entire multi-step
+/// flow, not one call) and far below the 300s a stuck call currently costs.
+const CDP_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Waits at most [`CDP_CALL_TIMEOUT`] for `f`, running it on its own thread
+/// since Rust has no way to cancel a blocking call already in flight (`f`
+/// itself is still bound by the vendored fork's much longer wait and keeps
+/// running to completion on that thread regardless - this only stops THIS
+/// caller from waiting on it). Confirmed live: about a third of attempts on
+/// one spec spent 3-10 minutes on a single stuck call instead of the normal
+/// ~35-50s for the whole flow; retrying immediately instead of waiting out
+/// that stall gives a fresh attempt a chance to land well within the same
+/// wall-clock budget a client would tolerate.
+///
+/// The timeout's own error text matches `is_transport_fault`, so a caller
+/// that already retries on transport faults (`frame_act`, `probe_frame`)
+/// treats a fast timeout exactly like the slow error it now stands in for -
+/// no separate handling needed at the call site.
+fn with_cdp_timeout<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    with_cdp_timeout_after(CDP_CALL_TIMEOUT, f)
+}
+
+/// The actual wait, with the deadline injectable so tests can prove the
+/// timeout fires (and what it produces) in milliseconds instead of at the
+/// real 30s production value.
+fn with_cdp_timeout_after<T: Send + 'static>(
+    deadline: Duration,
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(deadline)
+        .unwrap_or_else(|_| Err("the event waited for never came".to_string()))
 }
 
 /// Attempts allowed beyond the first for a transport-faulting operation.
@@ -2284,6 +2366,57 @@ mod transport_retry_tests {
                 Duration::from_millis(900),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod cdp_timeout_tests {
+    use super::with_cdp_timeout_after;
+    use std::time::Duration;
+
+    /// The common case: a call that returns well within the deadline is
+    /// unaffected by the wrapper.
+    #[test]
+    fn a_fast_call_returns_its_own_result() {
+        let result = with_cdp_timeout_after(Duration::from_millis(200), || Ok::<_, String>(42));
+        assert_eq!(result, Ok(42));
+    }
+
+    /// issue #616: a call still stuck past the deadline must not block the
+    /// caller - the timeout fires and hands back control, even though the
+    /// spawned thread (standing in for the real CDP wait) is still running.
+    #[test]
+    fn a_call_still_stuck_past_the_deadline_times_out_instead_of_blocking() {
+        let result = with_cdp_timeout_after(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(5));
+            Ok::<_, String>(())
+        });
+        assert_eq!(result, Err("the event waited for never came".to_string()));
+    }
+
+    /// The timeout's own error text must match `is_transport_fault`, so a
+    /// caller that already retries on transport faults treats a fast
+    /// timeout exactly like the slow error it now stands in for, with no
+    /// separate handling needed at the call site.
+    #[test]
+    fn the_timeout_error_is_itself_a_recognized_transport_fault() {
+        let result: Result<(), String> = with_cdp_timeout_after(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(5));
+            Ok(())
+        });
+        match result {
+            Err(e) => assert!(super::is_transport_fault(&e)),
+            Ok(()) => panic!("expected a timeout error"),
+        }
+    }
+
+    /// A genuine error from `f` (not a timeout) passes through unchanged -
+    /// the wrapper must not turn every real failure into "timed out".
+    #[test]
+    fn a_real_error_from_f_is_not_reported_as_a_timeout() {
+        let result: Result<(), String> =
+            with_cdp_timeout_after(Duration::from_millis(200), || Err("no_element".to_string()));
+        assert_eq!(result, Err("no_element".to_string()));
     }
 }
 
@@ -2567,11 +2700,14 @@ impl WebAppDriver {
         // uses for every field inside an iframe) killed the whole flow. A
         // single retry was also not enough on its own (issue #608) - this
         // is the call site that failed twice in a row live.
+        let tab = self.tab().map(Arc::clone).map_err(|e| e.to_string());
         let status = retry_on_transport_fault(|| {
-            self.tab()
-                .map_err(|e| e.to_string())?
-                .evaluate(&call, false)
-                .map_err(|e| e.to_string())
+            let tab = tab.clone()?;
+            let call = call.clone();
+            // issue #616: this call can stall for minutes on a dead
+            // connection before the vendored transport's own much larger
+            // timeout gives up - bound the wait from this side instead.
+            with_cdp_timeout(move || tab.evaluate(&call, false).map_err(|e| e.to_string()))
         })
         .map_err(|e| web_err("acting inside an iframe", e))?
         .value
@@ -2880,6 +3016,7 @@ impl AppDriver for WebAppDriver {
         _window_name: &str,
         _timeout: Duration,
     ) -> Result<(), DriverError> {
+        self.observed_collections.clear();
         let staged_browser = self.staged_browser.take();
         // Extra Chrome flags only apply at process start: swap in a
         // PRIVATE browser for this flow (a plain tab on it is already
@@ -2908,7 +3045,7 @@ impl AppDriver for WebAppDriver {
                 for_tab: None,
                 hidden: None,
             }),
-            None => self.browser.new_tab(),
+            None => private_flow_tab(&self.browser),
         }
         .map_err(|e| web_err("opening tab", e))?;
         // A visible flow is the only Chrome window the user should have to
@@ -3459,7 +3596,7 @@ impl AppDriver for WebAppDriver {
             })
             .flatten();
         let Some(resolver) = resolver else {
-            return flowproof_driver::composed_actionability_gate(self, target);
+            return self.composed_readiness(target);
         };
         let gate_js = format!(
             "(async el => {{
@@ -3495,7 +3632,7 @@ impl AppDriver for WebAppDriver {
             .map_err(|e| web_err(&format!("actionability of [{target}]"), e))?;
         let verdict = value.value.and_then(|v| v.as_str().map(str::to_string));
         Ok(match verdict.as_deref() {
-            Some("sap_grid") => return flowproof_driver::composed_actionability_gate(self, target),
+            Some("sap_grid") => return self.composed_readiness(target),
             Some("ok") => None,
             Some("disabled") => Some("disabled".into()),
             Some("unstable") => Some("unstable (still moving/animating)".into()),
@@ -3547,6 +3684,36 @@ impl AppDriver for WebAppDriver {
 
     fn element_visible(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
         let locator = Self::locator(selector)?;
+        // A dialog can disappear between element_exists and this probe.
+        // Resolve and read in one page operation: absence is a visibility
+        // answer, while browser/transport failures must still propagate.
+        if selector.frame.is_none() {
+            if let Some(resolver) = Self::js_resolver(&locator) {
+                let expression = format!(
+                    "((element) => {{
+                        if (!element) return false;
+                        if (typeof element.checkVisibility === 'function' &&
+                            !element.checkVisibility({{
+                                contentVisibilityAuto: true,
+                                opacityProperty: true,
+                                visibilityProperty: true
+                            }})) return false;
+                        return element.getClientRects().length > 0;
+                    }})({resolver})"
+                );
+                let value = self
+                    .tab()?
+                    .evaluate(&expression, false)
+                    .map_err(|e| web_err(&format!("reading visibility of [{selector}]"), e))?;
+                return value
+                    .value
+                    .and_then(|v| v.as_bool())
+                    .map(Some)
+                    .ok_or_else(|| {
+                        DriverError::Browser("visibility probe did not return a boolean".into())
+                    });
+            }
+        }
         let value = self.with_element(
             &locator,
             &format!("reading visibility of [{selector}]"),
@@ -4265,11 +4432,13 @@ impl AppDriver for WebAppDriver {
         // the tab directly, with no element to re-resolve, so it never went
         // through that retry at all - any transient CDP hiccup here killed
         // the whole flow on the first blip, with zero chance to recover.
+        let tab = self.tab().map(Arc::clone).map_err(|e| e.to_string());
         let status = retry_on_transport_fault(|| {
-            self.tab()
-                .map_err(|e| e.to_string())?
-                .evaluate(&call, false)
-                .map_err(|e| e.to_string())
+            let tab = tab.clone()?;
+            let call = call.clone();
+            // issue #616: bound this call's wait from the caller's side
+            // instead of the vendored transport's much larger one.
+            with_cdp_timeout(move || tab.evaluate(&call, false).map_err(|e| e.to_string()))
         })
         .map_err(|e| web_err("probing an iframe", e))?
         .value
@@ -5077,6 +5246,14 @@ impl AppDriver for WebAppDriver {
               const ordered = all.filter(priorityField).concat(all.filter(interactive),
                 all.filter(el => !interactive(el) && readableLeaf(el))
               );
+              const hitTestableTick = el => {
+                if (!el.matches('input[type=checkbox], input[type=radio]')) return false;
+                const r = el.getBoundingClientRect();
+                // Transparent native controls often overlay a drawn checkbox.
+                // Include only controls that really receive the pointer here.
+                return r.width > 1 && r.height > 1 &&
+                  document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el;
+              };
               const seen = new Set();
               const chosen = ordered.filter(el => {
                 const r = el.getBoundingClientRect();
@@ -5086,7 +5263,7 @@ impl AppDriver for WebAppDriver {
                 // even when the field starts below the fold, and every web
                 // action already scrolls its target into view before acting.
                 const rendered = style.display !== 'none' && style.visibility !== 'hidden' &&
-                  Number(style.opacity) > 0 && r.width > 0 && r.height > 0;
+                  (Number(style.opacity) > 0 || hitTestableTick(el)) && r.width > 0 && r.height > 0;
                 if (!rendered || seen.has(el)) return false;
                 seen.add(el);
                 return true;
@@ -5161,6 +5338,22 @@ impl AppDriver for WebAppDriver {
               // final cell without naming one current row. Represent those
               // collection identities directly so the model can ground the
               // intent without inventing a selector from today's DOM.
+              // Keep empty list identities available for assertions. A model
+              // must not invent a selector just because the last item vanished.
+              for (const list of document.querySelectorAll('ul, ol, [role="list"]')) {
+                const listCss = semanticCss(list);
+                if (!listCss) continue;
+                const itemCss = listCss + ' > :is(li, [role="listitem"])';
+                entries.push({
+                  target: 'css:' + itemCss,
+                  css: itemCss,
+                  tag: 'collection',
+                  actionable: false,
+                  count: list.querySelectorAll(':scope > :is(li, [role="listitem"])').length,
+                  label: 'items in ' + (list.getAttribute('aria-label') || listCss),
+                });
+              }
+
               for (const table of document.querySelectorAll('table')) {
                 const tableCss = semanticCss(table);
                 if (!tableCss) continue;
@@ -5273,13 +5466,50 @@ impl AppDriver for WebAppDriver {
                 entries: parsed["entries"].as_array().cloned().unwrap_or_default(),
             })
         };
-        let entries = settled_scene(
+        let mut entries = settled_scene(
             sample,
             || std::thread::sleep(SCENE_SETTLE_INTERVAL),
             || self.network_idle(),
             SCENE_SETTLE_ROUNDS,
             SCENE_SETTLE_BUSY_ROUNDS,
         )?;
+        for entry in entries.iter().filter(|e| e["tag"] == "collection") {
+            if !self
+                .observed_collections
+                .iter()
+                .any(|old| old["target"] == entry["target"])
+                && self.observed_collections.len() < 50
+            {
+                self.observed_collections.push(entry.clone());
+            }
+        }
+        // Some apps remove the whole list when its last item is deleted.
+        // Retain only collection identities seen in this browser session,
+        // and re-count the DOM now; never infer absence from missing inventory.
+        let missing: Vec<_> = self
+            .observed_collections
+            .iter()
+            .filter(|old| !entries.iter().any(|e| e["target"] == old["target"]))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            let input =
+                serde_json::to_string(&missing).map_err(|e| DriverError::Browser(e.to_string()))?;
+            let script = format!("JSON.stringify(({input}).map(e => ({{...e, count: document.querySelectorAll(e.css).length, observed_before: true}})))");
+            let value = self
+                .tab()?
+                .evaluate(&script, false)
+                .map_err(|e| web_err("counting previously observed lists", e))?;
+            let previous: Vec<serde_json::Value> = serde_json::from_str(
+                value
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| DriverError::Browser("collection counts missing".into()))?,
+            )
+            .map_err(|e| DriverError::Browser(format!("collection counts: {e}")))?;
+            entries.extend(previous);
+        }
         let json = serde_json::to_string(&entries)
             .map_err(|e| DriverError::Browser(format!("re-serialising scene: {e}")))?;
         Ok(Some(json))
@@ -5864,5 +6094,44 @@ mod tests {
         let mut got = super::unclaimed_downloads(&current, &claimed);
         got.sort();
         assert_eq!(got, vec![&a, &b]);
+    }
+}
+
+#[cfg(test)]
+mod startup_tab_tests {
+    #[test]
+    fn private_browser_reuses_startup_tab_without_replacing_a_loaded_page() {
+        if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+            eprintln!("set FLOWPROOF_E2E=1 to run the real browser check");
+            return;
+        }
+        let browser = super::Browser::new(
+            super::launch_options_for(&[], true).expect("valid launch options"),
+        )
+        .expect("browser starts");
+        let first = super::private_flow_tab(&browser).expect("flow tab opens");
+        assert_eq!(
+            browser
+                .get_tabs()
+                .lock()
+                .expect("tab registry is available")
+                .len(),
+            1
+        );
+        first
+            .navigate_to("data:text/html,<title>Demo</title>Ready")
+            .expect("demo page loads");
+        first.wait_until_navigated().expect("demo page loads");
+        let second = super::private_flow_tab(&browser).expect("flow tab opens");
+        assert_ne!(first.get_target_id(), second.get_target_id());
+        assert!(first.get_url().starts_with("data:text/html,"));
+        assert_eq!(
+            browser
+                .get_tabs()
+                .lock()
+                .expect("tab registry is available")
+                .len(),
+            2
+        );
     }
 }

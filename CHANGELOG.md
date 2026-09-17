@@ -6,6 +6,41 @@ together).
 
 ## Unreleased
 
+- **Human-written checks reach the authoring agent.** Unsupported `assert:` prose
+  can now become grounded, read-only assertions during recording instead of
+  failing at the grammar parser. Checkbox actions have a structured model tool,
+  avoiding fragile rule-string generation. Replay still uses deterministic checks.
+
+- **Visible browser runs no longer start with an unused extra tab.** Private
+  browsers reuse Chrome's blank startup page for the flow. Loaded pages are
+  preserved, and shared-browser flows keep their isolated contexts.
+
+- **A stuck CDP connection now fails in seconds, not minutes.** `frame_act`
+  and `probe_frame` waited on the vendored transport's own `idle_browser_timeout`
+  (300s) for a single call's response - a value shared with two unrelated
+  purposes elsewhere in that fork, so raising or lowering it isn't safe to do
+  directly. Confirmed live: about a third of attempts on one spec spent 3-10
+  minutes on a single stuck call instead of the usual ~35-50s for the whole
+  flow. Both calls now bound their own wait to 30s from the caller's side
+  (the same fix browser-use applied for the identical failure shape), so a
+  dead connection is retried immediately instead of waited out.
+
+- **The AI doctor tests no longer borrow the developer's saved credentials.**
+  Clearing shell variables still let `config.yaml` supply a real key, turning a
+  missing-key check into a paid model call. The tests now use an empty, temporary
+  config home and restore the inherited environment when each check finishes.
+
+- **Repair uses the model credentials already saved for recording.** A desktop
+  recording could succeed while `heal` claimed no model was configured, because
+  only recording loaded the saved config. Healing now loads those same settings,
+  including the Anthropic workspace, while explicit environment values still win.
+
+## 0.23.6
+
+- **SAP redraws no longer fail readiness checks when a dialog disappears or a control temporarily loses its box.** Visibility is read atomically for CSS/text targets, and scoped pre-click checks wait for a renderable control without retrying the click.
+- **SAP value-help inputs keep their entered value.** Popup search fields no longer receive the ordinary screen-field blur/commit sequence.
+- **Framed typing uses the shared CDP transport recovery policy.**
+
 - **A killed `flowproof` process no longer leaves its shared browser
   running.** `SharedBrowserGuard`'s cleanup is a `Drop`, which only runs on a
   normal unwind — a `SIGTERM` (a CI job's timeout, a stuck-process cleanup
@@ -39,6 +74,20 @@ together).
   before values have been entered.
 
 ## 0.23.3
+
+- **An organization-level Anthropic key works once it names its workspace.**
+  Anthropic rejects such a key with a 400 unless the request carries an
+  `anthropic-workspace-id` header, and the only advice was "make a different
+  key". `flowproof config ai --workspace-id` (or `FLOWPROOF_AI_WORKSPACE_ID`)
+  stores the id once and every model call sends it; a workspace-scoped key
+  is unaffected.
+
+- **A `--json` replay reports each step as it finishes.** The report is only
+  complete at the end, so a long SAP replay used to be silent for a minute
+  and then dump everything at once — fine for CI, useless for a person or a
+  desktop app watching it. Every finished step now prints one line to
+  stderr, in the shape of the verdict lines, while stdout stays the pure
+  JSON report it always was.
 
 - **Browser key presses accept Space and Spacebar.** Both names now produce
   the real space key event, so AI-authored keyboard activation reaches the app.

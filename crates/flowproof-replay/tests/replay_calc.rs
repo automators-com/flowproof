@@ -2399,3 +2399,61 @@ fn a_multi_surface_flow_heals_with_surface_attribution() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A replay is silent until it finishes unless the caller asks to hear each
+/// step as it lands. The progress callback must see every step, in order,
+/// with the same verdict the report will hold — including the steps a
+/// failure skips — so a UI can show a live list that matches the report.
+#[test]
+fn progress_callback_sees_every_step_in_order_including_skipped() {
+    let dir = std::env::temp_dir().join("flowproof-replay-progress");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_calc_trace(&dir);
+
+    // Passing run: five callbacks, all passed, ids in trace order.
+    let mut driver =
+        MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+    let mut seen: Vec<(String, StepStatus)> = Vec::new();
+    let (report, _, _) = flowproof_replay::run_trace_with_progress(
+        &trace,
+        &mut driver,
+        &flowproof_replay::SecretScan::disabled(),
+        RecordingOptions::default(),
+        &Default::default(),
+        |step| seen.push((step.id.clone(), step.status)),
+    )
+    .expect("replay runs");
+    assert!(report.passed, "report: {report:?}");
+    assert_eq!(
+        seen,
+        report
+            .steps
+            .iter()
+            .map(|s| (s.id.clone(), s.status))
+            .collect::<Vec<_>>(),
+        "callback order and verdicts match the report"
+    );
+    assert!(seen.iter().all(|(_, st)| *st == StepStatus::Passed));
+
+    // Failing run: the display is wrong, so the final assert fails; the
+    // callback still fires for it, and for nothing after it that was skipped
+    // it fires with Skipped rather than going quiet.
+    let mut driver =
+        MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 9");
+    let mut seen: Vec<StepStatus> = Vec::new();
+    let (report, _, _) = flowproof_replay::run_trace_with_progress(
+        &trace,
+        &mut driver,
+        &flowproof_replay::SecretScan::disabled(),
+        RecordingOptions::default(),
+        &Default::default(),
+        |step| seen.push(step.status),
+    )
+    .expect("replay runs");
+    assert!(!report.passed);
+    assert_eq!(seen.len(), report.steps.len());
+    assert_eq!(seen.last(), Some(&StepStatus::Failed));
+
+    std::fs::remove_dir_all(&dir).ok();
+}

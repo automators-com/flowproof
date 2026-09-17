@@ -67,7 +67,9 @@ const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 ///
 /// Env names mirror the conventions used across Automators products:
 /// `FLOWPROOF_AI_PROVIDER` (`anthropic` | `openai`),
-/// `FLOWPROOF_AI_BASE_URL`, `FLOWPROOF_AI_API_KEY`, `FLOWPROOF_AI_MODEL`.
+/// `FLOWPROOF_AI_BASE_URL`, `FLOWPROOF_AI_API_KEY`, `FLOWPROOF_AI_MODEL`,
+/// and `FLOWPROOF_AI_WORKSPACE_ID` (Anthropic only: an organization-level key
+/// must name the workspace it bills to, sent as `anthropic-workspace-id`).
 /// The API key falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. The old
 /// `openai-compatible` provider spelling remains accepted for custom endpoints
 /// that set `FLOWPROOF_AI_BASE_URL`.
@@ -77,6 +79,7 @@ pub struct BackendConfig {
     pub base_url: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
+    pub workspace_id: Option<String>,
 }
 
 impl BackendConfig {
@@ -85,6 +88,9 @@ impl BackendConfig {
         Self::from_provider_name(&provider, env::var("FLOWPROOF_AI_BASE_URL").ok()).map(
             |mut config| {
                 config.model = env::var("FLOWPROOF_AI_MODEL").ok();
+                config.workspace_id = env::var("FLOWPROOF_AI_WORKSPACE_ID")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty());
                 config.api_key =
                     env::var("FLOWPROOF_AI_API_KEY")
                         .ok()
@@ -116,12 +122,14 @@ impl BackendConfig {
                 base_url,
                 model: None,
                 api_key: None,
+                workspace_id: None,
             }),
             "openai" => Ok(Self {
                 kind: BackendKind::OpenAi,
                 base_url: base_url.or_else(|| Some(DEFAULT_OPENAI_BASE_URL.to_string())),
                 model: None,
                 api_key: None,
+                workspace_id: None,
             }),
             "openai-compatible" => {
                 let Some(base_url) = base_url else {
@@ -134,6 +142,7 @@ impl BackendConfig {
                     base_url: Some(base_url),
                     model: None,
                     api_key: None,
+                    workspace_id: None,
                 })
             }
             other => Err(AgentError::Config(format!(

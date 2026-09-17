@@ -309,6 +309,7 @@ fn ai_config_fills_neutral_and_anthropic_alias_gaps_only() {
                 provider: Some(flowproof_cli::config::AiProvider::Anthropic),
                 api_key: Some("sk-ant-config".into()),
                 model: Some("FROM_CONFIG".into()),
+                workspace_id: None,
             }),
         };
         flowproof_cli::config::save(&config).expect("fixture config writes");
@@ -370,6 +371,7 @@ fn ai_config_fills_openai_alias_when_openai_provider_is_set() {
                 provider: Some(flowproof_cli::config::AiProvider::Openai),
                 api_key: Some("sk-openai-config".into()),
                 model: None,
+                workspace_id: None,
             }),
         };
         flowproof_cli::config::save(&config).expect("fixture config writes");
@@ -410,4 +412,58 @@ steps:
     std::env::remove_var("FLOWPROOF_AI_BASE_URL");
     std::fs::remove_dir_all(&home).ok();
     std::fs::remove_dir_all(&spec_dir).ok();
+}
+
+#[test]
+fn heal_seeds_saved_ai_config_without_overriding_shell_values() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_dir("heal-ai-home");
+    let spec_dir = temp_dir("heal-ai-spec");
+    let vars = [
+        "FLOWPROOF_AI_PROVIDER",
+        "FLOWPROOF_AI_API_KEY",
+        "FLOWPROOF_AI_WORKSPACE_ID",
+        "FLOWPROOF_AI_MODEL",
+        "ANTHROPIC_API_KEY",
+    ];
+    let previous: Vec<_> = vars.iter().map(std::env::var_os).collect();
+    for var in vars {
+        std::env::remove_var(var);
+    }
+    std::env::set_var("FLOWPROOF_AI_MODEL", "shell-model");
+    with_fake_home(&home, || {
+        flowproof_cli::config::save(&flowproof_cli::config::Config {
+            ai: Some(flowproof_cli::config::AiProfile {
+                provider: Some(flowproof_cli::config::AiProvider::Anthropic),
+                api_key: Some("test-config-key".into()),
+                workspace_id: Some("test-config-workspace".into()),
+                model: Some("config-model".into()),
+            }),
+            ..Default::default()
+        })
+        .expect("fixture config writes");
+        let spec = spec_dir.join("x.flow.yaml");
+        std::fs::write(&spec, "name: x\napp: api\nsteps:\n  - Type 1\n").expect("spec");
+        // A missing trace stops heal before recording or any model call,
+        // but only after it has selected the configured authoring backend.
+        assert_eq!(flowproof_cli::run_cli(["heal", &spec.to_string_lossy()]), 2);
+    });
+    let actual: Vec<_> = vars.iter().map(std::env::var).collect();
+    for (var, value) in vars.into_iter().zip(previous) {
+        match value {
+            Some(value) => std::env::set_var(var, value),
+            None => std::env::remove_var(var),
+        }
+    }
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&spec_dir).ok();
+    for (actual, expected) in actual.iter().zip([
+        "anthropic",
+        "test-config-key",
+        "test-config-workspace",
+        "shell-model",
+        "test-config-key",
+    ]) {
+        assert_eq!(actual.as_deref(), Ok(expected));
+    }
 }
