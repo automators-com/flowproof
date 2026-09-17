@@ -6040,16 +6040,33 @@ mod startup_tab_tests {
             eprintln!("set FLOWPROOF_E2E=1 to run the real browser check");
             return;
         }
-        let browser = super::Browser::new(super::launch_options_for(&[], true).unwrap()).unwrap();
-        let first = super::private_flow_tab(&browser).unwrap();
-        assert_eq!(browser.get_tabs().lock().unwrap().len(), 1);
+        let browser = super::Browser::new(
+            super::launch_options_for(&[], true).expect("valid launch options"),
+        )
+        .expect("browser starts");
+        let first = super::private_flow_tab(&browser).expect("flow tab opens");
+        assert_eq!(
+            browser
+                .get_tabs()
+                .lock()
+                .expect("tab registry is available")
+                .len(),
+            1
+        );
         first
             .navigate_to("data:text/html,<title>Demo</title>Ready")
-            .unwrap();
-        first.wait_until_navigated().unwrap();
-        let second = super::private_flow_tab(&browser).unwrap();
+            .expect("demo page loads");
+        first.wait_until_navigated().expect("demo page loads");
+        let second = super::private_flow_tab(&browser).expect("flow tab opens");
         assert_ne!(first.get_target_id(), second.get_target_id());
         assert!(first.get_url().starts_with("data:text/html,"));
-        assert_eq!(browser.get_tabs().lock().unwrap().len(), 2);
+        assert_eq!(
+            browser
+                .get_tabs()
+                .lock()
+                .expect("tab registry is available")
+                .len(),
+            2
+        );
     }
 }
