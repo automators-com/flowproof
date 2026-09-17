@@ -965,6 +965,16 @@ fn check_assertion<D: AppDriver>(
             expect,
             selector_ref,
         } => {
+            // A text assertion immediately after navigation can otherwise
+            // spend its whole recorded poll budget reading a real but
+            // transitional shell state. Web's `scene` is network-aware and
+            // returns only after the current page has settled; drivers that
+            // cannot provide a scene keep their previous behavior. This is
+            // best-effort because losing diagnostics/authoring inventory
+            // must not turn a readable assertion into a driver failure.
+            if text_expectation(expect).is_some() || title_expectation(expect).is_some() {
+                let _ = driver.scene();
+            }
             let primary = selector_ref.unwrap_or(0);
             // Prefer the recorded rung, then fall through the rest of the
             // ladder — same degradation semantics as action targets. The

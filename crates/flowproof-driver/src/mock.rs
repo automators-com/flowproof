@@ -36,6 +36,9 @@ pub struct MockAppDriver {
     pub fail_element_rect: bool,
     /// Scene JSON returned by `scene` (None = authoring unavailable).
     pub scene: Option<String>,
+    /// Number of settled-scene reads requested. Replay uses this to prove
+    /// navigation has settled before judging text on asynchronous web apps.
+    pub scene_reads: usize,
     /// Scripted scenes: each `scene` call pops the next entry, falling back
     /// to `scene` when drained — the same shape as `text_sequence`, for the
     /// same reason. A recorder that reads the screen again after acting is
@@ -548,6 +551,7 @@ impl AppDriver for MockAppDriver {
     }
 
     fn scene(&mut self) -> Result<Option<String>, DriverError> {
+        self.scene_reads += 1;
         if let Some(next) = self.scene_sequence.pop_front() {
             return Ok(Some(next));
         }
