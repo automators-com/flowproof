@@ -5,17 +5,15 @@
 # reference record with no undo. Navigate + search + read only, plus an
 # out-of-band OData cross-check at the end, same as the source flow.
 #
-# Uses ${SAP_USER}/${SAP_PASSWORD} (confirmed present in .env) rather than
-# the source flow's ${FIORI_USER}/${FIORI_PASSWORD}, and the "Home" wait
-# text confirmed live by login-smoke.flow.yaml rather than the source
-# flow's unconfirmed "My Apps" - both are the corpus's own convention, not
-# a claim the source flow is wrong.
+# Uses the Fiori credential namespace shared by the source flow. The "Home"
+# wait text was confirmed live by login-smoke.flow.yaml rather than the source
+# flow's unconfirmed "My Apps".
 name: Change Purchasing Info Record - read only
 app: web
-url: ${FIORI_BASE_URL}?sap-client=${SAP_CLIENT}&sap-language=${SAP_LANGUAGE}#Shell-home
+url: ${FIORI_BASE_URL}?sap-client=${FIORI_CLIENT}&sap-language=${FIORI_LANGUAGE}#Shell-home
 steps:
-  - Type ${SAP_USER} into the "User" field
-  - Type ${SAP_PASSWORD} into the "Password" field
+  - Type ${FIORI_USER} into the "User" field
+  - Type ${FIORI_PASSWORD} into the "Password" field
   - Press the "Log On" button
   - Wait until page shows Home within 90s
   - assert: page shows Change Purchasing Info Record
