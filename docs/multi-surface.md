@@ -7,14 +7,14 @@ description: "How multi-surface flows record and replay across apps and surfaces
 | --- | --- | --- |
 | Suite `exports:` | Shipped | Pass a captured value from one single-surface flow to the next |
 | `apps:` with `in:` blocks | Shipped | Move between named UI surfaces inside one flow |
-| Per-surface SAP `login:` | Validated but refused at runtime | Reserve the configuration shape without silently using the wrong session |
+| Per-surface SAP `login:` | Supported | Give each SAP surface its own login identity |
 | Agent segments inside a multi-surface flow | Design only | A future agent-to-UI handoff inside one trace |
 
 Multi-surface flows support per-surface `browser:` and `window:`
 configuration; surface-qualified screenshot baselines; captures across
 blocks; healing; and deterministic replay with zero LLM calls. Per-surface
-SAP `login:` parses and validates, but recording and healing refuse it until
-credential staging is implemented.
+SAP `login:` stages each identity before activation during recording, healing,
+and replay. Passwords are resolved from the flow spec, never stored in the trace.
 
 ## The problem
 
@@ -88,21 +88,14 @@ apps:
   approver: { app: sap, connection: TS3, login: { user: approver, password: ${APPROVER_PW} } }
 ```
 
-That parses and validates today. It does not RUN today: nothing stages a
-surface's credentials yet, so `record` and `heal` refuse a surface that names
-a `login:`: launching anyway would drive whatever SAP session was already
-open, as whoever opened it, which is the exact confusion `login:` exists to
-prevent. Until it lands, the same case is a suite of single-surface flows with
-one `login:` each, chained with `exports:` (Phase 1, which is shipped).
+Record and heal stage each surface's credentials before its first activation.
+Replay resolves the credentials again from the flow spec. Only the raw user
+reference is recorded in the trace; passwords are never stored there. Removing
+or changing a surface's login reference requires a new recording.
 
-`flowproof config sap`/`fiori` (`plans/001-credential-config.md`) is a
-different layer and does not close this gap: it seeds *process* env vars as
-a personal-machine default, one value per variable, so it cannot hold the
-`clerk`/`approver` case's two simultaneous `SAP_USER`s any more than a plain
-shell export could. What staging a surface's `login:` needs is a way to hand
-each surface its own credential pair independent of the process environment,
-worth designing alongside whichever of the two lands second, so the second
-one's interface doesn't get built twice.
+`flowproof config sap` remains the machine-wide fallback for surfaces without
+an explicit `login:`. A surface-specific login takes precedence, so clerk and
+approver can use different identities in the same flow.
 
 Design decisions, each with its reason:
 

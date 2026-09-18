@@ -212,3 +212,117 @@ fn two_flows_in_one_process_run_as_two_different_users() {
         "each flow logged in as its own user"
     );
 }
+
+#[test]
+fn multi_surface_record_and_replay_use_distinct_logins_and_resume_them() {
+    use flowproof_adapters::sap_com::SapEngine;
+    use flowproof_driver::surface::{SurfaceFactory, SurfaceRegistry};
+    use flowproof_driver::{DriverError, LoginCredentials};
+    use std::{cell::RefCell, rc::Rc, time::Duration};
+    struct ObservedEngine {
+        inner: FakeEngine,
+        log: Rc<RefCell<Vec<(String, String)>>>,
+    }
+    impl SapEngine for ObservedEngine {
+        fn connect(
+            &mut self,
+            connection: &str,
+            credentials: Option<&LoginCredentials>,
+            timeout: Duration,
+        ) -> Result<(), DriverError> {
+            assert!(
+                credentials.is_some(),
+                "each surface must stage its own credentials"
+            );
+            self.inner.connect(connection, credentials, timeout)?;
+            self.log.borrow_mut().push((
+                connection.into(),
+                self.inner
+                    .logged_in_as
+                    .clone()
+                    .expect("valid login test fixture"),
+            ));
+            Ok(())
+        }
+        fn find_by_id(&mut self, id: &str) -> Result<Option<SapElement>, DriverError> {
+            self.inner.find_by_id(id)
+        }
+        fn walk(&mut self) -> Result<Vec<SapElement>, DriverError> {
+            self.inner.walk()
+        }
+        fn set_text(&mut self, id: &str, text: &str) -> Result<(), DriverError> {
+            self.inner.set_text(id, text)
+        }
+        fn press(&mut self, id: &str) -> Result<(), DriverError> {
+            self.inner.press(id)
+        }
+        fn select(&mut self, id: &str) -> Result<(), DriverError> {
+            self.inner.select(id)
+        }
+        fn set_selected(&mut self, id: &str, selected: bool) -> Result<(), DriverError> {
+            self.inner.set_selected(id, selected)
+        }
+        fn set_focus(&mut self, id: &str) -> Result<(), DriverError> {
+            self.inner.set_focus(id)
+        }
+        fn send_vkey(&mut self, vkey: u16) -> Result<(), DriverError> {
+            self.inner.send_vkey(vkey)
+        }
+        fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
+            self.inner.screen_size()
+        }
+    }
+    let spec = FlowSpec::parse("name: Two users\napps:\n  clerk: {app: sap, connection: QA, login: {user: clerk, password: clerk-secret}}\n  approver: {app: sap, connection: Review, login: {user: approver, password: approver-secret}}\nsteps:\n  - in: clerk\n    steps: [Go to /nVA01]\n  - in: approver\n    steps: [Go to /nVA01]\n  - in: clerk\n    steps: [Go to /nVA01]\n").expect("valid login test fixture");
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let registry = |log: Rc<RefCell<Vec<(String, String)>>>| {
+        let factory: SurfaceFactory = Box::new(move |_| {
+            Ok(Box::new(SapAppDriver::with_engine(ObservedEngine {
+                inner: engine(),
+                log: log.clone(),
+            })))
+        });
+        SurfaceRegistry::new(
+            flowproof_agent::surface_targets(&spec).expect("valid login test fixture"),
+            factory,
+            Duration::from_secs(1),
+        )
+    };
+    let dir = std::env::temp_dir().join(format!("flowproof-multi-login-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("valid login test fixture");
+    let trace = dir.join("users.trace.jsonl");
+    let mut driver: Box<dyn AppDriver> = Box::new(registry(log.clone()));
+    flowproof_agent::record(&spec, &mut driver, &trace).expect("valid login test fixture");
+    assert!(log
+        .borrow()
+        .iter()
+        .all(|(connection, user)| (connection == "QA" && user == "clerk")
+            || (connection == "Review" && user == "approver")));
+    assert!(log.borrow().iter().any(|(_, user)| user == "approver"));
+    let saved = std::fs::read_to_string(&trace).expect("valid login test fixture");
+    assert!(!saved.contains("clerk-secret") && !saved.contains("approver-secret"));
+    log.borrow_mut().clear();
+    let mut replay: Box<dyn AppDriver> = Box::new(registry(log.clone()));
+    for (name, surface) in &spec.apps {
+        replay
+            .stage_surface_credentials(
+                name,
+                surface
+                    .login
+                    .as_ref()
+                    .expect("valid login test fixture")
+                    .resolved()
+                    .expect("valid login test fixture"),
+            )
+            .expect("valid login test fixture");
+    }
+    let (report, _) =
+        flowproof_replay::run_trace(&trace, &mut replay).expect("valid login test fixture");
+    assert!(report.passed);
+    assert!(log.borrow().iter().any(|(_, user)| user == "approver"));
+    assert!(log
+        .borrow()
+        .iter()
+        .all(|(connection, user)| (connection == "QA" && user == "clerk")
+            || (connection == "Review" && user == "approver")));
+    std::fs::remove_dir_all(dir).expect("valid login test fixture");
+}
