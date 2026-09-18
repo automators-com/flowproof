@@ -6,6 +6,12 @@ together).
 
 ## Unreleased
 
+- **The package now calls itself beta.** The PyPI classifier moves from
+  `3 - Alpha` to `4 - Beta` and the SDK README says the same. Record→replay,
+  model-grounded authoring, healing, suites, run recordings and the MCP server
+  are in daily use and tested in CI; interfaces may still move within the
+  contract in `docs/compatibility.md`.
+
 ## 0.23.7
 
 - **Human-written checks reach the authoring agent.** Unsupported `assert:` prose
