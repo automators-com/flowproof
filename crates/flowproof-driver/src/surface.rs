@@ -31,6 +31,7 @@ struct SurfaceSlot {
     /// once against different captures without special-casing the first
     /// visit.
     target: AppTarget,
+    credentials: Option<crate::LoginCredentials>,
     /// `None` until the surface's first activation launches it.
     driver: Option<Box<dyn AppDriver>>,
 }
@@ -67,6 +68,7 @@ impl SurfaceRegistry {
     ) -> Self {
         let slot = |target| SurfaceSlot {
             target,
+            credentials: None,
             driver: None,
         };
         Self {
@@ -104,7 +106,11 @@ impl SurfaceRegistry {
             )));
         };
         if slot.driver.is_none() {
-            slot.driver = Some((self.factory)(name)?);
+            let mut driver = (self.factory)(name)?;
+            if let Some(credentials) = &slot.credentials {
+                driver.stage_credentials(credentials.clone())?;
+            }
+            slot.driver = Some(driver);
         }
         let command = resolve_launch_template(&slot.target.command, captures)?;
         let window_name = resolve_launch_template(&slot.target.window_name, captures)?;
@@ -163,6 +169,24 @@ macro_rules! route_to_active {
 }
 
 impl AppDriver for SurfaceRegistry {
+    fn stage_surface_credentials(
+        &mut self,
+        surface: &str,
+        credentials: crate::LoginCredentials,
+    ) -> Result<(), DriverError> {
+        let slot = self
+            .surfaces
+            .get_mut(surface)
+            .ok_or_else(|| DriverError::Uia(format!("surface '{surface}' is not declared")))?;
+        if slot.driver.is_some() {
+            return Err(DriverError::Uia(format!(
+                "surface '{surface}' has already launched"
+            )));
+        }
+        slot.credentials = Some(credentials);
+        Ok(())
+    }
+
     // Every ROUTED method is listed once; the macro writes the identical
     // body for each. A method missing from the list falls back to the
     // trait DEFAULT — the silent hole the Box impl warns about — so keep

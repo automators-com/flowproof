@@ -119,10 +119,7 @@ pub struct SurfaceSpec {
     /// For sap surfaces: who this surface logs in as, exactly as on a
     /// single-surface flow. This is the shape a same-system two-user case
     /// wants — one flow, `clerk` and `approver` surfaces, one identity each.
-    /// It parses and validates today, but the multi-surface driver does not
-    /// log a surface in yet (docs/multi-surface.md), so the same case is a
-    /// suite of single-surface flows chained with `exports:`, one `login:`
-    /// each, until it does.
+    /// Staged separately for each surface before its first activation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login: Option<LoginSpec>,
     /// For web surfaces: launch/emulation config (viewport, user-agent,

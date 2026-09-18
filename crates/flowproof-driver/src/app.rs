@@ -894,6 +894,17 @@ pub trait AppDriver {
         ))
     }
 
+    /// Stage an identity for one named surface before its first activation.
+    fn stage_surface_credentials(
+        &mut self,
+        _surface: &str,
+        _credentials: LoginCredentials,
+    ) -> Result<(), DriverError> {
+        Err(DriverError::Uia(
+            "this driver does not support named surface credentials".into(),
+        ))
+    }
+
     /// Navigate the current page to `url` (mid-flow `Go to /path`).
     fn navigate(&mut self, _url: &str) -> Result<(), DriverError> {
         Err(DriverError::Uia(
@@ -1969,6 +1980,14 @@ impl AppDriver for Box<dyn AppDriver> {
     // DEFAULT, which REFUSES — and every real run holds a `Box<dyn AppDriver>`.
     fn stage_credentials(&mut self, credentials: LoginCredentials) -> Result<(), DriverError> {
         (**self).stage_credentials(credentials)
+    }
+
+    fn stage_surface_credentials(
+        &mut self,
+        surface: &str,
+        credentials: LoginCredentials,
+    ) -> Result<(), DriverError> {
+        (**self).stage_surface_credentials(surface, credentials)
     }
 
     fn navigate(&mut self, url: &str) -> Result<(), DriverError> {

@@ -1484,6 +1484,37 @@ fn discover_specs(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
 /// with a fresh driver each time. Deterministic replay should be stable,
 /// but the infrastructure under it (a dropped CDP frame, a momentarily
 /// slow backend) is not — a flow that passes on a second look should not
+fn stage_replay_surface_logins(
+    driver: &mut dyn AppDriver,
+    spec: &FlowSpec,
+    header: &flowproof_trace::Header,
+) -> Result<(), String> {
+    for (name, recorded) in &header.apps {
+        let login = spec.apps.get(name).and_then(|s| s.login.as_ref());
+        if recorded.login_user.as_ref() != login.map(|l| &l.user) {
+            return Err(format!(
+                "The login for surface '{name}' changed. Record this flow again."
+            ));
+        }
+    }
+    for (name, surface) in &spec.apps {
+        if let Some(login) = &surface.login {
+            let recorded = header.apps.get(name).ok_or_else(|| {
+                format!("Surface '{name}' is not in the recording. Record this flow again.")
+            })?;
+            if recorded.name != "sap" {
+                return Err(format!(
+                    "Surface '{name}' was not recorded as SAP. Record this flow again."
+                ));
+            }
+            driver
+                .stage_surface_credentials(name, login.resolved().map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// fail the suite.
 ///
 /// The driver a REPLAY gets: the trace's single app's driver, or — for a
@@ -1683,7 +1714,7 @@ fn replay_with_retries(
     secret_scan: &flowproof_replay::SecretScan,
     recording: flowproof_driver::RecordingOptions,
     exports: &std::collections::BTreeMap<String, String>,
-    login: Option<&flowproof_agent::LoginSpec>,
+    spec: &FlowSpec,
 ) -> Result<
     (
         flowproof_replay::RunReport,
@@ -1701,11 +1732,12 @@ fn replay_with_retries(
         // password is not a header field, so it cannot come from the trace,
         // and every `run` has the spec in hand. `${VAR}`s resolve here, on
         // this replay, not at record.
-        if let Some(login) = login {
+        if let Some(login) = &spec.login {
             driver
                 .stage_credentials(login.resolved().map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
         }
+        stage_replay_surface_logins(driver.as_mut(), spec, header)?;
         let (report, run_dir, resolved) = flowproof_replay::run_trace_with_progress(
             trace_path,
             &mut driver,
@@ -2469,7 +2501,7 @@ fn run_suite_with_author(dir: &Path, options: RunOptions) -> Result<u8, String> 
                     &secret_scan,
                     recording,
                     &gated_spec.exports,
-                    gated_spec.login.as_ref(),
+                    &gated_spec,
                 )
             });
         // Cleanup always runs, pass, fail or error.
@@ -3019,7 +3051,7 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
         &secret_scan,
         recording,
         &spec.exports,
-        spec.login.as_ref(),
+        &spec,
     );
     // Cleanup always runs, pass, fail or error - the suite's rule, and the
     // reason it exists is that a flow which errors is exactly when a left
@@ -3754,6 +3786,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_replay_refuses_a_removed_or_changed_identity() {
+        let header: flowproof_trace::Header = serde_json::from_str(r#"{"format":"flowproof-trace","version":1,"trace_id":"t","recorded_at":"2026-08-05T00:00:00Z","app":{"name":"multi","adapter":"multi"},"apps":{"gui":{"name":"sap","adapter":"sap-com","url":"QA","login_user":"clerk"}},"env":{"os":"macos","resolution":[1,1]}}"#).expect("valid login test fixture");
+        let mut driver = flowproof_driver::mock::MockAppDriver::new(&[]);
+        for login in ["", ", login: {user: approver, password: private}"] {
+            let spec = FlowSpec::parse(&format!("name: x\napps:\n  gui: {{app: sap, connection: QA{login}}}\nsteps:\n  - in: gui\n    steps: [Go to /nVA01]\n")).expect("valid login test fixture");
+            let error = stage_replay_surface_logins(&mut driver, &spec, &header)
+                .expect_err("changed identity must fail");
+            assert!(error.contains("Record this flow again"));
+            assert!(!error.contains("private"));
+        }
+    }
 
     /// A surface's `browser:` config stages on its freshly built driver —
     /// the window between construction and first-activation launch is the

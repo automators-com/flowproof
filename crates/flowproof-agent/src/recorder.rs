@@ -112,19 +112,6 @@ pub enum RecordError {
     MissingUrl,
     #[error("app 'vision' requires a `window:` field in the spec (title of the window to drive)")]
     MissingWindow,
-    /// A surface named an identity nothing can act as yet. `login:` parses
-    /// and validates on a surface entry — it is the shape a same-system
-    /// two-user case wants — but no surface stages its credentials, so
-    /// recording it would drive whatever session was already open while the
-    /// spec says otherwise. That is the exact confusion `login:` exists to
-    /// prevent, so it is refused by name rather than run as somebody else.
-    #[error(
-        "surface `{0}` declares `login:`, but no surface logs itself in yet — recording it \
-         would drive whatever SAP session is already open, as whoever opened it. Until the \
-         engine lands, put each identity on its own single-surface `app: sap` flow with a \
-         `login:` block and chain the case with `exports:`"
-    )]
-    SurfaceLogin(String),
     #[error("element for step '{intent}' not found: [{selector}]")]
     ElementNotFound { intent: String, selector: String },
     /// `expected` and `actual` are complete phrases, not bare values: the
@@ -1262,12 +1249,7 @@ fn surface_app_info(surface: &crate::spec::SurfaceSpec) -> AppInfo {
         // A web surface's launch/emulation shape travels with the surface,
         // so record and every replay stage it before THIS surface launches.
         browser: surface.browser.clone(),
-        // Deliberately not `surface.login`: no surface logs itself in yet,
-        // so a recording never acted as that user, and a header that named
-        // one would be claiming evidence the run does not have. Record
-        // refuses such a flow by name (`RecordError::SurfaceLogin`), so
-        // this arm is only ever reached by a surface with no `login:`.
-        login_user: None,
+        login_user: surface.login.as_ref().map(|login| login.user.clone()),
         version: None,
     }
 }
@@ -1282,13 +1264,6 @@ pub fn surface_targets(
     spec.apps
         .iter()
         .map(|(name, surface)| {
-            // The one surface shape that parses but cannot be driven: an
-            // identity nothing stages. Refused here, at the launch seam
-            // both `record` and `heal` pass through, so no trace is ever
-            // written claiming a user the run never was.
-            if surface.login.is_some() {
-                return Err(RecordError::SurfaceLogin(name.clone()));
-            }
             let target = match surface.app.id() {
                 "web" => {
                     let url = surface.url.as_deref().ok_or(RecordError::MissingUrl)?;
@@ -2746,6 +2721,11 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     // one stays in the spec file, which is the only place it appears.
     if let Some(login) = &spec.login {
         driver.stage_credentials(login.resolved()?)?;
+    }
+    for (name, surface) in &spec.apps {
+        if let Some(login) = &surface.login {
+            driver.stage_surface_credentials(name, login.resolved()?)?;
+        }
     }
     if !spec.mock.is_empty() {
         driver.stage_mocks(spec.mock.iter().map(web_mock_from_rule).collect())?;
@@ -6698,30 +6678,20 @@ steps:
         );
     }
 
-    /// `login:` on a surface parses and validates — it is the shape a
-    /// same-system two-user case wants — but nothing stages a surface's
-    /// credentials yet. Launching anyway would drive whatever session was
-    /// already open while the spec names somebody else, so the launch seam
-    /// refuses by name and no trace is written claiming that identity.
     #[test]
-    fn a_surface_that_names_a_login_refuses_to_launch() {
-        let spec = FlowSpec::parse(
-            "name: Two users\napps:\n  \
-             clerk: {app: sap, connection: TS3, login: {user: obeva, password: pw}}\n  \
-             portal: {app: web, url: 'http://x'}\nsteps:\n  - in: clerk\n    \
-             steps: [Go to /nVA01]\n  - in: portal\n    steps: [Click \"Search\"]\n",
-        )
-        .expect("spec parses — the refusal is at launch, not at parse");
-        let err = surface_targets(&spec).expect_err("a surface login cannot launch");
-        let message = err.to_string();
-        assert!(
-            message.contains("clerk") && message.contains("logs itself in"),
-            "the refusal names the surface and the gap: {message}"
+    fn surface_login_targets_and_header_keep_identity_without_password() {
+        let spec = FlowSpec::parse("name: users\napps:\n  clerk: {app: sap, connection: TS3, login: {user: clerk, password: secret}}\nsteps:\n  - in: clerk\n    steps: [Go to /nVA01]\n").expect("valid login test fixture");
+        assert_eq!(
+            surface_targets(&spec).expect("valid login test fixture")[0]
+                .1
+                .command,
+            "TS3"
         );
-        assert!(
-            message.contains("exports:"),
-            "and names the shape that does work today: {message}"
-        );
+        let info = surface_app_info(&spec.apps["clerk"]);
+        assert_eq!(info.login_user.as_deref(), Some("clerk"));
+        assert!(!serde_json::to_string(&info)
+            .expect("valid login test fixture")
+            .contains("secret"));
     }
 
     /// The counterpart: surfaces without `login:` still launch, so the
