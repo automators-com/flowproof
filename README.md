@@ -26,7 +26,7 @@ One spec, one `record` against a real model, then `run` forever with none. The
 frames are a capture of [`scripts/demo/`](scripts/demo/) actually running, not a
 mock-up. The same three commands carry the guard path: add
 `assert_no_tool_call` and the call an agent must *never* make is proven on every
-commit ([docs/agent-testing.md](docs/agent-testing.md)).
+commit ([agent-boundary testing](docs/agent-testing/index.md)).
 
 ## The same promise, precisely
 
@@ -59,7 +59,7 @@ green build actually proves:
 What is *not* asserted: a file the agent's own process destroys directly. On
 Linux that is now **reported** (the run prints what it unlinked, renamed or
 truncated), but a report is not a control, and no build breaks on one. See
-[docs/agent-testing.md](docs/agent-testing.md#filesystem-observation).
+[filesystem observation](docs/agent-testing/security.md#filesystem-observation).
 
 Flows are plain YAML - short enough for an agent to write, readable enough
 for a human to review in a diff.
@@ -68,6 +68,17 @@ Adding it to an existing agent? [docs/adopting.md](docs/adopting.md) is
 written to be handed to a coding agent.
 
 Product page: [automators.ai/flowproof](https://automators.ai/flowproof)
+
+## Choose your path
+
+| Goal | Start here |
+| --- | --- |
+| Record and replay your first agent or UI flow | [Record and replay](docs/getting-started/record-and-replay.md) |
+| Add Flowproof to an existing project | [Adopting Flowproof](docs/adopting.md) |
+| Run multiple flows with shared data or dependencies | [Run a suite](docs/getting-started/suite-runs.md) |
+| Look up exact action and assertion syntax | [Authoring grammar](docs/authoring/index.md) |
+| Test model calls, tool calls, or agent containment | [Agent-boundary testing](docs/agent-testing/index.md) |
+| Choose between web, desktop, SAP, Citrix, API, and agent flows | [Live application tests](docs/getting-started/live-app-tests.md) |
 
 ## How it works
 
@@ -123,7 +134,7 @@ A guard flow is strongest when it is paired with enforcement, and when the
 recording contains a model that genuinely tried. If the only thing between
 a user and a destructive call is a sentence in a system prompt, that is not
 a control. flowproof's job is to make that visible, not to paper over
-it ([docs/agent-testing.md](docs/agent-testing.md#making-a-guard-flow-prove-enforcement-not-compliance)).
+it ([guard-flow enforcement](docs/agent-testing/spec-shape.md#making-a-guard-flow-prove-enforcement-not-compliance)).
 
 ## Quick start
 
@@ -182,7 +193,7 @@ passes on a fresh clone: no key, no provider network.
 
 Any OS. For a UI instead of an agent, point `app: web` at a page, or `app: api`
 at a flow with no UI at all ([examples/](examples/)); the Windows Calculator
-walkthrough lives in [docs/getting-started.md](docs/getting-started.md), which
+walkthrough lives in [Record and replay](docs/getting-started/record-and-replay.md), which
 is the complete version of this section. Add `--json` for the structured
 report on stdout.
 
@@ -232,7 +243,7 @@ against the live app's real elements via neutral target tokens, and the
 result replays with zero model calls. It cannot invent selectors. Use
 `rules: <text>` for one deterministic step or `--author rules` for an
 entire flow; the complete grammar is in
-[docs/authoring.md](docs/authoring.md), with every documented form enforced
+[the authoring grammar](docs/authoring/index.md), with every documented form enforced
 by a test. Anthropic and OpenAI-compatible endpoints (including vLLM) are
 supported.
 - When a step is too ambiguous to author ("make required field changes"),
@@ -275,7 +286,7 @@ before/after frames; applied only with explicit `--apply`.
 - `app: agent`: test an AI agent at the model boundary. Record its
   trajectory once against a real model, replay it deterministically with
   zero model calls, and assert the tool calls it makes
-  ([docs/agent-testing.md](docs/agent-testing.md)). On **Linux**, an
+  ([agent-boundary testing](docs/agent-testing/index.md)). On **Linux**, an
   `agent.command` flow can be run under real, unprivileged **egress
   containment (seccomp)**: declare its network with `allow_egress` and
   certify it with `assert_no_egress`
@@ -295,7 +306,7 @@ alive, then assert the denial); catch a leaked secret in agent output with
 `assert_no_secret_leak: ${VAR}` (agent flows in v1); and fold the
 control-bearing flows into a `pass`/`fail`/`capability-error` coverage map
 with `flowproof audit`
-([docs/authoring.md](docs/authoring.md#security-controls)).
+([security controls](docs/authoring/security-controls.md)).
 
 **Set up once, diagnose before you spend a key**: `flowproof config sap` /
 `fiori` / `ai` store SAP GUI, Fiori, and model-authoring credentials in one
@@ -305,10 +316,10 @@ Agent Skill so a coding agent can walk a user through setup instead of them
 reading docs. `flowproof doctor --sap` / `--fiori` / `--ai` / `--agent` then
 report what's actually reachable: connectivity and (for Fiori and AI) a
 real check, before a flow is written or a key is spent
-([docs/getting-started.md](docs/getting-started.md#flowproof-config-credentials-without-hand-exporting-env-vars)).
+([secrets and configuration](docs/getting-started/secrets-and-config.md#flowproof-config-credentials-without-hand-exporting-env-vars)).
 `flowproof author-from-doc` is an experimental third path into a flow: draft
 a `.flow.yaml` from a requirement/test-case PDF, then resolve it with one
-live `record` pass ([docs/authoring.md](docs/authoring.md)).
+live `record` pass ([the authoring grammar](docs/authoring/index.md)).
 
 **Debug what a tool sends**: `flowproof capture` is a byte-fidelity HTTP
 capture endpoint: point a tool-under-test at it and every request is printed
@@ -363,7 +374,7 @@ stdio.
 
 Built, but with thinner coverage: `agent.url` services and the MCP boundary
 over streamable HTTP.
-[docs/agent-testing.md](docs/agent-testing.md) names each gap in a
+[agent-testing status](docs/agent-testing/status-and-scope.md) names each gap in a
 per-capability table rather than leaving "built" to imply "tested".
 
 Two limits to know before you start: an agent flow is **one turn**, not a

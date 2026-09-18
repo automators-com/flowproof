@@ -37,6 +37,14 @@ repository whose cassette flowproof's own test suite replays (untrusted by
 design; see Cassette trust, below); a human or LLM reviewing a pull request
 that adds or changes a cassette; an external security researcher.
 
+The detailed boundaries below answer three questions consistently:
+
+| Question | What to look for |
+| --- | --- |
+| What does Flowproof guarantee? | The precise property a mechanism enforces |
+| What enforces it? | The implementation and regression evidence |
+| Where does it stop? | Explicit non-goals and unsupported platforms |
+
 ## Trust boundaries
 
 ### Model-proxy credential boundary
@@ -358,4 +366,3 @@ named honestly, per the principle this document opened with.
    `0600` mode set on Unix (`config.rs:266-271`) has no counterpart on
    Windows, where the file can hold a plaintext SAP/Fiori password and an AI
    API key with only the OS's default ACL protecting it.
-

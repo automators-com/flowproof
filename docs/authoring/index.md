@@ -1,10 +1,22 @@
 ---
 title: "Authoring overview"
-description: "The default --author auto mode and the explicit rules: grammar for opting a step out of model grounding."
+description: "Choose model or rules authoring, understand grounding, and find the exact grammar for each kind of step."
 ---
 
-In the default `--author auto` mode, a plain scalar UI step is
-**natural-language model intent**:
+Use natural-language steps for user intent. Use `rules:` when the exact
+deterministic action belongs in the source spec. Both routes produce the same
+kind of trace, and replay makes zero model calls.
+
+## Choose an authoring mode
+
+| Mode | Use it when | How plain UI steps are authored |
+| --- | --- | --- |
+| `--author auto` | Recommended for most flows | Uses the configured model, or visibly falls back to rules when no model is configured |
+| `--author llm` | Every plain step should use model grounding | Forces model authoring |
+| `--author rules` | The whole flow already uses the deterministic grammar | Parses every plain step as a rule |
+
+In the default `--author auto` mode, a plain scalar UI step expresses
+natural-language intent:
 
 ```yaml
 - Enter 24 Market Street in the shipping address field
@@ -18,32 +30,56 @@ the deterministic grammar instead, mark it explicitly:
 - rules: Press the "Save" button
 ```
 
-`--author rules` remains the global opt-in when a whole flow already uses
-the deterministic grammar; `--author llm` forces model authoring for plain
-UI steps. An `assert:` that already matches the deterministic grammar stays deterministic.
-Other check wording is translated by the model into read-only assertions in auto/LLM mode.
-The model cannot change the page to satisfy a check. Structured forms such as
-`assert_api:`, `repeat:` and `when:` retain their own semantics in every mode.
+An `assert:` that matches the deterministic grammar stays deterministic.
+Other check wording becomes a read-only assertion in auto or LLM mode. The
+model cannot change the page to satisfy a check. Structured forms such as
+`assert_api:`, `repeat:`, and `when:` retain their own semantics in every mode.
 
 If auto mode has no configured authoring model, recording says so visibly
 and falls back to deterministic rules for plain steps. It never silently
 reinterprets model intent. Human output identifies each step's route as
-`rules`, `llm`, `reused`, or `fallback`, and structured/JSON output carries the same
-per-step routing information for tooling; consumers should use the
+`rules`, `llm`, `reused`, or `fallback`, and structured/JSON output carries the
+same per-step routing information for tooling. Consumers should use the
 structured output rather than scraping the display text.
 
-This page is the **complete rules grammar**. The forms below are the text
-accepted inside `rules: <text>` (or as plain steps under global
-`--author rules`). They require no model call and are covered by tests that
-parse the exact examples shown (`documented_grammar_examples_all_resolve`
-in `crates/flowproof-agent/src/rules.rs`, if the doc and the code drift,
-CI fails).
+## Find the deterministic grammar
+
+The authoring section is the complete rules grammar. These pages document the
+text accepted inside `rules: <text>`, or as plain steps under global
+`--author rules`:
+
+| If you need to | Read |
+| --- | --- |
+| Click, type, select, scroll, drag, or press keys | [Actions](actions.md) |
+| Check visible state, values, counts, or screenshots | [Assertions](assertions.md) |
+| Reuse values within or between flows | [Variables and exports](variables-and-exports.md) |
+| Repeat steps or branch on visible state | [Repeating and conditions](repeating.md) |
+| Verify APIs, databases, or spreadsheets | [Out-of-band assertions](out-of-band-assertions.md) |
+| Define security and audit controls | [Security controls](security-controls.md) |
+| Diagnose a step that cannot be authored | [Troubleshooting](troubleshooting.md) |
+
+Rules require no model call. Tests parse the documented examples through
+`documented_grammar_examples_all_resolve` in
+`crates/flowproof-agent/src/rules.rs`, so CI fails when code and grammar
+examples drift.
+
+## How model authoring becomes deterministic replay
 
 Model authoring does not make replay probabilistic. The driver gives the
 model a finite list of provenance-neutral scene tokens and accepts only
 actions grounded to those listed tokens; the resulting selectors and
 actions are persisted in the trace. Replay executes that trace directly,
 with zero model calls.
+
+```mermaid
+flowchart LR
+    A["Plain-language step"] --> B["Live scene inventory"]
+    B --> C["Grounded actions"]
+    C --> D["Persisted trace"]
+    D --> E["Deterministic replay<br/>zero model calls"]
+```
+
+### Grounding targets on the live surface
 
 On the web, that inventory also represents readable values whose identity is
 relational rather than global. A value cell in a div-based row may have no
@@ -62,6 +98,8 @@ readable/actionable elements inside visible same-origin frames. Frame and
 scoped tokens are authoring-only handles: Flowproof translates them to ordinary
 deterministic targets before writing the trace.
 
+### One intent can produce several actions
+
 A plain step is a unit of intent, not a unit of work. `Fill out all the vehicle
 data and click next` is one step (`examples/tricentis-insurance-natural.flow.yaml`,
 the natural-language sibling of the field-by-field
@@ -69,15 +107,21 @@ the natural-language sibling of the field-by-field
 whole sequence of grounded actions it takes (one per field, plus the button)
 in a single call. Every action in that sequence is grounded against the same listed
 inventory and rejected as a whole if any one of them is not, so a half-filled
-form never reaches the trace. A rejected sequence is put back to the model as a
-correction rather than as a fresh question: the reply names which action failed
+form never reaches the trace.
+
+A rejected sequence is put back to the model as a correction rather than as a
+fresh request. The reply names which action failed
 and how many before it were already grounded, and asks for the corrected
 sequence. Re-authoring a dozen actions from scratch to fix one of them is a
 throw the model has to win twice, and a step naming a whole form is exactly
-where losing it costs the most. The inventory also reports what each field
-currently holds, which the page marks required, which boxes are ticked, and a
-dropdown's exact options, so a `<select>` is given a name it really has rather
-than a plausible guess. Values of password fields are never reported.
+where losing it costs the most.
+
+The inventory also reports what each field currently holds, which fields the
+page marks required, which boxes are ticked, and a dropdown's exact options.
+A `<select>` therefore receives a name the control actually offers rather than
+a plausible guess. Password values are never reported.
+
+### Capabilities available through plain language
 
 Plain language is not limited to midpoint clicks and typing. The structured
 model response can directly express clicking a point within a control,
@@ -88,6 +132,8 @@ learn. Write the user intent, for example, `Select Functional, End2End, GUI, and
 Exploratory testing together`, and keep `rules:` for the comparatively rare case
 where exact deterministic grammar is deliberately wanted in the source spec.
 
+## Rules matching conventions
+
 Conventions: forms are case-insensitive in their keywords. `<text>` is
 literal text (may carry `${VAR}` secret references). A quoted `"<label>"`
 is a **text anchor**: matched against visible text, accessible label
@@ -96,6 +142,7 @@ is a **text anchor**: matched against visible text, accessible label
 or, for `<input type="submit|button|reset">`, the `value` attribute (the
 accessible name of a void button-type input, so `Press the "Login"
 button` finds `<input type="submit" value="Login">`).
+
 Matching is exact first, then prefix (`"Name"` finds the field labelled
 `Name:`), then ASCII case-insensitive as a last resort (`"Close Account"`
 still finds the button reading `Close account`), and a case-sensitive match
@@ -110,6 +157,8 @@ quoted label: `"css:<selector>"` (web) and `"id:<native id>"` (DOM id,
 UIA AutomationId, SAP scripting id). `[2nd ]` marks an optional 1-based
 ordinal (`2nd`, `3rd`, `10th`) for when several elements match.
 
+## Start flows from the right application state
+
 Steps are only half the spec. Starting state that a flow should not
 rebuild through the UI (an authenticated session, a pre-filled cart or
 other app-state fixture) is declared in the spec-level `session:` block,
@@ -117,7 +166,7 @@ and network shaping in `mock:` - see
 [test-context seeding](../getting-started/test-context-seeding.md)
 before migrating a suite's setup helpers step by step.
 
-### Revealing controls while authoring
+## Reveal controls while authoring
 
 The model can use `scroll_into_view` with a listed individual field or cell.
 This uses the same deterministic scroll-into-view primitive as rules authoring,

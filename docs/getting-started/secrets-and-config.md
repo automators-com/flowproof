@@ -23,7 +23,7 @@ mask live text whenever the expectation contained a reference.
 
 This covers the *trace text*; the *pixels* of secret fields are covered by
 the recording layer (`redact:` rules and always-on password-field masking,
-see [docs/recording.md](recording.md)).
+see [Run recording](../recording.md)).
 
 ### `flowproof config`: credentials without hand-exporting env vars
 

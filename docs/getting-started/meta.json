@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "record-and-replay",
+    "suite-runs",
     "python-api",
     "live-app-tests",
     "web-flows",

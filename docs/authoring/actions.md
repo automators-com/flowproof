@@ -3,6 +3,11 @@ title: "Actions"
 description: "The generic action grammar shared by web, SAP, and vision flows, including native-dialog handling."
 ---
 
+Use this page as the exact deterministic action reference for `rules:` steps
+and flows recorded with `--author rules`.
+
+## Action reference
+
 | Step | Notes |
 |---|---|
 | `Type <text> into the [2nd ]"<label>" field` | text anchor / `css:` / `id:`. FILL semantics: the field ends up reading `<text>` exactly, whatever it held - the choice every mainstream tool makes. The keys are still real keystrokes (typed over a select-all), so keydown-filtering apps behave as with a person typing |
@@ -44,7 +49,7 @@ already works, and it additionally tests what the user really experiences -
 that focus lands somewhere sensible. Blur-triggered form validation is
 exercised with `Press Tab`.
 
-### Refused on purpose
+## Syntax refused on purpose
 
 `Blur` is one of a set. When deterministic rule authoring is selected,
 these shapes are **recognised in order to be refused**: each fails with the
@@ -62,7 +67,7 @@ reinterpreted as something adjacent that records green.
 | `${date:…}` / `{Date[…]}` | Against the wall clock a flow means something different every day; against a pinned `browser.clock` it is a constant you can write by hand. Pin the clock and type the literal |
 | `Click … without hovering` | Dispatching an event no user could produce breaks the claim that a passing flow describes something a person can do. `Click` already moves the pointer, which is what a user does |
 
-### Native dialogs
+## Handle native dialogs
 
 A native `window.alert` / `confirm` / `prompt` (and the navigation
 `beforeunload`) blocks JavaScript **synchronously**: nothing else runs until

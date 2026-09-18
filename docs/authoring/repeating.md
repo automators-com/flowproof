@@ -3,6 +3,8 @@ title: "Repeating steps"
 description: "Repeating a block with foreach, and repeating until the app settles with repeat: and when:."
 ---
 
+## Repeat over known values with `foreach`
+
 A block that repeats with one value changing collapses into a `foreach`
 values matrix. Scalars are referenced with `${each}`, mappings with
 `${each.<key>}`; a whole-string token keeps its YAML type, so

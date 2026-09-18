@@ -9,7 +9,7 @@ Linux and macOS too, since it runs on Chromium rather than Windows UIA.
 (replay) stays headless, which is right for CI. See
 [watching the browser](#watching-the-browser-headed-and-headless) to change
 either. Specs add a `url:` and use the web vocabulary
-([`examples/web.flow.yaml`](../examples/web.flow.yaml)):
+([`examples/web.flow.yaml`](../../examples/web.flow.yaml)):
 
 ```yaml
 name: Greet the user

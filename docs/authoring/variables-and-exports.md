@@ -3,6 +3,8 @@ title: "Variables and exports"
 description: "Remembering and reusing live values within a flow, and handing a value to the next flow with exports:."
 ---
 
+## Reuse a value within one flow
+
 Model-authored steps may describe a remembered value naturally and use a
 clear name or an unambiguous pronoun later:
 
@@ -114,7 +116,7 @@ test decide what the flow does next. Supplying text it just displayed is
 data entry; picking the next element is control flow. A name that was never
 remembered fails closed, naming what was in scope.
 
-### Handing a value to the next flow (`exports:`)
+## Hand a value to the next flow with `exports:`
 
 A capture is flow-scoped. `exports:` is how one crosses to the flows that
 run AFTER this one in a suite, which is how a test case spans

@@ -19,6 +19,11 @@ the only thing the deterministic replayer reads. Design constraints:
   it (`uia`, `sap-com`, `web`, `vision`), so a step records *why* replay may
   trust it.
 
+| Flow shape | Trace representation | Primary sections below |
+| --- | --- | --- |
+| UI, SAP, vision, and API flows | JSON Lines: one header followed by step lines | [Header line](#header-line), [Step line](#step-line) |
+| Agent flows | One JSON document with cassette and optional MCP lanes | [Cassette lane](#cassette-lane-app-agent), [Side-effect lane](#side-effect-lane-app-agent) |
+
 ## File layout
 
 UTF-8 JSON-lines (`.trace.jsonl`). Line 1 is the **header**; every following

@@ -3,6 +3,8 @@ title: "Agent flows"
 description: "Testing an AI agent, and authoring arbitrary steps with a model."
 ---
 
+## Test an agent at the model boundary
+
 `app: agent` tests an AI agent at the **model boundary** instead of a UI:
 record its tool-call trajectory once against a real model, then replay it
 deterministically with zero model calls. The spec drives the agent process,
@@ -41,6 +43,8 @@ example is `examples/agent-demo/`.
 
 ## Authoring with a model (arbitrary steps)
 
+### Ground intent to the live scene
+
 In the default `--author auto` mode, a plain scalar UI step is
 **natural-language model intent**:
 
@@ -73,6 +77,8 @@ well as stable table, frame, and relational targets. The model may only choose
 from that inventory, and Flowproof compiles the choice into the same
 deterministic trace used by an explicitly rule-authored flow.
 
+### Author several actions from one intent
+
 A step is a unit of **intent**, not a single click. One step may cover a whole
 form:
 
@@ -100,6 +106,8 @@ flowproof record shop.flow.yaml               # steps in your own words
 flowproof run shop.flow.yaml                  # replays with ZERO model calls
 ```
 
+### Choose model or rules authoring
+
 Use `rules: <text>` when one step should bypass model authoring and use the
 deterministic grammar explicitly:
 
@@ -121,6 +129,8 @@ the route. Human output identifies each step as `rules`, `llm`, `reused`, or `fa
 and structured/JSON output exposes the same routing information without
 requiring callers to parse terminal prose. The trace also records the
 authoring backend and model whenever one participated.
+
+### Reuse remembered values
 
 Natural remembered values work across model-authored steps:
 

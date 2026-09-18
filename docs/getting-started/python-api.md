@@ -7,6 +7,8 @@ flowproof is built to be driven by programs (usually AI agents) with the
 CLI as a thin wrapper over the same library. Every call returns structured
 data:
 
+## Record, run, and inspect a flow
+
 ```python
 from flowproof import Flow
 

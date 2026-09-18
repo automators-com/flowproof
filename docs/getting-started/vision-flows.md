@@ -8,6 +8,8 @@ perception is OCR over captured frames, action is real mouse/keyboard
 injection. This is the mode for Citrix/RDP sessions where the remote app
 is just pixels on your screen (Windows-only today: capture + SendInput).
 
+## Write a vision flow
+
 ```yaml
 name: Post order
 app: vision
@@ -25,5 +27,9 @@ trace carries `provenance: vision` text anchors with their spatial
 `relation` (`inside` for clicks, `right_of` for fields), and freeform
 steps work through the LLM author; the OCR lines are the scene. OCR
 models (pure-Rust [ocrs](https://github.com/robertknight/ocrs), ~12 MB)
-download on first use to `~/.cache/flowproof/ocrs`. Deliberately not in
-this slice yet: visual-template matching and OCR-region sync conditions.
+download on first use to `~/.cache/flowproof/ocrs`.
+
+## Know the current limits
+
+Vision flows are Windows-only. They do not yet support visual-template matching
+or OCR-region synchronization conditions.

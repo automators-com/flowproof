@@ -3,6 +3,8 @@ title: "When authoring gets stuck"
 description: "What happens when a step cannot be authored, and drafting a spec from a requirement document with author-from-doc."
 ---
 
+## Choose the intended authoring backend
+
 In auto mode, plain freeform UI text (for example, `Smash the shiny
 button`) is model intent. The model receives the live scene and must ground
 its answer to one of the listed target tokens; it cannot invent a selector.
@@ -17,13 +19,15 @@ its own `fallback` route in
 the per-step human and structured diagnostics, so ordinary prose is never
 silently mistaken for deliberate rule syntax.
 
+## Resolve an ambiguous step
+
 When a step is too *ambiguous* to author at all ("make required field
 changes", which fields?, or `Enter it` with several remembered values),
 recording fails with a structured **clarification payload**: the stuck step
 plus the relevant live-scene fields or remembered-value candidates. It is
 available via `record --json`, the MCP record tool, or Python's
 `ClarificationNeeded`. The driving agent rewrites the step more precisely
-and re-records; see [self-help.md](self-help.md) for the loop.
+and re-records; see [The outside-in loop](../self-help.md) for the loop.
 
 Whichever route authors a step, recording persists grounded selectors and
 actions in the trace. `flowproof run` executes those deterministic artifacts

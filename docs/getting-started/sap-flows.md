@@ -5,7 +5,11 @@ description: "Running flows against SAP GUI on Windows, including the login: blo
 
 `app: sap` drives SAP GUI for Windows through **SAP GUI Scripting**, the
 COM automation surface SAP ships, never through pixels or synthetic
-keystrokes. Requirements: SAP GUI for Windows installed, scripting enabled on
+keystrokes.
+
+## Meet the SAP requirements
+
+Requirements: SAP GUI for Windows installed, scripting enabled on
 the client and server (`sapgui/user_scripting = TRUE` in RZ11), and flowproof
 on the same Windows machine. With `connection:` present, Flowproof starts SAP
 Logon when needed, selects or opens that connection, and can complete the
@@ -14,6 +18,8 @@ the flow remains attach-only and needs an existing logged-in session.
 
 On the client, enable **SAP Logon Options → Accessibility & Scripting →
 Scripting → Enable scripting**. The server setting alone is not sufficient.
+
+## Configure a default connection
 
 ```powershell
 $env:SAP_CONNECTION = "S/4HANA Development" # SAP Logon entry description
@@ -34,7 +40,7 @@ For a non-standard installation, set `SAP_LOGON_EXE` to the full path of
 `saplogon.exe`. Named connections wait up to 60 seconds by default; override
 that for slow SAProuter landscapes with `FLOWPROOF_SAP_CONNECT_TIMEOUT_MS`.
 
-### `login:`: the flow names its own user
+## Give a flow its own SAP identity
 
 Those variables are *process-global*, which is fine until a test case needs
 two identities: a clerk creates the order, an approver releases it. One
@@ -76,6 +82,8 @@ What holds:
 - **A session belonging to another user is never taken over.** Naming a user
   and silently driving somebody else's session would pass while proving
   nothing, so flowproof opens its own connection and logs in beside them.
+
+## Write SAP steps
 
 ```yaml
 name: Create standard order

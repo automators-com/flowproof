@@ -1,14 +1,29 @@
 ---
 title: "Record and replay"
-description: "Write a spec, record it once against a real model, replay it deterministically, and run a whole suite."
+description: "Record one flow against a real model or application, then replay it deterministically with recognizable results."
 ---
 
-The thing flowproof is for: an agent calls tools, and you want a test that
-fails when it calls the wrong one - without paying a model on every CI run.
+This tutorial records one agent flow and replays it with zero model calls. You
+will finish with a versioned trace and a run report that can fail CI when the
+agent calls the wrong tool.
 
-[`examples/agent-demo/`](../examples/agent-demo/) has a real agent built on
-the official OpenAI SDK, in two languages. Use the Node one if you installed
-from npm; nothing here needs Python.
+## Before you start
+
+You need:
+
+- Flowproof installed with npm or pip;
+- Node.js for the example agent; and
+- an OpenAI-compatible model key for the one-time recording.
+
+The runnable example is in
+[`examples/agent-demo/`](../../examples/agent-demo/). If you installed
+Flowproof from npm, use the Node example below. The Python example has the same
+flow and assertions.
+
+## 1. Read the flow
+
+The flow runs a weather agent, supplies a result for its `get_weather` tool,
+and asserts the agent's behavior:
 
 ```yaml
 # examples/agent-demo/weather-node.flow.yaml
@@ -25,20 +40,31 @@ steps:
   - assert: reply contains sunny
 ```
 
-**Record once.** This is the only step that calls a real model, so it is the
-only step that needs a key:
+`assert_tool_call` fails if the agent uses the wrong tool, sends the wrong city,
+or calls the tool out of order.
+
+## 2. Record once
+
+Install the agent's SDK, configure the model key, and record:
 
 ```bash
 npm install openai
-npx flowproof config ai             # stores the model API key with a masked prompt
+npx flowproof config ai
 npx flowproof record examples/agent-demo/weather-node.flow.yaml
 ```
 
-**Replay for ever.** No key, no model, no network to the provider:
+Recording is the only phase that calls the real model. Flowproof runs the real
+agent and captures its model exchange as a trace.
+
+## 3. Replay without a model
+
+Run the same flow:
 
 ```bash
 npx flowproof run examples/agent-demo/weather-node.flow.yaml
 ```
+
+A successful replay looks like this:
 
 ```text
   [PASS] s0001 prompt
@@ -47,54 +73,33 @@ npx flowproof run examples/agent-demo/weather-node.flow.yaml
 PASS: Weather assistant answers with the forecast (Node)
 ```
 
-What just happened, and why it is worth having:
+At replay, Flowproof serves the recorded model response back to the same agent
+and rechecks the trajectory. Replay needs no model key and makes no provider
+network call.
 
-- The agent ran **for real** both times - same client, same tool loop.
-- At record, flowproof sat at the model boundary and captured the exchange.
-  At replay it served that recording back, so the trajectory is fixed and
-  **no model was called**. A CI run costs nothing and cannot flake on
-  sampling.
-- `assert_tool_call: get_weather where city contains Nairobi` is the part
-  that fails when the agent regresses: wrong tool, wrong argument, or a
-  tool called out of order.
-- `get_weather` returns a live timestamp. Replay is deterministic anyway,
-  because the spec's `result:` is substituted at the model boundary.
+Two boundaries matter:
 
-Two limits worth knowing before you build on this, rather than discovering
-them later:
+| Boundary | What Flowproof replaces | Does the agent's real tool execute? |
+| --- | --- | --- |
+| Model boundary with `tools:` | What the model is told the tool returned | Yes |
+| MCP tool boundary with `mcp:` | The tool server itself | No |
 
-- **A bare `prompt:` flow is one turn, not a conversation.** Every `prompt:`
-  step is joined into a single task delivered up front. For a real
-  back-and-forth, use `conversation:` instead. See
-  [agent-testing.md](../agent-testing/index.md).
-- **The model boundary is not the tool boundary.** A `tools:` mock changes
-  what the model is TOLD a tool returned; the agent still ran its own tool.
-  Only the `mcp:` boundary stops a tool executing. flowproof warns at
-  runtime when a flow relies on this.
+A bare `prompt:` flow is one turn. Flowproof joins all `prompt:` steps into one
+task delivered up front. Use `conversation:` for a real back-and-forth. See
+[Agent-boundary testing](../agent-testing/index.md) for conversations, MCP tool
+mocking, and the complete assertion contract.
 
-Python instead of Node? Same flow, same assertions:
-[`weather.flow.yaml`](../examples/agent-demo/weather.flow.yaml) runs
-`python3 examples/agent-demo/weather_agent.py` (`pip install openai`).
+Python users can run
+[`weather.flow.yaml`](../../examples/agent-demo/weather.flow.yaml) after
+installing the OpenAI Python package.
 
-**Adding flowproof to an existing agent?** [adopting.md](adopting.md) is
-written to be handed to a coding agent: the audit to run first, the three
-questions that decide everything, and the order to do it in.
+## Record and replay a UI flow
 
-Next: [agent-testing.md](../agent-testing/index.md) for the full assertion grammar,
-the MCP tool boundary, and egress containment.
-
-## Walkthrough: a UI flow (Windows Calculator)
-
-The same record-once/replay-deterministically idea, applied to a desktop
-app. This drives Windows Calculator to compute **5 + 3 = 8**.
-
-Requirements: **Windows 10/11** with the Calculator app.
-
-## 1. Write a spec
-
-`calc.flow.yaml` (also in [`examples/calc.flow.yaml`](../examples/calc.flow.yaml)):
+The same lifecycle applies to a live application. On Windows 10 or 11, this
+spec drives Calculator to compute 5 + 3:
 
 ```yaml
+# calc.flow.yaml
 name: Add two numbers
 app: calc
 steps:
@@ -105,46 +110,29 @@ steps:
   - assert: display shows 8
 ```
 
-## 2. Record
+Record and replay it:
 
 ```powershell
 flowproof record calc.flow.yaml
-```
-
-flowproof launches Calculator, resolves every step to a real UI Automation
-element, **actually performs the flow** (you'll see the buttons pressed),
-verifies the assertion against the live display, and writes
-`calc.trace.jsonl`: one JSON step per line, human-diffable:
-
-```text
-Recorded 'Add two numbers': 5 steps -> calc.trace.jsonl
-```
-
-That filename is a convention, not a lookup: `record` derives
-`<name>.trace.jsonl` from the spec, and `run` and `heal` derive the same one
-when you do not say otherwise. Override it when a trace should not sit next
-to its spec: `--out` chooses where `record` writes, `--trace` tells `run`
-and `heal` where to read:
-
-```powershell
-flowproof record calc.flow.yaml --out traces/calc.trace.jsonl
-flowproof run   calc.flow.yaml --trace traces/calc.trace.jsonl
-flowproof heal  calc.flow.yaml --trace traces/calc.trace.jsonl
-```
-
-Keep the pair together unless you have a reason not to. A suite run resolves
-every spec's trace by the convention and **ignores `--trace`**, so a
-relocated trace reads to `run <dir>` as a flow that was never recorded,
-skipped by default, or a hard error under `--strict`.
-
-## 3. Replay
-
-```powershell
 flowproof run calc.flow.yaml
 ```
 
-Replay is deterministic: it re-resolves the recorded selectors, presses the
-same buttons, and evaluates the assertion by reading the display.
+Flowproof derives `calc.trace.jsonl` from the spec name. Keep the spec and trace
+together unless you need an explicit location:
+
+```powershell
+flowproof record calc.flow.yaml --out traces/calc.trace.jsonl
+flowproof run calc.flow.yaml --trace traces/calc.trace.jsonl
+flowproof heal calc.flow.yaml --trace traces/calc.trace.jsonl
+```
+
+Directory suite runs ignore `--trace` and resolve each trace by convention. A
+relocated trace therefore appears missing in a suite unless it is placed where
+the convention expects it.
+
+## Recognize a successful run
+
+A passing Calculator replay prints each step and the report path:
 
 ```text
   [PASS] s0001 Type 5
@@ -155,304 +143,64 @@ same buttons, and evaluates the assertion by reading the display.
 PASS: Add two numbers (2154 ms) -> .flowproof\runs\20260718T120000.000Z\report.html
 ```
 
-The path is the one worth opening: `report.html` is the human rendering, and
-on a headless adapter it is the only way to *see* what the run did. Exit
-codes: `0` pass, `1` test failure, `2` error. Each run writes a
-self-contained bundle under `.flowproof/runs/<timestamp>/`: `result.json`
-(the machine surface, including the step→time mapping), `report.html`
-(with a step-synchronized frame viewer: click any step to see exactly
-what happened), `junit.xml` (one testcase per step, for Jenkins / GitLab /
-Azure DevOps / any CI that ingests JUnit; point your test-report collector
-at `.flowproof/runs/*/junit.xml`), and `recording/` with the captured
-keyframes. Pass `--video` to additionally create `recording.gif`, the whole
-run as one animation, paced like the real execution, embedded at the top of
-the report. Sensitive
-regions are masked before frames are written: declare `redact:` rules in
-the spec, and password fields are always masked automatically
-(see [docs/recording.md](recording.md)).
+Exit code `0` means pass, `1` means test failure, and `2` means an execution or
+configuration error. Each run bundle contains:
 
-For faster runs, GIF/video assembly is off by default while screenshots remain
-available. Use `--video` to opt in. `--recording-detail low` captures only the
-initial state, every fifth step, and the final state; `--recording-detail off`
-disables screenshots and video entirely. The flags work on both `record` and
-`run`, and affect artifacts rather than execution or verdicts. Add
-`--highlight-cursor` when reviewers should see a synthetic cursor and bright
-click halo at each pointer action; drag steps highlight both their source and
-destination.
+| Artifact | Use it for |
+| --- | --- |
+| `report.html` | Review steps and synchronized frames |
+| `result.json` | Consume the structured verdict and step timing |
+| `junit.xml` | Publish test results in CI |
+| `recording/` | Inspect captured keyframes |
+| `debug/dom.html` and `debug/console.log` | Diagnose a failed web step when available |
 
-**When a step fails**, the bundle additionally answers the first two
-questions a human asks. `debug/dom.html` is the full DOM at the moment of
-failure and `debug/console.log` the page's recent console/exception tail
-(web flows; captured best-effort). And when an anchored element wasn't
-found, the failure detail suggests the nearest visible text anchors:
-`element … not found, did you mean 'Save changes'?`, usually the whole
-diagnosis for drifted labels, with `flowproof heal` as the fix.
+Password fields are always masked. Add `redact:` rules for other sensitive
+regions. See [Run recording](../recording.md) for capture controls and the
+artifact format.
 
-**Verify the recording reproduces itself.** A recording is a claim that
-the flow can be performed again from the trace alone, and nothing checks
-that claim: authoring succeeds when the live app happens to cooperate, so
-a target that was merely reachable at that moment (a button under a
-rotating carousel, a field beneath a datepicker that hadn't opened yet)
-gets written down as though it always would be. The first person to learn
-otherwise is whoever runs the suite.
+## Choose recording options
+
+| Goal | Option |
+| --- | --- |
+| Add an animated `recording.gif` | `--video` |
+| Capture the initial state, every fifth step, and final state | `--recording-detail low` |
+| Disable screenshots and video | `--recording-detail off` |
+| Show a synthetic cursor and click halo | `--highlight-cursor` |
+
+These options change evidence artifacts, not execution or verdicts.
+
+## Verify or update a recording
+
+Use `--verify` when a flow is safe to perform twice:
 
 ```bash
 flowproof record shop.flow.yaml --verify
 ```
 
-`--verify` replays the new trace once, immediately, and refuses the
-recording if it cannot reproduce itself: the trace is kept as evidence for
-`flowproof heal`, and the command exits non-zero saying so. It is opt-in
-rather than the default because it **performs the flow a second time**
-against the live application, repeating whatever that flow does: orders,
-e-mails, payments. Turn it on for a flow whose steps are safe to repeat,
-and leave it off for one that isn't.
+Verification immediately replays the new trace and refuses the recording if it
+cannot reproduce itself. It can repeat orders, emails, payments, or other side
+effects, so leave it off when repetition is unsafe.
 
-**Incremental re-record.** When the app changes, don't re-record the
-flow, re-record the step: `flowproof record calc.flow.yaml --reuse`
-walks the spec against the existing trace and reuses every old step
-whose intent still matches and whose target still resolves on the live
-app, verbatim (same selectors, zero rules/model work). Only drifted or
-new steps are authored fresh; for model-authored steps that means the
-model is consulted **only** for the drift. The summary reports the
-split: `Recorded 'Flow': 12 steps (11 reused)`.
-
-**Autonomous repair.** When a `record` step fails and an authoring model is
-configured (`flowproof config ai`), `record` does not just stop and report
-the failure. It diagnoses the failure, asks the model for a minimal edit to
-the failing step in the `.flow.yaml`, applies that edit directly, and reruns,
-up to 3 attempts, or fewer if the same failure recurs with no progress
-(treated as a Flowproof limitation rather than a fixable flow, not
-something more patching can solve). The only file this ever touches is the
-`.flow.yaml` being recorded; it never edits Flowproof's own code. A
-`<flow>.repair.json` report next to the trace records every attempt, what
-changed, and why. Pass `--no-repair` to disable this and get the original
-behavior: stop and report the first failure immediately.
-
-When the model concludes a failure is a Flowproof limitation rather than a
-fixable flow (an "engine gap"), that verdict is treated as provisional, not
-final: live evidence at the moment of failure can be ambiguous (a target
-that briefly reads as empty text, for example), so `record` gives the whole
-flow one independent, fresh attempt (a new driver session, from the top)
-before reporting a hard failure. If the fresh attempt passes outright, the
-first failure was a one-off; if it fails again and repair finds a real fix,
-that's used; if it fails the same way again, both failures are recorded in
-`<flow>.repair.json` as agreeing evidence of a genuine problem. A
-budget-exhausted verdict (repair genuinely tried several real fixes) does
-not get this free retry, only a verdict that never really tried a fix at
-all.
+Use `--reuse` when only part of an existing flow changed:
 
 ```bash
-flowproof record shop.flow.yaml --no-repair
+flowproof record shop.flow.yaml --reuse
 ```
 
-**Actionability.** Element actions don't fire on an element that merely
-exists: replay gates every click/type on **enabled** (not
-`disabled`/`aria-disabled`), **stable** (bounding box settled, no
-mid-animation clicks), and **receives events** (a click at its center
-actually reaches it, not a toast or modal backdrop), polling within the
-step's auto-wait bound. A gate that never clears fails with its name:
-`element exists but is disabled after 5000ms`, so a flake is a
-diagnosis, not a mystery.
+Flowproof reuses matching, resolvable trace steps and authors only new or
+drifted steps. If model authoring is configured, recording can also repair a
+failing spec step with a bounded set of edits. Pass `--no-repair` to stop on the
+first failure. See [Resilience and healing](resilience.md) for selector fallback
+and reviewable healing.
 
-### Running a whole suite
+Element actions wait until the target is enabled, stable, and able to receive
+events. A gate that does not clear reports the failed condition, such as
+`element exists but is disabled after 5000ms`.
 
-Point `run` at a **directory** and every `*.flow.yaml` under it (recursive,
-sorted, `.flowproof` artifact dirs skipped) replays as one suite: a failing
-flow doesn't stop the rest, each flow keeps its own run bundle, and a merged
-`<dir>/.flowproof/suite-junit.xml` (one `<testsuite>` per flow) is what CI
-ingests. Exit code is non-zero if ANY flow failed:
+## Next steps
 
-```bash
-flowproof run specs/
-flowproof run specs/ --retries 2      # re-run a flow that fails, up to twice
-```
-
-**Dev servers with file watchers.** flowproof writes each run bundle to
-`.flowproof/runs/…` inside the project, next to the spec it came from. A dev
-server watching that tree (vite, webpack-dev-server, nodemon) sees those
-files appear and reloads the app **mid-run**, which can fail a flow for
-reasons that have nothing to do with the app. Exclude the artifacts from the
-watcher: in vite that is `server.watch.ignored: ["**/.flowproof/**"]`, plus
-any directory your app writes to during a test (a JSON-file database, an
-upload folder).
-
-Deterministic replay is stable, but the infrastructure under it (a dropped
-CDP frame, a momentarily slow backend) is not; `--retries N` re-runs a
-failed flow up to N more times with a fresh driver before calling it
-failed. The web adapter reuses **one headless browser** across the whole suite
-(an isolated context per flow), so the cold start is paid once, not per flow;
-set `FLOWPROOF_NO_SHARED_BROWSER=1` to force a browser per flow. A headed run
-is private automatically: its visible browser is maximized and closes with the
-flow instead of leaving the shared keep-alive window on the desktop.
-
-**Suite manifest.** A suite usually needs sequencing a bespoke harness
-would otherwise provide: shared env, seed before each flow, cleanup after.
-Declare it in an optional `suite.yaml` next to the specs instead:
-
-```yaml
-# specs/suite.yaml
-env:
-  DM_BASE_URL: http://localhost:3000
-  DM_SESSION_COOKIE: ${DM_SESSION_COOKIE}   # re-map / compose ambient vars
-before_each: pnpm --filter app exec tsx seed.ts   # $FLOWPROOF_SPEC = the spec path
-after_each: pnpm --filter app exec tsx cleanup.ts
-order:                                       # optional; unlisted specs run after, sorted
-  - smoke/login.flow.yaml
-```
-
-`env` is exported to every flow and hook; `before_each`/`after_each` run
-via `sh -c` with the current spec path in `$FLOWPROOF_SPEC`. A hook that
-exits non-zero errors that flow; silent seed/cleanup failure is exactly
-the fragility to avoid.
-
-**Business workflows: select and guard their stages.** `order` only sorts;
-it still runs unlisted files. Use `flows` when candidate or alternative
-operations must stay out of the run:
-
-```yaml
-flows:
-  - create-order.flow.yaml
-  - receive-order.flow.yaml
-  - invoice-order.flow.yaml
-depends_on:
-  receive-order.flow.yaml: [create-order.flow.yaml]
-  invoice-order.flow.yaml: [receive-order.flow.yaml]
-stop_on_failure: true
-```
-
-`flows` is a nonempty allowlist in execution order; it cannot be combined
-with `order`. Paths must be relative files inside the suite. Dependencies
-must name selected flows earlier in that order. Invalid names, exclusions,
-duplicates and cycles fail before any data command or flow runs.
-
-A prerequisite must actually pass. A failed, errored or skipped prerequisite
-skips its dependents without launching their hooks or drivers, and makes the
-suite fail. `stop_on_failure: true` also skips independent remaining flows
-after a failure or error. Both policies are opt-in; ordinary suites still
-continue through independent failures and write a complete merged report.
-These guards apply to directory runs; running one spec directly remains an
-explicit standalone operation.
-
-**Checkpoint a reviewed business boundary.** For a selected workflow with
-`stop_on_failure: true`, use a new local checkpoint file for each intended
-business run:
-
-```bash
-flowproof run specs --vars inputs.values.yaml \
-  --checkpoint ./j45-progress.json --stop-after create-order.flow.yaml
-flowproof run specs --vars inputs.values.yaml \
-  --checkpoint ./j45-progress.json --resume
-```
-
-The first command runs through the named stage and pauses. Pending stages
-remain visible as skipped, and the incomplete suite exits nonzero. The
-second restores each confirmed stage's exports, reports it as `resumed`
-(previous evidence, not a fresh execution), and runs only unstarted stages.
-A fully completed checkpoint performs no target operations on another resume.
-Resumed stages do not mint new control-audit records or refresh their evidence
-timestamps; only stages evaluated by this invocation enter its audit record.
-An existing checkpoint requires `--resume`; it is never silently overwritten.
-
-Before an operation starts, its claim is written and synced. Only a passing
-report with all declared exports clears that claim. A failed or interrupted
-flow therefore blocks resume even if the underlying system later recovers:
-its writes may already have happened. Reconcile the business system and run
-evidence first; prepare a new reviewed continuation using the confirmed IDs.
-There is no flag that automatically retries or declares an uncertain stage
-successful. A crash can also leave `<checkpoint>.lock`: remove that lock only
-after checking that its process has stopped. Removing a stale lock does not
-clear an uncertain operation.
-
-Recovery pins the suite directory, exact suite/spec/trace/values bytes,
-parsed specs, engine binary (the native extension for Python installs),
-referenced inputs and adapter environment. The engine image is pinned once
-per invocation; business input files are rechecked at every stage boundary.
-Changed inputs are refused before replay, and each pending stage rechecks the
-pinned files and effective inputs immediately before starting. Exports must have unique producers,
-consumers must declare their prerequisites, and suite env/values cannot
-override them. All selected flows need valid traces and enabled gates.
-Checkpoint mode rejects retries, `--record-missing`, trace overrides,
-`env_from`, shell hooks, external launch commands, agent flows and
-multi-surface flows. Prepare data separately with native `--vars`.
-
-The checkpoint intentionally contains resolved business IDs and previous
-reports. Keep it in a private local directory, outside version control and
-shared CI artifacts; Unix files are mode 0600. Its checksum detects corruption,
-not tampering by somebody who can rewrite the file. Keep credentials out of
-`exports`. This is conservative orchestration, not business-level idempotency:
-recording, polling/retries inside an existing step, another checkpoint file,
-or a standalone flow can still repeat an external operation. Review the
-recorded flow and reconcile external state when an outcome is uncertain.
-
-**Minted test data: `env_from`.** Hooks are for *effects*; their stdout
-is not captured. When flows need values an external CLI mints (DataMaker
-picking a valid Material/Supplier/Plant out of SAP), declare a data
-command instead:
-
-```yaml
-env_from: datamaker sap info-record pick --plant 1010 --format env
-```
-
-It runs once before any flow (via `sh -c`, from the suite directory); its
-stdout must be `KEY=VALUE` lines (`#` comments and blank lines allowed)
-which become env vars for every flow and hook, reachable from specs as
-`${VAR}`. It fails closed: a non-zero exit or a malformed line aborts the
-run, and the command's stderr is echoed either way, so a mint script that
-explains itself is heard.
-
-The command **runs with the suite's `env:` visible**: minting test data
-almost always needs the suite's own base URL and credentials. Each `env:`
-entry is resolved against the process environment for this purpose; an
-entry that cannot resolve yet is simply not passed (it may reference this
-command's own output, and it gets its turn afterwards). Two orderings are
-easy to conflate and only the first changed: what the *command sees* now
-includes `env:`, while `${VAR}` precedence *in flows* is unchanged:
-process env, then `env_from` output, then `env:`.
-
-Suite context follows single flows too: `record` and single-spec `run`
-discover the nearest `suite.yaml` walking up from the spec (nearest wins;
-the chosen manifest is named on stderr), so a flow behaves the same alone
-as inside its suite, including at record time, when `${VAR}`s must
-already resolve. Note the trust model: running a spec executes the
-`env_from`/hooks of the suite it belongs to, same as running the suite.
-See [self-help.md](self-help.md) for the authoring loop this enables.
-
-More suite machinery, all from the first external adoption:
-
-- **`min_version: "X.Y.Z"`** in `suite.yaml`: the engine refuses to run
-  when older than the suite demands, naming both versions. Set it when
-  specs use vocabulary an older flowproof would have mishandled (before
-  0.2.2, unknown spec fields were silently ignored; now they are parse
-  errors).
-- **Missing traces skip, not abort**: a committed spec whose trace was
-  never recorded reports as junit `skipped` with the reason, instead of
-  hard-failing everyone's suite run. `--record-missing` records it in
-  place first; `--strict` restores the hard error for CI that must not
-  let coverage silently shrink. `run`'s own `--author <auto|rules|llm>`
-  only has an effect together with `--record-missing`: it picks the
-  authoring backend for whatever gets recorded, same flag and default as
-  `record`'s; on a spec that already has a trace, `run --author` is a
-  no-op.
-- **Suite `env:` is lazy per entry**: an unresolvable value warns and is
-  skipped instead of blocking flows that never reference it. A flow that
-  DOES reference it still fails at the moment of use, naming the
-  variable. (`env_from` stays fail-closed: a data command failing is
-  never ignorable.)
-- **`skip_unless_env: [FLAG]`** on a spec: first-class env-flag gating,
-  reported as junit `skipped` with the reason instead of an invisible
-  bash guard. Checked after suite env applies, so `suite.yaml` can
-  satisfy the gate; a gated flow skips even under `--strict`.
-
-Programmatic callers invoking the CLI should pass `--json`: the full
-structured report prints to stdout instead of the human-readable lines;
-never parse the prose output.
-
-```powershell
-flowproof run calc.flow.yaml --json
-```
-
-While a `--json` replay runs, each finished step prints one line to stderr
-(`  [PASS] s0003 Type 3 (41 ms)`, or `[FAIL]`, `[SKIP]`, `[ERROR]`), so a
-caller that streams stderr can show progress before the report exists.
-stdout still carries only the JSON.
+- Run multiple flows with manifests, dependencies, and checkpoints in
+  [Run a suite](suite-runs.md).
+- Add Flowproof to an existing project with [Adopting Flowproof](../adopting.md).
+- Use `--json` when another program invokes the CLI. Structured output goes to
+  stdout, while per-step progress continues on stderr.

@@ -49,7 +49,7 @@ for a window vision attaches to but never launched. Using the wrong one is a
 parse error that names the right one. A web flow sizes its page with
 `browser: viewport`, and an api flow has no window at all.
 
-### UWP and packaged apps
+## Drive UWP and packaged apps
 
 A UWP app (Calculator, Settings, anything from the Store) is not an exe you
 launch by path. Launch one through the shell, naming the package by its

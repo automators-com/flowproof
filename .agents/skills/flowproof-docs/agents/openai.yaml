@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flowproof Docs"
+  short_description: "Write clear, task-centered Flowproof documentation"
+  default_prompt: "Use $flowproof-docs to improve this documentation for accuracy, structure, scanability, and reader task success."

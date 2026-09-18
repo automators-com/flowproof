@@ -8,7 +8,7 @@ Status: **shipped**. v1 (OpenAI-compatible proxy, `assert_tool_call`), v2
 (the MCP tool boundary, stdio and streamable-HTTP) are all built; the
 `## Phasing` section below is authoritative on what landed when, and
 "Settled in review" records the design calls. A complete, runnable example
-ships in [`examples/agent-demo/`](../examples/agent-demo/).
+ships in [`examples/agent-demo/`](../../examples/agent-demo/).
 
 ## How a test runs with no model
 
@@ -50,7 +50,7 @@ And this is where a regression surfaces: if the agent calls a different tool
 or passes a different argument, the request no longer matches what was
 recorded, and replay fails with a divergence rather than passing quietly.
 
-### So what is actually under test?
+## What is actually under test?
 
 A fair objection: if the model is a recording and the tools are mocks, what
 is left? The answer is specific, and it is worth being blunt about both
@@ -94,7 +94,7 @@ The model said "call it"; the test proves your agent did not. That is a
 regression test you cannot practically run against a live model, because
 you would be paying to re-roll a dice you already know the face of.
 
-### Wiring a real agent: env, handles, and the record upstream
+## Wire a real agent
 
 The runtime contract, in one place, because an adopter whose agent is not a
 plain SDK loop hits all of it at once.
@@ -133,7 +133,9 @@ from one base all route to the same stand-in. You do not need one listener
 per path; you need the base to point at the stand-in, which is what
 `${flowproof.mcp_url.<name>}` is for.
 
-**Check the wiring before writing a spec.** The failure above is the
+### Check the wiring before writing a spec
+
+The failure above is the
 commonest one in adoption, and it used to be found only after a spec was
 written and a key spent. `flowproof doctor` answers the same question in
 seconds, with no spec, no assertions and no key:
@@ -189,7 +191,9 @@ SUBSTRING of the path, so a base URL with a doubled `/v1` still reaches it.
 Picking `${flowproof.proxy_url}` where you wanted `${flowproof.proxy_url_no_v1}`
 is therefore not a silent failure mode.
 
-**Testing an unreleased fix.** An adopter who hits a gap should not have to
+### Test with an unreleased Flowproof binary
+
+An adopter who hits a gap should not have to
 wait for a release to test the fix. `FLOWPROOF_BIN` points the launcher at
 any build:
 
@@ -207,7 +211,9 @@ the branch carrying the fix. CI should NOT set this - a suite whose job is to
 prove the RELEASED package works must use the released package.
 
 
-**Recording needs a real model.** Replay needs nothing, but `record` has to
+### Configure the recording upstream
+
+Replay needs nothing, but `record` has to
 call something. The upstream is read from, in order:
 
 1. `FLOWPROOF_AGENT_UPSTREAM` - an OpenAI-compatible base URL, including a
@@ -219,7 +225,9 @@ The key is read from `FLOWPROOF_AGENT_KEY`, then `ANTHROPIC_API_KEY`, then
 `OPENAI_API_KEY`. It goes into the outbound `Authorization` header and
 nowhere else: the trace stores request bodies only, so no key reaches disk.
 
-**What `assert: reply contains` reads.** The content of the LAST assistant
+### Understand what `reply` reads
+
+The content of the LAST assistant
 message in the trajectory - taken from the model boundary, NOT from the
 agent's stdout. This matters for any agent that returns its answer over SSE,
 polling, a queue, or a subprocess boundary: none of that affects the
@@ -227,12 +235,14 @@ assertion, because the reply is read where the model produced it. A
 trajectory whose last turn is a tool call has no reply yet, which is a real
 state rather than an empty string.
 
-**`assert_no_egress` is enforced on Linux only.** On macOS and Windows the
+### Know the boundary limitations
+
+`assert_no_egress` is enforced on Linux only. On macOS and Windows the
 run reports "not contained" and the assertion fails as a capability error
 rather than passing vacuously, so it will not silently certify nothing. See
 [Egress containment](#egress-containment).
 
-**Two limits to know before you start**, because they shape what a flow can
+Two additional limits shape what a flow can
 express rather than being details you hit later:
 
 - **A bare `prompt:` flow is still ONE turn, not a conversation.** Every
