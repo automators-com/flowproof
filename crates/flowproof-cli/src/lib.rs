@@ -461,6 +461,10 @@ enum Command {
         /// (`--agent` only).
         #[arg(long, default_value = "Say hello.")]
         prompt: String,
+        /// Emit the whole report as one JSON object instead of human text
+        /// (the exit code still carries pass/fail/error).
+        #[arg(long)]
+        json: bool,
     },
     /// EXPERIMENTAL: draft a `.flow.yaml` from a requirement/test-case
     /// document (PDF export from a test-management tool). DRAFT only —
@@ -3697,13 +3701,14 @@ where
             ai,
             timeout,
             prompt,
+            json,
         } => match (agent, sap, fiori, ai) {
             (Some(agent), false, false, false) => {
-                agent_flow::cmd_doctor_agent(&agent, timeout, &prompt)
+                agent_flow::cmd_doctor_agent(&agent, timeout, &prompt, json)
             }
-            (None, true, false, false) => doctor::cmd_doctor_sap(),
-            (None, false, true, false) => doctor::cmd_doctor_fiori(timeout),
-            (None, false, false, true) => doctor::cmd_doctor_ai(),
+            (None, true, false, false) => doctor::cmd_doctor_sap(json),
+            (None, false, true, false) => doctor::cmd_doctor_fiori(timeout, json),
+            (None, false, false, true) => doctor::cmd_doctor_ai(json),
             (None, false, false, false) => {
                 Err("specify one of --agent <command>, --sap, --fiori, or --ai".to_string())
             }
