@@ -511,19 +511,27 @@ fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
 
+/// Render one Rust string as a single YAML scalar, so a URL or name with
+/// YAML-significant characters (a literal `: `, a leading `#`) cannot be
+/// misparsed when spliced into the hand-built flow spec above.
+fn yaml_scalar(s: &str) -> Result<String, String> {
+    let doc = serde_yaml::to_string(s).map_err(|e| format!("encoding YAML scalar: {e}"))?;
+    Ok(doc.trim_end().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn report_serialises_checks_and_pass_under_the_area() {
+    fn report_serialises_checks_and_pass_under_the_area() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut report = DoctorReport::new("ai");
         report.check("ok", "provider", "anthropic");
         report.note(true, "fail", "api key", "not configured");
         report.pass = false;
 
-        let value: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&serde_json::to_string(&report)?)?;
         assert_eq!(value["area"], "ai");
         assert_eq!(value["pass"], false);
         assert_eq!(value["checks"][0]["name"], "provider");
@@ -532,13 +540,6 @@ mod tests {
         assert_eq!(value["checks"][1]["name"], "api key");
         assert_eq!(value["checks"][1]["status"], "fail");
         assert_eq!(value["checks"][1]["message"], "not configured");
+        Ok(())
     }
-}
-
-/// Render one Rust string as a single YAML scalar, so a URL or name with
-/// YAML-significant characters (a literal `: `, a leading `#`) cannot be
-/// misparsed when spliced into the hand-built flow spec above.
-fn yaml_scalar(s: &str) -> Result<String, String> {
-    let doc = serde_yaml::to_string(s).map_err(|e| format!("encoding YAML scalar: {e}"))?;
-    Ok(doc.trim_end().to_string())
 }
