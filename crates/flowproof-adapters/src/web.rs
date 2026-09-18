@@ -12,7 +12,7 @@ use std::time::Duration;
 use flowproof_driver::{
     AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector, WebSession,
 };
-use headless_chrome::browser::tab::{ModifierKey, Tab};
+use headless_chrome::browser::tab::{ModifierKey, NoElementFound, Tab};
 use headless_chrome::protocol::cdp::Target::CreateTarget;
 use headless_chrome::protocol::cdp::{Accessibility, Emulation, Input, Network, Page, DOM};
 use headless_chrome::types::Bounds;
@@ -5522,9 +5522,14 @@ impl AppDriver for WebAppDriver {
 
     fn password_rects(&mut self) -> Result<Vec<PixelRect>, DriverError> {
         let tab = self.tab()?;
-        let fields = tab
-            .find_elements("input[type=password]")
-            .map_err(|e| web_err("finding password fields", e))?;
+        // A page with no password input is the ordinary case and has nothing
+        // to mask; headless_chrome's find_elements reports an empty match as
+        // an error, so only genuine CDP failures may abort the resolution.
+        let fields = match tab.find_elements("input[type=password]") {
+            Ok(fields) => fields,
+            Err(e) if e.downcast_ref::<NoElementFound>().is_some() => Vec::new(),
+            Err(e) => return Err(web_err("finding password fields", e)),
+        };
         let mut rects = Vec::new();
         for field in fields {
             // Hidden wizard pages still contain password inputs, but have no
