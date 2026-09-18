@@ -29,8 +29,9 @@ pub use repair::{
     ProposedPatch, RepairAttempt, RepairError, RepairOptions, RepairOutcome, RepairReport,
 };
 pub use spec::{
-    check_control_ids, DeliverySpec, FlowSpec, LoginSpec, McpServerSpec, SessionRef, SpecStep,
-    SuiteManifest,
+    check_control_ids, DataBinding, DataExecution, DataFailurePolicy, DataProvider, DataRows,
+    DataRowsMode, DataShard, DeliverySpec, FlowSpec, LoginSpec, McpServerSpec, SessionRef,
+    SpecStep, SuiteManifest,
 };
 
 use std::env;
