@@ -68,7 +68,10 @@ impl DoctorReport {
 
     pub fn emit(&self, json: bool) -> Result<(), String> {
         if json {
-            println!("{}", serde_json::to_string(self).map_err(|e| e.to_string())?);
+            println!(
+                "{}",
+                serde_json::to_string(self).map_err(|e| e.to_string())?
+            );
         }
         Ok(())
     }
@@ -107,7 +110,12 @@ pub fn cmd_doctor_sap(json: bool) -> Result<u8, String> {
                 "SAP_CONNECTION is not set; observing attach-only (any open session).",
             );
         } else {
-            report.note(json, "ok", "connection", format!("SAP_CONNECTION={connection}"));
+            report.note(
+                json,
+                "ok",
+                "connection",
+                format!("SAP_CONNECTION={connection}"),
+            );
         }
 
         let observation =
@@ -119,7 +127,12 @@ pub fn cmd_doctor_sap(json: bool) -> Result<u8, String> {
                 "sap gui",
                 "SAP Logon is not reachable: no 'SAPGUI' entry in the Running Object Table.",
             );
-            report.note(json, "fail", "sap gui", "Start SAP Logon (or SAP GUI) and try again.");
+            report.note(
+                json,
+                "fail",
+                "sap gui",
+                "Start SAP Logon (or SAP GUI) and try again.",
+            );
             report.emit(json)?;
             return Ok(EXIT_FAIL);
         }
@@ -137,12 +150,22 @@ pub fn cmd_doctor_sap(json: bool) -> Result<u8, String> {
             );
         }
         if observation.sessions.is_empty() {
-            report.note(json, "warn", "session", "no session found on this connection.");
+            report.note(
+                json,
+                "warn",
+                "session",
+                "no session found on this connection.",
+            );
         }
         for session in &observation.sessions {
             match session {
                 flowproof_adapters::sap_com::SapSessionState::LoggedIn(user) => {
-                    report.note(json, "ok", "session", format!("session logged in as {user}"));
+                    report.note(
+                        json,
+                        "ok",
+                        "session",
+                        format!("session logged in as {user}"),
+                    );
                 }
                 flowproof_adapters::sap_com::SapSessionState::AtLoginScreen => {
                     report.note(
@@ -243,7 +266,12 @@ pub fn cmd_doctor_fiori(timeout_secs: u64, json: bool) -> Result<u8, String> {
         // path, which is not a redirect - compare with that difference
         // ignored so a same-origin request doesn't print a false one.
         if final_url.trim_end_matches('/') != url.trim_end_matches('/') {
-            report.note(json, "warn", "redirect", format!("redirected to: {final_url}"));
+            report.note(
+                json,
+                "warn",
+                "redirect",
+                format!("redirected to: {final_url}"),
+            );
         }
     }
 
@@ -408,13 +436,21 @@ pub fn cmd_doctor_ai(json: bool) -> Result<u8, String> {
     if !json {
         println!(
             "api key: {}",
-            if key_configured { "configured" } else { "not configured" }
+            if key_configured {
+                "configured"
+            } else {
+                "not configured"
+            }
         );
     }
     report.check(
         if key_configured { "ok" } else { "fail" },
         "api key",
-        if key_configured { "configured" } else { "not configured" },
+        if key_configured {
+            "configured"
+        } else {
+            "not configured"
+        },
     );
 
     if !config.is_usable() {
@@ -459,7 +495,12 @@ pub fn cmd_doctor_ai(json: bool) -> Result<u8, String> {
             Ok(EXIT_FAIL)
         }
         Err(e) => {
-            report.note(json, "fail", "model call", format!("model call failed: {e}"));
+            report.note(
+                json,
+                "fail",
+                "model call",
+                format!("model call failed: {e}"),
+            );
             report.emit(json)?;
             Ok(EXIT_FAIL)
         }

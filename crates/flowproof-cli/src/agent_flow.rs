@@ -1827,9 +1827,15 @@ pub fn cmd_doctor_agent(
     if arrived == 0 {
         if !json {
             println!();
-            println!("NOTHING reached the proxy. The client is not honouring the base URL flowproof");
-            println!("injected (OPENAI_BASE_URL, OPENAI_API_BASE, OPENAI_BASE, ANTHROPIC_BASE_URL,");
-            println!("FLOWPROOF_LLM_PROXY). If it reads a different variable, or builds its base URL");
+            println!(
+                "NOTHING reached the proxy. The client is not honouring the base URL flowproof"
+            );
+            println!(
+                "injected (OPENAI_BASE_URL, OPENAI_API_BASE, OPENAI_BASE, ANTHROPIC_BASE_URL,"
+            );
+            println!(
+                "FLOWPROOF_LLM_PROXY). If it reads a different variable, or builds its base URL"
+            );
             println!("from a config object, map it in `agent.env`:");
             println!();
             println!("    env:");
@@ -1866,7 +1872,9 @@ pub fn cmd_doctor_agent(
         println!();
         println!("At least one client reached the proxy, so recording can capture that traffic.");
         println!("This does NOT prove every model call goes through flowproof: an agent with more");
-        println!("than one client can reach the proxy with one and the real provider with another.");
+        println!(
+            "than one client can reach the proxy with one and the real provider with another."
+        );
         println!("`record` is the check that settles it - it fails and writes no trace if nothing");
         println!("is captured.");
     }
