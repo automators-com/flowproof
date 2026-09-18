@@ -3,20 +3,18 @@ title: "Test cases that span technologies"
 description: "How multi-surface flows record and replay across apps and surfaces with exports: and apps: + in: blocks."
 ---
 
-> Status: Phases 1 and 2 are **shipped**. `exports:` chains
-> single-surface flows through a suite
-> ([authoring.md](authoring/variables-and-exports.md#handing-a-value-to-the-next-flow-exports)),
-> and multi-surface flows record AND replay
-> ([authoring.md](authoring/multi-surface-flows.md)):
-> `apps:` + `in:` blocks, one surface active at a time, captures crossing
-> blocks, per-step surface attribution, replay from the trace alone with
-> zero LLM calls. Per-surface `browser:` and `window:` are shipped (vision
-> surfaces included), and `assert_screenshot` baselines are
-> surface-qualified (`<name>@<surface>.png`), and `heal` runs on the same
-> surface registry recording uses. **Nothing from Phase 2 remains open.**
-> The one multi-surface shape still refused is a surface that names a
-> `login:`: nothing stages a surface's credentials yet ([below](#phase-2-multi-surface-flows-shipped)).
-> Phase 3 remains a proposal.
+| Capability | Status | Use it for |
+| --- | --- | --- |
+| Suite `exports:` | Shipped | Pass a captured value from one single-surface flow to the next |
+| `apps:` with `in:` blocks | Shipped | Move between named UI surfaces inside one flow |
+| Per-surface SAP `login:` | Validated but refused at runtime | Reserve the configuration shape without silently using the wrong session |
+| Agent segments inside a multi-surface flow | Design only | A future agent-to-UI handoff inside one trace |
+
+Multi-surface flows support per-surface `browser:` and `window:`
+configuration; surface-qualified screenshot baselines; captures across
+blocks; healing; and deterministic replay with zero LLM calls. Per-surface
+SAP `login:` parses and validates, but recording and healing refuse it until
+credential staging is implemented.
 
 ## The problem
 
@@ -149,9 +147,9 @@ ratchet still applies: `docs/trace-format.md` and
 change. Replay routes each recorded step to its recorded surface through a
 driver registry holding one driver per named app.
 
-Open questions Phase 2 must answer before it ships:
+Phase 2 also delivered these supporting behaviors:
 
-- `window:` geometry and `browser:` config become per-surface.
+- `window:` geometry and `browser:` config are per-surface.
 - `flowproof heal` heals multi-surface flows: healing is re-record-plus-
   diff, so the registry does the surface work, and a step that moved
   between surfaces diffs as a `surface` change. Shipped.

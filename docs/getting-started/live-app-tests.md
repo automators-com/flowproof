@@ -7,6 +7,8 @@ Two live-app tests drive real applications, both Windows-only and gated on
 `FLOWPROOF_E2E=1` (the gate variable's name is a stable interface and
 predates the current naming):
 
+## Run the Windows tests
+
 ```powershell
 $env:FLOWPROOF_E2E = "1"
 cargo test -p flowproof-cli --test calc_e2e -- --nocapture     # needs a desktop VM
@@ -19,7 +21,7 @@ record→replay spine is proven on every push. Calculator stays a manual VM
 walkthrough because GitHub's Windows Server runners don't ship the
 Calculator app.
 
-### Deploying a UWP app on a CI runner
+## Deploy a UWP app on a CI runner
 
 A Windows Server runner can still run a UWP app the suite needs: you
 build and side-load it in the workflow. The sequence below is the one
@@ -45,6 +47,8 @@ Two UWP-specific traps for specs and window handling: the visible window
 belongs to **ApplicationFrameHost**, not the app's own process: target
 windows by *title*, never by process; and the frame window is the one
 `window:` geometry applies to.
+
+## Choose an SAP test tier
 
 SAP has three tiers: `sap_pipeline` (in-memory fake engine, every
 platform, plain `cargo test`), `sap_sim_e2e` (the REAL COM engine against

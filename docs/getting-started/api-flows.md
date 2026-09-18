@@ -7,6 +7,8 @@ Not every test drives a UI. `app: api` runs a flow of **out-of-band
 assertions only** (HTTP status/body and SQL row checks) with no browser
 and no window launched, on any platform:
 
+## Write an API-only flow
+
 ```yaml
 name: Provisioning API
 app: api
@@ -29,6 +31,8 @@ with no UI to drive; they run through the same deterministic record/replay
 spine (zero model calls), and the connection names and `${VAR}` hosts never
 enter the trace. See `examples/api/health.flow.yaml`.
 
+## Repeat a check over several values
+
 A repeated block with one value changing collapses into a `foreach`
 values matrix: scalars use `${each}`, mappings use `${each.<key>}`
 (whole-string tokens keep their YAML type, so `status: ${each.status}`
@@ -47,7 +51,7 @@ steps:
             body_contains: "Database not yet supported!"
 ```
 
-### Minting traces offline against a contract responder
+## Mint traces offline against a contract responder
 
 Traces store only raw `${VAR}` references, verified end to end: no
 resolved host, token, or connection string ever lands in the file. That

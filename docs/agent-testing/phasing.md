@@ -3,11 +3,17 @@ title: "Phasing"
 description: "What landed in v1, v2, and v3 of agent-boundary testing."
 ---
 
-1. **v1**: OpenAI-compatible chat-completions proxy (non-streaming),
+The agent-testing surface shipped in three compatibility-preserving phases.
+
+## v1: OpenAI-compatible model boundary
+
+OpenAI-compatible chat-completions proxy (non-streaming),
    `app: agent` process driver, cassette in trace v1 (additive header +
    step artifacts), `assert_tool_call` grammar, trajectory diff on
    re-record.
-2. **v2**: **Landed** - the Anthropic Messages API (`/v1/messages`) and
+## v2: Anthropic, streaming, and HTTP targets
+
+**Landed:** the Anthropic Messages API (`/v1/messages`) and
    streaming replay for both dialects. A request with `stream: true` is served
    the recorded turn as a synthetic SSE stream in the client's own dialect
    (OpenAI chat-completion chunks, or Anthropic `message_start` /
@@ -24,7 +30,9 @@ description: "What landed in v1, v2, and v3 of agent-boundary testing."
    back to the agent. Also landed: **http-target agents** (drive an
    already-running service via `agent.url` instead of spawning a process; see
    "Driving a running service" above). v2 is complete.
-3. **v3**: MCP servers as a second mockable boundary, for systems whose
+## v3: MCP tool boundary
+
+MCP servers are a second mockable boundary for systems whose
    tools are external MCP processes rather than internal functions.
    **Landed (v3.1)**: the stdio transport, with per-tool result mocks and
    per-server strict-positional lanes in the trace (see "Mocking MCP tool

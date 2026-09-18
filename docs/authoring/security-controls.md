@@ -11,6 +11,8 @@ below add just enough to NAME a control stably and to assert one class of
 access-control pattern needs no new step at all (see below); it is composed
 from grammar you already have.
 
+## Know what the control surface covers
+
 What v1 ships, stated plainly so nothing here is mistaken for more:
 
 - The `control:` block on any flow (a stable id for coverage).
@@ -23,7 +25,7 @@ What v1 ships, stated plainly so nothing here is mistaken for more:
   flow's verdict with an evidence pointer, and with `--since <run-id>` diffs
   two runs by control id (added, removed, verdict-changed).
 
-### Naming a control: the `control:` block
+## Name a control with `control:`
 
 A flow-level block, at most one per flow, gives the control a stable id:
 
@@ -54,7 +56,7 @@ id is a suite-load error naming BOTH flows, because a duplicated join key
 would corrupt the coverage map. A lone `flowproof run` on a single flow sees
 only that flow, so it neither checks nor needs uniqueness.
 
-### Access-control regression (a pattern, not a step)
+## Prove an access-control denial
 
 The highest-value control in practice is "identity X must be denied action
 Y". It is NOT a new `assert_no_*` subject. "Unauthorized access" is not a
@@ -76,7 +78,7 @@ The worked example lives at
 declaring identities and a `viewer-cannot-delete.flow.yaml` that carries the
 liveness proof and the denial side by side. See it for the full flow.
 
-### `assert_no_secret_leak: ${VAR}` (v1)
+## Detect a named secret leak
 
 The engine already guarantees the TRACE never stores a secret (`${VAR}`
 resolves at the moment of use, only the reference is written). That protects
@@ -135,7 +137,7 @@ declaration gives it a defined domain (`${APP_URL}`, `${API}`, and minted
 test data legitimately appear in output, so a bare scan would false-fail on
 nearly every flow).
 
-### `flowproof audit`: the control map
+## Build the control map with `flowproof audit`
 
 A suite run already yields per-flow verdicts and writes one structured run
 record at `.flowproof/runs/<run-id>/report.json`. `flowproof audit <dir>` READS

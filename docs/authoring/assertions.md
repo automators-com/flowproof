@@ -11,6 +11,8 @@ The grammar below remains available without a model and with `--author rules`.
 All assertion forms **auto-wait** (default 10s, recorded into the trace);
 append `within <N>s` to any form to change the bound.
 
+## Assertion reference
+
 | Assert | Meaning |
 |---|---|
 | `page shows <text>` | the whole surface (page text / window subtree / SAP session / OCR frame) contains `<text>`; `the page shows <text>` also accepted |
@@ -81,7 +83,7 @@ Checkboxes map `cy.check()` / `should("be.checked")`:
 - assert: the "Remember me" checkbox is not checked
 ```
 
-### Scoped targets: table cells and list items, by identity
+## Scope targets by table row or list item
 
 Repeated UI - a grid's rows, a list's items, a board's cards - needs a way
 to say WHICH one without counting. Both forms name the region by its

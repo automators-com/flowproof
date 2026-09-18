@@ -3,6 +3,8 @@ title: "Running agent flows"
 description: "Running an agent flow, driving a running service with url:, and mocking MCP tool servers with mcp:."
 ---
 
+## Run an agent as a command
+
 The agent under test is an ordinary process flowproof spawns (`agent.command`).
 Five facts about the runtime contract, all exercised by
 [`examples/agent-demo/`](../../examples/agent-demo/):
@@ -80,7 +82,7 @@ And one the demo cannot show you, because the demo works:
   its client never honoured the injected base URL, which is what
   `flowproof doctor` diagnoses.
 
-### Driving a running service (`url:`)
+## Drive a running service with `url:`
 
 Instead of a `command` flowproof starts, an agent flow can drive a service
 that is ALREADY running, by POSTing to it:

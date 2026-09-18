@@ -1,13 +1,10 @@
 ---
-title: "Installation"
-description: "Install flowproof and run the agent quickstart: record a flow once, then replay it with zero LLM calls."
+title: "Install Flowproof"
+description: "Install Flowproof, verify the CLI, and choose the guide for the system you need to test."
 ---
 
-flowproof records a flow once from a natural-language YAML spec, then replays
-it deterministically - **zero LLM calls at replay time**.
-
-Start with the agent quickstart below. The UI walkthrough after it is the
-same idea applied to a desktop app, and needs Windows.
+Flowproof records a natural-language YAML flow once, then replays the resulting
+trace deterministically with zero LLM calls.
 
 ## Install
 
@@ -30,10 +27,32 @@ The npm package resolves a platform binary for linux-x64, darwin-x64,
 darwin-arm64 and win32-x64. On any other platform install from PyPI instead;
 `npx flowproof` will say so rather than fail obscurely.
 
-Building from source instead? You need Rust and maturin: `pip install .`
-from `sdk/python` compiles the engine automatically.
+Confirm the installation:
 
-**Staying current.** Every command checks (at most once a day, cached) whether
+```bash
+flowproof --version
+```
+
+## Choose what to test
+
+| Goal | Start here |
+| --- | --- |
+| Record and replay a first agent or UI flow | [Record and replay](record-and-replay.md) |
+| Test an AI agent's model and tool behavior | [Agent flows](agent-flows.md) |
+| Drive a browser | [Web flows](web-flows.md) |
+| Test HTTP or SQL without a UI | [API-only flows](api-flows.md) |
+| Drive Windows, SAP GUI, or Citrix | [Live application tests](live-app-tests.md) |
+| Run several flows with shared setup | [Run a suite](suite-runs.md) |
+| Configure credentials and model access | [Secrets and configuration](secrets-and-config.md) |
+
+## Build from source
+
+You need Rust and maturin. Run `pip install .` from `sdk/python` to compile
+and install the engine.
+
+## Control update notices
+
+Every command checks at most once a day (cached) whether
 a newer release exists, and prints a one-line notice to stderr if so, never
 to stdout, so `--json` output and scripted use stay clean. Set
 `FLOWPROOF_NO_UPDATE_CHECK` (any value) to disable it entirely, e.g. for CI or

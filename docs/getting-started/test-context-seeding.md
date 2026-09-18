@@ -3,6 +3,8 @@ title: "Test-context seeding"
 description: "Sessions, fixtures, and navigation seeding, including declaring a shared identity once and referencing it by name."
 ---
 
+## Seed one flow
+
 Real app suites don't rebuild their starting state through the UI in
 every test: they inject it and start on the page under test. That
 covers two idioms, and the `session:` block handles both:
@@ -67,7 +69,7 @@ it in the assertion explicitly.
 `Go to` takes a path (resolved against the flow URL's origin) or a full
 URL.
 
-### Shared identities: declare once, reference by name
+## Share identities across a suite
 
 An access-control suite runs the same flows as several identities (a viewer,
 an admin), so repeating the `session:` mapping in every flow is noise. Declare

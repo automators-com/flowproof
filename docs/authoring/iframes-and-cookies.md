@@ -3,6 +3,8 @@ title: "iframes and cookies"
 description: "Same-origin iframe assertions and cookie controls for web flows."
 ---
 
+## Target an element inside an iframe
+
 An element inside an iframe is addressed with the same target-tail shape as
 a container scope:
 
@@ -24,6 +26,8 @@ assertion fails even when an identically named element sits on the page
 outside it. That is the whole point - a scope that silently fell back to
 the main document would pass green on the wrong element.
 
+## Interpret iframe failures
+
 Three failures are kept distinct so none of them can read as a pass:
 
 | Situation | What happens |
@@ -31,6 +35,8 @@ Three failures are kept distinct so none of them can read as a pass:
 | the named iframe is not on the page | fails naming the frames that ARE there (`iframe 'invoice' was never found (iframes present: checkout, receipt)`) |
 | the iframe is cross-origin | the run ERRORS - the same-origin policy walls off the document, so the assertion cannot be checked, and it is never silently passed |
 | the element is not inside the frame | an ordinary miss, reported as `inside iframe '<frame>'` so it is not confused with a page-wide miss |
+
+## Supported iframe actions and limits
 
 Limits in v1, each for a reason rather than for later:
 
@@ -91,7 +97,7 @@ Limits in v1, each for a reason rather than for later:
 - **One frame, no combining.** A frame scope cannot be nested inside a
   container or cell scope yet; one context per target.
 - An ordinal cannot address a frame (`the 2nd iframe`): name it.
-### Cookie controls (web, security)
+## Verify cookie security controls
 
 "The session cookie is httpOnly" is a control that regresses SILENTLY: an
 auth library config changes, the cookie becomes readable by page scripts,

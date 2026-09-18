@@ -3,6 +3,8 @@ title: "Spec shape and assertions"
 description: "The shape of an agent-flow spec, argument assertions, and making a guard flow prove enforcement, not compliance."
 ---
 
+## Write an agent spec
+
 ```yaml
 name: Booking assistant books a flight
 app: agent
@@ -78,7 +80,7 @@ on `assert_no_tool_call` to forbid a specific shape of call:
 - assert_no_tool_call: issue_refund where status equals approved   # guard path
 ```
 
-### Making a guard flow prove enforcement, not compliance
+## Make a guard flow prove enforcement, not compliance
 
 `assert_no_tool_call` is worth reading precisely. It proves the agent did
 not ASK for the tool, given the model response in the recording. It does

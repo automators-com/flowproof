@@ -3,6 +3,8 @@ title: "When authoring gets stuck"
 description: "What happens when a step cannot be authored, and drafting a spec from a requirement document with author-from-doc."
 ---
 
+## Choose the intended authoring backend
+
 In auto mode, plain freeform UI text (for example, `Smash the shiny
 button`) is model intent. The model receives the live scene and must ground
 its answer to one of the listed target tokens; it cannot invent a selector.
@@ -16,6 +18,8 @@ warning before trying the deterministic grammar. This fallback is identified as
 its own `fallback` route in
 the per-step human and structured diagnostics, so ordinary prose is never
 silently mistaken for deliberate rule syntax.
+
+## Resolve an ambiguous step
 
 When a step is too *ambiguous* to author at all ("make required field
 changes", which fields?, or `Enter it` with several remembered values),

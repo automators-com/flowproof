@@ -3,6 +3,11 @@ title: "Out-of-band assertions"
 description: "Structured assertions outside the UI, including assert_spreadsheet and how reads vs. writes are retried."
 ---
 
+Out-of-band assertions verify system state directly instead of reading it
+through the UI. They use the same record-and-replay lifecycle as UI assertions.
+
+## Assert SQL rows and HTTP responses
+
 ```yaml
 - assert_sql:
     connection: reporting        # resolved from FLOWPROOF_SQL_REPORTING
@@ -45,6 +50,8 @@ when the probe fires (record and every replay). `body` is any YAML
 application/json` unless you set your own `content-type` header (yours
 wins). A `body` on GET/HEAD/DELETE is rejected at parse time.
 
+### Assert a JSON response field
+
 `body_json` reads a value out of the JSON response and asserts on it,
 alongside `status` and `body_contains` (all three may appear on one step;
 they are checked in the order status, then body_contains, then body_json).
@@ -77,6 +84,8 @@ JSON"; a path that runs off the document names the segment where it died
 on an object or array reports "path resolves to a non-scalar; assert a leaf
 value".
 
+### Assert a response header
+
 `header` asserts on a response header, alongside `status`, `body_contains`,
 and `body_json` (all may appear on one step; they are checked in the order
 status, then body_contains, then body_json, then header). The header NAME is
@@ -98,6 +107,8 @@ replay. The failure modes are soft: an absent header reports "response has no
 '<name>' header (status <code>)", and a value mismatch reports "header
 '<name>' is '<actual>', expected <equals|contains> '<want>' (status <code>)".
 
+### Count JSON collection elements
+
 `count` (exactly N) and `count_at_least` (a minimum) ask how many elements
 are in the array at `body_json`. Either requires `body_json`, at most one of
 the two may appear, and neither pairs with `equals` (a count needs an array,
@@ -108,7 +119,7 @@ actually there: "path 'page' is an object, count requires an array (status
 expected exactly 9 (status 200)". Both are soft failures, so on a `GET` they
 auto-wait: "poll until the collection has N rows" is a real pattern.
 
-### assert_spreadsheet: an exported file, read directly
+## Read an exported spreadsheet directly
 
 ```yaml
 - assert_spreadsheet:
@@ -148,7 +159,7 @@ just-landed download may still be mid-write when the first poll fires, so
 the auto-wait loop keeps re-opening the file until it resolves or the bound
 (`timeout_seconds`, default 10s) elapses.
 
-### Retries: reads are polled, writes are sent once
+## Retry reads without repeating writes
 
 A failing assertion auto-waits by RE-SENDING its probe until the bound
 expires. That is right for a read (the API is still converging) and wrong

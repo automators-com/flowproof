@@ -11,12 +11,24 @@ from urllib.parse import unquote
 
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 WORD_RE = re.compile(r"\b[\w'-]+\b")
+FRONTMATTER_RE = re.compile(r"\A---\r?\n(?P<body>.*?)\r?\n---", re.DOTALL)
+TITLE_RE = re.compile(r"(?m)^title:\s*\S.*$")
 SKIP_SCHEMES = ("http://", "https://", "mailto:", "tel:")
+
+
+def is_public_doc(page: Path) -> bool:
+    """Match the docs renderer: published pages require a frontmatter title."""
+    frontmatter = FRONTMATTER_RE.match(page.read_text(encoding="utf-8"))
+    return bool(frontmatter and TITLE_RE.search(frontmatter.group("body")))
 
 
 def markdown_files(root: Path) -> list[Path]:
     files = [root / "README.md"] if (root / "README.md").is_file() else []
-    files.extend(sorted((root / "docs").rglob("*.md")))
+    files.extend(
+        page
+        for page in sorted((root / "docs").rglob("*.md"))
+        if is_public_doc(page)
+    )
     return files
 
 

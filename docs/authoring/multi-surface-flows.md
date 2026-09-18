@@ -3,6 +3,8 @@ title: "Multi-surface flows"
 description: "Flows that cross apps: and in: blocks, one surface active at a time."
 ---
 
+## Declare the surfaces and steps
+
 One test case, several technologies, one flow file, one trace. Declare the
 surfaces under `apps:` and put steps in `in:` blocks; exactly one surface
 is active at a time, and captures share one namespace across blocks:
@@ -24,6 +26,8 @@ steps:
       - Type ${captured.order} into the "Search" field
       - assert: page shows ${captured.order}
 ```
+
+## Multi-surface guarantees and constraints
 
 What holds, and why:
 
@@ -117,6 +121,8 @@ What holds, and why:
   re-record-plus-diff, so it runs on the same surface registry recording
   uses, and a step that moved between surfaces is flagged as a `surface`
   change: the same action against another app is not the same step.
+
+## Prefer a suite for a one-way handoff
 
 When the case is "do in system A, prove in system B" with no ping-pong, a
 suite of single-surface flows chained with

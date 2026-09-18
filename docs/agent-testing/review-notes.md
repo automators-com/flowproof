@@ -7,6 +7,8 @@ The three questions this design left open have answers, and they are the
 same answer three times: a test that quietly tolerates drift stops being a
 test.
 
+## Match cassette turns by body
+
 **Cassette matching is strict by BODY, and every turn is consumed exactly
 once.** The sketch proposed matching a structural envelope plus a normalized
 prompt hash, with named holes for volatile spans. Still rejected: an edited
@@ -35,6 +37,8 @@ matching one: model, tool names and message roles are compared and
 reported before any message body, because a byte diff of two 8000-token
 prompts is unreadable and "you added a tool" is a one-line answer.
 
+## Fail at the first genuine divergence
+
 **Divergence fails at the first bad turn.** No searching forward for a
 turn that fits. Once a trajectory has diverged its later turns say
 nothing about the system under test, and continuing would report a
@@ -42,6 +46,8 @@ cascade whose only real cause was the first failure. (Reordering
 tolerance, which this bullet once deferred, is now part of matching - see
 above. Failing fast is unaffected: it is about not searching PAST a
 genuine divergence, not about the order of concurrent calls.)
+
+## Select the task conversation's final reply
 
 **`reply` is the final assistant message of the conversation the flow is
 about.** Not the process's stdout, which this document originally

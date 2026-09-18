@@ -3,6 +3,8 @@ title: "Agent flows and app sugar"
 description: "The app: agent step grammar and shorthand sugar for common app configurations."
 ---
 
+## Agent step reference
+
 An `app: agent` flow tests an AI agent at the model boundary rather than a
 UI, so it has its own small step vocabulary, documented in full in
 [agent-testing.md](../agent-testing/index.md). Unlike the forms above, these are
@@ -20,7 +22,7 @@ LLM author. The step forms:
 `agent:` (command/env), `tools:` (the boundary mocks), and `strict:` are
 spec-level config, like `mock:` and `browser:` above.
 
-## App sugar
+## Use shorthand for desktop apps
 
 Sugar is an alias layer, not a cage: on every UIA-driven app (`calc`,
 `notepad`, and the `app:` mapping form) the full shared action grammar

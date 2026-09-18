@@ -3,6 +3,8 @@ title: "Status and scope"
 description: "Implementation status, what multi-turn conversation testing covers today, and why model-output evals are out of scope."
 ---
 
+## Implementation status
+
 Built and tested, each independently:
 
 | Piece | What it does |
@@ -22,6 +24,8 @@ Built and tested, each independently:
 | http-target | `agent.url` services are built, and covered end to end including the record leg: a service started independently and pointed at the proxy is triggered, recorded, and replayed offline |
 | `conversation:` (multi-turn) | built (#375): a list of deliveries, each a `user:` message plus its own delivery-local assertions, checked against just the turns that delivery produced before the next one is sent. Both drivers gate on it - `agent.url` sends each delivery as its own sequential POST, `agent.command` sends delivery 0 via `FLOWPROOF_PROMPT` and later deliveries over the child's stdin. A bare `prompt:` step still reduces to a single-delivery conversation internally, so existing cassettes replay unchanged. See [Multi-turn conversations](#multi-turn-conversations) below for what is and is not covered yet |
 
+## Known gaps
+
 Not built yet: per-call result sequences (one static result per tool), and
 the structured `args:` / `args_exact:` assertion forms. The `matches`
 argument matcher shipped in 0.3.x. The MCP tool
@@ -32,7 +36,9 @@ proxy) is met by [`examples/agent-demo/`](../../examples/agent-demo/) (a real
 OpenAI-SDK agent against a live model); the in-tree E2E proves the same path
 with a fake agent and a fake model.
 
-**Where the tests are, and are not.** Worth stating plainly, because "built"
+## Coverage evidence
+
+Worth stating plainly, because "built"
 and "covered by a test that would fail if it broke" are different claims:
 
 | Capability | Coverage |
