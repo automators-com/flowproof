@@ -5524,9 +5524,25 @@ impl AppDriver for WebAppDriver {
         let tab = self.tab()?;
         let fields = tab
             .find_elements("input[type=password]")
-            .unwrap_or_default();
+            .map_err(|e| web_err("finding password fields", e))?;
         let mut rects = Vec::new();
         for field in fields {
+            // Hidden wizard pages still contain password inputs, but have no
+            // layout box. Only positively identified non-rendered fields may
+            // be skipped; failed visibility probes must still drop the frame.
+            let rendered = field
+                .call_js_fn(
+                    "function() { return this.getClientRects().length > 0; }",
+                    vec![],
+                    false,
+                )
+                .map_err(|e| web_err("checking password field layout", e))?
+                .value
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| DriverError::Browser("password field layout unavailable".into()))?;
+            if !rendered {
+                continue;
+            }
             let quad = field
                 .get_box_model()
                 .map_err(|e| web_err("box model of password field", e))?
