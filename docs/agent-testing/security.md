@@ -233,7 +233,7 @@ any bare `.` components, no component rewritten - and redact everything
 else (traversal forms included, never normalized-and-kept) to a
 `sha256:` fragment of the captured path; the exact rules and the
 confirmation-oracle residual are in
-[trace-format.md](trace-format.md#side-effect-lane-app-agent). The lane is
+[trace format](../trace-format.md#side-effect-lane-app-agent). The lane is
 scanned by the `assert_no_secret_leak` store-guard before the trace is
 minted, and the stderr report above keeps full absolute-path fidelity
 either way. So "what has this flow destroyed since March" finally has an

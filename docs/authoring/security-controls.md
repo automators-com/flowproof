@@ -72,7 +72,7 @@ allowed, or a UI fact only the signed-in session shows. A denial flow with no
 liveness assertion is an incomplete control.
 
 The worked example lives at
-[`examples/access-control/`](../examples/access-control/): a `suite.yaml`
+[`examples/access-control/`](../../examples/access-control/): a `suite.yaml`
 declaring identities and a `viewer-cannot-delete.flow.yaml` that carries the
 liveness proof and the denial side by side. See it for the full flow.
 

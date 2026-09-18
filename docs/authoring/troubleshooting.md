@@ -23,7 +23,7 @@ recording fails with a structured **clarification payload**: the stuck step
 plus the relevant live-scene fields or remembered-value candidates. It is
 available via `record --json`, the MCP record tool, or Python's
 `ClarificationNeeded`. The driving agent rewrites the step more precisely
-and re-records; see [self-help.md](self-help.md) for the loop.
+and re-records; see [The outside-in loop](../self-help.md) for the loop.
 
 Whichever route authors a step, recording persists grounded selectors and
 actions in the trace. `flowproof run` executes those deterministic artifacts

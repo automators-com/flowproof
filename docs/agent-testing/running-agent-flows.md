@@ -5,7 +5,7 @@ description: "Running an agent flow, driving a running service with url:, and mo
 
 The agent under test is an ordinary process flowproof spawns (`agent.command`).
 Five facts about the runtime contract, all exercised by
-[`examples/agent-demo/`](../examples/agent-demo/):
+[`examples/agent-demo/`](../../examples/agent-demo/):
 
 - **The prompt arrives in `FLOWPROOF_PROMPT`.** Every `prompt:` step is joined
   by newlines into ONE task string, set on the process environment before it

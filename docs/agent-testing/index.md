@@ -8,7 +8,7 @@ Status: **shipped**. v1 (OpenAI-compatible proxy, `assert_tool_call`), v2
 (the MCP tool boundary, stdio and streamable-HTTP) are all built; the
 `## Phasing` section below is authoritative on what landed when, and
 "Settled in review" records the design calls. A complete, runnable example
-ships in [`examples/agent-demo/`](../examples/agent-demo/).
+ships in [`examples/agent-demo/`](../../examples/agent-demo/).
 
 ## How a test runs with no model
 

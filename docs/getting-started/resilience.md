@@ -34,6 +34,26 @@ steps:
   - assert: page shows 100 rows within 5s
 ```
 
+## Repair a spec while recording
+
+When an authoring model is configured, `record` can repair a failing spec step.
+It asks the model for a minimal edit, changes only the `.flow.yaml` being
+recorded, and reruns the flow. Repair stops after three attempts, or earlier
+when the same failure recurs without progress. Each attempt and edit is written
+to `<flow>.repair.json` beside the trace.
+
+Disable automatic repair when you want the original failure immediately:
+
+```bash
+flowproof record shop.flow.yaml --no-repair
+```
+
+A model verdict that identifies an engine limitation without trying a fix is
+provisional. Flowproof gives the whole flow one independent attempt in a fresh
+driver session. If that attempt fails the same way, the repair report retains
+both failures as evidence. A repair that exhausted its edit budget does not get
+the extra attempt.
+
 ## Healing a stale trace
 
 When the app changes and replay fails, `heal` re-authors the flow from the

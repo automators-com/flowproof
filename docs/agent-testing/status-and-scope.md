@@ -28,7 +28,7 @@ argument matcher shipped in 0.3.x. The MCP tool
 boundary is BUILT (v3.1 stdio, v3.2 streamable-HTTP) - an earlier revision of
 this paragraph listed it as unbuilt, contradicting the Phasing section. v1's
 acceptance bar (a real external agent recording and replaying through the
-proxy) is met by [`examples/agent-demo/`](../examples/agent-demo/) (a real
+proxy) is met by [`examples/agent-demo/`](../../examples/agent-demo/) (a real
 OpenAI-SDK agent against a live model); the in-tree E2E proves the same path
 with a fake agent and a fake model.
 
