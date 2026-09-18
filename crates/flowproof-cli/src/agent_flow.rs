@@ -1721,7 +1721,12 @@ fn require_progress(run: &AgentRun, cassette: &Cassette, plan: &Plan) -> Result<
 /// the proxy - not that all of them did. Reporting the observation and
 /// letting the reader judge is the honest shape, and the same reason the
 /// zero-capture guard names causes as possibilities rather than facts.
-pub fn cmd_doctor_agent(command: &str, timeout_secs: u64, prompt: &str) -> Result<u8, String> {
+pub fn cmd_doctor_agent(
+    command: &str,
+    timeout_secs: u64,
+    prompt: &str,
+    json: bool,
+) -> Result<u8, String> {
     use flowproof_trace::cassette::{Cassette, Message, Turn, TurnRequest, TurnResponse};
 
     // One canned turn. Anything the agent sends is answered from this, so no
@@ -1752,11 +1757,13 @@ pub fn cmd_doctor_agent(command: &str, timeout_secs: u64, prompt: &str) -> Resul
         ..Default::default()
     };
 
+    let mut report = crate::doctor::DoctorReport::new("agent");
+
     let proxy = AgentProxy::start(probe, Mocks::new(), 0)
         .map_err(|e| format!("starting the probe proxy: {e}"))?;
     let base = proxy.base_url();
-    println!("proxy listening on {base}");
-    println!("running: {command}");
+    report.note(json, "ok", "proxy", format!("proxy listening on {base}"));
+    report.note(json, "ok", "command", format!("running: {command}"));
 
     let mut env = BTreeMap::new();
     env.insert(PROMPT_VAR.to_string(), prompt.to_string());
@@ -1768,61 +1775,118 @@ pub fn cmd_doctor_agent(command: &str, timeout_secs: u64, prompt: &str) -> Resul
     let arrived = log.served + usize::from(log.divergence.is_some());
     drop(log);
 
-    println!();
-    println!("model requests that reached the proxy: {arrived}");
+    if !json {
+        println!();
+    }
+    report.note(
+        json,
+        if arrived > 0 { "ok" } else { "fail" },
+        "traffic",
+        format!("model requests that reached the proxy: {arrived}"),
+    );
     if run.timed_out {
-        println!(
-            "the agent was still running after {timeout_secs}s and was stopped. That is an \
-             observation, not a wiring failure: an agent waiting for a useful reply will hang \
-             against a canned one."
+        report.note(
+            json,
+            "warn",
+            "timeout",
+            format!(
+                "the agent was still running after {timeout_secs}s and was stopped. That is an \
+                 observation, not a wiring failure: an agent waiting for a useful reply will hang \
+                 against a canned one."
+            ),
         );
         // Found while testing this command: the deadline kills the process
         // flowproof started, but a GRANDCHILD holding the inherited stdout
         // pipe keeps the read blocking, so the wall-clock wait can exceed
         // the timeout by a lot. Say so rather than let it look like a hang
         // with no explanation.
-        println!(
-            "  (if this took much longer than {timeout_secs}s, the agent spawned a child that \
-             outlived it and kept the output pipe open. flowproof stops the process it started, \
-             not the tree.)"
+        report.note(
+            json,
+            "warn",
+            "timeout",
+            format!(
+                "(if this took much longer than {timeout_secs}s, the agent spawned a child that \
+                 outlived it and kept the output pipe open. flowproof stops the process it \
+                 started, not the tree.)"
+            ),
         );
     } else {
-        println!(
-            "the agent exited {}",
-            run.exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "with no code".into())
+        report.note(
+            json,
+            "ok",
+            "exit",
+            format!(
+                "the agent exited {}",
+                run.exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "with no code".into())
+            ),
         );
     }
 
     if arrived == 0 {
-        println!();
-        println!("NOTHING reached the proxy. The client is not honouring the base URL flowproof");
-        println!("injected (OPENAI_BASE_URL, OPENAI_API_BASE, OPENAI_BASE, ANTHROPIC_BASE_URL,");
-        println!("FLOWPROOF_LLM_PROXY). If it reads a different variable, or builds its base URL");
-        println!("from a config object, map it in `agent.env`:");
-        println!();
-        println!("    env:");
-        println!("      YOUR_VARIABLE: \"${{flowproof.proxy_url}}\"        # includes /v1");
-        println!(
-            "      OR:            \"${{flowproof.proxy_url_no_v1}}\"  # client appends its own"
-        );
-        println!();
-        println!("If the model call happens in a CHILD process, check that it inherits the");
-        println!("environment - that is the usual cause when the command itself looks right.");
-        if !run.stderr.trim().is_empty() {
+        if !json {
             println!();
-            println!("stderr:\n{}", run.stderr.trim());
+            println!(
+                "NOTHING reached the proxy. The client is not honouring the base URL flowproof"
+            );
+            println!(
+                "injected (OPENAI_BASE_URL, OPENAI_API_BASE, OPENAI_BASE, ANTHROPIC_BASE_URL,"
+            );
+            println!(
+                "FLOWPROOF_LLM_PROXY). If it reads a different variable, or builds its base URL"
+            );
+            println!("from a config object, map it in `agent.env`:");
+            println!();
+            println!("    env:");
+            println!("      YOUR_VARIABLE: \"${{flowproof.proxy_url}}\"        # includes /v1");
+            println!(
+                "      OR:            \"${{flowproof.proxy_url_no_v1}}\"  # client appends its own"
+            );
+            println!();
+            println!("If the model call happens in a CHILD process, check that it inherits the");
+            println!("environment - that is the usual cause when the command itself looks right.");
         }
+        report.note(
+            json,
+            "fail",
+            "wiring",
+            "NOTHING reached the proxy. The client is not honouring the base URL flowproof \
+             injected (OPENAI_BASE_URL, OPENAI_API_BASE, OPENAI_BASE, ANTHROPIC_BASE_URL, \
+             FLOWPROOF_LLM_PROXY); map it in `agent.env` via `${{flowproof.proxy_url}}` or \
+             `${{flowproof.proxy_url_no_v1}}`, and check a child-process model call inherits the \
+             environment.",
+        );
+        if !run.stderr.trim().is_empty() {
+            if !json {
+                println!();
+                println!("stderr:\n{}", run.stderr.trim());
+            }
+            report.note(json, "warn", "stderr", run.stderr.trim());
+        }
+        report.emit(json)?;
         return Ok(crate::EXIT_FAIL);
     }
 
-    println!();
-    println!("At least one client reached the proxy, so recording can capture that traffic.");
-    println!("This does NOT prove every model call goes through flowproof: an agent with more");
-    println!("than one client can reach the proxy with one and the real provider with another.");
-    println!("`record` is the check that settles it - it fails and writes no trace if nothing");
-    println!("is captured.");
+    if !json {
+        println!();
+        println!("At least one client reached the proxy, so recording can capture that traffic.");
+        println!("This does NOT prove every model call goes through flowproof: an agent with more");
+        println!(
+            "than one client can reach the proxy with one and the real provider with another."
+        );
+        println!("`record` is the check that settles it - it fails and writes no trace if nothing");
+        println!("is captured.");
+    }
+    report.note(
+        json,
+        "ok",
+        "verdict",
+        "At least one client reached the proxy, so recording can capture that traffic. This does \
+         NOT prove every model call goes through flowproof.",
+    );
+    report.pass = true;
+    report.emit(json)?;
     Ok(crate::EXIT_PASS)
 }
 
