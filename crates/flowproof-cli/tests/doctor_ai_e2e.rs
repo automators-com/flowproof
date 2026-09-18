@@ -73,6 +73,18 @@ fn doctor_ai_without_a_key_fails_without_a_model_call() {
 }
 
 #[test]
+fn doctor_ai_json_keeps_the_same_verdict_as_human_output() {
+    let _guard = ENV.lock().expect("env lock");
+    let _env = IsolatedAiEnv::new();
+
+    assert_eq!(
+        flowproof_cli::run_cli(["doctor", "--ai", "--json"]),
+        1,
+        "--json must not change the verdict: a missing key still fails without a model call"
+    );
+}
+
+#[test]
 fn doctor_ai_openai_can_validate_against_a_local_compatible_endpoint() {
     let _guard = ENV.lock().expect("env lock");
     let _env = IsolatedAiEnv::new();
@@ -98,6 +110,36 @@ fn doctor_ai_openai_can_validate_against_a_local_compatible_endpoint() {
     std::env::set_var("FLOWPROOF_AI_BASE_URL", base);
 
     assert_eq!(flowproof_cli::run_cli(["doctor", "--ai"]), 0);
+
+    handle.join().expect("server thread joins");
+}
+
+#[test]
+fn doctor_ai_json_passes_against_a_local_compatible_endpoint() {
+    let _guard = ENV.lock().expect("env lock");
+    let _env = IsolatedAiEnv::new();
+
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let handle = std::thread::spawn(move || {
+        let request = server.recv().expect("doctor sends one request");
+        assert_eq!(request.url(), "/chat/completions");
+        let response =
+            tiny_http::Response::from_string(r#"{"choices":[{"message":{"content":"ok"}}]}"#)
+                .with_status_code(200)
+                .with_header(
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                        .expect("header"),
+                );
+        request.respond(response).expect("responds");
+    });
+
+    std::env::set_var("FLOWPROOF_AI_PROVIDER", "openai");
+    std::env::set_var("FLOWPROOF_AI_API_KEY", "sk-test");
+    std::env::set_var("FLOWPROOF_AI_MODEL", "gpt-5");
+    std::env::set_var("FLOWPROOF_AI_BASE_URL", base);
+
+    assert_eq!(flowproof_cli::run_cli(["doctor", "--ai", "--json"]), 0);
 
     handle.join().expect("server thread joins");
 }
