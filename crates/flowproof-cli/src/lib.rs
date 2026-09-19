@@ -633,6 +633,13 @@ fn load_prepared_spec(
     Ok((spec, overlay))
 }
 
+/// Opt-in desktop progress stays on stderr so stdout remains one JSON result.
+fn recording_progress(message: &str) {
+    if std::env::var("FLOWPROOF_PROGRESS").as_deref() == Ok("1") {
+        eprintln!("[PROGRESS] {message}");
+    }
+}
+
 fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
     let RecordOptions {
         out,
@@ -720,6 +727,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
         return Ok(EXIT_PASS);
     }
 
+    recording_progress("Preparing recording");
     let mut driver = record_driver(&spec)?;
     // --reuse: consult the existing trace per step, re-authoring only
     // drift; the old steps come from the trace being replaced.
@@ -730,6 +738,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
     } else {
         None
     };
+    recording_progress("Recording steps");
     let result = match &old_steps {
         Some(steps) => flowproof_agent::record_incremental_with_options(
             &spec,
@@ -754,6 +763,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
             // repair loop rewrites the spec file itself, which would desync
             // that reuse cursor, so repair does not engage on top of it.
             if !no_repair && !reuse {
+                recording_progress("Checking recording failure");
                 match run_repair_loop(spec_path, &values, &out, author, recording, err) {
                     RepairLoopOutcome::Passed { summary, report } => {
                         write_repair_report(&out, &report)?;
@@ -781,6 +791,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                             write_repair_report(&out, &report)?;
                             return emit_repair_failure(&err, &report, &report, json);
                         }
+                        recording_progress("Retrying recording from a fresh start");
                         if !json {
                             eprintln!(
                                 "Repair called this an engine gap; giving the flow one fresh, \
@@ -1119,6 +1130,10 @@ fn run_repair_loop(
             _ => Vec::new(),
         };
 
+        recording_progress(&format!(
+            "Waiting for repair model · attempt {attempt} of {}",
+            budget.max_attempts
+        ));
         let patch = match flowproof_agent::propose_patch(
             &mut client,
             &raw,
@@ -1254,6 +1269,7 @@ fn run_repair_loop(
             applied: true,
         });
 
+        recording_progress("Retrying repaired flow");
         let (rerun_spec, _rerun_env_overlay) = match load_prepared_spec(spec_path, values) {
             Ok(result) => result,
             Err(e) => {
