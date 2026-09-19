@@ -1841,6 +1841,13 @@ fn execute_step<D: AppDriver>(
     let (outcome, matched) = match &step.action {
         // Mid-flow navigation: `url` (relative paths resolve against the
         // flow's origin; `${VAR}` refs resolve now) or `reload: true`.
+        Action::AgentRun(params) => (
+            driver
+                .agent_segment(&params.steps, Some(&params.cassette), captures)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            StepMatch::default(),
+        ),
         Action::Launch(params) => {
             if params.get("reload").and_then(|v| v.as_bool()) == Some(true) {
                 driver.reload()?;

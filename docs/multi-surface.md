@@ -248,3 +248,26 @@ answered for mixed lanes.
 
 The arbitrary-Windows-app case needs no phase of its own: `app:
 {command, window_title}` is one more entry in the Phase 2 `apps:` map.
+
+
+## Implementation update: API and Agent surfaces
+
+`apps:` now accepts `api` and `agent` alongside UI adapters. API blocks run
+`assert_api` and `assert_sql` without a UI. An agent surface declares its
+`agent` command (or service URL and proxy_port), plus optional `tools`, `mcp`
+and `strict`, using the standalone agent contract. Its blocks accept prompts,
+scripted conversations and agent assertions; UI actions are rejected.
+
+The Phase 3 proposal above remains design context. This implementation uses
+an embedded cassette rather than a sidecar: one `agent_run` step holds the
+block's authored steps and standalone cassette object. Copied traces remain
+self-contained. Each block is a separate agent execution; replay uses its
+cassette without an upstream model. Failed assertions stop the flow.
+Containment retains the standalone runner's platform guarantees.
+
+Earlier UI captures resolve in agent inputs at execution time; the authored
+`${captured.name}` reference stays in the step. Agent-answer captures,
+interactive conversations and persistent sessions across blocks remain
+future work. Scripted conversations keep multiple deliveries in one block.
+Older engines reject these new surface/action types; desktop support must
+ship with an engine containing this implementation.

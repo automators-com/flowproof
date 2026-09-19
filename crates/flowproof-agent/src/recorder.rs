@@ -404,6 +404,8 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
             vec![Selector {
                 tier: SelectorTier::TextAnchor,
                 provenance: match app {
+                    "api" => flowproof_trace::format::Adapter::Api,
+                    "agent" => flowproof_trace::format::Adapter::Agent,
                     "web" => flowproof_trace::format::Adapter::Web,
                     "sap" => flowproof_trace::format::Adapter::SapCom,
                     "vision" => flowproof_trace::format::Adapter::Vision,
@@ -1265,6 +1267,10 @@ pub fn surface_targets(
         .iter()
         .map(|(name, surface)| {
             let target = match surface.app.id() {
+                "api" | "agent" => flowproof_driver::AppTarget {
+                    command: String::new(),
+                    window_name: String::new(),
+                },
                 "web" => {
                     let url = surface.url.as_deref().ok_or(RecordError::MissingUrl)?;
                     let url = flowproof_trace::secret::resolve_refs(url)?;
@@ -2903,6 +2909,28 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     }
                 }
                 current_surface = Some(block.surface.clone());
+                if spec.apps[&block.surface].app.id() == "agent" {
+                    let raw_steps = serde_json::to_value(&block.steps).map_err(|e| {
+                        RecordError::Driver(flowproof_driver::DriverError::Uia(e.to_string()))
+                    })?;
+                    let cassette = driver.agent_segment(&raw_steps, None, &captures)?;
+                    steps.push(flowproof_trace::Step {
+                        id: format!("s{:04}", steps.len() + 1),
+                        intent: format!("Run agent {}", block.surface),
+                        surface: current_surface.clone(),
+                        action: Action::AgentRun(flowproof_trace::format::AgentRunParams {
+                            steps: raw_steps,
+                            cassette,
+                        }),
+                        selectors: Vec::new(),
+                        sync: flowproof_trace::format::Sync {
+                            pre: Vec::new(),
+                            post: Vec::new(),
+                        },
+                        artifacts: Default::default(),
+                    });
+                    continue;
+                }
                 for (i, inner) in block.steps.iter().enumerate() {
                     queue.insert(i, (inner.clone(), 0));
                 }

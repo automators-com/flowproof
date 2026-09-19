@@ -16,6 +16,7 @@ name = "flowproof"
 path = "src/main.rs"
 
 [dependencies]
+uuid = { workspace = true, features = ["v4"] }
 chrono = { workspace = true }
 clap = { workspace = true }
 # Cross-platform Ctrl-C handling for the long-lived `capture` listener, so a

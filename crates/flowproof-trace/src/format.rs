@@ -294,6 +294,7 @@ pub enum Adapter {
     Vision,
     /// No UI at all: the flow is out-of-band assertions only (SQL / API).
     Api,
+    Agent,
     /// The sentinel adapter of a MULTI-surface header (`header.apps`
     /// present): per-surface adapters live on the surface entries, and
     /// this value is deliberately not one of them so an engine predating
@@ -350,6 +351,8 @@ pub struct Step {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "params", rename_all = "snake_case")]
 pub enum Action {
+    /// A model-boundary recording for one agent block.
+    AgentRun(AgentRunParams),
     Launch(Params),
     FocusWindow(Params),
     Click(Params),
@@ -380,6 +383,14 @@ pub enum Action {
     Upload(UploadParams),
     Wait(Params),
     Assert(Assertion),
+}
+
+/// Authored agent steps and their portable model-boundary cassette.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRunParams {
+    pub steps: serde_json::Value,
+    pub cassette: serde_json::Value,
 }
 
 /// A native JavaScript dialog (`alert`/`confirm`/`prompt`/`beforeunload`)

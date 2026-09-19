@@ -135,6 +135,14 @@ pub struct SurfaceSpec {
     /// sized with `browser: viewport`, not a window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolMock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp: Vec<McpServerSpec>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
 }
 
 /// Who a SAP flow logs in as. Every value may carry `${VAR}` references,
@@ -1087,6 +1095,29 @@ impl FlowSpec {
     /// it goes. (`assert_screenshot` needs no rule here: the recorder
     /// qualifies each baseline with its surface, so a `gui` baseline can
     /// never be compared against a `portal` frame.)
+    /// Agent execution uses the existing single-agent contract per block.
+    pub fn surface_flow(&self, name: &str, steps: Vec<SpecStep>) -> Result<Self, SpecError> {
+        let surface = self
+            .apps
+            .get(name)
+            .ok_or_else(|| SpecError::Surfaces(format!("Unknown surface {name}")))?;
+        let mut flow = self.clone();
+        flow.apps.clear();
+        flow.app = surface.app.clone();
+        flow.url = surface.url.clone();
+        flow.connection = surface.connection.clone();
+        flow.browser = surface.browser.clone();
+        flow.window = surface.window.clone();
+        flow.login = surface.login.clone();
+        flow.agent = surface.agent.clone();
+        flow.tools = surface.tools.clone();
+        flow.mcp = surface.mcp.clone();
+        flow.strict = surface.strict;
+        flow.steps = steps;
+        flow.exports.clear();
+        Ok(flow)
+    }
+
     fn validate_surfaces(&self) -> Result<(), SpecError> {
         let bad = |m: String| Err(SpecError::Surfaces(m));
         let multi = !self.apps.is_empty();
@@ -1127,21 +1158,19 @@ impl FlowSpec {
                 return bad(format!("surface `{name}` names no app"));
             }
             let id = surface.app.id();
-            match id {
-                "agent" => {
-                    return bad(format!(
-                        "surface `{name}`: `agent` is a model boundary, not a UI surface — \
-                         chain an `app: agent` flow in the suite instead (docs/multi-surface.md \
-                         defers the in-flow agent seam deliberately)"
-                    ))
-                }
-                "api" => {
-                    return bad(format!(
-                        "surface `{name}`: an `api` surface has nothing to drive — \
-                         `assert_api` runs fine inside any `in:` block"
-                    ))
-                }
-                _ => {}
+            self.surface_flow(
+                name,
+                if id == "agent" {
+                    vec![SpecStep::Prompt {
+                        prompt: "validate configuration".into(),
+                    }]
+                } else {
+                    Vec::new()
+                },
+            )?
+            .validate_agent()?;
+            if matches!(id, "agent" | "api") && surface.window.is_some() {
+                return bad(format!("surface `{name}` has no window"));
             }
             if id == "web" && surface.url.is_none() {
                 return bad(format!("web surface `{name}` needs `url:`"));
@@ -1224,6 +1253,39 @@ impl FlowSpec {
                     declared()
                 ));
             }
+            self.surface_flow(&block.surface, block.steps.clone())?
+                .validate_agent()?;
+            if self.apps[&block.surface].app.id() == "agent"
+                && block.steps.iter().any(|s| {
+                    !matches!(
+                        s,
+                        SpecStep::Prompt { .. }
+                            | SpecStep::Conversation { .. }
+                            | SpecStep::Assert { .. }
+                            | SpecStep::AssertToolCall { .. }
+                            | SpecStep::AssertNoToolCall { .. }
+                            | SpecStep::AssertNoEgress
+                            | SpecStep::AssertNoSideEffect { .. }
+                            | SpecStep::AssertNoSecretLeak { .. }
+                    )
+                })
+            {
+                return bad(format!(
+                    "Agent surface {} accepts prompts, scripted conversations and agent assertions",
+                    block.surface
+                ));
+            }
+            if self.apps[&block.surface].app.id() == "api"
+                && block
+                    .steps
+                    .iter()
+                    .any(|s| !matches!(s, SpecStep::AssertApi { .. } | SpecStep::AssertSql { .. }))
+            {
+                return bad(format!(
+                    "API surface {} accepts assert_api and assert_sql steps",
+                    block.surface
+                ));
+            }
             if block.steps.is_empty() {
                 return bad(format!("`in: {}` has no steps", block.surface));
             }
@@ -1277,7 +1339,7 @@ impl FlowSpec {
         if self.agent.is_some() || !self.tools.is_empty() || !self.mcp.is_empty() || self.strict {
             return bad(
                 "`agent:`, `tools:`, `mcp:` and `strict:` belong to an `app: agent` flow \
-                 — an agent is a model boundary, not a surface"
+                 — put them inside its `apps:` entry"
                     .into(),
             );
         }
@@ -4357,8 +4419,11 @@ steps:
     /// Each refused surface kind names its reason and its alternative —
     /// a vocabulary that parses but cannot run would be a trap.
     #[test]
-    fn non_ui_surface_kinds_are_refused_by_name() {
-        for (kind, expect) in [("agent", "model boundary"), ("api", "nothing to drive")] {
+    fn invalid_non_ui_surface_configuration_is_refused_by_name() {
+        for (kind, expect) in [
+            ("agent", "needs an `agent:` block"),
+            ("api", "accepts assert_api"),
+        ] {
             let err = spec(&format!(
                 "name: n\napps:\n  s: {{app: {kind}}}\nsteps:\n  - in: s\n    steps: [Press Enter]\n"
             ))

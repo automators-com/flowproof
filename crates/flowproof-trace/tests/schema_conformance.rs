@@ -139,3 +139,20 @@ fn single_surface_traces_serialize_without_the_new_keys() {
         );
     }
 }
+
+#[test]
+fn embedded_agent_segment_round_trips_and_requires_its_cassette() {
+    let validator = validator();
+    let mut step: serde_json::Value =
+        serde_json::from_str(FIXTURE.lines().nth(1).expect("sample step")).expect("JSON");
+    step["surface"] = serde_json::json!("assistant");
+    step["action"] = serde_json::json!({"type":"agent_run","params":{"steps":[{"prompt":"hi"}],"cassette":{"app":"agent","cassette":{"turns":[]}}}});
+    assert!(validator.is_valid(&step));
+    let parsed: TraceLine = serde_json::from_value(step.clone()).expect("agent segment parses");
+    assert_eq!(serde_json::to_value(parsed).expect("serialize"), step);
+    step["action"]["params"]
+        .as_object_mut()
+        .expect("params")
+        .remove("cassette");
+    assert!(!validator.is_valid(&step));
+}
