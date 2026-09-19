@@ -6,6 +6,10 @@ together).
 
 ## Unreleased
 
+## 0.23.10
+
+- **Recording no longer looks idle while it prepares or retries.** Desktop callers can opt into progress events on stderr, including repair-model waits and fresh-start retries. JSON results on stdout and ordinary CLI output stay unchanged.
+
 - **The package now calls itself beta.** The PyPI classifier moves from
   `3 - Alpha` to `4 - Beta` and the SDK README says the same. Record→replay,
   model-grounded authoring, healing, suites, run recordings and the MCP server
