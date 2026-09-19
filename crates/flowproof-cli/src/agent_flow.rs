@@ -4202,6 +4202,91 @@ mod tests {
     }
 
     #[test]
+    fn mixed_api_agent_pipeline_records_and_replays_in_order() {
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = ConversationTestDir::new();
+        let agent = write_fake_interactive_agent();
+        let (url, handle) = spawn_fake_upstream(vec!["hello"]);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("mixed pipeline fixture");
+        let api_url = format!(
+            "http://{}",
+            listener.local_addr().expect("mixed pipeline fixture")
+        );
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..4 {
+                let (mut socket, _) = listener.accept().expect("mixed pipeline fixture");
+                let mut request = [0; 8192];
+                let read = socket.read(&mut request).expect("read request");
+                assert!(read > 0);
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                    )
+                    .expect("mixed pipeline fixture");
+            }
+        });
+        std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", url);
+        let spec = FlowSpec::parse(&format!("name: mixed\napps:\n  api:\n    app: api\n  assistant:\n    app: agent\n    agent:\n      command: python3 \"{}\"\nsteps:\n  - in: api\n    steps:\n      - assert_api:\n          request: GET {api_url}\n  - in: assistant\n    steps:\n      - prompt: hi\n      - assert: reply contains hello\n  - in: api\n    steps:\n      - assert_api:\n          request: GET {api_url}\n", agent.display())).expect("mixed pipeline fixture");
+        let path = dir.path().join("mixed.trace.jsonl");
+        let mut driver = crate::record_driver(&spec).expect("mixed pipeline fixture");
+        let result = flowproof_agent::recorder::record_with_author(
+            &spec,
+            &mut driver,
+            &path,
+            flowproof_agent::recorder::Author::Rules,
+        );
+        std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+        result.expect("record mixed flow");
+        handle.join().expect("mixed pipeline fixture");
+        let (header, steps) = flowproof_replay::load_trace(&path).expect("mixed pipeline fixture");
+        assert_eq!(
+            steps
+                .iter()
+                .map(|s| s.surface.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("api"), Some("assistant"), Some("api")]
+        );
+        assert!(matches!(
+            steps[1].action,
+            flowproof_trace::format::Action::AgentRun(_)
+        ));
+        let mut driver = crate::replay_driver(&header, &spec).expect("mixed pipeline fixture");
+        let (report, _) =
+            flowproof_replay::run_trace(&path, &mut driver).expect("mixed pipeline fixture");
+        assert!(report.passed, "{report:?}");
+        server.join().expect("mixed pipeline fixture");
+    }
+
+    #[test]
+    fn agent_surface_records_and_replays_without_upstream() {
+        use flowproof_driver::AppDriver;
+        let _guard = INTERACTIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let agent = write_fake_interactive_agent();
+        let (url, handle) = spawn_fake_upstream(vec!["hello"]);
+        std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", url);
+        let spec = FlowSpec::parse(&format!("name: mixed\napps:\n  assistant:\n    app: agent\n    agent:\n      command: python3 \"{}\"\n  api:\n    app: api\nsteps:\n  - in: assistant\n    steps:\n      - prompt: hi\n      - assert: reply contains hello\n  - in: api\n    steps:\n      - assert_api:\n          request: GET http://localhost/health\n", agent.display())).expect("mixed spec");
+        let captures = [("greeting".into(), "hi".into())].into_iter().collect();
+        let steps = serde_json::json!([{"prompt":"${captured.greeting}"}, {"assert":"reply contains hello"}]);
+        let mut driver = crate::agent_surface::AgentSurface::new(spec, "assistant".into());
+        let cassette = driver.agent_segment(&steps, None, &captures);
+        std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
+        handle.join().expect("upstream completed");
+        let cassette = cassette.expect("record agent segment");
+        driver
+            .agent_segment(&steps, Some(&cassette), &captures)
+            .expect("offline replay");
+        let bad = serde_json::json!([{"prompt":"hi"}, {"assert":"reply contains WRONG"}]);
+        assert!(driver
+            .agent_segment(&bad, Some(&cassette), &captures)
+            .is_err());
+    }
+
+    #[test]
     fn scripted_conversation_records_delivery_metadata_and_replays() {
         let _guard = INTERACTIVE_ENV_LOCK
             .lock()

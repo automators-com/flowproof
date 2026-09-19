@@ -2,6 +2,7 @@
 //! the Python entry point (via PyO3) share one implementation.
 
 mod agent_flow;
+mod agent_surface;
 mod capture;
 pub mod config;
 mod doctor;
@@ -1519,10 +1520,13 @@ fn stage_replay_surface_logins(
 ///
 /// The driver a REPLAY gets: the trace's single app's driver, or — for a
 /// `multi` header — a `SurfaceRegistry` rebuilt from the header's own
-/// surface map, so a replay needs the trace and nothing else. Config was
+/// surface map; agent segments additionally use the current spec configuration. Config was
 /// stored as WRITTEN; `${VAR}` urls and connections resolve here, fresh,
 /// at every replay.
-fn replay_driver(header: &flowproof_trace::Header) -> Result<Box<dyn AppDriver>, String> {
+fn replay_driver(
+    header: &flowproof_trace::Header,
+    spec: &FlowSpec,
+) -> Result<Box<dyn AppDriver>, String> {
     if header.app.name != "multi" {
         return driver_for(&header.app.name);
     }
@@ -1532,11 +1536,19 @@ fn replay_driver(header: &flowproof_trace::Header) -> Result<Box<dyn AppDriver>,
         .iter()
         .map(|(n, info)| (n.clone(), (info.name.clone(), info.browser.clone())))
         .collect();
+    let segment_spec = spec.clone();
     let factory: flowproof_driver::surface::SurfaceFactory = Box::new(move |name| {
         let (kind, browser) = surfaces.get(name).ok_or_else(|| {
             flowproof_driver::DriverError::Uia(format!("surface '{name}' is not in the header"))
         })?;
-        let mut driver = driver_for(kind).map_err(flowproof_driver::DriverError::Uia)?;
+        let mut driver: Box<dyn AppDriver> = if kind == "agent" {
+            Box::new(agent_surface::AgentSurface::new(
+                segment_spec.clone(),
+                name.to_string(),
+            ))
+        } else {
+            driver_for(kind).map_err(flowproof_driver::DriverError::Uia)?
+        };
         stage_surface_browser(driver.as_mut(), browser.as_ref())?;
         Ok(driver)
     });
@@ -1585,6 +1597,10 @@ fn replay_surface_targets(
                 // resolve once the block that captures it has replayed —
                 // `SurfaceRegistry::activate` resolves it, and any `${VAR}`
                 // alongside it, fresh at the surface's actual activation.
+                "agent" | "api" => flowproof_driver::AppTarget {
+                    command: String::new(),
+                    window_name: String::new(),
+                },
                 "windows" => flowproof_driver::AppTarget {
                     command: info.command.clone().unwrap_or_default(),
                     window_name: info.window_title.clone().unwrap_or_default(),
@@ -1656,11 +1672,19 @@ fn record_driver(spec: &FlowSpec) -> Result<Box<dyn AppDriver>, String> {
         .iter()
         .map(|(n, s)| (n.clone(), (s.app.id().to_string(), s.browser.clone())))
         .collect();
+    let segment_spec = spec.clone();
     let factory: flowproof_driver::surface::SurfaceFactory = Box::new(move |name| {
         let (kind, browser) = surfaces.get(name).ok_or_else(|| {
             flowproof_driver::DriverError::Uia(format!("surface '{name}' is not declared"))
         })?;
-        let mut driver = driver_for(kind).map_err(flowproof_driver::DriverError::Uia)?;
+        let mut driver: Box<dyn AppDriver> = if kind == "agent" {
+            Box::new(agent_surface::AgentSurface::new(
+                segment_spec.clone(),
+                name.to_string(),
+            ))
+        } else {
+            driver_for(kind).map_err(flowproof_driver::DriverError::Uia)?
+        };
         stage_surface_browser(driver.as_mut(), browser.as_ref())?;
         Ok(driver)
     });
@@ -1727,7 +1751,7 @@ fn replay_with_retries(
     let mut attempt = 0u32;
     loop {
         attempt += 1;
-        let mut driver = replay_driver(header)?;
+        let mut driver = replay_driver(header, spec)?;
         // Credentials are SPEC-driven, like the secret-leak scan: the
         // password is not a header field, so it cannot come from the trace,
         // and every `run` has the spec in hand. `${VAR}`s resolve here, on

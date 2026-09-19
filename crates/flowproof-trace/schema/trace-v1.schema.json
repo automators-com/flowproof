@@ -45,7 +45,8 @@
         "web",
         "vision",
         "api",
-        "multi"
+        "multi",
+        "agent"
       ]
     },
     "app_info": {
@@ -226,7 +227,7 @@
         },
         "apps": {
           "type": "object",
-          "description": "The named surfaces of a MULTI-surface trace, mirroring the spec's `apps:`. When present, `app` carries the reserved name `multi` with adapter `multi` — deliberately not a copy of any one surface, so an engine without multi-surface support fails loudly at load instead of replaying every step against whichever surface happened to be first.",
+          "description": "The named surfaces of a MULTI-surface trace, mirroring the spec's `apps:`. When present, `app` carries the reserved name `multi` with adapter `multi` \u2014 deliberately not a copy of any one surface, so an engine without multi-surface support fails loudly at load instead of replaying every step against whichever surface happened to be first.",
           "propertyNames": {
             "pattern": "^[a-z][a-z0-9_-]*$"
           },
@@ -423,7 +424,8 @@
             "capture_download",
             "set_checked",
             "wait",
-            "assert"
+            "assert",
+            "agent_run"
           ]
         },
         "params": {
@@ -631,6 +633,36 @@
                 "properties": {
                   "dialog": {
                     "$ref": "#/$defs/dialog"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent_run"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "required": [
+                  "steps",
+                  "cassette"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "steps": {
+                    "type": "array",
+                    "minItems": 1
+                  },
+                  "cassette": {
+                    "type": "object"
                   }
                 }
               }

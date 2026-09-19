@@ -597,6 +597,18 @@ pub trait AppDriver {
     /// EARLIER block captured, typed the same way `TypeText` types it.
     /// Ignored by every driver but the registry, which is the only one that
     /// ever has a surface left to launch.
+    /// Execute an agent block; None records, Some replays a model cassette.
+    fn agent_segment(
+        &mut self,
+        _steps: &serde_json::Value,
+        _cassette: Option<&serde_json::Value>,
+        _captures: &std::collections::HashMap<String, String>,
+    ) -> Result<serde_json::Value, DriverError> {
+        Err(DriverError::Uia(
+            "This surface cannot run agent steps".into(),
+        ))
+    }
+
     fn activate_surface(
         &mut self,
         name: &str,
@@ -1836,6 +1848,15 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn probe_frame(&mut self, query: &FrameQuery) -> Result<FrameProbe, DriverError> {
         (**self).probe_frame(query)
+    }
+
+    fn agent_segment(
+        &mut self,
+        steps: &serde_json::Value,
+        cassette: Option<&serde_json::Value>,
+        captures: &std::collections::HashMap<String, String>,
+    ) -> Result<serde_json::Value, DriverError> {
+        (**self).agent_segment(steps, cassette, captures)
     }
 
     fn activate_surface(

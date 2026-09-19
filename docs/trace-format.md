@@ -544,3 +544,14 @@ fail schema validation on that selector, unlike the `dialog` object above
 gracefully — skip the one unrecognized selector and try the next tier in the
 list — is a real policy decision this repository has not made yet; see
 `docs/fiori-reliability/FINDINGS.md`'s design note for the `a11y` tier.
+
+### Agent segments in multi-surface traces
+
+A surface may use adapter `agent` or `api`. An agent block records one step
+with its named `surface` and action `agent_run`. Its params contain `steps`
+(the authored agent steps array) and `cassette` (the standalone agent trace
+object, including model turns and boundary observations). The embedded
+object travels with the trace and run bundle. Replay resolves the named
+agent's current configuration from the flow and re-executes against the
+recorded cassette without an upstream model. Old readers fail on
+`agent_run` rather than skipping it.

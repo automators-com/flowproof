@@ -169,6 +169,15 @@ macro_rules! route_to_active {
 }
 
 impl AppDriver for SurfaceRegistry {
+    fn agent_segment(
+        &mut self,
+        steps: &serde_json::Value,
+        cassette: Option<&serde_json::Value>,
+        captures: &std::collections::HashMap<String, String>,
+    ) -> Result<serde_json::Value, DriverError> {
+        self.active_mut()?.agent_segment(steps, cassette, captures)
+    }
+
     fn stage_surface_credentials(
         &mut self,
         surface: &str,
