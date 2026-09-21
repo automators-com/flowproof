@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use flowproof_driver::{resolve_app, AppDriver, UiaSelector};
 use flowproof_trace::format::{
-    Action, AppInfo, Artifacts, Assertion, Condition, EnvInfo, Header, Selector, Step, Sync,
+    Action, AppInfo, Artifacts, Assertion, Condition, EnvInfo, Guard, Header, Selector, Step, Sync,
     TypeTextParams,
 };
 use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
@@ -1084,6 +1084,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
         selectors,
         sync: Sync { pre, post: vec![] },
         artifacts: Artifacts::default(),
+        guards: Vec::new(),
     }
 }
 
@@ -2141,6 +2142,33 @@ fn condition_holds<D: AppDriver>(
     }
 }
 
+/// The replay-time form of a `when:` condition: the ordinary assert step
+/// for the same text with its auto-wait set to zero. `None` for the numeric
+/// comparison, which has no `element_state` spelling and stays record-time.
+fn guard_for(app: &str, condition: &str, id: u32) -> Option<Guard> {
+    let condition = condition.trim().to_string();
+    let probe = crate::spec::SpecStep::Assert {
+        assert: condition.clone(),
+    };
+    let resolved = crate::rules::resolve_step(app, &probe).ok()?;
+    let action = resolved.first()?;
+    use ResolvedAction::{AssertPresence, AssertText};
+    if !matches!(action, AssertText { .. } | AssertPresence { .. }) {
+        return None;
+    }
+    let step = step_for(0, &condition, app, action);
+    let Action::Assert(Assertion::ElementState { mut expect, .. }) = step.action else {
+        return None;
+    };
+    expect["timeout_ms"] = serde_json::json!(0);
+    Some(Guard {
+        id: format!("g{id:04}"),
+        condition,
+        expect,
+        selectors: step.selectors,
+    })
+}
+
 /// Record `spec` against the live app via `driver`, writing the trace to
 /// `out`. Every planned action's target element must exist before it is
 /// written — recording is a verification pass, not a transcription.
@@ -2813,14 +2841,17 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     // flow asserts `assert_no_secret_leak`.
     let mut secret_corpus: Vec<(String, String)> = Vec::new();
     // `repeat:` and `when:` are expanded HERE, against the live app, into the
-    // concrete steps that actually ran - so the trace stays a flat recording
-    // and replay never re-decides. `foreach` does the same thing at parse
-    // time; it can, because its list is known statically, and a condition
-    // cannot be known until something has run.
+    // concrete steps that actually ran - so the trace stays a flat recording.
+    // A `repeat:` is settled for good; a `when:` keeps its condition as a
+    // guard on every step it produced, so replay reads it again. `foreach`
+    // expands at parse time; it can, because its list is known statically.
     // Each entry carries how many passes ITS loop has made, so two loops in
-    // one flow do not share a budget.
-    let mut queue: std::collections::VecDeque<(crate::spec::SpecStep, u32)> =
-        spec.steps.iter().cloned().map(|s| (s, 0)).collect();
+    // one flow do not share a budget, and the guards it sits under. Guard
+    // ids are per expansion: replay reads each once.
+    type Queued = (crate::spec::SpecStep, u32, Vec<Guard>);
+    let mut queue: std::collections::VecDeque<Queued> =
+        spec.steps.iter().cloned().map(|s| (s, 0, vec![])).collect();
+    let mut guard_ids = 0u32;
     // The surface the CURRENT step runs on (multi-surface flows): set at
     // each `in:` boundary, stamped into every recorded step, and the app id
     // steps author and record against follows it.
@@ -2841,12 +2872,16 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             .map(|s| s.app.id().to_string())
             .unwrap_or_else(|| spec.app.id().to_string())
     };
-    while let Some((owned_step, passes)) = queue.pop_front() {
+    while let Some((owned_step, passes, guards)) = queue.pop_front() {
         match &owned_step {
             crate::spec::SpecStep::When { when } => {
-                if condition_holds(driver, &surface_app(&current_surface), &when.when)? {
+                let app = surface_app(&current_surface);
+                if condition_holds(driver, &app, &when.when)? {
+                    guard_ids += 1;
+                    let mut inner_guards = guards.clone();
+                    inner_guards.extend(guard_for(&app, &when.when, guard_ids));
                     for (i, inner) in when.steps.iter().enumerate() {
-                        queue.insert(i, (inner.clone(), 0));
+                        queue.insert(i, (inner.clone(), 0, inner_guards.clone()));
                     }
                 }
                 continue;
@@ -2875,10 +2910,10 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 }
                 let mut at = 0;
                 for inner in &repeat.steps {
-                    queue.insert(at, (inner.clone(), 0));
+                    queue.insert(at, (inner.clone(), 0, guards.clone()));
                     at += 1;
                 }
-                queue.insert(at, (owned_step.clone(), passes + 1));
+                queue.insert(at, (owned_step.clone(), passes + 1, guards.clone()));
                 continue;
             }
             // The block boundary: activate the surface (lazy launch on its
@@ -2928,11 +2963,12 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                             post: Vec::new(),
                         },
                         artifacts: Default::default(),
+                        guards: guards.clone(),
                     });
                     continue;
                 }
                 for (i, inner) in block.steps.iter().enumerate() {
-                    queue.insert(i, (inner.clone(), 0));
+                    queue.insert(i, (inner.clone(), 0, guards.clone()));
                 }
                 continue;
             }
@@ -3988,6 +4024,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             // Which surface ran it — how a multi-surface replay knows the
             // driver a step belongs to. None on single-surface flows.
             step.surface = current_surface.clone();
+            step.guards = guards.clone();
             match write_token(&action) {
                 Some(token) => typed_at.push((steps.len(), token)),
                 None => {
@@ -5303,6 +5340,32 @@ steps:
             !contents.contains("repeat"),
             "the trace holds no control flow"
         );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The block's steps carry the condition as a guard, in the form
+    /// replay reads: the same assertion with its auto-wait set to zero.
+    #[test]
+    fn a_when_that_holds_records_its_condition_as_a_guard() {
+        let spec = FlowSpec::parse(LOOP_SPEC).expect("spec parses");
+        let mut driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+        surface_reads(&mut driver, &["Done", "Error"]);
+        let out = std::env::temp_dir().join("flowproof-recorder-when-guard.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("recording succeeds");
+
+        let contents = std::fs::read_to_string(&out).expect("trace written");
+        let step = |n: usize| match TraceLine::parse(contents.lines().nth(n).expect("line")) {
+            Ok(TraceLine::Step(step)) => step,
+            other => panic!("expected a step, got {other:?}"),
+        };
+        let guard = step(1).guards.pop().expect("the press is guarded");
+        assert_eq!(guard.id, "g0001");
+        assert_eq!(guard.condition, "page shows Error");
+        assert_eq!(guard.expect["value_contains"], "Error");
+        assert_eq!(guard.expect["scope"], "surface");
+        assert_eq!(guard.expect["timeout_ms"], 0, "a condition never waits");
+        assert!(step(2).guards.is_empty(), "the assert is outside the block");
         std::fs::remove_file(&out).ok();
     }
 

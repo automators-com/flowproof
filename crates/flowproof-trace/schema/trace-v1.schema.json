@@ -367,6 +367,13 @@
             }
           }
         },
+        "guards": {
+          "type": "array",
+          "description": "The `when:` blocks this step was recorded inside, outermost first. Replay runs the step only if every one holds, reading each guard id once per run.",
+          "items": {
+            "$ref": "#/$defs/guard"
+          }
+        },
         "artifacts": {
           "type": "object",
           "additionalProperties": false,
@@ -395,6 +402,35 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "guard": {
+      "type": "object",
+      "required": [
+        "id",
+        "condition",
+        "expect"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^g[0-9]{4,}$"
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expect": {
+          "type": "object",
+          "description": "An `element_state` expectation with `timeout_ms: 0`: a condition reads state, it never waits for it."
+        },
+        "selectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/selector"
           }
         }
       }

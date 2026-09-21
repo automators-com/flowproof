@@ -3133,7 +3133,17 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
                         .map(step_detail_suffix)
                         .unwrap_or_default(),
                 ),
-                StepStatus::Skipped => ("SKIP", String::new()),
+                // A step skipped because its `when:` did not hold says so;
+                // the ones skipped behind a failure already have their reason
+                // on the line above them.
+                StepStatus::Skipped => (
+                    "SKIP",
+                    step.detail
+                        .as_deref()
+                        .filter(|why| why.starts_with("`when:"))
+                        .map(step_detail_suffix)
+                        .unwrap_or_default(),
+                ),
                 StepStatus::Errored => (
                     "ERROR",
                     step.detail

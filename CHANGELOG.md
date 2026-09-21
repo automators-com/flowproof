@@ -6,6 +6,17 @@ together).
 
 ## Unreleased
 
+- **A `when:` block is decided at replay, not frozen at record.** `when:`
+  read its condition once, while recording, and the trace kept only the
+  steps that ran - so a flow that dismissed a banner on the day it was
+  recorded failed on every day the banner did not show, and the failure
+  read as a regression. That rule is right for `repeat:` (the pass count is
+  a fact about the recording) and wrong for an optional block. Steps inside
+  a `when:` now carry the condition as `guards`; replay reads it once per
+  block with no auto-wait, runs the block if it holds and otherwise skips it
+  with the condition named in the report. Traces without guards replay
+  exactly as before. The numeric comparison stays record-time for now.
+
 ## 0.23.10
 
 - **Recording no longer looks idle while it prepares or retries.** Desktop callers can opt into progress events on stderr, including repair-model waits and fresh-start retries. JSON results on stdout and ordinary CLI output stay unchanged.

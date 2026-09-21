@@ -23,11 +23,11 @@ steps:
             status: 500
 ```
 
-## Repeating until the app settles (`repeat:` and `when:`)
+## Repeating until the app settles, and optional blocks (`repeat:` and `when:`)
 
 `foreach` repeats a block as many times as you know when you write it.
-Sometimes you do not know: press a button until the label changes, recover
-if an error appeared. Those are `repeat:` and `when:`.
+Sometimes you do not know: press a button until the label changes, dismiss
+a banner if it appeared. Those are `repeat:` and `when:`.
 
 ```yaml
 steps:
@@ -41,18 +41,33 @@ steps:
       - Press the "id:tech" button
 ```
 
-**Both expand while recording, not while replaying.** The condition is read
-against the live app, and what lands in the trace is the passes that
-actually ran: ordinary concrete steps, no `repeat` and no `when`. The trace
-stays a recording of what happened and replay still decides nothing. Against
-a non-deterministic application that recording only replays against the same
-behaviour, which for a regression test is the right way round: a flow that
-silently re-adapted every run would always pass.
+**`repeat:` is settled while recording.** The condition is read against the
+live app before each pass, and what lands in the trace is the passes that
+actually ran: ordinary concrete steps, no `repeat`. How many passes it took
+is a fact about that recording, and a replay that needs a different number
+is a different behaviour, which for a regression test is the right way
+round: a loop that silently re-adapted every run would always pass.
 
 `until:` is checked **before** the first pass, so a `repeat:` whose
 condition already holds runs zero times. `max:` is required: if the
 condition never holds within it, recording fails and names the bound. Each
 `repeat:` gets its own budget.
+
+**`when:` is read again at every replay.** Recording reads the condition
+against the live app and, if it holds, records the block's steps with the
+condition attached to each of them as a guard. Replay reads that guard
+again, once per block, before the block's first step: if it holds the
+block runs, and if not its steps are skipped, reported as `SKIP` with the
+condition named, and the flow continues. A skipped block is not a passed
+one; the report says which branch each run took.
+
+Two consequences follow. A `when:` block is only in the trace if its
+condition held while recording, so record with the optional element
+present: the banner showing, the dialog open. If it was absent at record
+time there is nothing to replay when it appears later, and the step after
+it fails exactly as it did before. And the guard is read once per block,
+not once per step, so a block that removes the very thing its condition
+saw (dismissing the banner) still runs to its end.
 
 Conditions read state; they never wait:
 
@@ -71,6 +86,9 @@ other rather than a reading against a literal, and it is **numeric**: `"9"`
 is greater than `"10"` as text and smaller as a number, and a condition that
 quietly answered the text question would be worse than one that refuses. A
 side that does not read as a number fails the recording and is quoted back.
+It is also the one condition settled at record time only: it has no
+replay-time form yet, so a `when:` on it records the branch that held and
+replays it unconditionally.
 
 Scope conditions tightly: `page shows ERROR` also matches a heading reading
 "Errors occur", so name the element instead.

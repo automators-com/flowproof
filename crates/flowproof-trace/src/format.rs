@@ -344,6 +344,34 @@ pub struct Step {
     pub selectors: Vec<Selector>,
     pub sync: Sync,
     pub artifacts: Artifacts,
+    /// The `when:` blocks this step was recorded inside, outermost first.
+    /// Replay runs the step only if every one holds; see [`Guard`]. Absent
+    /// on steps outside any block, which serialize byte-identically to
+    /// before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guards: Vec<Guard>,
+}
+
+/// A replay-time condition on a step: the `when:` block it was recorded
+/// inside. STRICTLY ADDITIVE: an older engine that meets one ignores it
+/// and runs the step unconditionally, which is what every engine did
+/// before the field existed.
+///
+/// Every step recorded in ONE expansion of a `when:` carries the same `id`,
+/// and replay reads the condition once per id, before the first of them.
+/// A block's own steps usually change the very state the condition read (a
+/// dismissed banner is no longer visible), so a per-step re-read would
+/// skip the rest of a block it had just started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Guard {
+    pub id: String,
+    /// The authored condition, for the report and the reader.
+    pub condition: String,
+    /// The reading, in the `element_state` vocabulary with `timeout_ms: 0`:
+    /// a condition reads state, it never waits for it.
+    pub expect: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selectors: Vec<Selector>,
 }
 
 /// The action performed in a step. Adjacently tagged as
