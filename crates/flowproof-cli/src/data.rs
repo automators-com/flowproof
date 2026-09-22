@@ -517,11 +517,16 @@ mod tests {
     #[test]
     fn dotted_mapping_accepts_only_scalars() {
         let row = serde_json::json!({"contact": {"email": "a@example.test"}, "tags": []});
-        assert_eq!(scalar(&row, "contact.email").unwrap(), "a@example.test");
+        assert_eq!(
+            scalar(&row, "contact.email").expect("scalar email"),
+            "a@example.test"
+        );
         assert!(scalar(&row, "contact.missing")
-            .unwrap_err()
+            .expect_err("missing field")
             .contains("missing"));
-        assert!(scalar(&row, "tags").unwrap_err().contains("scalar"));
+        assert!(scalar(&row, "tags")
+            .expect_err("non-scalar field")
+            .contains("scalar"));
     }
 
     #[test]
@@ -539,11 +544,11 @@ mod tests {
         let mut too_large = binding(DataRowsMode::All);
         too_large.rows.limit = DESKTOP_ROW_CAP + 1;
         assert!(validate(&too_large, DESKTOP_ROW_CAP)
-            .unwrap_err()
+            .expect_err("over desktop cap")
             .contains("Desktop"));
         too_large.rows.limit = CLI_ROW_CAP + 1;
         assert!(validate(&too_large, CLI_ROW_CAP)
-            .unwrap_err()
+            .expect_err("over CLI cap")
             .contains("CLI/CI"));
     }
 
@@ -578,10 +583,13 @@ mod tests {
                     other => panic!("unexpected fake API request {other}"),
                 };
                 request
-                    .respond(tiny_http::Response::from_string(body).with_header(
-                        tiny_http::Header::from_bytes("Content-Type", content_type).unwrap(),
-                    ))
-                    .unwrap();
+                    .respond(
+                        tiny_http::Response::from_string(body).with_header(
+                            tiny_http::Header::from_bytes("Content-Type", content_type)
+                                .expect("valid header"),
+                        ),
+                    )
+                    .expect("fake API responds");
             }
         });
         let source = DataMakerSource {
@@ -594,12 +602,12 @@ mod tests {
         let mut seen = Vec::new();
         source
             .rows(&identity, &BTreeSet::from([0, 2]), &mut |ordinal, row| {
-                seen.push((ordinal, row["id"].as_u64().unwrap()));
+                seen.push((ordinal, row["id"].as_u64().expect("row id")));
                 Ok(())
             })
             .expect("chunks stream");
         assert_eq!(seen, vec![(0, 1), (2, 3)]);
-        handle.join().unwrap();
+        handle.join().expect("fake API thread");
     }
 
     #[test]
@@ -610,7 +618,7 @@ mod tests {
             let request = server.recv().expect("metadata request");
             request.respond(tiny_http::Response::from_string(
                 r#"{"id":"building","status":"building","rowCount":0,"chunkCount":0,"contentHash":null}"#,
-            ).with_header(tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap())).unwrap();
+            ).with_header(tiny_http::Header::from_bytes("Content-Type", "application/json").expect("valid header"))).expect("fake API responds");
         });
         let source = DataMakerSource {
             base_url,
@@ -620,8 +628,8 @@ mod tests {
         };
         assert!(source
             .pin("building")
-            .unwrap_err()
+            .expect_err("dataset not ready")
             .contains("must be ready"));
-        handle.join().unwrap();
+        handle.join().expect("fake API thread");
     }
 }

@@ -3198,12 +3198,7 @@ fn cmd_run_data(
         serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("writing data report: {e}"))?;
-    write_data_junit(
-        &run_dir.join("junit.xml"),
-        &name,
-        &serde_json::from_value::<Vec<DataRowResult>>(report["rows"].clone())
-            .map_err(|e| e.to_string())?,
-    )?;
+    write_data_junit(&run_dir.join("junit.xml"), &name, &results)?;
     if options.json {
         println!(
             "{}",
@@ -3216,13 +3211,8 @@ fn cmd_run_data(
         println!(
             "{}: {}/{} rows passed -> {}",
             if all_passed { "PASS" } else { "FAIL" },
-            report["rows"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|r| r["passed"] == true)
-                .count(),
-            report["rows"].as_array().unwrap().len(),
+            results.iter().filter(|r| r.passed).count(),
+            results.len(),
             report_path.display()
         );
     }

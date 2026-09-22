@@ -11,8 +11,9 @@ Use the smallest input mechanism that fits the test:
 | Dataset binding | The same flow or suite repeated over governed dataset rows |
 
 A dataset binding belongs in `suite.yaml`, or in `<flow-stem>.data.yaml` for
-one flow. Data Maker itself is not modified. Flowproof reads its public API
-with a project `READ_ONLY` key.
+one flow. Pass `flowproof run --data PATH` to point at a binding file that
+isn't the discovered sibling. Data Maker itself is not modified. Flowproof
+reads its public API with a project `READ_ONLY` key.
 
 ```yaml
 provider: datamaker
