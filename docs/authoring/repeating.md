@@ -41,17 +41,25 @@ steps:
       - Press the "id:tech" button
 ```
 
-**`repeat:` is settled while recording.** The condition is read against the
-live app before each pass, and what lands in the trace is the passes that
-actually ran: ordinary concrete steps, no `repeat`. How many passes it took
-is a fact about that recording, and a replay that needs a different number
-is a different behaviour, which for a regression test is the right way
-round: a loop that silently re-adapted every run would always pass.
+**`repeat:` is read again at every replay.** Recording reads the condition
+against the live app before each pass and records the passes that actually
+ran, each step carrying the condition, the bound, and its pass number.
+Replay keeps the first recorded pass as the body: it reads the condition,
+runs the body while the condition does not hold, and stops when it holds
+or fails at `max:`, naming the bound. So the pass count is decided by the
+app under replay, not fixed by the recording: a list that has three items
+today and seven tomorrow is walked to its end both days. Passes beyond the
+first report with a `.2`, `.3` suffix on the step id, and a loop that is
+already settled reports its body as skipped, by name.
 
 `until:` is checked **before** the first pass, so a `repeat:` whose
 condition already holds runs zero times. `max:` is required: if the
-condition never holds within it, recording fails and names the bound. Each
-`repeat:` gets its own budget.
+condition never holds within it, recording fails and names the bound, and
+so does replay. Each `repeat:` gets its own budget. Two consequences
+mirror `when:`. The body exists in the trace only if the loop ran at least
+one pass while recording, so record against an app that needs the loop. And
+only the outermost `repeat:` is re-decided at replay; a `repeat:` nested
+inside another is settled while recording, as part of the outer body.
 
 **`when:` is read again at every replay.** Recording reads the condition
 against the live app and, if it holds, records the block's steps with the
@@ -88,7 +96,8 @@ quietly answered the text question would be worse than one that refuses. A
 side that does not read as a number fails the recording and is quoted back.
 It is also the one condition settled at record time only: it has no
 replay-time form yet, so a `when:` on it records the branch that held and
-replays it unconditionally.
+replays it unconditionally, and a `repeat:` on it replays its recorded
+passes as they were.
 
 Scope conditions tightly: `page shows ERROR` also matches a heading reading
 "Errors occur", so name the element instead.
