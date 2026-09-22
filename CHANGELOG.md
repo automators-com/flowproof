@@ -6,6 +6,8 @@ together).
 
 ## Unreleased
 
+## 0.23.11
+
 - **A `when:` block is decided at replay, not frozen at record.** `when:`
   read its condition once, while recording, and the trace kept only the
   steps that ran - so a flow that dismissed a banner on the day it was
