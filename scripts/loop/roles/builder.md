@@ -65,7 +65,10 @@ You also may not:
 ## Quality
 
 - Conventional Commits, with crate scope where it helps: `fix(agent): …`
-- **Read the last few `CHANGELOG.md` entries before writing one.** The voice is
+- **Add a `.changeset/<slug>.md` fragment, not a direct `CHANGELOG.md` edit.**
+  See `.changeset/README.md` — your PR gets its own file instead of a shared
+  `## Unreleased` section that every other open Builder PR is also editing.
+  Read the last few `CHANGELOG.md` entries before writing one. The voice is
   distinctive: it names what was wrong, why it mattered, and what holds now.
   Match it. Do not write a list of what you changed.
 - A fix ships with the test that proves it stays fixed. This is a testing tool;
