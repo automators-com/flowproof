@@ -28,6 +28,9 @@ codebase to move quickly.
 - CI must pass: fmt, clippy (`-D warnings`), tests on Ubuntu and Windows, ruff + pytest.
 - Changes to the trace format require updating both `docs/trace-format.md` and the JSON
   Schema in `crates/flowproof-trace/schema/`.
+- Changes visible to someone using flowproof add a changelog fragment under
+  `.changeset/` instead of editing `CHANGELOG.md` directly — see
+  `.changeset/README.md`.
 
 ## License
 

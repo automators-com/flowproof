@@ -52,7 +52,9 @@ scenario REFUSE "a rust test is deleted" \
    perl -0pi -e "s/^\s*#\[test\]\n\s*fn [a-z_0-9]+\(\)[^\n]*\{//m" "$f"'
 scenario ALLOW  "a rust test is added" \
   'printf "\n#[test]\nfn ratchet_probe_added() { assert!(true); }\n" \
-     >> crates/flowproof-trace/src/lib.rs'
+     >> crates/flowproof-trace/src/lib.rs;
+   printf "**Ratchet probe.** Exercises the ratchet test suite.\n" \
+     > .changeset/_ratchet_probe.md'
 
 echo "-- and may not be silenced --"
 scenario REFUSE "#[ignore] is added" \
@@ -73,13 +75,30 @@ scenario REFUSE "schema changes without the doc" \
   'printf "\n" >> crates/flowproof-trace/schema/trace-v1.schema.json'
 scenario ALLOW  "schema and doc change together" \
   'printf "\n" >> crates/flowproof-trace/schema/trace-v1.schema.json;
-   printf "\n" >> docs/trace-format.md'
+   printf "\n" >> docs/trace-format.md;
+   printf "**Ratchet probe.** Exercises the ratchet test suite.\n" \
+     > .changeset/_ratchet_probe.md'
+
+echo "-- an engine change carries its own changeset --"
+scenario REFUSE "engine file changes with no changeset" \
+  'printf "\n// ratchet probe\n" >> crates/flowproof-trace/src/lib.rs'
+scenario ALLOW  "engine file changes with a changeset fragment" \
+  'printf "\n// ratchet probe\n" >> crates/flowproof-trace/src/lib.rs;
+   printf "**Ratchet probe.** Exercises the changeset check.\n" \
+     > .changeset/_ratchet_probe.md'
+scenario ALLOW  "engine file changes with a direct CHANGELOG.md edit" \
+  'printf "\n// ratchet probe\n" >> crates/flowproof-trace/src/lib.rs;
+   printf "\n- ratchet probe\n" >> CHANGELOG.md'
+scenario ALLOW  "a docs-only change needs no changeset" \
+  'printf "\n" >> docs/trace-format.md'
 
 echo "-- size --"
 scenario REFUSE "a diff over the cap" \
   'seq 1 500 | sed "s/^/\/\/ line /" >> crates/flowproof-trace/src/lib.rs'
 scenario ALLOW  "a diff under the cap" \
-  'seq 1 20 | sed "s/^/\/\/ line /" >> crates/flowproof-trace/src/lib.rs'
+  'seq 1 20 | sed "s/^/\/\/ line /" >> crates/flowproof-trace/src/lib.rs;
+   printf "**Ratchet probe.** Exercises the ratchet test suite.\n" \
+     > .changeset/_ratchet_probe.md'
 scenario ALLOW  "a large generated Cargo.lock bump is exempt" \
   'seq 1 500 | sed "s/^/# generated /" >> Cargo.lock'
 

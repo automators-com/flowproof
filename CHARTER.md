@@ -289,9 +289,13 @@ Builder reads `status: eligible` and nothing else.
 - **Conventional Commits** with optional crate scope (`feat(trace):`).
 - **Small, incremental commits.** A PR over ~400 changed lines escalates to a
   human: large diffs are where review stops working.
-- **The CHANGELOG explains why, not what.** The existing voice is distinctive —
-  it names the thing that was wrong, why it mattered, and what now holds instead.
-  Match it. Read the last few entries before writing one.
+- **The CHANGELOG explains why, not what.** Add a fragment under `.changeset/`
+  (see `.changeset/README.md`) instead of editing `CHANGELOG.md` directly —
+  one file per PR, so concurrent Builder PRs stop colliding on the same
+  `## Unreleased` lines. The existing voice is distinctive — it names the
+  thing that was wrong, why it mattered, and what now holds instead. Match it.
+  Read the last few `CHANGELOG.md` entries before writing one. A human folds
+  pending fragments into `CHANGELOG.md` at release time.
 - **A fix ships with the test that proves it stays fixed.** Every defect the
   loops find becomes a committed flow.
 - **Docs and code move together.** Prose describing code that does not exist is a

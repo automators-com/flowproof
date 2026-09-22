@@ -86,9 +86,12 @@ results here. Redirect to a file and read the status, or use `${PIPESTATUS[0]}`.
 
 - **Conventional Commits** with crate scope where it helps: `fix(agent): …`,
   `feat(trace): …`, `docs: …`.
-- **The CHANGELOG explains why, not what.** The voice is distinctive: it names
-  what was wrong, why it mattered, and what holds now. Read the last few entries
-  before writing one — do not produce a list of changes.
+- **The CHANGELOG explains why, not what.** Add a fragment under `.changeset/`
+  (see `.changeset/README.md`) instead of editing `CHANGELOG.md` directly — one
+  file per PR, so concurrent PRs stop colliding on the same `## Unreleased`
+  lines. The voice is distinctive: it names what was wrong, why it mattered,
+  and what holds now. Read the last few `CHANGELOG.md` entries before writing
+  one — do not produce a list of changes.
 - **A fix ships with the test that proves it stays fixed.** This is a testing
   tool; a fix without a test is an assertion.
 - **Prose describing code that no longer exists is a defect.** If you change

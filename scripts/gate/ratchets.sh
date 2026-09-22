@@ -118,6 +118,27 @@ else
   ok "trace schema untouched"
 fi
 
+# --- an engine change carries its own changeset -------------------------------
+# Deliberately its own definition of "user-visible", not a reuse of
+# .github/workflows/ci.yml's `scope` filter: that filter answers "should CI
+# run the heavy jobs", where a test-only or CI-only change correctly says
+# yes. This answers "does someone using flowproof need to know", where the
+# same changes correctly say no - the two questions diverge on purpose.
+# Every .md file is already exempt - CHANGELOG.md and .changeset/*.md
+# included - so this only asks whether a fragment was ADDED, not merely
+# that some Markdown moved.
+engine_changed="$(git diff --name-only "$BASE" "$HEAD_REF" -- . \
+                   | grep -vE '^(docs/|examples/|README\.md|CONTRIBUTING\.md|\.loop/|\.github/|Cargo\.lock$|crates/[^/]+/tests/|tests/|.*\.md$)' || true)"
+changeset_added="$(git diff --name-status "$BASE" "$HEAD_REF" -- '.changeset/*.md' \
+                    | awk '$1 ~ /^A/ {print $2}')"
+changelog_touched="$(git diff --name-only "$BASE" "$HEAD_REF" -- 'CHANGELOG.md')"
+if [ -n "$engine_changed" ] && [ -z "$changeset_added" ] && [ -z "$changelog_touched" ]; then
+  bad "engine paths changed with no .changeset/*.md fragment"
+  note "see .changeset/README.md - add one file describing what changed and why"
+else
+  ok "engine change carries a changeset, or touches nothing user-visible"
+fi
+
 # --- size ---------------------------------------------------------------------
 # Cargo.lock is generated, so it is excluded: a routine dependency bump would
 # otherwise blow the cap on its own and teach everyone to ignore this check.
