@@ -2437,6 +2437,96 @@ fn expand_foreach(doc: &mut serde_yaml::Value) -> Result<(), SpecError> {
 /// `after_each` shell commands run around every flow (the seed and cleanup
 /// the eval's 912-line harness mostly existed to do); `env` is exported to
 /// every flow and every hook; `order` pins spec order when it matters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataProvider {
+    Datamaker,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataRowsMode {
+    All,
+    First,
+    Sample,
+    Range,
+}
+
+fn default_data_rows_mode() -> DataRowsMode {
+    DataRowsMode::All
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataShard {
+    /// Zero-based shard number.
+    pub index: u32,
+    /// Total number of non-overlapping shards.
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataRows {
+    #[serde(default = "default_data_rows_mode")]
+    pub mode: DataRowsMode,
+    /// Required safety bound for every invocation.
+    pub limit: usize,
+    /// Inclusive, zero-based ordinal used by `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u64>,
+    /// Exclusive ordinal used by `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<u64>,
+    /// Stable seed used by `sample`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<DataShard>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DataFailurePolicy {
+    #[default]
+    Continue,
+    Stop,
+}
+
+fn default_data_concurrency() -> usize {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataExecution {
+    #[serde(default = "default_data_concurrency")]
+    pub concurrency: usize,
+    #[serde(default)]
+    pub on_failure: DataFailurePolicy,
+}
+
+impl Default for DataExecution {
+    fn default() -> Self {
+        Self {
+            concurrency: default_data_concurrency(),
+            on_failure: DataFailurePolicy::Continue,
+        }
+    }
+}
+
+/// Provider-neutral row binding shared by suite.yaml and *.data.yaml.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataBinding {
+    pub provider: DataProvider,
+    pub dataset: String,
+    pub map: std::collections::BTreeMap<String, String>,
+    pub rows: DataRows,
+    #[serde(default)]
+    pub execution: DataExecution,
+}
+
 // PartialEq only: `browser.viewport.device_scale_factor` is an f64.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2461,6 +2551,10 @@ pub struct SuiteManifest {
     /// against half-seeded data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_from: Option<String>,
+    /// Optional governed dataset whose selected rows each execute this suite
+    /// in an isolated run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<DataBinding>,
     /// Shell command run before each flow (seed). Runs via `sh -c` with the
     /// spec path in `FLOWPROOF_SPEC`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -4,6 +4,7 @@
 mod agent_flow;
 mod capture;
 pub mod config;
+mod data;
 mod doctor;
 mod suite;
 mod suite_checkpoint;
@@ -321,6 +322,16 @@ enum Command {
         /// Business-data override, repeatable as KEY=VALUE.
         #[arg(long = "var", value_name = "KEY=VALUE")]
         var: Vec<String>,
+        /// Data binding file. A sibling <flow-stem>.data.yaml or suite.yaml
+        /// data block is discovered when this is omitted.
+        #[arg(long, value_name = "PATH")]
+        data: Option<PathBuf>,
+        /// Enforce Desktop's 1,000-row invocation cap.
+        #[arg(long, hide = true)]
+        data_desktop: bool,
+        /// Link a failed-row rerun to its immutable original parent run.
+        #[arg(long, value_name = "RUN_ID")]
+        retry_of: Option<String>,
         /// Emit the full report as JSON on stdout (for programmatic callers).
         #[arg(long)]
         json: bool,
@@ -1438,6 +1449,9 @@ fn verify_recording(
             values,
             recording,
             recovery: suite_checkpoint::RecoveryArgs::default(),
+            data: None,
+            data_desktop: false,
+            retry_of: None,
         },
     )?;
     if replayed == EXIT_PASS {
@@ -2161,6 +2175,9 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
             values: ValuesArgs::default(),
             recording: flowproof_driver::RecordingOptions::default(),
             recovery: suite_checkpoint::RecoveryArgs::default(),
+            data: None,
+            data_desktop: false,
+            retry_of: None,
         },
     )
 }
@@ -2175,6 +2192,7 @@ fn run_suite_with_author(dir: &Path, options: RunOptions) -> Result<u8, String> 
         values,
         recording,
         recovery,
+        ..
     } = options;
     // Same fill-gaps-only seed `apply_suite_context` does for a single flow
     // (plans/001-credential-config.md, "How it reaches the flow") — this is
@@ -2199,6 +2217,7 @@ fn run_suite_with_author(dir: &Path, options: RunOptions) -> Result<u8, String> 
     suite_checkpoint::validate_mode(&recovery, &manifest, retries, missing, trace.as_deref())?;
     apply_env_from(&manifest, dir)?;
     apply_suite_env(&manifest);
+    let _data_row = apply_data_row_overlay()?;
 
     // Control-id uniqueness is a suite-level property, enforced at load: two
     // flows sharing a control id would corrupt the audit coverage map. Only
@@ -2844,9 +2863,368 @@ struct RunOptions {
     values: ValuesArgs,
     recording: flowproof_driver::RecordingOptions,
     recovery: suite_checkpoint::RecoveryArgs,
+    data: Option<PathBuf>,
+    data_desktop: bool,
+    retry_of: Option<String>,
+}
+
+const DATA_CHILD: &str = "FLOWPROOF_DATA_CHILD";
+const DATA_ROW: &str = "FLOWPROOF_DATA_ROW_JSON";
+
+fn apply_data_row_overlay() -> Result<EnvOverlay, String> {
+    let mut overlay = EnvOverlay::default();
+    let Some(raw) = std::env::var_os(DATA_ROW) else {
+        return Ok(overlay);
+    };
+    let values: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&raw.to_string_lossy())
+            .map_err(|e| format!("invalid internal dataset row mapping: {e}"))?;
+    for (name, value) in values {
+        if !valid_env_name(&name) {
+            return Err(format!("invalid internal dataset mapping name `{name}`"));
+        }
+        overlay.set(&name, &value);
+    }
+    Ok(overlay)
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DataRowResult {
+    row_ref: data::RowRef,
+    passed: bool,
+    status: String,
+    duration_ms: u64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DataCheckpoint {
+    dataset: data::DatasetIdentity,
+    selection: flowproof_agent::DataRows,
+    mapping_digest: String,
+    shard: Option<flowproof_agent::DataShard>,
+    completed: std::collections::BTreeSet<u64>,
+    last_completed_row: Option<u64>,
+}
+
+fn data_root(spec_path: &Path) -> PathBuf {
+    if spec_path.is_dir() {
+        spec_path.to_path_buf()
+    } else {
+        spec_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    }
+}
+
+fn retry_ordinals(root: &Path, retry_of: &str) -> Result<std::collections::BTreeSet<u64>, String> {
+    let path = root
+        .join(".flowproof")
+        .join("runs")
+        .join(retry_of)
+        .join("result.json");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("reading retry parent {}: {e}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("parsing retry parent {}: {e}", path.display()))?;
+    let rows = value
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("run {retry_of} is not a dataset parent run"))?;
+    Ok(rows
+        .iter()
+        .filter(|row| row.get("passed").and_then(|v| v.as_bool()) == Some(false))
+        .filter_map(|row| row.pointer("/row_ref/ordinal").and_then(|v| v.as_u64()))
+        .collect())
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn write_data_junit(path: &Path, name: &str, rows: &[DataRowResult]) -> Result<(), String> {
+    let failures = rows.iter().filter(|row| !row.passed).count();
+    let mut xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites tests=\"{}\" failures=\"{}\"><testsuite name=\"{}\" tests=\"{}\" failures=\"{}\">",
+        rows.len(), failures, xml_escape(name), rows.len(), failures
+    );
+    for row in rows {
+        let reference = row.row_ref.stable();
+        xml.push_str(&format!(
+            "<testcase name=\"{}\" time=\"{:.3}\">",
+            xml_escape(&reference),
+            row.duration_ms as f64 / 1000.0
+        ));
+        if !row.passed {
+            xml.push_str(&format!(
+                "<failure message=\"{}\"/>",
+                xml_escape(&row.status)
+            ));
+        }
+        xml.push_str("</testcase>");
+    }
+    xml.push_str("</testsuite></testsuites>\n");
+    std::fs::write(path, xml).map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
+fn save_data_checkpoint(path: &Path, checkpoint: &DataCheckpoint) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let temp = path.with_extension("tmp");
+    std::fs::write(
+        &temp,
+        serde_json::to_vec_pretty(checkpoint).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("writing dataset checkpoint: {e}"))?;
+    std::fs::rename(&temp, path).map_err(|e| format!("committing dataset checkpoint: {e}"))
+}
+
+fn cmd_run_data(
+    spec_path: &Path,
+    options: &RunOptions,
+    binding: flowproof_agent::DataBinding,
+) -> Result<u8, String> {
+    let cap = if options.data_desktop {
+        data::DESKTOP_ROW_CAP
+    } else {
+        data::CLI_ROW_CAP
+    };
+    let mut specs = Vec::new();
+    if spec_path.is_dir() {
+        discover_specs(spec_path, &mut specs)?;
+    } else {
+        specs.push(spec_path.to_path_buf());
+    }
+    for path in &specs {
+        let spec = FlowSpec::load(path).map_err(|e| e.to_string())?;
+        if let Some(name) = binding
+            .map
+            .keys()
+            .find(|name| spec.exports.contains_key(*name))
+        {
+            return Err(format!(
+                "data mapping `{name}` for {} attempts to overwrite a checkpoint export; rename one of them before a driver starts",
+                path.display()
+            ));
+        }
+    }
+    let (identity, mut selected_rows) = data::load_rows(&binding, cap)?;
+    let root = data_root(spec_path);
+    if let Some(parent) = &options.retry_of {
+        let failed = retry_ordinals(&root, parent)?;
+        selected_rows.retain(|row| failed.contains(&row.row_ref.ordinal));
+        if selected_rows.is_empty() {
+            return Err(format!(
+                "retry parent {parent} has no failed rows in this selection"
+            ));
+        }
+    }
+    let digest = data::mapping_digest(&binding);
+    let mut checkpoint = DataCheckpoint {
+        dataset: identity.clone(),
+        selection: binding.rows.clone(),
+        mapping_digest: digest.clone(),
+        shard: binding.rows.shard.clone(),
+        completed: Default::default(),
+        last_completed_row: None,
+    };
+    if options.recovery.resume {
+        let path = options
+            .recovery
+            .checkpoint
+            .as_ref()
+            .expect("clap requires checkpoint");
+        let saved: DataCheckpoint = serde_json::from_slice(
+            &std::fs::read(path)
+                .map_err(|e| format!("reading dataset checkpoint {}: {e}", path.display()))?,
+        )
+        .map_err(|e| format!("invalid dataset checkpoint {}: {e}", path.display()))?;
+        if saved.dataset != identity
+            || saved.selection != binding.rows
+            || saved.mapping_digest != digest
+        {
+            return Err("dataset checkpoint identity, selection, mapping or shard changed; no row was started".into());
+        }
+        checkpoint = saved;
+    } else if let Some(path) = &options.recovery.checkpoint {
+        if path.exists() {
+            return Err(
+                "dataset checkpoint already exists; use --resume or choose a new path".into(),
+            );
+        }
+        save_data_checkpoint(path, &checkpoint)?;
+    }
+
+    let started = Instant::now();
+    let mut results = Vec::new();
+    for row in selected_rows {
+        if checkpoint.completed.contains(&row.row_ref.ordinal) {
+            continue;
+        }
+        let row_started = Instant::now();
+        let mut command = std::process::Command::new(
+            std::env::current_exe().map_err(|e| format!("locating flowproof executable: {e}"))?,
+        );
+        command.arg("run").arg(spec_path).arg("--json");
+        if let Some(trace) = &options.trace {
+            command.arg("--trace").arg(trace);
+        }
+        if let Some(vars) = &options.values.vars_file {
+            command.arg("--vars").arg(vars);
+        }
+        for value in &options.values.vars {
+            command.arg("--var").arg(value);
+        }
+        if options.retries > 0 {
+            command.arg("--retries").arg(options.retries.to_string());
+        }
+        match options.missing {
+            MissingTrace::Record => {
+                command.arg("--record-missing");
+            }
+            MissingTrace::Error => {
+                command.arg("--strict");
+            }
+            MissingTrace::Skip => {}
+        }
+        command
+            .env(DATA_CHILD, "1")
+            .env(
+                DATA_ROW,
+                serde_json::to_string(&row.values).map_err(|e| e.to_string())?,
+            )
+            .env("FLOWPROOF_NO_UPDATE_CHECK", "1");
+        let output = command
+            .output()
+            .map_err(|e| format!("starting isolated row {}: {e}", row.row_ref.stable()))?;
+        let code = output.status.code().unwrap_or(i32::from(EXIT_ERROR));
+        let passed = code == i32::from(EXIT_PASS);
+        let status = if passed {
+            "passed"
+        } else if code == i32::from(EXIT_FAIL) {
+            "failed"
+        } else {
+            "errored"
+        };
+        if let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+            let mut report_paths = Vec::new();
+            if let Some(path) = payload.get("report_path").and_then(|value| value.as_str()) {
+                report_paths.push(path);
+            }
+            if let Some(flows) = payload.get("flows").and_then(|value| value.as_array()) {
+                report_paths.extend(
+                    flows.iter().filter_map(|flow| {
+                        flow.get("report_path").and_then(|value| value.as_str())
+                    }),
+                );
+            }
+            for result_path in report_paths {
+                if let Some(run_dir) = Path::new(result_path).parent() {
+                    // Retain each row's capture and report as evidence, but
+                    // mark it as a child so UIs present one aggregate parent.
+                    let _ = std::fs::write(run_dir.join(".data-child"), row.row_ref.stable());
+                }
+            }
+        }
+        results.push(DataRowResult {
+            row_ref: row.row_ref.clone(),
+            passed,
+            status: status.into(),
+            duration_ms: row_started.elapsed().as_millis() as u64,
+        });
+        checkpoint.completed.insert(row.row_ref.ordinal);
+        checkpoint.last_completed_row = Some(row.row_ref.ordinal);
+        if let Some(path) = &options.recovery.checkpoint {
+            save_data_checkpoint(path, &checkpoint)?;
+        }
+        let progress = format!("[{}] {}", status.to_uppercase(), row.row_ref.stable());
+        if options.json {
+            eprintln!("{progress}");
+        } else {
+            println!("{progress}");
+        }
+        if !passed
+            && matches!(
+                binding.execution.on_failure,
+                flowproof_agent::DataFailurePolicy::Stop
+            )
+        {
+            break;
+        }
+    }
+
+    let all_passed = !results.is_empty() && results.iter().all(|row| row.passed);
+    let (run_id, _started_at) = mint_run_id();
+    let run_dir = root.join(".flowproof").join("runs").join(&run_id);
+    std::fs::create_dir_all(&run_dir).map_err(|e| format!("creating data run: {e}"))?;
+    let name = spec_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .replace(".flow.yaml", "");
+    let steps: Vec<_> = results.iter().map(|row| serde_json::json!({
+        "id": format!("row-{}", row.row_ref.ordinal),
+        "intent": format!("dataset row {}", row.row_ref.ordinal),
+        "status": if row.passed { "passed" } else if row.status == "failed" { "failed" } else { "errored" },
+        "detail": if row.passed { serde_json::Value::Null } else { serde_json::Value::String(format!("{} failed", row.row_ref.stable())) },
+        "started_ms": 0,
+        "duration_ms": row.duration_ms,
+        "degraded": false
+    })).collect();
+    let report = serde_json::json!({
+        "name": name,
+        "trace_id": format!("data:{run_id}"),
+        "passed": all_passed,
+        "degraded": false,
+        "steps": steps,
+        "duration_ms": started.elapsed().as_millis() as u64,
+        "dataset": identity,
+        "selection": binding.rows,
+        "mapping_digest": digest,
+        "shard": checkpoint.shard,
+        "last_completed_row": checkpoint.last_completed_row,
+        "retry_of": options.retry_of,
+        "rows": results,
+    });
+    let report_path = run_dir.join("result.json");
+    std::fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("writing data report: {e}"))?;
+    write_data_junit(&run_dir.join("junit.xml"), &name, &results)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({"report": report, "report_path": report_path})
+            )
+            .map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "{}: {}/{} rows passed -> {}",
+            if all_passed { "PASS" } else { "FAIL" },
+            results.iter().filter(|r| r.passed).count(),
+            results.len(),
+            report_path.display()
+        );
+    }
+    Ok(if all_passed { EXIT_PASS } else { EXIT_FAIL })
 }
 
 fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
+    if std::env::var_os(DATA_CHILD).is_none() {
+        if let Some(binding) = data::load_binding(spec_path, options.data.as_deref())? {
+            return cmd_run_data(spec_path, &options, binding);
+        }
+    }
     if spec_path.is_dir() {
         return run_suite_with_author(spec_path, options);
     }
@@ -2870,6 +3248,7 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
     // expensive way - the second consecutive single-spec run failed on
     // state the first had left behind, while the suite passed.
     let manifest = apply_suite_context(spec_path)?;
+    let _data_row = apply_data_row_overlay()?;
     let _values = apply_values_context(spec_path, &values)?;
     // Load the spec for its gate (this also surfaces spec parse errors on
     // single runs, deliberately — a typo'd spec should not replay).
@@ -3635,6 +4014,9 @@ where
             trace,
             vars,
             var,
+            data,
+            data_desktop,
+            retry_of,
             json,
             retries,
             record_missing,
@@ -3681,6 +4063,9 @@ where
                                     video,
                                     highlight_cursor,
                                 ),
+                                data,
+                                data_desktop,
+                                retry_of,
                             },
                         )
                     })
