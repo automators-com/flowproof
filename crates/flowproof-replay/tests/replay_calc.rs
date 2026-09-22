@@ -2488,3 +2488,78 @@ fn progress_callback_sees_every_step_in_order_including_skipped() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+const WHEN_SPEC: &str = "\
+name: Recover from an error
+app: calc
+steps:
+  - Type 5
+  - when: page shows Error
+    steps:
+      - Press equals
+      - Press plus
+  - assert: display shows 8
+";
+
+fn record_when_trace(dir: &std::path::Path) -> std::path::PathBuf {
+    let spec = FlowSpec::parse(WHEN_SPEC).expect("spec parses");
+    // The condition holds while recording, so the block is in the trace.
+    let mut driver = MockAppDriver::new(&CALC_ELEMENTS)
+        .with_text("CalculatorResults", "Display is 8")
+        .with_surface_text("Error");
+    let out = dir.join("when.trace.jsonl");
+    record(&spec, &mut driver, &out).expect("recording succeeds");
+    out
+}
+
+/// A `when:` is decided again at replay: the block recorded on the day the
+/// error showed is skipped, by name, on the day it does not, and the flow
+/// goes on to pass.
+#[test]
+fn replay_skips_a_when_block_whose_condition_no_longer_holds() {
+    let dir = std::env::temp_dir().join("flowproof-replay-when-skip");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_when_trace(&dir);
+
+    let mut driver = MockAppDriver::new(&CALC_ELEMENTS)
+        .with_text("CalculatorResults", "Display is 8")
+        .with_surface_text("all is well");
+    let (report, _) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(report.passed, "report: {report:?}");
+    let statuses: Vec<StepStatus> = report.steps.iter().map(|s| s.status).collect();
+    use StepStatus::{Passed, Skipped};
+    assert_eq!(statuses, [Passed, Skipped, Skipped, Passed]);
+    assert_eq!(
+        report.steps[1].detail.as_deref(),
+        Some("`when: page shows Error` did not hold")
+    );
+    assert_eq!(driver.invoked, vec!["num5Button"], "the block did not run");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The guard is read once per block: the block's first step clears the
+/// error here, and a per-step re-read would have skipped the second.
+#[test]
+fn replay_reads_a_when_condition_once_per_block() {
+    let dir = std::env::temp_dir().join("flowproof-replay-when-once");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_when_trace(&dir);
+
+    let mut driver =
+        MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+    driver.text_sequence.insert(
+        MockAppDriver::SURFACE.to_string(),
+        ["Error", "calm"].iter().map(|s| s.to_string()).collect(),
+    );
+    let (report, _) = run_trace(&trace, &mut driver).expect("replay runs");
+
+    assert!(report.passed, "report: {report:?}");
+    assert!(report.steps.iter().all(|s| s.status == StepStatus::Passed));
+    assert_eq!(
+        driver.invoked,
+        vec!["num5Button", "equalButton", "plusButton"],
+        "both steps of the block ran"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -2284,6 +2284,38 @@ fn execute_step<D: AppDriver>(
     Ok((Ok(()), matched))
 }
 
+/// The first of `step.guards` that does not hold, by its condition text: an
+/// ordinary `element_state` check with a zero auto-wait. Each guard id is
+/// read ONCE per run and the verdict kept, because the block's own steps
+/// usually change the state its condition read.
+fn failed_guard<D: AppDriver>(
+    driver: &mut D,
+    step: &Step,
+    verdicts: &mut std::collections::HashMap<String, bool>,
+    captures: &std::collections::HashMap<String, String>,
+    api_corpus: &mut Vec<(String, String)>,
+) -> Result<Option<String>, ReplayError> {
+    for guard in &step.guards {
+        let holds = match verdicts.get(&guard.id) {
+            Some(holds) => *holds,
+            None => {
+                let assertion = Assertion::ElementState {
+                    expect: guard.expect.clone(),
+                    selector_ref: (!guard.selectors.is_empty()).then_some(0),
+                };
+                let (outcome, _) =
+                    check_assertion(driver, &assertion, &guard.selectors, captures, api_corpus)?;
+                verdicts.insert(guard.id.clone(), outcome.is_ok());
+                outcome.is_ok()
+            }
+        };
+        if !holds {
+            return Ok(Some(guard.condition.clone()));
+        }
+    }
+    Ok(None)
+}
+
 fn pointer_checkpoint<D: AppDriver>(
     recorder: &mut Option<&mut flowproof_driver::RunRecorder>,
     driver: &mut D,
@@ -2578,6 +2610,8 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
     // with NO surface (an out-of-band assert) keeps the current one.
     let mut active_surface: Option<String> = None;
     let mut configured_surfaces: std::collections::BTreeSet<String> = Default::default();
+    // `when:` verdicts by guard id, each read once per run.
+    let mut verdicts: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     for step in &steps {
         if failed {
             let skipped = StepResult::skipped(step);
@@ -2598,6 +2632,20 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
                 }
                 active_surface = Some(surface.clone());
             }
+        }
+        // A `when:` that does not hold this run skips its steps, not passes
+        // them, and the report names the condition.
+        if let Some(condition) =
+            failed_guard(driver, step, &mut verdicts, &captures, &mut secret_corpus)?
+        {
+            let skipped = StepResult::skipped_with_reason(
+                &step.id,
+                &step.intent,
+                &format!("`when: {condition}` did not hold"),
+            );
+            on_step(&skipped);
+            results.push(skipped);
+            continue;
         }
         if let Some(rec) = recorder.as_mut() {
             rec.step_started(driver, &step.id);

@@ -156,3 +156,36 @@ fn embedded_agent_segment_round_trips_and_requires_its_cassette() {
         .remove("cassette");
     assert!(!validator.is_valid(&step));
 }
+
+const GUARDED_FIXTURE: &str = include_str!("fixtures/guarded.trace.jsonl");
+
+/// A step recorded inside a `when:` carries the block's condition as a
+/// guard with its own selector ladder; a step outside any block carries
+/// none and serializes exactly as before the field existed.
+#[test]
+fn guarded_fixture_lines_parse_and_validate() {
+    let validator = validator();
+    let mut guarded = 0;
+    for line in GUARDED_FIXTURE.lines().filter(|l| !l.trim().is_empty()) {
+        let raw: serde_json::Value = serde_json::from_str(line).expect("line is JSON");
+        assert!(
+            validator.validate(&raw).is_ok(),
+            "fixture line failed schema validation: {:?}",
+            validator.iter_errors(&raw).next()
+        );
+        let parsed = TraceLine::parse(line).expect("line parses into typed model");
+        if let TraceLine::Step(step) = &parsed {
+            if let Some(guard) = step.guards.first() {
+                guarded += 1;
+                assert_eq!((guard.id.as_str(), guard.selectors.len()), ("g0001", 1));
+                assert_eq!(guard.expect["timeout_ms"], 0, "a condition never waits");
+            }
+        }
+        let reserialized = serde_json::to_value(&parsed).expect("typed model serializes");
+        assert_eq!(
+            serde_json::from_value::<TraceLine>(reserialized).ok(),
+            Some(parsed)
+        );
+    }
+    assert_eq!(guarded, 1, "one guarded step, one plain step with no field");
+}

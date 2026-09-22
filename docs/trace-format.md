@@ -284,6 +284,15 @@ already follows.
   field existed. Optional PER STEP even in a multi-surface trace: an
   out-of-band assertion (`assert_api`/`assert_sql`/`assert_spreadsheet`)
   drives no UI and may carry none.
+- `guards` (optional): the `when:` blocks the step was recorded inside,
+  outermost first, each `{id, condition, expect, selectors}`: the authored
+  text, an `element_state` expectation with `timeout_ms: 0` (a condition
+  reads state, it never waits) over the guard's own selector ladder or
+  `scope: "surface"`. Replay reads each `id` once per run, before the first
+  step carrying it, and skips every step whose guard did not hold, naming
+  the condition. Every step of one `when:` expansion shares the id, so a
+  block that changes what its condition read still runs to its end. Absent
+  outside any block; an engine predating it runs the step unconditionally.
 - `action.type`: one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`,
   `upload`, `capture`, `capture_download`, `set_checked`, `wait`, `assert`.
