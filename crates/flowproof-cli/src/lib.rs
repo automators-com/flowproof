@@ -2894,6 +2894,8 @@ struct DataRowResult {
     passed: bool,
     status: String,
     duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -2947,6 +2949,29 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn data_child_error(
+    stderr: &[u8],
+    values: &std::collections::BTreeMap<String, String>,
+    exit_code: i32,
+) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let mut detail = text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().trim_start_matches("error: ").to_string())
+        .unwrap_or_else(|| format!("row process exited with code {exit_code}"));
+    let mut secrets: Vec<_> = values.values().filter(|value| !value.is_empty()).collect();
+    secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    for secret in secrets {
+        detail = detail.replace(secret, "••••");
+    }
+    if detail.chars().count() > 500 {
+        detail = detail.chars().take(499).collect::<String>() + "…";
+    }
+    detail
+}
+
 fn write_data_junit(path: &Path, name: &str, rows: &[DataRowResult]) -> Result<(), String> {
     let failures = rows.iter().filter(|row| !row.passed).count();
     let mut xml = format!(
@@ -2963,7 +2988,7 @@ fn write_data_junit(path: &Path, name: &str, rows: &[DataRowResult]) -> Result<(
         if !row.passed {
             xml.push_str(&format!(
                 "<failure message=\"{}\"/>",
-                xml_escape(&row.status)
+                xml_escape(row.error.as_deref().unwrap_or(&row.status))
             ));
         }
         xml.push_str("</testcase>");
@@ -3099,7 +3124,10 @@ fn cmd_run_data(
                 DATA_ROW,
                 serde_json::to_string(&row.values).map_err(|e| e.to_string())?,
             )
-            .env("FLOWPROOF_NO_UPDATE_CHECK", "1");
+            .env("FLOWPROOF_NO_UPDATE_CHECK", "1")
+            .env_remove("DATAMAKER_API_KEY")
+            .env_remove("DATAMAKER_API_URL")
+            .env_remove("DATAMAKER_PROJECT_ID");
         let output = command
             .output()
             .map_err(|e| format!("starting isolated row {}: {e}", row.row_ref.stable()))?;
@@ -3137,6 +3165,7 @@ fn cmd_run_data(
             passed,
             status: status.into(),
             duration_ms: row_started.elapsed().as_millis() as u64,
+            error: (!passed).then(|| data_child_error(&output.stderr, &row.values, code)),
         });
         checkpoint.completed.insert(row.row_ref.ordinal);
         checkpoint.last_completed_row = Some(row.row_ref.ordinal);
@@ -3172,7 +3201,7 @@ fn cmd_run_data(
         "id": format!("row-{}", row.row_ref.ordinal),
         "intent": format!("dataset row {}", row.row_ref.ordinal),
         "status": if row.passed { "passed" } else if row.status == "failed" { "failed" } else { "errored" },
-        "detail": if row.passed { serde_json::Value::Null } else { serde_json::Value::String(format!("{} failed", row.row_ref.stable())) },
+        "detail": if row.passed { serde_json::Value::Null } else { serde_json::Value::String(row.error.clone().unwrap_or_else(|| format!("{} failed", row.row_ref.stable()))) },
         "started_ms": 0,
         "duration_ms": row.duration_ms,
         "degraded": false
@@ -4139,6 +4168,30 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dataset_child_errors_are_bounded_and_redact_mapped_values() {
+        let values = std::collections::BTreeMap::from([
+            ("CUSTOMER".into(), "alpha".into()),
+            ("ATTEMPT".into(), "3".into()),
+        ]);
+        let detail = data_child_error(
+            b"context\nerror: request for alpha failed after 3 attempts\n",
+            &values,
+            2,
+        );
+        assert_eq!(detail, "request for •••• failed after •••• attempts");
+        assert!(!detail.contains("alpha"));
+        assert!(!detail.contains('3'));
+
+        let long = data_child_error("x".repeat(600).as_bytes(), &Default::default(), 2);
+        assert_eq!(long.chars().count(), 500);
+        assert!(long.ends_with('…'));
+        assert_eq!(
+            data_child_error(b"", &Default::default(), 7),
+            "row process exited with code 7"
+        );
+    }
 
     /// A surface's `browser:` config stages on its freshly built driver —
     /// the window between construction and first-activation launch is the
