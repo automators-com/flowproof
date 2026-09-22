@@ -2668,3 +2668,46 @@ fn replay_fails_a_repeat_at_its_bound() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+const RECOVERING_SPEC: &str = "\
+name: Advance, recovering from faults
+app: calc
+steps:
+  - repeat:
+      until: page shows Done
+      max: 5
+      steps:
+        - when: page shows Error
+          steps:
+            - Press equals
+        - Press plus
+  - assert: display shows 8
+";
+
+/// A `when:` recovery inside a `repeat:` is only recorded in the passes
+/// that needed it, here the second of two. Replay takes that pass as the
+/// body, so a run whose FIRST pass faults can recover.
+#[test]
+fn replay_takes_the_recorded_pass_that_took_the_most_branches_as_the_body() {
+    let dir = std::env::temp_dir().join("flowproof-replay-repeat-recover");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(RECOVERING_SPEC).expect("spec parses");
+    // Reads: until, when, until, when, until. The fault shows on pass two.
+    let mut driver = replay_driver(&["a", "a", "a", "Error"], "Done");
+    let trace = dir.join("recover.trace.jsonl");
+    record(&spec, &mut driver, &trace).expect("recording succeeds");
+    assert_eq!(
+        driver.invoked,
+        vec!["plusButton", "equalButton", "plusButton"]
+    );
+
+    // Today the fault shows on pass ONE and never again.
+    let mut driver = replay_driver(&["a", "Error", "a", "a"], "Done");
+    let (report, _) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:?}");
+    assert_eq!(
+        driver.invoked,
+        vec!["equalButton", "plusButton", "plusButton"]
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

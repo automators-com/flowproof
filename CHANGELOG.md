@@ -12,8 +12,8 @@ together).
   fills, it is not: a queue that had three items on the recording day and
   seven today must be walked seven times, and a flow that stopped at three
   was not testing the app in front of it. Steps inside a `repeat:` now carry
-  the condition, the bound, and their pass number; replay keeps the first
-  recorded pass as the body, reads the condition before each pass, runs the
+  the condition, the bound, and their pass number; replay keeps the recorded
+  pass that took the most branches as the body, reads the condition before each pass, runs the
   body until it holds, and fails at `max:` by name. Passes beyond the first
   report with a `.2`, `.3` suffix on the step id. Traces without the field
   replay flat, as before. Only the outermost loop is re-decided; a nested
