@@ -6,6 +6,8 @@ together).
 
 ## Unreleased
 
+## 0.23.12
+
 - **A `repeat:` loop is decided at replay too.** 0.23.11 made `when:` a
   replay-time decision and left `repeat:` frozen at record, on the argument
   that the pass count is a fact about the recording. For a list the app
