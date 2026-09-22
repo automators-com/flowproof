@@ -293,6 +293,15 @@ already follows.
   the condition. Every step of one `when:` expansion shares the id, so a
   block that changes what its condition read still runs to its end. Absent
   outside any block; an engine predating it runs the step unconditionally.
+- `repeat` (optional): the `repeat:` block the step was recorded inside,
+  `{id, pass, max, condition, expect, selectors}`: the reading in the same
+  form as a guard, plus the loop's bound and which recorded pass this step
+  belongs to. Every step of one expansion shares the id. Replay reads the
+  condition before each pass, re-runs the first recorded pass's steps as the
+  body while it does not hold, and fails at `max`, so the pass count is the
+  app's under replay, not the recording's. Only the outermost `repeat:` is
+  carried; a nested one is settled at record time inside the body. Absent
+  outside any loop; an engine predating it replays the recorded passes flat.
 - `action.type`: one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`,
   `upload`, `capture`, `capture_download`, `set_checked`, `wait`, `assert`.

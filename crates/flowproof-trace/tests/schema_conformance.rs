@@ -189,3 +189,35 @@ fn guarded_fixture_lines_parse_and_validate() {
     }
     assert_eq!(guarded, 1, "one guarded step, one plain step with no field");
 }
+
+const REPEAT_FIXTURE: &str = include_str!("fixtures/repeat.trace.jsonl");
+
+/// Every pass of one `repeat:` shares the loop id and numbers its pass;
+/// the step after the loop carries nothing and serializes as before.
+#[test]
+fn repeat_fixture_lines_parse_and_validate() {
+    let validator = validator();
+    let mut passes = Vec::new();
+    for line in REPEAT_FIXTURE.lines().filter(|l| !l.trim().is_empty()) {
+        let raw: serde_json::Value = serde_json::from_str(line).expect("line is JSON");
+        assert!(
+            validator.validate(&raw).is_ok(),
+            "fixture line failed schema validation: {:?}",
+            validator.iter_errors(&raw).next()
+        );
+        let parsed = TraceLine::parse(line).expect("line parses into typed model");
+        if let TraceLine::Step(step) = &parsed {
+            if let Some(repeat) = &step.repeat {
+                assert_eq!((repeat.id.as_str(), repeat.max), ("l0001", 15));
+                assert_eq!(repeat.expect["timeout_ms"], 0, "a condition never waits");
+                passes.push(repeat.pass);
+            }
+        }
+        let reserialized = serde_json::to_value(&parsed).expect("typed model serializes");
+        assert_eq!(
+            serde_json::from_value::<TraceLine>(reserialized).ok(),
+            Some(parsed)
+        );
+    }
+    assert_eq!(passes, [1, 2], "two recorded passes, then a plain step");
+}

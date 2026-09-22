@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use flowproof_driver::{resolve_app, AppDriver, UiaSelector};
 use flowproof_trace::format::{
-    Action, AppInfo, Artifacts, Assertion, Condition, EnvInfo, Guard, Header, Selector, Step, Sync,
-    TypeTextParams,
+    Action, AppInfo, Artifacts, Assertion, Condition, EnvInfo, Guard, Header, Repeat, Selector,
+    Step, Sync, TypeTextParams,
 };
 use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 
@@ -1085,6 +1085,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
         sync: Sync { pre, post: vec![] },
         artifacts: Artifacts::default(),
         guards: Vec::new(),
+        repeat: None,
     }
 }
 
@@ -2169,6 +2170,42 @@ fn guard_for(app: &str, condition: &str, id: u32) -> Option<Guard> {
     })
 }
 
+/// The replay-time form of a `repeat:`: its `until:` reading, the loop's
+/// id and bound, and which pass this is. Same `None` as [`guard_for`].
+fn repeat_for(app: &str, until: &str, id: u32, max: u32, pass: u32) -> Option<Repeat> {
+    let reading = guard_for(app, until, id)?;
+    Some(Repeat {
+        id: format!("l{id:04}"),
+        pass,
+        max,
+        condition: reading.condition,
+        expect: reading.expect,
+        selectors: reading.selectors,
+    })
+}
+
+/// One queued spec step with the control flow it sits under.
+struct Queued {
+    step: crate::spec::SpecStep,
+    /// How many passes ITS loop has made (a re-queued `repeat:` entry).
+    passes: u32,
+    guards: Vec<Guard>,
+    /// The outermost `repeat:` this entry is inside, if any.
+    repeat: Option<Repeat>,
+    /// A re-queued `repeat:` entry's own loop id, fixed on its first pass.
+    own_loop: Option<u32>,
+}
+
+fn queued(step: &crate::spec::SpecStep, guards: &[Guard], repeat: &Option<Repeat>) -> Queued {
+    Queued {
+        step: step.clone(),
+        passes: 0,
+        guards: guards.to_vec(),
+        repeat: repeat.clone(),
+        own_loop: None,
+    }
+}
+
 /// Record `spec` against the live app via `driver`, writing the trace to
 /// `out`. Every planned action's target element must exist before it is
 /// written — recording is a verification pass, not a transcription.
@@ -2842,16 +2879,15 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     let mut secret_corpus: Vec<(String, String)> = Vec::new();
     // `repeat:` and `when:` are expanded HERE, against the live app, into the
     // concrete steps that actually ran - so the trace stays a flat recording.
-    // A `repeat:` is settled for good; a `when:` keeps its condition as a
-    // guard on every step it produced, so replay reads it again. `foreach`
-    // expands at parse time; it can, because its list is known statically.
-    // Each entry carries how many passes ITS loop has made, so two loops in
-    // one flow do not share a budget, and the guards it sits under. Guard
-    // ids are per expansion: replay reads each once.
-    type Queued = (crate::spec::SpecStep, u32, Vec<Guard>);
+    // Both keep their condition on every step they produced, so replay reads
+    // it again: a `when:` as a guard, the outermost `repeat:` as its loop.
+    // `foreach` expands at parse time; it can, because its list is known
+    // statically. Ids are per expansion: replay reads each guard once, and
+    // re-runs a loop's first recorded pass until its condition holds.
     let mut queue: std::collections::VecDeque<Queued> =
-        spec.steps.iter().cloned().map(|s| (s, 0, vec![])).collect();
+        spec.steps.iter().map(|s| queued(s, &[], &None)).collect();
     let mut guard_ids = 0u32;
+    let mut loop_ids = 0u32;
     // The surface the CURRENT step runs on (multi-surface flows): set at
     // each `in:` boundary, stamped into every recorded step, and the app id
     // steps author and record against follows it.
@@ -2872,7 +2908,14 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             .map(|s| s.app.id().to_string())
             .unwrap_or_else(|| spec.app.id().to_string())
     };
-    while let Some((owned_step, passes, guards)) = queue.pop_front() {
+    while let Some(Queued {
+        step: owned_step,
+        passes,
+        guards,
+        repeat: loop_ctx,
+        own_loop,
+    }) = queue.pop_front()
+    {
         match &owned_step {
             crate::spec::SpecStep::When { when } => {
                 let app = surface_app(&current_surface);
@@ -2881,7 +2924,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     let mut inner_guards = guards.clone();
                     inner_guards.extend(guard_for(&app, &when.when, guard_ids));
                     for (i, inner) in when.steps.iter().enumerate() {
-                        queue.insert(i, (inner.clone(), 0, inner_guards.clone()));
+                        queue.insert(i, queued(inner, &inner_guards, &loop_ctx));
                     }
                 }
                 continue;
@@ -2890,7 +2933,8 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 // One pass is queued at a time, with the loop re-queued
                 // behind it, so the condition is re-read against the app
                 // AFTER each pass rather than against a stale reading.
-                if condition_holds(driver, &surface_app(&current_surface), &repeat.until)? {
+                let app = surface_app(&current_surface);
+                if condition_holds(driver, &app, &repeat.until)? {
                     continue;
                 }
                 if passes >= repeat.max {
@@ -2908,12 +2952,31 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                         ),
                     });
                 }
+                let own = own_loop.unwrap_or_else(|| {
+                    loop_ids += 1;
+                    loop_ids
+                });
+                // Only the outermost `repeat:` carries its condition into the
+                // trace; a nested one is settled here, inside the outer body.
+                let body_loop = match &loop_ctx {
+                    Some(outer) => Some(outer.clone()),
+                    None => repeat_for(&app, &repeat.until, own, repeat.max, passes + 1),
+                };
                 let mut at = 0;
                 for inner in &repeat.steps {
-                    queue.insert(at, (inner.clone(), 0, guards.clone()));
+                    queue.insert(at, queued(inner, &guards, &body_loop));
                     at += 1;
                 }
-                queue.insert(at, (owned_step.clone(), passes + 1, guards.clone()));
+                queue.insert(
+                    at,
+                    Queued {
+                        step: owned_step.clone(),
+                        passes: passes + 1,
+                        guards: guards.clone(),
+                        repeat: loop_ctx.clone(),
+                        own_loop: Some(own),
+                    },
+                );
                 continue;
             }
             // The block boundary: activate the surface (lazy launch on its
@@ -2964,11 +3027,12 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                         },
                         artifacts: Default::default(),
                         guards: guards.clone(),
+                        repeat: loop_ctx.clone(),
                     });
                     continue;
                 }
                 for (i, inner) in block.steps.iter().enumerate() {
-                    queue.insert(i, (inner.clone(), 0, guards.clone()));
+                    queue.insert(i, queued(inner, &guards, &loop_ctx));
                 }
                 continue;
             }
@@ -4025,6 +4089,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             // driver a step belongs to. None on single-surface flows.
             step.surface = current_surface.clone();
             step.guards = guards.clone();
+            step.repeat = loop_ctx.clone();
             match write_token(&action) {
                 Some(token) => typed_at.push((steps.len(), token)),
                 None => {
@@ -5336,9 +5401,10 @@ steps:
         assert_eq!(driver.invoked, vec!["plusButton", "plusButton"]);
         assert_eq!(summary.steps, 3);
         let contents = std::fs::read_to_string(&out).expect("trace written");
+        let lines: Vec<&str> = contents.lines().collect();
         assert!(
-            !contents.contains("repeat"),
-            "the trace holds no control flow"
+            lines[1].contains("\"pass\":1") && lines[2].contains("\"pass\":2"),
+            "the trace holds the passes that ran, each numbered"
         );
         std::fs::remove_file(&out).ok();
     }
@@ -5366,6 +5432,34 @@ steps:
         assert_eq!(guard.expect["scope"], "surface");
         assert_eq!(guard.expect["timeout_ms"], 0, "a condition never waits");
         assert!(step(2).guards.is_empty(), "the assert is outside the block");
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// Every recorded pass carries the loop: same id, its own pass number,
+    /// the bound, and the reading replay takes. The step after carries none.
+    #[test]
+    fn a_repeat_records_its_condition_on_every_pass() {
+        let spec = FlowSpec::parse(LOOP_SPEC).expect("spec parses");
+        let mut driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+        surface_reads(&mut driver, &["counting", "counting", "Done", "calm"]);
+        let out = std::env::temp_dir().join("flowproof-recorder-repeat-loop.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("recording succeeds");
+
+        let contents = std::fs::read_to_string(&out).expect("trace written");
+        let step = |n: usize| match TraceLine::parse(contents.lines().nth(n).expect("line")) {
+            Ok(TraceLine::Step(step)) => step,
+            other => panic!("expected a step, got {other:?}"),
+        };
+        let (first, second) = (
+            step(1).repeat.expect("pass 1"),
+            step(2).repeat.expect("pass 2"),
+        );
+        assert_eq!((first.id.as_str(), first.pass, first.max), ("l0001", 1, 5));
+        assert_eq!((second.id.as_str(), second.pass), ("l0001", 2));
+        assert_eq!(first.condition, "page shows Done");
+        assert_eq!(first.expect["timeout_ms"], 0, "a condition never waits");
+        assert!(step(3).repeat.is_none(), "the assert is outside the loop");
         std::fs::remove_file(&out).ok();
     }
 
