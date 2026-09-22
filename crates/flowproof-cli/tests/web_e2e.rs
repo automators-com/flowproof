@@ -2610,8 +2610,10 @@ fn late_rendered_assert_targets_are_waited_for() {
 /// nothing here depends on a seed).
 ///
 /// What it proves is what the trace holds: the passes that ACTUALLY ran, as
-/// ordinary steps. The recovery presses are in there because the page faulted,
-/// not because anyone wrote them.
+/// ordinary steps, each numbered with its pass. The recovery presses are in
+/// there because the page faulted, not because anyone wrote them, and they
+/// carry the `when:` as a guard. Replay then takes the pass that recovered as
+/// its body and decides the count against the page again.
 #[test]
 fn a_repeat_with_a_nested_when_records_the_passes_that_ran() {
     if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
@@ -2678,8 +2680,13 @@ fn a_repeat_with_a_nested_when_records_the_passes_that_ran() {
     assert_eq!(summary.steps, 15, "the trace holds the passes that ran");
     let trace = std::fs::read_to_string(&trace_path).expect("trace written");
     assert!(
-        !trace.contains("repeat"),
-        "no control flow survives into the trace"
+        trace.contains("\"pass\":12") && !trace.contains("\"pass\":13"),
+        "twelve numbered passes, not a loop"
+    );
+    assert_eq!(
+        trace.matches("\"guards\":[").count(),
+        2,
+        "the two recoveries carry the `when:` as a guard"
     );
 
     let mut driver = flowproof_cli::driver_for("web").expect("browser launches");

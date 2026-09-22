@@ -44,7 +44,9 @@ steps:
 **`repeat:` is read again at every replay.** Recording reads the condition
 against the live app before each pass and records the passes that actually
 ran, each step carrying the condition, the bound, and its pass number.
-Replay keeps the first recorded pass as the body: it reads the condition,
+Replay keeps the recorded pass that took the most branches as the body (a
+`when:` recovery inside the loop is only recorded in the passes that needed
+it): it reads the condition,
 runs the body while the condition does not hold, and stops when it holds
 or fails at `max:`, naming the bound. So the pass count is decided by the
 app under replay, not fixed by the recording: a list that has three items

@@ -2737,7 +2737,9 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
         };
         // First sight of a recorded loop: every recorded pass of it sits at
         // the front of the worklist. Replace them all with the loop check,
-        // whose body is the first recorded pass.
+        // whose body is the recorded pass that took the most branches: a
+        // `when:` recovery inside the loop is only recorded in the passes
+        // that needed it, and a body without it could not recover.
         if let Some(repeat) = step
             .repeat
             .as_ref()
@@ -2748,10 +2750,18 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
                 .position(|s| std::ptr::eq(s, step))
                 .unwrap_or(0);
             let in_loop = |i: usize| steps[i].repeat.as_ref().map(|r| &r.id) == Some(&repeat.id);
-            let body: Vec<usize> = (first..steps.len())
-                .take_while(|&i| in_loop(i))
-                .filter(|&i| steps[i].repeat.as_ref().map(|r| r.pass) == Some(1))
-                .collect();
+            let mut by_pass: std::collections::BTreeMap<u32, Vec<usize>> = Default::default();
+            for i in (first..steps.len()).take_while(|&i| in_loop(i)) {
+                let pass = steps[i].repeat.as_ref().map(|r| r.pass).unwrap_or(1);
+                by_pass.entry(pass).or_default().push(i);
+            }
+            // The earliest of the longest passes, so a tie keeps pass 1.
+            let body: Vec<usize> = by_pass
+                .values()
+                .rev()
+                .max_by_key(|indices| indices.len())
+                .cloned()
+                .unwrap_or_default();
             while matches!(work.front(), Some(Work::Step { index, .. }) if in_loop(*index)) {
                 work.pop_front();
             }
