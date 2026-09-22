@@ -350,6 +350,33 @@ pub struct Step {
     /// before the field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guards: Vec<Guard>,
+    /// The `repeat:` block this step was recorded inside, if any; see
+    /// [`Repeat`]. Absent outside any loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<Repeat>,
+}
+
+/// The `repeat:` block a step was recorded inside. STRICTLY ADDITIVE, like
+/// [`Guard`]: an older engine ignores it and replays the recorded passes
+/// as the flat steps they are.
+///
+/// Every step of one `repeat:` expansion shares the `id`, and `pass` says
+/// which pass recorded it. Replay reads `condition` before each pass, runs
+/// the FIRST recorded pass's steps as the body while it does not hold, and
+/// fails at `max`, so the pass count is decided by the app under replay
+/// rather than fixed by the recording. Only the outermost `repeat:` is
+/// carried; a nested one is settled at record time inside the outer body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Repeat {
+    pub id: String,
+    pub pass: u32,
+    pub max: u32,
+    /// The authored `until:` text, for the report and the reader.
+    pub condition: String,
+    /// The reading, in the `element_state` vocabulary with `timeout_ms: 0`.
+    pub expect: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selectors: Vec<Selector>,
 }
 
 /// A replay-time condition on a step: the `when:` block it was recorded

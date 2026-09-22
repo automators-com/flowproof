@@ -374,6 +374,10 @@
             "$ref": "#/$defs/guard"
           }
         },
+        "repeat": {
+          "$ref": "#/$defs/repeat",
+          "description": "The `repeat:` block this step was recorded inside. Replay re-reads its condition before each pass and re-runs the first recorded pass's steps until it holds, at most `max` times."
+        },
         "artifacts": {
           "type": "object",
           "additionalProperties": false,
@@ -426,6 +430,44 @@
         "expect": {
           "type": "object",
           "description": "An `element_state` expectation with `timeout_ms: 0`: a condition reads state, it never waits for it."
+        },
+        "selectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/selector"
+          }
+        }
+      }
+    },
+    "repeat": {
+      "type": "object",
+      "required": [
+        "id",
+        "pass",
+        "max",
+        "condition",
+        "expect"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^l[0-9]{4,}$"
+        },
+        "pass": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expect": {
+          "type": "object"
         },
         "selectors": {
           "type": "array",
