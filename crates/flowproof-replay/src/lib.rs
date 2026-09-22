@@ -2299,14 +2299,15 @@ fn failed_guard<D: AppDriver>(
         let holds = match verdicts.get(&guard.id) {
             Some(holds) => *holds,
             None => {
-                let assertion = Assertion::ElementState {
-                    expect: guard.expect.clone(),
-                    selector_ref: (!guard.selectors.is_empty()).then_some(0),
-                };
-                let (outcome, _) =
-                    check_assertion(driver, &assertion, &guard.selectors, captures, api_corpus)?;
-                verdicts.insert(guard.id.clone(), outcome.is_ok());
-                outcome.is_ok()
+                let holds = reading_holds(
+                    driver,
+                    &guard.expect,
+                    &guard.selectors,
+                    captures,
+                    api_corpus,
+                )?;
+                verdicts.insert(guard.id.clone(), holds);
+                holds
             }
         };
         if !holds {
@@ -2314,6 +2315,39 @@ fn failed_guard<D: AppDriver>(
         }
     }
     Ok(None)
+}
+
+/// Does a recorded condition hold RIGHT NOW? The reading a guard or a loop
+/// carries: an `element_state` check whose recorded `timeout_ms` is zero.
+fn reading_holds<D: AppDriver>(
+    driver: &mut D,
+    expect: &serde_json::Value,
+    selectors: &[Selector],
+    captures: &std::collections::HashMap<String, String>,
+    api_corpus: &mut Vec<(String, String)>,
+) -> Result<bool, ReplayError> {
+    let assertion = Assertion::ElementState {
+        expect: expect.clone(),
+        selector_ref: (!selectors.is_empty()).then_some(0),
+    };
+    let (outcome, _) = check_assertion(driver, &assertion, selectors, captures, api_corpus)?;
+    Ok(outcome.is_ok())
+}
+
+/// One item of replay work: a recorded step, with the loop pass it runs in
+/// (1 outside any loop), or the check between two passes of a `repeat:`.
+/// The trace holds every pass the recording took; replay keeps the FIRST
+/// as the body and decides the count itself, against the app as it is now.
+enum Work {
+    Step {
+        index: usize,
+        pass: u32,
+    },
+    Loop {
+        first: usize,
+        body: Vec<usize>,
+        passes: u32,
+    },
 }
 
 fn pointer_checkpoint<D: AppDriver>(
@@ -2612,9 +2646,124 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
     let mut configured_surfaces: std::collections::BTreeSet<String> = Default::default();
     // `when:` verdicts by guard id, each read once per run.
     let mut verdicts: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
-    for step in &steps {
+    // A pass beyond the first re-runs the same recorded ids; the suffix
+    // keeps the report's ids distinct.
+    let stamp = |mut result: StepResult, pass: u32| {
+        if pass > 1 {
+            result.id = format!("{}.{pass}", result.id);
+        }
+        result
+    };
+    let mut work: std::collections::VecDeque<Work> = (0..steps.len())
+        .map(|index| Work::Step { index, pass: 1 })
+        .collect();
+    let mut seen_loops: std::collections::BTreeSet<String> = Default::default();
+    while let Some(item) = work.pop_front() {
+        let (step, pass) = match item {
+            Work::Step { index, pass } => (&steps[index], pass),
+            Work::Loop {
+                first,
+                body,
+                passes,
+            } => {
+                if failed {
+                    continue;
+                }
+                let Some(repeat) = &steps[first].repeat else {
+                    continue;
+                };
+                let holds = reading_holds(
+                    driver,
+                    &repeat.expect,
+                    &repeat.selectors,
+                    &captures,
+                    &mut secret_corpus,
+                )?;
+                if holds {
+                    // Settled before any pass: the body is reported as
+                    // skipped, by name, so a zero-pass run reads as one.
+                    for &i in body.iter().filter(|_| passes == 0) {
+                        let why = format!("`repeat until {}` already held", repeat.condition);
+                        let skipped =
+                            StepResult::skipped_with_reason(&steps[i].id, &steps[i].intent, &why);
+                        on_step(&skipped);
+                        results.push(skipped);
+                    }
+                    continue;
+                }
+                if passes >= repeat.max {
+                    failed = true;
+                    let mut result = StepResult::failed(
+                        &steps[first],
+                        started.elapsed().as_millis() as u64,
+                        0,
+                        format!(
+                            "`{}` did not hold within {} passes",
+                            repeat.condition, repeat.max
+                        ),
+                    );
+                    result.intent = format!("repeat until {}", repeat.condition);
+                    on_step(&result);
+                    results.push(result);
+                    continue;
+                }
+                // A fresh pass: the body's own `when:` guards are read again.
+                for &i in &body {
+                    for guard in &steps[i].guards {
+                        verdicts.remove(&guard.id);
+                    }
+                }
+                let mut at = 0;
+                for &index in &body {
+                    work.insert(
+                        at,
+                        Work::Step {
+                            index,
+                            pass: passes + 1,
+                        },
+                    );
+                    at += 1;
+                }
+                work.insert(
+                    at,
+                    Work::Loop {
+                        first,
+                        body,
+                        passes: passes + 1,
+                    },
+                );
+                continue;
+            }
+        };
+        // First sight of a recorded loop: every recorded pass of it sits at
+        // the front of the worklist. Replace them all with the loop check,
+        // whose body is the first recorded pass.
+        if let Some(repeat) = step
+            .repeat
+            .as_ref()
+            .filter(|r| seen_loops.insert(r.id.clone()))
+        {
+            let first = steps
+                .iter()
+                .position(|s| std::ptr::eq(s, step))
+                .unwrap_or(0);
+            let in_loop = |i: usize| steps[i].repeat.as_ref().map(|r| &r.id) == Some(&repeat.id);
+            let body: Vec<usize> = (first..steps.len())
+                .take_while(|&i| in_loop(i))
+                .filter(|&i| steps[i].repeat.as_ref().map(|r| r.pass) == Some(1))
+                .collect();
+            while matches!(work.front(), Some(Work::Step { index, .. }) if in_loop(*index)) {
+                work.pop_front();
+            }
+            work.push_front(Work::Loop {
+                first,
+                body,
+                passes: 0,
+            });
+            continue;
+        }
         if failed {
-            let skipped = StepResult::skipped(step);
+            let skipped = stamp(StepResult::skipped(step), pass);
             on_step(&skipped);
             results.push(skipped);
             continue;
@@ -2643,6 +2792,7 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
                 &step.intent,
                 &format!("`when: {condition}` did not hold"),
             );
+            let skipped = stamp(skipped, pass);
             on_step(&skipped);
             results.push(skipped);
             continue;
@@ -2687,6 +2837,7 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
         };
         result.selector_tier = matched.tier.map(|t| t.name().to_string());
         result.degraded = matched.degraded;
+        let result = stamp(result, pass);
         on_step(&result);
         results.push(result);
     }

@@ -2563,3 +2563,108 @@ fn replay_reads_a_when_condition_once_per_block() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+const REPEAT_SPEC: &str = "\
+name: Press until done
+app: calc
+steps:
+  - repeat:
+      until: page shows Done
+      max: 5
+      steps:
+        - Press plus
+  - assert: display shows 8
+";
+
+/// Records two passes: the surface reads twice before it says Done.
+fn record_repeat_trace(dir: &std::path::Path) -> std::path::PathBuf {
+    let spec = FlowSpec::parse(REPEAT_SPEC).expect("spec parses");
+    let mut driver = MockAppDriver::new(&CALC_ELEMENTS)
+        .with_text("CalculatorResults", "Display is 8")
+        .with_surface_text("Done");
+    driver.text_sequence.insert(
+        MockAppDriver::SURFACE.to_string(),
+        ["counting", "counting"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    );
+    let out = dir.join("repeat.trace.jsonl");
+    record(&spec, &mut driver, &out).expect("recording succeeds");
+    out
+}
+
+fn replay_driver(reads: &[&str], fallback: &str) -> MockAppDriver {
+    let mut driver = MockAppDriver::new(&CALC_ELEMENTS)
+        .with_text("CalculatorResults", "Display is 8")
+        .with_surface_text(fallback);
+    driver.text_sequence.insert(
+        MockAppDriver::SURFACE.to_string(),
+        reads.iter().map(|s| s.to_string()).collect(),
+    );
+    driver
+}
+
+/// The pass count is the app's under replay: three today against a
+/// recording that took two, and zero when the condition already holds.
+#[test]
+fn replay_runs_a_repeat_until_the_app_settles() {
+    let dir = std::env::temp_dir().join("flowproof-replay-repeat");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_repeat_trace(&dir);
+
+    let mut driver = replay_driver(&["a", "a", "a"], "Done");
+    let (report, _) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:?}");
+    assert_eq!(driver.invoked, vec!["plusButton"; 3], "three passes");
+    let ids: Vec<&str> = report.steps.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["s0001", "s0001.2", "s0001.3", "s0003"]);
+
+    let mut driver = replay_driver(&[], "Done");
+    let (report, _) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:?}");
+    assert!(driver.invoked.is_empty(), "zero passes");
+    assert_eq!(report.steps[0].status, StepStatus::Skipped);
+    assert_eq!(
+        report.steps[0].detail.as_deref(),
+        Some("`repeat until page shows Done` already held")
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A loop that never settles fails at the bound, by name, exactly as the
+/// recording would have.
+#[test]
+fn replay_fails_a_repeat_at_its_bound() {
+    let dir = std::env::temp_dir().join("flowproof-replay-repeat-bound");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace = record_repeat_trace(&dir);
+
+    let mut driver = replay_driver(&[], "never");
+    let (report, _) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(!report.passed);
+    assert_eq!(
+        driver.invoked,
+        vec!["plusButton"; 5],
+        "the bound, then stop"
+    );
+    let bound = report
+        .steps
+        .iter()
+        .find(|s| s.status == StepStatus::Failed)
+        .expect("the loop fails");
+    assert_eq!(bound.intent, "repeat until page shows Done");
+    assert!(
+        bound
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("within 5 passes"),
+        "{bound:?}"
+    );
+    assert_eq!(
+        report.steps.last().map(|s| s.status),
+        Some(StepStatus::Skipped)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
