@@ -226,10 +226,18 @@ fn user_prompt(ctx: &AuthorContext<'_>) -> String {
     format!(
         "Flow: {name}\nApp: {app}{url}{today}\nSteps already performed: {prior}\n\
          Remembered captures in scope: {captures}\n\
-         Current step to perform: {intent}{page}\n\nInteractable elements:\n{scene}",
+         Current step to perform: {intent}{page}{blank}\n\nInteractable elements:\n{scene}",
         name = ctx.flow_name,
         app = ctx.app,
         url = ctx.url.map(|u| format!(" ({u})")).unwrap_or_default(),
+        blank = if ctx.url == Some(crate::recorder::BLANK_START) {
+            "\n\nThe browser is on a blank page on purpose: this flow has no start address, \
+             so its steps open pages themselves. Nothing here is a problem left by an earlier \
+             step. If the current step names an address, open it first with a rule_step \
+             `Go to <full address>`."
+        } else {
+            ""
+        },
         today = ctx
             .today
             .map(|d| format!(
@@ -1367,6 +1375,27 @@ pub fn author_step<C: ModelClient>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_blank_start_page_is_named_as_intentional() {
+        let ctx = |url| AuthorContext {
+            flow_name: "x",
+            app: "web",
+            url,
+            prior_steps: &[],
+            intent: "open https://a.example.test and sign in",
+            scene: "[]",
+            captures: &[],
+            today: None,
+            page_text: None,
+        };
+        assert!(
+            user_prompt(&ctx(Some(crate::recorder::BLANK_START))).contains("blank page on purpose")
+        );
+        assert!(
+            !user_prompt(&ctx(Some("https://a.example.test/"))).contains("blank page on purpose")
+        );
+    }
+
     use super::*;
 
     struct Scripted {

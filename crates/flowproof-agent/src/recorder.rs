@@ -1341,7 +1341,13 @@ pub fn surface_targets(
 
 /// Where a web flow with no `url:` starts: its own steps navigate, so the
 /// first one is usually `Go to https://…`, and a flow can visit several sites.
-const BLANK_START: &str = "about:blank";
+pub(crate) const BLANK_START: &str = "about:blank";
+
+/// A `Go to` target that is a full address, or a `${VAR}` that stands for one
+/// (resolved at each launch, never rewritten).
+fn names_an_address(text: &str) -> bool {
+    text.contains("://") || flowproof_trace::secret::has_refs(text)
+}
 
 fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordError> {
     if spec.app.id() == "web" {
@@ -2416,6 +2422,29 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     let explicit_step = explicit_rules.map(|text| crate::spec::SpecStep::Plain(text.to_string()));
     let rules_step = explicit_step.as_ref().unwrap_or(spec_step);
 
+    // A flow with no `url:` starts blank, and a model shown an empty page can
+    // read it as a failure. A step the grammar already reads as `Go to <full
+    // address>` needs no model, so it is performed as written; a step that
+    // names no address has nothing to open, and says so.
+    if spec.url.is_none() && driver.current_url().is_ok_and(|url| url == BLANK_START) {
+        if !names_an_address(intent) {
+            return Err(RecordError::BlankStart {
+                intent: intent.to_string(),
+            });
+        }
+        if let Ok(actions) = resolve_step(app_id, rules_step) {
+            let opens_a_page = |action: &ResolvedAction| matches!(action, ResolvedAction::Navigate { path } if names_an_address(path));
+            if !actions.is_empty() && actions.iter().all(opens_a_page) {
+                return Ok(AuthoredActions {
+                    actions,
+                    continues: false,
+                    route: StepAuthoringRoute::Rules,
+                    warning: None,
+                });
+            }
+        }
+    }
+
     let use_model = natural_intent && (author == Author::Llm || (plain_auto && client.is_some()));
     if use_model {
         let Some(client) = client.as_mut() else {
@@ -2440,12 +2469,17 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             .ok_or_else(|| RecordError::NoScene(app_id.to_string()))?;
         let today = driver.today()?;
         let page_text = surface_words(driver);
+        let live_url = spec
+            .url
+            .is_none()
+            .then(|| driver.current_url().ok())
+            .flatten();
         let ctx = AuthorContext {
             today: today.as_deref(),
             page_text: page_text.as_deref(),
             flow_name: &spec.name,
             app: app_id,
-            url: spec.url.as_deref(),
+            url: spec.url.as_deref().or(live_url.as_deref()),
             prior_steps: prior,
             captures,
             intent,
@@ -2658,12 +2692,17 @@ fn replan_remainder<D: AppDriver, C: ModelClient>(
         .ok_or_else(|| RecordError::NoScene(app_id.to_string()))?;
     let today = driver.today()?;
     let page_text = surface_words(driver);
+    let live_url = spec
+        .url
+        .is_none()
+        .then(|| driver.current_url().ok())
+        .flatten();
     let ctx = AuthorContext {
         today: today.as_deref(),
         page_text: page_text.as_deref(),
         flow_name: &spec.name,
         app: app_id,
-        url: spec.url.as_deref(),
+        url: spec.url.as_deref().or(live_url.as_deref()),
         prior_steps: prior,
         captures,
         intent,
@@ -3177,6 +3216,27 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                         continue;
                     }
                 }
+            };
+            // With no `url:`, a relative `Go to /path` (a model often
+            // shortens an address on the site it can see) resolves against
+            // the page the flow is on, and is recorded in full: replay
+            // starts blank too, with no origin of its own.
+            let action = match action {
+                ResolvedAction::Navigate { path }
+                    if target.command == BLANK_START && !names_an_address(&path) =>
+                {
+                    match driver.current_url().ok().filter(|url| url.contains("://")) {
+                        Some(current) => ResolvedAction::Navigate {
+                            path: flowproof_driver::absolute_url(&path, &current),
+                        },
+                        None => {
+                            return Err(RecordError::BlankStart {
+                                intent: spec_step.intent().to_string(),
+                            })
+                        }
+                    }
+                }
+                other => other,
             };
             // A multi-surface baseline's IDENTITY names its surface —
             // stored and compared as `<name>@<surface>.png` — so two
@@ -3762,9 +3822,9 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 }
                 ResolvedAction::Navigate { path } => {
                     let path = flowproof_trace::secret::resolve_refs(path)?;
-                    // A relative `Go to /settings` resolves against the
-                    // flow's `url:`, at replay too. With none there is no
-                    // origin to resolve it against.
+                    // Rewritten to a full address above whenever a page
+                    // is open; only the blank page has nothing to resolve
+                    // a relative path against.
                     if target.command == BLANK_START && !path.contains("://") {
                         return Err(RecordError::BlankStart {
                             intent: spec_step.intent().to_string(),
@@ -4591,6 +4651,32 @@ mod tests {
     }
 
     #[test]
+    fn a_go_to_on_the_blank_start_page_never_asks_the_model() {
+        let spec =
+            FlowSpec::parse("name: x\napp: web\nsteps:\n  - Go to https://a.example.test/start\n")
+                .expect("spec parses");
+        let mut driver = MockAppDriver {
+            url: Some(BLANK_START.into()),
+            scene: Some("[]".into()),
+            ..Default::default()
+        };
+        // What a model shown an empty page has been seen to answer.
+        let mut client = CountingClient {
+            reply:
+                r##"{"action":"previous_step_incomplete","evidence":"No elements are present"}"##
+                    .into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-blank-go-to.trace.jsonl");
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("a full address needs no model");
+        assert_eq!(client.calls, 0);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
+        assert_eq!(driver.navigations, vec!["https://a.example.test/start"]);
+        std::fs::remove_file(out).ok();
+    }
+
+    #[test]
     fn a_relative_go_to_without_a_url_says_what_to_write() {
         let spec = FlowSpec::parse("name: x\napp: web\nsteps:\n  - Go to /settings\n")
             .expect("spec parses");
@@ -4600,6 +4686,33 @@ mod tests {
         assert!(matches!(err, RecordError::BlankStart { .. }), "{err}");
         assert!(driver.navigations.is_empty());
         assert!(err.to_string().contains("Go to https://"), "{err}");
+    }
+
+    #[test]
+    fn a_relative_go_to_after_a_page_opened_is_recorded_in_full() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nsteps:\n  - Go to https://a.example.test/start\n  - Go to /next\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            url: Some("https://a.example.test/start".into()),
+            ..Default::default()
+        };
+        let out = std::env::temp_dir().join("flowproof-blank-relative-after.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("resolves against the open page");
+        assert_eq!(
+            driver.navigations,
+            vec![
+                "https://a.example.test/start",
+                "https://a.example.test/next"
+            ]
+        );
+        let trace = std::fs::read_to_string(&out).expect("trace written");
+        assert!(
+            trace.contains("https://a.example.test/next"),
+            "stored in full"
+        );
+        std::fs::remove_file(out).ok();
     }
 
     #[test]
