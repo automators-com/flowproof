@@ -1066,3 +1066,134 @@ fn missing_secret_json_output_keeps_the_original_step_detail() {
         "JSON stays the replay report, with no human guidance injected"
     );
 }
+
+/// A data service in the shape of a DataMaker scenario run: every
+/// `POST /scenarios/execute` hands out a NEW customer number, and
+/// `POST /orders` accepts only the number issued last. So a flow passes only
+/// when the second step sends the value the first one captured on THIS run.
+fn serve_fresh_data(server: tiny_http::Server, requests: usize) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut issued = 0;
+        for _ in 0..requests {
+            let Ok(mut request) = server.recv() else {
+                break;
+            };
+            let mut body = String::new();
+            std::io::Read::read_to_string(request.as_reader(), &mut body).ok();
+            let sent: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let (code, text) = match request.url() {
+                "/scenarios/execute" => {
+                    issued += 1;
+                    let data = serde_json::json!({
+                        "success": true,
+                        "result": {"data": {"customer_no": format!("C-{issued:04}"), "plant": 1010}},
+                    });
+                    (200, data.to_string())
+                }
+                "/orders" if sent["customer"] == format!("C-{issued:04}") => {
+                    (201, r#"{"ok":true}"#.to_string())
+                }
+                _ => (422, format!("unexpected request: {body}")),
+            };
+            let response = tiny_http::Response::from_string(text).with_status_code(code);
+            request.respond(response).ok();
+        }
+    })
+}
+
+#[test]
+fn an_api_capture_feeds_later_steps_fresh_on_every_run_and_never_reaches_the_trace() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    // record: execute + order; replay: execute + order.
+    let server_thread = serve_fresh_data(server, 4);
+    std::env::set_var("CAPTURE_API", &base);
+
+    let spec_yaml = "\
+name: Order for fresh test data
+app: api
+steps:
+  - assert_api:
+      request: POST ${CAPTURE_API}/scenarios/execute
+      body:
+        scenarioId: scn_1
+      status: 200
+      capture:
+        customer_no: result.data.customer_no
+        plant: result.data.plant
+  - assert_api:
+      request: POST ${CAPTURE_API}/orders
+      body:
+        customer: ${captured.customer_no}
+        plant: ${captured.plant}
+      status: 201
+";
+    let spec = FlowSpec::parse(spec_yaml).expect("spec parses");
+
+    let dir = std::env::temp_dir().join("flowproof-api-capture");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("order.trace.jsonl");
+
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("capture flow records");
+
+    // The trace keeps the paths and the reference, never the value.
+    let trace = std::fs::read_to_string(&trace_path).expect("trace written");
+    assert!(trace.contains("result.data.customer_no"), "path kept");
+    assert!(trace.contains("${captured.customer_no}"), "reference kept");
+    assert!(
+        !trace.contains("C-0001"),
+        "captured value must not reach the trace"
+    );
+
+    // Replay runs the data step again and sends the NEW number (C-0002).
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let (report, _run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(
+        report.passed,
+        "replay must send this run's capture: {report:#?}"
+    );
+
+    server_thread.join().ok();
+    std::env::remove_var("CAPTURE_API");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_api_capture_at_a_missing_path_fails_the_record_naming_the_capture() {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let base = format!("http://{}", server.server_addr());
+    let server_thread = serve_fresh_data(server, 1);
+    std::env::set_var("CAPTURE_MISS_API", &base);
+
+    let spec = FlowSpec::parse(
+        "\
+name: Missing capture
+app: api
+steps:
+  - assert_api:
+      request: POST ${CAPTURE_MISS_API}/scenarios/execute
+      body: {}
+      capture:
+        order_id: result.data.order_id
+",
+    )
+    .expect("spec parses");
+    let dir = std::env::temp_dir().join("flowproof-api-capture-miss");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("miss.trace.jsonl");
+    let mut driver = flowproof_cli::driver_for("api").expect("api driver");
+    let err = flowproof_agent::record(&spec, &mut driver, &trace_path)
+        .expect_err("a capture path that is not there must fail the record")
+        .to_string();
+    assert!(
+        err.contains("capture 'order_id'") && err.contains("'order_id'"),
+        "{err}"
+    );
+    assert!(!trace_path.exists(), "no trace for a failed record");
+
+    server_thread.join().ok();
+    std::env::remove_var("CAPTURE_MISS_API");
+    std::fs::remove_dir_all(&dir).ok();
+}

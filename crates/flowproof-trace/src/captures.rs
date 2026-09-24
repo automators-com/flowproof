@@ -51,6 +51,29 @@ pub fn substitute(
     Ok(out)
 }
 
+/// [`substitute`] every string leaf of a JSON value (an `assert_api` body),
+/// leaving keys and non-string leaves untouched.
+pub fn substitute_json(
+    value: &serde_json::Value,
+    captures: &std::collections::HashMap<String, String>,
+) -> Result<serde_json::Value, String> {
+    Ok(match value {
+        serde_json::Value::String(s) => serde_json::Value::String(substitute(s, captures)?),
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|v| substitute_json(v, captures))
+                .collect::<Result<_, _>>()?,
+        ),
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| Ok((k.clone(), substitute_json(v, captures)?)))
+                .collect::<Result<_, String>>()?,
+        ),
+        other => other.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -131,6 +154,23 @@ mod tests {
 
         let err = substitute("${captured.oid}", &scope(&[])).expect_err("empty scope must fail");
         assert!(err.contains("no captures in scope"), "{err}");
+    }
+
+    #[test]
+    fn json_string_leaves_resolve_and_the_rest_is_kept() {
+        let c = scope(&[("oid", "1060049")]);
+        let body = serde_json::json!({
+            "env": {"ORDER": "${captured.oid}", "TOKEN": "${TOKEN}"},
+            "ids": ["x-${captured.oid}", 7, true],
+        });
+        assert_eq!(
+            substitute_json(&body, &c).expect("resolves"),
+            serde_json::json!({
+                "env": {"ORDER": "1060049", "TOKEN": "${TOKEN}"},
+                "ids": ["x-1060049", 7, true],
+            })
+        );
+        assert!(substitute_json(&serde_json::json!(["${captured.nope}"]), &c).is_err());
     }
 
     #[test]

@@ -25,6 +25,13 @@ together).
   write "Purchase Order". `title` is now the last fallback, in the page and in
   same-origin frames, so an explicit name still wins.
 
+- **An API step can keep what it fetched.** `assert_api` could check a
+  response but not use it, so fresh test data from a service had to be
+  fetched outside the flow and passed in by hand. `capture:` now keeps
+  scalar values from a passing response as `${captured.<name>}`, and a
+  request can send earlier captures on. It runs on every replay, so each run
+  gets fresh values; the trace keeps names and paths, never values.
+
 ## 0.23.12
 
 - **A `repeat:` loop is decided at replay too.** 0.23.11 made `when:` a

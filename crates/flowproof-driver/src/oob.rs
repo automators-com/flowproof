@@ -645,6 +645,52 @@ fn json_leaf_as_text(value: &serde_json::Value) -> String {
     }
 }
 
+/// An `assert_api` step's recorded `capture` map (capture name -> response
+/// path), read from the trace step's `expect`. Empty when there is none.
+pub fn capture_paths(
+    expect: Option<&serde_json::Value>,
+) -> std::collections::BTreeMap<String, String> {
+    expect
+        .and_then(|e| e.get("capture"))
+        .and_then(|v| v.as_object())
+        .map(|map| {
+            map.iter()
+                .filter_map(|(name, path)| Some((name.clone(), path.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Read an `assert_api` step's `capture:` paths out of a response body that
+/// already passed the step's checks, as `(name, value)` pairs in name order.
+/// Each path must reach a scalar leaf, rendered like `equals` compares it.
+/// The values live in the run's memory only; the trace keeps the paths.
+pub fn capture_json(
+    text: &str,
+    capture: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<(String, String)>, String> {
+    if capture.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|_| "response body is not valid JSON, nothing to capture".to_string())?;
+    capture
+        .iter()
+        .map(|(name, path)| {
+            let leaf = resolve_json_path(&value, path).map_err(|segment| {
+                format!("capture '{name}': path '{path}' stops at segment '{segment}'")
+            })?;
+            if leaf.is_object() || leaf.is_array() {
+                return Err(format!(
+                    "capture '{name}': path '{path}' is {}, capture a leaf value",
+                    json_kind(leaf)
+                ));
+            }
+            Ok((name.clone(), json_leaf_as_text(leaf)))
+        })
+        .collect()
+}
+
 /// Pluck a response header by NAME (case-INSENSITIVE, per HTTP: `http`'s
 /// `HeaderMap` lowercases and compares names insensitively). Returns `None`
 /// when the header is absent; when it repeats, the values join with ", "
@@ -765,6 +811,26 @@ mod tests {
             resolve_json_path(&v, "results.0.balance.x").expect_err("misses"),
             "x"
         );
+    }
+
+    #[test]
+    fn capture_reads_scalar_leaves_and_refuses_containers_and_misses() {
+        let text = body().to_string();
+        let one = |name: &str, path: &str| [(name.to_string(), path.to_string())].into();
+        let got = capture_json(&text, &one("balance", "results.0.balance")).expect("leaf");
+        assert_eq!(got, vec![("balance".to_string(), "150953".to_string())]);
+        let miss = capture_json(&text, &one("x", "results.0.nope")).expect_err("misses");
+        assert!(
+            miss.contains("capture 'x'") && miss.contains("'nope'"),
+            "{miss}"
+        );
+        let container = capture_json(&text, &one("x", "results")).expect_err("container");
+        assert!(container.contains("an array"), "{container}");
+        assert!(capture_json("not json", &one("x", "a")).is_err());
+        // No capture asked for: the body is never parsed.
+        assert!(capture_json("not json", &Default::default())
+            .expect("none")
+            .is_empty());
     }
 
     #[test]
