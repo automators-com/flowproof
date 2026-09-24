@@ -25,6 +25,23 @@ steps:
 flowproof record web.flow.yaml && flowproof run web.flow.yaml
 ```
 
+`url:` is where the browser starts, and it is optional. Without it the
+browser opens blank and the flow's own steps navigate, so one flow can visit
+several sites:
+
+```yaml
+name: Copy the order into a note
+app: web
+steps:
+  - Go to https://shop.example.test/orders/latest
+  - Remember the "Order number" as order_number
+  - Go to https://notes.example.test/new
+  - Type ${captured.order_number} into the body field
+```
+
+A flow without `url:` has to start with a full address: a relative
+`Go to /settings` has no site to resolve against.
+
 Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web
 live-app suite (`cargo test -p flowproof-cli --test web_e2e`,
 `FLOWPROOF_E2E=1`) runs in CI on ubuntu.

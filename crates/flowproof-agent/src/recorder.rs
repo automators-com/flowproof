@@ -112,6 +112,11 @@ pub enum RecordError {
     MissingUrl,
     #[error("app 'vision' requires a `window:` field in the spec (title of the window to drive)")]
     MissingWindow,
+    #[error(
+        "step '{intent}' has no page to work on: the flow has no `url:`, so the browser \
+         opened blank. Start with `Go to https://…` (a full address), or set the flow's `url:`"
+    )]
+    BlankStart { intent: String },
     #[error("element for step '{intent}' not found: [{selector}]")]
     ElementNotFound { intent: String, selector: String },
     /// `expected` and `actual` are complete phrases, not bare values: the
@@ -1334,9 +1339,18 @@ pub fn surface_targets(
         .collect()
 }
 
+/// Where a web flow with no `url:` starts: its own steps navigate, so the
+/// first one is usually `Go to https://…`, and a flow can visit several sites.
+const BLANK_START: &str = "about:blank";
+
 fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordError> {
     if spec.app.id() == "web" {
-        let url = spec.url.as_deref().ok_or(RecordError::MissingUrl)?;
+        let Some(url) = spec.url.as_deref() else {
+            return Ok(flowproof_driver::AppTarget {
+                command: BLANK_START.to_string(),
+                window_name: String::new(),
+            });
+        };
         let url = flowproof_trace::secret::resolve_refs(url)?;
         let url = if url.contains("://") {
             url.to_string()
@@ -3060,7 +3074,19 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
             spec_step,
             &mut llm_used,
             &mut reuse,
-        )?;
+        )
+        .map_err(|err| match err {
+            // An empty blank page reads as a broken one to the model.
+            RecordError::Agent(crate::AgentError::PreviousStepIncomplete { .. })
+                if target.command == BLANK_START
+                    && driver.current_url().is_ok_and(|url| url == BLANK_START) =>
+            {
+                RecordError::BlankStart {
+                    intent: intent.clone(),
+                }
+            }
+            other => other,
+        })?;
         routing.push(StepAuthoringDiagnostic {
             step: routing.len() + 1,
             intent: intent.clone(),
@@ -3228,6 +3254,13 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                                     continue;
                                 }
                             }
+                        }
+                        if target.command == BLANK_START
+                            && driver.current_url().is_ok_and(|url| url == BLANK_START)
+                        {
+                            return Err(RecordError::BlankStart {
+                                intent: spec_step.intent().to_string(),
+                            });
                         }
                         return Err(RecordError::ElementNotFound {
                             intent: spec_step.intent().to_string(),
@@ -3729,6 +3762,14 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 }
                 ResolvedAction::Navigate { path } => {
                     let path = flowproof_trace::secret::resolve_refs(path)?;
+                    // A relative `Go to /settings` resolves against the
+                    // flow's `url:`, at replay too. With none there is no
+                    // origin to resolve it against.
+                    if target.command == BLANK_START && !path.contains("://") {
+                        return Err(RecordError::BlankStart {
+                            intent: spec_step.intent().to_string(),
+                        });
+                    }
                     driver.navigate(&flowproof_driver::absolute_url(&path, &target.command))?
                 }
                 ResolvedAction::Reload => driver.reload()?,
@@ -4526,6 +4567,52 @@ mod tests {
     /// swaps out mid-step is named in good faith and then is not there.
     /// Aborting was the old answer, and it threw away a recording the very
     /// next look would have completed.
+    #[test]
+    fn a_web_flow_without_a_url_starts_blank_and_its_steps_navigate() {
+        let spec = FlowSpec::parse(
+            "name: Two sites\napp: web\nsteps:\n  - Go to https://a.example.test/start\n  - Go to https://b.example.test/next\n",
+        )
+        .expect("a web flow without url: parses");
+        let mut driver = MockAppDriver::default();
+        let out = std::env::temp_dir().join("flowproof-blank-start.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("records without a url");
+        assert_eq!(
+            driver.launched.as_ref().map(|l| l.0.as_str()),
+            Some(BLANK_START)
+        );
+        assert_eq!(
+            driver.navigations,
+            vec![
+                "https://a.example.test/start",
+                "https://b.example.test/next"
+            ]
+        );
+        std::fs::remove_file(out).ok();
+    }
+
+    #[test]
+    fn a_relative_go_to_without_a_url_says_what_to_write() {
+        let spec = FlowSpec::parse("name: x\napp: web\nsteps:\n  - Go to /settings\n")
+            .expect("spec parses");
+        let mut driver = MockAppDriver::default();
+        let out = std::env::temp_dir().join("flowproof-blank-relative.trace.jsonl");
+        let err = record(&spec, &mut driver, &out).expect_err("nothing to resolve against");
+        assert!(matches!(err, RecordError::BlankStart { .. }), "{err}");
+        assert!(driver.navigations.is_empty());
+        assert!(err.to_string().contains("Go to https://"), "{err}");
+    }
+
+    #[test]
+    fn a_step_on_the_blank_page_says_the_flow_never_opened_one() {
+        let spec = FlowSpec::parse("name: x\napp: web\nsteps:\n  - Click \"Submit\"\n")
+            .expect("spec parses");
+        let mut driver = MockAppDriver::new(&[]);
+        driver.url = Some(BLANK_START.into());
+        let out = std::env::temp_dir().join("flowproof-blank-click.trace.jsonl");
+        let err = record(&spec, &mut driver, &out).expect_err("no page to click on");
+        assert!(matches!(err, RecordError::BlankStart { .. }), "{err}");
+    }
+
     #[test]
     fn an_element_named_too_early_is_re_authored_against_what_the_screen_became() {
         let spec = FlowSpec::parse(ADDRESS_SPEC).expect("spec parses");
