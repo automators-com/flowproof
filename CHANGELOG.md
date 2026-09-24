@@ -6,6 +6,25 @@ together).
 
 ## Unreleased
 
+## 0.23.13
+
+- **`author-from-doc` can be driven by a tool.** `--check` reads the PDF and
+  reports how many steps it holds without a model call, so a caller can reject
+  an unreadable export before spending anything. `--json` reports the written
+  files and every drafted step with its kind, so a flagged or out-of-scope
+  step can be shown to a person without reading the `# TODO` comments back.
+  Progress (`drafting step N of M`) now goes to stderr. It also now sees a
+  model saved with `flowproof config ai`; before, only environment variables
+  worked.
+
+- **The authoring model now sees a field's `title` as its name.** The scene
+  labelled each element from its `<label>`, `aria-label`, `aria-labelledby` or
+  placeholder, and skipped `title`. SAP WebGUI names many fields only by their
+  title, so the model saw them unnamed, and an agent writing a flow could only
+  address them by id: `css:input[title='Purchase Order']` where a person would
+  write "Purchase Order". `title` is now the last fallback, in the page and in
+  same-origin frames, so an explicit name still wins.
+
 - **An API step can keep what it fetched.** `assert_api` could check a
   response but not use it, so fresh test data from a service had to be
   fetched outside the flow and passed in by hand. `capture:` now keeps
