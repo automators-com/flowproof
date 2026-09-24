@@ -953,12 +953,14 @@ fn exhausted(fault: Option<flowproof_driver::DriverError>) -> ReplayError {
     }
 }
 
+/// `kept` receives what a passing `assert_api` step's `capture:` read.
 fn check_assertion<D: AppDriver>(
     driver: &mut D,
     assertion: &Assertion,
     selectors: &[Selector],
     captures: &std::collections::HashMap<String, String>,
     api_corpus: &mut Vec<(String, String)>,
+    kept: &mut Vec<(String, String)>,
 ) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
     match assertion {
         Assertion::ElementState {
@@ -1496,6 +1498,25 @@ fn check_assertion<D: AppDriver>(
             status,
             expect,
         } => {
+            // Captures from earlier steps resolve before `${VAR}`s, the same
+            // ladder `TypeText` uses; an unknown one fails the step.
+            let sub = |text: &str| flowproof_trace::captures::substitute(text, captures);
+            let substituted = (|| {
+                let body = request.body.as_ref();
+                let headers: std::collections::BTreeMap<_, _> = request
+                    .headers
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone(), sub(v)?)))
+                    .collect::<Result<_, String>>()?;
+                let body = body
+                    .map(|b| flowproof_trace::captures::substitute_json(b, captures))
+                    .transpose()?;
+                Ok::<_, String>((sub(&request.url)?, body, headers))
+            })();
+            let (url, body, headers) = match substituted {
+                Ok(parts) => parts,
+                Err(reason) => return Ok((Err(reason), None)),
+            };
             let probe = flowproof_driver::oob::OobProbe::Api {
                 count: expect
                     .as_ref()
@@ -1514,15 +1535,14 @@ fn check_assertion<D: AppDriver>(
                     .and_then(|e| e.get("retry"))
                     .and_then(|v| v.as_bool()),
                 method: request.method.clone(),
-                url: flowproof_trace::secret::resolve_refs(&request.url)?,
+                url: flowproof_trace::secret::resolve_refs(&url)?,
                 // Trace carries raw ${VAR} refs in body leaves and header
                 // values; the probe gets the resolved data.
-                body: match &request.body {
+                body: match &body {
                     Some(b) => Some(flowproof_trace::secret::resolve_refs_in_json(b)?),
                     None => None,
                 },
-                headers: request
-                    .headers
+                headers: headers
                     .iter()
                     .map(|(k, v)| Ok((k.clone(), flowproof_trace::secret::resolve_refs(v)?)))
                     .collect::<Result<_, flowproof_trace::secret::MissingSecret>>()?,
@@ -1575,7 +1595,17 @@ fn check_assertion<D: AppDriver>(
                     None => None,
                 },
             };
-            let (verdict, rung, body) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
+            let (mut verdict, rung, body) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
+            if verdict.is_ok() {
+                let capture = flowproof_driver::oob::capture_paths(expect.as_ref());
+                match flowproof_driver::oob::capture_json(
+                    body.as_deref().unwrap_or_default(),
+                    &capture,
+                ) {
+                    Ok(values) => kept.extend(values),
+                    Err(reason) => verdict = Err(reason),
+                }
+            }
             // The response body joins the corpus a secret-leak scan reads, held
             // in memory for this run only and re-observed identically at record.
             if let Some(text) = body {
@@ -2242,8 +2272,16 @@ fn execute_step<D: AppDriver>(
             StepMatch::default(),
         ),
         Action::Assert(assertion) => {
-            let (outcome, rung) =
-                check_assertion(driver, assertion, &step.selectors, captures, api_corpus)?;
+            let mut kept = Vec::new();
+            let (outcome, rung) = check_assertion(
+                driver,
+                assertion,
+                &step.selectors,
+                captures,
+                api_corpus,
+                &mut kept,
+            )?;
+            captures.extend(kept);
             let primary = match assertion {
                 Assertion::ElementState { selector_ref, .. } => selector_ref.unwrap_or(0),
                 _ => 0,
@@ -2330,7 +2368,14 @@ fn reading_holds<D: AppDriver>(
         expect: expect.clone(),
         selector_ref: (!selectors.is_empty()).then_some(0),
     };
-    let (outcome, _) = check_assertion(driver, &assertion, selectors, captures, api_corpus)?;
+    let (outcome, _) = check_assertion(
+        driver,
+        &assertion,
+        selectors,
+        captures,
+        api_corpus,
+        &mut Vec::new(),
+    )?;
     Ok(outcome.is_ok())
 }
 

@@ -119,6 +119,30 @@ actually there: "path 'page' is an object, count requires an array (status
 expected exactly 9 (status 200)". Both are soft failures, so on a `GET` they
 auto-wait: "poll until the collection has N rows" is a real pattern.
 
+### Keep values from a response
+
+`capture` keeps values from a passing response for later steps, the way
+`Remember` keeps text from the screen: fetch fresh test data at the start of
+a flow, or send on a value the flow just made.
+
+```yaml
+- assert_api:
+    request: POST ${DATA_API}/scenarios/execute
+    headers: { X-API-Key: "${DATA_API_KEY}" }
+    body: { scenarioId: scn_8f2c41, environmentVariables: { ORDER: "${captured.order_id}" } }
+    capture:                     # capture name -> dotted response path
+      customer_no: result.data.customer_no
+- Type ${captured.customer_no} into the "Sold-to party" field
+```
+
+Paths use the `body_json` grammar and must reach a scalar leaf (a number or
+boolean is kept as its text); names follow `Remember`, `[a-z][a-z0-9_]*`. A
+missing path, or one that lands on an object or array, fails the step and
+names the capture. The `url`, header values and `body` strings may carry
+earlier `${captured.<name>}` refs, resolved before `${VAR}`. The step runs on
+record and every replay, so each run gets fresh values; the trace stores
+names and paths, never values, and `exports` can pass them to later flows.
+
 ## Read an exported spreadsheet directly
 
 ```yaml

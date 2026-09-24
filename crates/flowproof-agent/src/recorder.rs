@@ -975,9 +975,14 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
             count,
             count_at_least,
             retry,
+            capture,
             timeout_ms,
         } => {
             let mut expect = serde_json::Map::new();
+            // Capture names and paths only: values are never stored.
+            if !capture.is_empty() {
+                expect.insert("capture".into(), serde_json::json!(capture));
+            }
             if let Some(needle) = body_contains {
                 expect.insert("body_contains".into(), needle.as_str().into());
             }
@@ -1682,6 +1687,7 @@ fn decode_step(step: &Step) -> Option<ResolvedAction> {
                 .and_then(|e| e.get("header_contains"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
+            capture: flowproof_driver::oob::capture_paths(expect.as_ref()),
             timeout_ms: oob_timeout_from(expect.as_ref()),
         }),
         _ => None,
@@ -3599,26 +3605,44 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                     header,
                     header_equals,
                     header_contains,
+                    capture,
                     timeout_ms,
                 } => {
                     // Resolved like `equals` above: the trace keeps the raw
                     // ${VAR}; only the live probe sees values — including
-                    // header tokens and body string leaves.
+                    // header tokens and body string leaves. Earlier captures
+                    // resolve first, the same ladder `TypeText` uses.
+                    let captured_ref = |reason: String| RecordError::AssertMismatch {
+                        intent: spec_step.intent().to_string(),
+                        expected: "a remembered capture in the request".to_string(),
+                        actual: reason,
+                    };
+                    let url = flowproof_trace::captures::substitute(url, &captures)
+                        .map_err(captured_ref)?;
+                    let body = match body {
+                        Some(b) => Some(
+                            flowproof_trace::captures::substitute_json(b, &captures)
+                                .map_err(captured_ref)?,
+                        ),
+                        None => None,
+                    };
                     let probe = flowproof_driver::oob::OobProbe::Api {
                         count: array_count(*count, *count_at_least),
                         retry: *retry,
                         method: method.clone(),
-                        url: flowproof_trace::secret::resolve_refs(url)?,
-                        body: match body {
+                        url: flowproof_trace::secret::resolve_refs(&url)?,
+                        body: match &body {
                             Some(b) => Some(flowproof_trace::secret::resolve_refs_in_json(b)?),
                             None => None,
                         },
                         headers: headers
                             .iter()
                             .map(|(k, v)| {
-                                Ok((k.clone(), flowproof_trace::secret::resolve_refs(v)?))
+                                let v = flowproof_trace::captures::substitute(v, &captures)
+                                    .map_err(captured_ref)?;
+                                Ok((k.clone(), flowproof_trace::secret::resolve_refs(&v)?))
                             })
-                            .collect::<Result<_, flowproof_trace::secret::MissingSecret>>()?,
+                            .collect::<Result<_, RecordError>>()?,
                         status: *status,
                         body_contains: match body_contains {
                             Some(needle) => Some(flowproof_trace::secret::resolve_refs(needle)?),
@@ -3647,6 +3671,17 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                         },
                     };
                     let body = poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
+                    // Kept values join this run's captures, in memory only.
+                    let kept = flowproof_driver::oob::capture_json(
+                        body.as_deref().unwrap_or_default(),
+                        capture,
+                    )
+                    .map_err(|reason| RecordError::AssertMismatch {
+                        intent: spec_step.intent().to_string(),
+                        expected: "a value at each capture path".to_string(),
+                        actual: reason,
+                    })?;
+                    captures.extend(kept);
                     // The response body joins the corpus a secret-leak scan
                     // reads. Held in memory, never written to the trace.
                     if scan_secrets {

@@ -368,6 +368,8 @@ pub enum ResolvedAction {
         count_at_least: Option<u64>,
         /// Override the method-derived retry policy (see `oob::is_retryable`).
         retry: Option<bool>,
+        /// Capture name -> dotted response path, kept once the step passes.
+        capture: std::collections::BTreeMap<String, String>,
         timeout_ms: u64,
     },
     /// Out-of-band spreadsheet assertion: the exported file on disk.
@@ -1024,6 +1026,21 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                     "assert_api sets at most one of header_equals/header_contains",
                 ));
             }
+            // A capture is read back as `${captured.<name>}`, so it takes the
+            // same names `Remember` does, and a path like `body_json`'s.
+            if let Some((name, _)) = assert_api
+                .capture
+                .iter()
+                .find(|(name, path)| !valid_capture_name(name) || path.trim().is_empty())
+            {
+                return Err(unresolvable(
+                    &assert_api.request,
+                    format!(
+                        "assert_api capture '{name}' needs a name matching [a-z][a-z0-9_]* \
+                         and a response path"
+                    ),
+                ));
+            }
             return Ok(vec![ResolvedAction::AssertApi {
                 method,
                 url: url.to_string(),
@@ -1039,6 +1056,7 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
                 count: assert_api.count,
                 count_at_least: assert_api.count_at_least,
                 retry: assert_api.retry,
+                capture: assert_api.capture.clone(),
                 timeout_ms: assert_api
                     .timeout_seconds
                     .map_or(ASSERT_TIMEOUT_MS, |s| s * 1000),
