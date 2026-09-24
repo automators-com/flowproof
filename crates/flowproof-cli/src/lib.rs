@@ -474,13 +474,21 @@ enum Command {
         /// Path to the test-case document (PDF).
         doc: PathBuf,
         /// Target app id (e.g. sap, web, calc).
-        #[arg(long)]
-        app: String,
+        #[arg(long, required_unless_present = "check")]
+        app: Option<String>,
         /// Flow name, written into the draft's `name:` field.
+        #[arg(long, required_unless_present = "check")]
+        name: Option<String>,
+        #[arg(short, long, required_unless_present = "check")]
+        out: Option<PathBuf>,
+        /// Only read the document and report how many steps it holds;
+        /// nothing is sent to a model and nothing is written.
         #[arg(long)]
-        name: String,
-        #[arg(short, long)]
-        out: PathBuf,
+        check: bool,
+        /// Print the result as one JSON object: the files written and every
+        /// drafted step with its kind (action, assert, flagged, out_of_scope).
+        #[arg(long)]
+        json: bool,
     },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
@@ -3409,34 +3417,79 @@ fn cmd_audit(
 
 fn cmd_author_from_doc(
     doc: PathBuf,
-    app: String,
-    name: String,
-    out: PathBuf,
+    app: Option<String>,
+    name: Option<String>,
+    out: Option<PathBuf>,
+    check: bool,
+    json: bool,
 ) -> Result<u8, String> {
-    let opts = flowproof_agent::doc_author::DocAuthorOptions {
+    use flowproof_agent::doc_author;
+    if check {
+        let found = doc_author::inspect_doc(&doc).map_err(|e| e.to_string())?;
+        if json {
+            let report =
+                serde_json::json!({ "steps": found.steps, "with_expected": found.with_expected });
+            println!("{report}");
+        } else {
+            println!(
+                "{} steps, {} with an expected result",
+                found.steps, found.with_expected
+            );
+        }
+        return Ok(EXIT_PASS);
+    }
+    // Like record and heal, drafting must see credentials saved by config ai.
+    config::seed_env();
+    let (Some(app), Some(name), Some(out)) = (app, name, out) else {
+        return Err("--app, --name and --out are required to draft".into());
+    };
+    let opts = doc_author::DocAuthorOptions {
         doc,
         app,
         name,
         out,
     };
-    match flowproof_agent::doc_author::author_from_doc(&opts) {
-        Ok(result) => {
-            println!(
-                "draft spec written to {} — DRAFT; review every step (a flagged one needs \
-                 the live app to resolve it, an assert is a light translation of the \
-                 document's own wording), then `flowproof record`",
-                result.flow.display()
-            );
-            if let Some(values) = result.values {
-                println!(
-                    "business-data values written to {} — review them; secrets still belong in `flowproof config`",
-                    values.display()
-                );
-            }
-            Ok(EXIT_PASS)
-        }
-        Err(e) => Err(e.to_string()),
+    let result = doc_author::author_from_doc_with_progress(&opts, &mut |done, total| {
+        eprintln!("drafting step {} of {total}", done + 1);
+    })
+    .map_err(|e| e.to_string())?;
+    if json {
+        use flowproof_agent::draft_assembly::DraftLine;
+        let steps: Vec<_> = result
+            .lines
+            .iter()
+            .map(|line| {
+                let kind = match line {
+                    DraftLine::Action(_) => "action",
+                    DraftLine::Assert(_) => "assert",
+                    DraftLine::Flagged(_) => "flagged",
+                    DraftLine::OutOfScope(_) => "out_of_scope",
+                };
+                let mut step = serde_json::json!({ "kind": kind, "text": line.step_text() });
+                if let DraftLine::Flagged(observed) | DraftLine::OutOfScope(observed) = line {
+                    step["observed"] = observed.clone().into();
+                }
+                step
+            })
+            .collect();
+        let report =
+            serde_json::json!({ "flow": result.flow, "values": result.values, "steps": steps });
+        println!("{report}");
+        return Ok(EXIT_PASS);
     }
+    println!(
+        "draft spec written to {} — DRAFT; review every step (a flagged one needs \
+         the live app to resolve it, an assert is a light translation of the \
+         document's own wording), then `flowproof record`",
+        result.flow.display()
+    );
+    if let Some(values) = result.values {
+        println!(
+            "business-data values written to {} — review them; secrets still belong in `flowproof config`",
+            values.display()
+        );
+    }
+    Ok(EXIT_PASS)
 }
 
 fn cmd_heal(
@@ -3803,7 +3856,9 @@ where
             app,
             name,
             out,
-        } => cmd_author_from_doc(doc, app, name, out),
+            check,
+            json,
+        } => cmd_author_from_doc(doc, app, name, out, check, json),
         Command::Heal {
             spec,
             trace,

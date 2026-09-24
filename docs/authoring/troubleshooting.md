@@ -88,3 +88,17 @@ action-or-not:
 
 The output is a **draft**: review every step, then run `flowproof record`
 to resolve any flagged ones against the live app before trusting it.
+
+For tools that call it (the desktop app does), two flags help:
+
+- `--check` reads the PDF and prints how many steps it holds and how many
+  have an expected result. Nothing is sent to a model and nothing is
+  written, so it is a fast way to confirm the export is readable.
+- `--json` prints one JSON object when the draft is written: `flow`,
+  `values` (or `null`), and `steps`, each with a `kind` (`action`,
+  `assert`, `flagged`, `out_of_scope`), the exact `text` written to the
+  file, and for the two flagged kinds the `observed` document wording.
+
+While drafting, `drafting step N of M` goes to stderr before each model
+call. The model comes from `flowproof config ai` or the usual environment
+variables.

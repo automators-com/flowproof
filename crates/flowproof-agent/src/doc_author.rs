@@ -193,6 +193,30 @@ pub struct DocAuthorOptions {
 pub struct DocAuthorResult {
     pub flow: PathBuf,
     pub values: Option<PathBuf>,
+    /// The drafted lines in file order, so a caller can show which steps
+    /// were flagged without reading the `# TODO` comments back.
+    pub lines: Vec<DraftLine>,
+}
+
+/// What a document holds before anything is sent to a model: enough for
+/// a caller to confirm the format is readable and say how much it found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocInspection {
+    pub steps: usize,
+    /// Steps whose `Expected` field is filled in, each a candidate assert.
+    pub with_expected: usize,
+}
+
+/// Reads and segments the document without a model call.
+pub fn inspect_doc(doc: &Path) -> Result<DocInspection, DocAuthorError> {
+    let records = hp_alm::parse(&extract_pdf_text(doc)?)?;
+    Ok(DocInspection {
+        steps: records.len(),
+        with_expected: records
+            .iter()
+            .filter(|r| !r.expected.trim().is_empty())
+            .count(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,6 +287,15 @@ fn values_yaml(values: &[BusinessValue]) -> Result<String, DocAuthorError> {
 }
 
 pub fn author_from_doc(opts: &DocAuthorOptions) -> Result<DocAuthorResult, DocAuthorError> {
+    author_from_doc_with_progress(opts, &mut |_, _| {})
+}
+
+/// [`author_from_doc`], calling `on_step(done, total)` before each
+/// document step is sent to the model: the one slow part.
+pub fn author_from_doc_with_progress(
+    opts: &DocAuthorOptions,
+    on_step: &mut dyn FnMut(usize, usize),
+) -> Result<DocAuthorResult, DocAuthorError> {
     let config = BackendConfig::from_env().map_err(DocAuthorError::from)?;
     if !config.is_usable() {
         return Err(DocAuthorError::Agent(AgentError::Config(
@@ -277,7 +310,8 @@ pub fn author_from_doc(opts: &DocAuthorOptions) -> Result<DocAuthorResult, DocAu
 
     let mut lines = Vec::new();
     let mut values = Vec::new();
-    for record in &records {
+    for (i, record) in records.iter().enumerate() {
+        on_step(i, records.len());
         let translated = translate_record_with_values(record, &mut client)?;
         lines.extend(translated.lines);
         values.extend(translated.values);
@@ -307,6 +341,7 @@ pub fn author_from_doc(opts: &DocAuthorOptions) -> Result<DocAuthorResult, DocAu
     Ok(DocAuthorResult {
         flow: opts.out.clone(),
         values,
+        lines,
     })
 }
 
