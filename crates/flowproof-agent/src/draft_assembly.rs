@@ -36,6 +36,7 @@ is for clicking something and DOES need its label quoted:
 pub const FLAGGED_MARKER: &str = "__FLAGGED__: ";
 
 /// One line of a drafted spec, before it's rendered to YAML.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DraftLine {
     /// A step in flowproof's grammar, verbatim.
     Action(String),
@@ -57,6 +58,26 @@ pub enum DraftLine {
 }
 
 /// Double-quoted YAML scalar, safe for arbitrary model-generated text.
+impl DraftLine {
+    /// The text this line is written with in the draft: the step itself,
+    /// or for an assert the assertion without the `assert:` key. A caller
+    /// that lists the draft's steps (`author-from-doc --json`) reports
+    /// this, so it can find each flagged step in the written file.
+    pub fn step_text(&self) -> String {
+        match self {
+            DraftLine::Action(step) | DraftLine::Assert(step) => step.clone(),
+            DraftLine::Flagged(observed) => format!(
+                "resolve the action needed here against the live screen — a \
+                 keyboard-only action like Enter may be the cause. Observed: {observed}"
+            ),
+            DraftLine::OutOfScope(observed) => format!(
+                "manual step — outside the app under test, flowproof cannot \
+                 automate this here. Observed: {observed}"
+            ),
+        }
+    }
+}
+
 pub fn yaml_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
@@ -78,28 +99,19 @@ pub fn assemble(
     );
     for line in lines {
         match line {
-            DraftLine::Action(step) => {
-                yaml.push_str(&format!("  - {}\n", yaml_quote(step)));
-            }
             DraftLine::Assert(text) => {
                 yaml.push_str(&format!("  - assert: {}\n", yaml_quote(text)));
             }
-            DraftLine::Flagged(observed) => {
+            DraftLine::Flagged(_) => {
                 yaml.push_str(
                     "  # TODO: unexplained step here — flagged for the live\n  \
                      # authoring agent to resolve when `flowproof record` runs, not\n  \
                      # dropped silently. Rewrite by hand first if you already know\n  \
                      # what this should be.\n",
                 );
-                yaml.push_str(&format!(
-                    "  - {}\n",
-                    yaml_quote(&format!(
-                        "resolve the action needed here against the live screen — a \
-                         keyboard-only action like Enter may be the cause. Observed: {observed}"
-                    ))
-                ));
+                yaml.push_str(&format!("  - {}\n", yaml_quote(&line.step_text())));
             }
-            DraftLine::OutOfScope(observed) => {
+            DraftLine::OutOfScope(_) => {
                 yaml.push_str(
                     "  # TODO: out-of-scope step here — this action targets a\n  \
                      # different app/tool than the one under test, so flowproof\n  \
@@ -107,13 +119,10 @@ pub fn assemble(
                      # silently; handle it manually, or move it to a separate\n  \
                      # flow targeting that app.\n",
                 );
-                yaml.push_str(&format!(
-                    "  - {}\n",
-                    yaml_quote(&format!(
-                        "manual step — outside the app under test, flowproof cannot \
-                         automate this here. Observed: {observed}"
-                    ))
-                ));
+                yaml.push_str(&format!("  - {}\n", yaml_quote(&line.step_text())));
+            }
+            DraftLine::Action(_) => {
+                yaml.push_str(&format!("  - {}\n", yaml_quote(&line.step_text())));
             }
         }
     }
@@ -146,6 +155,25 @@ mod tests {
             .steps
             .iter()
             .any(|s| matches!(s, crate::spec::SpecStep::Assert { .. })));
+    }
+
+    /// `author-from-doc --json` reports `step_text` so a caller can find
+    /// each flagged step in the file; it must be the exact text written.
+    #[test]
+    fn step_text_is_what_the_draft_writes() {
+        let lines = vec![
+            DraftLine::Action("Press Enter".to_string()),
+            DraftLine::Assert("page shows Overview".to_string()),
+            DraftLine::Flagged("two buttons could accept the defaults".to_string()),
+            DraftLine::OutOfScope("open the confirmation in Outlook".to_string()),
+        ];
+        let yaml = assemble("# DRAFT", "n", "sap", &lines).expect("assembles");
+        for line in &lines {
+            assert!(
+                yaml.contains(&yaml_quote(&line.step_text())),
+                "{line:?} missing from {yaml}"
+            );
+        }
     }
 
     /// An out-of-scope step must be visibly flagged, distinct from an
