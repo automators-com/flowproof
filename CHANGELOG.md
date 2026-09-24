@@ -6,6 +6,17 @@ together).
 
 ## Unreleased
 
+## 0.23.17
+
+- **A web flow without `url:` records reliably with a model configured.**
+  0.23.16 let such a flow start on a blank page, but the model saw an empty
+  page and sometimes blamed a previous step that did not exist, and a
+  `Go to` it shortened to `/path` was refused. `Go to <full address>` (or
+  `${VAR}`) on the blank page is now performed without the model, a step that
+  names no address says at once what to write, and a relative `Go to` after a
+  page is open resolves against that page and is recorded in full, so replay
+  lands on the same page.
+
 ## 0.23.16
 
 - **A web flow no longer needs a `url:`.** Recording refused a web flow without
