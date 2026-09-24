@@ -5288,8 +5288,12 @@ impl AppDriver for WebAppDriver {
                 const scoped = !interactive(el) && !semanticCss(el) ? scopedReadable(el) : null;
                 const labelledBy = (el.getAttribute('aria-labelledby') || '').split(/\s+/)
                   .map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
+                // `title` last: SAP WebGUI names many fields only by their
+                // title, and a field the model sees without a name is one it
+                // can only address by id, which then lands in the flow.
                 const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
-                    : (el.getAttribute('aria-label') || labelledBy || el.getAttribute('placeholder') || '');
+                    : (el.getAttribute('aria-label') || labelledBy || el.getAttribute('placeholder')
+                      || el.getAttribute('title') || '');
                 const gridCell = el.closest('[role=gridcell]');
                 const rowIndex = gridCell && (gridCell.getAttribute('aria-rowindex') ||
                   gridCell.getAttribute('lsmatrixrowindex') ||
@@ -5431,7 +5435,8 @@ impl AppDriver for WebAppDriver {
                     'input, button, select, textarea, a, [role=button], [role=checkbox], [role=radio], [role=menuitem]'
                   );
                   const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
-                    : (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+                    : (el.getAttribute('aria-label') || el.getAttribute('placeholder')
+                      || el.getAttribute('title') || '');
                   entries.push({
                     target: token,
                     css,
