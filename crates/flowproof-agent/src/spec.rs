@@ -2073,6 +2073,8 @@ pub struct SqlAssertSpec {
 ///     body_contains: TestTemplate      # optional
 ///     body_json: results.0.balance     # optional; a dotted response path
 ///     equals: 150953                   # optional; requires body_json
+///     capture:                         # optional; name -> dotted response path
+///       balance: results.0.balance     # later steps use ${captured.balance}
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2136,6 +2138,12 @@ pub struct ApiAssertSpec {
     /// `retry: false` sends a read exactly once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<bool>,
+    /// Values to keep from the response once the step passes: capture name
+    /// (`[a-z][a-z0-9_]*`) -> dotted path to a scalar leaf, same grammar as
+    /// `body_json`. Later steps read them as `${captured.<name>}`, exactly
+    /// like a remembered on-screen value; the trace stores the paths only.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub capture: std::collections::BTreeMap<String, String>,
 }
 
 /// ```yaml
