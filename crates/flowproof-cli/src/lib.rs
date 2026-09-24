@@ -1730,20 +1730,27 @@ fn record_driver(spec: &FlowSpec) -> Result<Box<dyn AppDriver>, String> {
 /// report and must stay pure, and without this a long replay is silent
 /// until it ends.
 fn print_step_progress(step: &flowproof_replay::StepResult) {
+    eprintln!("{}", step_progress_line(step));
+}
+
+/// A step that only passed on a fallback rung says so live, with the same
+/// suffix as the human verdict line.
+fn step_progress_line(step: &flowproof_replay::StepResult) -> String {
     let mark = match step.status {
         flowproof_replay::StepStatus::Passed => "PASS",
         flowproof_replay::StepStatus::Failed => "FAIL",
         flowproof_replay::StepStatus::Skipped => "SKIP",
         flowproof_replay::StepStatus::Errored => "ERROR",
     };
-    if step.status == flowproof_replay::StepStatus::Skipped {
-        eprintln!("  [{mark}] {} {}", step.id, step.intent);
-    } else {
-        eprintln!(
-            "  [{mark}] {} {} ({} ms)",
-            step.id, step.intent, step.duration_ms
-        );
+    let mut line = format!("  [{mark}] {} {}", step.id, step.intent);
+    if step.status != flowproof_replay::StepStatus::Skipped {
+        line.push_str(&format!(" ({} ms)", step.duration_ms));
     }
+    if step.degraded {
+        let tier = step.selector_tier.as_deref().unwrap_or("fallback");
+        line.push_str(&format!(" (matched via {tier} fallback)"));
+    }
+    line
 }
 
 /// What a replay says while it runs. `Human` announces retries on stdout;
@@ -3956,6 +3963,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_live_step_line_says_when_a_fallback_found_the_target() {
+        let step: flowproof_replay::StepResult = serde_json::from_str(
+            r#"{"id":"s0002","intent":"Press plus","status":"passed","duration_ms":118}"#,
+        )
+        .expect("valid step result");
+        assert_eq!(
+            step_progress_line(&step),
+            "  [PASS] s0002 Press plus (118 ms)"
+        );
+        let fell_back = flowproof_replay::StepResult {
+            selector_tier: Some("structural".into()),
+            degraded: true,
+            ..step
+        };
+        assert_eq!(
+            step_progress_line(&fell_back),
+            "  [PASS] s0002 Press plus (118 ms) (matched via structural fallback)"
+        );
+    }
 
     #[test]
     fn surface_replay_refuses_a_removed_or_changed_identity() {
