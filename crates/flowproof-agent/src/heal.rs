@@ -178,6 +178,136 @@ pub fn heal_with_author<D: AppDriver>(
     Ok(report)
 }
 
+/// A step a replay could only reach through a fallback rung: the report's
+/// step id (a repeat pass carries a `.N` suffix) and the tier that matched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fallback {
+    pub step: String,
+    pub tier: String,
+}
+
+/// Heal only the steps a replay reached through a fallback selector: the
+/// rung that matched becomes the step's primary and the stale one stays on
+/// the ladder below it. Nothing is re-recorded and no other step changes,
+/// so this needs no live app. The proposal and `--apply` work as in
+/// [`heal`].
+pub fn heal_fallbacks(trace_path: &Path, fallbacks: &[Fallback]) -> Result<HealReport, HealError> {
+    let contents = std::fs::read_to_string(trace_path).map_err(|source| HealError::Io {
+        path: trace_path.display().to_string(),
+        source,
+    })?;
+    // Only the promoted steps are compared; every other line is kept as is.
+    let (mut old_steps, mut new_steps, mut lines) = (Vec::new(), Vec::new(), Vec::new());
+    for line in contents.lines() {
+        let step = match line.trim() {
+            "" => None,
+            text => match TraceLine::parse(text)? {
+                TraceLine::Step(step) => Some(step),
+                TraceLine::Header(_) => None,
+            },
+        };
+        // A repeat's later passes replay the first pass's steps, so every
+        // recorded step under the id takes the same repair.
+        let promoted = step.as_ref().and_then(|step| {
+            let fallback = fallbacks.iter().find(|f| recorded_id(&f.step) == step.id)?;
+            promote(step, &fallback.tier)
+        });
+        match (step, promoted) {
+            (Some(old), Some(new)) => {
+                lines.push(serde_json::to_string(&new).map_err(flowproof_trace::TraceError::from)?);
+                old_steps.push(old);
+                new_steps.push(new);
+            }
+            _ => lines.push(line.to_string()),
+        }
+    }
+
+    let (steps_changed, _, _) = diff_steps(&old_steps, &new_steps);
+    let changed = !steps_changed.is_empty();
+    let proposal = proposed_path(trace_path);
+    if changed {
+        std::fs::write(&proposal, lines.join("\n") + "\n").map_err(|source| HealError::Io {
+            path: proposal.display().to_string(),
+            source,
+        })?;
+    }
+    let mut report = HealReport {
+        changed,
+        steps_changed,
+        steps_added: 0,
+        steps_removed: 0,
+        proposed_path: changed.then_some(proposal),
+        diff_html: None,
+        routing: Vec::new(),
+    };
+    if report.changed {
+        report.diff_html = write_diff_html(&report, trace_path).ok();
+    }
+    Ok(report)
+}
+
+/// `s0004.2` (pass 2 of a repeat) → `s0004`, the id in the trace.
+fn recorded_id(report_id: &str) -> &str {
+    match report_id.rsplit_once('.') {
+        Some((id, pass)) if !pass.is_empty() && pass.bytes().all(|b| b.is_ascii_digit()) => id,
+        _ => report_id,
+    }
+}
+
+/// Move the rung of `tier` to the top of the step's ladder. Every
+/// `selector_ref` that named the old primary now names the promoted rung;
+/// the rest follow their selector to its new index. `None` when the ladder
+/// has no such rung apart from the primary.
+fn promote(step: &Step, tier: &str) -> Option<Step> {
+    let mut value = serde_json::to_value(step).ok()?;
+    let primary = value
+        .pointer("/action/params/selector_ref")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as usize;
+    let rung = (0..step.selectors.len())
+        .find(|&i| i != primary && step.selectors[i].tier.name() == tier)?;
+    let moved = |i: usize| {
+        if i == primary || i == rung {
+            0
+        } else if i < rung {
+            i + 1
+        } else {
+            i
+        }
+    };
+    for key in ["action", "sync"] {
+        if let Some(part) = value.get_mut(key) {
+            remap_selector_refs(part, &moved);
+        }
+    }
+    let mut selectors = step.selectors.clone();
+    let top = selectors.remove(rung);
+    selectors.insert(0, top);
+    value["selectors"] = serde_json::to_value(selectors).ok()?;
+    serde_json::from_value(value).ok()
+}
+
+fn remap_selector_refs(value: &mut serde_json::Value, moved: &dyn Fn(usize) -> usize) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                match child.as_u64() {
+                    Some(i) if key == "selector_ref" => {
+                        *child = (moved(i as usize) as u64).into();
+                    }
+                    _ => remap_selector_refs(child, moved),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                remap_selector_refs(item, moved);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The step time-range → frame files of one execution's recording bundle.
 /// Derivable purely from the structured data plus the content-named files.
 fn frames_for_range(
@@ -445,5 +575,102 @@ steps:
         assert!(!html.contains("<script>alert(1)</script>"));
         assert!(html.contains("&lt;script&gt;"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fallback_repair_promotes_only_the_rung_that_matched() {
+        let dir = std::env::temp_dir().join("flowproof-heal-fallbacks");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
+        let trace = dir.join("calc.trace.jsonl");
+        record(&spec, &mut calc_mock(), &trace).expect("recording succeeds");
+        let contents = std::fs::read_to_string(&trace)
+            .expect("trace readable")
+            .replace("plusButton", "oldPlusButton");
+        std::fs::write(&trace, &contents).expect("trace rewritten");
+        let plus = load_steps(&trace).expect("steps")[1].clone();
+        assert_eq!(plus.intent, "Press plus");
+
+        // Replay found the plus button by its structure; pass 2 of a repeat
+        // names the same recorded step.
+        // A step the trace does not hold is ignored.
+        let fallbacks = [
+            Fallback {
+                step: format!("{}.2", plus.id),
+                tier: "structural".into(),
+            },
+            Fallback {
+                step: "s9999".into(),
+                tier: "structural".into(),
+            },
+        ];
+        let report = heal_fallbacks(&trace, &fallbacks).expect("heal runs");
+        assert!(report.changed);
+        assert_eq!(report.steps_changed.len(), 1);
+        assert_eq!(
+            report.steps_changed[0].fields,
+            vec!["selectors".to_string()]
+        );
+
+        let proposal = report.proposed_path.expect("proposal written");
+        let healed = load_steps(&proposal).expect("proposal parses");
+        let tiers: Vec<_> = healed[1].selectors.iter().map(|s| s.tier.name()).collect();
+        assert_eq!(tiers, ["structural", "native_id", "text_anchor"]);
+        // Every other line is byte-for-byte the recording.
+        let proposed = std::fs::read_to_string(&proposal).expect("proposal readable");
+        let differing = contents
+            .lines()
+            .zip(proposed.lines())
+            .filter(|(a, b)| a != b);
+        assert_eq!(differing.count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&trace).expect("trace readable"),
+            contents,
+            "the recording is untouched"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn promoting_a_rung_keeps_every_selector_ref_on_its_selector() {
+        let step: Step = serde_json::from_value(serde_json::json!({
+            "id": "s0001",
+            "intent": "total shows 8",
+            "action": {"type": "assert", "params": {
+                "kind": "element_state", "expect": {"value_equals": "8"}, "selector_ref": 0
+            }},
+            "selectors": [
+                {"tier": "native_id", "provenance": "uia", "payload": {"automation_id": "old"}},
+                {"tier": "structural", "provenance": "uia", "payload": {"name": "Total"}},
+                {"tier": "text_anchor", "provenance": "uia", "payload": {"text": "Total"}}
+            ],
+            "sync": {"pre": [
+                {"kind": "element_exists", "timeout_ms": 5000, "selector_ref": 0},
+                {"kind": "element_exists", "timeout_ms": 5000, "selector_ref": 1},
+                {"kind": "element_exists", "timeout_ms": 5000, "selector_ref": 2}
+            ], "post": []},
+            "artifacts": {}
+        }))
+        .expect("step parses");
+        let healed = serde_json::to_value(promote(&step, "text_anchor").expect("promoted"))
+            .expect("serializes");
+        let tiers: Vec<_> = healed["selectors"]
+            .as_array()
+            .expect("selectors")
+            .iter()
+            .map(|s| s["tier"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(tiers, ["text_anchor", "native_id", "structural"]);
+        // The assertion's primary now names the promoted rung; the other
+        // refs follow their selector.
+        assert_eq!(healed["action"]["params"]["selector_ref"], 0);
+        let refs: Vec<_> = healed["sync"]["pre"]
+            .as_array()
+            .expect("pre")
+            .iter()
+            .map(|c| c["selector_ref"].as_u64().unwrap_or(99))
+            .collect();
+        assert_eq!(refs, [0, 2, 0]);
+        assert!(promote(&step, "native_id").is_none(), "already primary");
     }
 }

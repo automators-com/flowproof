@@ -75,6 +75,24 @@ re-authored run) plus the step JSON, rendered entirely from the structured
 report. Open it to see *what the app looked like* when each version of the
 step ran, then decide on `--apply`.
 
+### Healing only the fallback steps
+
+When the run passed but was degraded, re-authoring is more than the drift
+needs: the run already knows which rung found each drifted step. Point
+`heal` at that run and it promotes the matched rung to the top of each
+degraded step's ladder, keeps the dead one below it, and leaves every other
+step byte-for-byte alone. Nothing is re-recorded, so no app or model is
+needed:
+
+```text
+$ flowproof heal calc.flow.yaml --from-run .flowproof/runs/20260924T100048.993Z
+  [CHANGED] s0002 Press plus (selectors)
+PROPOSED: review calc.proposed.jsonl then re-run with --apply
+```
+
+The run must have replayed this trace (`trace_id` must match). `--apply`
+works the same way.
+
 Exit codes: `0` healthy (or applied), `1` changes proposed for review,
 `2` error. `--json` emits the structured report (including `diff_html`); the
 Python API returns a `HealResult` (with `diff_html: Path | None`) and the
