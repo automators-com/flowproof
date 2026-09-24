@@ -167,6 +167,18 @@ pub enum RecordError {
     NeedsClarification(Box<crate::clarify::Clarification>),
 }
 
+impl RecordError {
+    /// The flow cannot run as configured: a `${VAR}` with no value, or no app
+    /// to drive. Rewording a step or starting over cannot change that, so
+    /// the repair loop and its fresh retry must not spend a second run on it.
+    pub fn is_setup_error(&self) -> bool {
+        matches!(
+            self,
+            Self::Secret(_) | Self::UnknownApp(_) | Self::MissingUrl | Self::MissingWindow
+        )
+    }
+}
+
 /// Outcome of a recording session.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RecordSummary {
@@ -3174,7 +3186,12 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         // the same budget as any other replan.
         loop {
             let Some(action) = plan.pop_front() else {
-                if !pending_continuation {
+                // A step that has already needed a second look ends only on
+                // the model's own `step_complete`: a continuation reply that
+                // simply stops is not proof the intent was reached. A retried
+                // "Send code" that ended a login step on a page still saying
+                // "Sending…" recorded green and never signed in.
+                if !pending_continuation && (replans == 0 || replans >= MAX_STEP_REPLANS) {
                     break;
                 }
                 // The model said the rest of this step lives on a screen it
@@ -4742,6 +4759,7 @@ mod tests {
             r##"[{"action":"click","target":"css:#expand"},
                  {"action":"click","target":"css:#billing-next"}]"##,
             r##"[{"action":"click","target":"css:#billing"}]"##,
+            r##"[{"action":"step_complete"}]"##,
         ]);
         let out = std::env::temp_dir().join("flowproof-named-too-early.trace.jsonl");
         std::fs::remove_file(&out).ok();
@@ -4753,7 +4771,7 @@ mod tests {
             vec!["#expand", "#billing"],
             "the control that was really there was clicked; the stale one never was"
         );
-        assert_eq!(client.prompts.len(), 2);
+        assert_eq!(client.prompts.len(), 3);
         assert!(
             client.prompts[1].contains("not on the current screen")
                 && client.prompts[1].contains("css=#billing-next"),
@@ -4858,6 +4876,7 @@ mod tests {
             r##"[{"action":"click","target":"css:#submit"}]"##,
             r##"[{"action":"click","target":"css:#close-toast"},
                  {"action":"click","target":"css:#submit"}]"##,
+            r##"[{"action":"step_complete"}]"##,
         ]);
         let out = std::env::temp_dir().join("flowproof-overlay-dismissed.trace.jsonl");
         std::fs::remove_file(&out).ok();
@@ -4869,7 +4888,7 @@ mod tests {
             vec!["#close-toast", "#submit"],
             "dismissed first, then the click the page could finally receive"
         );
-        assert_eq!(client.prompts.len(), 2);
+        assert_eq!(client.prompts.len(), 3);
         assert!(
             client.prompts[1].contains("a `div.toast` would receive that click"),
             "the correction names the occluder, not just that one exists: {}",
@@ -4977,6 +4996,7 @@ steps:
                  {"action":"click","target":"css:#next"}]"##,
             r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
                  {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"step_complete"}]"##,
         ]);
         let out = std::env::temp_dir().join("flowproof-rejected-then-fixed.trace.jsonl");
         std::fs::remove_file(&out).ok();
@@ -5026,6 +5046,7 @@ steps:
                  {"action":"click","target":"css:#next"}]"##,
             r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
                  {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"step_complete"}]"##,
         ]);
         let out = std::env::temp_dir().join("flowproof-neighbour-survives.trace.jsonl");
         std::fs::remove_file(&out).ok();
@@ -5077,6 +5098,7 @@ steps:
                  {"action":"click","target":"css:#next"}]"##,
             r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
                  {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"step_complete"}]"##,
         ]);
         let out = std::env::temp_dir().join("flowproof-observer-blocks-prune.trace.jsonl");
         std::fs::remove_file(&out).ok();
@@ -5117,6 +5139,7 @@ steps:
                  {"action":"click","target":"css:#next"}]"##,
             r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
                  {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"step_complete"}]"##,
         ]);
         let out = std::env::temp_dir().join("flowproof-refused-value-dropped.trace.jsonl");
         std::fs::remove_file(&out).ok();
@@ -5293,6 +5316,7 @@ steps:
                  {"action":"type_text","target":"css:#email","text":"ada@example.test"},
                  {"action":"click","target":"css:#continue"}]"##,
             r##"[{"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"step_complete"}]"##,
         ]);
         let out = std::env::temp_dir().join("flowproof-continuation-prompt.trace.jsonl");
         std::fs::remove_file(&out).ok();
@@ -5301,8 +5325,8 @@ steps:
 
         assert_eq!(
             client.prompts.len(),
-            2,
-            "one authoring call and one continuation, no more"
+            3,
+            "one authoring call, one continuation and its step_complete, no more"
         );
         let performed = already_performed(&client.prompts[1]);
         assert_eq!(
@@ -5354,6 +5378,7 @@ steps:
                  {"action":"step_continues"}]"##,
             r##"[{"action":"type_text","target":"css:#city","text":"Vienna"},
                  {"action":"click","target":"css:#finish"}]"##,
+            r##"[{"action":"step_complete"}]"##,
         ]);
         let out = std::env::temp_dir().join("flowproof-two-installments.trace.jsonl");
         std::fs::remove_file(&out).ok();
@@ -5380,7 +5405,11 @@ steps:
             "and still exactly one routing decision, on the Llm route"
         );
         assert_eq!(summary.routing[0].route, StepAuthoringRoute::Llm);
-        assert_eq!(client.prompts.len(), 2, "authored, then asked for the rest");
+        assert_eq!(
+            client.prompts.len(),
+            3,
+            "authored, asked for the rest, then asked to confirm it is done"
+        );
         assert!(
             client.prompts[1].contains("PARTWAY DONE")
                 && client.prompts[1].contains("typed \"1 Main\""),
@@ -5412,6 +5441,7 @@ steps:
             r##"[{"action":"click","target":"css:#a"},{"action":"step_continues"}]"##,
             r##"[{"action":"click","target":"css:#b"},{"action":"step_continues"}]"##,
             r##"[{"action":"click","target":"css:#c"}]"##,
+            r##"[{"action":"step_complete"}]"##,
         ]);
         let out = std::env::temp_dir().join("flowproof-three-screens.trace.jsonl");
         std::fs::remove_file(&out).ok();
@@ -5423,6 +5453,69 @@ steps:
             "every installment ran, in order"
         );
         std::fs::remove_file(&out).ok();
+    }
+
+    /// A continuation reply that simply stops does not end the step. The
+    /// page refused the first "Send code", the model sent it again and
+    /// stopped there, and the step used to record green without ever
+    /// signing in. Once a step has needed a second look, only the model's own
+    /// `step_complete` ends it.
+    #[test]
+    fn a_continued_step_ends_only_on_step_complete() {
+        let spec = FlowSpec::parse(
+            "name: Login\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Sign in with ada@example.test and code 123456\n",
+        )
+        .expect("spec parses");
+        let scene = r##"[{"target":"css:#email","tag":"input","label":"Email"},
+             {"target":"css:#send","tag":"button","text":"Send code"},
+             {"target":"css:#code","tag":"input","label":"Code"},
+             {"target":"css:#verify","tag":"button","text":"Verify"}]"##;
+        let mut driver = MockAppDriver::new(&["#email", "#send", "#code", "#verify"]);
+        driver.scene = Some(scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#email","text":"ada@example.test"},
+                 {"action":"click","target":"css:#send"},
+                 {"action":"step_continues"}]"##,
+            r##"[{"action":"click","target":"css:#send"}]"##,
+            r##"[{"action":"type_text","target":"css:#code","text":"123456"},
+                 {"action":"click","target":"css:#verify"}]"##,
+            r##"[{"action":"step_complete"}]"##,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-continued-step-complete.trace.jsonl");
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the step records once the model says it is complete");
+        assert_eq!(
+            driver.invoked,
+            vec!["#send", "#send", "#verify"],
+            "the retried send did not end the step; the code was entered and verified"
+        );
+        assert_eq!(
+            client.prompts.len(),
+            4,
+            "authored, continued twice, confirmed"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// A value the flow never gets, or an app it cannot drive, fails the same
+    /// way on every attempt, so repair must not spend another run on it.
+    #[test]
+    fn only_configuration_failures_are_setup_errors() {
+        let missing = RecordError::Secret(flowproof_trace::secret::MissingSecret {
+            var: "SAP_INVOICE_DOCUMENT".into(),
+        });
+        assert!(missing.is_setup_error());
+        assert!(RecordError::UnknownApp("teletype".into()).is_setup_error());
+        let not_found = RecordError::ElementNotFound {
+            intent: "Click Save".into(),
+            selector: "css:#save".into(),
+        };
+        assert!(
+            !not_found.is_setup_error(),
+            "a missing element may be repairable"
+        );
     }
 
     /// A step the model never stops continuing is REFUSED, not quietly
