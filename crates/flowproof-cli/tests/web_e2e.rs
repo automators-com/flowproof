@@ -178,6 +178,73 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A replay that found a step through a fallback selector is repaired from
+/// that run alone: `heal --from-run` promotes the rung that matched, touches
+/// no other step, and the next replay is no longer degraded.
+#[test]
+fn heal_from_run_repairs_only_the_fallback_step() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web heal --from-run E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("flowproof-web-heal-from-run-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let page = dir.join("greeter.html");
+    std::fs::write(&page, GREETER_HTML).expect("page written");
+    let spec_path = dir.join("web.flow.yaml");
+    let yaml = include_str!("../../../examples/web.flow.yaml").replace(
+        "url: examples/web/greeter.html",
+        &format!("url: file://{}", page.display()),
+    );
+    std::fs::write(&spec_path, yaml).expect("spec written");
+    let trace_path = dir.join("web.trace.jsonl");
+    let spec = FlowSpec::load(&spec_path).expect("spec loads");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec, &mut driver, &trace_path).expect("recording succeeds");
+    drop(driver);
+    let contents = std::fs::read_to_string(&trace_path)
+        .expect("trace readable")
+        .replace(
+            "\"name\":\"Greet\",\"role\":\"button\"",
+            "\"name\":\"Say hello\",\"role\":\"button\"",
+        );
+    std::fs::write(&trace_path, &contents).expect("trace rewritten");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, run_dir) =
+        flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    drop(driver);
+    assert!(report.passed && report.degraded, "report: {report:#?}");
+    report
+        .write_into(&run_dir)
+        .expect("result.json written, as `run` does");
+
+    let args = [
+        "heal",
+        spec_path.to_str().expect("path"),
+        "--from-run",
+        run_dir.to_str().expect("path"),
+        "--apply",
+    ];
+    assert_eq!(flowproof_cli::run_cli(args), 0, "heal --from-run --apply");
+    let healed = std::fs::read_to_string(&trace_path).expect("trace readable");
+    let differing = contents
+        .lines()
+        .zip(healed.lines())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(differing, 1, "only the fallback step changes");
+
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let (report, _) = flowproof_replay::run_trace(&trace_path, &mut driver).expect("replay runs");
+    assert!(report.passed && !report.degraded, "report: {report:#?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Secret indirection against a real browser: a `${VAR}` password typed
 /// into a live page resolves from the environment; neither the trace nor
 /// the run artifacts ever contain the value.

@@ -507,6 +507,10 @@ enum Command {
         /// Authoring backend: rules, llm, or auto (model intent with a visible no-model fallback).
         #[arg(long, value_enum, default_value_t)]
         author: AuthorArg,
+        /// Repair only the steps this replay found through a fallback
+        /// selector (its run directory or result.json), without re-recording.
+        #[arg(long, value_name = "RUN")]
+        from_run: Option<PathBuf>,
     },
 }
 
@@ -3517,7 +3521,7 @@ fn cmd_heal(
     // Healing re-records the spec against the live app and diffs — so a
     // multi-surface flow heals with the same registry recording uses.
     let mut driver = record_driver(&spec)?;
-    let mut report =
+    let report =
         match flowproof_agent::heal_with_author(&spec, &mut driver, &trace_path, author.into()) {
             Ok(report) => report,
             Err(flowproof_agent::HealError::Record(err)) if json => {
@@ -3533,10 +3537,67 @@ fn cmd_heal(
             Err(err) => return Err(err.to_string()),
         };
 
+    finish_heal(&spec.name, &trace_path, report, apply, json)
+}
+
+/// `heal --from-run`: repair only the steps a replay reached through a
+/// fallback selector. Reads the run's report, needs no live app.
+fn cmd_heal_fallbacks(
+    spec_path: &Path,
+    trace: Option<PathBuf>,
+    run: &Path,
+    apply: bool,
+    json: bool,
+) -> Result<u8, String> {
+    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
+    let result = if run.is_dir() {
+        run.join("result.json")
+    } else {
+        run.to_path_buf()
+    };
+    let text = std::fs::read_to_string(&result)
+        .map_err(|e| format!("cannot read {}: {e}", result.display()))?;
+    let run_report: flowproof_replay::RunReport = serde_json::from_str(&text)
+        .map_err(|e| format!("{} is not a run report: {e}", result.display()))?;
+    let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
+    // A report from another recording names other steps; repairing from it
+    // would move selectors the run never tried.
+    if run_report.trace_id != header.trace_id {
+        return Err(format!(
+            "{} replayed another recording than {}; run the flow again, then repair",
+            result.display(),
+            trace_path.display()
+        ));
+    }
+    let fallbacks: Vec<flowproof_agent::Fallback> = run_report
+        .steps
+        .iter()
+        .filter(|s| s.degraded && s.status == flowproof_replay::StepStatus::Passed)
+        .filter_map(|s| {
+            Some(flowproof_agent::Fallback {
+                step: s.id.clone(),
+                tier: s.selector_tier.clone()?,
+            })
+        })
+        .collect();
+    let report =
+        flowproof_agent::heal_fallbacks(&trace_path, &fallbacks).map_err(|e| e.to_string())?;
+    finish_heal(&spec.name, &trace_path, report, apply, json)
+}
+
+/// Apply (when asked) and print a heal report; shared by both heal modes.
+fn finish_heal(
+    name: &str,
+    trace_path: &Path,
+    mut report: flowproof_agent::HealReport,
+    apply: bool,
+    json: bool,
+) -> Result<u8, String> {
     let mut applied = false;
     if apply && report.changed {
         if let Some(proposal) = &report.proposed_path {
-            std::fs::copy(proposal, &trace_path).map_err(|e| e.to_string())?;
+            std::fs::copy(proposal, trace_path).map_err(|e| e.to_string())?;
             std::fs::remove_file(proposal).map_err(|e| e.to_string())?;
             report.proposed_path = None;
             applied = true;
@@ -3560,7 +3621,7 @@ fn cmd_heal(
             }
         }
         if !report.changed {
-            println!("HEALTHY: {} — trace matches the live app", spec.name);
+            println!("HEALTHY: {} — trace matches the live app", name);
         } else {
             for change in &report.steps_changed {
                 println!(
@@ -3865,7 +3926,11 @@ where
             apply,
             json,
             author,
-        } => cmd_heal(&spec, trace, apply, json, author),
+            from_run,
+        } => match from_run {
+            Some(run) => cmd_heal_fallbacks(&spec, trace, &run, apply, json),
+            None => cmd_heal(&spec, trace, apply, json, author),
+        },
         // The stand-in speaks JSON-RPC on stdout, so it must print NOTHING
         // else there; any error goes to stderr and a non-zero exit, which
         // the orchestrator sees as a missing/short out file.
