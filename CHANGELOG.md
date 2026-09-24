@@ -6,6 +6,8 @@ together).
 
 ## Unreleased
 
+## 0.23.18
+
 - **Live step progress names the failing step while recording, and fallbacks
   while replaying.** With `FLOWPROOF_PROGRESS=1`, `record` now prints one
   stderr line per finished flow step, in the `  [PASS] s0003 Log in (812 ms)`
