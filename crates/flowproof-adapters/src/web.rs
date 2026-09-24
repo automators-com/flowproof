@@ -7,7 +7,7 @@
 //! the `CHROME` env var or platform auto-detection.
 
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use flowproof_driver::{
     AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector, WebSession,
@@ -1249,19 +1249,44 @@ fn force_kill_pid(pid: u32) {
     }
 }
 
+/// How long an open request counts as the page still loading. A long-poll,
+/// a streamed response, or a request whose finish event never arrives stays
+/// open for the life of the page; counting it forever meant every settle
+/// waited out `SCENE_SETTLE_BUSY_ROUNDS` - 30s or more per text check and
+/// per authored step, on any app that keeps a connection open. Past this
+/// age the request is background traffic, and settling falls back to the
+/// scene's own shape agreeing.
+const LOADING_REQUEST_WINDOW: Duration = Duration::from_secs(5);
+
 /// CDP reuses one request ID through an HTTP redirect chain. Counting start
 /// events loses that identity and never returns to idle after the final finish.
 #[derive(Default)]
 struct NetworkActivity {
-    active: Mutex<std::collections::HashSet<String>>,
+    active: Mutex<std::collections::HashMap<String, Instant>>,
 }
 
 impl NetworkActivity {
+    /// Kinds of request that are open by design and never mean loading.
+    fn is_long_lived(kind: Option<&Network::ResourceType>) -> bool {
+        matches!(
+            kind,
+            Some(
+                Network::ResourceType::EventSource
+                    | Network::ResourceType::WebSocket
+                    | Network::ResourceType::Media
+            )
+        )
+    }
+
     fn started(&self, id: &str) {
+        self.started_at(id, Instant::now());
+    }
+
+    fn started_at(&self, id: &str, at: Instant) {
         self.active
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(id.into());
+            .insert(id.into(), at);
     }
 
     fn finished(&self, id: &str) {
@@ -1272,10 +1297,14 @@ impl NetworkActivity {
     }
 
     fn idle(&self) -> bool {
-        self.active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
+        self.idle_at(Instant::now())
+    }
+
+    fn idle_at(&self, now: Instant) -> bool {
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        active
+            .retain(|_, started| now.saturating_duration_since(*started) < LOADING_REQUEST_WINDOW);
+        active.is_empty()
     }
 }
 
@@ -3224,7 +3253,9 @@ impl AppDriver for WebAppDriver {
             let listener = move |event: &headless_chrome::protocol::cdp::types::Event| {
                 use headless_chrome::protocol::cdp::types::Event;
                 match event {
-                    Event::NetworkRequestWillBeSent(event) => {
+                    Event::NetworkRequestWillBeSent(event)
+                        if !NetworkActivity::is_long_lived(event.params.Type.as_ref()) =>
+                    {
                         inflight.started(&event.params.request_id);
                     }
                     Event::NetworkLoadingFinished(event) => {
@@ -5716,6 +5747,45 @@ mod tests {
             "bounded by busy_rounds, not left to hang forever"
         );
         assert_eq!(targets_of(&entries), vec!["css:#row"]);
+    }
+
+    /// A long-poll or a request whose finish never arrives is background
+    /// traffic once it outlives the loading window. Counting it forever made
+    /// every text check and authored step wait out the busy bound.
+    #[test]
+    fn a_request_open_past_the_loading_window_no_longer_counts_as_busy() {
+        let activity = super::NetworkActivity::default();
+        let t0 = std::time::Instant::now();
+        activity.started_at("long-poll", t0);
+        assert!(!activity.idle_at(t0 + std::time::Duration::from_secs(1)));
+        assert!(activity.idle_at(t0 + super::LOADING_REQUEST_WINDOW));
+        // A new request still counts, from its own start.
+        let t1 = t0 + std::time::Duration::from_secs(6);
+        activity.started_at("odata-batch", t1);
+        assert!(!activity.idle_at(t1));
+        activity.finished("odata-batch");
+        assert!(activity.idle_at(t1));
+    }
+
+    #[test]
+    fn streams_and_sockets_never_count_as_loading() {
+        use headless_chrome::protocol::cdp::Network::ResourceType;
+        for kind in [
+            ResourceType::EventSource,
+            ResourceType::WebSocket,
+            ResourceType::Media,
+        ] {
+            assert!(
+                super::NetworkActivity::is_long_lived(Some(&kind)),
+                "{kind:?}"
+            );
+        }
+        for kind in [Some(ResourceType::Xhr), Some(ResourceType::Fetch), None] {
+            assert!(
+                !super::NetworkActivity::is_long_lived(kind.as_ref()),
+                "{kind:?}"
+            );
+        }
     }
 
     /// A page that never goes quiet must still yield a scene. Recording it is
