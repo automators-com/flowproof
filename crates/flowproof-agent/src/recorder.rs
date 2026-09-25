@@ -2793,7 +2793,79 @@ pub fn record_with_reuse<D: AppDriver, C: ModelClient>(
     )
 }
 
+/// Live progress for a caller driving `record --json`: one stderr line per
+/// finished flow step, in the shape `run --json` prints, so a failure names
+/// its step while the recording is still on screen. Opt-in through the
+/// `FLOWPROOF_PROGRESS=1` the CLI's stage lines already use; stdout stays the
+/// one JSON result. Numbered by flow step as executed (`when:` and `repeat:`
+/// expanded), not by trace step: one flow step can mint several.
+#[derive(Default)]
+struct LiveSteps {
+    print: bool,
+    finished: usize,
+    current: Option<(String, std::time::Instant)>,
+    lines: Vec<String>,
+}
+
+impl LiveSteps {
+    fn from_env() -> Self {
+        Self {
+            print: std::env::var("FLOWPROOF_PROGRESS").as_deref() == Ok("1"),
+            ..Self::default()
+        }
+    }
+
+    fn start(&mut self, intent: &str) {
+        self.current = Some((intent.to_string(), std::time::Instant::now()));
+    }
+
+    /// Closes the step in progress, if any: an error raised between steps
+    /// (a `when:` condition, a surface switch, writing the trace) names none.
+    fn finish(&mut self, mark: &str) {
+        let Some((intent, started)) = self.current.take() else {
+            return;
+        };
+        self.finished += 1;
+        let line = format!(
+            "  [{mark}] s{:04} {intent} ({} ms)",
+            self.finished,
+            started.elapsed().as_millis()
+        );
+        if self.print {
+            eprintln!("{line}");
+        }
+        self.lines.push(line);
+    }
+}
+
 pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+    client: Option<&mut C>,
+    old_steps: Option<&[Step]>,
+    recording_options: flowproof_driver::RecordingOptions,
+) -> Result<RecordSummary, RecordError> {
+    let mut live = LiveSteps::from_env();
+    let result = record_steps(
+        spec,
+        driver,
+        out,
+        author,
+        client,
+        old_steps,
+        recording_options,
+        &mut live,
+    );
+    if result.is_err() {
+        live.finish("FAIL");
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_steps<D: AppDriver, C: ModelClient>(
     spec: &FlowSpec,
     driver: &mut D,
     out: &Path,
@@ -2801,6 +2873,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     mut client: Option<&mut C>,
     old_steps: Option<&[Step]>,
     recording_options: flowproof_driver::RecordingOptions,
+    live: &mut LiveSteps,
 ) -> Result<RecordSummary, RecordError> {
     // The multi-surface vocabulary parses (so the format is stable and its
     // validation is real) but the engine has not shipped: refuse before
@@ -3111,6 +3184,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         }
         let spec_step = &owned_step;
         let intent = spec_step.intent().to_string();
+        live.start(&intent);
         let step_app = surface_app(&current_surface);
         let mut capture_names: Vec<String> = captures.keys().cloned().collect();
         capture_names.sort();
@@ -4330,6 +4404,7 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
                 driver.surface_text()?,
             ));
         }
+        live.finish("PASS");
     }
 
     // The recording spans join FIRST, by the ids both sides minted while the
@@ -6641,6 +6716,44 @@ steps:
         assert_eq!(driver.invoked, vec!["greet"]);
         assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
         std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn live_progress_names_each_step_and_the_one_that_failed() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nurl: https://e.test/x\nsteps:\n  - Press the greet button\n  - Press the missing button\n",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["greet"]);
+        let out = std::env::temp_dir().join("flowproof-live-steps.trace.jsonl");
+        let mut live = LiveSteps::default();
+        let err = record_steps(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Rules,
+            None::<&mut CountingClient>,
+            None,
+            flowproof_driver::RecordingOptions::default(),
+            &mut live,
+        )
+        .expect_err("the second button is not on the page");
+        assert!(matches!(err, RecordError::ElementNotFound { .. }));
+        live.finish("FAIL");
+        let marks: Vec<&str> = live
+            .lines
+            .iter()
+            .map(|line| line.split(" (").next().expect("a line"))
+            .collect();
+        assert_eq!(
+            marks,
+            vec![
+                "  [PASS] s0001 Press the greet button",
+                "  [FAIL] s0002 Press the missing button",
+            ]
+        );
+        live.finish("FAIL");
+        assert_eq!(live.lines.len(), 2, "no step in progress, nothing to close");
     }
 
     #[test]

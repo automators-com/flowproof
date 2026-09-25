@@ -6,6 +6,20 @@ together).
 
 ## Unreleased
 
+## 0.23.18
+
+- **Live step progress names the failing step while recording, and fallbacks
+  while replaying.** With `FLOWPROOF_PROGRESS=1`, `record` now prints one
+  stderr line per finished flow step, in the `  [PASS] s0003 Log in (812 ms)`
+  shape `run --json` already uses, and a `[FAIL]` line for the step an error
+  stopped it at. Before, a driver error such as an unknown key said nothing
+  about which step raised it. A replay's live step line now ends in
+  `(matched via <tier> fallback)` when a fallback selector found the target,
+  as the human verdict line does.
+- **`heal --from-run` repairs only the steps you name with `--step`.** A
+  reviewer can accept some fallback repairs and leave others; a step the run
+  did not reach through a fallback is refused rather than silently skipped.
+
 ## 0.23.17
 
 - **A web flow without `url:` records reliably with a model configured.**

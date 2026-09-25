@@ -91,7 +91,9 @@ PROPOSED: review calc.proposed.jsonl then re-run with --apply
 ```
 
 The run must have replayed this trace (`trace_id` must match). `--apply`
-works the same way.
+works the same way. `--step <id>` (repeatable) repairs only the steps you
+name, so a reviewer can accept some repairs and leave the rest; naming a step
+the run did not reach through a fallback is an error.
 
 Exit codes: `0` healthy (or applied), `1` changes proposed for review,
 `2` error. `--json` emits the structured report (including `diff_html`); the
