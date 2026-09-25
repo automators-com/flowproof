@@ -1054,6 +1054,9 @@ fn run_repair_loop(
     recording: flowproof_driver::RecordingOptions,
     first_err: flowproof_agent::RecordError,
 ) -> RepairLoopOutcome {
+    if first_err.is_setup_error() {
+        return RepairLoopOutcome::NotRepaired(first_err);
+    }
     let Some(mut client) = flowproof_agent::HttpModelClient::from_env() else {
         return RepairLoopOutcome::NotRepaired(first_err);
     };
