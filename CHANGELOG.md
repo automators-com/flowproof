@@ -16,6 +16,9 @@ together).
   about which step raised it. A replay's live step line now ends in
   `(matched via <tier> fallback)` when a fallback selector found the target,
   as the human verdict line does.
+- **`heal --from-run` repairs only the steps you name with `--step`.** A
+  reviewer can accept some fallback repairs and leave others; a step the run
+  did not reach through a fallback is refused rather than silently skipped.
 
 ## 0.23.17
 

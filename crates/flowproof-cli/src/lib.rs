@@ -511,6 +511,10 @@ enum Command {
         /// selector (its run directory or result.json), without re-recording.
         #[arg(long, value_name = "RUN")]
         from_run: Option<PathBuf>,
+        /// With --from-run, repair only this step (repeatable), so a
+        /// reviewer can accept some of the fallback repairs and not others.
+        #[arg(long = "step", value_name = "ID", requires = "from_run")]
+        steps: Vec<String>,
     },
 }
 
@@ -3553,6 +3557,7 @@ fn cmd_heal_fallbacks(
     spec_path: &Path,
     trace: Option<PathBuf>,
     run: &Path,
+    only: &[String],
     apply: bool,
     json: bool,
 ) -> Result<u8, String> {
@@ -3588,9 +3593,34 @@ fn cmd_heal_fallbacks(
             })
         })
         .collect();
+    let fallbacks = only_steps(fallbacks, only)?;
     let report =
         flowproof_agent::heal_fallbacks(&trace_path, &fallbacks).map_err(|e| e.to_string())?;
     finish_heal(&spec.name, &trace_path, report, apply, json)
+}
+
+/// The fallback repairs a reviewer kept (`--step`), or all of them. A step
+/// the run did not reach through a fallback is refused, not ignored: there
+/// is nothing to repair there, and a silent skip would read as applied.
+fn only_steps(
+    fallbacks: Vec<flowproof_agent::Fallback>,
+    only: &[String],
+) -> Result<Vec<flowproof_agent::Fallback>, String> {
+    if only.is_empty() {
+        return Ok(fallbacks);
+    }
+    if let Some(missing) = only
+        .iter()
+        .find(|id| !fallbacks.iter().any(|f| &f.step == *id))
+    {
+        return Err(format!(
+            "step {missing} did not pass through a fallback on that run; nothing to repair there"
+        ));
+    }
+    Ok(fallbacks
+        .into_iter()
+        .filter(|f| only.contains(&f.step))
+        .collect())
 }
 
 /// Apply (when asked) and print a heal report; shared by both heal modes.
@@ -3934,8 +3964,9 @@ where
             json,
             author,
             from_run,
+            steps,
         } => match from_run {
-            Some(run) => cmd_heal_fallbacks(&spec, trace, &run, apply, json),
+            Some(run) => cmd_heal_fallbacks(&spec, trace, &run, &steps, apply, json),
             None => cmd_heal(&spec, trace, apply, json, author),
         },
         // The stand-in speaks JSON-RPC on stdout, so it must print NOTHING
@@ -3963,6 +3994,26 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heal_step_keeps_only_the_repairs_the_reviewer_accepted() {
+        let fallbacks = || {
+            ["s0002", "s0005"]
+                .map(|step| flowproof_agent::Fallback {
+                    step: step.into(),
+                    tier: "native_id".into(),
+                })
+                .to_vec()
+        };
+        let kept = only_steps(fallbacks(), &["s0005".into()]).expect("s0005 fell back");
+        assert_eq!(
+            kept.iter().map(|f| f.step.as_str()).collect::<Vec<_>>(),
+            ["s0005"]
+        );
+        assert_eq!(only_steps(fallbacks(), &[]).expect("no filter").len(), 2);
+        let err = only_steps(fallbacks(), &["s0003".into()]).expect_err("s0003 passed first time");
+        assert!(err.contains("s0003 did not pass through a fallback"));
+    }
 
     #[test]
     fn a_live_step_line_says_when_a_fallback_found_the_target() {
