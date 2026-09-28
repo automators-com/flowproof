@@ -38,6 +38,7 @@ fn a_plain_click_records_an_a11y_selector_first() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
@@ -110,6 +111,7 @@ fn a_renamed_native_id_still_replays_via_the_a11y_rung() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))

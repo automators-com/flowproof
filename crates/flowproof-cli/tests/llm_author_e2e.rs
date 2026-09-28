@@ -133,6 +133,7 @@ fn freeform_spec(url: String) -> FlowSpec {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -489,6 +490,7 @@ fn authors_scoped_capture_from_human_language() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![

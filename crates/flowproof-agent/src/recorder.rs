@@ -2215,8 +2215,17 @@ pub(crate) fn resolved_assertion_holds<D: AppDriver>(
         ResolvedAction::AssertText {
             expected, matcher, ..
         } => {
+            // `target_selector` returns None only for `Target::Surface`
+            // ("the surface is not an element - it resolves via
+            // surface_text", per its own doc comment) - the same case the
+            // live step-execution loop reads via `driver.surface_text()`
+            // instead of a selector. Treating a missing selector here as
+            // "false" (as every other assertion kind safely does) would
+            // make a `page shows`/surface-targeted goal check silently
+            // unreachable, always false regardless of the live page.
             let Some(selector) = action_selector(action) else {
-                return Ok(Some(false));
+                let surface = driver.surface_text()?;
+                return Ok(Some(assert_holds(&surface, expected, *matcher)));
             };
             if !driver.element_exists(&selector)? {
                 // A missing element makes a positive `shows` false and a
@@ -6158,19 +6167,19 @@ steps:
         };
         let mut on = MockAppDriver::new(&["tos"]).with_checkbox("tos", true);
         assert_eq!(
-            resolved_assertion_holds(&mut on, &checked_action).unwrap(),
+            resolved_assertion_holds(&mut on, &checked_action).expect("no driver error"),
             Some(true)
         );
 
         let mut off = MockAppDriver::new(&["tos"]).with_checkbox("tos", false);
         assert_eq!(
-            resolved_assertion_holds(&mut off, &checked_action).unwrap(),
+            resolved_assertion_holds(&mut off, &checked_action).expect("no driver error"),
             Some(false)
         );
 
         let mut absent = MockAppDriver::new(&[]);
         assert_eq!(
-            resolved_assertion_holds(&mut absent, &checked_action).unwrap(),
+            resolved_assertion_holds(&mut absent, &checked_action).expect("no driver error"),
             Some(false)
         );
     }
@@ -6184,13 +6193,13 @@ steps:
         };
         let mut two = MockAppDriver::new(&[".row"]).with_occurrences(".row", 2);
         assert_eq!(
-            resolved_assertion_holds(&mut two, &wants_two).unwrap(),
+            resolved_assertion_holds(&mut two, &wants_two).expect("no driver error"),
             Some(true)
         );
 
         let mut three = MockAppDriver::new(&[".row"]).with_occurrences(".row", 3);
         assert_eq!(
-            resolved_assertion_holds(&mut three, &wants_two).unwrap(),
+            resolved_assertion_holds(&mut three, &wants_two).expect("no driver error"),
             Some(false)
         );
     }
@@ -6203,7 +6212,39 @@ steps:
             dialog: None,
         };
         let mut driver = MockAppDriver::new(&["go"]);
-        assert_eq!(resolved_assertion_holds(&mut driver, &press).unwrap(), None);
+        assert_eq!(
+            resolved_assertion_holds(&mut driver, &press).expect("no driver error"),
+            None
+        );
+    }
+
+    /// `target_selector` returns `None` for `Target::Surface` by design
+    /// ("the surface is not an element"), which the live step-execution
+    /// loop already knows to read via `surface_text()` instead of a
+    /// selector. `resolved_assertion_holds` must make the same distinction:
+    /// a naive `action_selector(action).is_none() => Some(false)` would
+    /// make any surface-targeted assertion always read false, which is
+    /// exactly what silently broke goal-based authoring's own "is the goal
+    /// reached yet" check for a goal like `page shows Hello, Ada` before
+    /// this test was added.
+    #[test]
+    fn resolved_assertion_holds_reads_the_whole_surface_when_the_target_is_surface() {
+        let surface_says_hello = ResolvedAction::AssertText {
+            target: crate::rules::Target::Surface,
+            expected: "Hello".into(),
+            matcher: TextMatch::Contains,
+            timeout_ms: 0,
+        };
+        let mut empty = MockAppDriver::new(&[]).with_surface_text("Greeter");
+        assert_eq!(
+            resolved_assertion_holds(&mut empty, &surface_says_hello).expect("no driver error"),
+            Some(false)
+        );
+        let mut greeted = MockAppDriver::new(&[]).with_surface_text("Hello, Ada!");
+        assert_eq!(
+            resolved_assertion_holds(&mut greeted, &surface_says_hello).expect("no driver error"),
+            Some(true)
+        );
     }
 
     #[test]

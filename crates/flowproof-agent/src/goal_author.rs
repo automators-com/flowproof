@@ -532,7 +532,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).expect("temp dir creates");
         GoalAuthorOptions {
             out: dir.join("draft.flow.yaml"),
             budget: 10,
@@ -579,7 +579,7 @@ mod tests {
              got {}",
             dir.join(gif).display()
         );
-        std::fs::remove_dir_all(result.flow.parent().unwrap()).ok();
+        std::fs::remove_dir_all(result.flow.parent().expect("draft path has a parent")).ok();
     }
 
     #[test]
@@ -610,7 +610,7 @@ mod tests {
             .iter()
             .any(|l| matches!(l, DraftLine::Action(a) if a.contains("id:go"))));
         assert!(matches!(result.lines.last(), Some(DraftLine::Assert(_))));
-        std::fs::remove_dir_all(result.flow.parent().unwrap()).ok();
+        std::fs::remove_dir_all(result.flow.parent().expect("draft path has a parent")).ok();
     }
 
     #[test]
@@ -639,7 +639,7 @@ mod tests {
             .lines
             .iter()
             .any(|l| matches!(l, DraftLine::Flagged(f) if f.contains("deny-list"))));
-        std::fs::remove_dir_all(result.flow.parent().unwrap()).ok();
+        std::fs::remove_dir_all(result.flow.parent().expect("draft path has a parent")).ok();
     }
 
     #[test]
@@ -676,6 +676,6 @@ mod tests {
             result.outcome,
             GoalOutcome::BudgetExhausted { .. }
         ));
-        std::fs::remove_dir_all(result.flow.parent().unwrap()).ok();
+        std::fs::remove_dir_all(result.flow.parent().expect("draft path has a parent")).ok();
     }
 }
