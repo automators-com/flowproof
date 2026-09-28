@@ -10,6 +10,7 @@ pub mod clarify;
 pub mod doc_author;
 pub mod doc_formats;
 pub mod draft_assembly;
+pub mod goal_author;
 pub mod heal;
 pub mod llm;
 pub mod recorder;
