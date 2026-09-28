@@ -184,9 +184,17 @@ pub fn author_from_goal<D: AppDriver, C: ModelClient>(
     let mut last_signature: Option<String> = None;
     let mut repeats: u32 = 0;
     const MAX_REPEATS: u32 = 3;
+    // Opt-in through the same FLOWPROOF_PROGRESS=1 record's own live-step
+    // reporting uses (recorder.rs's LiveSteps) — a caller driving this
+    // through a UI has no other way to know exploration is making
+    // progress, not hung, during what can be a slow, multi-call loop.
+    let report_progress = std::env::var("FLOWPROOF_PROGRESS").as_deref() == Ok("1");
 
     let outcome = loop {
         let actions_tried = history.len();
+        if report_progress {
+            eprintln!("[PROGRESS] tried {actions_tried} of {}", opts.budget);
+        }
         if actions_tried >= opts.budget {
             break GoalOutcome::BudgetExhausted { actions_tried };
         }
