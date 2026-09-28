@@ -490,6 +490,38 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// EXPERIMENTAL: explore the live app to satisfy a `goal:` spec (see
+    /// `docs/authoring/index.md`) and draft a `.flow.yaml` of the steps
+    /// that got there. DRAFT only — still needs a live `record` pass, same
+    /// as `author-from-doc`. Web driver only for now.
+    AuthorFromGoal {
+        /// Path to the YAML flow spec. Must give `goal:`, not `steps:`.
+        spec: PathBuf,
+        /// Output draft file (default: <spec>.flow.yaml next to the spec,
+        /// suffixed .draft before the extension, so a real flow at the same
+        /// path is never overwritten).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Business-data values file to load before resolving ${VAR}s.
+        #[arg(long)]
+        vars: Option<PathBuf>,
+        /// Business-data override, repeatable as KEY=VALUE.
+        #[arg(long = "var", value_name = "KEY=VALUE")]
+        var: Vec<String>,
+        /// Maximum actions tried before giving up as budget-exhausted.
+        #[arg(long, default_value_t = 40)]
+        budget: usize,
+        /// Visual capture density for the exploration recording: full, low,
+        /// or off. Unlike `record`, a GIF is always assembled when this is
+        /// not `off` — the recorded attempt is how a reviewer judges an
+        /// autonomous exploration, not an opt-in extra.
+        #[arg(long, value_enum, default_value_t)]
+        recording_detail: RecordingDetailArg,
+        /// Print the result as one JSON object: the draft written, every
+        /// line with its kind, the outcome, and the recording bundle.
+        #[arg(long)]
+        json: bool,
+    },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
     Heal {
@@ -530,6 +562,22 @@ pub fn default_trace_path(spec: &Path) -> PathBuf {
             .unwrap_or(&stem)
     });
     spec.with_file_name(format!("{base}.trace.jsonl"))
+}
+
+/// Default draft path for a goal spec: `checkout.flow.yaml` ->
+/// `checkout.draft.flow.yaml` — distinct from the input, so exploring
+/// toward a goal never overwrites a real flow at the same stem.
+pub fn default_draft_path(spec: &Path) -> PathBuf {
+    let stem = spec
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let base = stem.strip_suffix(".flow.yaml").unwrap_or_else(|| {
+        stem.strip_suffix(".yaml")
+            .or_else(|| stem.strip_suffix(".yml"))
+            .unwrap_or(&stem)
+    });
+    spec.with_file_name(format!("{base}.draft.flow.yaml"))
 }
 
 pub fn default_values_path(spec: &Path) -> PathBuf {
@@ -3510,6 +3558,106 @@ fn cmd_author_from_doc(
     Ok(EXIT_PASS)
 }
 
+fn cmd_author_from_goal(
+    spec_path: &Path,
+    out: Option<PathBuf>,
+    values: ValuesArgs,
+    budget: usize,
+    recording_detail: RecordingDetailArg,
+    json: bool,
+) -> Result<u8, String> {
+    use flowproof_agent::goal_author;
+    // Like record, doc-author and heal, exploring must see credentials
+    // saved by `config ai`.
+    config::seed_env();
+    let (spec, _env_overlay) = load_prepared_spec(spec_path, &values)?;
+    if spec.goal.is_none() {
+        return Err(
+            "this spec has no `goal:` — author-from-goal needs `goal:` instead of `steps:` \
+             (see docs/authoring/index.md)"
+                .into(),
+        );
+    }
+    let out = out.unwrap_or_else(|| default_draft_path(spec_path));
+
+    let config = flowproof_agent::BackendConfig::from_env().map_err(|e| e.to_string())?;
+    if !config.is_usable() {
+        return Err(
+            "no usable model backend configured (run `flowproof config ai` or set \
+             FLOWPROOF_AI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY)"
+                .into(),
+        );
+    }
+    let mut client = flowproof_agent::HttpModelClient::new(config);
+
+    recording_progress("Exploring toward the goal");
+    let mut driver = driver_for(spec.app.id())?;
+    let opts = goal_author::GoalAuthorOptions {
+        out,
+        budget,
+        recording: recording_options(recording_detail, true, false),
+    };
+    let result = goal_author::author_from_goal(&spec, &mut driver, &mut client, &opts)
+        .map_err(|e| e.to_string())?;
+
+    if json {
+        use flowproof_agent::draft_assembly::DraftLine;
+        let lines: Vec<_> = result
+            .lines
+            .iter()
+            .map(|line| {
+                let kind = match line {
+                    DraftLine::Action(_) => "action",
+                    DraftLine::Assert(_) => "assert",
+                    DraftLine::Flagged(_) => "flagged",
+                    DraftLine::OutOfScope(_) => "out_of_scope",
+                };
+                let mut step = serde_json::json!({ "kind": kind, "text": line.step_text() });
+                if let DraftLine::Flagged(observed) | DraftLine::OutOfScope(observed) = line {
+                    step["observed"] = observed.clone().into();
+                }
+                step
+            })
+            .collect();
+        let report = serde_json::json!({
+            "flow": result.flow,
+            "steps": lines,
+            "outcome": result.outcome,
+            "recording": result.recording,
+            "recording_dir": result.recording_dir,
+        });
+        println!("{report}");
+        return Ok(EXIT_PASS);
+    }
+
+    let outcome_line = match &result.outcome {
+        goal_author::GoalOutcome::Reached { actions_tried } => {
+            format!("reached the goal in {actions_tried} action(s)")
+        }
+        goal_author::GoalOutcome::BudgetExhausted { actions_tried } => {
+            format!("budget exhausted after {actions_tried} action(s) — goal not confirmed reached")
+        }
+        goal_author::GoalOutcome::NoProgress {
+            actions_tried,
+            reason,
+        } => {
+            format!("gave up after {actions_tried} action(s): {reason}")
+        }
+    };
+    println!(
+        "draft spec written to {} — DRAFT; {outcome_line}. Review every step (a flagged one \
+         is either deny-listed or an abandoned attempt — watch the recorded exploration to \
+         see why), then `flowproof record`",
+        result.flow.display()
+    );
+    if let (Some(recording), Some(dir)) = (&result.recording, &result.recording_dir) {
+        if let Some(gif) = &recording.gif {
+            println!("exploration recording: {}", dir.join(gif).display());
+        }
+    }
+    Ok(EXIT_PASS)
+}
+
 fn cmd_heal(
     spec_path: &Path,
     trace: Option<PathBuf>,
@@ -3960,6 +4108,25 @@ where
             check,
             json,
         } => cmd_author_from_doc(doc, app, name, out, check, json),
+        Command::AuthorFromGoal {
+            spec,
+            out,
+            vars,
+            var,
+            budget,
+            recording_detail,
+            json,
+        } => cmd_author_from_goal(
+            &spec,
+            out,
+            ValuesArgs {
+                vars_file: vars,
+                vars: var,
+            },
+            budget,
+            recording_detail,
+            json,
+        ),
         Command::Heal {
             spec,
             trace,

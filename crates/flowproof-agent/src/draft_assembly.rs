@@ -85,15 +85,21 @@ pub fn yaml_quote(s: &str) -> String {
 /// Assembles a draft spec and validates it parses before returning — a
 /// bad model reply fails here, not silently. `header_comment` carries
 /// the caller's own provenance/review-instructions text (source-specific
-/// wording lives with the caller, not here).
+/// wording lives with the caller, not here). `extra_head` is raw YAML,
+/// inserted verbatim between `app:` and `steps:` — empty for a source with
+/// no other spec context to carry over (a document); the fields a live
+/// exploration already resolved (`url:`, `session:`, ...) for one that has
+/// them, so the draft it hands back can be recorded without the reviewer
+/// re-adding what authoring already knew.
 pub fn assemble(
     header_comment: &str,
     name: &str,
     app: &str,
+    extra_head: &str,
     lines: &[DraftLine],
 ) -> Result<String, crate::spec::SpecError> {
     let mut yaml = format!(
-        "{header_comment}\nname: {}\napp: {}\nsteps:\n",
+        "{header_comment}\nname: {}\napp: {}\n{extra_head}steps:\n",
         yaml_quote(name),
         yaml_quote(app),
     );
@@ -141,7 +147,7 @@ mod tests {
             DraftLine::Assert("page shows Create Standard Order".to_string()),
             DraftLine::Flagged("the screen changed to an order overview".to_string()),
         ];
-        let yaml = assemble("# DRAFT", "n", "sap", &lines).expect("assembles");
+        let yaml = assemble("# DRAFT", "n", "sap", "", &lines).expect("assembles");
         assert!(yaml.contains("- \"Go to /nVA01\""));
         assert!(yaml.contains("- assert: \"page shows Create Standard Order\""));
         assert!(yaml.contains("TODO"), "flagged step must be visibly marked");
@@ -167,7 +173,7 @@ mod tests {
             DraftLine::Flagged("two buttons could accept the defaults".to_string()),
             DraftLine::OutOfScope("open the confirmation in Outlook".to_string()),
         ];
-        let yaml = assemble("# DRAFT", "n", "sap", &lines).expect("assembles");
+        let yaml = assemble("# DRAFT", "n", "sap", "", &lines).expect("assembles");
         for line in &lines {
             assert!(
                 yaml.contains(&yaml_quote(&line.step_text())),
@@ -185,7 +191,7 @@ mod tests {
         let lines = vec![DraftLine::OutOfScope(
             "open the exported file in Excel and review it".to_string(),
         )];
-        let yaml = assemble("# DRAFT", "n", "sap", &lines).expect("assembles");
+        let yaml = assemble("# DRAFT", "n", "sap", "", &lines).expect("assembles");
         assert!(
             yaml.contains("out-of-scope"),
             "must be distinguishable from an in-app flagged step: {yaml}"
@@ -210,7 +216,7 @@ mod tests {
         // calling assemble(). This just confirms assemble() doesn't
         // silently succeed with zero steps - FlowSpec::parse's own
         // Empty-steps rule catches it.
-        let err = assemble("# DRAFT", "n", "sap", &[]).expect_err("empty steps must not parse");
+        let err = assemble("# DRAFT", "n", "sap", "", &[]).expect_err("empty steps must not parse");
         assert!(matches!(err, crate::spec::SpecError::Empty));
     }
 }

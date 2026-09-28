@@ -954,6 +954,7 @@ dependencies = [
  "chrono",
  "flowproof-driver",
  "flowproof-trace",
+ "image",
  "pdf-extract",
  "regex",
  "serde",
