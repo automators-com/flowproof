@@ -171,6 +171,10 @@ enum ConfigAction {
         clear_language: bool,
         #[arg(long = "clear-connection")]
         clear_connection: bool,
+        /// Remove the entire `sap:` block in one call. Rejected if combined
+        /// with any other flag on this command.
+        #[arg(long = "clear-all")]
+        clear_all: bool,
     },
     /// Fiori: user, password, client, language, and the launchpad base
     /// URL — an identity independent of `sap`, not shared with it
@@ -196,6 +200,10 @@ enum ConfigAction {
         clear_language: bool,
         #[arg(long = "clear-base-url")]
         clear_base_url: bool,
+        /// Remove the entire `fiori:` block in one call. Rejected if
+        /// combined with any other flag on this command.
+        #[arg(long = "clear-all")]
+        clear_all: bool,
     },
     /// AI authoring: provider and API key for model-assisted recording/doc
     /// authoring. Prompts interactively unless any flag is given; model is an
@@ -3803,6 +3811,7 @@ where
                 clear_client,
                 clear_language,
                 clear_connection,
+                clear_all,
             } => config::cmd_sap(
                 config::SharedArgs {
                     user,
@@ -3816,6 +3825,7 @@ where
                 },
                 connection,
                 clear_connection,
+                clear_all,
             ),
             ConfigAction::Fiori {
                 user,
@@ -3828,6 +3838,7 @@ where
                 clear_client,
                 clear_language,
                 clear_base_url,
+                clear_all,
             } => config::cmd_fiori(
                 config::SharedArgs {
                     user,
@@ -3841,6 +3852,7 @@ where
                 },
                 base_url,
                 clear_base_url,
+                clear_all,
             ),
             ConfigAction::Ai {
                 provider,
