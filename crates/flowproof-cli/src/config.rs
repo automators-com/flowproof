@@ -350,12 +350,17 @@ fn prompt_password(label: &str, currently_set: bool) -> Result<Option<String>, S
 
 /// Interactive/flag-driven arguments common to both `sap` and `fiori`; the
 /// one field that differs (`connection` vs `base_url`) stays outside this
-/// struct.
+/// struct, with its own `clear_*` flag kept beside it in each command's own
+/// args.
 pub struct SharedArgs {
     pub user: Option<String>,
     pub password: Option<String>,
     pub client: Option<String>,
     pub language: Option<String>,
+    pub clear_user: bool,
+    pub clear_password: bool,
+    pub clear_client: bool,
+    pub clear_language: bool,
 }
 
 impl SharedArgs {
@@ -364,13 +369,38 @@ impl SharedArgs {
             || self.password.is_some()
             || self.client.is_some()
             || self.language.is_some()
+            || self.clear_user
+            || self.clear_password
+            || self.clear_client
+            || self.clear_language
+    }
+
+    /// A `--clear-X` paired with its own `--X` is rejected outright, the
+    /// same posture `cmd_ai` already takes for its clear flags — one
+    /// combination can't win silently over the other.
+    fn validate(&self) -> Result<(), String> {
+        if self.clear_user && self.user.is_some() {
+            return Err("--clear-user cannot be combined with --user".to_string());
+        }
+        if self.clear_password && self.password.is_some() {
+            return Err("--clear-password cannot be combined with --password".to_string());
+        }
+        if self.clear_client && self.client.is_some() {
+            return Err("--clear-client cannot be combined with --client".to_string());
+        }
+        if self.clear_language && self.language.is_some() {
+            return Err("--clear-language cannot be combined with --language".to_string());
+        }
+        Ok(())
     }
 
     /// Apply whichever fields were actually given, leaving the rest of the
     /// profile untouched — the non-interactive mirror of the prompts'
-    /// merge-on-rerun behavior. Takes the four destination fields directly
-    /// rather than a whole profile, since `SapProfile` and `FioriProfile`
-    /// share this shape but aren't the same type.
+    /// merge-on-rerun behavior. Clears are applied before sets, though
+    /// [`validate`](Self::validate) already rules out both being given for
+    /// the same field. Takes the four destination fields directly rather
+    /// than a whole profile, since `SapProfile` and `FioriProfile` share
+    /// this shape but aren't the same type.
     fn apply_to(
         self,
         user: &mut Option<String>,
@@ -378,6 +408,18 @@ impl SharedArgs {
         client: &mut Option<String>,
         language: &mut Option<String>,
     ) {
+        if self.clear_user {
+            *user = None;
+        }
+        if self.clear_password {
+            *password = None;
+        }
+        if self.clear_client {
+            *client = None;
+        }
+        if self.clear_language {
+            *language = None;
+        }
         if let Some(v) = self.user {
             *user = Some(v);
         }
@@ -397,8 +439,17 @@ impl SharedArgs {
 /// client, language, connection, merge into whatever `sap:` block already
 /// exists, and write the file. No live check against SAP — see
 /// plans/001-credential-config.md, "The shape the team landed on".
-pub fn cmd_sap(shared: SharedArgs, connection: Option<String>) -> Result<u8, String> {
-    let any_flag = shared.any_set() || connection.is_some();
+pub fn cmd_sap(
+    shared: SharedArgs,
+    connection: Option<String>,
+    clear_connection: bool,
+) -> Result<u8, String> {
+    shared.validate()?;
+    if clear_connection && connection.is_some() {
+        return Err("--clear-connection cannot be combined with --connection".to_string());
+    }
+
+    let any_flag = shared.any_set() || connection.is_some() || clear_connection;
     let mut config = load()?;
     let mut profile = config.sap.take().unwrap_or_default();
 
@@ -409,6 +460,9 @@ pub fn cmd_sap(shared: SharedArgs, connection: Option<String>) -> Result<u8, Str
             &mut profile.client,
             &mut profile.language,
         );
+        if clear_connection {
+            profile.connection = None;
+        }
         if let Some(v) = connection {
             profile.connection = Some(v);
         }
@@ -442,8 +496,17 @@ pub fn cmd_sap(shared: SharedArgs, connection: Option<String>) -> Result<u8, Str
 
 /// `flowproof config fiori`: same shape as [`cmd_sap`], writing the
 /// independent `fiori:` block with `base_url` in place of `connection`.
-pub fn cmd_fiori(shared: SharedArgs, base_url: Option<String>) -> Result<u8, String> {
-    let any_flag = shared.any_set() || base_url.is_some();
+pub fn cmd_fiori(
+    shared: SharedArgs,
+    base_url: Option<String>,
+    clear_base_url: bool,
+) -> Result<u8, String> {
+    shared.validate()?;
+    if clear_base_url && base_url.is_some() {
+        return Err("--clear-base-url cannot be combined with --base-url".to_string());
+    }
+
+    let any_flag = shared.any_set() || base_url.is_some() || clear_base_url;
     let mut config = load()?;
     let mut profile = config.fiori.take().unwrap_or_default();
 
@@ -454,6 +517,9 @@ pub fn cmd_fiori(shared: SharedArgs, base_url: Option<String>) -> Result<u8, Str
             &mut profile.client,
             &mut profile.language,
         );
+        if clear_base_url {
+            profile.base_url = None;
+        }
         if let Some(v) = base_url {
             profile.base_url = Some(v);
         }

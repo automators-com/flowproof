@@ -72,9 +72,16 @@ retyping the rest).
 
 Flags exist for scripting a machine's setup instead of typing it by hand:
 `--user`, `--password`, `--client`, `--language`, `--connection` (`sap`) or
-`--base-url` (`fiori`). `flowproof config show` prints the file's path and
-contents with the password masked; `flowproof config path` prints just the
-resolved path. Design rationale, including what's deliberately out of scope
+`--base-url` (`fiori`). Each also has a `--clear-*` counterpart
+(`--clear-user`, `--clear-password`, `--clear-client`, `--clear-language`,
+`--clear-connection`/`--clear-base-url`) that removes just that field from
+the stored profile without touching the rest — the only way to unset a
+value non-interactively, since there's no interactive prompt for clearing.
+Pairing a clear flag with its own setter is rejected outright, the same
+posture `config ai`'s clear flags below already take. `flowproof config
+show` prints the file's path and contents with the password masked;
+`flowproof config path` prints just the resolved path. Design rationale,
+including what's deliberately out of scope
 for now (multiple SAP systems on one machine, Windows file permissions),
 lives in `plans/001-credential-config.md`.
 

@@ -72,6 +72,86 @@ fn config_sap_via_flags_writes_and_a_second_call_merges() {
 }
 
 #[test]
+fn config_sap_via_flags_clears_fields() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("sap-clear");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli([
+            "config",
+            "sap",
+            "--user",
+            "obeva",
+            "--password",
+            "secret",
+            "--client",
+            "100",
+            "--connection",
+            "TS3",
+        ]);
+        assert_eq!(code, 0, "first write succeeds");
+
+        let code =
+            flowproof_cli::run_cli(["config", "sap", "--clear-password", "--clear-connection"]);
+        assert_eq!(code, 0, "clear succeeds");
+
+        let config = flowproof_cli::config::load().expect("loads after clear");
+        let sap = config.sap.expect("sap profile still present");
+        assert_eq!(sap.user.as_deref(), Some("obeva"), "untouched by clear");
+        assert_eq!(sap.client.as_deref(), Some("100"), "untouched by clear");
+        assert_eq!(sap.password, None, "cleared");
+        assert_eq!(sap.connection, None, "cleared");
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn config_sap_rejects_a_clear_flag_paired_with_its_own_setter() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("sap-clear-conflict");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli(["config", "sap", "--password", "x", "--clear-password"]);
+        assert_ne!(code, 0, "combining --password with --clear-password fails");
+
+        let config = flowproof_cli::config::load().expect("loads");
+        assert_eq!(config.sap, None, "the conflicting call wrote nothing");
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn config_fiori_via_flags_clears_fields() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("fiori-clear");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli([
+            "config",
+            "fiori",
+            "--user",
+            "obeva",
+            "--password",
+            "secret",
+            "--base-url",
+            "https://launchpad.test/",
+        ]);
+        assert_eq!(code, 0, "first write succeeds");
+
+        let code =
+            flowproof_cli::run_cli(["config", "fiori", "--clear-password", "--clear-base-url"]);
+        assert_eq!(code, 0, "clear succeeds");
+
+        let config = flowproof_cli::config::load().expect("loads after clear");
+        let fiori = config.fiori.expect("fiori profile still present");
+        assert_eq!(fiori.user.as_deref(), Some("obeva"), "untouched by clear");
+        assert_eq!(fiori.password, None, "cleared");
+        assert_eq!(fiori.base_url, None, "cleared");
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
 fn config_sap_and_fiori_are_independent_profiles() {
     let _guard = ENV.lock().expect("env lock");
     let home = temp_home("independence");

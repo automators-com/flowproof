@@ -161,6 +161,16 @@ enum ConfigAction {
         language: Option<String>,
         #[arg(long)]
         connection: Option<String>,
+        #[arg(long = "clear-user")]
+        clear_user: bool,
+        #[arg(long = "clear-password")]
+        clear_password: bool,
+        #[arg(long = "clear-client")]
+        clear_client: bool,
+        #[arg(long = "clear-language")]
+        clear_language: bool,
+        #[arg(long = "clear-connection")]
+        clear_connection: bool,
     },
     /// Fiori: user, password, client, language, and the launchpad base
     /// URL — an identity independent of `sap`, not shared with it
@@ -176,6 +186,16 @@ enum ConfigAction {
         language: Option<String>,
         #[arg(long = "base-url")]
         base_url: Option<String>,
+        #[arg(long = "clear-user")]
+        clear_user: bool,
+        #[arg(long = "clear-password")]
+        clear_password: bool,
+        #[arg(long = "clear-client")]
+        clear_client: bool,
+        #[arg(long = "clear-language")]
+        clear_language: bool,
+        #[arg(long = "clear-base-url")]
+        clear_base_url: bool,
     },
     /// AI authoring: provider and API key for model-assisted recording/doc
     /// authoring. Prompts interactively unless any flag is given; model is an
@@ -3778,14 +3798,24 @@ where
                 client,
                 language,
                 connection,
+                clear_user,
+                clear_password,
+                clear_client,
+                clear_language,
+                clear_connection,
             } => config::cmd_sap(
                 config::SharedArgs {
                     user,
                     password,
                     client,
                     language,
+                    clear_user,
+                    clear_password,
+                    clear_client,
+                    clear_language,
                 },
                 connection,
+                clear_connection,
             ),
             ConfigAction::Fiori {
                 user,
@@ -3793,14 +3823,24 @@ where
                 client,
                 language,
                 base_url,
+                clear_user,
+                clear_password,
+                clear_client,
+                clear_language,
+                clear_base_url,
             } => config::cmd_fiori(
                 config::SharedArgs {
                     user,
                     password,
                     client,
                     language,
+                    clear_user,
+                    clear_password,
+                    clear_client,
+                    clear_language,
                 },
                 base_url,
+                clear_base_url,
             ),
             ConfigAction::Ai {
                 provider,
