@@ -443,7 +443,19 @@ pub fn cmd_sap(
     shared: SharedArgs,
     connection: Option<String>,
     clear_connection: bool,
+    clear_all: bool,
 ) -> Result<u8, String> {
+    if clear_all && (shared.any_set() || connection.is_some() || clear_connection) {
+        return Err("--clear-all cannot be combined with any other flag".to_string());
+    }
+    if clear_all {
+        let mut config = load()?;
+        config.sap = None;
+        save(&config)?;
+        println!("wrote {}", config_path()?.display());
+        return Ok(EXIT_PASS);
+    }
+
     shared.validate()?;
     if clear_connection && connection.is_some() {
         return Err("--clear-connection cannot be combined with --connection".to_string());
@@ -500,7 +512,19 @@ pub fn cmd_fiori(
     shared: SharedArgs,
     base_url: Option<String>,
     clear_base_url: bool,
+    clear_all: bool,
 ) -> Result<u8, String> {
+    if clear_all && (shared.any_set() || base_url.is_some() || clear_base_url) {
+        return Err("--clear-all cannot be combined with any other flag".to_string());
+    }
+    if clear_all {
+        let mut config = load()?;
+        config.fiori = None;
+        save(&config)?;
+        println!("wrote {}", config_path()?.display());
+        return Ok(EXIT_PASS);
+    }
+
     shared.validate()?;
     if clear_base_url && base_url.is_some() {
         return Err("--clear-base-url cannot be combined with --base-url".to_string());

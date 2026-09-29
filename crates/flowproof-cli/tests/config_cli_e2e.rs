@@ -121,6 +121,77 @@ fn config_sap_rejects_a_clear_flag_paired_with_its_own_setter() {
 }
 
 #[test]
+fn config_sap_via_flags_clears_all() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("sap-clear-all");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli([
+            "config",
+            "sap",
+            "--user",
+            "obeva",
+            "--password",
+            "secret",
+            "--client",
+            "100",
+            "--connection",
+            "TS3",
+        ]);
+        assert_eq!(code, 0, "first write succeeds");
+
+        let code = flowproof_cli::run_cli(["config", "sap", "--clear-all"]);
+        assert_eq!(code, 0, "clear-all succeeds");
+
+        let config = flowproof_cli::config::load().expect("loads after clear-all");
+        assert_eq!(
+            config.sap, None,
+            "the whole sap profile is gone, not just its fields"
+        );
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn config_sap_clear_all_on_an_unconfigured_profile_is_a_no_op() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("sap-clear-all-noop");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli(["config", "sap", "--clear-all"]);
+        assert_eq!(
+            code, 0,
+            "clear-all on a never-configured profile still succeeds"
+        );
+
+        let config = flowproof_cli::config::load().expect("loads");
+        assert_eq!(config.sap, None);
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn config_sap_rejects_clear_all_combined_with_another_flag() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("sap-clear-all-conflict");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli(["config", "sap", "--clear-all", "--user", "x"]);
+        assert_ne!(code, 0, "combining --clear-all with --user fails");
+
+        let code = flowproof_cli::run_cli(["config", "sap", "--clear-all", "--clear-password"]);
+        assert_ne!(
+            code, 0,
+            "combining --clear-all with another clear flag also fails"
+        );
+
+        let config = flowproof_cli::config::load().expect("loads");
+        assert_eq!(config.sap, None, "neither conflicting call wrote anything");
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
 fn config_fiori_via_flags_clears_fields() {
     let _guard = ENV.lock().expect("env lock");
     let home = temp_home("fiori-clear");
@@ -147,6 +218,51 @@ fn config_fiori_via_flags_clears_fields() {
         assert_eq!(fiori.user.as_deref(), Some("obeva"), "untouched by clear");
         assert_eq!(fiori.password, None, "cleared");
         assert_eq!(fiori.base_url, None, "cleared");
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn config_fiori_via_flags_clears_all() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("fiori-clear-all");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli([
+            "config",
+            "fiori",
+            "--user",
+            "obeva",
+            "--password",
+            "secret",
+            "--base-url",
+            "https://launchpad.test/",
+        ]);
+        assert_eq!(code, 0, "first write succeeds");
+
+        let code = flowproof_cli::run_cli(["config", "fiori", "--clear-all"]);
+        assert_eq!(code, 0, "clear-all succeeds");
+
+        let config = flowproof_cli::config::load().expect("loads after clear-all");
+        assert_eq!(
+            config.fiori, None,
+            "the whole fiori profile is gone, not just its fields"
+        );
+    });
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn config_fiori_rejects_clear_all_combined_with_another_flag() {
+    let _guard = ENV.lock().expect("env lock");
+    let home = temp_home("fiori-clear-all-conflict");
+
+    with_fake_home(&home, || {
+        let code = flowproof_cli::run_cli(["config", "fiori", "--clear-all", "--base-url", "x"]);
+        assert_ne!(code, 0, "combining --clear-all with --base-url fails");
+
+        let config = flowproof_cli::config::load().expect("loads");
+        assert_eq!(config.fiori, None, "the conflicting call wrote nothing");
     });
     std::fs::remove_dir_all(&home).ok();
 }
