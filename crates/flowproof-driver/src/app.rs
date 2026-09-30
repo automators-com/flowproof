@@ -1858,6 +1858,13 @@ impl AppDriver for Box<dyn AppDriver> {
         (**self).a11y_hint(selector)
     }
 
+    fn fingerprint(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<Option<flowproof_trace::format::Fingerprint>, DriverError> {
+        (**self).fingerprint(selector)
+    }
+
     fn probe_frame(&mut self, query: &FrameQuery) -> Result<FrameProbe, DriverError> {
         (**self).probe_frame(query)
     }

@@ -204,6 +204,7 @@ impl AppDriver for SurfaceRegistry {
         fn cell_hints(&mut self, selector: &UiaSelector) -> Result<Option<CellHints>, DriverError>;
         fn scope_hints(&mut self, selector: &UiaSelector) -> Result<Option<ScopeHints>, DriverError>;
         fn a11y_hint(&mut self, selector: &UiaSelector) -> Result<Option<A11yHints>, DriverError>;
+        fn fingerprint(&mut self, selector: &UiaSelector) -> Result<Option<flowproof_trace::format::Fingerprint>, DriverError>;
         fn probe_frame(&mut self, query: &FrameQuery) -> Result<FrameProbe, DriverError>;
         fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError>;
         fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError>;
@@ -507,5 +508,38 @@ mod tests {
             .dom_html
             .unwrap_or_default()
             .contains("active surface"));
+    }
+
+    /// `fingerprint` reaches the active driver through the registry AND the
+    /// `Box<dyn AppDriver>` it holds: a delegation missing from either
+    /// answers the default, and the recorder stores nothing.
+    #[test]
+    fn fingerprint_routes_through_the_registry_and_the_box() {
+        let factory: SurfaceFactory = Box::new(|_| {
+            let mut mock = MockAppDriver::new(&["#make"]);
+            mock.fingerprints.insert(
+                "#make".into(),
+                flowproof_trace::format::Fingerprint {
+                    kind: Some("select".into()),
+                    ..Default::default()
+                },
+            );
+            Ok(Box::new(mock))
+        });
+        let target = AppTarget {
+            command: "x".into(),
+            window_name: String::new(),
+        };
+        let mut reg = SurfaceRegistry::new(
+            [("gui".to_string(), target)],
+            factory,
+            Duration::from_millis(10),
+        );
+        reg.activate("gui", &no_captures()).expect("activates");
+        let fingerprint = reg
+            .fingerprint(&UiaSelector::css("#make"))
+            .expect("routes")
+            .expect("the active driver answered");
+        assert_eq!(fingerprint.kind.as_deref(), Some("select"));
     }
 }
