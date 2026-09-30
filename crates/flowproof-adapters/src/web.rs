@@ -915,6 +915,111 @@ fn launch_options_for(
         .map_err(|e| AdapterError::Web(format!("building launch options: {e}")))
 }
 
+/// Name the browser a run drove, for the report.
+///
+/// Every Chromium answers `Browser.getVersion` with a `Chrome/…` (or
+/// `HeadlessChrome/…`) product, Edge and Brave included, so the product alone
+/// would report an Edge-only machine as running Chrome — the one thing the
+/// field exists to make visible. The executable name (argv[0] of the browser's
+/// command line) is what tells them apart.
+///
+/// The product's version is Chrome's and Chromium's own, but only the
+/// Chromium base of Edge and Brave. Their own version comes from `installed`
+/// (see [`installed_browser_versions`]), and only a version whose major
+/// matches the running Chromium's counts: an update can leave the next
+/// version installed beside the one still running. The user agent is no
+/// substitute — current Edge reduces its `Edg/` token to `154.0.0.0` — so
+/// without an installed match the report says just the major, never a
+/// precise-looking version that isn't one.
+fn describe_browser(
+    program: Option<&str>,
+    product: &str,
+    user_agent: &str,
+    installed: &[String],
+) -> flowproof_driver::BrowserInfo {
+    let file = program
+        .and_then(|p| p.rsplit(['/', '\\']).next())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let edge_version = user_agent
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("Edg/"));
+    let name = if file.contains("edge") || (file.is_empty() && edge_version.is_some()) {
+        "Microsoft Edge"
+    } else if file.contains("brave") {
+        "Brave"
+    } else if file.contains("chromium") {
+        "Chromium"
+    } else {
+        "Google Chrome"
+    };
+    let chromium_version = product.split_once('/').map_or(product, |(_, v)| v);
+    let major = chromium_version.split('.').next().unwrap_or_default();
+    let version = if matches!(name, "Google Chrome" | "Chromium") {
+        chromium_version.to_string()
+    } else {
+        installed
+            .iter()
+            .filter(|v| v.split('.').next() == Some(major))
+            .max_by_key(|v| version_key(v))
+            .cloned()
+            .or_else(|| {
+                edge_version
+                    .filter(|v| !v.ends_with(".0.0.0"))
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| major.to_string())
+    };
+    flowproof_driver::BrowserInfo {
+        name: name.to_string(),
+        version,
+    }
+}
+
+/// `154.0.4258.37` as numbers, so `.37` sorts above `.9`.
+fn version_key(version: &str) -> Vec<u32> {
+    version.split('.').map(|p| p.parse().unwrap_or(0)).collect()
+}
+
+/// The versions a browser install holds on disk, for [`describe_browser`].
+///
+/// Chromium browsers on Windows keep each version in a folder named after it
+/// beside the executable (`Application\154.0.4258.37\`), sometimes two
+/// during an update; a macOS `.app` states it in `Contents/Info.plist`.
+/// Both layouts are checked whatever the OS: a path that isn't one simply
+/// yields nothing.
+fn installed_browser_versions(program: &std::path::Path) -> Vec<String> {
+    let is_version = |name: &str| {
+        name.split('.').count() == 4 && name.split('.').all(|p| p.parse::<u32>().is_ok())
+    };
+    let mut found: Vec<String> = program
+        .parent()
+        .and_then(|dir| std::fs::read_dir(dir).ok())
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| is_version(name))
+        .collect();
+    let plist = program
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|contents| contents.join("Info.plist"));
+    if let Some(text) = plist.and_then(|p| std::fs::read_to_string(p).ok()) {
+        let key = "<key>CFBundleShortVersionString</key>";
+        if let Some(value) = text
+            .split_once(key)
+            .and_then(|(_, rest)| rest.split_once("<string>"))
+            .and_then(|(_, rest)| rest.split_once("</string>"))
+            .map(|(value, _)| value.trim().to_string())
+        {
+            found.push(value);
+        }
+    }
+    found
+}
+
 /// Explain a launch failure that only happens because the window was asked for.
 ///
 /// Measured, not guessed: with `FLOWPROOF_HEADED=1` and no `DISPLAY`, Chromium
@@ -4179,6 +4284,27 @@ impl AppDriver for WebAppDriver {
         Ok(value.value.and_then(|v| v.as_bool()))
     }
 
+    fn browser_info(&mut self) -> Option<flowproof_driver::BrowserInfo> {
+        let tab = self.tab.as_ref()?;
+        let version = tab
+            .call_method(headless_chrome::protocol::cdp::Browser::GetVersion(None))
+            .ok()?;
+        let program = tab
+            .call_method(headless_chrome::protocol::cdp::Browser::GetBrowserCommandLine(None))
+            .ok()
+            .and_then(|line| line.arguments.into_iter().next());
+        let installed = program
+            .as_deref()
+            .map(|p| installed_browser_versions(std::path::Path::new(p)))
+            .unwrap_or_default();
+        Some(describe_browser(
+            program.as_deref(),
+            &version.product,
+            &version.user_agent,
+            &installed,
+        ))
+    }
+
     fn today(&mut self) -> Result<Option<String>, DriverError> {
         let value = self
             .tab()?
@@ -5995,6 +6121,104 @@ mod tests {
         assert!(!super::should_share_browser(true, false));
         assert!(!super::should_share_browser(false, true));
         assert!(!super::should_share_browser(true, true));
+    }
+
+    /// Edge and Brave both call themselves Chrome in `getVersion`; the report
+    /// must still say which one ran, with its own version.
+    ///
+    /// The Edge user agent here is the one observed on a Windows machine with
+    /// Edge 154.0.4258.37 installed: the `Edg/` token is reduced to
+    /// `154.0.0.0`, so the version has to come from the install.
+    #[test]
+    fn describe_browser_names_the_executable_not_the_chromium_product() {
+        let edge_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                       (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0";
+        let chrome_ua = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) \
+                         HeadlessChrome/154.0.0.0 Safari/537.36";
+        let product = "HeadlessChrome/154.0.8037.92";
+        let named = |program, ua, installed: &[&str]| {
+            let installed: Vec<String> = installed.iter().map(|v| v.to_string()).collect();
+            let info = super::describe_browser(program, product, ua, &installed);
+            (info.name, info.version)
+        };
+        let edge = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
+
+        // Edge's own version, from the install, not the reduced user agent.
+        assert_eq!(
+            named(Some(edge), edge_ua, &["154.0.4258.37"]),
+            ("Microsoft Edge".into(), "154.0.4258.37".into())
+        );
+        // Mid-update: the next major sits beside the running one.
+        assert_eq!(
+            named(
+                Some(edge),
+                edge_ua,
+                &["155.0.4301.2", "154.0.4258.9", "154.0.4258.37"]
+            )
+            .1,
+            "154.0.4258.37"
+        );
+        // Nothing usable on disk: the major alone, never `154.0.0.0`.
+        assert_eq!(named(Some(edge), edge_ua, &[]).1, "154");
+        // An unreduced `Edg/` token is still used when the disk says nothing.
+        let old_edge_ua =
+            "Mozilla/5.0 (Windows NT 10.0) HeadlessChrome/154.0.0.0 Edg/154.0.4258.37";
+        assert_eq!(named(Some(edge), old_edge_ua, &[]).1, "154.0.4258.37");
+        // Command line unavailable: the user agent still gives Edge away.
+        assert_eq!(named(None, edge_ua, &[]).0, "Microsoft Edge");
+
+        // Chrome's product version is its own; the disk is not consulted.
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        assert_eq!(
+            named(Some(chrome), chrome_ua, &["154.0.8037.58"]),
+            ("Google Chrome".into(), "154.0.8037.92".into())
+        );
+        let brave = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser";
+        assert_eq!(
+            named(Some(brave), chrome_ua, &["154.1.84.12"]),
+            ("Brave".into(), "154.1.84.12".into())
+        );
+        assert_eq!(
+            named(Some("/usr/bin/chromium-browser"), chrome_ua, &[]).0,
+            "Chromium"
+        );
+    }
+
+    /// Both install layouts, built on disk: Windows' version folders beside
+    /// the executable, and a macOS bundle's `Info.plist`.
+    #[test]
+    fn installed_browser_versions_reads_windows_folders_and_macos_plists() {
+        let root = std::env::temp_dir().join(format!(
+            "flowproof-installed-versions-{}",
+            std::process::id()
+        ));
+        let app = root.join("Edge").join("Application");
+        for dir in ["154.0.4258.37", "155.0.4301.2", "SetupMetrics", "1.2.3"] {
+            std::fs::create_dir_all(app.join(dir)).expect("version dir");
+        }
+        std::fs::write(app.join("msedge.exe"), b"").expect("exe");
+        std::fs::write(app.join("9.9.9.9"), b"").expect("a file, not a folder");
+        let mut found = super::installed_browser_versions(&app.join("msedge.exe"));
+        found.sort();
+        assert_eq!(found, vec!["154.0.4258.37", "155.0.4301.2"]);
+
+        let contents = root.join("Brave Browser.app").join("Contents");
+        std::fs::create_dir_all(contents.join("MacOS")).expect("bundle");
+        std::fs::write(
+            contents.join("Info.plist"),
+            "<plist><dict><key>CFBundleName</key><string>Brave</string>\n\
+             <key>CFBundleShortVersionString</key>\n\t<string>154.1.84.12</string></dict></plist>",
+        )
+        .expect("plist");
+        assert_eq!(
+            super::installed_browser_versions(&contents.join("MacOS").join("Brave Browser")),
+            vec!["154.1.84.12"]
+        );
+
+        assert!(
+            super::installed_browser_versions(std::path::Path::new("/nowhere/chrome")).is_empty()
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The headed launch failure must name the display, and must not invent one

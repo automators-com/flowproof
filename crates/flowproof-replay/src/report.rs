@@ -111,6 +111,9 @@ pub struct RunReport {
     /// ranges — the complete step→time mapping, embedded (no sidecar).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<flowproof_driver::Recording>,
+    /// The browser a web flow drove; absent for flows that drove none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<flowproof_driver::BrowserInfo>,
 }
 
 impl RunReport {
@@ -135,6 +138,7 @@ impl RunReport {
             }],
             duration_ms: 0,
             recording: None,
+            browser: None,
         }
     }
 
@@ -169,6 +173,7 @@ impl RunReport {
             }],
             duration_ms,
             recording: None,
+            browser: None,
         }
     }
 
@@ -189,6 +194,7 @@ impl RunReport {
             )],
             duration_ms: 0,
             recording: None,
+            browser: None,
         }
     }
 
@@ -504,6 +510,7 @@ mod tests {
                 },
             ],
             recording: None,
+            browser: None,
         };
         let html = report.to_html();
         assert!(html.contains("Add &lt;two&gt; numbers"));
@@ -537,6 +544,7 @@ mod tests {
                 degraded: true,
             }],
             recording: None,
+            browser: None,
         };
         let html = report.to_html();
         assert!(html.contains("DEGRADED"));
@@ -579,6 +587,7 @@ mod tests {
             duration_ms: 1,
             steps: vec![],
             recording: Some(recording),
+            browser: None,
         };
         let html = report.to_html();
         assert!(html.contains("src=\"recording/recording.gif\""));
@@ -634,6 +643,7 @@ mod tests {
             duration_ms: 300,
             steps: vec![step("s0001"), step("s0002"), step("s0003")],
             recording: Some(recording),
+            browser: None,
         };
         let html = report.to_html();
         assert_eq!(
@@ -659,6 +669,7 @@ mod tests {
             duration_ms: 1,
             steps: vec![],
             recording: None,
+            browser: None,
         };
         let base = std::env::temp_dir().join("flowproof-report-write");
         std::fs::create_dir_all(&base).expect("temp dir");
@@ -667,6 +678,27 @@ mod tests {
         assert!(json_path.with_file_name("report.html").exists());
         assert!(json_path.with_file_name("junit.xml").exists());
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// `browser` is additive: absent when no browser ran, so existing
+    /// readers of `result.json` see exactly what they saw before.
+    #[test]
+    fn browser_is_reported_for_web_runs_and_absent_otherwise() {
+        let mut report = RunReport::errored("x", "boom");
+        let json = serde_json::to_value(&report).expect("serializes");
+        assert!(json.get("browser").is_none(), "{json}");
+
+        report.browser = Some(flowproof_driver::BrowserInfo {
+            name: "Microsoft Edge".into(),
+            version: "131.0.2903.70".into(),
+        });
+        let json = serde_json::to_value(&report).expect("serializes");
+        assert_eq!(
+            json["browser"],
+            serde_json::json!({"name": "Microsoft Edge", "version": "131.0.2903.70"})
+        );
+        let back: RunReport = serde_json::from_value(json).expect("round-trips");
+        assert_eq!(back.browser, report.browser);
     }
 
     fn junit_fixture() -> RunReport {
@@ -709,6 +741,7 @@ mod tests {
                 },
             ],
             recording: None,
+            browser: None,
         }
     }
 
