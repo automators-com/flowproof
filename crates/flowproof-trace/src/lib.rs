@@ -16,6 +16,7 @@ pub mod secret_scan;
 pub mod side_effect;
 pub mod substitution;
 pub mod toolcalls;
+pub mod tosca;
 
 pub use format::{Header, Step, TraceError, TraceLine};
 
