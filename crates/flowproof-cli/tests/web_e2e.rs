@@ -37,6 +37,7 @@ fn records_and_replays_a_browser_flow() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
@@ -121,6 +122,7 @@ fn heal_writes_a_review_page_with_frames_from_both_runs() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: FlowSpec::parse(include_str!("../../../examples/web.flow.yaml"))
@@ -289,6 +291,7 @@ fn secret_reference_types_real_value_but_never_persists_it() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -372,6 +375,7 @@ fn assertions_wait_for_async_page_updates() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -445,6 +449,7 @@ fn idless_page_is_driven_by_placeholder_and_button_text() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -529,6 +534,7 @@ fn assertion_forms_wait_and_verify_on_real_pages() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -634,6 +640,7 @@ fn keyboard_css_targets_and_ordinals_drive_real_pages() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -743,6 +750,7 @@ fn session_seeding_and_navigation_drive_real_pages() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -820,6 +828,7 @@ fn persisted_frames_never_contain_masked_data() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -999,6 +1008,7 @@ fn select_own_text_anchors_and_state_asserts_work() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: FlowSpec::parse(
@@ -1090,6 +1100,7 @@ fn targeted_typing_fills_and_focused_typing_appends() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: FlowSpec::parse(
@@ -1699,6 +1710,7 @@ fn a_navigation_after_a_long_idle_does_not_kill_the_connection() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -1796,6 +1808,7 @@ fn an_element_below_the_fold_is_scrolled_to_rather_than_called_obscured() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -1873,6 +1886,7 @@ fn attribute_style_and_scroll_record_and_replay() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -1966,6 +1980,7 @@ fn a_secret_in_web_surface_text_fails_the_record_and_mints_no_trace() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -2051,6 +2066,7 @@ fn a_clean_web_flow_records_and_replays_with_the_secret_absent() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -2140,6 +2156,7 @@ fn native_dialogs_arm_and_verify() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -2247,6 +2264,7 @@ fn undeclared_dialog_fails_and_does_not_hang() {
             mcp: Vec::new(),
             strict: false,
             control: None,
+            goal: None,
             exports: Default::default(),
             apps: Default::default(),
             // A PLAIN click, no dialog suffix: the dialog is undeclared.
@@ -2492,6 +2510,7 @@ fn the_seed_does_not_follow_a_cross_origin_navigation() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![
@@ -2590,6 +2609,7 @@ fn seeded_fixture_mutation_survives_navigation() {
         mcp: Vec::new(),
         strict: false,
         control: None,
+        goal: None,
         exports: Default::default(),
         apps: Default::default(),
         steps: vec![

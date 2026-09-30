@@ -1126,7 +1126,7 @@ fn frame_miss_detail<D: AppDriver + ?Sized>(driver: &mut D, selector: &UiaSelect
     }
 }
 
-fn target_selector(target: &Target) -> Option<UiaSelector> {
+pub(crate) fn target_selector(target: &Target) -> Option<UiaSelector> {
     match target {
         Target::AutomationId(id) => Some(UiaSelector::automation_id(id.clone())),
         Target::Css(css) => Some(UiaSelector::css(css.clone())),
@@ -1193,7 +1193,7 @@ fn target_selector(target: &Target) -> Option<UiaSelector> {
 
 /// The live-driver selector for an action's target; None for targetless
 /// actions (key press, focused typing) and surface-scoped assertions.
-fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
+pub(crate) fn action_selector(action: &ResolvedAction) -> Option<UiaSelector> {
     let target = match action {
         ResolvedAction::Press { target, .. }
         | ResolvedAction::TypeText { target, .. }
@@ -1361,7 +1361,7 @@ fn names_an_address(text: &str) -> bool {
     text.contains("://") || flowproof_trace::secret::has_refs(text)
 }
 
-fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordError> {
+pub(crate) fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordError> {
     if spec.app.id() == "web" {
         let Some(url) = spec.url.as_deref() else {
             return Ok(flowproof_driver::AppTarget {
@@ -1438,6 +1438,52 @@ fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordE
         });
     }
     resolve_app(spec.app.id()).ok_or_else(|| RecordError::UnknownApp(spec.app.id().to_string()))
+}
+
+/// Stage a single-surface flow's `session:`/`login:`/`mock:`/`browser:`/
+/// `window:` context and launch it — the same seeding `record_steps` does
+/// for a non-multi-surface spec, pulled out so a mode with no `steps:` to
+/// walk (goal-based authoring) still gets a real, faithfully-seeded launch
+/// rather than reimplementing it from scratch.
+///
+/// Deliberately NOT wired into `record_steps` itself: that function also
+/// carries the multi-surface (`apps:`) path, which threads the same
+/// `captures` map through surface activation and the step loop below it.
+/// `goal:` specs are refused at parse time when `apps:` is set
+/// (`FlowSpec::validate_goal`), so this only ever needs the single-surface
+/// half — duplicating that half here is a smaller, lower-risk change than
+/// reshaping `record_steps`'s single/multi branching to share it.
+pub(crate) fn stage_context_and_launch<D: AppDriver>(
+    spec: &FlowSpec,
+    driver: &mut D,
+) -> Result<flowproof_driver::AppTarget, RecordError> {
+    let target = launch_target(spec)?;
+    if let Some(setup) = spec.session.as_ref().and_then(|s| s.inline()) {
+        let (cookies, local_storage) = setup.resolved()?;
+        driver.stage_session(flowproof_driver::WebSession {
+            cookies,
+            local_storage,
+        })?;
+    }
+    if let Some(login) = &spec.login {
+        driver.stage_credentials(login.resolved()?)?;
+    }
+    if !spec.mock.is_empty() {
+        driver.stage_mocks(spec.mock.iter().map(web_mock_from_rule).collect())?;
+    }
+    if let Some(browser) = &spec.browser {
+        if !browser.is_empty() {
+            driver.stage_browser(web_browser_from_setup(browser)?)?;
+        }
+    }
+    driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+    if let Some(config) = spec.window.as_ref().map(|w| w.config()) {
+        if let (Some(w), Some(h)) = (config.width, config.height) {
+            let position = config.x.zip(config.y);
+            driver.set_window_geometry(w, h, position)?;
+        }
+    }
+    Ok(target)
 }
 
 fn driver_key_mod(m: &flowproof_trace::format::KeyModifier) -> flowproof_driver::KeyMod {
@@ -2144,40 +2190,76 @@ fn condition_holds<D: AppDriver>(
     let Some(action) = resolved.first() else {
         return Ok(false);
     };
+    resolved_assertion_holds(driver, action)?.ok_or_else(|| RecordError::AssertMismatch {
+        intent: text.to_string(),
+        expected: "a condition that reads state without waiting: `page [does not] show \
+                   <text>`, `the \"<target>\" shows <text>`, `the \"<target>\" is \
+                   [not] visible`, or `the \"<a>\" is greater/less than the \"<b>\"`"
+            .to_string(),
+        actual: "this assertion form is not usable as a condition".to_string(),
+    })
+}
+
+/// Whether an already-resolved, already-grounded assertion holds against the
+/// live driver right now — a single-shot read, no waiting, no retry (unlike
+/// a step's own execution, which polls until its timeout). Shared by
+/// `condition_holds` (`when:`/`repeat:` guards) and goal-based authoring's
+/// "has the goal been reached yet" check — both ask the same question.
+/// `Ok(None)` means `action` is not one of the assertion kinds this can
+/// answer as a condition; the caller decides what that means for it.
+pub(crate) fn resolved_assertion_holds<D: AppDriver>(
+    driver: &mut D,
+    action: &ResolvedAction,
+) -> Result<Option<bool>, RecordError> {
     match action {
         ResolvedAction::AssertText {
-            target,
-            expected,
-            matcher,
-            ..
+            expected, matcher, ..
         } => {
+            // `target_selector` returns None only for `Target::Surface`
+            // ("the surface is not an element - it resolves via
+            // surface_text", per its own doc comment) - the same case the
+            // live step-execution loop reads via `driver.surface_text()`
+            // instead of a selector. Treating a missing selector here as
+            // "false" (as every other assertion kind safely does) would
+            // make a `page shows`/surface-targeted goal check silently
+            // unreachable, always false regardless of the live page.
             let Some(selector) = action_selector(action) else {
-                return Ok(false);
+                let surface = driver.surface_text()?;
+                return Ok(Some(assert_holds(&surface, expected, *matcher)));
             };
-            let _ = target;
             if !driver.element_exists(&selector)? {
                 // A missing element makes a positive `shows` false and a
                 // negative one true - the same reading replay takes.
-                return Ok(matches!(matcher, TextMatch::NotContains));
+                return Ok(Some(matches!(matcher, TextMatch::NotContains)));
             }
             let actual = driver.read_text(&selector)?;
-            Ok(assert_holds(&actual, expected, *matcher))
+            Ok(Some(assert_holds(&actual, expected, *matcher)))
         }
         ResolvedAction::AssertPresence { present, .. } => {
             let Some(selector) = action_selector(action) else {
-                return Ok(false);
+                return Ok(Some(false));
             };
             let (_, visible) = flowproof_driver::visible_now(driver, &selector)?;
-            Ok(visible == *present)
+            Ok(Some(visible == *present))
         }
-        _ => Err(RecordError::AssertMismatch {
-            intent: text.to_string(),
-            expected: "a condition that reads state without waiting: `page [does not] show \
-                       <text>`, `the \"<target>\" shows <text>`, `the \"<target>\" is \
-                       [not] visible`, or `the \"<a>\" is greater/less than the \"<b>\"`"
-                .to_string(),
-            actual: "this assertion form is not usable as a condition".to_string(),
-        }),
+        ResolvedAction::AssertChecked { checked, .. } => {
+            let Some(selector) = action_selector(action) else {
+                return Ok(Some(false));
+            };
+            if !driver.element_exists(&selector)? {
+                return Ok(Some(false));
+            }
+            Ok(Some(driver.element_checked(&selector)? == Some(*checked)))
+        }
+        ResolvedAction::AssertCount { count, .. } => {
+            let Some(selector) = action_selector(action) else {
+                return Ok(Some(false));
+            };
+            let wanted = *count as usize;
+            let found = flowproof_driver::count_matching(driver, &selector, wanted + 1)?;
+            Ok(Some(found == wanted))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -6070,6 +6152,99 @@ steps:
             other => panic!("expected AssertMismatch, got {other:?}"),
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `resolved_assertion_holds` is the single-shot half of what
+    /// `AssertChecked`/`AssertCount` execution does with a poll loop —
+    /// `when:`/`repeat:` guards and goal-based authoring's "reached yet"
+    /// check both need the single read, never the wait.
+    #[test]
+    fn resolved_assertion_holds_reads_checkbox_state_once() {
+        let checked_action = ResolvedAction::AssertChecked {
+            target: crate::rules::Target::id("tos"),
+            checked: true,
+            timeout_ms: 0,
+        };
+        let mut on = MockAppDriver::new(&["tos"]).with_checkbox("tos", true);
+        assert_eq!(
+            resolved_assertion_holds(&mut on, &checked_action).expect("no driver error"),
+            Some(true)
+        );
+
+        let mut off = MockAppDriver::new(&["tos"]).with_checkbox("tos", false);
+        assert_eq!(
+            resolved_assertion_holds(&mut off, &checked_action).expect("no driver error"),
+            Some(false)
+        );
+
+        let mut absent = MockAppDriver::new(&[]);
+        assert_eq!(
+            resolved_assertion_holds(&mut absent, &checked_action).expect("no driver error"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn resolved_assertion_holds_reads_element_count_once() {
+        let wants_two = ResolvedAction::AssertCount {
+            target: crate::rules::Target::css(".row"),
+            count: 2,
+            timeout_ms: 0,
+        };
+        let mut two = MockAppDriver::new(&[".row"]).with_occurrences(".row", 2);
+        assert_eq!(
+            resolved_assertion_holds(&mut two, &wants_two).expect("no driver error"),
+            Some(true)
+        );
+
+        let mut three = MockAppDriver::new(&[".row"]).with_occurrences(".row", 3);
+        assert_eq!(
+            resolved_assertion_holds(&mut three, &wants_two).expect("no driver error"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn resolved_assertion_holds_defers_unsupported_forms_to_the_caller() {
+        let press = ResolvedAction::Press {
+            target: crate::rules::Target::id("go"),
+            label: "go".into(),
+            dialog: None,
+        };
+        let mut driver = MockAppDriver::new(&["go"]);
+        assert_eq!(
+            resolved_assertion_holds(&mut driver, &press).expect("no driver error"),
+            None
+        );
+    }
+
+    /// `target_selector` returns `None` for `Target::Surface` by design
+    /// ("the surface is not an element"), which the live step-execution
+    /// loop already knows to read via `surface_text()` instead of a
+    /// selector. `resolved_assertion_holds` must make the same distinction:
+    /// a naive `action_selector(action).is_none() => Some(false)` would
+    /// make any surface-targeted assertion always read false, which is
+    /// exactly what silently broke goal-based authoring's own "is the goal
+    /// reached yet" check for a goal like `page shows Hello, Ada` before
+    /// this test was added.
+    #[test]
+    fn resolved_assertion_holds_reads_the_whole_surface_when_the_target_is_surface() {
+        let surface_says_hello = ResolvedAction::AssertText {
+            target: crate::rules::Target::Surface,
+            expected: "Hello".into(),
+            matcher: TextMatch::Contains,
+            timeout_ms: 0,
+        };
+        let mut empty = MockAppDriver::new(&[]).with_surface_text("Greeter");
+        assert_eq!(
+            resolved_assertion_holds(&mut empty, &surface_says_hello).expect("no driver error"),
+            Some(false)
+        );
+        let mut greeted = MockAppDriver::new(&[]).with_surface_text("Hello, Ada!");
+        assert_eq!(
+            resolved_assertion_holds(&mut greeted, &surface_says_hello).expect("no driver error"),
+            Some(true)
+        );
     }
 
     #[test]

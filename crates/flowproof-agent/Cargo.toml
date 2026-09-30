@@ -28,3 +28,6 @@ workspace = true
 # actually puts on the wire is the thing under test, so a mock client would
 # prove nothing about it.
 tiny_http = "0.12"
+# Same version flowproof-driver already pulls for RunRecorder's own frames;
+# only needed here to hand MockAppDriver a real captured frame in tests.
+image = { version = "0.25.10", default-features = false, features = ["png", "gif"] }

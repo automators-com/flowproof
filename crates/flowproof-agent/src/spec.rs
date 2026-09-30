@@ -36,6 +36,8 @@ pub enum SpecError {
     Agent(String),
     #[error("invalid control: {0}")]
     Control(String),
+    #[error("invalid goal: {0}")]
+    Goal(String),
     #[error("invalid drag: {0}")]
     Drag(String),
     #[error("invalid exports: {0}")]
@@ -521,6 +523,15 @@ pub struct FlowSpec {
     /// the trace header at record so the evidence is self-describing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control: Option<flowproof_trace::format::Control>,
+    /// EXPERIMENTAL: the outcome an as-yet-unwritten flow should reach,
+    /// authored by `author-from-goal` instead of a human-written `steps:`
+    /// list. Mutually exclusive with `steps:` — a spec names either the
+    /// path or the destination, never both — and restricted to a
+    /// single-surface flow (`app:`, never `apps:`): nothing here decides
+    /// which surface an autonomous exploration would act on next.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    #[serde(default)]
     pub steps: Vec<SpecStep>,
     /// Values this flow hands to the flows that RUN AFTER it in a suite:
     /// `ENV_NAME -> template`. Templates may carry `${captured.<name>}`
@@ -1051,6 +1062,31 @@ impl FlowSpec {
                 surface.login.as_ref(),
                 surface.connection.as_ref(),
             )?;
+        }
+        Ok(())
+    }
+
+    fn validate_goal(&self) -> Result<(), SpecError> {
+        let Some(goal) = &self.goal else {
+            return Ok(());
+        };
+        let bad = |m: String| Err(SpecError::Goal(m));
+        if !self.steps.is_empty() {
+            return bad(
+                "`goal:` and `steps:` are mutually exclusive — a flow either names \
+                         steps or an outcome, not both"
+                    .into(),
+            );
+        }
+        if !self.apps.is_empty() {
+            return bad(
+                "`goal:` needs a single-surface flow (`app:`); `apps:` has no defined \
+                         answer for which surface an exploration acts on next"
+                    .into(),
+            );
+        }
+        if goal.trim().is_empty() {
+            return bad("`goal:` is present but empty".into());
         }
         Ok(())
     }
@@ -2269,7 +2305,7 @@ impl FlowSpec {
         } else {
             serde_yaml::from_str(yaml)?
         };
-        if spec.steps.is_empty() {
+        if spec.goal.is_none() && spec.steps.is_empty() {
             return Err(SpecError::Empty);
         }
         // Surfaces first: a multi-surface flow should get surface errors,
@@ -2282,6 +2318,7 @@ impl FlowSpec {
         spec.validate_clock()?;
         spec.validate_random()?;
         spec.validate_control()?;
+        spec.validate_goal()?;
         spec.validate_exports()?;
         validate_drags_are_asserted(&spec.steps)?;
         Ok(spec)
@@ -3130,6 +3167,45 @@ order:
     #[test]
     fn rejects_empty_steps() {
         let err = FlowSpec::parse("name: x\napp: calc\nsteps: []\n").expect_err("must fail");
+        assert!(matches!(err, SpecError::Empty));
+    }
+
+    #[test]
+    fn a_spec_may_give_goal_instead_of_steps() {
+        let s = FlowSpec::parse(
+            "name: x\napp: web\nurl: https://example.test\ngoal: the page confirms the order\n",
+        )
+        .expect("parses");
+        assert_eq!(s.goal.as_deref(), Some("the page confirms the order"));
+        assert!(s.steps.is_empty());
+    }
+
+    #[test]
+    fn goal_and_steps_together_are_rejected() {
+        let err =
+            FlowSpec::parse("name: x\napp: calc\ngoal: the display shows 8\nsteps:\n  - Type 5\n")
+                .expect_err("must fail");
+        assert!(matches!(err, SpecError::Goal(m) if m.contains("mutually exclusive")));
+    }
+
+    #[test]
+    fn empty_goal_text_is_rejected() {
+        let err = FlowSpec::parse("name: x\napp: calc\ngoal: \"\"\n").expect_err("must fail");
+        assert!(matches!(err, SpecError::Goal(m) if m.contains("empty")));
+    }
+
+    #[test]
+    fn goal_on_a_multi_surface_flow_is_rejected() {
+        let err = FlowSpec::parse(
+            "name: x\ngoal: something happens\napps:\n  a:\n    app: web\n    url: https://example.test\n",
+        )
+        .expect_err("must fail");
+        assert!(matches!(err, SpecError::Goal(m) if m.contains("single-surface")));
+    }
+
+    #[test]
+    fn a_spec_with_neither_goal_nor_steps_is_still_empty() {
+        let err = FlowSpec::parse("name: x\napp: calc\n").expect_err("must fail");
         assert!(matches!(err, SpecError::Empty));
     }
 }

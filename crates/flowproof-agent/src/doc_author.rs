@@ -329,7 +329,7 @@ pub fn author_from_doc_with_progress(
          # want.",
         opts.doc.display(),
     );
-    let yaml = draft_assembly::assemble(&header, &opts.name, &opts.app, &lines)?;
+    let yaml = draft_assembly::assemble(&header, &opts.name, &opts.app, "", &lines)?;
     std::fs::write(&opts.out, &yaml).map_err(|e| io_err(&opts.out, e))?;
     let values = if values.is_empty() {
         None
@@ -540,7 +540,7 @@ mod tests {
             DraftLine::Action("Go to /nVA01".to_string()),
             DraftLine::Assert("page shows Create Standard Order".to_string()),
         ];
-        let yaml = draft_assembly::assemble("# DRAFT", "n", "sap", &lines).expect("assembles");
+        let yaml = draft_assembly::assemble("# DRAFT", "n", "sap", "", &lines).expect("assembles");
         let spec = crate::FlowSpec::parse(&yaml).expect("draft parses");
         assert!(spec
             .steps
