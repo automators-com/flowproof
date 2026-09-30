@@ -977,6 +977,12 @@ pub trait AppDriver {
         Ok(None)
     }
 
+    /// The browser this driver has launched, for the run report. `None` for
+    /// drivers that drive no browser, or before one has launched.
+    fn browser_info(&mut self) -> Option<BrowserInfo> {
+        None
+    }
+
     /// The date the application itself believes it is, `YYYY-MM-DD`.
     ///
     /// Not the recorder's clock: a flow may pin the browser's, and a form
@@ -1113,6 +1119,17 @@ pub trait AppDriver {
             "{what} is not supported by this driver (web flows only)"
         )))
     }
+}
+
+/// Which browser a web run drove, as the run report states it: `name` is
+/// the product ("Microsoft Edge", "Google Chrome"), `version` its own version
+/// string. A run's outcome can depend on which Chromium it met, and the
+/// machine that picked it (auto-detection, `CHROME`) is not always the one
+/// reading the report.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BrowserInfo {
+    pub name: String,
+    pub version: String,
 }
 
 /// Fully-resolved browser launch/emulation config for the web driver:
@@ -2050,6 +2067,10 @@ impl AppDriver for Box<dyn AppDriver> {
         selector: &UiaSelector,
     ) -> Result<Option<bool>, DriverError> {
         (**self).element_receives_events(selector)
+    }
+
+    fn browser_info(&mut self) -> Option<BrowserInfo> {
+        (**self).browser_info()
     }
 
     fn today(&mut self) -> Result<Option<String>, DriverError> {

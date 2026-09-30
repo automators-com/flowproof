@@ -898,6 +898,47 @@ fn launch_options_for(
         .map_err(|e| AdapterError::Web(format!("building launch options: {e}")))
 }
 
+/// Name the browser a run drove, for the report.
+///
+/// Every Chromium answers `Browser.getVersion` with a `Chrome/…` (or
+/// `HeadlessChrome/…`) product, Edge and Brave included, so the product alone
+/// would report an Edge-only machine as running Chrome — the one thing the
+/// field exists to make visible. The executable name (argv[0] of the browser's
+/// command line) is what tells them apart; the user agent's `Edg/` token is
+/// the fallback when the command line is unavailable, and carries Edge's own
+/// version, which differs from the Chromium one it is built on.
+fn describe_browser(
+    program: Option<&str>,
+    product: &str,
+    user_agent: &str,
+) -> flowproof_driver::BrowserInfo {
+    let file = program
+        .and_then(|p| p.rsplit(['/', '\\']).next())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let edge_version = user_agent
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("Edg/"));
+    let name = if file.contains("edge") || (file.is_empty() && edge_version.is_some()) {
+        "Microsoft Edge"
+    } else if file.contains("brave") {
+        "Brave"
+    } else if file.contains("chromium") {
+        "Chromium"
+    } else {
+        "Google Chrome"
+    };
+    let chromium_version = product.split_once('/').map_or(product, |(_, v)| v);
+    let version = match (name, edge_version) {
+        ("Microsoft Edge", Some(v)) => v,
+        _ => chromium_version,
+    };
+    flowproof_driver::BrowserInfo {
+        name: name.to_string(),
+        version: version.to_string(),
+    }
+}
+
 /// Explain a launch failure that only happens because the window was asked for.
 ///
 /// Measured, not guessed: with `FLOWPROOF_HEADED=1` and no `DISPLAY`, Chromium
@@ -4127,6 +4168,22 @@ impl AppDriver for WebAppDriver {
         Ok(value.value.and_then(|v| v.as_bool()))
     }
 
+    fn browser_info(&mut self) -> Option<flowproof_driver::BrowserInfo> {
+        let tab = self.tab.as_ref()?;
+        let version = tab
+            .call_method(headless_chrome::protocol::cdp::Browser::GetVersion(None))
+            .ok()?;
+        let program = tab
+            .call_method(headless_chrome::protocol::cdp::Browser::GetBrowserCommandLine(None))
+            .ok()
+            .and_then(|line| line.arguments.into_iter().next());
+        Some(describe_browser(
+            program.as_deref(),
+            &version.product,
+            &version.user_agent,
+        ))
+    }
+
     fn today(&mut self) -> Result<Option<String>, DriverError> {
         let value = self
             .tab()?
@@ -5943,6 +6000,43 @@ mod tests {
         assert!(!super::should_share_browser(true, false));
         assert!(!super::should_share_browser(false, true));
         assert!(!super::should_share_browser(true, true));
+    }
+
+    /// Edge and Brave both call themselves Chrome in `getVersion`; the report
+    /// must still say which one ran, with Edge's own version.
+    #[test]
+    fn describe_browser_names_the_executable_not_the_chromium_product() {
+        let edge_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                       (KHTML, like Gecko) HeadlessChrome/131.0.0.0 Safari/537.36 Edg/131.0.2903.70";
+        let chrome_ua = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) \
+                         HeadlessChrome/131.0.6778.85 Safari/537.36";
+        let product = "HeadlessChrome/131.0.6778.85";
+        let named = |program, ua| {
+            let info = super::describe_browser(program, product, ua);
+            (info.name, info.version)
+        };
+
+        let edge = r"C:\Program Files\Microsoft\Edge\Application\msedge.exe";
+        assert_eq!(
+            named(Some(edge), edge_ua),
+            ("Microsoft Edge".into(), "131.0.2903.70".into())
+        );
+        // Command line unavailable: the user agent still gives Edge away.
+        assert_eq!(
+            named(None, edge_ua),
+            ("Microsoft Edge".into(), "131.0.2903.70".into())
+        );
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        assert_eq!(
+            named(Some(chrome), chrome_ua),
+            ("Google Chrome".into(), "131.0.6778.85".into())
+        );
+        let brave = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser";
+        assert_eq!(named(Some(brave), chrome_ua).0, "Brave");
+        assert_eq!(
+            named(Some("/usr/bin/chromium-browser"), chrome_ua).0,
+            "Chromium"
+        );
     }
 
     /// The headed launch failure must name the display, and must not invent one

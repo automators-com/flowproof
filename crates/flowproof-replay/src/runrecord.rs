@@ -440,6 +440,7 @@ mod tests {
             }],
             duration_ms: 1,
             recording: None,
+            browser: None,
         }
     }
 

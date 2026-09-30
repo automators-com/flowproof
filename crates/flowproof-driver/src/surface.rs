@@ -196,6 +196,16 @@ impl AppDriver for SurfaceRegistry {
         Ok(())
     }
 
+    /// Not routed to the active surface: the report asks once, at the end,
+    /// when the active surface may well be SAP. Every surface in one process
+    /// launches the same browser binary, so the first that has one answers.
+    fn browser_info(&mut self) -> Option<crate::BrowserInfo> {
+        self.surfaces
+            .values_mut()
+            .filter_map(|slot| slot.driver.as_mut())
+            .find_map(|driver| driver.browser_info())
+    }
+
     // Every ROUTED method is listed once; the macro writes the identical
     // body for each. A method missing from the list falls back to the
     // trait DEFAULT — the silent hole the Box impl warns about — so keep
@@ -323,6 +333,34 @@ mod tests {
 
     fn no_captures() -> std::collections::HashMap<String, String> {
         std::collections::HashMap::new()
+    }
+
+    /// The report asks once, after the last step, when the active surface
+    /// may be SAP: the browser must come from whichever surface has one.
+    #[test]
+    fn browser_info_comes_from_any_launched_surface_not_the_active_one() {
+        let edge = crate::BrowserInfo {
+            name: "Microsoft Edge".into(),
+            version: "131.0.2903.70".into(),
+        };
+        let reported = edge.clone();
+        let factory: SurfaceFactory = Box::new(move |name| {
+            let mut driver = MockAppDriver::new(&[]);
+            if name == "portal" {
+                driver.browser = Some(reported.clone());
+            }
+            Ok(Box::new(driver))
+        });
+        let mut reg = SurfaceRegistry::new(
+            [target("saplogon.exe"), target("https://portal.test")],
+            factory,
+            Duration::from_millis(10),
+        );
+        assert_eq!(reg.browser_info(), None, "nothing launched yet");
+
+        reg.activate("portal", &no_captures()).expect("portal");
+        reg.activate("gui", &no_captures()).expect("gui");
+        assert_eq!(reg.browser_info(), Some(edge));
     }
 
     /// Launch is lazy and routing follows activation: nothing launches at
