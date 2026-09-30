@@ -6,6 +6,37 @@ together).
 
 ## Unreleased
 
+## 0.23.19
+
+- **`flowproof export` hands a SAP GUI or web recording to Tosca.** A flow
+  recorded in flowproof had no way into Tosca except rewriting it by hand, so
+  the recording stopped being useful the moment a team's regression suite
+  lived there. `flowproof export --format tosca-json` now writes the test-case
+  JSON the Automators Tosca migrator imports, from a trace or a flow spec:
+  transactions become `StartTransaction`, a web flow's URL becomes
+  `NavigateBrowser`, scripting ids become `RelativeId`, DOM ids become
+  `html id`, and checks become `Verify` or `Exist`. A step Tosca cannot
+  express, such as a page-wide text check or a web target with no DOM id, is
+  named on stderr instead of being dropped, so the exported test never
+  quietly checks less than the recording did.
+
+- **`flowproof config sap`/`config fiori` can now clear a stored field, or a
+  whole profile.** Both commands had every setter flag but no way to unset one
+  once stored, so a terminal-only setup (CI, a headless machine) could not
+  decommission a SAP or Fiori password short of hand-editing `config.yaml`.
+  Each field now has a matching `--clear-*` flag, and `--clear-all` removes
+  the whole `sap:`/`fiori:` block in one call. Pairing a clear flag with any
+  setter on the same command is rejected outright, the posture `config ai`'s
+  clear flags already took.
+
+- **`doctor --fiori --json` no longer reports its pre-login caution as a
+  `warn` check.** The heads-up that a real credential is about to be submitted
+  was recorded as a `login` check with status `warn`, so every successful
+  login came back as two `login` entries and anything summarising the report
+  (the desktop app's "passed, with notes" banner) read a clean login as a
+  problem. The caution still prints before the attempt in human output, and
+  `--json` now carries one `login` check, the verdict.
+
 ## 0.23.18
 
 - **A plain step that needed a second screen now ends only when the model says
