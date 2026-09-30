@@ -3,7 +3,8 @@
 //! and turns into Tosca modules and test steps.
 //!
 //! The mapping is deliberately conservative. A step the migrator cannot
-//! express faithfully (a page-wide text check, a visual diff) is left out and
+//! express faithfully (a page-wide text check, a web target with no DOM id)
+//! is left out and
 //! named in [`ToscaExport::warnings`], never guessed at: a Tosca test that
 //! silently checks less than the recording did is worse than one that
 //! visibly has a gap.
@@ -29,19 +30,33 @@ struct Exported {
     action: Value,
 }
 
-/// Convert a SAP GUI trace. Other adapters are an error, not a partial
-/// export.
+/// Convert a single-surface SAP GUI or web trace. Other adapters are an
+/// error, not a partial export.
 pub fn export(header: &Header, steps: &[Step]) -> Result<ToscaExport, String> {
-    if header.app.adapter != Adapter::SapCom {
-        return Err(format!(
-            "Tosca export supports sap traces; this trace uses the {:?} adapter",
-            header.app.adapter
-        ));
-    }
+    let sap = match header.app.adapter {
+        Adapter::SapCom => true,
+        Adapter::Web => false,
+        other => {
+            return Err(format!(
+                "Tosca export supports sap and web traces; this trace uses the {other:?} adapter"
+            ))
+        }
+    };
     let mut warnings = Vec::new();
     let mut out = Vec::new();
-    // Modules are named after the transaction the step ran in.
-    let mut application = "SAP".to_string();
+    let base = header.app.url.clone().unwrap_or_default();
+    // SAP modules are named after the transaction the step ran in, web
+    // modules after the site.
+    let mut application = if sap { "SAP".into() } else { site(header) };
+    if !sap && !base.is_empty() {
+        let open =
+            json!({"name": "Open URL", "keyword": "NavigateBrowser", "value": tosca_value(&base)});
+        out.push(Exported {
+            intent: format!("Open {base}"),
+            keyword: true,
+            action: open,
+        });
+    }
     if steps
         .iter()
         .any(|s| s.repeat.is_some() || !s.guards.is_empty())
@@ -50,11 +65,11 @@ pub fn export(header: &Header, steps: &[Step]) -> Result<ToscaExport, String> {
     }
     for step in steps {
         if let Action::Launch(p) = &step.action {
-            if let Some(url) = p.get("url").and_then(Value::as_str) {
+            if let (true, Some(url)) = (sap, p.get("url").and_then(Value::as_str)) {
                 application = transaction(url);
             }
         }
-        match export_step(step, &application) {
+        match export_step(step, sap, &application, &base) {
             Ok(e) => out.push(e),
             Err(why) => warnings.push(format!(
                 "{} ({}): not exported, {why}",
@@ -94,7 +109,8 @@ fn assemble(actions: Vec<Exported>) -> Vec<Value> {
     steps.into_iter().enumerate().map(step).collect()
 }
 
-fn export_step(step: &Step, application: &str) -> Result<Exported, String> {
+/// `base` is the web flow's URL, which relative `Go to`s resolve against.
+fn export_step(step: &Step, sap: bool, application: &str, base: &str) -> Result<Exported, String> {
     let exported = |keyword, action| Exported {
         intent: step.intent.clone(),
         keyword,
@@ -113,7 +129,14 @@ fn export_step(step: &Step, application: &str) -> Result<Exported, String> {
                 .get("url")
                 .and_then(Value::as_str)
                 .ok_or("a reload has no Tosca keyword")?;
-            return keyword("Start transaction", "StartTransaction", transaction(url));
+            return match sap {
+                true => keyword("Start transaction", "StartTransaction", transaction(url)),
+                false => keyword(
+                    "Open URL",
+                    "NavigateBrowser",
+                    tosca_value(&absolute(base, url)),
+                ),
+            };
         }
         Action::PressKey(p) => {
             let keys = tosca_key(&p.key, p.modifiers.is_empty())
@@ -149,7 +172,10 @@ fn export_step(step: &Step, application: &str) -> Result<Exported, String> {
         }
         other => return Err(format!("{} has no Tosca equivalent", kind(other))),
     };
-    let element = sap_element(&step.selectors, fallback, application)?;
+    let element = match sap {
+        true => sap_element(&step.selectors, fallback, application)?,
+        false => web_element(&step.selectors, fallback, application)?,
+    };
     let mut action = json!({"name": element["name"], "actionmode": mode, "element": element});
     if !value.is_empty() {
         action["value"] = value.into();
@@ -229,6 +255,68 @@ fn sap_element(selectors: &[Selector], fallback: &str, application: &str) -> Res
         "steering_strategy": "SAPGUI_CBTA", "business_type": business_type,
         "interface_type": "GUI", "properties": props,
     }))
+}
+
+fn web_element(selectors: &[Selector], fallback: &str, application: &str) -> Result<Value, String> {
+    let css = payload(selectors, SelectorTier::NativeId, "css");
+    let plain = |i: &&str| {
+        !i.is_empty()
+            && i.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+    };
+    let id = css
+        .and_then(|c| c.strip_prefix('#'))
+        .filter(plain)
+        .ok_or_else(|| match css {
+            Some(css) => format!("css selector {css} is not a plain DOM id"),
+            None => "the web target has no DOM id".to_string(),
+        })?;
+    let business_type = match payload(selectors, SelectorTier::A11y, "role") {
+        Some("textbox" | "searchbox") => "TextBox",
+        Some("button") => "Button",
+        Some("link") => "Link",
+        Some("checkbox") => "CheckBox",
+        Some("combobox") => "ComboBox",
+        Some("radio") => "RadioButton",
+        _ => fallback,
+    };
+    let name = payload(selectors, SelectorTier::A11y, "name")
+        .or_else(|| payload(selectors, SelectorTier::TextAnchor, "text"))
+        .unwrap_or(id);
+    // The page title is not recorded yet, so the module matches any page.
+    Ok(json!({
+        "name": name, "engine": "Html", "application": application, "context": "*",
+        "steering_strategy": "Html_NWBC", "business_type": business_type,
+        "interface_type": "GUI", "properties": [{"name": "html id", "value": id}],
+    }))
+}
+
+/// The host of a web flow's URL, or its name when the URL is a `${VAR}`.
+fn site(header: &Header) -> String {
+    let url = header.app.url.as_deref().unwrap_or_default();
+    let host = url
+        .split("://")
+        .nth(1)
+        .and_then(|r| r.split(['/', ':']).next());
+    match host {
+        Some(h) if !h.is_empty() && !h.contains('$') => h.to_string(),
+        _ => header
+            .spec
+            .as_ref()
+            .map_or("web".into(), |s| s.name.clone()),
+    }
+}
+
+/// Resolve a root-relative `Go to /path` against the flow's URL.
+fn absolute(base: &str, url: &str) -> String {
+    if !url.starts_with('/') {
+        return url.to_string();
+    }
+    let after_scheme = base.find("://").map_or(0, |i| i + 3);
+    let origin = base[after_scheme..]
+        .find('/')
+        .map_or(base.len(), |j| after_scheme + j);
+    format!("{}{url}", &base[..origin])
 }
 
 fn payload<'a>(selectors: &'a [Selector], tier: SelectorTier, key: &str) -> Option<&'a str> {

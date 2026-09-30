@@ -1,8 +1,8 @@
-//! `tosca::export` against a committed SAP trace: the migrator JSON it
-//! produces for a real recording.
+//! `tosca::export` against committed traces: the migrator JSON it produces
+//! for a real SAP and a real web recording.
 
 use flowproof_trace::{tosca, Header, Step, TraceLine};
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn load(rel: &str) -> (Header, Vec<Step>) {
     let path = format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"));
@@ -60,9 +60,41 @@ fn sap_trace_maps_to_transaction_and_relative_id() {
 }
 
 #[test]
+fn web_trace_opens_the_url_and_maps_dom_ids() {
+    let (header, steps) = load("examples/tricentis-insurance-natural.trace.jsonl");
+    let out = tosca::export(&header, &steps).expect("export");
+    let steps = out.testcase["steps"].as_array().expect("array");
+    assert_eq!(steps[0]["actions"][0]["keyword"], "NavigateBrowser");
+    assert_eq!(
+        steps[0]["actions"][0]["value"],
+        "https://sampleapp.tricentis.com/101"
+    );
+
+    let click = &steps[1]["actions"][0];
+    assert_eq!(click["value"], "Click");
+    assert_eq!(click["element"]["engine"], "Html");
+    assert_eq!(click["element"]["application"], "sampleapp.tricentis.com");
+    assert_eq!(click["element"]["steering_strategy"], "Html_NWBC");
+    assert_eq!(
+        click["element"]["properties"],
+        json!([{"name": "html id", "value": "get_truck"}])
+    );
+
+    // One authored step that filled several fields stays one Tosca step.
+    let vehicle = steps
+        .iter()
+        .find(|s| s["name"] == "Fill out all the vehicle data and click next")
+        .expect("vehicle step");
+    assert!(vehicle["actions"].as_array().expect("array").len() > 3);
+
+    let last = &steps[steps.len() - 1]["order"];
+    assert_eq!(last, &Value::String(steps.len().to_string()));
+}
+
+#[test]
 fn non_ui_traces_are_refused() {
     let (mut header, steps) = load("examples/sap/create-order.trace.jsonl");
     header.app.adapter = flowproof_trace::format::Adapter::Api;
     let err = tosca::export(&header, &steps).expect_err("api adapter refused");
-    assert!(err.contains("sap traces"), "{err}");
+    assert!(err.contains("sap and web"), "{err}");
 }
