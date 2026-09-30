@@ -740,6 +740,23 @@ impl headless_chrome::protocol::cdp::types::Method for GetAxNodeAndAncestorsRaw 
 /// practice, but the protocol doesn't promise it), so this is a narrowing
 /// read, not a decode that can fail loudly - an absent or non-string value
 /// just means no accessibility hint for that node, not an error.
+/// What the target is, for `fingerprint` (plans/014): labels, never values.
+/// An input's value, a textarea's content and a select's options are never
+/// read; visible text is read only from controls whose text IS their label.
+const FINGERPRINT_JS: &str = r#"function() {
+    const el = this, tag = el.tagName.toLowerCase(), role = el.getAttribute('role');
+    const kind = tag === 'input'
+        ? 'input[' + (el.getAttribute('type') || 'text').toLowerCase() + ']'
+        : role ? tag + '[role=' + role + ']' : tag;
+    const labelled = ['button', 'a', 'option', 'summary', 'label'].includes(tag)
+        || ['button', 'link', 'tab', 'menuitem', 'option', 'checkbox', 'radio'].includes(role);
+    const label = (el.labels && el.labels[0] && el.labels[0].innerText)
+        || el.getAttribute('aria-label') || el.getAttribute('placeholder')
+        || (labelled ? el.innerText : '') || '';
+    return JSON.stringify({kind, name: el.getAttribute('name') || '',
+        label: label.trim().replace(/\s+/g, ' '), title: document.title, app: location.origin});
+}"#;
+
 fn ax_node_value_string(node: &serde_json::Value, field: &str) -> Option<String> {
     node.get(field)?.get("value")?.as_str().map(str::to_string)
 }
@@ -2961,6 +2978,41 @@ impl AppDriver for WebAppDriver {
     /// container/anchor identity already, not by a single element's
     /// accessible name, so this only applies to a plain css/text locator -
     /// same split `cell_hints`/`scope_hints` make in the other direction.
+    fn fingerprint(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<Option<flowproof_trace::format::Fingerprint>, DriverError> {
+        // The same scope as `a11y_hint`: a cell, container or frame target is
+        // resolved by its own reader, not the plain locator below.
+        if selector.cell.is_some() || selector.scope.is_some() || selector.frame.is_some() {
+            return Ok(None);
+        }
+        let Some(locator) = Self::locator_of(selector) else {
+            return Ok(None);
+        };
+        let Some(element) = self.try_find(&locator)? else {
+            return Ok(None);
+        };
+        // Best-effort: a page that throws here has simply described nothing.
+        let raw = element
+            .call_js_fn(FINGERPRINT_JS, vec![], false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(str::to_owned));
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+        let field = |k: &str| v[k].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+        Ok(Some(flowproof_trace::format::Fingerprint {
+            kind: field("kind"),
+            name: field("name"),
+            label: field("label"),
+            title: field("title"),
+            app: field("app"),
+        }))
+    }
+
     fn a11y_hint(
         &mut self,
         selector: &UiaSelector,

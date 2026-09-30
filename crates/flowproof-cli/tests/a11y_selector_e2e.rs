@@ -70,6 +70,11 @@ fn a_plain_click_records_an_a11y_selector_first() {
     );
     assert_eq!(selectors[0]["payload"]["role"], "button");
     assert_eq!(selectors[0]["payload"]["name"], "Greet");
+    // plans/014: the same step records what the target was.
+    let fingerprint = &press_step["observed"]["fingerprint"];
+    assert_eq!(fingerprint["kind"], "button");
+    assert_eq!(fingerprint["label"], "Greet");
+    assert_eq!(fingerprint["title"], "Greeter");
 
     std::fs::remove_dir_all(&dir).ok();
 }
