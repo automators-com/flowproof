@@ -56,6 +56,29 @@ fn fixture_lines_parse_and_validate() {
     assert_eq!(steps, 6, "fixture should contain six steps");
 }
 
+/// `observed` is closed like the rest of a step: a fingerprint validates and
+/// round-trips, an unknown key inside it does not validate.
+#[test]
+fn observed_fingerprint_validates_and_round_trips() {
+    let validator = validator();
+    let line = r##"{"id":"s0001","intent":"Pick the make","action":{"type":"click","params":{}},"selectors":[{"tier":"native_id","provenance":"web","payload":{"css":"#make"}}],"sync":{"pre":[],"post":[]},"artifacts":{},"observed":{"fingerprint":{"kind":"select","name":"make","label":"Make","title":"Enter Vehicle Data"}}}"##;
+    let raw: serde_json::Value = serde_json::from_str(line).expect("JSON");
+    assert!(
+        validator.validate(&raw).is_ok(),
+        "{:?}",
+        validator.iter_errors(&raw).next()
+    );
+    let parsed = TraceLine::parse(line).expect("parses");
+    assert_eq!(serde_json::to_value(&parsed).expect("serializes"), raw);
+
+    let mut unknown = raw;
+    unknown["observed"]["fingerprint"]["value"] = "4711".into();
+    assert!(
+        validator.validate(&unknown).is_err(),
+        "a value field is not part of the fingerprint"
+    );
+}
+
 #[test]
 fn unsupported_version_is_rejected() {
     let bad = FIXTURE

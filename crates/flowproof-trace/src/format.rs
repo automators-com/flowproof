@@ -354,6 +354,43 @@ pub struct Step {
     /// [`Repeat`]. Absent outside any loop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat: Option<Repeat>,
+    /// What the recorder saw of the target; see [`Observed`]. Absent when
+    /// nothing was observed, and on every trace recorded before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed: Option<Observed>,
+}
+
+/// Record-time evidence about a step's target (plans/014): what the element
+/// WAS, for review, drift warnings and exporters. STRICTLY ADDITIVE and
+/// never a locator - replay does not try it to find anything, so an older
+/// engine that ignores it replays the step exactly as before.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Observed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<Fingerprint>,
+}
+
+/// Labels, never values: every field describes the control, none carries
+/// what it contained. A field holding a resolved `${VAR}` value is refused
+/// at record time rather than stored.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fingerprint {
+    /// Web: tag plus input type or role (`select`, `input[text]`). SAP: the
+    /// control type (`GuiCTextField`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Web: the `name` attribute. SAP: the technical name (`VBAK-AUART`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The accessible name or visible label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Web: the page title. SAP: the active window's caption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Web: the origin. SAP: the transaction code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 /// The `repeat:` block a step was recorded inside. STRICTLY ADDITIVE, like

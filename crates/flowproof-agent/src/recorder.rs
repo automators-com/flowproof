@@ -527,6 +527,54 @@ fn enrich_a11y_hint(step: &mut Step, hints: &flowproof_driver::A11yHints) {
     );
 }
 
+/// Every value a `${VAR}` in this flow resolves to, long enough to scan for.
+/// The spec is where every reference the recorder resolves comes from (steps,
+/// url, login, connection), so reading them here covers all of them without
+/// threading a collector through each call site.
+fn resolved_values(spec: &FlowSpec) -> Vec<String> {
+    let text = serde_json::to_string(spec).unwrap_or_default();
+    let mut values: Vec<String> = flowproof_trace::secret::ref_names(&text)
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .filter(|v| v.chars().count() >= flowproof_trace::secret_scan::MIN_SECRET_LEN)
+        .collect();
+    values.sort();
+    values.dedup();
+    values
+}
+
+/// The longest label or title kept; past it a string is description, not
+/// identity.
+const FINGERPRINT_MAX_CHARS: usize = 80;
+
+/// Labels, never values: a field containing a resolved secret is dropped,
+/// not stored, and the rest are capped. `None` when nothing is left.
+fn observed(
+    mut fingerprint: flowproof_trace::format::Fingerprint,
+    secrets: &[String],
+) -> Option<flowproof_trace::format::Observed> {
+    let fields = [
+        &mut fingerprint.kind,
+        &mut fingerprint.name,
+        &mut fingerprint.label,
+        &mut fingerprint.title,
+        &mut fingerprint.app,
+    ];
+    for field in fields {
+        let leaks = field
+            .as_deref()
+            .is_some_and(|v| secrets.iter().any(|s| v.contains(s.as_str())));
+        if leaks {
+            *field = None;
+        } else if let Some(value) = field {
+            *value = value.chars().take(FINGERPRINT_MAX_CHARS).collect();
+        }
+    }
+    (fingerprint != Default::default()).then_some(flowproof_trace::format::Observed {
+        fingerprint: Some(fingerprint),
+    })
+}
+
 /// Encode a trigger action's optional folded-in dialog into its params bag.
 /// STRICTLY ADDITIVE: with no dialog the bag stays empty, so the action
 /// serializes byte-identically to before the feature (the `dialog` key never
@@ -1108,6 +1156,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
         artifacts: Artifacts::default(),
         guards: Vec::new(),
         repeat: None,
+        observed: None,
     }
 }
 
@@ -2890,6 +2939,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     // as before.
     let leak_assertions = spec.secret_leak_assertions();
     let scan_secrets = !leak_assertions.is_empty();
+    let fingerprint_secrets = resolved_values(spec);
     // Honesty, not a vacuous pass: a flow kind with no readable corpus is
     // refused at execution (the same rule `assert_no_egress` follows), before
     // launching anything, so nothing is minted for a control that cannot be
@@ -3172,6 +3222,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                         artifacts: Default::default(),
                         guards: guards.clone(),
                         repeat: loop_ctx.clone(),
+                        observed: None,
                     });
                     continue;
                 }
@@ -4356,6 +4407,12 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 if let Ok(Some(hints)) = driver.a11y_hint(&uia) {
                     if let Some(step) = steps.last_mut() {
                         enrich_a11y_hint(step, &hints);
+                    }
+                }
+                // What the target was (plans/014), best-effort like the hint.
+                if let Ok(Some(fingerprint)) = driver.fingerprint(&uia) {
+                    if let Some(step) = steps.last_mut() {
+                        step.observed = observed(fingerprint, &fingerprint_secrets);
                     }
                 }
             }
@@ -6621,6 +6678,77 @@ steps:
             steps[0].selectors[0].payload["name"],
             "Please save the document now"
         );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// plans/014: the target's fingerprint lands in `observed`, a field
+    /// holding a resolved `${VAR}` value is refused rather than stored, and
+    /// a target the driver describes nothing of adds no `observed` at all.
+    #[test]
+    fn fingerprints_are_recorded_without_resolved_values() {
+        std::env::set_var("FP_RECORDER_USER", "jdoe-fingerprint");
+        let spec = FlowSpec::parse(
+            "name: Fingerprint\napp: web\nurl: https://example.test\nsteps:\n  \
+             - rules: Type ${FP_RECORDER_USER} into the \"css:#user\" field\n  \
+             - rules: Press the \"css:#go\" button\n  \
+             - rules: Press the \"css:#plain\" button\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["#user", "#go", "#plain"]);
+        let fingerprint =
+            |kind: &str, label: &str, title: &str| flowproof_trace::format::Fingerprint {
+                kind: Some(kind.into()),
+                label: Some(label.into()),
+                title: Some(title.into()),
+                ..Default::default()
+            };
+        let long_label = "Go ".repeat(40);
+        driver.fingerprints.insert(
+            "#user".into(),
+            fingerprint("input[text]", "User", "Hello jdoe-fingerprint"),
+        );
+        driver
+            .fingerprints
+            .insert("#go".into(), fingerprint("button", &long_label, "Sign in"));
+        let out = std::env::temp_dir().join("flowproof-fingerprint.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("records");
+        let trace = std::fs::read_to_string(&out).expect("trace written");
+        assert!(
+            !trace.contains("jdoe-fingerprint"),
+            "a resolved value never reaches the trace"
+        );
+
+        let steps: Vec<Step> = trace
+            .lines()
+            .skip(1)
+            .map(|l| match TraceLine::parse(l).expect("line parses") {
+                TraceLine::Step(step) => step,
+                TraceLine::Header(_) => panic!("one header"),
+            })
+            .collect();
+        let seen = |i: usize| steps[i].observed.clone().and_then(|o| o.fingerprint);
+        let user = seen(0).expect("typed target observed");
+        assert_eq!(user.kind.as_deref(), Some("input[text]"));
+        assert_eq!(user.label.as_deref(), Some("User"));
+        assert_eq!(
+            user.title, None,
+            "the title held the resolved value and was refused"
+        );
+        let go = seen(1).expect("pressed target observed");
+        assert_eq!(
+            go.label.map(|l| l.chars().count()),
+            Some(FINGERPRINT_MAX_CHARS)
+        );
+        assert_eq!(go.title.as_deref(), Some("Sign in"));
+        assert!(
+            steps[2].observed.is_none(),
+            "nothing observed, nothing stored"
+        );
+        assert!(!trace
+            .lines()
+            .nth(3)
+            .expect("third step")
+            .contains("observed"));
         std::fs::remove_file(&out).ok();
     }
 

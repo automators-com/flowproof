@@ -577,6 +577,18 @@ pub trait AppDriver {
         Ok(None)
     }
 
+    /// Record-time description of the just-resolved `selector`: what kind of
+    /// control it is, its name, label and the page or window it sits on
+    /// (plans/014). Evidence, never a locator. Best-effort like `a11y_hint`:
+    /// the default observes nothing, which the recorder treats as "no
+    /// fingerprint", not an error.
+    fn fingerprint(
+        &mut self,
+        _selector: &UiaSelector,
+    ) -> Result<Option<flowproof_trace::format::Fingerprint>, DriverError> {
+        Ok(None)
+    }
+
     /// Read the inner target INSIDE a same-origin iframe. Only the web
     /// adapter implements it; every other surface says so rather than
     /// answering as if the frame were not there, because a default `false`

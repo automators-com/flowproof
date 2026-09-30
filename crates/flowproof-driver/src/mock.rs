@@ -77,6 +77,8 @@ pub struct MockAppDriver {
     pub staged_mocks: Vec<crate::WebMock>,
     /// Source/target pairs passed to `drag`, in order.
     pub dragged: Vec<(String, String)>,
+    /// Fingerprints returned by `fingerprint`, keyed like `disabled`.
+    pub fingerprints: HashMap<String, flowproof_trace::format::Fingerprint>,
     /// Element keys that report as disabled via `element_enabled`.
     pub disabled: Vec<String>,
     /// Scripted text sequences: each `read_text` on the key pops the next
@@ -302,6 +304,14 @@ impl AppDriver for MockAppDriver {
             }
             None => Ok(false),
         }
+    }
+
+    fn fingerprint(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<Option<flowproof_trace::format::Fingerprint>, DriverError> {
+        let key = selector.automation_id.as_ref().or(selector.css.as_ref());
+        Ok(key.and_then(|k| self.fingerprints.get(k).cloned()))
     }
 
     fn element_enabled(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
