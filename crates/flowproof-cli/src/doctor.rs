@@ -66,6 +66,15 @@ impl DoctorReport {
         }
     }
 
+    /// Print a terminal-only line that is not a check: with `--json` it is
+    /// dropped, so a heads-up printed before a step runs cannot read as a
+    /// finding in the structured report.
+    pub fn say(&self, json: bool, message: impl AsRef<str>) {
+        if !json {
+            println!("{}", message.as_ref());
+        }
+    }
+
     pub fn emit(&self, json: bool) -> Result<(), String> {
         if json {
             println!(
@@ -311,10 +320,11 @@ pub fn cmd_doctor_fiori(timeout_secs: u64, json: bool) -> Result<u8, String> {
     if !json {
         println!();
     }
-    report.note(
+    // A heads-up before the attempt, not a finding: the login's own verdict
+    // follows as the `login` check, so a caller reading `--json` gets one
+    // result rather than a standing `warn` beside a passing login.
+    report.say(
         json,
-        "warn",
-        "login",
         format!(
             "attempting a real login as {user} - this submits a real credential to a live system. \
              Never run --fiori from CI or on a loop: a wrong password is a real failed logon."
@@ -540,6 +550,21 @@ mod tests {
         assert_eq!(value["checks"][1]["name"], "api key");
         assert_eq!(value["checks"][1]["status"], "fail");
         assert_eq!(value["checks"][1]["message"], "not configured");
+        Ok(())
+    }
+
+    #[test]
+    fn say_never_adds_a_check() -> Result<(), Box<dyn std::error::Error>> {
+        let mut report = DoctorReport::new("fiori");
+        report.say(true, "attempting a real login as someone");
+        report.say(false, "attempting a real login as someone");
+        report.note(true, "ok", "login", "login succeeded");
+
+        let value: serde_json::Value = serde_json::from_str(&serde_json::to_string(&report)?)?;
+        let checks = value["checks"].as_array().ok_or("checks is not an array")?;
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0]["name"], "login");
+        assert_eq!(checks[0]["status"], "ok");
         Ok(())
     }
 }
