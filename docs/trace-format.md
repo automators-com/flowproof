@@ -312,8 +312,10 @@ already follows.
   active SAP window's caption) and `app` (origin, or transaction code), each
   capped at 80 characters. Labels, never values: a field that contains a
   value one of the flow's `${VAR}` references resolves to is dropped at
-  record time, not stored. Absent when the adapter describes nothing, which
-  is every adapter until it implements the hook. An older engine's `heal`
+  record time, not stored. The web adapter fills it for plain targets (not
+  cells, scoped containers or frames), reading visible text only from
+  controls whose text is their label, never an input's value or a select's
+  options; other adapters leave it absent for now. An older engine's `heal`
   rewrites steps through its own model and drops the field from the steps
   it promotes.
 - `action.type`: one of `launch`, `focus_window`, `click`, `double_click`,
