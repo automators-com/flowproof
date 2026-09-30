@@ -92,6 +92,13 @@ pub struct Cli {
 
 /// Authoring backend selection for record/heal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+enum ExportFormat {
+    /// The Automators Tosca migrator's test-case JSON (`file_format: JSON`).
+    #[default]
+    ToscaJson,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 enum AuthorArg {
     /// Model-ground plain steps; visibly fall back to rules if no model exists.
     #[default]
@@ -517,6 +524,18 @@ enum Command {
         /// drafted step with its kind (action, assert, flagged, out_of_scope).
         #[arg(long)]
         json: bool,
+    },
+    /// Convert a recorded trace to another tool's test format. Steps the
+    /// target cannot express are listed on stderr, never dropped silently.
+    Export {
+        /// Trace file, or a flow spec whose trace `record` wrote.
+        path: PathBuf,
+        /// Target format.
+        #[arg(long, value_enum, default_value_t)]
+        format: ExportFormat,
+        /// Write here instead of stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
     },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
@@ -3413,6 +3432,30 @@ fn cmd_audit_diff(dir: &Path, json: bool, base_id: &str) -> Result<u8, String> {
     })
 }
 
+/// `flowproof export <trace|spec>`: convert a trace to another tool's test
+/// format. Warnings go to stderr so stdout stays a clean document to pipe.
+fn cmd_export(path: &Path, format: ExportFormat, out: Option<&Path>) -> Result<u8, String> {
+    let is_spec = path.extension().is_some_and(|e| e == "yaml" || e == "yml");
+    let trace = if is_spec {
+        default_trace_path(path)
+    } else {
+        path.to_path_buf()
+    };
+    let (header, steps) = flowproof_replay::load_trace(&trace).map_err(|e| e.to_string())?;
+    let ExportFormat::ToscaJson = format;
+    let export = flowproof_trace::tosca::export(&header, &steps)?;
+    for warning in &export.warnings {
+        eprintln!("warning: {warning}");
+    }
+    let rendered = serde_json::to_string_pretty(&export.testcase).map_err(|e| e.to_string())?;
+    match out {
+        Some(out) => std::fs::write(out, rendered + "\n")
+            .map_err(|e| format!("cannot write {}: {e}", out.display()))?,
+        None => println!("{rendered}"),
+    }
+    Ok(EXIT_PASS)
+}
+
 /// `flowproof audit <dir>`: render a suite's control-coverage map by READING
 /// the persisted run record `flowproof run` wrote (never re-replaying). The
 /// latest record by default, a specific one with `--run <id>`, or a cross-run
@@ -4012,6 +4055,7 @@ where
             check,
             json,
         } => cmd_author_from_doc(doc, app, name, out, check, json),
+        Command::Export { path, format, out } => cmd_export(&path, format, out.as_deref()),
         Command::Heal {
             spec,
             trace,
