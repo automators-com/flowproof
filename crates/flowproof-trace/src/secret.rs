@@ -41,6 +41,20 @@ pub fn has_refs(text: &str) -> bool {
     false
 }
 
+/// The names of every `${VAR}` reference in `text`, in order, repeats kept.
+pub fn ref_names(text: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        rest = &rest[start + 2..];
+        if let Some((name, consumed)) = parse_ref(rest) {
+            names.push(name);
+            rest = &rest[consumed..];
+        }
+    }
+    names
+}
+
 /// Resolve every `${VAR}` reference in `text` from the environment.
 /// Fails on the first unset variable — a missing secret must never
 /// silently degrade into typing the literal reference.

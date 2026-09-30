@@ -378,6 +378,10 @@
           "$ref": "#/$defs/repeat",
           "description": "The `repeat:` block this step was recorded inside. Replay re-reads its condition before each pass and re-runs the first recorded pass's steps until it holds, at most `max` times."
         },
+        "observed": {
+          "$ref": "#/$defs/observed",
+          "description": "Record-time evidence about the target (plans/014). Advisory and never a locator: replay does not use it to find anything."
+        },
         "artifacts": {
           "type": "object",
           "additionalProperties": false,
@@ -437,6 +441,27 @@
             "$ref": "#/$defs/selector"
           }
         }
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        }
+      }
+    },
+    "fingerprint": {
+      "type": "object",
+      "description": "What the target was: labels, never values. A field holding a resolved ${VAR} value is refused at record time.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "maxLength": 80 },
+        "name": { "type": "string", "maxLength": 80 },
+        "label": { "type": "string", "maxLength": 80 },
+        "title": { "type": "string", "maxLength": 80 },
+        "app": { "type": "string", "maxLength": 80 }
       }
     },
     "repeat": {

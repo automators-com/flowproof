@@ -302,6 +302,20 @@ already follows.
   app's under replay, not the recording's. Only the outermost `repeat:` is
   carried; a nested one is settled at record time inside the body. Absent
   outside any loop; an engine predating it replays the recorded passes flat.
+- `observed` (optional): what the recorder saw of the step's target, as
+  evidence for review, drift warnings and exporters
+  ([plan 14](../plans/014-element-fingerprint.md)). It is never a locator:
+  replay does not use it to find anything, so an engine predating it replays
+  the step unchanged. Today it carries `fingerprint`, with optional `kind`
+  (web: tag plus input type or role; SAP: control type), `name` (the `name`
+  attribute, or SAP's technical name), `label`, `title` (page title, or the
+  active SAP window's caption) and `app` (origin, or transaction code), each
+  capped at 80 characters. Labels, never values: a field that contains a
+  value one of the flow's `${VAR}` references resolves to is dropped at
+  record time, not stored. Absent when the adapter describes nothing, which
+  is every adapter until it implements the hook. An older engine's `heal`
+  rewrites steps through its own model and drops the field from the steps
+  it promotes.
 - `action.type`: one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`,
   `upload`, `capture`, `capture_download`, `set_checked`, `wait`, `assert`.
