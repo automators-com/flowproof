@@ -939,17 +939,12 @@ fn extra_browser_candidates() -> Vec<std::path::PathBuf> {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn extra_browser_candidates() -> Vec<std::path::PathBuf> {
+    let dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
     ["brave-browser", "brave"]
         .iter()
-        .flat_map(|name| {
-            std::env::var_os("PATH")
-                .map(|path| {
-                    std::env::split_paths(&path)
-                        .map(|dir| dir.join(name))
-                        .collect()
-                })
-                .unwrap_or_else(Vec::new)
-        })
+        .flat_map(|name| dirs.iter().map(move |dir| dir.join(name)))
         .collect()
 }
 
