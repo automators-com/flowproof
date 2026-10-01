@@ -42,6 +42,42 @@ reinterprets model intent. Human output identifies each step's route as
 same per-step routing information for tooling. Consumers should use the
 structured output rather than scraping the display text.
 
+## Draft a flow from a goal
+
+`flowproof author-from-goal` is experimental, and web-only for now (Fiori
+runs through the web driver, so it is covered). Instead of writing `steps:`,
+give the spec a `goal:`, the outcome the flow should prove:
+
+```yaml
+name: Find a product
+app: web
+url: https://shop.example.test
+goal: the results list shows at least one blue kettle
+```
+
+```bash
+flowproof author-from-goal find-product.flow.yaml --budget 20
+```
+
+It explores the live app toward the goal one action at a time, checking
+after each, and writes a DRAFT `.flow.yaml` of the steps that got there,
+ending with the goal as a check. Like `author-from-doc`, it never writes a
+trace: review the draft, then `flowproof record` it.
+
+- `--budget` caps the actions tried (default 40). The outcome is
+  `reached`, `budget-exhausted`, or `no-progress` when the same failure keeps
+  recurring.
+- `--recording-detail` (`full`, `low`, or `off`) controls the recording of
+  the attempt. Unless it is `off`, a GIF of everything tried, including
+  abandoned actions, is always assembled.
+- `--out` names the draft (default: next to the spec, suffixed `.draft`).
+  `--vars` / `--var` supply business data, and `--json` prints the draft,
+  each line's kind, the outcome, and the recording as one JSON object.
+
+Actions that sound destructive or irreversible (delete, place order, pay
+now, approve, sign out and the like) are refused and flagged in the draft
+instead of performed.
+
 ## Find the deterministic grammar
 
 The authoring section is the complete rules grammar. These pages document the
