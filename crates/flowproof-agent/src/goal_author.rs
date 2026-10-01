@@ -134,7 +134,10 @@ pub enum GoalOutcome {
     },
     /// The same failure kept recurring with nothing new to try — treated
     /// like `crate::repair`'s own give-up judgment: more budget would not
-    /// have helped either.
+    /// have helped either. Also how a round the model could not ground
+    /// ends (a check or proposal it could not tie to the screen, or a page
+    /// that reports a problem): the draft and recording so far are still
+    /// written, so the attempt can be watched instead of lost.
     NoProgress {
         actions_tried: usize,
         reason: String,
@@ -217,7 +220,10 @@ pub fn author_from_goal<D: AppDriver, C: ModelClient>(
             today: None,
             page_text: page_text.as_deref(),
         };
-        let (checks, _) = author_checks(client, &check_ctx)?;
+        let (checks, _) = match author_checks(client, &check_ctx) {
+            Ok(found) => found,
+            Err(e) => break stop_or_fail(e, actions_tried)?,
+        };
         if !checks.is_empty()
             && checks
                 .iter()
@@ -248,7 +254,10 @@ pub fn author_from_goal<D: AppDriver, C: ModelClient>(
             today: None,
             page_text: page_text.as_deref(),
         };
-        let candidates = author_steps(client, &propose_ctx)?;
+        let candidates = match author_steps(client, &propose_ctx) {
+            Ok(found) => found,
+            Err(e) => break stop_or_fail(e, actions_tried)?,
+        };
 
         let mut progressed = false;
         let mut round_signature: Option<String> = None;
@@ -294,6 +303,13 @@ pub fn author_from_goal<D: AppDriver, C: ModelClient>(
             last_signature = round_signature;
         }
     };
+
+    // An unreached goal still ends the draft as the check it has to pass,
+    // like a reached one — `record` then proves or fails it. This also
+    // keeps a draft that stopped before any action from being empty.
+    if !matches!(outcome, GoalOutcome::Reached { .. }) {
+        lines.push(DraftLine::Assert(goal.to_string()));
+    }
 
     let recording = recorder.and_then(|r| r.finish_with_driver(driver));
     let recording_dir = recording.as_ref().map(|r| bundle_base.join(&r.dir));
@@ -390,6 +406,19 @@ fn try_action<D: AppDriver>(
 /// Rust's `Debug` only for a genuinely unexpected shape; every action kind
 /// actually seen in practice (an assertion proposed where an action was
 /// asked for, or an action kind this mode doesn't perform) gets real prose.
+/// A model backend that is not configured fails the whole run; anything
+/// else the model could not ground ends exploration as `NoProgress`, so the
+/// partial draft and recording are kept.
+fn stop_or_fail(e: AgentError, actions_tried: usize) -> Result<GoalOutcome, GoalAuthorError> {
+    match e {
+        AgentError::Config(_) => Err(e.into()),
+        e => Ok(GoalOutcome::NoProgress {
+            actions_tried,
+            reason: e.to_string(),
+        }),
+    }
+}
+
 fn describe_action(action: &ResolvedAction) -> String {
     match action {
         ResolvedAction::AssertText { .. }
@@ -647,6 +676,25 @@ mod tests {
             .lines
             .iter()
             .any(|l| matches!(l, DraftLine::Flagged(f) if f.contains("deny-list"))));
+        std::fs::remove_dir_all(result.flow.parent().expect("draft path has a parent")).ok();
+    }
+
+    #[test]
+    fn an_ungroundable_check_ends_as_no_progress_with_the_draft_kept() {
+        let spec = goal_spec("the page confirms greet");
+        let mut driver = MockAppDriver::new(&["go"]);
+        driver.scene = Some(r#"[{"target":"id:go","tag":"button","text":"Go"}]"#.to_string());
+        // The check names a target the screen does not have, on both tries,
+        // so authoring it fails. That must end the exploration, not the run.
+        let missing = r#"{"action":"assert_visible","target":"id:nowhere","present":true}"#;
+        let mut client = Scripted::new(&[missing, missing]);
+        let result = author_from_goal(&spec, &mut driver, &mut client, &opts())
+            .expect("exploration returns a partial draft, not an error");
+        match &result.outcome {
+            GoalOutcome::NoProgress { reason, .. } => assert!(!reason.is_empty()),
+            other => panic!("expected NoProgress, got {other:?}"),
+        }
+        assert!(result.flow.is_file(), "the draft is still written");
         std::fs::remove_dir_all(result.flow.parent().expect("draft path has a parent")).ok();
     }
 
