@@ -7,6 +7,7 @@
 pub mod agent_steps;
 pub mod author;
 pub mod clarify;
+pub mod code_author;
 pub mod doc_author;
 pub mod doc_formats;
 pub mod draft_assembly;
