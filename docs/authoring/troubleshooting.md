@@ -1,6 +1,6 @@
 ---
 title: "When authoring gets stuck"
-description: "What happens when a step cannot be authored, and drafting a spec from a requirement document with author-from-doc."
+description: "What happens when a step cannot be authored, and drafting a spec from a requirement document (author-from-doc) or from the app's code (author-from-code)."
 ---
 
 ## Choose the intended authoring backend
@@ -102,3 +102,34 @@ For tools that call it (the desktop app does), two flags help:
 While drafting, `drafting step N of M` goes to stderr before each model
 call. The model comes from `flowproof config ai` or the usual environment
 variables.
+
+## Drafting a spec from an outcome and the app's code (`author-from-code`)
+
+When nobody has written the steps yet, only the outcome a flow should prove,
+`flowproof author-from-code` drafts them from the app's own source. The code
+already says how the app is navigated: its routes, its link and field labels,
+where a status is rendered. That beats exploring the live app by trial.
+
+```bash
+flowproof author-from-code ~/src/portal/apps/web \
+  --goal "the supplier list shows Acme Metals with status Active" \
+  --name "Find Acme Metals" --url https://portal.example.test --out draft.flow.yaml
+```
+
+- `--goal`: what the flow should prove, as the screen shows it when done.
+- `--url`: the starting address, written into the draft's `url:` field.
+- `--app`: the target app id (default `web`).
+- `--name` and `--out`: as for `author-from-doc`.
+
+Two model calls: the first picks up to 12 files from the repository's list of
+source files, the second drafts steps from those files with line numbers.
+Every step ends up citing the `path:line` it rests on, so you check it against
+the code rather than take it on trust. Dot-files (`.env`, `.git`), dependency
+and build folders, and anything the root `.gitignore` names are never listed,
+read or sent. Anything the code cannot settle, such as sign-in credentials
+or a record that must already exist, is flagged as a `# TODO`, as above.
+
+With `--json`, the report is `flow` and `steps`, each step with `kind`,
+`text`, `observed` for a flagged one, and `source` (`file`, `line`) when the
+model cited a file it was given. `reading <path>` for each picked file, then
+`drafting steps`, go to stderr.
