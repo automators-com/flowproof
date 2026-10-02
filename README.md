@@ -320,6 +320,8 @@ real check, before a flow is written or a key is spent
 `flowproof author-from-doc` is an experimental third path into a flow: draft
 a `.flow.yaml` from a requirement/test-case PDF, then resolve it with one
 live `record` pass ([the authoring grammar](docs/authoring/index.md)).
+`flowproof author-from-code` drafts one from an outcome and the app's source,
+each step citing the line of code it came from.
 
 **Debug what a tool sends**: `flowproof capture` is a byte-fidelity HTTP
 capture endpoint: point a tool-under-test at it and every request is printed
