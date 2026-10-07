@@ -18,7 +18,9 @@ pub mod rules;
 pub mod spec;
 
 pub use clarify::{Clarification, ClarifyStage};
-pub use heal::{heal, heal_fallbacks, heal_with_author, Fallback, HealError, HealReport};
+pub use heal::{
+    heal, heal_fallbacks, heal_with_author, proposed_path, Fallback, HealError, HealReport,
+};
 pub use llm::{HttpModelClient, ModelClient};
 pub use recorder::{
     record, record_incremental, record_incremental_with_options, record_with_author,

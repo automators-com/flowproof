@@ -64,9 +64,18 @@ the trace on its own:
 $ flowproof heal calc.flow.yaml
   [CHANGED] s0002 Press plus (selectors)
 REVIEW: calc.heal.html (before/after with frames)
-PROPOSED: review calc.proposed.jsonl then re-run with --apply
-$ flowproof heal calc.flow.yaml --apply   # explicit opt-in
+PROPOSED: review calc.proposed.jsonl then apply it with --apply-proposal
+$ flowproof heal calc.flow.yaml --apply-proposal   # explicit opt-in
 ```
+
+`--apply-proposal` copies the proposal you reviewed over the trace and removes
+it, without touching the app. `--apply` instead re-records and applies the
+result straight away; since re-authoring can come out differently the second
+time, it is for when you don't need to review first.
+
+Heal re-records the way `record` does, so it takes the same `--vars <file>`,
+`--var KEY=VALUE` (repeatable) and `--headed` / `--headless` flags, and loads
+the flow's sibling `.values.yaml` the same way.
 
 Alongside the machine-readable proposal, heal writes `<name>.heal.html`: a
 self-contained review page with a before/after pair per changed step: the
@@ -87,11 +96,11 @@ needed:
 ```text
 $ flowproof heal calc.flow.yaml --from-run .flowproof/runs/20260924T100048.993Z
   [CHANGED] s0002 Press plus (selectors)
-PROPOSED: review calc.proposed.jsonl then re-run with --apply
+PROPOSED: review calc.proposed.jsonl then apply it with --apply-proposal
 ```
 
 The run must have replayed this trace (`trace_id` must match). `--apply`
-works the same way. `--step <id>` (repeatable) repairs only the steps you
+and `--apply-proposal` work the same way. `--step <id>` (repeatable) repairs only the steps you
 name, so a reviewer can accept some repairs and leave the rest; naming a step
 the run did not reach through a fallback is an error.
 
