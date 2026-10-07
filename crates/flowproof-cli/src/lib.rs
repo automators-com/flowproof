@@ -548,6 +548,22 @@ enum Command {
         /// Replace the trace with the proposal (explicit opt-in).
         #[arg(long)]
         apply: bool,
+        /// Replace the trace with the proposal an earlier heal already wrote,
+        /// without re-recording: applies exactly what was reviewed.
+        #[arg(long, conflicts_with_all = ["apply", "from_run"])]
+        apply_proposal: bool,
+        /// Business-data values file to load before resolving ${VAR}s.
+        #[arg(long, conflicts_with = "from_run")]
+        vars: Option<PathBuf>,
+        /// Business-data override, repeatable as KEY=VALUE.
+        #[arg(long = "var", value_name = "KEY=VALUE", conflicts_with = "from_run")]
+        var: Vec<String>,
+        /// Show Chromium while re-recording.
+        #[arg(long, conflicts_with_all = ["headless", "from_run"])]
+        headed: bool,
+        /// Re-record headless, overriding any ambient FLOWPROOF_HEADED.
+        #[arg(long, conflicts_with = "from_run")]
+        headless: bool,
         /// Emit the heal report as JSON on stdout (for programmatic callers).
         #[arg(long)]
         json: bool,
@@ -3584,13 +3600,16 @@ fn cmd_author_from_doc(
 fn cmd_heal(
     spec_path: &Path,
     trace: Option<PathBuf>,
+    values: ValuesArgs,
     apply: bool,
     json: bool,
     author: AuthorArg,
 ) -> Result<u8, String> {
     // Like record and doctor, heal must see credentials saved by config ai.
     config::seed_env();
-    let spec = FlowSpec::load(spec_path).map_err(|e| e.to_string())?;
+    // Heal re-records, so it resolves the flow exactly as record does:
+    // values, suite context and identity.
+    let (spec, _env_overlay) = load_prepared_spec(spec_path, &values)?;
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
     if author == AuthorArg::Auto
         && spec.has_plain_steps()
@@ -3697,6 +3716,36 @@ fn only_steps(
         .collect())
 }
 
+/// `heal --apply-proposal`: put the proposal an earlier heal wrote in place
+/// of the trace. Re-running heal with `--apply` would record again and could
+/// apply something other than what the reviewer saw.
+fn cmd_heal_apply_proposal(
+    spec_path: &Path,
+    trace: Option<PathBuf>,
+    json: bool,
+) -> Result<u8, String> {
+    let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
+    let proposal = flowproof_agent::proposed_path(&trace_path);
+    if !proposal.is_file() {
+        return Err(format!(
+            "no proposal to apply: {} does not exist; run `flowproof heal` first",
+            proposal.display()
+        ));
+    }
+    std::fs::copy(&proposal, &trace_path).map_err(|e| e.to_string())?;
+    std::fs::remove_file(&proposal).map_err(|e| e.to_string())?;
+    if json {
+        let payload = serde_json::json!({ "applied": true, "trace_path": trace_path });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!("APPLIED: {} updated in place", trace_path.display());
+    }
+    Ok(EXIT_PASS)
+}
+
 /// Apply (when asked) and print a heal report; shared by both heal modes.
 fn finish_heal(
     name: &str,
@@ -3755,7 +3804,7 @@ fn finish_heal(
                 println!("APPLIED: {} updated in place", trace_path.display());
             } else if let Some(proposal) = &report.proposed_path {
                 println!(
-                    "PROPOSED: review {} then re-run with --apply",
+                    "PROPOSED: review {} then apply it with --apply-proposal",
                     proposal.display()
                 );
             }
@@ -4060,13 +4109,25 @@ where
             spec,
             trace,
             apply,
+            apply_proposal,
+            vars,
+            var,
+            headed,
+            headless,
             json,
             author,
             from_run,
             steps,
         } => match from_run {
+            _ if apply_proposal => cmd_heal_apply_proposal(&spec, trace, json),
             Some(run) => cmd_heal_fallbacks(&spec, trace, &run, &steps, apply, json),
-            None => cmd_heal(&spec, trace, apply, json, author),
+            None => with_headed_mode(resolve_headed(headed, headless, false), || {
+                let values = ValuesArgs {
+                    vars_file: vars,
+                    vars: var,
+                };
+                cmd_heal(&spec, trace, values, apply, json, author)
+            }),
         },
         // The stand-in speaks JSON-RPC on stdout, so it must print NOTHING
         // else there; any error goes to stderr and a non-zero exit, which
