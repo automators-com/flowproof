@@ -4,7 +4,7 @@
 //!
 //! Selector mapping: `css` payload key, else `#<automation_id>`. `launch`
 //! interprets `command` as the URL to open. The Chromium binary is found via
-//! the `CHROME` env var or platform auto-detection.
+//! the `CHROME` env var or platform auto-detection ([`find_browser`]).
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -907,12 +907,100 @@ fn launch_options_for(
     options.headless(!headed).sandbox(false);
     options.idle_browser_timeout(BROWSER_IDLE_TIMEOUT);
     options.args(os_args.iter().map(AsRef::as_ref).collect());
-    if let Ok(path) = std::env::var("CHROME") {
-        options.path(Some(path.into()));
-    }
     options
         .build()
         .map_err(|e| AdapterError::Web(format!("building launch options: {e}")))
+}
+
+/// Chromium-family installs that `headless_chrome`'s own auto-detection misses.
+///
+/// Upstream looks on `PATH`, in `/Applications` on macOS, and on Windows in the
+/// registry for Chrome and in one Edge folder, `Program Files (x86)`. A Windows
+/// machine whose only browser is Edge installed anywhere else, a per-user
+/// install on either OS, or Brave, all came back "not found" while a perfectly
+/// drivable browser sat on disk. Chrome is listed first so the preference
+/// upstream expresses (Chrome, then Chromium, then Edge) holds here too.
+#[cfg(windows)]
+fn extra_browser_candidates() -> Vec<std::path::PathBuf> {
+    let roots: Vec<std::path::PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(Into::into)
+        .collect();
+    [
+        r"Google\Chrome\Application\chrome.exe",
+        r"Microsoft\Edge\Application\msedge.exe",
+        r"BraveSoftware\Brave-Browser\Application\brave.exe",
+    ]
+    .iter()
+    .flat_map(|app| roots.iter().map(move |root| root.join(app)))
+    .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn extra_browser_candidates() -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![std::path::PathBuf::from("/Applications")];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.insert(0, std::path::PathBuf::from(home).join("Applications"));
+    }
+    [
+        "Google Chrome.app/Contents/MacOS/Google Chrome",
+        "Chromium.app/Contents/MacOS/Chromium",
+        "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "Brave Browser.app/Contents/MacOS/Brave Browser",
+    ]
+    .iter()
+    .flat_map(|app| dirs.iter().map(move |dir| dir.join(app)))
+    .collect()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn extra_browser_candidates() -> Vec<std::path::PathBuf> {
+    let dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    ["brave-browser", "brave"]
+        .iter()
+        .flat_map(|name| dirs.iter().map(move |dir| dir.join(name)))
+        .collect()
+}
+
+/// Say which browser binary to launch: `CHROME` when set, else upstream
+/// auto-detection, else the first of `extra` that exists.
+///
+/// A `CHROME` that points nowhere is an error rather than a fall-through: the
+/// person set it to pick a browser, and silently launching a different one
+/// would make every later "it behaves differently" report unexplainable.
+///
+/// The not-found message is matched by callers (the desktop app among them) on
+/// its `no supported browser found` prefix; keep that wording stable.
+fn find_browser(
+    chrome_env: Option<std::ffi::OsString>,
+    auto: impl FnOnce() -> Result<std::path::PathBuf, String>,
+    extra: &[std::path::PathBuf],
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Result<std::path::PathBuf, String> {
+    if let Some(path) = chrome_env.filter(|p| !p.is_empty()) {
+        let path = std::path::PathBuf::from(path);
+        return if exists(&path) {
+            Ok(path)
+        } else {
+            Err(format!(
+                "CHROME is set to {}, but there is no file there",
+                path.display()
+            ))
+        };
+    }
+    if let Ok(path) = auto() {
+        return Ok(path);
+    }
+    extra.iter().find(|p| exists(p)).cloned().ok_or_else(|| {
+        "no supported browser found. flowproof drives Chromium-based browsers \
+         (Chrome, Edge, Chromium, Brave) over the DevTools protocol; Safari and \
+         Firefox cannot be driven. Install Chrome or Edge, or set CHROME to the \
+         path of a Chromium-based browser's executable."
+            .to_string()
+    })
 }
 
 /// Explain a launch failure that only happens because the window was asked for.
@@ -1047,12 +1135,20 @@ fn settled_scene(
     }
 }
 
-/// Launch a fresh Chromium (`CHROME` env var overrides the binary), optionally
+/// Launch a fresh Chromium (see [`find_browser`] for which binary), optionally
 /// with extra command-line flags. Headless unless `FLOWPROOF_HEADED` is set.
 fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
     let headed = headed_requested();
+    let path = find_browser(
+        std::env::var_os("CHROME"),
+        headless_chrome::browser::default_executable,
+        &extra_browser_candidates(),
+        std::path::Path::exists,
+    )
+    .map_err(|e| AdapterError::Web(format!("launching browser: {e}")))?;
     let os_args: Vec<std::ffi::OsString> = extra_args.iter().map(Into::into).collect();
-    let options = launch_options_for(&os_args, headed)?;
+    let mut options = launch_options_for(&os_args, headed)?;
+    options.path = Some(path);
     Browser::new(options)
         .map_err(|e| AdapterError::Web(launch_failure_message(&e.to_string(), headed)))
 }
@@ -5995,6 +6091,51 @@ mod tests {
         assert!(!super::should_share_browser(true, false));
         assert!(!super::should_share_browser(false, true));
         assert!(!super::should_share_browser(true, true));
+    }
+
+    /// Which binary gets launched, without touching the real filesystem.
+    #[test]
+    fn find_browser_prefers_chrome_env_then_upstream_then_extra_locations() {
+        use std::path::{Path, PathBuf};
+        let edge = PathBuf::from("C:/Program Files/Microsoft/Edge/Application/msedge.exe");
+        let brave = PathBuf::from("/opt/brave");
+        let extra = [edge.clone(), brave.clone()];
+        let none = || Err::<PathBuf, String>("Could not auto detect a chrome executable".into());
+        let only = |p: &'static str| move |q: &Path| q == Path::new(p);
+
+        // The Windows machine this exists for: only Edge, outside the one
+        // folder upstream checks.
+        let found = super::find_browser(None, none, &extra, |p| p == edge);
+        assert_eq!(found.expect("found"), edge);
+
+        // Upstream still wins when it finds something.
+        let chrome = PathBuf::from("/usr/bin/google-chrome");
+        let found = super::find_browser(None, || Ok(chrome.clone()), &extra, |_| true);
+        assert_eq!(found.expect("found"), chrome);
+
+        // CHROME wins over both, and an empty CHROME counts as unset.
+        let found = super::find_browser(Some("/x/chrome".into()), none, &extra, only("/x/chrome"));
+        assert_eq!(found.expect("found"), PathBuf::from("/x/chrome"));
+        let found = super::find_browser(Some("".into()), none, &extra, |p| p == brave);
+        assert_eq!(found.expect("found"), brave);
+
+        // A CHROME pointing nowhere is named, never silently replaced.
+        let err = super::find_browser(
+            Some("/gone".into()),
+            || Ok(chrome.clone()),
+            &extra,
+            |_| false,
+        )
+        .expect_err("must fail");
+        assert!(err.contains("CHROME") && err.contains("/gone"), "{err}");
+
+        // Nothing anywhere: the stable prefix, the fix, and why Safari won't do.
+        let err = super::find_browser(None, none, &extra, |_| false).expect_err("must fail");
+        assert!(err.starts_with("no supported browser found"), "{err}");
+        assert!(
+            err.contains("set CHROME") && err.contains("Safari"),
+            "{err}"
+        );
     }
 
     /// The headed launch failure must name the display, and must not invent one
