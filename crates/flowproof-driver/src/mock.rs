@@ -48,6 +48,8 @@ pub struct MockAppDriver {
     /// The date the app believes it is, returned by `today` (None = this
     /// driver cannot tell, the trait's default).
     pub today: Option<String>,
+    /// The browser returned by `browser_info` (None = drives no browser).
+    pub browser: Option<crate::BrowserInfo>,
     /// What `occluding_element` names as standing in the way. Only ever
     /// asked about a refused click, so one answer covers the screen. It is
     /// cleared automatically once nothing is obscured any more — the two
@@ -566,6 +568,10 @@ impl AppDriver for MockAppDriver {
             return Ok(Some(next));
         }
         Ok(self.scene.clone())
+    }
+
+    fn browser_info(&mut self) -> Option<crate::BrowserInfo> {
+        self.browser.clone()
     }
 
     fn today(&mut self) -> Result<Option<String>, DriverError> {
