@@ -144,6 +144,16 @@ Each mode reports three numbers: coverage, accuracy by name, and wrong
 clicks. A wrong click is one that lands on a different control, which is
 worse than a miss.
 
+## Open Windows Start
+
+`Press the "Windows Start button" button` detects a four-pane white or blue
+Windows logo in the bottom taskbar on every lookup. Recording saves a semantic
+text anchor; replay finds fresh pixels after resizing or moving the window.
+Missing, damaged, or duplicate logos fail without a guessed click or keyboard
+fallback. The icon's label is excluded from OCR surface-text assertions.
+`Press Meta` (also `Press Win` or `Press Windows`) sends the Windows key;
+whether Citrix forwards that key depends on the client configuration.
+
 ## Know the current limits
 
 Vision flows are Windows-only. They do not yet support visual-template matching
@@ -152,3 +162,8 @@ or OCR-region synchronization conditions. A target inside a scrolling area
 the wheel scrolls the window. And the window has to be on a display that is
 actually repainting: a VM or remote desktop left idle can stop updating its
 screen, and every flow then fails for reasons that have nothing to do with it.
+
+Start recognition is conservative: bottom taskbars, separated panes 3–28 pixels
+wide/high, and gaps 1–6 pixels. Other logos, themes, compressed/occluded glyphs,
+and taskbar positions may be unavailable. Synthetic replay tests cover scale
+and window movement; live Citrix validation requires the separate Windows demo machine.
