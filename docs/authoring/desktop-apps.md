@@ -4,7 +4,8 @@ description: "Mapping an arbitrary Windows app with app: and window: config, inc
 ---
 
 `app:` is normally a registry id (`web`, `calc`, `notepad`, `sap`, `vision`,
-`api`). It also accepts a mapping, which drives any Windows program through
+`api`). `fiori` is accepted as another name for `web`, since a Fiori launchpad
+is a web app; the trace records it as `web`. It also accepts a mapping, which drives any Windows program through
 UI Automation:
 
 ```yaml

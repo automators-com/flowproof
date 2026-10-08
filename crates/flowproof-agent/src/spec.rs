@@ -48,9 +48,11 @@ pub enum SpecError {
 
 /// `app:` is either a registry id (`web`, `calc`, `notepad`, `sap`,
 /// `vision`, `api`) or a Windows launch mapping. The scalar form is what
-/// every existing spec uses and its meaning is unchanged.
+/// every existing spec uses and its meaning is unchanged. `fiori` is read as
+/// `web`: a Fiori launchpad is a web app, and naming it is how flows written
+/// for Fiori (the desktop app writes `app: fiori`) say so.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, from = "AppSpecSource")]
 pub enum AppSpec {
     Id(String),
     /// `app: {command, window_title}` - drive an arbitrary Windows program.
@@ -62,6 +64,33 @@ pub enum AppSpec {
         command: String,
         window_title: String,
     },
+}
+
+/// `app:` as written, before [`AppSpec`] reads `fiori` as `web`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AppSpecSource {
+    Id(String),
+    Launch {
+        command: String,
+        window_title: String,
+    },
+}
+
+impl From<AppSpecSource> for AppSpec {
+    fn from(source: AppSpecSource) -> Self {
+        match source {
+            AppSpecSource::Id(id) if id == "fiori" => AppSpec::Id("web".into()),
+            AppSpecSource::Id(id) => AppSpec::Id(id),
+            AppSpecSource::Launch {
+                command,
+                window_title,
+            } => AppSpec::Launch {
+                command,
+                window_title,
+            },
+        }
+    }
 }
 
 impl Default for AppSpec {
@@ -3149,6 +3178,21 @@ mod app_and_window_tests {
         let s = spec("name: n\napp: calc\nsteps:\n  - Type 5\n").expect("parses");
         assert_eq!(s.app.id(), "calc");
         assert!(s.app.launch_parts().is_none());
+    }
+
+    /// A Fiori launchpad is a web app. The desktop app writes `app: fiori`,
+    /// and the engine used to refuse it as an unknown app, so no Fiori flow
+    /// made there could record (automators-com/flowproof-desktop#168).
+    #[test]
+    fn fiori_is_read_as_web_alone_and_as_a_surface() {
+        let s = spec("name: n\napp: fiori\nurl: https://launchpad.test\nsteps:\n  - Type 5\n")
+            .expect("parses");
+        assert_eq!(s.app.id(), "web");
+        let multi = spec(
+            "name: n\napps:\n  launchpad: {app: fiori, url: https://launchpad.test}\n  gui: {app: sap, connection: QA}\nsteps:\n  - in: launchpad\n    steps:\n      - Type 5\n",
+        )
+        .expect("a Fiori surface takes url: like any web surface");
+        assert_eq!(multi.apps["launchpad"].app.id(), "web");
     }
 
     /// #66: drive an arbitrary Windows program. Both fields keep their
