@@ -8,7 +8,7 @@ pub(super) const LABEL: &str = "Windows Start button";
 fn foreground(p: &image::Rgba<u8>) -> bool {
     let [r, g, b, a] = p.0;
     a >= 200
-        && ((r.min(g).min(b) >= 190 && r.max(g).max(b) - r.min(g).min(b) <= 30)
+        && ((r.min(g).min(b) >= 200 && r.max(g).max(b) - r.min(g).min(b) <= 30)
             || (b >= 120 && b.saturating_sub(r) >= 40 && g.saturating_sub(r) >= 20))
 }
 
@@ -63,26 +63,23 @@ pub(super) fn locate(frame: &RgbaImage) -> Option<PixelRect> {
     }
     let mut candidate = None;
     for &(x, y, w, h) in &panes {
-        let close = |a: i32, b: i32| (a - b).abs() <= 2;
+        let close = |a: i32, b: i32| (a - b).abs() <= (w.max(h) / 4).max(2) as i32;
+        let similar = |a: u32, b: u32| a.abs_diff(b) <= (a.max(b) / 3).max(2);
         let gap = |a: i32, b: i32| (1..=6).contains(&(b - a));
         for &(rx, ry, rw, rh) in &panes {
-            if !gap(x + w as i32, rx) || !close(y, ry) || w.abs_diff(rw) > 4 || h.abs_diff(rh) > 4 {
+            if !gap(x + w as i32, rx) || !close(y, ry) || !similar(w, rw) || !similar(h, rh) {
                 continue;
             }
             for &(bx, by, bw, bh) in &panes {
-                if !close(x, bx)
-                    || !gap(y + h as i32, by)
-                    || w.abs_diff(bw) > 2
-                    || h.abs_diff(bh) > 4
-                {
+                if !close(x, bx) || !gap(y + h as i32, by) || !similar(w, bw) || !similar(h, bh) {
                     continue;
                 }
                 for &(dx, dy, dw, dh) in &panes {
                     if close(rx, dx)
                         && close(by, dy)
                         && gap(ry + rh as i32, dy)
-                        && rw.abs_diff(dw) <= 2
-                        && bh.abs_diff(dh) <= 4
+                        && similar(rw, dw)
+                        && similar(bh, dh)
                     {
                         let rect = (
                             x,

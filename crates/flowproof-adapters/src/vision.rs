@@ -319,6 +319,9 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     }
 
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
+        if selector.name.as_deref().map(str::trim) == Some(start::LABEL) {
+            return Err(DriverError::Uia("vision: the Start icon has no readable text; use a visibility check or check the opened menu".into()));
+        }
         Ok(self.require(selector)?.text)
     }
 
@@ -970,6 +973,34 @@ mod tests {
         assert!(error.to_string().contains("unavailable"));
         assert_eq!(d.scene().expect("vision").as_deref(), Some("[]"));
         assert!(d.screen.clicks.is_empty());
+    }
+
+    #[test]
+    fn field_report_start_glyph_is_recognized_at_multiple_scales() {
+        // Only the unlabeled Windows glyph is retained from the field image.
+        let glyph = image::load_from_memory(include_bytes!("../tests/fixtures/windows-start.png"))
+            .expect("Start glyph fixture")
+            .to_rgba8();
+        for scale in [1, 2, 3] {
+            let glyph = image::imageops::resize(
+                &glyph,
+                glyph.width() * scale,
+                glyph.height() * scale,
+                image::imageops::FilterType::Nearest,
+            );
+            let mut frame =
+                RgbaImage::from_pixel(640 * scale, 360 * scale, image::Rgba([30, 30, 30, 255]));
+            image::imageops::overlay(&mut frame, &glyph, 12 * scale as i64, 330 * scale as i64);
+            let rect = start::locate(&frame).expect("field glyph recognized");
+            assert!(rect.0 >= 12 * scale as i32 && rect.0 < 30 * scale as i32);
+            assert!(rect.1 >= 330 * scale as i32 && rect.1 < 350 * scale as i32);
+            assert!(VisionAppDriver::with_parts(
+                FakeScreen::with_frames(vec![frame]),
+                FakeOcr::default()
+            )
+            .read_text(&anchor(start::LABEL))
+            .is_err());
+        }
     }
 
     #[test]
