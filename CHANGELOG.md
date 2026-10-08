@@ -6,6 +6,55 @@ together).
 
 ## Unreleased
 
+## 0.23.20
+
+- **Draft a flow from an outcome and the app's code.** Exploring a live app
+  toward an outcome means guessing how it is navigated, which is exactly what
+  the app's source already spells out. `flowproof author-from-code <repo>
+  --goal "…"` has a model pick the files that matter (routes, pages, labels,
+  message bundles) and draft steps from them, each citing the `path:line` it
+  rests on, so the draft can be reviewed against the code instead of trusted.
+  Dot-files such as `.env`, dependency folders and anything the root
+  `.gitignore` names are never read or sent; what the code cannot settle, such
+  as sign-in credentials, is flagged rather than guessed. Experimental, and a
+  draft like `author-from-doc`: `flowproof record` still proves it on the live
+  app.
+
+- **`heal` now applies the proposal you reviewed, and re-records with the
+  flow's values.** The only way to apply a heal was `--apply`, which
+  re-records and applies the new result. Re-authoring can come out differently
+  the second time, so what landed in the trace was not always what the
+  reviewer had looked at. `heal --apply-proposal` copies the existing
+  `.proposed.jsonl` over the trace without touching the app, and the PROPOSED
+  hint now points to it. Heal also ignored the flow's values: it had no
+  `--vars`/`--var` and didn't read the sibling `.values.yaml`, so a flow whose
+  URL or data came from `${VAR}`s could not be healed at all. It now loads the
+  flow the same way `record` does (values, suite context, identity) and takes
+  `--headed`/`--headless`.
+
+- **A trace step can now carry what its target was, not just how to find it.**
+  A recording remembered the selector for each step but nothing about the
+  element it resolved to, so a selector that still matched after the element
+  changed meaning replayed green, and a reviewer could not tell a dropdown
+  from a text box. Steps gain an optional `observed.fingerprint` (kind, name,
+  label, page or window title, app), written when an adapter describes its
+  target. It is evidence, never a locator, so every existing trace replays
+  exactly as before, and it holds labels, never values: a field containing a
+  value one of the flow's `${VAR}` references resolves to is dropped at record
+  time rather than stored. The web and SAP adapters fill it in next
+  (plans/014).
+
+- **Web recordings now say what each target was.** A web step recorded its
+  selector and nothing else, so `#make` looked the same in a trace whether it
+  was a dropdown or a text box, and a page's title was known only if a step
+  asserted it. The web adapter now fills `observed.fingerprint` for every
+  plain target: the tag and input type or role, the `name` attribute, the
+  label (a form control's `<label>`, its accessible name or placeholder, or a
+  button's or link's own text), the page title and the origin. It never reads
+  an input's value, a textarea's content or a select's options, so a trace
+  gains a description of the page, not its data. Existing traces are unchanged
+  until re-recorded.
+
 ## 0.23.19
 
 - **`flowproof export` hands a SAP GUI or web recording to Tosca.** A flow
