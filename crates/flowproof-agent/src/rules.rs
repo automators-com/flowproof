@@ -1298,6 +1298,11 @@ fn function_key(key: &str) -> Option<String> {
     (1..=12).contains(&n).then(|| format!("F{n}"))
 }
 
+/// Shared key normalization for rule steps and model-authored key actions.
+pub(crate) fn parse_key_chord(text: &str) -> Option<(String, Vec<KeyModifier>)> {
+    web::parse_key_chord(text)
+}
+
 /// A container must name itself: the bare word `item` (the closed list of
 /// list-ish roles) or an explicit selector. A plain quoted noun cannot -
 /// "the Transaction" is not a thing the DOM knows.
@@ -2575,6 +2580,7 @@ mod web {
         "End",
         "PageUp",
         "PageDown",
+        "Meta",
     ];
 
     fn parse_modifier(word: &str) -> Option<KeyModifier> {
@@ -2594,12 +2600,17 @@ mod web {
     /// Parse `Enter`, `Escape`, `Control+V`, `Alt+Shift+Backspace` into a
     /// canonical key plus modifiers. Returns None for anything that isn't a
     /// key chord, so ordinary sentences never match.
-    fn parse_key_chord(text: &str) -> Option<(String, Vec<KeyModifier>)> {
+    pub(super) fn parse_key_chord(text: &str) -> Option<(String, Vec<KeyModifier>)> {
         let parts: Vec<&str> = text.split('+').map(str::trim).collect();
         if parts.iter().any(|p| p.is_empty()) {
             return None;
         }
         let (key, mod_parts) = parts.split_last()?;
+        let key = if key.eq_ignore_ascii_case("win") || key.eq_ignore_ascii_case("windows") {
+            &"Meta"
+        } else {
+            key
+        };
         let mut modifiers = Vec::with_capacity(mod_parts.len());
         for part in mod_parts {
             modifiers.push(parse_modifier(part)?);
