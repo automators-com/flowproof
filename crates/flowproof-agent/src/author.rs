@@ -735,10 +735,15 @@ fn ground_one(
             .key
             .filter(|key| !key.trim().is_empty())
             .ok_or("press_key needs a non-empty 'key'")?;
-        return Ok(vec![ResolvedAction::PressKey {
-            key,
-            modifiers: Vec::new(),
-        }]);
+        let key = key.trim();
+        let (key, modifiers) = crate::rules::parse_key_chord(key)
+            // Models may press a bare character; rule grammar uses Type for that.
+            .or_else(|| {
+                (key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric())
+                    .then(|| (key.to_ascii_lowercase(), Vec::new()))
+            })
+            .ok_or_else(|| GroundingError::Rejected(format!("invalid key chord: {key}")))?;
+        return Ok(vec![ResolvedAction::PressKey { key, modifiers }]);
     }
 
     let token = authored.target.trim();
@@ -1375,6 +1380,54 @@ pub fn author_step<C: ModelClient>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_key_chords_are_split_before_they_reach_native_input() {
+        use flowproof_trace::format::KeyModifier;
+        for (chord, key, modifiers) in [
+            ("Control+l", "l", vec![KeyModifier::Ctrl]),
+            (
+                "Ctrl+Shift+L",
+                "l",
+                vec![KeyModifier::Ctrl, KeyModifier::Shift],
+            ),
+            ("Alt+F4", "F4", vec![KeyModifier::Alt]),
+            ("Meta", "Meta", vec![]),
+            ("Win", "Meta", vec![]),
+            ("Windows", "Meta", vec![]),
+            ("L", "l", vec![]),
+        ] {
+            let actions = ground_one(
+                serde_json::json!({"action":"press_key", "key":chord}),
+                &[],
+                "[]",
+                "vision",
+                "Focus the address bar",
+                &[],
+                &mut std::collections::BTreeSet::new(),
+            )
+            .expect("valid key chord");
+            assert_eq!(
+                actions,
+                vec![ResolvedAction::PressKey {
+                    key: key.into(),
+                    modifiers
+                }]
+            );
+        }
+        for invalid in ["Hyper+l", "Control+", "the \"Delete\" button"] {
+            assert!(ground_one(
+                serde_json::json!({"action":"press_key", "key":invalid}),
+                &[],
+                "[]",
+                "vision",
+                "Focus the address bar",
+                &[],
+                &mut std::collections::BTreeSet::new()
+            )
+            .is_err());
+        }
+    }
+
     #[test]
     fn the_blank_start_page_is_named_as_intentional() {
         let ctx = |url| AuthorContext {
