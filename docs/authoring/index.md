@@ -59,20 +59,24 @@ goal: the results list shows at least one blue kettle
 flowproof author-from-goal find-product.flow.yaml --budget 20
 ```
 
-It explores the live app toward the goal one action at a time, checking
-after each, and writes a DRAFT `.flow.yaml` of the steps that got there,
-ending with the goal as a check. Like `author-from-doc`, it never writes a
-trace: review the draft, then `flowproof record` it.
+It needs a model backend (`flowproof config ai`). It explores the live app
+toward the goal in rounds: each round checks whether the goal holds, and if
+not, asks the model for the next action (or a short sequence of them) and
+performs it. It writes a DRAFT `.flow.yaml` of the steps it took. Only when
+the goal is reached does the draft end with the goal as a check; otherwise
+the draft stops where exploration did. Like `author-from-doc`, it never
+writes a trace: review the draft, then `flowproof record` it.
 
-- `--budget` caps the actions tried (default 40). The outcome is
-  `reached`, `budget-exhausted`, or `no-progress` when the same failure keeps
-  recurring.
+- `--budget` caps the actions tried (default 40), counting refused actions
+  as well as performed ones. The outcome is `reached`, `budget-exhausted`, or
+  `no-progress` when the same failure keeps recurring.
 - `--recording-detail` (`full`, `low`, or `off`) controls the recording of
-  the attempt. Unless it is `off`, a GIF of everything tried, including
-  abandoned actions, is always assembled.
+  the attempt, saved under `.flowproof/explorations/` next to the draft.
+  Unless it is `off`, a GIF of everything tried, including abandoned
+  actions, is always assembled.
 - `--out` names the draft (default: next to the spec, suffixed `.draft`).
-  `--vars` / `--var` supply business data, and `--json` prints the draft,
-  each line's kind, the outcome, and the recording as one JSON object.
+  `--vars` / `--var` supply business data, and `--json` prints the draft's
+  path, each line's kind, the outcome, and the recording as one JSON object.
 
 Actions that sound destructive or irreversible (delete, place order, pay
 now, approve, sign out and the like) are refused and flagged in the draft
