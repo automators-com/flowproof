@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use flowproof_agent::FlowSpec;
+use flowproof_agent::{code_author, FlowSpec};
 use flowproof_driver::{AppDriver, UiaAppDriver};
 use flowproof_replay::StepStatus;
 
@@ -536,6 +536,31 @@ enum Command {
         /// Write here instead of stdout.
         #[arg(short, long)]
         out: Option<PathBuf>,
+    },
+    /// EXPERIMENTAL: draft a `.flow.yaml` that reaches a stated outcome,
+    /// from the app's own source code. DRAFT only: each step cites the
+    /// line it came from, and a live `record` pass still proves it.
+    AuthorFromCode {
+        /// The app's source checkout (or the folder the app lives in).
+        repo: PathBuf,
+        /// What the flow should prove, e.g. "the order is confirmed with a number".
+        #[arg(long)]
+        goal: String,
+        /// Target app id (e.g. web, fiori).
+        #[arg(long, default_value = "web")]
+        app: String,
+        /// Flow name, written into the draft's `name:` field.
+        #[arg(long)]
+        name: String,
+        /// Starting address, written into the draft's `url:` field.
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Print the result as one JSON object: the file written and every
+        /// drafted step with its kind and the source line it rests on.
+        #[arg(long)]
+        json: bool,
     },
     /// Re-author the flow against the live app and propose a reviewable
     /// trace diff. Never modifies the trace unless --apply is passed.
@@ -3597,6 +3622,50 @@ fn cmd_author_from_doc(
     Ok(EXIT_PASS)
 }
 
+fn cmd_author_from_code(opts: code_author::CodeAuthorOptions, json: bool) -> Result<u8, String> {
+    use flowproof_agent::draft_assembly::DraftLine;
+    // Like record and heal, drafting must see credentials saved by config ai.
+    config::seed_env();
+    let result = code_author::author_from_code_with_progress(&opts, &mut |event| match event {
+        code_author::CodeAuthorEvent::Reading(file) => eprintln!("reading {file}"),
+        code_author::CodeAuthorEvent::Drafting => eprintln!("drafting steps"),
+    })
+    .map_err(|e| e.to_string())?;
+    if !json {
+        println!(
+            "draft spec written to {} - DRAFT; review every step against the code it \
+             cites (a flagged one needs you or the live app), then `flowproof record`",
+            result.flow.display()
+        );
+        return Ok(EXIT_PASS);
+    }
+    let steps: Vec<_> = result
+        .lines
+        .iter()
+        .map(|l| {
+            let kind = match &l.line {
+                DraftLine::Action(_) => "action",
+                DraftLine::Assert(_) => "assert",
+                DraftLine::Flagged(_) => "flagged",
+                DraftLine::OutOfScope(_) => "out_of_scope",
+            };
+            let mut step = serde_json::json!({ "kind": kind, "text": l.line.step_text() });
+            if let DraftLine::Flagged(observed) | DraftLine::OutOfScope(observed) = &l.line {
+                step["observed"] = observed.clone().into();
+            }
+            if let Some(src) = &l.source {
+                step["source"] = serde_json::json!({ "file": src.file, "line": src.line });
+            }
+            step
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::json!({ "flow": result.flow, "steps": steps })
+    );
+    Ok(EXIT_PASS)
+}
+
 fn cmd_heal(
     spec_path: &Path,
     trace: Option<PathBuf>,
@@ -4104,6 +4173,22 @@ where
             check,
             json,
         } => cmd_author_from_doc(doc, app, name, out, check, json),
+        Command::AuthorFromCode {
+            repo,
+            goal,
+            app,
+            name,
+            url,
+            out,
+            json,
+        } => cmd_author_from_code(code_author::CodeAuthorOptions {
+            repo,
+            goal,
+            app,
+            name,
+            url,
+            out,
+        }, json),
         Command::Export { path, format, out } => cmd_export(&path, format, out.as_deref()),
         Command::Heal {
             spec,
