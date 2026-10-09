@@ -2566,6 +2566,7 @@ mod web {
         "Backspace",
         "Delete",
         "Space",
+        "Meta",
         "ArrowUp",
         "ArrowDown",
         "ArrowLeft",
@@ -2603,6 +2604,11 @@ mod web {
         for part in mod_parts {
             modifiers.push(parse_modifier(part)?);
         }
+        let key = if key.eq_ignore_ascii_case("win") || key.eq_ignore_ascii_case("windows") {
+            &"Meta"
+        } else {
+            key
+        };
         if let Some(named) = NAMED_KEYS.iter().find(|k| k.eq_ignore_ascii_case(key)) {
             return Some(((*named).to_string(), modifiers));
         }
@@ -3871,6 +3877,18 @@ mod tests {
             assert!(
                 err.to_string().contains("app under test"),
                 "the reason must be stated for '{step}': {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_key_aliases_resolve_to_meta() {
+        for key in ["Meta", "Win", "Windows"] {
+            let actions =
+                resolve_step("vision", &SpecStep::Plain(format!("Press {key}"))).expect("key");
+            assert!(
+                matches!(&actions[..], [ResolvedAction::PressKey { key, modifiers }]
+                if key == "Meta" && modifiers.is_empty())
             );
         }
     }
