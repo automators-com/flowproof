@@ -60,6 +60,11 @@ so the passes are not just the assertions matching the page's code samples.
 The morning's run had 0 of 6. The type flow now stops honestly at finding 17
 (fixed since) instead of passing falsely.
 
+Second live run (12 October, evening, all five PRs built together): the
+double-click visibly works (finding 15), scroll-to-bottom records and replays,
+and the type flow's green replay is a FALSE pass (finding 18) - so the honest
+count of proven flows is still two plus scroll-to-bottom.
+
 ## Findings
 
 | # | Area | Symptom | Cause | Status |
@@ -81,6 +86,9 @@ The morning's run had 0 of 6. The type flow now stops honestly at finding 17
 | 15 | actions | double-click and checkbox steps fail: "double-click is not supported by this driver"; "no actionable checkbox" | `VisionAppDriver` implements neither `double_click` nor `set_checked`, and vision scene entries carry no checkbox role | double-click and right-click **fixed** — #705. Checkboxes **need a decision** (see Open questions) |
 | 16 | grounding | `Press the "Submit" button` authored no action | not yet diagnosed — needs the `record --json` inventory from a live run | open |
 | 17 | clearing | after a recorded Clear, the field still held its old value and the next step stopped on it | a clear is recorded as `type_text("")` with replace; vision select-all'd and typed nothing | **fixed** — #702: typing nothing deletes the selection |
+| 18 | false pass (again) | the type flow REPLAYED green, but its final frame shows the email field empty under Edge's autofill popup | the clear worked; the second value never landed (typed while the autofill popup held focus); `page shows slow.typing@email.com` matched the page's code sample | confirmed. This is finding 13 hiding a real failure — the "already held before the step" guard is now the most important open fix |
+| 19 | deterministic steps sent to the model | after a double-click that visibly worked (input revealed and focused), `Type Zebra42` was refused ("previous step left a problem") or looped ("asked for another screen" 3 times) | under `--author auto` with a model configured, every plain step is model-authored, even one the grammar resolves exactly (bare `Type X` is `TypeFocused`); on vision the model sees only OCR text and second-guesses it | confirmed. Proposal: prefer the deterministic grammar when it resolves a plain step completely, at least on `app: vision` |
+| 20 | nested scrolling | `Scroll "I'm Here" into view` — the target is in a small scrolling box inside the page | the wheel is turned over the window centre, which scrolls the page, never an inner container | confirmed, not fixed; inner scroll areas are common in Citrix grids |
 
 ## Notes for merging
 
