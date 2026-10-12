@@ -58,9 +58,9 @@ each failure is the engine's own.
 | 2 | keyboard | (expected under Citrix/RDP) typed text and key presses do not arrive in the remote session | `backend.rs` sends text as `KEYEVENTF_UNICODE` packets and keys as virtual-key codes with `wScan: 0`. Citrix and RDP clients forward keyboard input by scan code, so both are candidates for being dropped. Locally, typing works | suspected from code; Phase 2 |
 | 3 | multi-monitor | (expected) a client window on a second monitor is captured and clicked wrongly | `gdi::capture_screen` captures the primary screen only; `frame()` clamps negative window origins to 0 while `click()` does not, so capture and click disagree; mouse normalisation covers the primary screen only | suspected from code |
 | 4 | display scaling | (expected) at 125%/150% scaling, capture, window rect and click coordinates disagree | no DPI awareness is declared anywhere in the driver or the binary | suspected from code |
-| 5 | authoring | every model-authored `rule_step` on `app: vision` (clear, check, select, hover) is rejected: "target `Text("text:…")` is not one of the listed scene targets", although that exact token is listed | the prompt tells the model to copy scene tokens into quotes; a vision scene lists only `text:` tokens; `rules::target_from_label` unwraps `css:` and `id:` but not `text:` | **fixed on branch, test written; not yet compiled** (no disk) |
-| 6 | assertions | `page shows Hello, Ada` fails against a page showing `Hello, Ada!` | `text_matches` is exact substring plus a case fallback; OCR drops and misreads punctuation (`,` dropped, `!` → `l`), and a Citrix stream's compression will make it worse | confirmed; fix designed: a vision-only, widening-only rung ignoring punctuation at word edges (never inside a token, so `$10.00` cannot match `$1000`) |
-| 7 | scrolling | any target below the fold is "not present on the current screen"; 5 of 6 kitchensink flows fail on it | `VisionAppDriver::resolve` OCRs one frame of the visible window and never scrolls; the input layer has no wheel event at all | confirmed; the largest gap. Needs a wheel `InputEvent`, scroll-and-search in `resolve`, and the same search at replay |
+| 5 | authoring | every model-authored `rule_step` on `app: vision` (clear, check, select, hover) is rejected: "target `Text("text:…")` is not one of the listed scene targets", although that exact token is listed | the prompt tells the model to copy scene tokens into quotes; a vision scene lists only `text:` tokens; `rules::target_from_label` unwraps `css:` and `id:` but not `text:` | **fixed** — this branch, test `rule_step_grounds_a_quoted_text_token_from_a_vision_scene` |
+| 6 | assertions | `page shows Hello, Ada` fails against a page showing `Hello, Ada!` | `text_matches` is exact substring plus a case fallback; OCR drops and misreads punctuation (`,` dropped, `!` → `l`), and a Citrix stream's compression will make it worse | **fixed** — branch `vision-hardening/ocr-text`: `AppDriver::reads_text_by_ocr` plus a widening-only rung ignoring punctuation at word edges, never inside a token |
+| 7 | scrolling | any target below the fold is "not present on the current screen"; 5 of 6 kitchensink flows fail on it | `VisionAppDriver::resolve` OCRs one frame of the visible window and never scrolls; the input layer has no wheel event at all | **fixed** — branch `vision-hardening/scroll`: a wheel `InputEvent`; actions search down then up a page at a time; existence checks never scroll |
 | 8 | repair | (a) a stale browser notification read as "the browser crashed"; (b) repair **rewrote the flow's assertion** from `Hello, Ada` (correct) to `Hello Ada!`, from OCR noise | the repair agent sees only OCR text, and is permitted to edit an assertion's expected value | confirmed. (b) is a product decision — whether repair may ever change what an assertion expects — not changed here |
 | 9 | error text | "the previous step left a problem behind" on the FIRST step of a flow | the message assumes a prior step | confirmed, cosmetic |
 
@@ -70,7 +70,9 @@ each failure is the engine's own.
   under 1 GB free, and 4 GB of RAM grows the page file into whatever space
   appears; a guarded test build of one crate fell to 247 MB free within a
   minute. Builds need a larger disk (30 GB added is comfortable) or another
-  machine — CI, or a cloud session.
+  machine. Clearing the Visual Studio installer's package cache freed 6.2 GB,
+  enough for single-crate test builds with debug info off; full builds are
+  left to CI.
 
 ## Open questions
 
