@@ -20,7 +20,7 @@
 
 use std::time::Duration;
 
-use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector};
+use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector};
 use image::RgbaImage;
 
 /// One recognized word, in window-relative pixel coordinates. Words are
@@ -128,6 +128,9 @@ pub trait VisionScreen {
     fn type_text(&mut self, text: &str) -> Result<(), DriverError>;
     /// Press a key chord (canonical key names, e.g. `Enter`, `F5`, `a`).
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError>;
+    /// Turn the mouse wheel over the window by `notches` (negative scrolls
+    /// the view down) and let the frame settle.
+    fn scroll(&mut self, notches: i32) -> Result<(), DriverError>;
     /// Screen origin of the attached window, for absolute-coordinate
     /// artifacts (element rects in recordings).
     fn window_origin(&mut self) -> Result<(i32, i32), DriverError>;
@@ -139,6 +142,17 @@ pub trait VisionScreen {
 /// multiple of the label's own height — scale-invariant and inside the
 /// input box on typical form layouts.
 const RIGHT_OF_GAP_FACTOR: u32 = 1;
+
+/// Wheel notches per search step. A browser scrolls about 100px a notch,
+/// so five move well under one screen of a maximized window and
+/// consecutive frames overlap: a line straddling the fold is read whole in
+/// one of them.
+const SCROLL_NOTCHES_PER_PAGE: i32 = 5;
+
+/// Search steps per direction before giving up. Bounds the cost of a
+/// target that is not on the page at all, and of OCR noise that keeps an
+/// edge from ever reading as "no change".
+const MAX_SCROLL_PAGES: usize = 20;
 
 /// `AppDriver` over frames + OCR + injected input.
 pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
@@ -173,22 +187,81 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// tier that has matches but not an `nth`th one falls through to the
     /// next, which is how line-then-prefix already behaved.
     fn resolve(&mut self, selector: &UiaSelector) -> Result<Option<OcrHit>, DriverError> {
-        let Some(needle) = selector.name.as_deref().map(str::trim) else {
-            return Ok(None);
-        };
-        if needle.is_empty() {
-            return Ok(None);
-        }
         let lines = self.lines()?;
+        Ok(Self::resolve_in(&lines, selector))
+    }
+
+    fn resolve_in(lines: &[OcrLine], selector: &UiaSelector) -> Option<OcrHit> {
+        let needle = selector.name.as_deref().map(str::trim)?;
+        if needle.is_empty() {
+            return None;
+        }
         let nth = selector.nth.unwrap_or(1).max(1) as usize;
         for tier in [Self::exact_lines, Self::exact_words, Self::prefix_lines] {
-            let mut hits = tier(&lines, needle);
+            let mut hits = tier(lines, needle);
             hits.sort_by_key(|h| h.order);
             if let Some(hit) = hits.into_iter().nth(nth - 1) {
-                return Ok(Some(hit));
+                return Some(hit);
+            }
+        }
+        None
+    }
+
+    /// [`Self::resolve`], but a target that is not on screen is looked for
+    /// by scrolling: down a page at a time to the bottom, then up to the
+    /// top. A web driver scrolls an element into view before acting on it;
+    /// pixels have no element to scroll to, so the only way to find text
+    /// below the fold is to bring it into the frame and read again. Without
+    /// this, every field below the first screen of a long form was "not on
+    /// the current screen" (plan 15, finding 7).
+    ///
+    /// Deterministic for replay: a replay starts from the same page state
+    /// the recording did and runs the same search, so it stops at the same
+    /// scroll position. An edge is detected by the OCR'd text not changing
+    /// across a scroll, and [`MAX_SCROLL_PAGES`] bounds the search when OCR
+    /// noise keeps two frames of one position from reading identically.
+    ///
+    /// Only actions search. `element_exists` stays a pure read of the
+    /// current frame, because it is what auto-wait polls: a poll that
+    /// scrolled would move the page on every tick.
+    fn resolve_scrolling(&mut self, selector: &UiaSelector) -> Result<Option<OcrHit>, DriverError> {
+        let mut lines = self.lines()?;
+        if let Some(hit) = Self::resolve_in(&lines, selector) {
+            return Ok(Some(hit));
+        }
+        for notches in [-SCROLL_NOTCHES_PER_PAGE, SCROLL_NOTCHES_PER_PAGE] {
+            for _ in 0..MAX_SCROLL_PAGES {
+                self.screen.scroll(notches)?;
+                let next = self.lines()?;
+                if let Some(hit) = Self::resolve_in(&next, selector) {
+                    return Ok(Some(hit));
+                }
+                let edge = Self::same_text(&next, &lines);
+                lines = next;
+                if edge {
+                    break;
+                }
             }
         }
         Ok(None)
+    }
+
+    /// Scroll one way until the view stops moving (or the page bound).
+    fn scroll_to_edge(&mut self, notches: i32) -> Result<(), DriverError> {
+        let mut lines = self.lines()?;
+        for _ in 0..MAX_SCROLL_PAGES {
+            self.screen.scroll(notches)?;
+            let next = self.lines()?;
+            if Self::same_text(&next, &lines) {
+                return Ok(());
+            }
+            lines = next;
+        }
+        Ok(())
+    }
+
+    fn same_text(a: &[OcrLine], b: &[OcrLine]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.text == y.text)
     }
 
     fn exact_lines(lines: &[OcrLine], needle: &str) -> Vec<OcrHit> {
@@ -252,9 +325,10 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     }
 
     fn require(&mut self, selector: &UiaSelector) -> Result<OcrHit, DriverError> {
-        self.resolve(selector)?.ok_or_else(|| {
+        self.resolve_scrolling(selector)?.ok_or_else(|| {
             DriverError::Uia(format!(
-                "vision: no OCR line or word matches selector [{selector}]"
+                "vision: no OCR line or word matches selector [{selector}], \
+                 after scrolling the window to the bottom and back to the top"
             ))
         })
     }
@@ -329,6 +403,23 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
 
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
         self.screen.press_key(key, modifiers)
+    }
+
+    fn scroll(&mut self, selector: Option<&UiaSelector>, to: ScrollTo) -> Result<(), DriverError> {
+        match (selector, to) {
+            (Some(selector), ScrollTo::IntoView) => self.require(selector).map(|_| ()),
+            (None, ScrollTo::Top) => self.scroll_to_edge(SCROLL_NOTCHES_PER_PAGE),
+            (None, ScrollTo::Bottom) => self.scroll_to_edge(-SCROLL_NOTCHES_PER_PAGE),
+            (_, to) => Err(DriverError::Uia(format!(
+                "vision: cannot scroll {to:?}{}: pixels give no scroll container or offset, \
+                 only the window's wheel - scroll the page to top/bottom or a text into view",
+                if selector.is_some() {
+                    " inside an element"
+                } else {
+                    ""
+                }
+            ))),
+        }
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
@@ -737,6 +828,22 @@ pub mod native {
             Ok(())
         }
 
+        fn scroll(&mut self, notches: i32) -> Result<(), DriverError> {
+            // The wheel goes to whatever is under the cursor, so park it
+            // mid-window first: over the content, not the title bar.
+            let (wx, wy, w, h) = self.window()?.refresh_rect()?;
+            self.inject(InputEvent::MouseMove {
+                x: wx + w as i32 / 2,
+                y: wy + h as i32 / 2,
+            })?;
+            std::thread::sleep(Duration::from_millis(60));
+            self.inject(InputEvent::Wheel { notches })?;
+            // Smooth scrolling animates for ~150ms in a browser, and a
+            // remote display adds its own repaint latency on top.
+            std::thread::sleep(Duration::from_millis(400));
+            Ok(())
+        }
+
         fn window_origin(&mut self) -> Result<(i32, i32), DriverError> {
             let (x, y, _, _) = self.window()?.refresh_rect()?;
             Ok((x, y))
@@ -778,6 +885,11 @@ pub mod fake {
         pub clicks: Vec<(i32, i32)>,
         pub typed: Vec<String>,
         pub keys: Vec<(String, Vec<KeyMod>)>,
+        /// Wheel turns received, in order. Each one moves the view a whole
+        /// frame: negative to the next frame, positive to the previous,
+        /// stopping at either end - a page whose frames ARE its scroll
+        /// positions.
+        pub scrolls: Vec<i32>,
     }
 
     impl FakeScreen {
@@ -820,6 +932,16 @@ pub mod fake {
 
         fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
             self.keys.push((key.to_string(), modifiers.to_vec()));
+            Ok(())
+        }
+
+        fn scroll(&mut self, notches: i32) -> Result<(), DriverError> {
+            self.scrolls.push(notches);
+            if notches < 0 && self.current + 1 < self.frames.len() {
+                self.current += 1;
+            } else if notches > 0 && self.current > 0 {
+                self.current -= 1;
+            }
             Ok(())
         }
 
@@ -966,6 +1088,114 @@ mod tests {
                 ("Delete".to_string(), vec![])
             ]
         );
+    }
+}
+
+/// Plan 15, finding 7: a target below the fold. Each fake frame is one
+/// scroll position, and its OCR is chosen by the frame itself, so the
+/// driver only ever learns what is on screen by scrolling to it.
+#[cfg(test)]
+mod scroll_search_tests {
+    use super::fake::FakeScreen;
+    use super::*;
+
+    /// OCR that reads the page index a frame was painted with.
+    struct PagedOcr(Vec<Vec<OcrLine>>);
+
+    impl OcrEngine for PagedOcr {
+        fn recognize(&mut self, frame: &RgbaImage) -> Result<Vec<OcrLine>, DriverError> {
+            Ok(self.0[frame.get_pixel(0, 0)[0] as usize].clone())
+        }
+    }
+
+    fn page_driver(
+        pages: Vec<Vec<OcrLine>>,
+        start: usize,
+    ) -> VisionAppDriver<FakeScreen, PagedOcr> {
+        let frames = (0..pages.len())
+            .map(|i| RgbaImage::from_pixel(400, 200, image::Rgba([i as u8, 255, 255, 255])))
+            .collect();
+        let mut screen = FakeScreen::with_frames(frames);
+        screen.current = start;
+        VisionAppDriver::with_parts(screen, PagedOcr(pages))
+    }
+
+    fn form() -> Vec<Vec<OcrLine>> {
+        vec![
+            vec![OcrLine::new("Actions", (20, 20, 80, 20))],
+            vec![
+                OcrLine::new("Email address", (20, 20, 120, 16)),
+                OcrLine::new("Password", (20, 60, 80, 16)),
+            ],
+            vec![
+                OcrLine::new("Coupon Code", (20, 40, 100, 16)),
+                OcrLine::new("Submit", (20, 90, 60, 20)),
+            ],
+        ]
+    }
+
+    fn anchor(text: &str) -> UiaSelector {
+        UiaSelector {
+            name: Some(text.into()),
+            ..UiaSelector::default()
+        }
+    }
+
+    #[test]
+    fn a_field_below_the_fold_is_found_by_scrolling_down() {
+        let mut d = page_driver(form(), 0);
+        d.type_text(&anchor("Coupon Code"), "HALFOFF")
+            .expect("found two screens down");
+        assert_eq!(d.screen.scrolls, vec![-5, -5], "down a page at a time");
+        // The click is in the frame the target was FOUND in: right of the
+        // label as it sits on that screen.
+        assert_eq!(d.screen.clicks, vec![(136, 48)]);
+        assert_eq!(d.screen.typed, vec!["HALFOFF".to_string()]);
+    }
+
+    #[test]
+    fn a_target_above_is_found_on_the_way_back_up() {
+        let mut d = page_driver(form(), 2);
+        d.invoke(&anchor("Actions")).expect("found above");
+        // Already at the bottom: one scroll down proves the edge, then up.
+        assert_eq!(d.screen.scrolls, vec![-5, 5, 5]);
+        assert_eq!(d.screen.current, 0);
+    }
+
+    #[test]
+    fn a_missing_target_searches_both_ways_then_fails_cleanly() {
+        let mut d = page_driver(form(), 0);
+        let err = d.invoke(&anchor("Logout")).expect_err("not on any screen");
+        assert!(err.to_string().contains("after scrolling"), "{err}");
+        // Down: 0→1, 1→2, then 2→2 reads the same, which is the edge. Up
+        // the same way. Bounded by the page, not by MAX_SCROLL_PAGES.
+        assert_eq!(d.screen.scrolls, vec![-5, -5, -5, 5, 5, 5]);
+        assert!(d.screen.clicks.is_empty());
+    }
+
+    /// Auto-wait polls `element_exists`; a poll that scrolled would move
+    /// the page on every tick.
+    #[test]
+    fn existence_checks_never_scroll() {
+        let mut d = page_driver(form(), 0);
+        assert!(!d.element_exists(&anchor("Submit")).expect("reads"));
+        assert!(d.screen.scrolls.is_empty());
+    }
+
+    #[test]
+    fn scroll_steps_reach_the_edges_and_into_view() {
+        let mut d = page_driver(form(), 1);
+        d.scroll(None, ScrollTo::Bottom).expect("to bottom");
+        assert_eq!(d.screen.current, 2);
+        d.scroll(None, ScrollTo::Top).expect("to top");
+        assert_eq!(d.screen.current, 0);
+        d.scroll(Some(&anchor("Password")), ScrollTo::IntoView)
+            .expect("into view");
+        assert_eq!(d.screen.current, 1);
+        let err = d
+            .scroll(None, ScrollTo::Offset(300))
+            .expect_err("pixels have no offset to scroll to");
+        assert!(err.to_string().contains("cannot scroll"), "{err}");
     }
 }
 

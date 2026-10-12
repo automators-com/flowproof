@@ -53,7 +53,8 @@ mod win_input {
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
         KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
         MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+        MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
@@ -148,6 +149,13 @@ mod win_input {
                     return Ok(());
                 }
                 send(&inputs)
+            }
+            InputEvent::Wheel { notches } => {
+                // WHEEL_DELTA (120) per notch travels in mouseData, which
+                // the `mouse` helper leaves zero.
+                let mut wheel = mouse(MOUSEEVENTF_WHEEL, 0, 0);
+                wheel.Anonymous.mi.mouseData = (*notches * 120) as u32;
+                send(&[wheel])
             }
         }
     }

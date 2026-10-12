@@ -45,7 +45,9 @@ pub struct Frame {
     pub data: Vec<u8>,
 }
 
-/// A keyboard/mouse input event to inject.
+/// A keyboard/mouse input event to inject. `Wheel` turns the vertical wheel
+/// under the cursor by whole notches, in Windows' sign convention: negative
+/// scrolls the view down, positive scrolls it up.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
     MouseMove { x: i32, y: i32 },
@@ -54,6 +56,7 @@ pub enum InputEvent {
     KeyDown { virtual_key: u16 },
     KeyUp { virtual_key: u16 },
     Text { text: String },
+    Wheel { notches: i32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
