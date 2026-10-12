@@ -23,6 +23,8 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, UiaSelector};
 use image::RgbaImage;
 
+mod start;
+
 /// One recognized word, in window-relative pixel coordinates. Words are
 /// what make a dense screen addressable: a spreadsheet row OCRs as one
 /// line, and only its words can be clicked individually.
@@ -144,11 +146,16 @@ const RIGHT_OF_GAP_FACTOR: u32 = 1;
 pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     screen: S,
     ocr: E,
+    window_title: Option<String>,
 }
 
 impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     pub fn with_parts(screen: S, ocr: E) -> Self {
-        Self { screen, ocr }
+        Self {
+            screen,
+            ocr,
+            window_title: None,
+        }
     }
 
     fn lines(&mut self) -> Result<Vec<OcrLine>, DriverError> {
@@ -178,6 +185,16 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         };
         if needle.is_empty() {
             return Ok(None);
+        }
+        if needle == start::LABEL {
+            if selector.nth.unwrap_or(1) != 1 {
+                return Ok(None);
+            }
+            return Ok(start::locate(&self.screen.frame()?).map(|rect| OcrHit {
+                text: start::LABEL.into(),
+                rect,
+                order: (rect.1, rect.0),
+            }));
         }
         let lines = self.lines()?;
         let nth = selector.nth.unwrap_or(1).max(1) as usize;
@@ -253,9 +270,11 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
 
     fn require(&mut self, selector: &UiaSelector) -> Result<OcrHit, DriverError> {
         self.resolve(selector)?.ok_or_else(|| {
-            DriverError::Uia(format!(
-                "vision: no OCR line or word matches selector [{selector}]"
-            ))
+            DriverError::Uia(if selector.name.as_deref().map(str::trim) == Some(start::LABEL) {
+                "vision: Windows Start button unavailable: expected one visible bottom-taskbar logo".into()
+            } else {
+                format!("vision: no OCR line or word matches selector [{selector}]")
+            })
         })
     }
 
@@ -284,7 +303,9 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     ) -> Result<(), DriverError> {
         // Pixels mode never spawns processes: the Citrix/RDP client (or
         // target window) is already on screen; we attach by title.
-        self.screen.attach(window_name, timeout)
+        self.screen.attach(window_name, timeout)?;
+        self.window_title = Some(window_name.to_lowercase());
+        Ok(())
     }
 
     fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
@@ -364,18 +385,28 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // as a `text:` TARGET TOKEN — the same neutral contract as every
         // other provenance; the agent needs no vision-specific handling.
         let mut entries: Vec<serde_json::Value> = Vec::new();
-        for line in self.lines()? {
+        let frame = self.screen.frame()?;
+        if let Some(rect) = start::locate(&frame) {
+            entries.push(serde_json::json!({
+                "target": format!("text:{}", start::LABEL),
+                "label": start::LABEL, "tag": "button", "actionable": true,
+                "source": "visual_icon", "rect": [rect.0, rect.1, rect.2, rect.3],
+            }));
+        }
+        for line in self.ocr.recognize(&frame)? {
             if entries.len() >= 100 {
                 break;
             }
             let text = line.text.trim();
-            if text.is_empty() {
+            if text.is_empty() || text == start::LABEL {
                 continue;
             }
             entries.push(serde_json::json!({
                 "target": format!("text:{text}"),
                 "text": text,
                 "rect": [line.rect.0, line.rect.1, line.rect.2, line.rect.3],
+                "actionable": !(line.rect.1 < 64 && self.window_title.as_ref()
+                    .is_some_and(|title| !title.is_empty() && text.to_lowercase().contains(title))),
             }));
         }
         serde_json::to_string(&entries)
@@ -882,6 +913,63 @@ mod tests {
             name: Some(text.into()),
             ..UiaSelector::default()
         }
+    }
+
+    fn desktop() -> RgbaImage {
+        let mut frame = RgbaImage::from_pixel(640, 360, image::Rgba([30, 30, 30, 255]));
+        let (x, y, pane, gap) = (12, 334, 7, 2);
+        for (dx, dy) in [
+            (0, 0),
+            (pane + gap, 0),
+            (0, pane + gap),
+            (pane + gap, pane + gap),
+        ] {
+            for px in x + dx..x + dx + pane {
+                for py in y + dy..y + dy + pane {
+                    frame.put_pixel(px, py, image::Rgba([240, 240, 240, 255]));
+                }
+            }
+        }
+        frame
+    }
+
+    #[test]
+    fn start_icon_is_grounded_without_fabricating_ocr_evidence() {
+        let frame = desktop();
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![frame]),
+            FakeOcr::with_lines(vec![OcrLine::new("ERGO - Desktop Viewer", (8, 4, 200, 20))]),
+        );
+        d.launch("", "Desktop Viewer", Duration::ZERO)
+            .expect("vision");
+        let scene: serde_json::Value =
+            serde_json::from_str(&d.scene().expect("vision").expect("vision")).expect("vision");
+        assert_eq!(scene[0]["label"], start::LABEL);
+        assert_eq!(scene[0]["source"], "visual_icon");
+        assert_eq!(scene[1]["actionable"], false, "title is not a button");
+        assert!(!d.surface_text().expect("vision").contains(start::LABEL));
+        let mut second = anchor(start::LABEL);
+        second.nth = Some(2);
+        assert!(!d.element_exists(&second).expect("vision"));
+    }
+
+    #[test]
+    fn damaged_start_icon_never_falls_back_to_ocr_or_clicks() {
+        let mut frame = desktop();
+        for y in 334..341 {
+            for x in 12..19 {
+                frame.put_pixel(x, y, image::Rgba([30, 30, 30, 255]));
+            }
+        }
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![frame]),
+            FakeOcr::with_lines(vec![OcrLine::new(start::LABEL, (8, 4, 200, 20))]),
+        );
+        assert!(!d.element_exists(&anchor(start::LABEL)).expect("vision"));
+        let error = d.invoke(&anchor(start::LABEL)).expect_err("damaged icon");
+        assert!(error.to_string().contains("unavailable"));
+        assert_eq!(d.scene().expect("vision").as_deref(), Some("[]"));
+        assert!(d.screen.clicks.is_empty());
     }
 
     #[test]

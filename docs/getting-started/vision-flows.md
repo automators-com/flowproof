@@ -25,11 +25,26 @@ Text anchors match OCR lines exactly first, then by prefix; `the 2nd
 "Amount" field` disambiguates repeats in reading order. The recorded
 trace carries `provenance: vision` text anchors with their spatial
 `relation` (`inside` for clicks, `right_of` for fields), and freeform
-steps work through the LLM author; the OCR lines are the scene. OCR
+steps work through the LLM author; OCR lines and supported visual icons form the scene. OCR
 models (pure-Rust [ocrs](https://github.com/robertknight/ocrs), ~12 MB)
 download on first use to `~/.cache/flowproof/ocrs`.
+
+## Open Windows Start
+
+`Press the "Windows Start button" button` detects a four-pane white or blue
+Windows logo in the bottom taskbar on every lookup. Recording saves a semantic
+text anchor; replay finds fresh pixels after resizing or moving the window.
+Missing, damaged, or duplicate logos fail without a guessed click or keyboard
+fallback. The icon's label is excluded from OCR surface-text assertions.
+`Press Meta` (also `Press Win` or `Press Windows`) sends the Windows key;
+whether Citrix forwards that key depends on the client configuration.
 
 ## Know the current limits
 
 Vision flows are Windows-only. They do not yet support visual-template matching
 or OCR-region synchronization conditions.
+
+Start recognition is conservative: bottom taskbars, separated panes 3–28 pixels
+wide/high, and gaps 1–6 pixels. Other logos, themes, compressed/occluded glyphs,
+and taskbar positions may be unavailable. Synthetic replay tests cover scale
+and window movement; live Citrix validation requires the separate Windows demo machine.

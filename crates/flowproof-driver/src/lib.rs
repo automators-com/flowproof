@@ -74,6 +74,7 @@ pub fn virtual_key(key: &str) -> Option<u16> {
         "Backspace" => 0x08,
         "Delete" => 0x2E,
         "Space" => 0x20,
+        "Meta" | "Win" | "Windows" => 0x5B,
         "ArrowLeft" => 0x25,
         "ArrowUp" => 0x26,
         "ArrowRight" => 0x27,
@@ -171,6 +172,14 @@ pub fn platform_backend() -> PlatformBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_windows_key_uses_the_same_mapping_as_the_modifier() {
+        for name in ["Meta", "Win", "Windows"] {
+            assert_eq!(virtual_key(name), Some(modifier_virtual_key(&KeyMod::Meta)));
+        }
+        assert_eq!(virtual_key("not-a-key"), None);
+    }
 
     #[test]
     fn stub_backend_reports_unsupported_off_windows() {
