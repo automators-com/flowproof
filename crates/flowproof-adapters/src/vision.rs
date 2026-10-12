@@ -417,6 +417,13 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // why the recipe must not depend on knowing: select-all over an
         // empty field is a no-op, over a filled one it is the replace.
         self.screen.press_key("a", &[KeyMod::Ctrl])?;
+        // Typing NOTHING over a selection replaces nothing: the old value
+        // stayed selected and on screen. A clear is recorded as typing ""
+        // with replace, so this is the path every vision clear takes
+        // (plan 15) - delete the selection instead.
+        if text.is_empty() {
+            return self.screen.press_key("Delete", &[]);
+        }
         self.screen.type_text(text)
     }
 
@@ -1110,6 +1117,22 @@ mod tests {
             .invoke(&anchor("Logout"))
             .expect_err("no such text on screen");
         assert!(err.to_string().contains("no OCR line or word matches"));
+    }
+
+    /// A recorded clear is `type_text("")` with replace. Live, that left the
+    /// old value selected and the next step saw it still there.
+    #[test]
+    fn typing_nothing_deletes_the_selection() {
+        let mut d = driver();
+        d.type_text(&anchor("User name"), "").expect("clears");
+        assert_eq!(
+            d.screen.keys,
+            vec![
+                ("a".to_string(), vec![KeyMod::Ctrl]),
+                ("Delete".to_string(), vec![])
+            ]
+        );
+        assert!(d.screen.typed.is_empty());
     }
 
     #[test]

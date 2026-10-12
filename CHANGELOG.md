@@ -15,7 +15,9 @@ together).
   `app: vision` does anything with it. Separately, a field recorded as
   `Fake@email.com` read back as `fake@email.com`: vision anchors now fall
   back to a case-insensitive match, as every other kind of anchor already
-  did, with an exact-case match still preferred.
+  did, with an exact-case match still preferred. And a vision clear now
+  clears: it is recorded as typing nothing over a selected field, which
+  left the old value selected and still on screen.
 
 - **`app: vision` scrolls to find what is below the fold.** Pixels-only mode
   read the one frame the window showed and never scrolled, so every field
