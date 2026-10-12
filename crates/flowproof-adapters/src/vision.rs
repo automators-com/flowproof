@@ -124,6 +124,11 @@ pub trait VisionScreen {
     fn frame(&mut self) -> Result<RgbaImage, DriverError>;
     /// Click at window-relative coordinates.
     fn click(&mut self, x: i32, y: i32) -> Result<(), DriverError>;
+    /// Double-click (left) at window-relative coordinates, inside the
+    /// system double-click interval.
+    fn double_click(&mut self, x: i32, y: i32) -> Result<(), DriverError>;
+    /// Right-click at window-relative coordinates.
+    fn right_click(&mut self, x: i32, y: i32) -> Result<(), DriverError>;
     /// Type text into whatever has keyboard focus.
     fn type_text(&mut self, text: &str) -> Result<(), DriverError>;
     /// Press a key chord (canonical key names, e.g. `Enter`, `F5`, `a`).
@@ -445,6 +450,18 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
 
     fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         self.resolve_scrolling(selector).map(|_| ())
+    }
+
+    fn double_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let hit = self.require(selector)?;
+        let (x, y) = Self::action_point(&hit, selector, "inside");
+        self.screen.double_click(x, y)
+    }
+
+    fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let hit = self.require(selector)?;
+        let (x, y) = Self::action_point(&hit, selector, "inside");
+        self.screen.right_click(x, y)
     }
 
     fn scroll(&mut self, selector: Option<&UiaSelector>, to: ScrollTo) -> Result<(), DriverError> {
@@ -784,6 +801,33 @@ pub mod native {
         fn inject(&mut self, event: InputEvent) -> Result<(), DriverError> {
             self.backend.inject(&event)
         }
+
+        /// Move onto the point, then `presses` down/up pairs of `button`.
+        /// The pairs are 40ms apart - well inside the system double-click
+        /// interval (500ms by default) even with a remote display's input
+        /// latency in between, since the client forwards them in order.
+        fn press_at(
+            &mut self,
+            x: i32,
+            y: i32,
+            button: MouseButton,
+            presses: u32,
+        ) -> Result<(), DriverError> {
+            let (wx, wy, _, _) = self.window()?.refresh_rect()?;
+            self.inject(InputEvent::MouseMove {
+                x: wx + x,
+                y: wy + y,
+            })?;
+            std::thread::sleep(Duration::from_millis(60));
+            for _ in 0..presses {
+                self.inject(InputEvent::MouseDown { button })?;
+                std::thread::sleep(Duration::from_millis(20));
+                self.inject(InputEvent::MouseUp { button })?;
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            std::thread::sleep(Duration::from_millis(120));
+            Ok(())
+        }
     }
 
     impl Default for NativeScreen {
@@ -841,6 +885,14 @@ pub mod native {
             })?;
             std::thread::sleep(Duration::from_millis(120));
             Ok(())
+        }
+
+        fn double_click(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
+            self.press_at(x, y, MouseButton::Left, 2)
+        }
+
+        fn right_click(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
+            self.press_at(x, y, MouseButton::Right, 1)
         }
 
         fn type_text(&mut self, text: &str) -> Result<(), DriverError> {
@@ -932,6 +984,8 @@ pub mod fake {
         /// stopping at either end - a page whose frames ARE its scroll
         /// positions.
         pub scrolls: Vec<i32>,
+        pub double_clicks: Vec<(i32, i32)>,
+        pub right_clicks: Vec<(i32, i32)>,
     }
 
     impl FakeScreen {
@@ -974,6 +1028,16 @@ pub mod fake {
 
         fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
             self.keys.push((key.to_string(), modifiers.to_vec()));
+            Ok(())
+        }
+
+        fn double_click(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
+            self.double_clicks.push((x, y));
+            Ok(())
+        }
+
+        fn right_click(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
+            self.right_clicks.push((x, y));
             Ok(())
         }
 
@@ -1055,6 +1119,19 @@ mod tests {
         // Label ends at x=110, height 16 → click lands one text-height right.
         assert_eq!(d.screen.clicks, vec![(126, 28)]);
         assert_eq!(d.screen.typed, vec!["ada".to_string()]);
+    }
+
+    /// Plan 15, finding 15: kitchensink's "Double click to edit" failed
+    /// with "double-click is not supported by this driver". Both act ON
+    /// the text, like a click.
+    #[test]
+    fn double_and_right_clicks_land_on_the_text() {
+        let mut d = driver();
+        d.double_click(&anchor("Sign in")).expect("double-clicks");
+        d.context_click(&anchor("Password")).expect("right-clicks");
+        assert_eq!(d.screen.double_clicks, vec![(55, 110)]);
+        assert_eq!(d.screen.right_clicks, vec![(60, 68)]);
+        assert!(d.screen.clicks.is_empty(), "not two single clicks");
     }
 
     #[test]
