@@ -149,7 +149,7 @@ configuration error. Each run bundle contains:
 | Artifact | Use it for |
 | --- | --- |
 | `report.html` | Review steps and synchronized frames |
-| `result.json` | Consume the structured verdict and step timing |
+| `result.json` | Consume the structured verdict, step timing, and which browser a web flow ran in (`browser`) |
 | `junit.xml` | Publish test results in CI |
 | `recording/` | Inspect captured keyframes |
 | `debug/dom.html` and `debug/console.log` | Diagnose a failed web step when available |

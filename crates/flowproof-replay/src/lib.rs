@@ -2968,6 +2968,7 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
 
     let degraded = results.iter().any(|s| s.degraded);
     let duration_ms = started.elapsed().as_millis() as u64;
+    let browser = driver.browser_info();
     let recording = recorder.and_then(|recorder| recorder.finish_with_driver(driver));
     let report = RunReport {
         name,
@@ -2977,6 +2978,7 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
         steps: results,
         duration_ms,
         recording,
+        browser,
     };
     Ok((report, run_dir, resolved_exports))
 }
