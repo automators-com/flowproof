@@ -239,7 +239,7 @@ class Flow:
         (missing trace, unsupported platform, ...).
 
         ``recording_detail`` chooses how densely visual evidence is captured:
-        ``"full"`` (before and after every step), ``"low"`` (initial state,
+        ``"full"`` (one screenshot per step), ``"low"`` (initial state,
         every fifth completed step, final state), or ``"off"`` (no capture).
         ``video`` assembles the captured checkpoints into ``recording.gif``;
         it is off by default, so a suite run does not pay for a GIF nobody

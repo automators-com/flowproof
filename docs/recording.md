@@ -15,7 +15,7 @@ Capture density and GIF assembly are execution-time choices, available on both
 
 | Flag | Default | What it does |
 | --- | --- | --- |
-| `--recording-detail full` | yes | A frame before each step, after each step, and on failure. |
+| `--recording-detail full` | yes | One screenshot per step: the screen as the step left it. |
 | `--recording-detail low` | | Initial state, every fifth completed step, and final state. |
 | `--recording-detail off` | | No screenshots and no GIF. |
 | `--video` | off | Assemble the captured frames into a `recording.gif`. |
@@ -44,10 +44,11 @@ several steps share one visual checkpoint, producing a less fluent but much
 cheaper review artifact. `off` changes artifacts only: the same actions,
 assertions, redaction-independent safety checks, and verdict still execute.
 `--video` is independent of detail, so `low --video` creates a sparse
-animation. `--highlight-cursor` adds a pre-action checkpoint for
-click, right-click, double-click, and hover actions; drag actions mark both
-ends. The bright halo appears on the event checkpoint, while later frames
-retain the cursor at its last known position. Because the cursor is rendered
+animation. `--highlight-cursor` makes a pointer step's one screenshot
+a pre-action checkpoint for click, right-click, double-click, and hover
+actions, in place of the after-step frame; a drag is marked at its first end.
+The bright halo appears on the event checkpoint, while later frames retain the
+cursor at its last known position. Because the cursor is rendered
 after redaction, it cannot reveal pixels hidden by a mask. Pointer checkpoints
 are retained in low-detail mode so important clicks are not lost.
 

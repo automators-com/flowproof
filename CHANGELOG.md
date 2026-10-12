@@ -15,6 +15,13 @@ together).
   that was not listed even though it was. `text:` is now unwrapped like the
   others.
 
+- **One screenshot per step.** `--recording-detail full` (the default)
+  captured a frame before and after every step, plus a click frame with
+  `--highlight-cursor`, so most steps had two or three near-identical
+  screenshots. It now captures one: the screen as the step left it, or the
+  highlighted click when `--highlight-cursor` is on. `low` and `off` are
+  unchanged.
+
 ## 0.23.20
 
 - **Draft a flow from an outcome and the app's code.** Exploring a live app
