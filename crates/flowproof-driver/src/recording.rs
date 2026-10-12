@@ -1,4 +1,4 @@
-//! The RunRecorder: owns the clock, captures keyframes around every step,
+//! The RunRecorder: owns the clock, captures one keyframe per step,
 //! applies redaction in-memory, and persists a self-contained recording
 //! bundle. Both the recorder (authoring) and the replayer drive it, so
 //! every execution gets the same review surface.
@@ -18,7 +18,8 @@ pub const FORMAT_FILMSTRIP_V1: &str = "filmstrip/1";
 /// How densely an execution captures visual evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RecordingDetail {
-    /// Capture before and after every step (the historical behavior).
+    /// Capture one screenshot per step: the screen as the step left it (or
+    /// its highlighted pointer event, when cursor highlighting is on).
     #[default]
     Full,
     /// Capture the initial state, every fifth completed step, and the final
@@ -113,6 +114,8 @@ pub struct RunRecorder {
     completed_steps: usize,
     last_snapshot_after_step: usize,
     pointer: Option<PointerMarker>,
+    /// The in-flight step already has its one screenshot.
+    step_has_frame: bool,
     /// A frame for the in-flight step was dropped by fail-closed redaction.
     pending_drop: bool,
     /// Set once the driver reports it cannot capture; recording is skipped
@@ -146,6 +149,7 @@ impl RunRecorder {
             completed_steps: 0,
             last_snapshot_after_step: 0,
             pointer: None,
+            step_has_frame: false,
             pending_drop: false,
             unsupported: false,
         })
@@ -213,25 +217,23 @@ impl RunRecorder {
     }
 
     pub fn step_started<D: AppDriver>(&mut self, driver: &mut D, id: &str) {
-        // Stamp the start BEFORE the pre-step snap so that frame falls
-        // inside the step's range — it is this step's "before" evidence.
+        // Stamp the start BEFORE any snap so it falls inside the step's range.
         let start_ms = self.now_ms();
         self.current = Some((id.to_string(), start_ms));
-        match self.options.detail {
-            RecordingDetail::Full => {
-                self.snap(driver);
-            }
-            RecordingDetail::Low if self.completed_steps == 0 && self.frames.is_empty() => {
-                self.snap(driver);
-            }
-            RecordingDetail::Low | RecordingDetail::Off => {}
+        self.step_has_frame = false;
+        if self.options.detail == RecordingDetail::Low
+            && self.completed_steps == 0
+            && self.frames.is_empty()
+        {
+            self.snap(driver);
         }
     }
 
     /// Add a pointer-event checkpoint at a point inside `selector`.
     ///
     /// This is best-effort evidence: an unavailable element rectangle or a
-    /// capture failure never changes execution. The event frame gets the
+    /// capture failure never changes execution. A captured event frame is
+    /// the step's one screenshot, so a drag keeps only its first end. The event frame gets the
     /// bright halo; later frames retain the visible cursor at the last known
     /// position without implying another click.
     pub fn pointer_event<D: AppDriver>(
@@ -241,7 +243,7 @@ impl RunRecorder {
         x_pct: f64,
         y_pct: f64,
     ) -> bool {
-        if !self.options.highlight_cursor || !self.options.enabled() {
+        if !self.options.highlight_cursor || !self.options.enabled() || self.step_has_frame {
             return false;
         }
         let Ok(Some((left, top, width, height))) = driver.element_rect(selector) else {
@@ -258,6 +260,7 @@ impl RunRecorder {
             highlighted: true,
         });
         let captured = self.snap(driver);
+        self.step_has_frame |= captured;
         if let Some(pointer) = self.pointer.as_mut() {
             pointer.highlighted = false;
         }
@@ -267,6 +270,7 @@ impl RunRecorder {
     pub fn step_finished<D: AppDriver>(&mut self, driver: &mut D) {
         self.completed_steps += 1;
         match self.options.detail {
+            RecordingDetail::Full if self.step_has_frame => {}
             RecordingDetail::Full => {
                 if self.snap(driver) {
                     self.last_snapshot_after_step = self.completed_steps;
@@ -530,6 +534,7 @@ mod tests {
 
         assert_eq!(recording.format, FORMAT_FILMSTRIP_V1);
         assert_eq!(recording.steps.len(), 3);
+        assert_eq!(recording.frames.len(), 3, "one screenshot per step");
         let mut last_end = 0;
         for step in &recording.steps {
             assert!(step.start_ms <= step.end_ms, "range valid: {step:?}");
@@ -608,12 +613,14 @@ mod tests {
         };
         let mut recorder = RunRecorder::with_options(&base, vec![], options).expect("recorder");
         recorder.step_started(&mut driver, "s0001");
-        // Change the screen mid-run so the GIF has distinct frames.
+        recorder.step_finished(&mut driver);
+        // Change the screen between steps so the GIF has distinct frames.
         driver.frame = Some(image::RgbaImage::from_pixel(
             20,
             20,
             image::Rgba([10, 10, 200, 255]),
         ));
+        recorder.step_started(&mut driver, "s0002");
         recorder.step_finished(&mut driver);
         let recording = recorder.finish().expect("recording produced");
 
@@ -642,14 +649,14 @@ mod tests {
         recorder.step_finished(&mut driver);
         let recording = recorder.finish().expect("recording produced");
 
-        assert_eq!(recording.frames.len(), 2);
+        assert_eq!(recording.frames.len(), 1);
         assert!(recording.gif.is_none());
         assert!(!base.join("recording/recording.gif").exists());
         std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
-    fn pointer_events_add_a_highlighted_cursor_checkpoint() {
+    fn a_pointer_event_is_the_steps_one_screenshot() {
         let base = std::env::temp_dir().join("flowproof-recording-highlight-cursor");
         std::fs::remove_dir_all(&base).ok();
         std::fs::create_dir_all(&base).expect("temp dir");
@@ -673,11 +680,18 @@ mod tests {
             50.0,
             50.0,
         ));
+        // A drag's second end does not add a second screenshot.
+        assert!(!recorder.pointer_event(
+            &mut driver,
+            &crate::app::UiaSelector::css("#target"),
+            50.0,
+            50.0,
+        ));
         recorder.step_finished(&mut driver);
         let recording = recorder.finish().expect("recording produced");
 
-        assert_eq!(recording.frames.len(), 3);
-        let event_png = std::fs::read(base.join("recording").join(&recording.frames[1].file))
+        assert_eq!(recording.frames.len(), 1, "no extra after-step frame");
+        let event_png = std::fs::read(base.join("recording").join(&recording.frames[0].file))
             .expect("event frame readable");
         let event = image::load_from_memory(&event_png)
             .expect("valid event png")

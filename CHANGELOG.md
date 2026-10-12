@@ -6,17 +6,31 @@ together).
 
 ## Unreleased
 
-- **`page shows` on `app: vision` forgives what OCR does to punctuation.**
-  A greeter page reading `Hello, Ada!` came back from OCR as `Hello Adal`,
-  so `page shows Hello, Ada` failed against an app that had done exactly the
-  right thing - and a Citrix stream's compression makes such misreads more
-  common, not less. On a surface whose text is recognized from pixels, a
-  positive `shows`/`contains` assertion now also matches with punctuation
-  stripped from the edges of words and case and spacing ignored. It never
-  reaches inside a word, so `$10.00` cannot match `$1000` and `1,000` cannot
-  match `1000`; it never applies to `does not show`, an equality or a count;
-  and record and replay ask the same question of the driver, so a recording
-  cannot pass an assertion its replay would fail.
+## 0.23.21
+
+- **One screenshot per step.** `--recording-detail full` (the default)
+  captured a frame before and after every step, plus a click frame with
+  `--highlight-cursor`, so most steps had two or three near-identical
+  screenshots. It now captures one: the screen as the step left it, or the
+  highlighted click when `--highlight-cursor` is on. `low` and `off` are
+  unchanged.
+
+- **`app: fiori` records as a web app.** A Fiori launchpad is a web app, and
+  the engine only knew it as `web`. The desktop app writes `app: fiori` for
+  every Fiori flow and surface, so each one failed before it started: "unknown
+  app 'fiori'" for a flow, and "`url:` … means nothing for `app: fiori`" for a
+  surface. No Fiori flow made there could be recorded or run. `fiori` is now
+  read as `web` wherever `app:` is written, alone or on a surface, and the
+  trace records `web`, so replays and existing traces are unaffected.
+
+- **A `record` that started SAP Logon no longer looks busy until SAP is
+  closed.** When no SAP Logon was running, flowproof started one that
+  inherited flowproof's own stdout and stderr. flowproof finished and exited,
+  but anything reading its output (flowproof desktop, a CI step, a `| tee`)
+  waits for the pipe to close, and SAP Logon still held it. The run sat at
+  "running" with the trace already written, and cancelling could not stop a
+  process that had already exited. SAP Logon now starts with none of
+  flowproof's handles, so the output closes when flowproof exits.
 
 ## 0.23.20
 
