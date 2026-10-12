@@ -77,8 +77,8 @@ The morning's run had 0 of 6. The type flow now stops honestly at finding 17
 | 11 | unattended runs | a re-run reported only browser chrome on screen, page body blank, for every flow | the VM's display stopped repainting once the host was left (taskbar clock frozen 12 minutes behind); capture returned stale frames and the browser painted nothing | confirmed. Environment, not engine — but flowproof read a frozen screen as "the field is not there". A vision run should detect a frame that never changes across actions and say the display is not updating. Not yet fixed |
 | 12 | replay | the first three flows to record all failed to replay: "element did not appear within 5000ms"; one target recorded as `Fake@email.com` read back as `fake@email.com` | replay's existence precondition is a pure read of the visible frame, so an off-screen target timed out before the action's scroll search; vision anchors matched case-sensitively | **fixed** — #702 (stacked on #698): `AppDriver::reveal` before the wait and before giving up; case-insensitive fallback |
 | 13 | false pass | `Type slow.typing@email.com into the "Email address" field` recorded as a single Escape press, and the flow passed | the model dismissed Edge's autofill popup, then judged the step done because the value appears in the page's code sample; the next `page shows` matched the same sample | confirmed. Two guards worth building: a type step that types nothing is suspect; a `page shows` that already held before the step meant to cause it is vacuous. Not fixed |
-| 14 | layout | `Type ... into the "Describe:" field` authored no action | vision types `right_of` a label by default (the SAP GUI layout); web forms put the label ABOVE the box | confirmed. The model needs a way to say `below`, or the driver to try below when nothing editable is to the right. Not fixed |
-| 15 | actions | double-click and checkbox steps fail: "double-click is not supported by this driver"; "no actionable checkbox" | `VisionAppDriver` implements neither `double_click` nor `set_checked`, and vision scene entries carry no checkbox role | confirmed. Double-click is two clicks; a checkbox is a click on its label or box. Not fixed |
+| 14 | layout | `Type ... into the "Describe:" field` authored no action | vision types `right_of` a label by default (the SAP GUI layout); web forms put the label ABOVE the box | confirmed — **needs a decision** (see Open questions) |
+| 15 | actions | double-click and checkbox steps fail: "double-click is not supported by this driver"; "no actionable checkbox" | `VisionAppDriver` implements neither `double_click` nor `set_checked`, and vision scene entries carry no checkbox role | double-click and right-click **fixed** — #705. Checkboxes **need a decision** (see Open questions) |
 | 16 | grounding | `Press the "Submit" button` authored no action | not yet diagnosed — needs the `record --json` inventory from a live run | open |
 | 17 | clearing | after a recorded Clear, the field still held its old value and the next step stopped on it | a clear is recorded as `type_text("")` with replace; vision select-all'd and typed nothing | **fixed** — #702: typing nothing deletes the selection |
 
@@ -101,6 +101,24 @@ The morning's run had 0 of 6. The type flow now stops honestly at finding 17
   left to CI.
 
 ## Open questions
+
+- **Checkboxes on `app: vision` (finding 15).** `set_checked` is SET-state and
+  must verify, so a reseeded environment cannot silently invert a step. Pixels
+  give no checkbox state, so a click only toggles. Either vision keeps refusing
+  checkboxes with a clearer message, or it reads the state from the box's
+  pixels (compare the box region before and after the click) - heuristic, and
+  it should be proven on real Citrix screens before it is trusted.
+- **Labels above fields (finding 14).** A vision trace stamps WHERE an action
+  lands relative to its label, hard-coded to `right_of` for typing
+  (`recorder::stamp_vision_relation`) - right for SAP GUI, wrong for most web
+  forms. Either the grammar lets an author say so (`into the field below
+  "Describe:"`, a grammar change), or the recorder infers the layout from the
+  pixels around the label.
+- **Is a web page the right proxy for Citrix?** Kitchensink found real engine
+  bugs, but it is a documentation page whose code samples make `page shows`
+  vacuous, and Citrix targets are business forms and grids. Candidates closer
+  to the client case: `examples/tricentis-insurance.flow.yaml`, the Notepad and
+  Calculator desktop flows, and a SAP GUI flow, all as `app: vision`.
 
 - Whether the record-time agent's default model (`claude-sonnet-5`) is a
   factor in vision recordings, or only the engine. Re-running a failing
