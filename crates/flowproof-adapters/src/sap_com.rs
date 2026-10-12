@@ -601,6 +601,45 @@ pub mod fake {
     }
 }
 
+/// Start a program that outlives this one (SAP Logon) without handing it our
+/// stdin, stdout or stderr. Whoever reads our output waits for end-of-file,
+/// and a pipe stays open while any process still holds it: SAP Logon holding
+/// it kept a finished `record` looking busy until SAP was closed. On Windows,
+/// null stdio is not enough - every inheritable handle goes to the child, and
+/// our own std handles came in inheritable - so they stop being inheritable
+/// first. A later child that asks for `Stdio::inherit` still gets them: std
+/// passes it its own inheritable duplicate.
+#[cfg(any(windows, test))]
+pub(crate) fn spawn_detached(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::{
+            SetHandleInformation, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT,
+        };
+        for raw in [
+            std::io::stdin().as_raw_handle(),
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ] {
+            if !raw.is_null() {
+                // SAFETY: a handle this process owns for its whole life; only
+                // its inherit flag changes. A failure leaves it as it was.
+                let _ = unsafe {
+                    SetHandleInformation(HANDLE(raw), HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))
+                };
+            }
+        }
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+}
+
 /// SAP GUI Scripting over late-bound COM: exactly the `IDispatch` calls a
 /// VBScript recording makes (`GetObject("SAPGUI")` → `GetScriptingEngine`
 /// → `FindById` / property access), so behavior matches SAP's own tooling.
@@ -831,7 +870,7 @@ pub mod com {
 
             let mut failures = Vec::new();
             for executable in candidates {
-                match Command::new(&executable).spawn() {
+                match super::spawn_detached(&mut Command::new(&executable)) {
                     Ok(_) => {
                         eprintln!("sap-com: started SAP Logon; waiting for scripting");
                         return Ok(());
@@ -1735,5 +1774,67 @@ mod tests {
             !scene.contains("id:wnd[0]/tbar[0]/btn[11]"),
             "background controls must not be actionable through an active modal: {scene}"
         );
+    }
+
+    /// The process the test plays: start a long-lived program the way SAP
+    /// Logon is started, print its pid, and exit while it is still running.
+    const DETACHED_PARENT: &str = "FLOWPROOF_TEST_DETACHED_PARENT";
+
+    #[test]
+    fn a_detached_program_does_not_hold_our_output_open() {
+        if std::env::var_os(DETACHED_PARENT).is_some() {
+            #[cfg(windows)]
+            let mut sleeper = std::process::Command::new("ping");
+            #[cfg(windows)]
+            sleeper.args(["-n", "31", "127.0.0.1"]);
+            #[cfg(not(windows))]
+            let mut sleeper = std::process::Command::new("sleep");
+            #[cfg(not(windows))]
+            sleeper.arg("30");
+            // Never waited on: outliving this process is the point.
+            #[allow(clippy::zombie_processes)]
+            let child = spawn_detached(&mut sleeper).expect("start the sleeper");
+            println!("detached-pid={}", child.id());
+            return;
+        }
+
+        // Run this test again as the engine, its output piped the way
+        // flowproof desktop pipes it.
+        let mut parent = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "sap_com::tests::a_detached_program_does_not_hold_our_output_open",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(DETACHED_PARENT, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("run the test as the parent");
+        let stdout = parent.stdout.take().expect("piped stdout");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut out = String::new();
+            let _ = std::io::Read::read_to_string(&mut { stdout }, &mut out);
+            let _ = tx.send(out);
+        });
+        let out = rx.recv_timeout(Duration::from_secs(15));
+        let _ = parent.wait();
+
+        let pid = out
+            .as_deref()
+            .ok()
+            .and_then(|out| out.lines().find_map(|l| l.strip_prefix("detached-pid=")))
+            .map(str::to_owned);
+        if let Some(pid) = &pid {
+            #[cfg(windows)]
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", pid])
+                .output();
+            #[cfg(not(windows))]
+            let _ = std::process::Command::new("kill").arg(pid).output();
+        }
+        let out = out.expect("the parent's stdout stayed open after it exited");
+        assert!(pid.is_some(), "the parent never started the sleeper: {out}");
     }
 }
