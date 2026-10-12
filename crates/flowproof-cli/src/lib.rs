@@ -121,7 +121,7 @@ impl From<AuthorArg> for flowproof_agent::Author {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 enum RecordingDetailArg {
-    /// Capture before and after every step.
+    /// Capture one screenshot per step.
     #[default]
     Full,
     /// Capture the initial state, every fifth step, and the final state.
