@@ -197,6 +197,37 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             return None;
         }
         let nth = selector.nth.unwrap_or(1).max(1) as usize;
+        Self::match_tiers(lines, needle, nth).or_else(|| {
+            // OCR's capitals wobble between runs: a field recorded as
+            // `Fake@email.com` read back as `fake@email.com` on replay
+            // (plan 15). Exact case still wins; this is the fallback rung
+            // every other provenance already has, and the hit keeps the
+            // screen's own spelling.
+            let folded: Vec<OcrLine> = lines
+                .iter()
+                .map(|l| OcrLine {
+                    text: l.text.to_lowercase(),
+                    rect: l.rect,
+                    words: l
+                        .words
+                        .iter()
+                        .map(|w| OcrWord {
+                            text: w.text.to_lowercase(),
+                            rect: w.rect,
+                        })
+                        .collect(),
+                })
+                .collect();
+            let hit = Self::match_tiers(&folded, &needle.to_lowercase(), nth)?;
+            let text = lines
+                .iter()
+                .find(|l| l.rect == hit.rect)
+                .map_or_else(|| hit.text.clone(), |l| l.text.clone());
+            Some(OcrHit { text, ..hit })
+        })
+    }
+
+    fn match_tiers(lines: &[OcrLine], needle: &str, nth: usize) -> Option<OcrHit> {
         for tier in [Self::exact_lines, Self::exact_words, Self::prefix_lines] {
             let mut hits = tier(lines, needle);
             hits.sort_by_key(|h| h.order);
@@ -403,6 +434,10 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
 
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
         self.screen.press_key(key, modifiers)
+    }
+
+    fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        self.resolve_scrolling(selector).map(|_| ())
     }
 
     fn scroll(&mut self, selector: Option<&UiaSelector>, to: ScrollTo) -> Result<(), DriverError> {
@@ -1171,6 +1206,44 @@ mod scroll_search_tests {
         // the same way. Bounded by the page, not by MAX_SCROLL_PAGES.
         assert_eq!(d.screen.scrolls, vec![-5, -5, -5, 5, 5, 5]);
         assert!(d.screen.clicks.is_empty());
+    }
+
+    /// Replay reveals once, then polls existence: the reveal is what finds
+    /// an off-screen target, and leaves it on screen for the poll.
+    #[test]
+    fn reveal_brings_an_off_screen_target_into_the_frame() {
+        let mut d = page_driver(form(), 0);
+        d.reveal(&anchor("Submit")).expect("reveals");
+        assert!(d.element_exists(&anchor("Submit")).expect("reads"));
+        assert_eq!(d.screen.scrolls, vec![-5, -5]);
+        // Not found anywhere is not an error here - the wait reports it.
+        d.reveal(&anchor("Logout")).expect("quietly absent");
+    }
+
+    #[test]
+    fn ocr_case_wobble_falls_back_to_a_case_insensitive_match() {
+        let mut d = page_driver(
+            vec![vec![
+                OcrLine::new("Fake@email.com", (20, 20, 110, 16)),
+                OcrLine::new("SAVE", (20, 60, 40, 16)),
+                OcrLine::new("Save", (20, 100, 40, 16)),
+            ]],
+            0,
+        );
+        // Recorded as `Fake@...`, read back as `fake@...` (or vice versa).
+        let rect = d
+            .element_rect(&anchor("fake@email.com"))
+            .expect("reads")
+            .expect("folded match");
+        assert_eq!(rect, (20, 20, 110, 16));
+        assert_eq!(
+            d.read_text(&anchor("fake@email.com")).expect("reads"),
+            "Fake@email.com",
+            "the screen's own spelling, not the folded one"
+        );
+        // Exact case still wins over an earlier line that only folds equal.
+        let save = d.element_rect(&anchor("Save")).expect("reads");
+        assert_eq!(save, Some((20, 100, 40, 16)));
     }
 
     /// Auto-wait polls `element_exists`; a poll that scrolled would move

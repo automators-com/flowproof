@@ -226,6 +226,7 @@ impl AppDriver for SurfaceRegistry {
         fn element_computed_style(&mut self, selector: &UiaSelector, prop: &str) -> Result<String, DriverError>;
         fn scroll(&mut self, selector: Option<&UiaSelector>, to: ScrollTo) -> Result<(), DriverError>;
         fn current_url(&mut self) -> Result<String, DriverError>;
+        fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError>;
         fn probe_cookie(&mut self, name: &str) -> Result<CookieProbe, DriverError>;
         fn page_title(&mut self) -> Result<String, DriverError>;
         fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError>;
