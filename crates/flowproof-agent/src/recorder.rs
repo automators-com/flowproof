@@ -2391,6 +2391,44 @@ struct AuthoredActions {
 /// answer contributes nothing, and the bound keeps a long page from crowding
 /// out the element inventory, which is still what a target must be grounded
 /// against.
+/// On `app: vision`, scroll the first quoted label of an action step that is
+/// not on screen into view BEFORE the model is shown the scene.
+///
+/// The vision driver finds off-screen text by scrolling when it ACTS, but
+/// the model is asked first, and it is shown only the visible frame: told
+/// to type into a "Coupon Code" field it cannot see, it reported the
+/// previous step as broken and the recording stopped before the driver was
+/// ever asked (plan 15). Revealing the label first gives the model the same
+/// screen a person would scroll to. Nothing is recorded for it - replay's
+/// action resolves by the same scroll search from the same starting page.
+/// A label found nowhere is left for the model to report.
+fn reveal_quoted_label<D: AppDriver>(
+    driver: &mut D,
+    app_id: &str,
+    intent: &str,
+) -> Result<(), RecordError> {
+    if app_id != "vision" {
+        return Ok(());
+    }
+    let visible = driver.surface_text()?;
+    for label in intent.split('"').skip(1).step_by(2).map(str::trim) {
+        if label.is_empty() || flowproof_driver::text_contains(&visible, label) {
+            continue;
+        }
+        let selector = UiaSelector {
+            name: Some(label.to_string()),
+            ..UiaSelector::default()
+        };
+        if driver
+            .scroll(Some(&selector), flowproof_driver::ScrollTo::IntoView)
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 fn surface_words<D: AppDriver>(driver: &mut D) -> Option<String> {
     let text = driver.surface_text().ok()?;
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2525,6 +2563,9 @@ fn author_actions<D: AppDriver, C: ModelClient>(
                 inventory,
             ));
         };
+        if !natural_check {
+            reveal_quoted_label(driver, app_id, intent)?;
+        }
         let scene = driver
             .scene()?
             .ok_or_else(|| RecordError::NoScene(app_id.to_string()))?;
@@ -4774,6 +4815,29 @@ mod tests {
     ///
     /// The scene is captured before the step runs, so a control the page
     /// swaps out mid-step is named in good faith and then is not there.
+    /// Plan 15: on `app: vision` the model is shown only the visible frame,
+    /// so a step naming a field below the fold must bring that field into
+    /// view first - or the model reports it missing and the step stops
+    /// before the driver's own scroll search is ever asked.
+    #[test]
+    fn a_vision_step_scrolls_its_off_screen_label_into_view_before_authoring() {
+        let step = r#"Type HALFOFF into the "Coupon Code" field"#;
+        let mut below = MockAppDriver::new(&[]).with_surface_text("Actions\nEmail address");
+        reveal_quoted_label(&mut below, "vision", step).expect("reveals");
+        assert_eq!(
+            below.scrolls,
+            vec![(Some("Coupon Code".to_string()), "into_view".to_string())]
+        );
+
+        let mut visible = MockAppDriver::new(&[]).with_surface_text("Coupon Code\nSubmit");
+        reveal_quoted_label(&mut visible, "vision", step).expect("nothing to do");
+        assert!(visible.scrolls.is_empty(), "already on screen");
+
+        let mut web = MockAppDriver::new(&[]).with_surface_text("Actions");
+        reveal_quoted_label(&mut web, "web", step).expect("not vision");
+        assert!(web.scrolls.is_empty(), "a DOM driver scrolls when it acts");
+    }
+
     /// Aborting was the old answer, and it threw away a recording the very
     /// next look would have completed.
     #[test]

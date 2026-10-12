@@ -17,7 +17,10 @@ together).
   page, so it stops in the same place. Existence checks still read only the
   current frame, because auto-wait polls them and a poll that scrolled would
   move the page every tick. `scroll to top`, `to bottom` and `into view` now
-  work on vision surfaces as well.
+  work on vision surfaces as well. Recording does the same before the model
+  is asked: a step's quoted label that is off screen is scrolled into view
+  first, because a model shown only the visible frame reported the field
+  missing and stopped the recording before the driver could look.
 
 ## 0.23.20
 
