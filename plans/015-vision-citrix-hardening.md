@@ -50,6 +50,16 @@ each failure is the engine's own.
 | kitchensink type | fail at step 3 | quoted `text:` token never grounds (#5) |
 | kitchensink clear, submit, click, dblclick, checkboxes | fail at first step | target below the fold; vision cannot scroll (#7) |
 
+## Live result after the fixes
+
+With #697, #698, #699 and #702 built together (12 October), on the same
+kitchensink page: **two flows record AND replay green with zero model calls
+on replay** - clicking a button and choosing a dropdown option, both far below
+the fold. The final replay frames show the popover open and `apples` selected,
+so the passes are not just the assertions matching the page's code samples.
+The morning's run had 0 of 6. The type flow now stops honestly at finding 17
+(fixed since) instead of passing falsely.
+
 ## Findings
 
 | # | Area | Symptom | Cause | Status |
@@ -70,6 +80,7 @@ each failure is the engine's own.
 | 14 | layout | `Type ... into the "Describe:" field` authored no action | vision types `right_of` a label by default (the SAP GUI layout); web forms put the label ABOVE the box | confirmed. The model needs a way to say `below`, or the driver to try below when nothing editable is to the right. Not fixed |
 | 15 | actions | double-click and checkbox steps fail: "double-click is not supported by this driver"; "no actionable checkbox" | `VisionAppDriver` implements neither `double_click` nor `set_checked`, and vision scene entries carry no checkbox role | confirmed. Double-click is two clicks; a checkbox is a click on its label or box. Not fixed |
 | 16 | grounding | `Press the "Submit" button` authored no action | not yet diagnosed — needs the `record --json` inventory from a live run | open |
+| 17 | clearing | after a recorded Clear, the field still held its old value and the next step stopped on it | a clear is recorded as `type_text("")` with replace; vision select-all'd and typed nothing | **fixed** — #702: typing nothing deletes the selection |
 
 ## Notes for merging
 
