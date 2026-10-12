@@ -63,6 +63,16 @@ each failure is the engine's own.
 | 7 | scrolling | any target below the fold is "not present on the current screen"; 5 of 6 kitchensink flows fail on it | `VisionAppDriver::resolve` OCRs one frame of the visible window and never scrolls; the input layer has no wheel event at all | **fixed** — branch `vision-hardening/scroll`: a wheel `InputEvent`; actions search down then up a page at a time; existence checks never scroll |
 | 8 | repair | (a) a stale browser notification read as "the browser crashed"; (b) repair **rewrote the flow's assertion** from `Hello, Ada` (correct) to `Hello Ada!`, from OCR noise | the repair agent sees only OCR text, and is permitted to edit an assertion's expected value | confirmed. (b) is a product decision — whether repair may ever change what an assertion expects — not changed here |
 | 9 | error text | "the previous step left a problem behind" on the FIRST step of a flow | the message assumes a prior step | confirmed, cosmetic |
+| 10 | recording | with the scroll fix in place, every below-the-fold flow still stopped at its first step: "previous step left a problem — X is not on the current screen" | the recorder asks the model BEFORE the driver acts, and the model is shown only the visible frame; with no way to say "below the fold" it reports the previous step broken | **fixed** — #698: on `app: vision` the step's first off-screen quoted label is scrolled into view before the model is asked |
+| 11 | unattended runs | a re-run reported only browser chrome on screen, page body blank, for every flow | the VM's display stopped repainting once the host was left (taskbar clock frozen 12 minutes behind); capture returned stale frames and the browser painted nothing | confirmed. Environment, not engine — but flowproof read a frozen screen as "the field is not there". A vision run should detect a frame that never changes across actions and say the display is not updating. Not yet fixed |
+
+## Notes for merging
+
+- #698 and #699 both add a method at the same point in `VisionAppDriver`'s
+  `AppDriver` impl, and both add a CHANGELOG entry and a docs paragraph at the
+  same place. Whichever merges second has a keep-both conflict in all three.
+- Live vision runs need a display that is on and repainting: on this VM,
+  leaving the host stops it (finding 11).
 
 ## Blockers
 
