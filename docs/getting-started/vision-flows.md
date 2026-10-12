@@ -29,6 +29,11 @@ steps work through the LLM author; the OCR lines are the scene. OCR
 models (pure-Rust [ocrs](https://github.com/robertknight/ocrs), ~12 MB)
 download on first use to `~/.cache/flowproof/ocrs`.
 
+An action whose text is not on screen is looked for by scrolling: the
+mouse wheel turns a page at a time, down to the bottom and back up, and
+the step acts where the text is found. Replay repeats the same search, so
+start each run from the same page. Assertions read only what is visible.
+
 ## Know the current limits
 
 Vision flows are Windows-only. They do not yet support visual-template matching
