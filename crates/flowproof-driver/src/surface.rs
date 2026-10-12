@@ -226,6 +226,7 @@ impl AppDriver for SurfaceRegistry {
         fn element_computed_style(&mut self, selector: &UiaSelector, prop: &str) -> Result<String, DriverError>;
         fn scroll(&mut self, selector: Option<&UiaSelector>, to: ScrollTo) -> Result<(), DriverError>;
         fn current_url(&mut self) -> Result<String, DriverError>;
+        fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError>;
         fn probe_cookie(&mut self, name: &str) -> Result<CookieProbe, DriverError>;
         fn page_title(&mut self) -> Result<String, DriverError>;
         fn stage_session(&mut self, session: WebSession) -> Result<(), DriverError>;
@@ -508,6 +509,31 @@ mod tests {
             .dom_html
             .unwrap_or_default()
             .contains("active surface"));
+    }
+
+    /// A vision surface in a multi-surface flow must still say its text is
+    /// OCR'd: answering the default would put its assertions back on exact
+    /// matching, and only for flows that happen to use `surfaces:`.
+    #[test]
+    fn ocr_provenance_routes_through_the_registry_and_the_box() {
+        let factory: SurfaceFactory = Box::new(|_| {
+            let mut mock = MockAppDriver::new(&[]);
+            mock.ocr = true;
+            Ok(Box::new(mock))
+        });
+        let mut reg = SurfaceRegistry::new(
+            [(
+                "citrix".to_string(),
+                AppTarget {
+                    command: "x".into(),
+                    window_name: String::new(),
+                },
+            )],
+            factory,
+            Duration::from_millis(10),
+        );
+        reg.activate("citrix", &no_captures()).expect("activates");
+        assert!(reg.reads_text_by_ocr().expect("routes"));
     }
 
     /// `fingerprint` reaches the active driver through the registry AND the

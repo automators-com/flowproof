@@ -331,6 +331,12 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         self.screen.press_key(key, modifiers)
     }
 
+    /// OCR'd text, so text assertions take the punctuation-forgiving rung
+    /// (`flowproof_driver::ocr_text_contains`).
+    fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError> {
+        Ok(true)
+    }
+
     fn surface_text(&mut self) -> Result<String, DriverError> {
         // The OCR'd frame IS the surface — reading order, one line each.
         Ok(self
