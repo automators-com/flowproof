@@ -2534,21 +2534,19 @@ fn author_actions<D: AppDriver, C: ModelClient>(
         }
     }
 
-    // On `app: vision` a step the grammar resolves to actions that name no
-    // element - `Type Zebra42`, `Press Enter` - is performed as written. The
-    // model has nothing to ground there, only an OCR'd screen to second-guess:
-    // after a double-click that visibly opened an input, it refused a bare
-    // `Type` as "the previous step left a problem", and looped asking for
-    // more screens on another (plan 15, finding 19). Other apps keep the
-    // model's read of the page, which they can trust.
+    // On `app: vision` a step the grammar reads completely is performed as
+    // the grammar reads it. The model's job is to turn intent into a target
+    // the scene lists, and a vision scene lists only OCR'd text - for a quoted
+    // label the grammar already produces that exact anchor. What the model
+    // added instead was doubt: after a double-click that visibly opened an
+    // input it refused a bare `Type` as "the previous step left a problem",
+    // and twice refused to type into a field it could see only as its label
+    // (plan 15, findings 19 and 21). Other apps keep the model's read of the
+    // page, which they can trust; anything the grammar cannot read still
+    // goes to the model.
     if plain_auto && app_id == "vision" {
         if let Ok(actions) = resolve_step(app_id, rules_step) {
-            let names_nothing = |a: &ResolvedAction| {
-                crate::author::action_targets(a)
-                    .iter()
-                    .all(|t| **t == Target::Surface)
-            };
-            if !actions.is_empty() && actions.iter().all(names_nothing) {
+            if !actions.is_empty() {
                 return Ok(AuthoredActions {
                     actions,
                     continues: false,
@@ -4921,6 +4919,35 @@ mod tests {
         assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
         let warning = summary.routing[1].warning.as_deref().expect("flagged");
         assert!(warning.contains("already held before"), "{warning}");
+        std::fs::remove_file(out).ok();
+    }
+
+    /// Plan 15, finding 21: shown only a label's OCR text, the model twice
+    /// refused to type into the field under it. On vision a quoted step the
+    /// grammar reads is the same anchor the model would have produced.
+    #[test]
+    fn a_vision_step_naming_a_quoted_field_never_asks_the_model() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: W\nsteps:\n  - Type ada into the \"Email address\" field\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            scene: Some(r#"[{"target":"text:Email address","text":"Email address"}]"#.into()),
+            ..MockAppDriver::new(&["Email address"])
+        };
+        let mut client = CountingClient {
+            reply: r##"{"action":"previous_step_incomplete","evidence":"only a label"}"##.into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-vision-quoted.trace.jsonl");
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("records");
+        assert_eq!(client.calls, 0);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
+        assert_eq!(
+            driver.typed,
+            vec![("Email address".to_string(), "ada".to_string())]
+        );
         std::fs::remove_file(out).ok();
     }
 
