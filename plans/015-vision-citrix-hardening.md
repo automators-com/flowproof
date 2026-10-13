@@ -98,6 +98,8 @@ scroll-to-bottom.
 | 20 | nested scrolling | `Scroll "I'm Here" into view` — the target is in a small scrolling box inside the page | the wheel is turned over the window centre, which scrolls the page, never an inner container | **known limitation, deferred**: finding an unknown inner scroll area means wheeling at many points per miss; documented rather than shipped slow |
 | 21 | silent type failure | with every fix built, the type flow replayed green again; its final frame shows the field empty and the WHOLE PAGE selected. #706's warning flagged both checks at record time | the click meant for the field lands `right_of` its label, which sits ABOVE the box, so the field never gets focus; select-all then selects the page and the typing goes nowhere | confirmed — this is finding 14 failing silently. Fixing 14 fixes it; a read-back guard (OCR near the field after typing: did the value appear?) would catch every silent type failure |
 | 22 | right-click in a browser | the right-click visibly revealed and focused the input, but `Type Quokka77` landed in Edge's own context menu | real input opens the browser's native menu, which takes focus - as it would for a person. Cypress's synthetic `rightclick()` never shows it | test content, not engine: the flow presses Escape after the right-click |
+| 23 | OCR accuracy | `Quokka77`, visibly correct in its field, read as `Quokka/` in every capture | an OCR glyph confusion on a digit pair in this font - not the caret, which Edge stops blinking after a few idle seconds | **mitigated** — #707 reads a value back by its head and near-tail, never its last two characters; an assertion on such text can still miss it |
+| 24 | edge of window | `HALFOFF` was typed into Coupon Code, which sat just inside the bottom edge, half cut off; read-back failed honestly | the nudge only fired for a point past the edge | **fixed** — #709 keeps action points two line-heights clear of the edge |
 
 ## The pull requests
 
@@ -123,6 +125,16 @@ below it lands.
 
 ## Notes for merging
 
+- **#712 and #713 merge cleanly by text and do not compile together.** Both
+  rewrite the driver's input imports and add a `#[cfg(test)]` module at the
+  same point. Whichever merges second needs, by hand: one `use crate::{...}`
+  line in `backend.rs` carrying both sides' names (git keeps both lines,
+  which is a duplicate-import error), `MOUSEEVENTF_VIRTUALDESK` and the
+  scan-code names in the one Windows import, and `#[cfg(test)]` on BOTH
+  test modules in `lib.rs` (a keep-both resolution drops one). Also with
+  #698: `InputEvent` gains both `KeyText` and `Wheel`.
+- OCR misreads `77` as `/` in the kitchensink font (finding 23); read-back
+  keys avoid a value's last two characters for that reason (#707).
 - #698 and #699 both add a method at the same point in `VisionAppDriver`'s
   `AppDriver` impl, and both add a CHANGELOG entry and a docs paragraph at the
   same place. Whichever merges second has a keep-both conflict in all three.
