@@ -65,6 +65,13 @@ double-click visibly works (finding 15), scroll-to-bottom records and replays,
 and the type flow's green replay is a FALSE pass (finding 18) - so the honest
 count of proven flows is still two plus scroll-to-bottom.
 
+Third live run (13 October, all six PRs): **double-click records and replays,
+proven by its frame** (`Zebra42Double click to edit` in the revealed input,
+a word nowhere else on the page). #706's warning fired on both of the type
+flow's checks at record time, and its green replay was again false (finding
+21). Proven flows: popover click, dropdown select, double-click, and
+scroll-to-bottom.
+
 ## Findings
 
 | # | Area | Symptom | Cause | Status |
@@ -89,6 +96,8 @@ count of proven flows is still two plus scroll-to-bottom.
 | 18 | false pass (again) | the type flow REPLAYED green, but its final frame shows the email field empty under Edge's autofill popup | the clear worked; the second value never landed (typed while the autofill popup held focus); `page shows slow.typing@email.com` matched the page's code sample | **warned** — #706 (same guard as 13); the autofill-popup focus loss itself is not fixed |
 | 19 | deterministic steps sent to the model | after a double-click that visibly worked (input revealed and focused), `Type Zebra42` was refused ("previous step left a problem") or looped ("asked for another screen" 3 times) | under `--author auto` with a model configured, every plain step is model-authored, even one the grammar resolves exactly (bare `Type X` is `TypeFocused`); on vision the model sees only OCR text and second-guesses it | **fixed** — #706: on `app: vision`, a plain step resolving to actions that name no element skips the model |
 | 20 | nested scrolling | `Scroll "I'm Here" into view` — the target is in a small scrolling box inside the page | the wheel is turned over the window centre, which scrolls the page, never an inner container | confirmed, not fixed; inner scroll areas are common in Citrix grids |
+| 21 | silent type failure | with every fix built, the type flow replayed green again; its final frame shows the field empty and the WHOLE PAGE selected. #706's warning flagged both checks at record time | the click meant for the field lands `right_of` its label, which sits ABOVE the box, so the field never gets focus; select-all then selects the page and the typing goes nowhere | confirmed — this is finding 14 failing silently. Fixing 14 fixes it; a read-back guard (OCR near the field after typing: did the value appear?) would catch every silent type failure |
+| 22 | right-click in a browser | the right-click visibly revealed and focused the input, but `Type Quokka77` landed in Edge's own context menu | real input opens the browser's native menu, which takes focus - as it would for a person. Cypress's synthetic `rightclick()` never shows it | test content, not engine: the flow presses Escape after the right-click |
 
 ## Notes for merging
 
