@@ -163,11 +163,48 @@ const MAX_SCROLL_PAGES: usize = 20;
 pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     screen: S,
     ocr: E,
+    /// The last `type_text`: its value's read-back key and how many times
+    /// that key was on screen BEFORE typing - see `typed_value_arrived`.
+    typed_baseline: Option<(String, usize)>,
 }
 
 impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     pub fn with_parts(screen: S, ocr: E) -> Self {
-        Self { screen, ocr }
+        Self {
+            screen,
+            ocr,
+            typed_baseline: None,
+        }
+    }
+
+    /// How a typed value is recognised on screen: its last eight letters
+    /// and digits, lowercased. The TAIL, because a value longer than its
+    /// field scrolls and leaves the end in view; letters and digits only,
+    /// because OCR drops punctuation (plan 15, finding 6). None below three
+    /// characters - too short to tell a typed value from the page.
+    fn readback_key(text: &str) -> Option<String> {
+        let chars: Vec<char> = text
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect();
+        (chars.len() >= 3).then(|| chars[chars.len().saturating_sub(8)..].iter().collect())
+    }
+
+    fn readback_count(&mut self, key: &str) -> Result<usize, DriverError> {
+        Ok(self
+            .lines()?
+            .iter()
+            .map(|l| {
+                let text: String = l
+                    .text
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect();
+                text.matches(key).count()
+            })
+            .sum())
     }
 
     fn lines(&mut self) -> Result<Vec<OcrLine>, DriverError> {
@@ -427,9 +464,37 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // with replace, so this is the path every vision clear takes
         // (plan 15) - delete the selection instead.
         if text.is_empty() {
+            self.typed_baseline = None;
             return self.screen.press_key("Delete", &[]);
         }
+        // Empty the field, then count the value's read-back key on screen:
+        // counted after the delete, a field that already held the value does
+        // not inflate the baseline, so re-typing it still reads as arrived.
+        self.screen.press_key("Delete", &[])?;
+        self.typed_baseline = match Self::readback_key(text) {
+            Some(key) => {
+                let before = self.readback_count(&key)?;
+                Some((key, before))
+            }
+            None => None,
+        };
         self.screen.type_text(text)
+    }
+
+    /// Plan 15, finding 21: with the field's label ABOVE the box, the click
+    /// landed beside the label, select-all took the whole page, and the
+    /// value was typed into nothing - and the flow replayed green. Arrived
+    /// means the value's key is on screen MORE often than before typing,
+    /// so a page that already prints the value elsewhere (a code sample, a
+    /// summary panel) cannot vouch for it.
+    fn typed_value_arrived(&mut self, text: &str) -> Result<Option<bool>, DriverError> {
+        let Some((key, before)) = self.typed_baseline.clone() else {
+            return Ok(None);
+        };
+        if Self::readback_key(text).as_deref() != Some(key.as_str()) {
+            return Ok(None);
+        }
+        Ok(Some(self.readback_count(&key)? > before))
     }
 
     fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
@@ -975,6 +1040,8 @@ pub mod fake {
         pub frames: Vec<RgbaImage>,
         pub current: usize,
         pub advance_on_click: Option<PixelRect>,
+        /// Typing moves to the next frame: "the field now shows it".
+        pub advance_on_type: bool,
         pub attached: Option<String>,
         pub clicks: Vec<(i32, i32)>,
         pub typed: Vec<String>,
@@ -1023,6 +1090,9 @@ pub mod fake {
 
         fn type_text(&mut self, text: &str) -> Result<(), DriverError> {
             self.typed.push(text.to_string());
+            if self.advance_on_type && self.current + 1 < self.frames.len() {
+                self.current += 1;
+            }
             Ok(())
         }
 
@@ -1306,6 +1376,58 @@ mod scroll_search_tests {
         // the same way. Bounded by the page, not by MAX_SCROLL_PAGES.
         assert_eq!(d.screen.scrolls, vec![-5, -5, -5, 5, 5, 5]);
         assert!(d.screen.clicks.is_empty());
+    }
+
+    /// Plan 15, finding 21. Frame 1 is the screen after the click, frame 2
+    /// after typing: `arrives` decides whether the value shows up there.
+    fn email_form(arrives: bool) -> VisionAppDriver<FakeScreen, PagedOcr> {
+        let sample = OcrLine::new("cy.type('fake@email.com')", (20, 200, 220, 16));
+        let label = OcrLine::new("Email address", (20, 20, 120, 16));
+        let mut after = vec![sample.clone(), label.clone()];
+        if arrives {
+            after.push(OcrLine::new("fake@email.com", (160, 20, 110, 16)));
+        }
+        let before = vec![sample, label];
+        let mut d = page_driver(vec![before.clone(), before, after], 0);
+        d.screen.advance_on_click = Some((0, 0, 400, 200));
+        d.screen.advance_on_type = true;
+        d
+    }
+
+    #[test]
+    fn a_typed_value_that_reached_the_field_reads_back() {
+        let mut d = email_form(true);
+        d.type_text(&anchor("Email address"), "fake@email.com")
+            .expect("types");
+        assert_eq!(
+            d.typed_value_arrived("fake@email.com").expect("reads"),
+            Some(true)
+        );
+    }
+
+    /// The code sample prints the same value, so "is it on screen" would
+    /// say yes; only "is it on screen MORE than before" tells the truth.
+    #[test]
+    fn a_value_typed_into_nothing_does_not_read_back_off_a_code_sample() {
+        let mut d = email_form(false);
+        d.type_text(&anchor("Email address"), "fake@email.com")
+            .expect("types");
+        assert_eq!(
+            d.typed_value_arrived("fake@email.com").expect("reads"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_value_too_short_or_untyped_cannot_be_judged() {
+        let mut d = email_form(false);
+        d.type_text(&anchor("Email address"), "ab").expect("types");
+        assert_eq!(d.typed_value_arrived("ab").expect("reads"), None);
+        assert_eq!(
+            d.typed_value_arrived("something else").expect("reads"),
+            None,
+            "only the value last typed"
+        );
     }
 
     /// Replay reveals once, then polls existence: the reveal is what finds
