@@ -416,7 +416,10 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 x + w as i32 + (h * RIGHT_OF_GAP_FACTOR) as i32,
                 y + h as i32 / 2,
             ),
-            "below" => (x + w as i32 / 2, y + h as i32 + h as i32 / 2),
+            // One label-height under the label's bottom edge: inside an
+            // input box that starts a few pixels below its label. Half a
+            // height landed 2px ABOVE kitchensink's email box (plan 15).
+            "below" => (x + w as i32 / 2, y + 2 * h as i32),
             _ => hit.center(), // "inside" and anything unrecognized
         }
     }
@@ -1244,7 +1247,8 @@ mod tests {
         let mut d = driver();
         let below = anchor("User name").with_relation(Some("below".into()));
         d.type_text(&below, "x").expect("types");
-        assert_eq!(d.screen.clicks, vec![(65, 44)]);
+        // One label-height below the label's bottom edge (20 + 16 + 16).
+        assert_eq!(d.screen.clicks, vec![(65, 52)]);
     }
 
     #[test]

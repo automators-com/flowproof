@@ -3106,6 +3106,10 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     let mut prior_intents: Vec<String> = Vec::new();
     let mut llm_used = false;
     let mut routing = Vec::new();
+    // A vision form's field layout, once a typed value has SHOWN it: a
+    // field below its label. A `${...}` value cannot be read back (a masked
+    // field shows dots), so it follows the layout its form already showed.
+    let mut fields_below_labels = false;
     // The secret-leak corpus, held in memory for this run only, exactly like a
     // resolved `${VAR}` value: (a) the web surface text read at each step
     // boundary (the same text `page shows` reads, not the page source) and
@@ -3446,6 +3450,9 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 rec.step_started(driver, &step_id);
             }
             let selector = action_selector(&action);
+            // Set when a vision field took its value BELOW its label rather
+            // than beside it; stamped into the step's selector below.
+            let mut landed_below = false;
             // Assertions do their own waiting (an element may legitimately
             // not exist yet — a toast — or be expected to be gone); every
             // other targeted action requires its element up front.
@@ -3711,10 +3718,36 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                         },
                     )?;
                     let value = flowproof_trace::secret::resolve_refs(&text)?;
-                    driver.type_text(targeted(), &value)?;
                     // A value from a `${...}` reference is not read back: a
                     // masked password field never shows what was typed.
-                    if !text.contains("${") && driver.typed_value_arrived(&value)? == Some(false) {
+                    let referenced = text.contains("${");
+                    // Plan 15, finding 14: a vision field types beside its
+                    // label (the SAP GUI layout), but most web forms put the
+                    // label ABOVE the box. A referenced value follows the
+                    // layout its form already showed; any other value tries
+                    // beside, then below, and the trace records whichever the
+                    // screen showed worked - an observation, not a guess, and
+                    // replay follows the recorded relation exactly.
+                    let unplaced = step_app == "vision" && targeted().relation.is_none();
+                    let below = || targeted().clone().with_relation(Some("below".into()));
+                    landed_below = unplaced && referenced && fields_below_labels;
+                    if landed_below {
+                        driver.type_text(&below(), &value)?;
+                    } else {
+                        driver.type_text(targeted(), &value)?;
+                    }
+                    let mut arrived = if referenced {
+                        None
+                    } else {
+                        driver.typed_value_arrived(&value)?
+                    };
+                    if arrived == Some(false) && unplaced {
+                        driver.type_text(&below(), &value)?;
+                        arrived = driver.typed_value_arrived(&value)?;
+                        landed_below = arrived == Some(true);
+                        fields_below_labels |= landed_below;
+                    }
+                    if arrived == Some(false) {
                         return Err(RecordError::AssertMismatch {
                             intent: spec_step.intent().to_string(),
                             expected: format!("'{value}' to appear in the field"),
@@ -4413,6 +4446,13 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 });
             }
             let mut step = step_for(steps.len() + 1, &spec_step.intent(), &step_app, &action);
+            if landed_below {
+                for selector in &mut step.selectors {
+                    if selector.tier == SelectorTier::TextAnchor {
+                        selector.payload.insert("relation".into(), "below".into());
+                    }
+                }
+            }
             // Which surface ran it — how a multi-surface replay knows the
             // driver a step belongs to. None on single-surface flows.
             step.surface = current_surface.clone();
@@ -4855,6 +4895,34 @@ mod tests {
         record(&spec("${FLOWPROOF_READBACK_TEST_PW}"), &mut driver, &out)
             .expect("a referenced value is not read back");
         std::env::remove_var("FLOWPROOF_READBACK_TEST_PW");
+        std::fs::remove_file(out).ok();
+    }
+
+    /// Plan 15, finding 14: a web-style form puts each label ABOVE its box.
+    /// The user name is tried beside its label, does not arrive, is typed
+    /// below and arrives - and the trace says `below`. The password, from a
+    /// reference that cannot be read back, follows the layout the form has
+    /// shown and is typed below once, never beside first.
+    #[test]
+    fn a_vision_form_with_labels_above_its_fields_records_below() {
+        std::env::set_var("FLOWPROOF_BELOW_TEST_PW", "hunter2");
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: W\nsteps:\n  - Type ada into the \"User\" field\n  - Type ${FLOWPROOF_BELOW_TEST_PW} into the \"Password\" field\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["User", "Password"]);
+        driver.fields_below = true;
+        let out = std::env::temp_dir().join("flowproof-below.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("records below the labels");
+        std::env::remove_var("FLOWPROOF_BELOW_TEST_PW");
+        let below = Some("below".to_string());
+        assert_eq!(
+            driver.typed_relations,
+            vec![None, below.clone(), below],
+            "user: beside then below; password: below only"
+        );
+        let trace = std::fs::read_to_string(&out).expect("trace written");
+        assert_eq!(trace.matches(r#""relation":"below""#).count(), 2, "{trace}");
         std::fs::remove_file(out).ok();
     }
 
