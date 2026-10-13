@@ -173,9 +173,9 @@ const EDGE_NUDGE_NOTCHES: i32 = 2;
 pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     screen: S,
     ocr: E,
-    /// The last `type_text`: its value's read-back key and how many times
-    /// that key was on screen BEFORE typing - see `typed_value_arrived`.
-    typed_baseline: Option<(String, usize)>,
+    /// The last `type_text`: its value's read-back keys and how many times
+    /// each was on screen BEFORE typing - see `typed_value_arrived`.
+    typed_baseline: Option<(Vec<String>, Vec<usize>)>,
     /// Height of the last frame read, to keep action points inside it.
     frame_height: u32,
 }
@@ -190,27 +190,47 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         }
     }
 
-    /// How a typed value is recognised on screen: its last eight letters
-    /// and digits, lowercased. The TAIL, because a value longer than its
-    /// field scrolls and leaves the end in view; letters and digits only,
-    /// because OCR drops punctuation (plan 15, finding 6). None below three
-    /// characters - too short to tell a typed value from the page.
-    fn readback_key(text: &str) -> Option<String> {
+    /// How a typed value is recognised on screen: letters and digits only,
+    /// lowercased, because OCR drops punctuation (plan 15, finding 6). A
+    /// value of eight or more gives TWO keys, either of which will do: its
+    /// first six, and the six before its last two. The head, because a
+    /// value's last characters are where OCR stumbles - `Quokka77` was read
+    /// `Quokka/`; the near-tail, because a value longer than its field
+    /// scrolls and leaves only the end in view. A shorter value is its own
+    /// key; under three characters, none - too short to tell from the page.
+    fn readback_keys(text: &str) -> Vec<String> {
         let chars: Vec<char> = text
             .chars()
             .filter(|c| c.is_alphanumeric())
             .flat_map(char::to_lowercase)
             .collect();
-        (chars.len() >= 3).then(|| chars[chars.len().saturating_sub(8)..].iter().collect())
+        let n = chars.len();
+        let mut keys: Vec<String> = match n {
+            0..=2 => Vec::new(),
+            3..=7 => vec![chars.iter().collect()],
+            _ => vec![
+                chars[..6].iter().collect(),
+                chars[n - 8..n - 2].iter().collect(),
+            ],
+        };
+        keys.dedup();
+        keys
     }
 
-    fn readback_count(&mut self, key: &str) -> Result<usize, DriverError> {
+    /// How many times each key is on screen now. Across a caret blink both
+    /// readings count, and the higher one is the answer.
+    fn readback_counts(&mut self, keys: &[String]) -> Result<Vec<usize>, DriverError> {
         let readings = self.steady_lines()?;
-        Ok(readings
+        Ok(keys
             .iter()
-            .map(|lines| Self::key_count(lines, key))
-            .max()
-            .unwrap_or(0))
+            .map(|key| {
+                readings
+                    .iter()
+                    .map(|lines| Self::key_count(lines, key))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect())
     }
 
     fn key_count(lines: &[OcrLine], key: &str) -> usize {
@@ -270,7 +290,10 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let mut point = Self::action_point(&hit, selector, default_relation);
         for _ in 0..2 {
             let line = hit.rect.3 as i32;
-            let notches = if point.1 > self.frame_height as i32 - line {
+            // Two lines clear of the bottom edge, not one: live, a Coupon Code
+            // box just inside the edge took its value but showed it half cut
+            // off, so OCR could not read it back.
+            let notches = if point.1 > self.frame_height as i32 - 2 * line {
                 -EDGE_NUDGE_NOTCHES
             } else if point.1 < line / 2 {
                 EDGE_NUDGE_NOTCHES
@@ -544,12 +567,12 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // counted after the delete, a field that already held the value does
         // not inflate the baseline, so re-typing it still reads as arrived.
         self.screen.press_key("Delete", &[])?;
-        self.typed_baseline = match Self::readback_key(text) {
-            Some(key) => {
-                let before = self.readback_count(&key)?;
-                Some((key, before))
-            }
-            None => None,
+        let keys = Self::readback_keys(text);
+        self.typed_baseline = if keys.is_empty() {
+            None
+        } else {
+            let before = self.readback_counts(&keys)?;
+            Some((keys, before))
         };
         self.screen.type_text(text)
     }
@@ -561,13 +584,16 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     /// so a page that already prints the value elsewhere (a code sample, a
     /// summary panel) cannot vouch for it.
     fn typed_value_arrived(&mut self, text: &str) -> Result<Option<bool>, DriverError> {
-        let Some((key, before)) = self.typed_baseline.clone() else {
+        let Some((keys, before)) = self.typed_baseline.clone() else {
             return Ok(None);
         };
-        if Self::readback_key(text).as_deref() != Some(key.as_str()) {
+        if Self::readback_keys(text) != keys {
             return Ok(None);
         }
-        Ok(Some(self.readback_count(&key)? > before))
+        let now = self.readback_counts(&keys)?;
+        Ok(Some(
+            now.iter().zip(&before).any(|(now, before)| now > before),
+        ))
     }
 
     fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
@@ -1508,6 +1534,23 @@ mod scroll_search_tests {
         );
     }
 
+    /// Live: `Quokka77` in the field read back as `Quokka/Right...` - the
+    /// value's head still counts.
+    #[test]
+    fn a_value_whose_last_characters_ocr_garbles_still_reads_back() {
+        let label = OcrLine::new("Name", (20, 20, 40, 16));
+        let before = vec![label.clone()];
+        let after = vec![label, OcrLine::new("Quokka/Right click", (80, 20, 160, 16))];
+        let mut d = page_driver(vec![before.clone(), before, after], 0);
+        d.screen.advance_on_click = Some((0, 0, 400, 200));
+        d.screen.advance_on_type = true;
+        d.type_text(&anchor("Name"), "Quokka77").expect("types");
+        assert_eq!(
+            d.typed_value_arrived("Quokka77").expect("reads"),
+            Some(true)
+        );
+    }
+
     #[test]
     fn a_value_too_short_or_untyped_cannot_be_judged() {
         let mut d = email_form(false);
@@ -1561,6 +1604,24 @@ mod scroll_search_tests {
         d.type_text(&below, "HALFOFF").expect("types");
         assert_eq!(d.screen.scrolls, vec![-EDGE_NUDGE_NOTCHES]);
         assert_eq!(d.screen.clicks, vec![(70, 132)], "inside the frame");
+    }
+
+    /// Live: the box below Coupon Code sat just INSIDE the bottom edge,
+    /// took its value, and showed it half cut off. Within two lines of the
+    /// edge is too close.
+    #[test]
+    fn an_action_point_just_inside_the_edge_still_scrolls_clear_of_it() {
+        let mut d = page_driver(
+            vec![
+                vec![OcrLine::new("Coupon Code", (20, 150, 100, 16))],
+                vec![OcrLine::new("Coupon Code", (20, 60, 100, 16))],
+            ],
+            0,
+        );
+        let below = anchor("Coupon Code").with_relation(Some("below".into()));
+        d.type_text(&below, "HALFOFF").expect("types");
+        assert_eq!(d.screen.scrolls, vec![-EDGE_NUDGE_NOTCHES]);
+        assert_eq!(d.screen.clicks, vec![(70, 92)]);
     }
 
     /// Replay reveals once, then polls existence: the reveal is what finds
