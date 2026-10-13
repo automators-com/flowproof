@@ -473,7 +473,11 @@ impl AppDriver for MockAppDriver {
     }
 
     fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
-        self.revealed.push(Self::id_of(selector)?.to_string());
+        // Like a real driver's reveal, never an error: a selector the
+        // mock cannot key is simply not recorded.
+        if let Ok(id) = Self::id_of(selector) {
+            self.revealed.push(id.to_string());
+        }
         Ok(())
     }
 

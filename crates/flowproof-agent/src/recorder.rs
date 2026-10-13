@@ -3477,6 +3477,13 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 matches!(&action, ResolvedAction::Capture { count: true, .. });
             if !is_assert && !is_counting_capture {
                 if let Some(selector) = &selector {
+                    // Existence is a pure read of what a driver can see; a
+                    // pixels-only driver sees one window of the page, so it
+                    // brings the target into view first - as replay's wait
+                    // does. Without it, every off-screen vision target the
+                    // grammar authored was "not found" before the driver
+                    // looked (plan 15). A no-op for every other driver.
+                    driver.reveal(selector)?;
                     if !driver.element_exists(selector)? {
                         let refusal = format!(
                             "click on {selector} - that element is not on the current screen"
@@ -4903,6 +4910,22 @@ mod tests {
     /// below and arrives - and the trace says `below`. The password, from a
     /// reference that cannot be read back, follows the layout the form has
     /// shown and is typed below once, never beside first.
+    /// Plan 15: with grammar-authored vision steps, the recorder's up-front
+    /// existence check ran before anything scrolled, so an off-screen field
+    /// was "not found". It reveals the target first, as replay does.
+    #[test]
+    fn recording_reveals_a_target_before_requiring_it() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: W\nsteps:\n  - Type HALFOFF into the \"Coupon Code\" field\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["Coupon Code"]);
+        let out = std::env::temp_dir().join("flowproof-record-reveal.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("records");
+        assert_eq!(driver.revealed, vec!["Coupon Code".to_string()]);
+        std::fs::remove_file(out).ok();
+    }
+
     #[test]
     fn a_vision_form_with_labels_above_its_fields_records_below() {
         std::env::set_var("FLOWPROOF_BELOW_TEST_PW", "hunter2");
