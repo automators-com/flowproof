@@ -132,6 +132,18 @@ pub enum RepairError {
     Model(#[from] AgentError),
     #[error("flow yaml error: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error(
+        "repair may not change what an assertion expects - '{0}' is left as written;          if it is wrong, a person changes it"
+    )]
+    AssertionProtected(String),
+}
+
+/// An `assert...:` step - `assert:`, `assert_sql:`, `assert_api:` and the rest.
+fn is_assertion(step: &serde_yaml::Value) -> bool {
+    step.as_mapping().is_some_and(|m| {
+        m.keys()
+            .any(|k| k.as_str().is_some_and(|k| k.starts_with("assert")))
+    })
 }
 
 /// Ask the model for a minimal fix to the failing step. `flow_yaml` is the
@@ -255,6 +267,16 @@ pub fn apply_patch(
             "index {step_index} out of range ({} steps)",
             steps.len()
         )));
+    }
+    // What a check expects is the test. Told never to weaken an assertion,
+    // the model still rewrote `page shows Hello, Ada` - correct - to
+    // `Hello Ada!` from an OCR misread of the page (plan 15, finding 8):
+    // a repair that edits an expectation until it matches is the exact
+    // failure a test exists to catch. Waiting longer stays allowed
+    // (`widen_timeout`); changing the expectation does not.
+    if is_assertion(&steps[step_index]) && steps[step_index] != replacement {
+        let written = serde_yaml::to_string(&steps[step_index]).unwrap_or_default();
+        return Err(RepairError::AssertionProtected(written.trim().to_string()));
     }
     steps[step_index] = replacement;
     serde_yaml::to_string(&doc).map_err(RepairError::Yaml)
@@ -388,6 +410,25 @@ mod tests {
         let steps = doc["steps"].as_sequence().expect("steps is a sequence");
         assert_eq!(steps[0].as_str(), Some("Click \"New\""));
         assert_eq!(steps[1].as_str(), Some("Click \"Keep\""));
+    }
+
+    /// Plan 15, finding 8: the model "corrected" a right expectation to an
+    /// OCR misread and the flow file was rewritten.
+    #[test]
+    fn apply_patch_refuses_to_change_what_an_assertion_expects() {
+        let yaml = "name: x
+app: vision
+steps:
+  - Type Ada into the name field
+  - assert: page shows Hello, Ada
+";
+        let err = apply_patch(yaml, 1, "assert: page shows Hello Ada!").expect_err("protected");
+        assert!(matches!(err, RepairError::AssertionProtected(_)), "{err}");
+        assert!(err.to_string().contains("Hello, Ada"), "{err}");
+        // An action step is still repairable.
+        let patched =
+            apply_patch(yaml, 0, "Type Ada into the \"Your name\" field").expect("patched");
+        assert!(patched.contains("Your name"));
     }
 
     #[test]
