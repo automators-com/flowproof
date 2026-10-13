@@ -34,7 +34,28 @@ mouse wheel turns a page at a time, down to the bottom and back up, and
 the step acts where the text is found. Replay repeats the same search, so
 start each run from the same page. Assertions read only what is visible.
 
+## How vision acts
+
+- **Fields.** A field is typed beside its label (the SAP GUI layout) or, when
+  the value does not appear there, below it - recording reads the screen back
+  after typing and keeps whichever worked, so the trace records where the
+  field is. A typed value that never appears on screen fails the step instead
+  of passing; a value from a `${...}` reference is never read back, since a
+  password field shows dots.
+- **Clicks.** Click, double-click and right-click land on the matched text.
+  A right-click in a browser also opens the browser's own menu, which takes
+  focus - add `Press Escape` after it before typing.
+- **Checkboxes.** `Check` and `Uncheck` click the label and watch the box
+  beside it change; a click that changes nothing visible is refused. Asking
+  whether a box *is* checked is not something pixels can answer on their own.
+- **Reading.** Checks read the screen twice, half a caret blink apart, so a
+  blinking text cursor beside freshly typed text cannot garble it.
+
 ## Know the current limits
 
 Vision flows are Windows-only. They do not yet support visual-template matching
-or OCR-region synchronization conditions.
+or OCR-region synchronization conditions. A target inside a scrolling area
+*within* the page (a grid or list with its own scrollbar) is not searched -
+the wheel scrolls the window. And the window has to be on a display that is
+actually repainting: a VM or remote desktop left idle can stop updating its
+screen, and every flow then fails for reasons that have nothing to do with it.
