@@ -89,15 +89,34 @@ scroll-to-bottom.
 | 11 | unattended runs | a re-run reported only browser chrome on screen, page body blank, for every flow | the VM's display stopped repainting once the host was left (taskbar clock frozen 12 minutes behind); capture returned stale frames and the browser painted nothing | confirmed. Environment, not engine — but flowproof read a frozen screen as "the field is not there". A vision run should detect a frame that never changes across actions and say the display is not updating. Not yet fixed |
 | 12 | replay | the first three flows to record all failed to replay: "element did not appear within 5000ms"; one target recorded as `Fake@email.com` read back as `fake@email.com` | replay's existence precondition is a pure read of the visible frame, so an off-screen target timed out before the action's scroll search; vision anchors matched case-sensitively | **fixed** — #702 (stacked on #698): `AppDriver::reveal` before the wait and before giving up; case-insensitive fallback |
 | 13 | false pass | `Type slow.typing@email.com into the "Email address" field` recorded as a single Escape press, and the flow passed | the model dismissed Edge's autofill popup, then judged the step done because the value appears in the page's code sample; the next `page shows` matched the same sample | **warned** — #706: a vision `page shows` whose text was on screen before the actions it follows carries a recording warning. (A type step that types nothing is not yet guarded.) |
-| 14 | layout | `Type ... into the "Describe:" field` authored no action | vision types `right_of` a label by default (the SAP GUI layout); web forms put the label ABOVE the box | confirmed — **needs a decision** (see Open questions) |
-| 15 | actions | double-click and checkbox steps fail: "double-click is not supported by this driver"; "no actionable checkbox" | `VisionAppDriver` implements neither `double_click` nor `set_checked`, and vision scene entries carry no checkbox role | double-click and right-click **fixed** — #705. Checkboxes **need a decision** (see Open questions) |
+| 14 | layout | `Type ... into the "Describe:" field` authored no action | vision types `right_of` a label by default (the SAP GUI layout); web forms put the label ABOVE the box | **fixed** — #708: recording types beside, reads back (#707), and on a miss types below and records `relation: below`; the below point moved inside typical input boxes |
+| 15 | actions | double-click and checkbox steps fail: "double-click is not supported by this driver"; "no actionable checkbox" | `VisionAppDriver` implements neither `double_click` nor `set_checked`, and vision scene entries carry no checkbox role | double-click and right-click **fixed** — #705; checkboxes **fixed** — #711, set by watching the box change, refused when nothing visibly changes |
 | 16 | grounding | `Press the "Submit" button` authored no action | not yet diagnosed — needs the `record --json` inventory from a live run | open |
 | 17 | clearing | after a recorded Clear, the field still held its old value and the next step stopped on it | a clear is recorded as `type_text("")` with replace; vision select-all'd and typed nothing | **fixed** — #702: typing nothing deletes the selection |
 | 18 | false pass (again) | the type flow REPLAYED green, but its final frame shows the email field empty under Edge's autofill popup | the clear worked; the second value never landed (typed while the autofill popup held focus); `page shows slow.typing@email.com` matched the page's code sample | **warned** — #706 (same guard as 13); the autofill-popup focus loss itself is not fixed |
 | 19 | deterministic steps sent to the model | after a double-click that visibly worked (input revealed and focused), `Type Zebra42` was refused ("previous step left a problem") or looped ("asked for another screen" 3 times) | under `--author auto` with a model configured, every plain step is model-authored, even one the grammar resolves exactly (bare `Type X` is `TypeFocused`); on vision the model sees only OCR text and second-guesses it | **fixed** — #706: on `app: vision`, a plain step resolving to actions that name no element skips the model |
-| 20 | nested scrolling | `Scroll "I'm Here" into view` — the target is in a small scrolling box inside the page | the wheel is turned over the window centre, which scrolls the page, never an inner container | confirmed, not fixed; inner scroll areas are common in Citrix grids |
+| 20 | nested scrolling | `Scroll "I'm Here" into view` — the target is in a small scrolling box inside the page | the wheel is turned over the window centre, which scrolls the page, never an inner container | **known limitation, deferred**: finding an unknown inner scroll area means wheeling at many points per miss; documented rather than shipped slow |
 | 21 | silent type failure | with every fix built, the type flow replayed green again; its final frame shows the field empty and the WHOLE PAGE selected. #706's warning flagged both checks at record time | the click meant for the field lands `right_of` its label, which sits ABOVE the box, so the field never gets focus; select-all then selects the page and the typing goes nowhere | confirmed — this is finding 14 failing silently. Fixing 14 fixes it; a read-back guard (OCR near the field after typing: did the value appear?) would catch every silent type failure |
 | 22 | right-click in a browser | the right-click visibly revealed and focused the input, but `Type Quokka77` landed in Edge's own context menu | real input opens the browser's native menu, which takes focus - as it would for a person. Cypress's synthetic `rightclick()` never shows it | test content, not engine: the flow presses Escape after the right-click |
+
+## The pull requests
+
+| PR | Base | What |
+|---|---|---|
+| #697 | main | this plan; vision `rule_step` grounds `text:` tokens (5) |
+| #699 | main | OCR-tolerant positive `page shows` (6) |
+| #706 | main | vision performs grammar-readable steps without the model; warns on a check that already held (13, 18, 19) |
+| #698 | main | vision scrolls to find off-screen targets, at record and act time (7, 10) |
+| #702 | #698 | replay reveals before waiting; case-insensitive anchors; a clear clears (12, 17) |
+| #705 | #702 | double-click and right-click (15) |
+| #707 | #705 | a typed value is read back; a miss fails the step (21) |
+| #708 | #707 | fields below their labels (14) |
+| #709 | #708 | reads past a blinking caret; action points kept inside the window |
+| #710 | #709 | the recorder reveals a target before requiring it |
+| #711 | #710 | checkboxes set by watching them change (15) |
+
+The stacked ones merge in order; each is retargeted to `main` as the one
+below it lands.
 
 ## Notes for merging
 
@@ -119,13 +138,18 @@ scroll-to-bottom.
 
 ## Open questions
 
-- **Checkboxes on `app: vision` (finding 15).** `set_checked` is SET-state and
+- **Checkboxes on `app: vision` (finding 15)** - decided in #711 as the
+  pixel option, by observing the change rather than reading an absolute
+  state; reversible.
+  Original framing: `set_checked` is SET-state and
   must verify, so a reseeded environment cannot silently invert a step. Pixels
   give no checkbox state, so a click only toggles. Either vision keeps refusing
   checkboxes with a clearer message, or it reads the state from the box's
   pixels (compare the box region before and after the click) - heuristic, and
   it should be proven on real Citrix screens before it is trusted.
-- **Labels above fields (finding 14).** A vision trace stamps WHERE an action
+- **Labels above fields (finding 14)** - decided in #708 by observation
+  (type beside, read back, type below), not grammar; reversible.
+  Original framing: A vision trace stamps WHERE an action
   lands relative to its label, hard-coded to `right_of` for typing
   (`recorder::stamp_vision_relation`) - right for SAP GUI, wrong for most web
   forms. Either the grammar lets an author say so (`into the field below
