@@ -711,7 +711,9 @@ pub mod native {
         }
 
         fn type_text(&mut self, text: &str) -> Result<(), DriverError> {
-            self.inject(InputEvent::Text {
+            // As key strokes, not Unicode packets: the window is usually a
+            // Citrix or RDP client, and those forward scan codes only.
+            self.inject(InputEvent::KeyText {
                 text: text.to_string(),
             })?;
             std::thread::sleep(Duration::from_millis(120));
