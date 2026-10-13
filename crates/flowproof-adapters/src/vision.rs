@@ -136,6 +136,12 @@ pub trait VisionScreen {
     /// Turn the mouse wheel over the window by `notches` (negative scrolls
     /// the view down) and let the frame settle.
     fn scroll(&mut self, notches: i32) -> Result<(), DriverError>;
+    /// How long to wait between two captures so a blinking text caret is
+    /// on in one and off in the other: half a blink. Zero for a screen
+    /// that does not blink.
+    fn blink_gap(&self) -> Duration {
+        Duration::ZERO
+    }
     /// Screen origin of the attached window, for absolute-coordinate
     /// artifacts (element rects in recordings).
     fn window_origin(&mut self) -> Result<(i32, i32), DriverError>;
@@ -159,6 +165,10 @@ const SCROLL_NOTCHES_PER_PAGE: i32 = 5;
 /// edge from ever reading as "no change".
 const MAX_SCROLL_PAGES: usize = 20;
 
+/// Wheel notches to bring an action point that fell past the window's edge
+/// back inside it - a couple of lines, not a page.
+const EDGE_NUDGE_NOTCHES: i32 = 2;
+
 /// `AppDriver` over frames + OCR + injected input.
 pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     screen: S,
@@ -166,6 +176,8 @@ pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     /// The last `type_text`: its value's read-back key and how many times
     /// that key was on screen BEFORE typing - see `typed_value_arrived`.
     typed_baseline: Option<(String, usize)>,
+    /// Height of the last frame read, to keep action points inside it.
+    frame_height: u32,
 }
 
 impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
@@ -174,6 +186,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             screen,
             ocr,
             typed_baseline: None,
+            frame_height: 0,
         }
     }
 
@@ -192,8 +205,16 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     }
 
     fn readback_count(&mut self, key: &str) -> Result<usize, DriverError> {
-        Ok(self
-            .lines()?
+        let readings = self.steady_lines()?;
+        Ok(readings
+            .iter()
+            .map(|lines| Self::key_count(lines, key))
+            .max()
+            .unwrap_or(0))
+    }
+
+    fn key_count(lines: &[OcrLine], key: &str) -> usize {
+        lines
             .iter()
             .map(|l| {
                 let text: String = l
@@ -204,12 +225,63 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                     .collect();
                 text.matches(key).count()
             })
-            .sum())
+            .sum()
     }
 
     fn lines(&mut self) -> Result<Vec<OcrLine>, DriverError> {
         let frame = self.screen.frame()?;
+        self.frame_height = frame.height();
         self.ocr.recognize(&frame)
+    }
+
+    /// One reading per distinct frame across a caret blink. A text caret
+    /// blinking beside freshly typed text merges with its last characters:
+    /// `Quokka77` beside the caret was read as `Quokka/` (plan 15). Two
+    /// captures half a blink apart differ only when something blinks, and
+    /// then both are read, so a check sees the caret-free reading too. An
+    /// unchanging screen costs one OCR pass, as before.
+    fn steady_lines(&mut self) -> Result<Vec<Vec<OcrLine>>, DriverError> {
+        let first = self.screen.frame()?;
+        let gap = self.screen.blink_gap();
+        if !gap.is_zero() {
+            std::thread::sleep(gap);
+        }
+        let second = self.screen.frame()?;
+        self.frame_height = second.height();
+        let mut readings = vec![self.ocr.recognize(&second)?];
+        if first != second {
+            readings.push(self.ocr.recognize(&first)?);
+        }
+        Ok(readings)
+    }
+
+    /// [`Self::require`] plus the action point, kept inside the frame. A
+    /// search stops as soon as the TEXT is on screen, and a field below its
+    /// label can then sit past the bottom edge: kitchensink's Coupon Code
+    /// label came to rest on the last line, its box out of view, and the
+    /// click went nowhere (plan 15). An off-frame point scrolls a little
+    /// and looks again.
+    fn locate(
+        &mut self,
+        selector: &UiaSelector,
+        default_relation: &str,
+    ) -> Result<(OcrHit, (i32, i32)), DriverError> {
+        let mut hit = self.require(selector)?;
+        let mut point = Self::action_point(&hit, selector, default_relation);
+        for _ in 0..2 {
+            let line = hit.rect.3 as i32;
+            let notches = if point.1 > self.frame_height as i32 - line {
+                -EDGE_NUDGE_NOTCHES
+            } else if point.1 < line / 2 {
+                EDGE_NUDGE_NOTCHES
+            } else {
+                break;
+            };
+            self.screen.scroll(notches)?;
+            hit = self.require(selector)?;
+            point = Self::action_point(&hit, selector, default_relation);
+        }
+        Ok((hit, point))
     }
 
     /// Match a text anchor over BOTH granularities, strongest first:
@@ -442,8 +514,7 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     }
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
-        let line = self.require(selector)?;
-        let (x, y) = Self::action_point(&line, selector, "inside");
+        let (_, (x, y)) = self.locate(selector, "inside")?;
         self.screen.click(x, y)
     }
 
@@ -453,8 +524,7 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
         // A field is addressed by its label; the input box sits beside it.
-        let line = self.require(selector)?;
-        let (x, y) = Self::action_point(&line, selector, "right_of");
+        let (_, (x, y)) = self.locate(selector, "right_of")?;
         self.screen.click(x, y)?;
         // Select what the field holds before the keystrokes land - the
         // trait's fill contract, by the same chord clear_text below already
@@ -501,8 +571,7 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     }
 
     fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
-        let line = self.require(selector)?;
-        let (x, y) = Self::action_point(&line, selector, "right_of");
+        let (_, (x, y)) = self.locate(selector, "right_of")?;
         self.screen.click(x, y)?;
         self.screen.press_key("a", &[KeyMod::Ctrl])?;
         self.screen.press_key("Delete", &[])
@@ -521,14 +590,12 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     }
 
     fn double_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
-        let hit = self.require(selector)?;
-        let (x, y) = Self::action_point(&hit, selector, "inside");
+        let (_, (x, y)) = self.locate(selector, "inside")?;
         self.screen.double_click(x, y)
     }
 
     fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
-        let hit = self.require(selector)?;
-        let (x, y) = Self::action_point(&hit, selector, "inside");
+        let (_, (x, y)) = self.locate(selector, "inside")?;
         self.screen.right_click(x, y)
     }
 
@@ -550,10 +617,13 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     }
 
     fn surface_text(&mut self) -> Result<String, DriverError> {
-        // The OCR'd frame IS the surface — reading order, one line each.
+        // The OCR'd frame IS the surface - reading order, one line each.
+        // Across a caret blink both readings are kept, so a check is judged
+        // against the one the caret did not garble.
         Ok(self
-            .lines()?
+            .steady_lines()?
             .into_iter()
+            .flatten()
             .map(|l| l.text)
             .filter(|t| !t.trim().is_empty())
             .collect::<Vec<_>>()
@@ -1006,6 +1076,13 @@ pub mod native {
             Ok(())
         }
 
+        fn blink_gap(&self) -> Duration {
+            // Windows' default caret blink: 530ms on, 530ms off. Two
+            // captures 300ms apart straddle a transition far more often
+            // than not, and cost little on a screen that is not blinking.
+            Duration::from_millis(300)
+        }
+
         fn window_origin(&mut self) -> Result<(i32, i32), DriverError> {
             let (x, y, _, _) = self.window()?.refresh_rect()?;
             Ok((x, y))
@@ -1055,6 +1132,9 @@ pub mod fake {
         /// positions.
         pub scrolls: Vec<i32>,
         pub double_clicks: Vec<(i32, i32)>,
+        /// A blinking caret: every other `frame()` returns this instead.
+        pub blink_frame: Option<RgbaImage>,
+        pub blink_on: bool,
         pub right_clicks: Vec<(i32, i32)>,
     }
 
@@ -1074,6 +1154,12 @@ pub mod fake {
         }
 
         fn frame(&mut self) -> Result<RgbaImage, DriverError> {
+            if let Some(alternate) = &self.blink_frame {
+                self.blink_on = !self.blink_on;
+                if self.blink_on {
+                    return Ok(alternate.clone());
+                }
+            }
             self.frames
                 .get(self.current)
                 .cloned()
@@ -1432,6 +1518,49 @@ mod scroll_search_tests {
             None,
             "only the value last typed"
         );
+    }
+
+    /// Plan 15: the caret beside freshly typed `Quokka77` made OCR read
+    /// `Quokka/`. The garbled reading is one frame; the caret-off frame,
+    /// half a blink later, reads true - and both reach the check.
+    #[test]
+    fn a_blinking_caret_does_not_hide_freshly_typed_text() {
+        let mut d = page_driver(
+            vec![
+                vec![OcrLine::new(
+                    "Quokka/Right click to edit",
+                    (20, 20, 200, 16),
+                )],
+                vec![OcrLine::new(
+                    "Quokka77Right click to edit",
+                    (20, 20, 200, 16),
+                )],
+            ],
+            0,
+        );
+        let caret_off = d.screen.frames[1].clone();
+        d.screen.frames.truncate(1);
+        d.screen.blink_frame = Some(caret_off);
+        let surface = d.surface_text().expect("reads");
+        assert!(surface.contains("Quokka77"), "{surface}");
+    }
+
+    /// Plan 15: the search stopped with kitchensink's Coupon Code label on
+    /// the last line and its box below the window. The point below the
+    /// label is off the frame, so the driver nudges and looks again.
+    #[test]
+    fn an_action_point_past_the_window_edge_scrolls_back_into_view() {
+        let mut d = page_driver(
+            vec![
+                vec![OcrLine::new("Coupon Code", (20, 190, 100, 16))],
+                vec![OcrLine::new("Coupon Code", (20, 100, 100, 16))],
+            ],
+            0,
+        );
+        let below = anchor("Coupon Code").with_relation(Some("below".into()));
+        d.type_text(&below, "HALFOFF").expect("types");
+        assert_eq!(d.screen.scrolls, vec![-EDGE_NUDGE_NOTCHES]);
+        assert_eq!(d.screen.clicks, vec![(70, 132)], "inside the frame");
     }
 
     /// Replay reveals once, then polls existence: the reveal is what finds
