@@ -625,10 +625,16 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 x + w as i32 + (h * RIGHT_OF_GAP_FACTOR) as i32,
                 y + h as i32 / 2,
             ),
-            // One label-height under the label's bottom edge: inside an
-            // input box that starts a few pixels below its label. Half a
-            // height landed 2px ABOVE kitchensink's email box (plan 15).
-            "below" => (x + w as i32 / 2, y + 2 * h as i32),
+            // The middle of where an input box sits under its label: one and
+            // a half line-heights below the label's bottom edge, the height
+            // floored at 14px. Live, OCR measured `Describe:` only 10px tall,
+            // and "one height below" landed in the gap ABOVE its box (plan 15,
+            // finding 26); earlier, half a height landed above kitchensink's
+            // email box. A label's OCR height wobbles; an input box does not.
+            "below" => {
+                let line = (h as i32).max(14);
+                (x + w as i32 / 2, y + h as i32 + line * 3 / 2)
+            }
             _ => hit.center(), // "inside" and anything unrecognized
         }
     }
@@ -1509,8 +1515,8 @@ mod tests {
         let mut d = driver();
         let below = anchor("User name").with_relation(Some("below".into()));
         d.type_text(&below, "x").expect("types");
-        // One label-height below the label's bottom edge (20 + 16 + 16).
-        assert_eq!(d.screen.clicks, vec![(65, 52)]);
+        // One and a half label-heights below its bottom edge (20 + 16 + 24).
+        assert_eq!(d.screen.clicks, vec![(65, 60)]);
     }
 
     #[test]
@@ -1831,7 +1837,7 @@ mod scroll_search_tests {
         let below = anchor("Coupon Code").with_relation(Some("below".into()));
         d.type_text(&below, "HALFOFF").expect("types");
         assert_eq!(d.screen.scrolls, vec![-EDGE_NUDGE_NOTCHES]);
-        assert_eq!(d.screen.clicks, vec![(70, 132)], "inside the frame");
+        assert_eq!(d.screen.clicks, vec![(70, 140)], "inside the frame");
     }
 
     /// Live: the box below Coupon Code sat just INSIDE the bottom edge,
@@ -1849,7 +1855,18 @@ mod scroll_search_tests {
         let below = anchor("Coupon Code").with_relation(Some("below".into()));
         d.type_text(&below, "HALFOFF").expect("types");
         assert_eq!(d.screen.scrolls, vec![-EDGE_NUDGE_NOTCHES]);
-        assert_eq!(d.screen.clicks, vec![(70, 92)]);
+        assert_eq!(d.screen.clicks, vec![(70, 100)]);
+    }
+
+    /// Live: OCR measured `Describe:` 10px tall, and the point one height
+    /// below landed between the label and its box. The height is floored.
+    #[test]
+    fn below_a_label_ocr_measured_short_still_lands_in_the_box() {
+        let mut d = page_driver(vec![vec![OcrLine::new("Describe:", (20, 20, 60, 10))]], 0);
+        let below = anchor("Describe:").with_relation(Some("below".into()));
+        d.type_text(&below, "Narwhal31").expect("types");
+        // bottom edge 30, plus 1.5 x 14.
+        assert_eq!(d.screen.clicks, vec![(50, 51)]);
     }
 
     /// Replay reveals once, then polls existence: the reveal is what finds
