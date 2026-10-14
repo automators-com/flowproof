@@ -2034,6 +2034,18 @@ fn execute_step<D: AppDriver>(
             match flowproof_trace::secret::resolve_refs(&params.text) {
                 Ok(value) => {
                     driver.type_focused(&value)?;
+                    // Read back unless the value came from a reference: a
+                    // masked password field never shows it.
+                    if !params.text.contains("${")
+                        && driver.typed_value_arrived(&value)? == Some(false)
+                    {
+                        return Ok((
+                            Err(format!(
+                                "typed '{value}' but it never appeared on screen - nothing had focus, or the keystrokes went to something else"
+                            )),
+                            StepMatch::default(),
+                        ));
+                    }
                     (Ok(()), StepMatch::default())
                 }
                 Err(e) => (Err(e.to_string()), StepMatch::default()),
