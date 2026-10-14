@@ -80,6 +80,12 @@ checkboxes, submit - **7 of 10**. Still failing: clear (26) and the right-click
 flow's check (25). The findings report for the team is the PDF built from
 this plan.
 
+Sixth live run (14 October, evening): **clear, right-click and double-click
+record and replay**, with the vision log confirming each value arrived. With
+submit, type, checkboxes, popover, select and scroll-to-bottom that is **every
+browser-window flow of the Cypress `actions` spec - 9 of 10**; the tenth, a
+scroll area inside the page, is the documented limitation (20).
+
 ## Findings
 
 | # | Area | Symptom | Cause | Status |
@@ -108,8 +114,8 @@ this plan.
 | 22 | right-click in a browser | the right-click visibly revealed and focused the input, but `Type Quokka77` landed in Edge's own context menu | real input opens the browser's native menu, which takes focus - as it would for a person. Cypress's synthetic `rightclick()` never shows it | test content, not engine: the flow presses Escape after the right-click |
 | 23 | OCR accuracy | `Quokka77`, visibly correct in its field, read as `Quokka/` in every capture | an OCR glyph confusion on a digit pair in this font - not the caret, which Edge stops blinking after a few idle seconds | **mitigated** — #707 reads a value back by its head and near-tail, never its last two characters; an assertion on such text can still miss it |
 | 24 | edge of window | `HALFOFF` was typed into Coupon Code, which sat just inside the bottom edge, half cut off; read-back failed honestly | the nudge only fired for a point past the edge | **fixed** — #709 keeps action points two line-heights clear of the edge |
-| 25 | OCR near the cursor | the right-click flow's typed `Quokka42`, visibly correct in the revealed input, read as `Quokka4Right` | text touching the text cursor and the next word is garbled; a check on just-typed text can miss it | open — the right-click itself is proven by the frame |
-| 26 | clear flow | `Type Narwhal31 into the "Describe:" field` failed read-back: the value never appeared | not yet diagnosed - the run failed before any frame was captured | open |
+| 25 | OCR near the cursor | the right-click flow's typed `Quokka42`, visibly correct in the revealed input, read as `Quokka4Right` | text touching the text cursor and the next word is garbled; a check on just-typed text can miss it | **fixed** — #717: a bare `Type X` is read back by the value's head, away from the cursor, so the typing step proves the value and no check on just-typed text is needed; right-click and double-click record and replay |
+| 26 | clear flow | `Type Narwhal31 into the "Describe:" field` failed read-back: the value never appeared | diagnosed with #716's `FLOWPROOF_VISION_LOG`: OCR dropped the label's colon (field not found), then OCR measured the label 10px tall so "one height below" missed the box, then a Clear acted beside the label | **fixed** — #718 (edge punctuation in anchors), #719 (below point by line height, floored), #720 (Clear follows the learned layout); records and replays |
 
 ## The pull requests
 
@@ -129,6 +135,11 @@ this plan.
 | #712 | main | scan-code keyboard input for Citrix/RDP (2) |
 | #713 | main | multi-monitor capture and input; DPI awareness (3, 4) |
 | #714 | main | repair may not change what an assertion expects (8) |
+| #716 | #711 | `FLOWPROOF_VISION_LOG`: what was matched, where it clicked, read-back counts |
+| #717 | #716 | a bare `Type X` is read back (25) |
+| #718 | #717 | anchors forgive punctuation OCR drops at word edges (26) |
+| #719 | #718 | the point below a label aims at its box, not by OCR's label height (26) |
+| #720 | #719 | a Clear follows the field layout its form has shown (26) |
 
 The stacked ones merge in order; each is retargeted to `main` as the one
 below it lands.
