@@ -3773,7 +3773,22 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                         });
                     }
                 }
-                ResolvedAction::Clear { .. } => driver.clear_text(targeted())?,
+                ResolvedAction::Clear { .. } => {
+                    // A field below its label is cleared below it too. Live, a
+                    // Clear on the field just typed into below `Describe:` acted
+                    // beside the label, deleted nothing, and the old value
+                    // stayed (plan 15). The layout the form has shown applies,
+                    // and is recorded so replay clears the same place.
+                    landed_below = step_app == "vision"
+                        && targeted().relation.is_none()
+                        && fields_below_labels;
+                    if landed_below {
+                        driver
+                            .clear_text(&targeted().clone().with_relation(Some("below".into())))?
+                    } else {
+                        driver.clear_text(targeted())?
+                    }
+                }
                 ResolvedAction::SetChecked { checked, .. } => {
                     driver.set_checked(targeted(), *checked)?
                 }
@@ -4946,6 +4961,23 @@ mod tests {
         let out = std::env::temp_dir().join("flowproof-record-reveal.trace.jsonl");
         record(&spec, &mut driver, &out).expect("records");
         assert_eq!(driver.revealed, vec!["Coupon Code".to_string()]);
+        std::fs::remove_file(out).ok();
+    }
+
+    /// A Clear on a field the form has shown sits below its label is
+    /// cleared below it, and the trace records that for replay.
+    #[test]
+    fn a_vision_clear_follows_the_layout_its_form_has_shown() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: W\nsteps:\n  - Type ada into the \"User\" field\n  - Clear the \"User\" field\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["User"]);
+        driver.fields_below = true;
+        let out = std::env::temp_dir().join("flowproof-clear-below.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("records");
+        let trace = std::fs::read_to_string(&out).expect("trace written");
+        assert_eq!(trace.matches(r#""relation":"below""#).count(), 2, "{trace}");
         std::fs::remove_file(out).ok();
     }
 
