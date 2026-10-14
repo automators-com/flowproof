@@ -72,6 +72,14 @@ flow's checks at record time, and its green replay was again false (finding
 21). Proven flows: popover click, dropdown select, double-click, and
 scroll-to-bottom.
 
+Fifth live run (14 October, all 14 PRs built together): **submit records and
+replays** - `HALFOFF` typed below its label, Submit pressed, the green
+confirmation in the replay frame; typing and checkboxes replayed again. Proven
+flows: popover click, dropdown select, double-click, scroll-to-bottom, type,
+checkboxes, submit - **7 of 10**. Still failing: clear (26) and the right-click
+flow's check (25). The findings report for the team is the PDF built from
+this plan.
+
 ## Findings
 
 | # | Area | Symptom | Cause | Status |
@@ -100,6 +108,8 @@ scroll-to-bottom.
 | 22 | right-click in a browser | the right-click visibly revealed and focused the input, but `Type Quokka77` landed in Edge's own context menu | real input opens the browser's native menu, which takes focus - as it would for a person. Cypress's synthetic `rightclick()` never shows it | test content, not engine: the flow presses Escape after the right-click |
 | 23 | OCR accuracy | `Quokka77`, visibly correct in its field, read as `Quokka/` in every capture | an OCR glyph confusion on a digit pair in this font - not the caret, which Edge stops blinking after a few idle seconds | **mitigated** — #707 reads a value back by its head and near-tail, never its last two characters; an assertion on such text can still miss it |
 | 24 | edge of window | `HALFOFF` was typed into Coupon Code, which sat just inside the bottom edge, half cut off; read-back failed honestly | the nudge only fired for a point past the edge | **fixed** — #709 keeps action points two line-heights clear of the edge |
+| 25 | OCR near the cursor | the right-click flow's typed `Quokka42`, visibly correct in the revealed input, read as `Quokka4Right` | text touching the text cursor and the next word is garbled; a check on just-typed text can miss it | open — the right-click itself is proven by the frame |
+| 26 | clear flow | `Type Narwhal31 into the "Describe:" field` failed read-back: the value never appeared | not yet diagnosed - the run failed before any frame was captured | open |
 
 ## The pull requests
 
