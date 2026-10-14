@@ -34,6 +34,12 @@ mouse wheel turns a page at a time, down to the bottom and back up, and
 the step acts where the text is found. Replay repeats the same search, so
 start each run from the same page. Assertions read only what is visible.
 
+OCR loses punctuation more than letters, so a positive `page shows` on a
+vision surface also matches with punctuation at the edges of words, case
+and spacing ignored: `page shows Hello, Ada` holds against an OCR reading
+of `Hello Adal`. Punctuation inside a word still counts (`$10.00` is not
+`$1000`), and `does not show` stays exact.
+
 ## Know the current limits
 
 Vision flows are Windows-only. They do not yet support visual-template matching

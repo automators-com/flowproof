@@ -1160,7 +1160,12 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
 
 /// `css:` targets by CSS selector, `id:` by native id (UIA automation id,
 /// SAP scripting id) — adapter-specific escape hatches inside a quoted
-/// label. Everything else is a text anchor, meaningful on every provenance.
+/// label. `text:` is the scene token for a text anchor, and is unwrapped
+/// for the same reason: the authoring model is told to copy listed tokens
+/// into quotes, and on `app: vision` every listed token is a `text:` one.
+/// Left wrapped, the quoted label became `Text("text:Email")`, which no
+/// scene entry ever grounds to. Everything else is a text anchor,
+/// meaningful on every provenance.
 fn target_from_label(label: &str) -> Target {
     if let Some(css) = label.strip_prefix("css:") {
         if !css.trim().is_empty() {
@@ -1170,6 +1175,11 @@ fn target_from_label(label: &str) -> Target {
     if let Some(id) = label.strip_prefix("id:") {
         if !id.trim().is_empty() {
             return Target::id(id.trim());
+        }
+    }
+    if let Some(text) = label.strip_prefix("text:") {
+        if !text.trim().is_empty() {
+            return Target::text(text.trim());
         }
     }
     Target::text(label)
