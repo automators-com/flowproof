@@ -385,34 +385,62 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             return None;
         }
         let nth = selector.nth.unwrap_or(1).max(1) as usize;
-        Self::match_tiers(lines, needle, nth).or_else(|| {
-            // OCR's capitals wobble between runs: a field recorded as
-            // `Fake@email.com` read back as `fake@email.com` on replay
-            // (plan 15). Exact case still wins; this is the fallback rung
-            // every other provenance already has, and the hit keeps the
-            // screen's own spelling.
-            let folded: Vec<OcrLine> = lines
-                .iter()
-                .map(|l| OcrLine {
-                    text: l.text.to_lowercase(),
-                    rect: l.rect,
-                    words: l
-                        .words
-                        .iter()
-                        .map(|w| OcrWord {
-                            text: w.text.to_lowercase(),
-                            rect: w.rect,
-                        })
-                        .collect(),
-                })
-                .collect();
-            let hit = Self::match_tiers(&folded, &needle.to_lowercase(), nth)?;
-            let text = lines
-                .iter()
-                .find(|l| l.rect == hit.rect)
-                .map_or_else(|| hit.text.clone(), |l| l.text.clone());
-            Some(OcrHit { text, ..hit })
-        })
+        // Strongest first, each a fallback for the one before: as written;
+        // then case-insensitive - OCR's capitals wobble between runs, a field
+        // recorded as `Fake@email.com` read back as `fake@email.com`; then
+        // also ignoring punctuation at the edges of words - OCR drops a
+        // label's trailing colon, so `Describe:` read as `Describe` and the
+        // field could not be found at all (plan 15, finding 26), and labels
+        // ending in a colon are the norm on SAP and business forms. A hit
+        // keeps the screen's own spelling.
+        let fold = |text: &str| text.to_lowercase();
+        let loosen = |text: &str| {
+            text.split_whitespace()
+                .map(|word| word.trim_matches(|c: char| c.is_ascii_punctuation()))
+                .filter(|word| !word.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        Self::match_tiers(lines, needle, nth)
+            .or_else(|| Self::match_reshaped(lines, needle, nth, fold))
+            .or_else(|| Self::match_reshaped(lines, needle, nth, loosen))
+    }
+
+    /// [`Self::match_tiers`] over lines and needle passed through `shape`,
+    /// handing back the matched line's original text.
+    fn match_reshaped(
+        lines: &[OcrLine],
+        needle: &str,
+        nth: usize,
+        shape: impl Fn(&str) -> String,
+    ) -> Option<OcrHit> {
+        let shaped_needle = shape(needle);
+        if shaped_needle.is_empty() {
+            return None;
+        }
+        let shaped: Vec<OcrLine> = lines
+            .iter()
+            .map(|l| OcrLine {
+                text: shape(&l.text),
+                rect: l.rect,
+                words: l
+                    .words
+                    .iter()
+                    .map(|w| OcrWord {
+                        text: shape(&w.text),
+                        rect: w.rect,
+                    })
+                    .filter(|w| !w.text.is_empty())
+                    .collect(),
+            })
+            .collect();
+        let hit = Self::match_tiers(&shaped, &shaped_needle, nth)?;
+        let text = lines
+            .iter()
+            .find(|l| l.rect == hit.rect)
+            .map_or_else(|| hit.text.clone(), |l| l.text.clone());
+        Some(OcrHit { text, ..hit })
     }
 
     fn match_tiers(lines: &[OcrLine], needle: &str, nth: usize) -> Option<OcrHit> {
@@ -1834,6 +1862,28 @@ mod scroll_search_tests {
         assert_eq!(d.screen.scrolls, vec![-5, -5]);
         // Not found anywhere is not an error here - the wait reports it.
         d.reveal(&anchor("Logout")).expect("quietly absent");
+    }
+
+    /// Live: OCR read the label `Describe:` without its colon, and the
+    /// clear flow could not find its field anywhere on the page.
+    #[test]
+    fn a_label_whose_trailing_colon_ocr_dropped_still_matches() {
+        let mut d = page_driver(
+            vec![vec![
+                OcrLine::new("Describe", (20, 20, 70, 16)),
+                OcrLine::new("Coupon Code;", (20, 60, 100, 16)),
+            ]],
+            0,
+        );
+        let rect = d.element_rect(&anchor("Describe:")).expect("reads");
+        assert_eq!(rect, Some((20, 20, 70, 16)));
+        let rect = d.element_rect(&anchor("Coupon Code:")).expect("reads");
+        assert_eq!(rect, Some((20, 60, 100, 16)), "a misread colon too");
+        // Exact still wins, and nothing matches what is not there.
+        assert!(d
+            .element_rect(&anchor("Describe it"))
+            .expect("reads")
+            .is_none());
     }
 
     #[test]
