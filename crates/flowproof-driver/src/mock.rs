@@ -65,6 +65,8 @@ pub struct MockAppDriver {
     /// Failure-time diagnostics returned by `debug_bundle` (None = the
     /// trait default: driver has nothing to add).
     pub debug: Option<crate::DebugBundle>,
+    /// What `reads_text_by_ocr` answers: true stands in for `app: vision`.
+    pub ocr: bool,
     /// Element keys whose center a click would NOT reach (toast/overlay on
     /// top) — `element_receives_events` reports Some(false) for these.
     pub obscured: Vec<String>,
@@ -594,6 +596,10 @@ impl AppDriver for MockAppDriver {
 
     fn debug_bundle(&mut self) -> Result<Option<crate::DebugBundle>, DriverError> {
         Ok(self.debug.clone())
+    }
+
+    fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError> {
+        Ok(self.ocr)
     }
 
     fn element_receives_events(

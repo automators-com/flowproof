@@ -2054,7 +2054,9 @@ fn describe_style(prop: &str, value: &str, negate: bool) -> String {
     }
 }
 
-fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
+/// `ocr` is the driver's `reads_text_by_ocr`; see replay's `text_matches`,
+/// which takes the same extra rung for the same form.
+fn assert_holds(actual: &str, expected: &str, matcher: TextMatch, ocr: bool) -> bool {
     // Case-insensitive FALLBACK, mirroring element anchors: an exact
     // match always wins; when it misses, lowercased comparison decides
     // ("page shows Close Account" against a page reading "Close
@@ -2069,7 +2071,10 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
     // traces that used to pass), and a nonzero case-sensitive count is
     // the count.
     match matcher {
-        TextMatch::Contains => flowproof_driver::text_contains(actual, expected),
+        TextMatch::Contains => {
+            flowproof_driver::text_contains(actual, expected)
+                || (ocr && flowproof_driver::ocr_text_contains(actual, expected))
+        }
         TextMatch::NotContains => {
             let actual = flowproof_driver::normalize_visible_text(actual);
             let expected = flowproof_driver::normalize_visible_text(expected);
@@ -2210,7 +2215,12 @@ fn condition_holds<D: AppDriver>(
                 return Ok(matches!(matcher, TextMatch::NotContains));
             }
             let actual = driver.read_text(&selector)?;
-            Ok(assert_holds(&actual, expected, *matcher))
+            Ok(assert_holds(
+                &actual,
+                expected,
+                *matcher,
+                driver.reads_text_by_ocr()?,
+            ))
         }
         ResolvedAction::AssertPresence { present, .. } => {
             let Some(selector) = action_selector(action) else {
@@ -2429,6 +2439,34 @@ fn reveal_quoted_label<D: AppDriver>(
     Ok(())
 }
 
+/// A positive `page shows X` whose text was ALREADY on screen before the run
+/// of actions it follows cannot fail if those actions do nothing - it is a
+/// check in name only. Found on `app: vision` (plan 15, findings 13 and 18):
+/// a type step whose value never reached the field replayed green, because
+/// the page printed that same value in a code sample. Pixels give no way to
+/// scope the check to the field, so the recorder says so instead.
+///
+/// A warning, not a refusal: a check that re-confirms a value which should
+/// SURVIVE the actions is legitimate, and only the author knows which.
+fn vacuous_check(intent: &str, actions: &[ResolvedAction], before: Option<&str>) -> Option<String> {
+    let before = before?;
+    actions.iter().find_map(|action| match action {
+        ResolvedAction::AssertText {
+            target: Target::Surface,
+            expected,
+            matcher: TextMatch::Contains,
+            ..
+        } if !expected.trim().is_empty() && flowproof_driver::text_contains(before, expected) => {
+            Some(format!(
+                "'{intent}' already held before the steps it follows - '{expected}' was on \
+                 screen before they ran, so this check cannot fail if they do nothing; check \
+                 for something only those steps produce"
+            ))
+        }
+        _ => None,
+    })
+}
+
 fn surface_words<D: AppDriver>(driver: &mut D) -> Option<String> {
     let text = driver.surface_text().ok()?;
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2534,6 +2572,29 @@ fn author_actions<D: AppDriver, C: ModelClient>(
         if let Ok(actions) = resolve_step(app_id, rules_step) {
             let opens_a_page = |action: &ResolvedAction| matches!(action, ResolvedAction::Navigate { path } if names_an_address(path));
             if !actions.is_empty() && actions.iter().all(opens_a_page) {
+                return Ok(AuthoredActions {
+                    actions,
+                    continues: false,
+                    route: StepAuthoringRoute::Rules,
+                    warning: None,
+                });
+            }
+        }
+    }
+
+    // On `app: vision` a step the grammar reads completely is performed as
+    // the grammar reads it. The model's job is to turn intent into a target
+    // the scene lists, and a vision scene lists only OCR'd text - for a quoted
+    // label the grammar already produces that exact anchor. What the model
+    // added instead was doubt: after a double-click that visibly opened an
+    // input it refused a bare `Type` as "the previous step left a problem",
+    // and twice refused to type into a field it could see only as its label
+    // (plan 15, findings 19 and 21). Other apps keep the model's read of the
+    // page, which they can trust; anything the grammar cannot read still
+    // goes to the model.
+    if plain_auto && app_id == "vision" {
+        if let Ok(actions) = resolve_step(app_id, rules_step) {
+            if !actions.is_empty() {
                 return Ok(AuthoredActions {
                     actions,
                     continues: false,
@@ -3106,6 +3167,10 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     let mut prior_intents: Vec<String> = Vec::new();
     let mut llm_used = false;
     let mut routing = Vec::new();
+    // What a vision surface read before the run of actions the next check
+    // follows - see `vacuous_check`.
+    let mut before_actions: Option<String> = None;
+    let mut actions_since_check = false;
     // The secret-leak corpus, held in memory for this run only, exactly like a
     // resolved `${VAR}` value: (a) the web surface text read at each step
     // boundary (the same text `page shows` reads, not the page source) and
@@ -3278,6 +3343,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         let intent = spec_step.intent().to_string();
         live.start(&intent);
         let step_app = surface_app(&current_surface);
+        let is_check = matches!(spec_step, crate::spec::SpecStep::Assert { .. });
+        if step_app == "vision" && !is_check && !actions_since_check {
+            before_actions = driver.surface_text().ok();
+        }
+        actions_since_check = !is_check;
         let mut capture_names: Vec<String> = captures.keys().cloned().collect();
         capture_names.sort();
         let authored = author_actions(
@@ -3308,7 +3378,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             step: routing.len() + 1,
             intent: intent.clone(),
             route: authored.route,
-            warning: authored.warning,
+            warning: authored.warning.clone().or_else(|| {
+                is_check
+                    .then(|| vacuous_check(&intent, &authored.actions, before_actions.as_deref()))
+                    .flatten()
+            }),
         });
         prior_intents.push(intent);
         // A plan, not a list: when the page changes under it, the remainder
@@ -4097,7 +4171,8 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             None
                         };
                         if let Some(actual) = &actual {
-                            if assert_holds(actual, &wanted, *matcher) {
+                            if assert_holds(actual, &wanted, *matcher, driver.reads_text_by_ocr()?)
+                            {
                                 break;
                             }
                         }
@@ -4926,6 +5001,85 @@ mod tests {
         assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
         assert_eq!(driver.navigations, vec!["https://a.example.test/start"]);
         std::fs::remove_file(out).ok();
+    }
+
+    /// Plan 15, findings 18 and 19, on a vision flow: a bare `Type` names no
+    /// element, so the model is never asked (it refused one live), and a
+    /// `page shows` whose text was on screen before the typing is flagged
+    /// as unable to fail (one replayed green with the value never typed).
+    #[test]
+    fn a_vision_flow_types_bare_text_without_the_model_and_flags_a_check_that_could_not_fail() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: Kitchen\nsteps:\n  - Type Zebra42\n  - assert: page shows slow.typing@email.com\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            scene: Some("[]".into()),
+            ..Default::default()
+        }
+        .with_surface_text("cy.get('.action-email').type('slow.typing@email.com')");
+        let mut client = CountingClient {
+            reply: r##"{"action":"previous_step_incomplete","evidence":"Double click to edit"}"##
+                .into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-vision-honest.trace.jsonl");
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("records");
+        assert_eq!(
+            client.calls, 0,
+            "a bare Type has nothing for the model to ground"
+        );
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
+        let warning = summary.routing[1].warning.as_deref().expect("flagged");
+        assert!(warning.contains("already held before"), "{warning}");
+        std::fs::remove_file(out).ok();
+    }
+
+    /// Plan 15, finding 21: shown only a label's OCR text, the model twice
+    /// refused to type into the field under it. On vision a quoted step the
+    /// grammar reads is the same anchor the model would have produced.
+    #[test]
+    fn a_vision_step_naming_a_quoted_field_never_asks_the_model() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: W\nsteps:\n  - Type ada into the \"Email address\" field\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            scene: Some(r#"[{"target":"text:Email address","text":"Email address"}]"#.into()),
+            ..MockAppDriver::new(&["Email address"])
+        };
+        let mut client = CountingClient {
+            reply: r##"{"action":"previous_step_incomplete","evidence":"only a label"}"##.into(),
+            calls: 0,
+        };
+        let out = std::env::temp_dir().join("flowproof-vision-quoted.trace.jsonl");
+        let summary = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("records");
+        assert_eq!(client.calls, 0);
+        assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
+        assert_eq!(
+            driver.typed,
+            vec![("Email address".to_string(), "ada".to_string())]
+        );
+        std::fs::remove_file(out).ok();
+    }
+
+    #[test]
+    fn a_check_for_text_the_actions_produced_is_not_flagged() {
+        let shows = |text: &str| ResolvedAction::AssertText {
+            target: Target::Surface,
+            expected: text.into(),
+            matcher: TextMatch::Contains,
+            timeout_ms: 1000,
+        };
+        let before = Some("Double click to edit");
+        assert!(vacuous_check("x", &[shows("Zebra42")], before).is_none());
+        assert!(vacuous_check("x", &[shows("Double click")], before).is_some());
+        assert!(
+            vacuous_check("x", &[shows("Double click")], None).is_none(),
+            "no snapshot (not vision, or no actions before it): nothing to judge"
+        );
     }
 
     #[test]
