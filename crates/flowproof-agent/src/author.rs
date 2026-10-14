@@ -2610,6 +2610,40 @@ mod tests {
         );
     }
 
+    /// A pixels-only scene lists nothing but `text:` tokens, so a rule_step
+    /// copying one into quotes is the ONLY way a vision clear/check/select
+    /// is ever authored. Found running Cypress's kitchensink under
+    /// `app: vision`: `Clear the "text:fake@email.com" field` was rejected
+    /// although that exact token was listed, because the quoted label kept
+    /// its `text:` prefix and resolved to `Text("text:fake@email.com")`.
+    #[test]
+    fn rule_step_grounds_a_quoted_text_token_from_a_vision_scene() {
+        let mut client = Scripted {
+            replies: vec![
+                r##"{"action":"rule_step","step":"Clear the \"text:fake@email.com\" field"}"##
+                    .into(),
+            ],
+            calls: 0,
+        };
+        let action = author_step(
+            &mut client,
+            &AuthorContext {
+                app: "vision",
+                url: None,
+                intent: "Clear the email field",
+                scene: r#"[{"target":"text:Email address","text":"Email address","rect":[1086,426,90,18]},{"target":"text:fake@email.com","text":"fake@email.com","rect":[1098,459,110,18]}]"#,
+                ..ctx()
+            },
+        )
+        .expect("a listed text token grounds");
+        assert_eq!(
+            action,
+            ResolvedAction::Clear {
+                target: Target::text("fake@email.com")
+            }
+        );
+    }
+
     #[test]
     fn rule_step_rejects_an_invented_selector() {
         let reply = r##"{"action":"rule_step","step":"Clear the \"css:#invented\" field"}"##;
