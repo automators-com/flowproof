@@ -5,6 +5,12 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// The confirmed operation's ID, which the checkpoint must keep and the JSON
+/// output must never show. Distinctive on purpose: it was `0010`, and "stdout
+/// does not contain 0010" then failed by coincidence whenever a duration or
+/// counter in the output happened to contain those four digits.
+const ORDER_ID: &str = "ord-q7xz3k";
+
 struct Fixture {
     dir: PathBuf,
     base: String,
@@ -39,7 +45,7 @@ impl Fixture {
                 }
                 request
                     .respond(
-                        tiny_http::Response::from_string(r#"{"id":"0010"}"#)
+                        tiny_http::Response::from_string(format!(r#"{{"id":"{ORDER_ID}"}}"#))
                             .with_status_code(*served_status.lock().expect("fixture state lock")),
                     )
                     .expect("fixture operation succeeds");
@@ -65,7 +71,7 @@ impl Fixture {
             let output = fixture
                 .command()
                 .args(["record", &spec, "--author", "rules", "--no-repair"])
-                .env("CHECKPOINT_ORDER", "0010")
+                .env("CHECKPOINT_ORDER", ORDER_ID)
                 .output()
                 .expect("fixture operation succeeds");
             assert!(
@@ -83,7 +89,7 @@ impl Fixture {
         cmd.current_dir(&self.dir)
             .env("FLOWPROOF_NO_UPDATE_CHECK", "1")
             .env("CHECKPOINT_BASE", &self.base)
-            .env("INPUT_ID", "0010")
+            .env("INPUT_ID", ORDER_ID)
             .env_remove("CHECKPOINT_ORDER");
         cmd
     }
@@ -142,11 +148,11 @@ fn pause_resume_retains_exports_and_never_reexecutes_confirmed_stages() {
     let saved =
         std::fs::read_to_string(f.dir.join("progress.json")).expect("fixture operation succeeds");
     assert!(
-        saved.contains("0010"),
+        saved.contains(ORDER_ID),
         "the private checkpoint retains the resolved ID"
     );
     assert!(
-        !String::from_utf8_lossy(&first.stdout).contains("0010"),
+        !String::from_utf8_lossy(&first.stdout).contains(ORDER_ID),
         "exports must not leak into JSON output"
     );
     #[cfg(unix)]
@@ -173,7 +179,7 @@ fn pause_resume_retains_exports_and_never_reexecutes_confirmed_stages() {
     assert_eq!(json(&resumed)["flows"][0]["resumed"], true);
     assert_eq!(
         *f.requests.lock().expect("fixture state lock"),
-        vec!["/verify/0010"]
+        vec![format!("/verify/{ORDER_ID}")]
     );
     f.requests.lock().expect("fixture state lock").clear();
     let records_before = std::fs::read_dir(f.dir.join(".flowproof/runs"))
@@ -218,8 +224,11 @@ fn changed_inputs_and_corrupted_or_locked_checkpoints_fail_before_replay() {
         f.assert_error_without_requests(output, "inputs changed");
         std::fs::write(&path, original).expect("fixture operation succeeds");
     }
-    std::fs::write(f.dir.join("verify.values.yaml"), "INPUT_ID: '0010'\n")
-        .expect("fixture operation succeeds");
+    std::fs::write(
+        f.dir.join("verify.values.yaml"),
+        format!("INPUT_ID: '{ORDER_ID}'\n"),
+    )
+    .expect("fixture operation succeeds");
     f.assert_error_without_requests(f.run(&["--resume"]), "inputs changed");
     std::fs::remove_file(f.dir.join("verify.values.yaml")).expect("fixture operation succeeds");
     std::fs::write(f.dir.join("progress.json.lock"), "active or stale\n")
@@ -228,7 +237,7 @@ fn changed_inputs_and_corrupted_or_locked_checkpoints_fail_before_replay() {
     std::fs::remove_file(f.dir.join("progress.json.lock")).expect("fixture operation succeeds");
     let path = f.dir.join("progress.json");
     let original = std::fs::read_to_string(&path).expect("fixture operation succeeds");
-    std::fs::write(&path, original.replace("0010", "tampered"))
+    std::fs::write(&path, original.replace(ORDER_ID, "tampered"))
         .expect("fixture operation succeeds");
     f.assert_error_without_requests(f.run(&["--resume"]), "integrity");
 }
@@ -277,7 +286,7 @@ fn unsafe_options_and_export_overrides_are_refused_before_execution() {
 #[test]
 fn datamaker_json_values_preserve_flat_scalar_identity_in_native_vars() {
     let f = Fixture::new("native-values");
-    let values = serde_json::json!({"CHECKPOINT_BASE": f.base, "INPUT_ID": "0010", "PRICE": "0.50", "EMPTY": "", "FLAG": false, "COUNT": 0});
+    let values = serde_json::json!({"CHECKPOINT_BASE": f.base, "INPUT_ID": ORDER_ID, "PRICE": "0.50", "EMPTY": "", "FLAG": false, "COUNT": 0});
     std::fs::write(
         f.dir.join("inputs.values.yaml"),
         serde_json::to_vec_pretty(&values).expect("fixture operation succeeds"),
@@ -316,7 +325,7 @@ fn datamaker_json_values_preserve_flat_scalar_identity_in_native_vars() {
     );
     assert_eq!(
         *f.requests.lock().expect("fixture state lock"),
-        vec!["/values/0010/0.50/false/0?empty="]
+        vec![format!("/values/{ORDER_ID}/0.50/false/0?empty=")]
     );
 }
 

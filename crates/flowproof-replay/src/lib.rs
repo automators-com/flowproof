@@ -512,7 +512,17 @@ fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
 /// that passed must keep passing. Counts widen the same way: a nonzero
 /// case-sensitive count IS the count, and the lowercased count is consulted
 /// only when the case-sensitive one found nothing.
-fn text_matches(expect: &serde_json::Value, expected: &str, negated: bool, text: &str) -> bool {
+/// `ocr` is the driver's [`AppDriver::reads_text_by_ocr`]: recognized text
+/// also gets [`flowproof_driver::ocr_text_contains`] for the positive
+/// `contains` form, the one `page shows` compiles to. Mirrored by the
+/// recorder's `assert_holds`.
+fn text_matches(
+    expect: &serde_json::Value,
+    expected: &str,
+    negated: bool,
+    text: &str,
+    ocr: bool,
+) -> bool {
     if let Some(want_empty) = expect.get("value_empty").and_then(|v| v.as_bool()) {
         return flowproof_driver::normalize_visible_text(text)
             .trim()
@@ -528,6 +538,7 @@ fn text_matches(expect: &serde_json::Value, expected: &str, negated: bool, text:
         flowproof_driver::text_occurrences(&expected, &text) as u64 == n
     } else if expect.get("value_contains").is_some() {
         flowproof_driver::text_contains(&text, &expected)
+            || (ocr && flowproof_driver::ocr_text_contains(&text, &expected))
     } else if expect.get("normalize").and_then(|v| v.as_str()) == Some("numeric") {
         matches!(
             (numeric_value(&text), expected.parse::<f64>()),
@@ -572,6 +583,7 @@ fn check_framed_expectation<D: AppDriver>(
         },
         None => None,
     };
+    let ocr = driver.reads_text_by_ocr()?;
     let mut fault: Option<flowproof_driver::DriverError> = None;
     let mut last: Option<String> = None;
     let mut missing_frame: Option<Vec<String>> = None;
@@ -602,7 +614,7 @@ fn check_framed_expectation<D: AppDriver>(
                     // A target that is not in the frame has no text to
                     // judge: an absent element must not satisfy a `does
                     // not show` assertion by accident.
-                    if present && text_matches(expect, expected, negated, &text) {
+                    if present && text_matches(expect, expected, negated, &text, ocr) {
                         return Ok((Ok(()), Some(rung)));
                     }
                     last = present.then_some(text);
@@ -671,6 +683,7 @@ fn check_text_expectation<F>(
     expect: &serde_json::Value,
     deadline: Instant,
     rung: Option<usize>,
+    ocr: bool,
     mut read: F,
 ) -> Result<(Result<(), String>, Option<usize>), ReplayError>
 where
@@ -692,7 +705,7 @@ where
         // A `None` here is a transport fault: the app was never asked, so
         // nothing was learned about it. Keep polling within the budget.
         if let Some(text) = tolerate(read(), &mut fault)? {
-            if text_matches(expect, &expected, negated, &text) {
+            if text_matches(expect, &expected, negated, &text, ocr) {
                 return Ok((Ok(()), rung));
             }
             last_text = Some(text);
@@ -1032,7 +1045,10 @@ fn check_assertion<D: AppDriver>(
                 return check_title_expectation(raw, exact, deadline, || driver.page_title());
             }
             if expect.get("scope").and_then(|v| v.as_str()) == Some("surface") {
-                return check_text_expectation(expect, deadline, None, || driver.surface_text());
+                let ocr = driver.reads_text_by_ocr()?;
+                return check_text_expectation(expect, deadline, None, ocr, || {
+                    driver.surface_text()
+                });
             }
 
             // Framed: the target lives in a same-origin iframe, which is a
@@ -1439,7 +1455,13 @@ fn check_assertion<D: AppDriver>(
             loop {
                 if let Some((uia, rung)) = resolve(driver, &mut fault)? {
                     if let Some(text) = tolerate(driver.read_text(&uia), &mut fault)? {
-                        if text_matches(expect, &expected, negated, &text) {
+                        if text_matches(
+                            expect,
+                            &expected,
+                            negated,
+                            &text,
+                            driver.reads_text_by_ocr()?,
+                        ) {
                             return Ok((Ok(()), Some(rung)));
                         }
                         last = Some((text, rung));
@@ -2984,6 +3006,30 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
 #[cfg(test)]
 mod failure_hint_tests {
     use super::*;
+
+    /// `page shows` on a vision surface takes the OCR rung; the same text
+    /// read from a DOM does not, and `does not show` never does - widening
+    /// the negative form would fail traces that used to pass.
+    #[test]
+    fn ocr_text_widens_only_the_positive_contains_form() {
+        let shows = serde_json::json!({ "value_contains": "Hello, Ada" });
+        assert!(text_matches(
+            &shows,
+            "Hello, Ada",
+            false,
+            "Hello Adal",
+            true
+        ));
+        assert!(!text_matches(
+            &shows,
+            "Hello, Ada",
+            false,
+            "Hello Adal",
+            false
+        ));
+        let hides = serde_json::json!({ "value_not_contains": "Hello, Ada" });
+        assert!(text_matches(&hides, "Hello, Ada", true, "Hello Adal", true));
+    }
 
     #[test]
     fn edit_distance_is_levenshtein() {

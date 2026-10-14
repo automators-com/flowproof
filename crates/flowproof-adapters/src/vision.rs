@@ -331,6 +331,12 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         self.screen.press_key(key, modifiers)
     }
 
+    /// OCR'd text, so text assertions take the punctuation-forgiving rung
+    /// (`flowproof_driver::ocr_text_contains`).
+    fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError> {
+        Ok(true)
+    }
+
     fn surface_text(&mut self) -> Result<String, DriverError> {
         // The OCR'd frame IS the surface — reading order, one line each.
         Ok(self
@@ -709,7 +715,9 @@ pub mod native {
         }
 
         fn type_text(&mut self, text: &str) -> Result<(), DriverError> {
-            self.inject(InputEvent::Text {
+            // As key strokes, not Unicode packets: the window is usually a
+            // Citrix or RDP client, and those forward scan codes only.
+            self.inject(InputEvent::KeyText {
                 text: text.to_string(),
             })?;
             std::thread::sleep(Duration::from_millis(120));
