@@ -20,8 +20,8 @@ use crate::{AgentError, BackendConfig, BackendKind};
 // wrong ceiling. 16K keeps the request bounded with room for both.
 const ANTHROPIC_MAX_TOKENS: u32 = 16_384;
 const OPENAI_COMPATIBLE_MAX_TOKENS: u32 = 1024;
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-5";
-const DEFAULT_OPENAI_MODEL: &str = "gpt-5";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-5-5";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-6.1-sol";
 const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 
 /// A minimal chat completion: system + user in, text out.
@@ -299,7 +299,7 @@ mod tests {
         });
         assert_eq!(
             anthropic.identity(),
-            ("anthropic".into(), "claude-sonnet-5".into())
+            ("anthropic".into(), "claude-opus-5-5".into())
         );
 
         let openai = HttpModelClient::new(BackendConfig {
@@ -309,6 +309,6 @@ mod tests {
             api_key: Some("sk-openai".into()),
             workspace_id: None,
         });
-        assert_eq!(openai.identity(), ("openai".into(), "gpt-5".into()));
+        assert_eq!(openai.identity(), ("openai".into(), "gpt-6.1-sol".into()));
     }
 }
