@@ -483,7 +483,7 @@ fn scene_token_is_actionable(scene: &str, token: &str) -> bool {
         .any(|item| item == token || item == &format!("css:{token}"))
 }
 
-fn action_targets(action: &ResolvedAction) -> Vec<&Target> {
+pub(crate) fn action_targets(action: &ResolvedAction) -> Vec<&Target> {
     match action {
         ResolvedAction::Press { target, .. }
         | ResolvedAction::TypeText { target, .. }
