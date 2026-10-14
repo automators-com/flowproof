@@ -878,6 +878,15 @@ pub trait AppDriver {
         Ok(())
     }
 
+    /// Whether this driver's text is RECOGNIZED from pixels rather than read
+    /// from a DOM or accessibility tree. OCR drops and misreads punctuation
+    /// (`Hello, Ada!` reads as `Hello Adal`), so text assertions against it
+    /// take [`ocr_text_contains`] as a further, widening-only rung. Record
+    /// and replay both ask, so they cannot disagree about one assertion.
+    fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError> {
+        Ok(false)
+    }
+
     /// The surface's current location, for `page url is|contains`. Only a
     /// browser has one: a UIA window, a SAP session and an OCR'd frame do
     /// not, so the default refuses with a reason rather than inventing an
@@ -1350,6 +1359,27 @@ pub fn text_contains(actual: &str, expected: &str) -> bool {
     let actual = normalize_visible_text(actual);
     let expected = normalize_visible_text(expected);
     actual.contains(&expected) || actual.to_lowercase().contains(&expected.to_lowercase())
+}
+
+/// [`text_contains`] for text that came from OCR: both sides lowercased,
+/// whitespace collapsed, and punctuation stripped from the EDGES of each
+/// word only. OCR drops a trailing comma and turns `!` into `l`, so
+/// `Hello, Ada` must be found in `Hello Adal`; but punctuation INSIDE a
+/// word is kept, so `$10.00` never matches `$1000` and `1,000` never
+/// matches `1000`. Widening-only, and only for the positive form - the
+/// callers never consult it for `does not show`, an equality or a count.
+pub fn ocr_text_contains(actual: &str, expected: &str) -> bool {
+    fn loose(text: &str) -> String {
+        normalize_visible_text(text)
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c: char| c.is_ascii_punctuation()))
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+    let expected = loose(expected);
+    !expected.is_empty() && loose(actual).contains(&expected)
 }
 
 /// Does `actual` (a full URL) satisfy a `page url` expectation?
@@ -2016,6 +2046,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         (**self).reveal(selector)
+    }
+
+    fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError> {
+        (**self).reads_text_by_ocr()
     }
 
     fn probe_cookie(&mut self, name: &str) -> Result<CookieProbe, DriverError> {
@@ -3020,6 +3054,31 @@ mod visible_text_tests {
         assert_eq!(normalize_visible_text(actual), expected);
         assert!(text_contains(actual, expected));
         assert_eq!(text_occurrences(expected, actual), 1);
+    }
+
+    /// Plan 15, finding 6: the greeter page showed `Hello, Ada!` and real
+    /// OCR read it back as `Hello Adal`.
+    #[test]
+    fn ocr_text_forgives_punctuation_at_word_edges() {
+        use super::ocr_text_contains;
+        assert!(!text_contains("Hello Adal", "Hello, Ada"), "exact misses");
+        assert!(ocr_text_contains("Hello Adal", "Hello, Ada"));
+        assert!(ocr_text_contains("Order  saved.", "order saved"));
+        assert!(ocr_text_contains("Total: 42", "Total 42"));
+    }
+
+    /// The loosening must never reach INSIDE a word: an amount or an id
+    /// whose punctuation OCR kept is a different value without it.
+    #[test]
+    fn ocr_text_keeps_punctuation_inside_a_word() {
+        use super::ocr_text_contains;
+        assert!(!ocr_text_contains("Balance $1000", "$10.00"));
+        assert!(!ocr_text_contains("Qty 1000", "1,000"));
+        assert!(!ocr_text_contains("ab-12", "ab12"));
+        assert!(
+            !ocr_text_contains("anything", "!!"),
+            "all-punctuation expectation matches nothing, not everything"
+        );
     }
 }
 

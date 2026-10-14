@@ -481,6 +481,12 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         }
     }
 
+    /// OCR'd text, so text assertions take the punctuation-forgiving rung
+    /// (`flowproof_driver::ocr_text_contains`).
+    fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError> {
+        Ok(true)
+    }
+
     fn surface_text(&mut self) -> Result<String, DriverError> {
         // The OCR'd frame IS the surface — reading order, one line each.
         Ok(self
@@ -862,13 +868,11 @@ pub mod native {
         }
 
         fn frame(&mut self) -> Result<RgbaImage, DriverError> {
+            // The window's own rectangle, wherever it is on the desktop:
+            // the same origin `click` adds, so OCR coordinates and clicks
+            // agree on every monitor (plan 15, finding 3).
             let (x, y, w, h) = self.window()?.refresh_rect()?;
-            let screen = flowproof_driver::gdi::capture_screen()?;
-            let x = x.max(0) as u32;
-            let y = y.max(0) as u32;
-            let w = w.min(screen.width().saturating_sub(x)).max(1);
-            let h = h.min(screen.height().saturating_sub(y)).max(1);
-            Ok(image::imageops::crop_imm(&screen, x, y, w, h).to_image())
+            flowproof_driver::gdi::capture_region(x, y, w as i32, h as i32)
         }
 
         fn click(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
@@ -896,7 +900,9 @@ pub mod native {
         }
 
         fn type_text(&mut self, text: &str) -> Result<(), DriverError> {
-            self.inject(InputEvent::Text {
+            // As key strokes, not Unicode packets: the window is usually a
+            // Citrix or RDP client, and those forward scan codes only.
+            self.inject(InputEvent::KeyText {
                 text: text.to_string(),
             })?;
             std::thread::sleep(Duration::from_millis(120));
@@ -954,6 +960,9 @@ pub mod native {
 impl VisionAppDriver<native::NativeScreen, OcrsEngine> {
     /// The production driver: GDI + SendInput + ocrs.
     pub fn new() -> Result<Self, DriverError> {
+        // Before any window rectangle or capture: at display scaling, an
+        // unaware process gets scaled rectangles and physical captures.
+        flowproof_driver::gdi::ensure_dpi_aware();
         Ok(Self::with_parts(
             native::NativeScreen::new(),
             OcrsEngine::new()?,
