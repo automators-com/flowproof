@@ -29,6 +29,12 @@ steps work through the LLM author; the OCR lines are the scene. OCR
 models (pure-Rust [ocrs](https://github.com/robertknight/ocrs), ~12 MB)
 download on first use to `~/.cache/flowproof/ocrs`.
 
+OCR loses punctuation more than letters, so a positive `page shows` on a
+vision surface also matches with punctuation at the edges of words, case
+and spacing ignored: `page shows Hello, Ada` holds against an OCR reading
+of `Hello Adal`. Punctuation inside a word still counts (`$10.00` is not
+`$1000`), and `does not show` stays exact.
+
 ## Know the current limits
 
 Vision flows are Windows-only. They do not yet support visual-template matching

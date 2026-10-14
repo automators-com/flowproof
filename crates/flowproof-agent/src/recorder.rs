@@ -2054,7 +2054,9 @@ fn describe_style(prop: &str, value: &str, negate: bool) -> String {
     }
 }
 
-fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
+/// `ocr` is the driver's `reads_text_by_ocr`; see replay's `text_matches`,
+/// which takes the same extra rung for the same form.
+fn assert_holds(actual: &str, expected: &str, matcher: TextMatch, ocr: bool) -> bool {
     // Case-insensitive FALLBACK, mirroring element anchors: an exact
     // match always wins; when it misses, lowercased comparison decides
     // ("page shows Close Account" against a page reading "Close
@@ -2069,7 +2071,10 @@ fn assert_holds(actual: &str, expected: &str, matcher: TextMatch) -> bool {
     // traces that used to pass), and a nonzero case-sensitive count is
     // the count.
     match matcher {
-        TextMatch::Contains => flowproof_driver::text_contains(actual, expected),
+        TextMatch::Contains => {
+            flowproof_driver::text_contains(actual, expected)
+                || (ocr && flowproof_driver::ocr_text_contains(actual, expected))
+        }
         TextMatch::NotContains => {
             let actual = flowproof_driver::normalize_visible_text(actual);
             let expected = flowproof_driver::normalize_visible_text(expected);
@@ -2210,7 +2215,12 @@ fn condition_holds<D: AppDriver>(
                 return Ok(matches!(matcher, TextMatch::NotContains));
             }
             let actual = driver.read_text(&selector)?;
-            Ok(assert_holds(&actual, expected, *matcher))
+            Ok(assert_holds(
+                &actual,
+                expected,
+                *matcher,
+                driver.reads_text_by_ocr()?,
+            ))
         }
         ResolvedAction::AssertPresence { present, .. } => {
             let Some(selector) = action_selector(action) else {
@@ -4047,7 +4057,8 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             None
                         };
                         if let Some(actual) = &actual {
-                            if assert_holds(actual, &wanted, *matcher) {
+                            if assert_holds(actual, &wanted, *matcher, driver.reads_text_by_ocr()?)
+                            {
                                 break;
                             }
                         }
