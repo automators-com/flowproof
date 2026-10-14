@@ -161,6 +161,17 @@ pub fn is_extended_key(vk: u16) -> bool {
     matches!(vk, 0x21..=0x28 | 0x2D | 0x2E | 0x5B | 0x5C | 0x5D)
 }
 
+/// A screen point as `SendInput`'s absolute coordinates over the VIRTUAL
+/// desktop `(x, y, width, height)`: 0..=65535 across every monitor. Over
+/// the primary screen alone, a point on a second monitor could not be
+/// reached at all (plan 15, finding 3).
+pub fn absolute_on_desktop(x: i32, y: i32, desktop: (i32, i32, i32, i32)) -> (i32, i32) {
+    let (left, top, width, height) = desktop;
+    let scale =
+        |offset: i32, span: i32| ((i64::from(offset) * 65535) / i64::from(span.max(2) - 1)) as i32;
+    (scale(x - left, width), scale(y - top, height))
+}
+
 pub fn modifier_virtual_key(m: &KeyMod) -> u16 {
     match m {
         KeyMod::Ctrl => 0x11,
@@ -227,6 +238,30 @@ mod key_text_tests {
         for vk in [0x41, 0x0D, 0x1B, 0x09, 0x10, 0x70] {
             assert!(!is_extended_key(vk), "{vk:#x}");
         }
+    }
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::absolute_on_desktop;
+
+    #[test]
+    fn a_single_monitor_maps_as_before() {
+        let primary = (0, 0, 1920, 1080);
+        assert_eq!(absolute_on_desktop(0, 0, primary), (0, 0));
+        assert_eq!(absolute_on_desktop(1919, 1079, primary), (65535, 65535));
+    }
+
+    /// A second monitor LEFT of the primary starts at x = -1920.
+    #[test]
+    fn a_monitor_left_of_the_primary_is_reachable() {
+        let two = (-1920, 0, 3840, 1080);
+        assert_eq!(absolute_on_desktop(-1920, 0, two), (0, 0));
+        let (x, _) = absolute_on_desktop(0, 0, two);
+        assert!(
+            (32700..=32800).contains(&x),
+            "primary's left edge mid-desktop: {x}"
+        );
     }
 }
 

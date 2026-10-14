@@ -54,9 +54,8 @@ mod win_input {
         KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
         MAPVK_VK_TO_VSC, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-        MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+        MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
     use crate::{is_extended_key, plan_key_text, DriverError, InputEvent, KeyStroke, MouseButton};
 
@@ -147,17 +146,14 @@ mod win_input {
     pub(super) fn inject(event: &InputEvent) -> Result<(), DriverError> {
         match event {
             InputEvent::MouseMove { x, y } => {
-                // Absolute coordinates are normalized to a 0..=65535 grid
-                // over the primary screen.
-                let (w, h) = unsafe {
-                    (
-                        GetSystemMetrics(SM_CXSCREEN).max(2),
-                        GetSystemMetrics(SM_CYSCREEN).max(2),
-                    )
-                };
-                let dx = ((*x as i64 * 65535) / (w as i64 - 1)) as i32;
-                let dy = ((*y as i64 * 65535) / (h as i64 - 1)) as i32;
-                send(&[mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, dx, dy)])
+                // Absolute coordinates on a 0..=65535 grid over the whole
+                // VIRTUAL desktop, so a point on any monitor is reachable.
+                let (dx, dy) = crate::absolute_on_desktop(*x, *y, crate::gdi::virtual_desktop());
+                send(&[mouse(
+                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                    dx,
+                    dy,
+                )])
             }
             InputEvent::MouseDown { button } => send(&[mouse(
                 match button {
