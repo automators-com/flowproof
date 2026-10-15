@@ -6,6 +6,228 @@ together).
 
 ## Unreleased
 
+## 0.23.22
+
+- **`app: vision` scrolls to find what is below the fold.** Pixels-only mode
+  read the one frame the window showed and never scrolled, so every field
+  below the first screen of a form was "not present on the current screen" -
+  five of six flows translated from Cypress's kitchensink failed on it before
+  reaching anything else, and a long Citrix form fails the same way. A click,
+  type, clear or read now looks for its text by turning the mouse wheel a page
+  at a time, down to the bottom and back up to the top, and acts where it
+  finds it; replay runs the same search from the same starting page, so it
+  stops in the same place. Existence checks still read only the current frame,
+  because auto-wait polls them and a poll that scrolled would move the page
+  every tick. `scroll to top`, `to bottom` and `into view` now work on vision
+  surfaces as well. Recording does the same before the model is asked: a
+  step's quoted label that is off screen is scrolled into view first, because
+  a model shown only the visible frame reported the field missing and stopped
+  the recording before the driver could look.
+
+- **A recorded vision flow replays when its target is below the fold, or OCR
+  reads its case differently.** Replay waits for a step's target to exist
+  before acting, and that wait is a pure read of the visible frame - so a
+  target the recording had scrolled to timed out there, before the action's
+  own search could run. The wait now asks the driver to reveal the target once
+  before polling and once before giving up, never on every poll; only `app:
+  vision` does anything with it. Separately, a field recorded as
+  `Fake@email.com` read back as `fake@email.com`: vision anchors now fall back
+  to a case-insensitive match, as every other kind of anchor already did, with
+  an exact-case match still preferred. And a vision clear now clears: it is
+  recorded as typing nothing over a selected field, which left the old value
+  selected and still on screen.
+
+- **Recording a vision step finds a field below the fold before checking it is
+  there.** The recorder checks that a step's target exists before acting, and
+  for a pixels-only surface that check sees only the visible window - so once
+  vision steps were performed straight from the grammar, every field further
+  down a form was "not found" before anything scrolled. Recording now brings
+  the target into view first, as replay already does; nothing changes for
+  other apps.
+
+- **`app: vision` types into a field that sits below its label.** Vision typed
+  beside a field's label - the SAP GUI layout - and most web forms put the
+  label above the box, so the click landed beside the label and the value went
+  nowhere. When a typed value does not appear beside its label, recording now
+  types it below and keeps whichever the screen showed worked, so the trace
+  says where the field is and replay goes straight there. A value from a
+  `${...}` reference, which a masked field never shows, follows the layout its
+  form has already shown rather than being typed twice. The point below a
+  label also moved down to one label-height under it: half a height landed
+  just above the input box.
+
+- **A field below its label is clicked in its middle, whatever height OCR
+  gives the label.** Vision aimed one label-height under a label, and a
+  label's height is whatever OCR measures it to be: it measured `Describe:` at
+  10 pixels, and the click fell in the gap between the label and its box, so
+  the value went nowhere. It now aims one and a half line-heights under the
+  label, with the height floored at 14 pixels - the middle of where an input
+  box sits.
+
+- **A vision Clear clears the field, not the space beside its label.**
+  Recording learns that a form's fields sit below their labels when a typed
+  value only arrives there - but only typing used it. A Clear on the very
+  field just typed into still clicked beside the label, selected nothing, and
+  left the value in place. A Clear now follows the layout its form has shown,
+  and the trace records it so replay clears the same place.
+
+- **A vision type step fails when its value never reaches the field.** Pixels
+  give no way to read a field's value, so a click that missed the box - a
+  label above its field, an autofill popup holding focus - typed into nothing,
+  and the step passed anyway; one such flow replayed green while its field sat
+  empty. After typing, `app: vision` now checks that the value appears on
+  screen more often than it did before, so a page that already prints the
+  value elsewhere cannot vouch for it, and fails the step with the reason when
+  it does not. A value typed from a `${...}` reference is not read back,
+  because a masked password field never shows what was typed.
+
+- **A bare `Type X` on `app: vision` fails when the text never appears.**
+  Typing into whatever has focus was the one kind of typing vision did not
+  read back, so after a double-click that failed to open its input, `Type
+  Zebra42` typed into nothing and passed. It is now read back like typing into
+  a named field, by the value's first characters rather than its last - the
+  ones that sit against the text cursor, which OCR reads poorly. That also
+  makes a separate `page shows` for text just typed unnecessary. A value from
+  a `${...}` reference is still never read back.
+
+- **`app: vision` reads past a blinking caret and keeps its clicks inside the
+  window.** A text caret blinking beside freshly typed text merges with its
+  last characters - `Quokka77` read as `Quokka/` - so a check for the value
+  just typed failed against a field that held it. Text checks and the
+  typed-value read-back now capture twice, half a blink apart, and judge both
+  readings; a screen that is not blinking still costs one OCR pass.
+  Separately, a search stops as soon as a label is on screen, which could
+  leave the field below it past the window's bottom edge and the click outside
+  the page; an action point off the frame now scrolls a couple of lines and
+  looks again.
+
+- **`app: vision` can check and uncheck a box.** Pixels give no checkbox state
+  to read, so vision refused every checkbox step. It now sets a box by
+  watching it: it clicks the label and looks at the box beside it - a tick,
+  dot or fill appearing is checked, disappearing is unchecked - and if the
+  click went the wrong way, because the box already held the wanted state, it
+  clicks again and confirms it came back. A click that changes nothing visible
+  is refused with the reason rather than assumed, since a disabled box, a
+  radio button already selected and a missed click look the same. Asserting a
+  box's state is still not something pixels can answer on their own.
+
+- **`app: vision` can double-click and right-click.** Both refused with "not
+  supported by this driver", so a flow that edits a cell by double-clicking
+  it, or opens a context menu - common in SAP GUI and grid-heavy apps
+  published through Citrix - stopped at that step. They now land on the
+  matched text the way a click does, with the two presses of a double-click
+  well inside the system's double-click interval.
+
+- **A vision label ending in a colon is found when OCR drops the colon.** OCR
+  read the label `Describe:` as `Describe`, and since an anchor had to match
+  its text exactly - case aside - the field could not be found anywhere on the
+  page. Labels that end in a colon are the norm on SAP screens and business
+  forms. As a last resort after an exact and a case-insensitive match, an
+  anchor now also matches with punctuation at the edges of words ignored; an
+  exact match still wins, and punctuation inside a word still counts.
+
+- **`page shows` on `app: vision` forgives what OCR does to punctuation.** A
+  greeter page reading `Hello, Ada!` came back from OCR as `Hello Adal`, so
+  `page shows Hello, Ada` failed against an app that had done exactly the
+  right thing - and a Citrix stream's compression makes such misreads more
+  common, not less. On a surface whose text is recognized from pixels, a
+  positive `shows`/`contains` assertion now also matches with punctuation
+  stripped from the edges of words and case and spacing ignored. It never
+  reaches inside a word, so `$10.00` cannot match `$1000` and `1,000` cannot
+  match `1000`; it never applies to `does not show`, an equality or a count;
+  and record and replay ask the same question of the driver, so a recording
+  cannot pass an assertion its replay would fail.
+
+- **A vision recording performs the steps it can read, and says when a check
+  cannot fail.** On `app: vision` the model is shown only OCR'd text: for a
+  step naming a quoted label it can only produce the anchor the grammar
+  already reads, and what it added was doubt - after a double-click that
+  visibly opened an input it refused a bare `Type` as "the previous step left
+  a problem", and it refused to type into fields it could see only as their
+  labels. On vision a step the grammar reads completely is now performed as
+  written; anything else still goes to the model. Separately, a type step
+  whose value never reached its field replayed green, because the page also
+  printed that value in a code sample and `page shows` matched it there. When
+  a vision check's text was already on screen before the actions it follows,
+  recording now warns that the check cannot fail if they do nothing.
+
+- **Model-authored steps work on `app: vision`.** The authoring model is told
+  to copy a listed element's token into quotes, and a vision screen lists
+  nothing but `text:` tokens - yet only `css:` and `id:` were unwrapped from a
+  quoted label. Every clear, check, select or hover a model wrote for a vision
+  flow came out as a target named `text:Email`, which matched nothing on
+  screen, and the step was rejected as naming an element that was not listed
+  even though it was. `text:` is now unwrapped like the others.
+
+- **`app: vision` works on any monitor and at any display scaling.** Vision
+  captured the primary screen and cropped the window out of it, and moved the
+  mouse on a grid over the primary screen only - so a Citrix window on a
+  second monitor was read wrongly and clicked somewhere else, and one left of
+  the primary could not be reached at all. It now captures the window's own
+  rectangle wherever it is on the desktop, and mouse moves span every monitor.
+  Separately, the process never declared itself DPI aware: at 125% or 150%
+  scaling Windows hands an unaware process scaled window rectangles while its
+  screen captures stay physical, so the two disagreed. Vision now declares
+  per-monitor awareness before it looks at anything.
+
+- **Keyboard input reaches a Citrix or RDP session.** A remote-display client
+  forwards keyboard input by scan code, and flowproof sent none: key presses
+  went out with a scan code of 0 and typed text as Unicode packets, which
+  carry no key at all - so in a Citrix session typing and keys could simply
+  vanish. Every injected key now carries its real scan code, with the extended
+  flag on arrows and navigation keys so they are not read as their keypad
+  twins, and `app: vision` types text as the key strokes a keyboard would
+  make, falling back to a Unicode packet only for a character no plain key
+  produces. Local apps read the same virtual keys as before.
+
+- **`FLOWPROOF_VISION_LOG=1` shows where a vision run clicked.** A pixels-only
+  run leaves no DOM to inspect afterwards, so when a Citrix flow typed into
+  nothing there was no record of which text it had matched or where its click
+  landed. Setting the variable prints each match with its box, the point acted
+  on, every scroll and nudge, and the typed-value read-back counts. It never
+  prints the typed text or anything derived from it, since a value may be a
+  password.
+
+- **Automatic repair no longer changes what a check expects.** Told never to
+  weaken an assertion, the repair model still rewrote a vision flow's correct
+  `page shows Hello, Ada` to `Hello Ada!` - what OCR had misread on the page -
+  and saved it to the flow file. A repair that edits an expectation until it
+  matches is the very failure a test exists to catch. Repair now refuses any
+  patch to an `assert...:` step and says so, leaving the flow as written; it
+  can still give a check longer to come true, and it still fixes the steps
+  that act.
+
+- **`record --json` says where a recording failed and why.** A failed
+  recording printed JSON only when a step needed clarifying. Every other
+  failure left a single line on stderr, with no step and none of the app's own
+  words, so a caller had to scrape it. Now every failure prints one object.
+  `error` is the message, and `failure` gives its `kind`, the `step` that was
+  running (number, the `sNNNN` id the progress line printed, and its intent),
+  what the app was showing as `screen`, and a `hint` saying what to try. On
+  SAP, `screen` names the window title, the transaction, the program and
+  screen number, the status bar message with its severity, and any popup open
+  over the screen. A step SAP refused with an error on its status bar is
+  reported as `rejected_by_app`, and the hint quotes SAP's message. Failures
+  before recording starts (the flow does not load, or the driver cannot start)
+  use the same shape.
+
+- **`Alt+F4` closes a SAP window.** Two things stood in the way. When the
+  model chose the key itself, its `"Alt+F4"` went to the driver as one key
+  name with no modifiers. A `Press Alt+F4` step split it correctly; the
+  model's own key press did not. And even split, SAP refused it: its scripting
+  key table has no Alt chords, so every SAP flow that closed a window that way
+  stopped with "no virtual key for 'Alt+F4'". The model's key press now goes
+  through the same chord grammar as a spec step, and on SAP `Alt+F4` closes
+  the active window natively, the modal on top first, as the keystroke would.
+
+- **The default models now match flowproof desktop.** With no model
+  configured, the engine authored with `claude-sonnet-5` or `gpt-5`, while
+  flowproof desktop had moved its defaults to `claude-opus-5-5` and
+  `gpt-6.1-sol`. The same provider and key gave a different model depending on
+  whether the CLI or the app set it up, and the trace header recorded
+  whichever one it was. The engine's defaults are now `claude-opus-5-5` for
+  Anthropic and `gpt-6.1-sol` for OpenAI, the same as the app's.
+
 ## 0.23.21
 
 - **One screenshot per step.** `--recording-detail full` (the default)
