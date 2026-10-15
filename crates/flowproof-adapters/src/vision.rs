@@ -165,6 +165,22 @@ const SCROLL_NOTCHES_PER_PAGE: i32 = 5;
 /// edge from ever reading as "no change".
 const MAX_SCROLL_PAGES: usize = 20;
 
+/// `FLOWPROOF_VISION_LOG=1` prints, to stderr, what each vision action
+/// matched (the OCR text and its box), the point it acted on, each scroll,
+/// and the typed-value read-back counts. A pixels-only run has no DOM to
+/// inspect afterwards; this is the record of where the clicks went, which
+/// is the first question when a Citrix flow misbehaves (plan 15, finding
+/// 26). Never the typed text or its read-back keys - the driver sees
+/// resolved values, and one may be a password.
+fn vision_log(message: impl FnOnce() -> String) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| {
+        std::env::var("FLOWPROOF_VISION_LOG").is_ok_and(|v| !v.is_empty() && v != "0")
+    }) {
+        eprintln!("[vision] {}", message());
+    }
+}
+
 /// Wheel notches to bring an action point that fell past the window's edge
 /// back inside it - a couple of lines, not a page.
 const EDGE_NUDGE_NOTCHES: i32 = 2;
@@ -221,7 +237,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// readings count, and the higher one is the answer.
     fn readback_counts(&mut self, keys: &[String]) -> Result<Vec<usize>, DriverError> {
         let readings = self.steady_lines()?;
-        Ok(keys
+        let counts: Vec<usize> = keys
             .iter()
             .map(|key| {
                 readings
@@ -230,7 +246,14 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                     .max()
                     .unwrap_or(0)
             })
-            .collect())
+            .collect();
+        vision_log(|| {
+            format!(
+                "read-back: {} key(s) on screen {counts:?} times",
+                keys.len()
+            )
+        });
+        Ok(counts)
     }
 
     fn key_count(lines: &[OcrLine], key: &str) -> usize {
@@ -300,10 +323,24 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             } else {
                 break;
             };
+            vision_log(|| {
+                format!(
+                    "nudge {notches} notches: point {point:?} is near the edge of a {}px frame",
+                    self.frame_height
+                )
+            });
             self.screen.scroll(notches)?;
             hit = self.require(selector)?;
             point = Self::action_point(&hit, selector, default_relation);
         }
+        vision_log(|| {
+            format!(
+                "[{selector}] matched '{}' at {:?}; acting {} at {point:?}",
+                hit.text,
+                hit.rect,
+                selector.relation.as_deref().unwrap_or(default_relation)
+            )
+        });
         Ok((hit, point))
     }
 
@@ -397,6 +434,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         if let Some(hit) = Self::resolve_in(&lines, selector) {
             return Ok(Some(hit));
         }
+        vision_log(|| format!("[{selector}] not on screen - searching by scrolling"));
         for notches in [-SCROLL_NOTCHES_PER_PAGE, SCROLL_NOTCHES_PER_PAGE] {
             for _ in 0..MAX_SCROLL_PAGES {
                 self.screen.scroll(notches)?;
@@ -601,6 +639,7 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // counted after the delete, a field that already held the value does
         // not inflate the baseline, so re-typing it still reads as arrived.
         self.screen.press_key("Delete", &[])?;
+        vision_log(|| format!("typing {} character(s)", text.chars().count()));
         let keys = Self::readback_keys(text);
         self.typed_baseline = if keys.is_empty() {
             None
