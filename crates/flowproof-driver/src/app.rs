@@ -868,6 +868,18 @@ pub trait AppDriver {
         ))
     }
 
+    /// After [`AppDriver::type_text`], did the typed value visibly arrive?
+    /// For a driver that cannot read a field's value back - pixels - a
+    /// click that missed the field or keystrokes that went to a popup type
+    /// into nothing, and the step used to pass anyway. `Some(false)` = it
+    /// did not arrive; `None` = this driver cannot tell (the default: a DOM
+    /// or accessibility tree reads the value through its own assertions).
+    /// Callers skip it for a value typed from a `${...}` reference, since a
+    /// masked password field never shows what was typed.
+    fn typed_value_arrived(&mut self, _text: &str) -> Result<Option<bool>, DriverError> {
+        Ok(None)
+    }
+
     /// Bring `selector`'s target into view, for a driver that can only see
     /// part of the surface at once. Replay calls it before waiting for a
     /// target to exist, because existence checks must stay pure reads. A
@@ -2046,6 +2058,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         (**self).reveal(selector)
+    }
+
+    fn typed_value_arrived(&mut self, text: &str) -> Result<Option<bool>, DriverError> {
+        (**self).typed_value_arrived(text)
     }
 
     fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError> {

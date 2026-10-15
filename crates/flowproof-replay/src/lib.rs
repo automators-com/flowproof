@@ -2106,6 +2106,18 @@ fn execute_step<D: AppDriver>(
                         }
                         if !value.is_empty() {
                             driver.type_text(&target, &value)?;
+                            // Read back unless the value came from a reference:
+                            // a masked password field never shows it.
+                            if !typed.contains("${")
+                                && driver.typed_value_arrived(&value)? == Some(false)
+                            {
+                                return Ok((
+                                    Err(format!(
+                                        "typed '{value}' but it never appeared on screen - the click missed the field, or the keystrokes went to something else"
+                                    )),
+                                    matched,
+                                ));
+                            }
                         }
                         (Ok(()), matched)
                     }

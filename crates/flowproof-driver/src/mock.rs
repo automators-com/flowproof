@@ -136,6 +136,8 @@ pub struct MockAppDriver {
     pub scrolls: Vec<(Option<String>, String)>,
     /// Element keys passed to `AppDriver::reveal`, in order.
     pub revealed: Vec<String>,
+    /// What `typed_value_arrived` answers (None = cannot tell, the default).
+    pub typed_arrived: Option<bool>,
 }
 
 impl MockAppDriver {
@@ -470,6 +472,10 @@ impl AppDriver for MockAppDriver {
     fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         self.revealed.push(Self::id_of(selector)?.to_string());
         Ok(())
+    }
+
+    fn typed_value_arrived(&mut self, _text: &str) -> Result<Option<bool>, DriverError> {
+        Ok(self.typed_arrived)
     }
 
     fn current_url(&mut self) -> Result<String, DriverError> {

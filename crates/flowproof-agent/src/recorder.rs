@@ -3785,7 +3785,16 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                         },
                     )?;
                     let value = flowproof_trace::secret::resolve_refs(&text)?;
-                    driver.type_text(targeted(), &value)?
+                    driver.type_text(targeted(), &value)?;
+                    // A value from a `${...}` reference is not read back: a
+                    // masked password field never shows what was typed.
+                    if !text.contains("${") && driver.typed_value_arrived(&value)? == Some(false) {
+                        return Err(RecordError::AssertMismatch {
+                            intent: spec_step.intent().to_string(),
+                            expected: format!("'{value}' to appear in the field"),
+                            actual: "it never appeared on screen - the click missed the field, or the keystrokes went to something else".to_string(),
+                        });
+                    }
                 }
                 ResolvedAction::TypeFocused { text } => {
                     let value = flowproof_trace::secret::resolve_refs(text)?;
@@ -4894,6 +4903,36 @@ mod tests {
     /// so a step naming a field below the fold must bring that field into
     /// view first - or the model reports it missing and the step stops
     /// before the driver's own scroll search is ever asked.
+    /// Plan 15, finding 21: a vision type step whose value never reached its
+    /// field recorded and replayed green. A driver that reads the value
+    /// back and does not see it now fails the step - except for a value
+    /// from a `${...}` reference, which a masked field never shows.
+    #[test]
+    fn a_typed_value_that_never_arrived_fails_the_step_unless_it_is_a_reference() {
+        let spec = |value: &str| {
+            FlowSpec::parse(&format!(
+                "name: x\napp: vision\nwindow: W\nsteps:\n  - Type {value} into the \"Name\" field\n"
+            ))
+            .expect("spec parses")
+        };
+        let mut driver = MockAppDriver::new(&["Name"]);
+        driver.typed_arrived = Some(false);
+        let out = std::env::temp_dir().join("flowproof-readback.trace.jsonl");
+        let err = record(&spec("Ada"), &mut driver, &out).expect_err("typed into nothing");
+        assert!(
+            err.to_string().contains("never appeared on screen"),
+            "{err}"
+        );
+
+        std::env::set_var("FLOWPROOF_READBACK_TEST_PW", "hunter2");
+        let mut driver = MockAppDriver::new(&["Name"]);
+        driver.typed_arrived = Some(false);
+        record(&spec("${FLOWPROOF_READBACK_TEST_PW}"), &mut driver, &out)
+            .expect("a referenced value is not read back");
+        std::env::remove_var("FLOWPROOF_READBACK_TEST_PW");
+        std::fs::remove_file(out).ok();
+    }
+
     #[test]
     fn a_vision_step_scrolls_its_off_screen_label_into_view_before_authoring() {
         let step = r#"Type HALFOFF into the "Coupon Code" field"#;
