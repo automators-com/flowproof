@@ -55,15 +55,27 @@ fn render(font: &FontRef<'_>, lines: &[(&str, i32, i32)]) -> RgbaImage {
 
 fn screens(font: &FontRef<'_>) -> FakeScreen {
     let before = render(font, &[("Order Type", 40, 60), ("Submit", 40, 180)]);
+    // The field shows what was typed: a type step reads its value back
+    // (#707) and fails one that never reaches the screen.
+    let typed = render(
+        font,
+        &[
+            ("Order Type", 40, 60),
+            ("ZOR", 300, 60),
+            ("Submit", 40, 180),
+        ],
+    );
     let after = render(
         font,
         &[
             ("Order Type", 40, 60),
+            ("ZOR", 300, 60),
             ("Submit", 40, 180),
             ("Order 4711 saved", 40, 260),
         ],
     );
-    let mut screen = FakeScreen::with_frames(vec![before, after]);
+    let mut screen = FakeScreen::with_frames(vec![before, typed, after]);
+    screen.advance_on_type = true;
     // A click anywhere on the rendered Submit line posts the order.
     screen.advance_on_click = Some((30, 170, 200, 50));
     screen
