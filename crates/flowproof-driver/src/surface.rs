@@ -196,6 +196,11 @@ impl AppDriver for SurfaceRegistry {
         Ok(())
     }
 
+    // Not in the routed list: it answers an Option, not a Result.
+    fn failure_screen(&mut self) -> Option<crate::FailureScreen> {
+        self.active_mut().ok()?.failure_screen()
+    }
+
     // Every ROUTED method is listed once; the macro writes the identical
     // body for each. A method missing from the list falls back to the
     // trait DEFAULT — the silent hole the Box impl warns about — so keep

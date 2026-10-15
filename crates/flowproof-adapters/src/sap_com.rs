@@ -15,7 +15,10 @@
 
 use std::time::Duration;
 
-use flowproof_driver::{AppDriver, DriverError, KeyMod, LoginCredentials, PixelRect, UiaSelector};
+use flowproof_driver::{
+    AppDriver, DriverError, FailureScreen, KeyMod, LoginCredentials, PixelRect, PopupText,
+    StatusMessage, UiaSelector,
+};
 
 /// One element of the SAP screen, as the scripting API describes it.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -95,7 +98,24 @@ pub trait SapEngine {
     /// VKey table has no Alt chords, so this is the only way to send it.
     fn close_window(&mut self) -> Result<(), DriverError>;
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError>;
+    /// The session's `Info`: where the user is, for a failure report.
+    /// `Ok(None)` when the engine cannot say.
+    fn session_info(&mut self) -> Result<Option<SapSessionInfo>, DriverError> {
+        Ok(None)
+    }
 }
+
+/// The part of SAP's `session.Info` a failure report names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SapSessionInfo {
+    pub transaction: String,
+    pub program: String,
+    pub screen_number: String,
+}
+
+/// Longest popup text a failure report carries; a popup listing a whole
+/// table is evidence enough at this length.
+const POPUP_TEXT_CAP: usize = 400;
 
 /// The command field every SAP session has — `Go to /nVA01` types here.
 const OKCODE_FIELD: &str = "wnd[0]/tbar[0]/okcd";
@@ -293,6 +313,64 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
     fn stage_credentials(&mut self, credentials: LoginCredentials) -> Result<(), DriverError> {
         self.credentials = Some(credentials);
         Ok(())
+    }
+
+    /// The main window's title and transaction, SAP's status bar, and any
+    /// popup open over it — where SAP says why it refused a step.
+    fn failure_screen(&mut self) -> Option<FailureScreen> {
+        let filled = |text: &str| Some(text.trim().to_string()).filter(|t| !t.is_empty());
+        let mut screen = FailureScreen {
+            title: self
+                .engine
+                .find_by_id("wnd[0]")
+                .ok()
+                .flatten()
+                .and_then(|w| filled(&w.text)),
+            ..FailureScreen::default()
+        };
+        if let Ok(Some(info)) = self.engine.session_info() {
+            screen.transaction = filled(&info.transaction);
+            screen.program = filled(&info.program);
+            screen.screen_number = filled(&info.screen_number);
+        }
+        if let Ok(Some(bar)) = self.engine.find_by_id("wnd[0]/sbar") {
+            if let Some(text) = filled(&bar.text) {
+                let severity = match bar.message_type.trim() {
+                    "E" => "error",
+                    "A" => "abort",
+                    "W" => "warning",
+                    "S" => "success",
+                    _ => "info",
+                };
+                screen.status = Some(StatusMessage {
+                    severity: severity.into(),
+                    text,
+                });
+            }
+        }
+        if let Ok(elements) = self.engine.walk() {
+            if let Some(n) = active_window(&elements).filter(|&n| n > 0) {
+                let window = format!("wnd[{n}]");
+                let title = elements
+                    .iter()
+                    .find(|e| e.id == window)
+                    .map(|e| e.text.trim().to_string())
+                    .unwrap_or_default();
+                let mut text = elements
+                    .iter()
+                    .filter(|e| e.id != window && window_index(&e.id) == Some(n))
+                    .filter(|e| !matches!(e.kind.as_str(), "GuiButton" | "GuiMenu" | "GuiTitlebar"))
+                    .filter_map(|e| filled(&e.text))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if let Some((cut, _)) = text.char_indices().nth(POPUP_TEXT_CAP) {
+                    text.truncate(cut);
+                    text.push('…');
+                }
+                screen.popup = Some(PopupText { title, text });
+            }
+        }
+        (screen != FailureScreen::default()).then_some(screen)
     }
 
     fn element_exists(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
@@ -498,6 +576,7 @@ pub mod fake {
         pub focused: Vec<String>,
         pub vkeys: Vec<u16>,
         pub set_texts: Vec<(String, String)>,
+        pub session_info: Option<SapSessionInfo>,
     }
 
     impl FakeEngine {
@@ -613,6 +692,10 @@ pub mod fake {
         fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
             Ok((1920, 1080))
         }
+
+        fn session_info(&mut self) -> Result<Option<SapSessionInfo>, DriverError> {
+            Ok(self.session_info.clone())
+        }
     }
 }
 
@@ -674,7 +757,7 @@ pub mod com {
     use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
-    use super::{SapElement, SapEngine};
+    use super::{SapElement, SapEngine, SapSessionInfo};
     use flowproof_driver::{DriverError, LoginCredentials};
 
     fn com_err(context: &str, err: windows::core::Error) -> DriverError {
@@ -1378,6 +1461,19 @@ pub mod com {
             let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
             Ok((w.unsigned_abs().max(1), h.unsigned_abs().max(1)))
         }
+
+        fn session_info(&mut self) -> Result<Option<SapSessionInfo>, DriverError> {
+            let info = self.session()?.get_disp("Info")?;
+            Ok(Some(SapSessionInfo {
+                transaction: info.get_string("Transaction"),
+                program: info.get_string("Program"),
+                // A Long in the scripting API; SAP writes dynpros as four digits.
+                screen_number: info
+                    .get_i32("ScreenNumber")
+                    .map(|n| format!("{n:04}"))
+                    .unwrap_or_default(),
+            }))
+        }
     }
 }
 
@@ -1430,6 +1526,75 @@ mod tests {
 
     fn driver() -> SapAppDriver<FakeEngine> {
         SapAppDriver::with_engine(FakeEngine::with_elements(order_screen()))
+    }
+
+    #[test]
+    fn a_failure_reads_the_screen_sap_was_on() {
+        let mut elements = order_screen();
+        elements.push(SapElement {
+            id: "wnd[0]".into(),
+            kind: "GuiMainWindow".into(),
+            text: "Create Sales Order: Initial Screen".into(),
+            ..Default::default()
+        });
+        let status = elements
+            .iter_mut()
+            .find(|e| e.id == "wnd[0]/sbar")
+            .expect("status bar");
+        status.message_type = "E".into();
+        status.text = "Sales document type ZZZ is not defined".into();
+        let mut engine = FakeEngine::with_elements(elements);
+        engine.session_info = Some(SapSessionInfo {
+            transaction: "VA01".into(),
+            program: "SAPMV45A".into(),
+            screen_number: "0101".into(),
+        });
+        let mut d = SapAppDriver::with_engine(engine);
+
+        let screen = d.failure_screen().expect("SAP shows something");
+        assert_eq!(
+            screen.title.as_deref(),
+            Some("Create Sales Order: Initial Screen")
+        );
+        assert_eq!(screen.transaction.as_deref(), Some("VA01"));
+        assert_eq!(screen.screen_number.as_deref(), Some("0101"));
+        let status = screen.status.expect("status bar read");
+        assert_eq!(status.severity, "error");
+        assert_eq!(status.text, "Sales document type ZZZ is not defined");
+        assert!(screen.popup.is_none(), "no window over the main one");
+    }
+
+    #[test]
+    fn a_failure_reads_the_popup_over_the_screen_but_not_its_buttons() {
+        let mut elements = order_screen();
+        elements.extend([
+            SapElement {
+                id: "wnd[1]".into(),
+                kind: "GuiModalWindow".into(),
+                text: "Information".into(),
+                ..Default::default()
+            },
+            SapElement {
+                id: "wnd[1]/usr/txtMESSTXT1".into(),
+                kind: "GuiTextField".into(),
+                text: "Pricing date is in the past".into(),
+                ..Default::default()
+            },
+            SapElement {
+                id: "wnd[1]/tbar[0]/btn[0]".into(),
+                kind: "GuiButton".into(),
+                text: "Continue".into(),
+                ..Default::default()
+            },
+        ]);
+        let mut d = SapAppDriver::with_engine(FakeEngine::with_elements(elements));
+
+        let popup = d
+            .failure_screen()
+            .and_then(|s| s.popup)
+            .expect("popup read");
+        assert_eq!(popup.title, "Information");
+        assert_eq!(popup.text, "Pricing date is in the past");
     }
 
     #[test]
