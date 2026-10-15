@@ -367,7 +367,20 @@ fn wait_for_condition<D: AppDriver>(
             if targets.is_empty() {
                 return Ok(Ok(()));
             }
+            // A driver that sees only part of the surface at once (vision:
+            // one window of pixels) brings the target into view before the
+            // poll, and once more before giving up - for a target that
+            // rendered below the fold during the wait. Never per poll: the
+            // poll is a pure read. Plan 15: without this, every off-screen
+            // target timed out here before its action's own search ran.
+            let reveal = |driver: &mut D| {
+                if let Some(uia) = targets.iter().find_map(|s| selector_to_uia(s)) {
+                    let _ = driver.reveal(&uia);
+                }
+            };
+            reveal(driver);
             let deadline = Instant::now() + Duration::from_millis(*timeout_ms);
+            let mut last_look = false;
             loop {
                 for selector in &targets {
                     if let Some(uia) = selector_to_uia(selector) {
@@ -376,8 +389,13 @@ fn wait_for_condition<D: AppDriver>(
                         }
                     }
                 }
-                if Instant::now() >= deadline {
+                if last_look {
                     return Ok(Err(format!("element did not appear within {timeout_ms}ms")));
+                }
+                if Instant::now() >= deadline {
+                    reveal(driver);
+                    last_look = true;
+                    continue;
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
@@ -3006,6 +3024,25 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
 #[cfg(test)]
 mod failure_hint_tests {
     use super::*;
+
+    /// Plan 15: a vision target below the fold timed out in this wait
+    /// before its action's scroll search ran. The wait reveals once before
+    /// polling and once before giving up - never per poll.
+    #[test]
+    fn the_existence_wait_reveals_before_polling_and_before_giving_up() {
+        let mut driver = flowproof_driver::mock::MockAppDriver::new(&[]);
+        let selector: Selector = serde_json::from_value(serde_json::json!({
+            "tier": "text_anchor", "provenance": "vision", "payload": { "text": "Submit" }
+        }))
+        .expect("selector");
+        let wait: Condition = serde_json::from_value(
+            serde_json::json!({ "kind": "element_exists", "timeout_ms": 30 }),
+        )
+        .expect("condition");
+        let verdict = wait_for_condition(&mut driver, &wait, &[selector]).expect("runs");
+        assert!(verdict.is_err(), "never appeared");
+        assert_eq!(driver.revealed, vec!["Submit".to_string(); 2]);
+    }
 
     /// `page shows` on a vision surface takes the OCR rung; the same text
     /// read from a DOM does not, and `does not show` never does - widening

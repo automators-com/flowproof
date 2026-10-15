@@ -868,6 +868,16 @@ pub trait AppDriver {
         ))
     }
 
+    /// Bring `selector`'s target into view, for a driver that can only see
+    /// part of the surface at once. Replay calls it before waiting for a
+    /// target to exist, because existence checks must stay pure reads. A
+    /// DOM or accessibility tree sees off-screen elements already, so the
+    /// default does nothing; a target that cannot be found is not an error
+    /// here - the wait that follows reports it.
+    fn reveal(&mut self, _selector: &UiaSelector) -> Result<(), DriverError> {
+        Ok(())
+    }
+
     /// Whether this driver's text is RECOGNIZED from pixels rather than read
     /// from a DOM or accessibility tree. OCR drops and misreads punctuation
     /// (`Hello, Ada!` reads as `Hello Adal`), so text assertions against it
@@ -2032,6 +2042,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn current_url(&mut self) -> Result<String, DriverError> {
         (**self).current_url()
+    }
+
+    fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        (**self).reveal(selector)
     }
 
     fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError> {

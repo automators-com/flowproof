@@ -134,6 +134,8 @@ pub struct MockAppDriver {
     /// Scroll calls in order: `(element key or None for the page, edge)`
     /// where edge is `"top"`, `"bottom"`, or `"into_view"`.
     pub scrolls: Vec<(Option<String>, String)>,
+    /// Element keys passed to `AppDriver::reveal`, in order.
+    pub revealed: Vec<String>,
 }
 
 impl MockAppDriver {
@@ -462,6 +464,11 @@ impl AppDriver for MockAppDriver {
             crate::app::ScrollTo::Offset(_) => "offset",
         };
         self.scrolls.push((key, edge.into()));
+        Ok(())
+    }
+
+    fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        self.revealed.push(Self::id_of(selector)?.to_string());
         Ok(())
     }
 
