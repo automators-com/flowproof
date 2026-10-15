@@ -268,6 +268,9 @@ fn multi_surface_record_and_replay_use_distinct_logins_and_resume_them() {
         fn send_vkey(&mut self, vkey: u16) -> Result<(), DriverError> {
             self.inner.send_vkey(vkey)
         }
+        fn close_window(&mut self) -> Result<(), DriverError> {
+            self.inner.close_window()
+        }
         fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
             self.inner.screen_size()
         }

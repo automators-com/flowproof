@@ -735,6 +735,20 @@ fn ground_one(
             .key
             .filter(|key| !key.trim().is_empty())
             .ok_or("press_key needs a non-empty 'key'")?;
+        // A model writes a chord as one string (`Alt+F4`). Passed through
+        // whole, it reached the driver as a single key name nothing maps.
+        // Resolve it with the same grammar a `Press Alt+F4` step uses.
+        if let Some((key, modifiers)) = crate::rules::parse_key_chord(&key) {
+            return Ok(vec![ResolvedAction::PressKey { key, modifiers }]);
+        }
+        // Looks like a chord but isn't one: refuse it now, while the model
+        // can still correct it, rather than at the driver.
+        if key.trim().len() > 1 && key.contains('+') {
+            return Err(GroundingError::Rejected(format!(
+                "press_key '{key}' is not a key chord: write modifiers and key as \
+                 'Ctrl+V' or 'Alt+F4' (modifiers: Ctrl, Alt, Shift, Win)"
+            )));
+        }
         return Ok(vec![ResolvedAction::PressKey {
             key,
             modifiers: Vec::new(),
@@ -2553,6 +2567,59 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("{intent}: {error}"));
             assert_eq!(action, expected, "{intent}");
+        }
+    }
+
+    /// A model writes a chord the way a person says it — `Alt+F4` — and the
+    /// whole string used to go to the driver as one key name, so SAP refused
+    /// "no virtual key for 'Alt+F4'" and the UIA driver had no code for it.
+    /// A `Press Alt+F4` spec step split it correctly; the model's own
+    /// `press_key` now goes through the same chord grammar.
+    #[test]
+    fn a_model_authored_key_chord_is_split_into_key_and_modifiers() {
+        use flowproof_trace::format::KeyModifier;
+
+        let cases = [
+            (
+                r#"{"action":"press_key","key":"Alt+F4"}"#,
+                ResolvedAction::PressKey {
+                    key: "F4".into(),
+                    modifiers: vec![KeyModifier::Alt],
+                },
+            ),
+            (
+                r#"{"action":"press_key","key":"ctrl+shift+f2"}"#,
+                ResolvedAction::PressKey {
+                    key: "F2".into(),
+                    modifiers: vec![KeyModifier::Ctrl, KeyModifier::Shift],
+                },
+            ),
+            // A bare key is canonicalised and keeps no modifiers.
+            (
+                r#"{"action":"press_key","key":"tab"}"#,
+                ResolvedAction::PressKey {
+                    key: "Tab".into(),
+                    modifiers: Vec::new(),
+                },
+            ),
+        ];
+        for (reply, expected) in cases {
+            let mut client = Scripted {
+                replies: vec![reply.into()],
+                calls: 0,
+            };
+            let action = author_step(
+                &mut client,
+                &AuthorContext {
+                    today: None,
+                    page_text: None,
+                    intent: "Close the window",
+                    scene: HUMAN_PRIMITIVE_SCENE,
+                    ..ctx()
+                },
+            )
+            .unwrap_or_else(|error| panic!("{reply}: {error}"));
+            assert_eq!(action, expected, "{reply}");
         }
     }
 

@@ -1278,6 +1278,10 @@ enum Scope {
 /// The opening of a capture reference, from the crate that resolves them.
 pub use flowproof_trace::captures::OPEN as CAPTURE_OPEN;
 
+/// The `Press <Mod>+<Key>` chord grammar, shared with the model author so a
+/// model's `press_key` resolves a chord exactly as a spec step does.
+pub(crate) use web::parse_key_chord;
+
 /// Is every capture reference in this step confined to the VALUE of a
 /// `Type … into the …` step?
 ///
@@ -2603,7 +2607,7 @@ mod web {
     /// Parse `Enter`, `Escape`, `Control+V`, `Alt+Shift+Backspace` into a
     /// canonical key plus modifiers. Returns None for anything that isn't a
     /// key chord, so ordinary sentences never match.
-    fn parse_key_chord(text: &str) -> Option<(String, Vec<KeyModifier>)> {
+    pub(crate) fn parse_key_chord(text: &str) -> Option<(String, Vec<KeyModifier>)> {
         let parts: Vec<&str> = text.split('+').map(str::trim).collect();
         if parts.iter().any(|p| p.is_empty()) {
             return None;
