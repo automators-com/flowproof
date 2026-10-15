@@ -48,6 +48,8 @@ pub struct Frame {
 /// A keyboard/mouse input event to inject. `Text` types layout-independent
 /// Unicode packets; `KeyText` types the same text as real key strokes (see
 /// [`plan_key_text`]), which is what a Citrix or RDP client forwards.
+/// `Wheel` turns the vertical wheel under the cursor by whole notches, in
+/// Windows' sign convention: negative scrolls the view down, positive up.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
     MouseMove { x: i32, y: i32 },
@@ -57,6 +59,7 @@ pub enum InputEvent {
     KeyUp { virtual_key: u16 },
     Text { text: String },
     KeyText { text: String },
+    Wheel { notches: i32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

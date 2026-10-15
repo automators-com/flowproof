@@ -54,7 +54,8 @@ mod win_input {
         KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
         MAPVK_VK_TO_VSC, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-        MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+        MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+        MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
     };
 
     use crate::{is_extended_key, plan_key_text, DriverError, InputEvent, KeyStroke, MouseButton};
@@ -201,6 +202,13 @@ mod win_input {
                     return Ok(());
                 }
                 send(&inputs)
+            }
+            InputEvent::Wheel { notches } => {
+                // WHEEL_DELTA (120) per notch travels in mouseData, which
+                // the `mouse` helper leaves zero.
+                let mut wheel = mouse(MOUSEEVENTF_WHEEL, 0, 0);
+                wheel.Anonymous.mi.mouseData = (*notches * 120) as u32;
+                send(&[wheel])
             }
         }
     }
