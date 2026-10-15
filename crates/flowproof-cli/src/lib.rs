@@ -5212,7 +5212,10 @@ mod tests {
         let other = flowproof_agent::RecordError::UnknownApp("oracle".into()).into();
         let payload = record_failure_json(&other);
         assert_eq!(payload["failure"]["kind"], "flow_setup");
-        assert!(payload["error"].as_str().unwrap().contains("oracle"));
+        assert!(payload["error"]
+            .as_str()
+            .expect("error is a string")
+            .contains("oracle"));
         assert!(payload.get("needs_clarification").is_none());
     }
 
@@ -5251,7 +5254,7 @@ mod tests {
         );
         assert!(failure["hint"]
             .as_str()
-            .unwrap()
+            .expect("hint is a string")
             .contains("Material TEST-1 does not exist"));
     }
 
