@@ -3079,7 +3079,7 @@ pub fn record_located<D: AppDriver>(
     old_steps: Option<&[Step]>,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, LocatedRecordError> {
-    let mut client = HttpModelClient::from_env_result()?;
+    let mut client = HttpModelClient::from_env_result().map_err(RecordError::from)?;
     record_with_reuse_located(
         spec,
         driver,
