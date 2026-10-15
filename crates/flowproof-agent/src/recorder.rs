@@ -3838,7 +3838,14 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 }
                 ResolvedAction::TypeFocused { text } => {
                     let value = flowproof_trace::secret::resolve_refs(text)?;
-                    driver.type_focused(&value)?
+                    driver.type_focused(&value)?;
+                    if !text.contains("${") && driver.typed_value_arrived(&value)? == Some(false) {
+                        return Err(RecordError::AssertMismatch {
+                            intent: spec_step.intent().to_string(),
+                            expected: format!("'{value}' to appear where it was typed"),
+                            actual: "it never appeared on screen - nothing had focus, or the keystrokes went to something else".to_string(),
+                        });
+                    }
                 }
                 ResolvedAction::Clear { .. } => driver.clear_text(targeted())?,
                 ResolvedAction::SetChecked { checked, .. } => {
@@ -4954,6 +4961,22 @@ mod tests {
     /// field recorded and replayed green. A driver that reads the value
     /// back and does not see it now fails the step - except for a value
     /// from a `${...}` reference, which a masked field never shows.
+    /// A bare `Type X` is read back too: typed into nothing, it fails.
+    #[test]
+    fn a_focused_type_that_never_arrived_fails_the_step() {
+        let spec = FlowSpec::parse("name: x\napp: vision\nwindow: W\nsteps:\n  - Type Zebra42\n")
+            .expect("spec parses");
+        let mut driver = MockAppDriver::new(&[]);
+        driver.typed_arrived = Some(false);
+        let out = std::env::temp_dir().join("flowproof-focused-readback.trace.jsonl");
+        let err = record(&spec, &mut driver, &out).expect_err("typed into nothing");
+        assert!(
+            err.to_string().contains("never appeared on screen"),
+            "{err}"
+        );
+        std::fs::remove_file(out).ok();
+    }
+
     #[test]
     fn a_typed_value_that_never_arrived_fails_the_step_unless_it_is_a_reference() {
         let spec = |value: &str| {

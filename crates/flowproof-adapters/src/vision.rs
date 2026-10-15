@@ -233,6 +233,20 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         keys
     }
 
+    /// Note how often a value's read-back keys are on screen just before it
+    /// is typed - the baseline `typed_value_arrived` compares against.
+    fn count_before_typing(&mut self, text: &str) -> Result<(), DriverError> {
+        vision_log(|| format!("typing {} character(s)", text.chars().count()));
+        let keys = Self::readback_keys(text);
+        self.typed_baseline = if keys.is_empty() {
+            None
+        } else {
+            let before = self.readback_counts(&keys)?;
+            Some((keys, before))
+        };
+        Ok(())
+    }
+
     /// How many times each key is on screen now. Across a caret blink both
     /// readings count, and the higher one is the answer.
     fn readback_counts(&mut self, keys: &[String]) -> Result<Vec<usize>, DriverError> {
@@ -639,14 +653,7 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // counted after the delete, a field that already held the value does
         // not inflate the baseline, so re-typing it still reads as arrived.
         self.screen.press_key("Delete", &[])?;
-        vision_log(|| format!("typing {} character(s)", text.chars().count()));
-        let keys = Self::readback_keys(text);
-        self.typed_baseline = if keys.is_empty() {
-            None
-        } else {
-            let before = self.readback_counts(&keys)?;
-            Some((keys, before))
-        };
+        self.count_before_typing(text)?;
         self.screen.type_text(text)
     }
 
@@ -676,7 +683,11 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         self.screen.press_key("Delete", &[])
     }
 
+    /// Read back too: a bare `Type X` after a double-click that did NOT open
+    /// its input typed into nothing and passed (plan 15). Typing appends at
+    /// the caret, so arrival is the same "more often than before" test.
     fn type_focused(&mut self, text: &str) -> Result<(), DriverError> {
+        self.count_before_typing(text)?;
         self.screen.type_text(text)
     }
 
@@ -1669,6 +1680,25 @@ mod scroll_search_tests {
             d.typed_value_arrived("Quokka77").expect("reads"),
             Some(true)
         );
+    }
+
+    /// A bare `Type X` goes wherever focus is. Frame 1 is after typing.
+    #[test]
+    fn a_value_typed_into_focus_reads_back_only_if_it_appeared() {
+        let label = OcrLine::new("Double click to edit", (20, 20, 160, 16));
+        for (arrives, expected) in [(true, Some(true)), (false, Some(false))] {
+            let mut after = vec![label.clone()];
+            if arrives {
+                after.push(OcrLine::new(
+                    "Zebra42Double click to edit",
+                    (20, 60, 200, 16),
+                ));
+            }
+            let mut d = page_driver(vec![vec![label.clone()], after], 0);
+            d.screen.advance_on_type = true;
+            d.type_focused("Zebra42").expect("types");
+            assert_eq!(d.typed_value_arrived("Zebra42").expect("reads"), expected);
+        }
     }
 
     #[test]
