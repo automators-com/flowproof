@@ -101,6 +101,46 @@ pub struct A11yHints {
     pub ancestor_name: Option<String>,
 }
 
+/// What the app was showing when a recording failed: the evidence a person
+/// needs to act on the failure (`record --json`'s `failure.screen`). Every
+/// field is best-effort and omitted when the driver cannot read it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct FailureScreen {
+    /// The window title of the screen the flow was on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// SAP: the transaction code (`VA01`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction: Option<String>,
+    /// SAP: the ABAP program and dynpro number (`SAPMV45A`, `0101`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_number: Option<String>,
+    /// The app's own message line - SAP's status bar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<StatusMessage>,
+    /// A modal window open over the screen, which is often where the app
+    /// says what is wrong.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub popup: Option<PopupText>,
+}
+
+/// One message from the app's message line. `severity` is `error`,
+/// `abort`, `warning`, `success` or `info`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StatusMessage {
+    pub severity: String,
+    pub text: String,
+}
+
+/// The title and visible text of a modal window.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PopupText {
+    pub title: String,
+    pub text: String,
+}
+
 /// An element addressed inside a CONTAINER identified by an anchor. The
 /// container is either the bare word `item` (a closed list of list-ish
 /// roles) or an explicit `css:`/`id:` selector, written exactly as the spec
@@ -587,6 +627,13 @@ pub trait AppDriver {
         _selector: &UiaSelector,
     ) -> Result<Option<flowproof_trace::format::Fingerprint>, DriverError> {
         Ok(None)
+    }
+
+    /// Read what the app shows right now, after a step failed, so the
+    /// failure can name the screen and the app's own message. Best-effort:
+    /// `None` (the default) when the driver has nothing to add.
+    fn failure_screen(&mut self) -> Option<FailureScreen> {
+        None
     }
 
     /// Read the inner target INSIDE a same-origin iframe. Only the web
@@ -1915,6 +1962,10 @@ impl AppDriver for Box<dyn AppDriver> {
         selector: &UiaSelector,
     ) -> Result<Option<flowproof_trace::format::Fingerprint>, DriverError> {
         (**self).fingerprint(selector)
+    }
+
+    fn failure_screen(&mut self) -> Option<FailureScreen> {
+        (**self).failure_screen()
     }
 
     fn probe_frame(&mut self, query: &FrameQuery) -> Result<FrameProbe, DriverError> {

@@ -24,8 +24,9 @@ pub use heal::{
 };
 pub use llm::{HttpModelClient, ModelClient};
 pub use recorder::{
-    record, record_incremental, record_incremental_with_options, record_with_author,
-    record_with_author_and_options, surface_targets, Author, RecordError, RecordSummary,
+    record, record_incremental, record_incremental_with_options, record_located,
+    record_with_author, record_with_author_and_options, surface_targets, Author, FailedStep,
+    FailurePoint, LocatedRecordError, RecordError, RecordSummary,
 };
 pub use repair::{
     apply_patch, diagnose, find_step_index, propose_patch, widen_timeout, FailureContext,

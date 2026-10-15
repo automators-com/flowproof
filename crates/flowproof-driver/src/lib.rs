@@ -25,10 +25,10 @@ pub use app::{
     ocr_text_contains, parse_css_color, resolve_app, secure_over_http_warning, split_command_line,
     style_matches, text_contains, text_occurrences, url_matches, url_origin, verify_dialog,
     visible_now, A11yHints, AppDriver, AppTarget, CellHints, CellQuery, CookieFacts, CookieProbe,
-    DebugBundle, DialogArm, DialogDisposition, FiredDialog, FrameProbe, FrameQuery, KeyMod,
-    LoginCredentials, NoOpDriver, PixelRect, ScopeHints, ScopeQuery, ScrollTo, UiaAppDriver,
-    UiaSelector, WebBrowserConfig, WebClock, WebMock, WebRandom, WebSession, WebViewport,
-    COUNT_DIAGNOSTIC_CAP, STABILITY_INTERVAL, STYLE_PROPS,
+    DebugBundle, DialogArm, DialogDisposition, FailureScreen, FiredDialog, FrameProbe, FrameQuery,
+    KeyMod, LoginCredentials, NoOpDriver, PixelRect, PopupText, ScopeHints, ScopeQuery, ScrollTo,
+    StatusMessage, UiaAppDriver, UiaSelector, WebBrowserConfig, WebClock, WebMock, WebRandom,
+    WebSession, WebViewport, COUNT_DIAGNOSTIC_CAP, STABILITY_INTERVAL, STYLE_PROPS,
 };
 pub use backend::PlatformBackend;
 pub use recording::{

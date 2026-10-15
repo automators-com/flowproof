@@ -690,15 +690,138 @@ pub fn driver_for(app: &str) -> Result<Box<dyn AppDriver>, String> {
     Ok(Box::new(driver))
 }
 
-/// JSON rendering of a record failure for `--json` callers: a clarification
-/// becomes a structured payload the driving agent can act on; every other
-/// error stays a plain error (`None`).
-fn record_failure_json(err: &flowproof_agent::RecordError) -> Option<serde_json::Value> {
-    match err {
-        flowproof_agent::RecordError::NeedsClarification(c) => {
-            Some(serde_json::json!({ "needs_clarification": c }))
+/// JSON rendering of a record failure for `--json` callers: always one
+/// object, so a caller never has to scrape stderr for the reason. `error` is
+/// the one-line message; `failure` names the step, the kind of failure, what
+/// the app was showing and what to try. A clarification also keeps its
+/// structured payload, which the driving agent acts on.
+fn record_failure_json(err: &flowproof_agent::LocatedRecordError) -> serde_json::Value {
+    let message = err.error.to_string();
+    let kind = failure_kind(err.error.kind(), err.at.screen.as_ref());
+    let mut failure = serde_json::json!({
+        "kind": kind,
+        "message": message,
+        "hint": failure_hint(kind, err.at.screen.as_ref()),
+    });
+    if let Some(step) = &err.at.step {
+        failure["step"] = serde_json::json!(step);
+    }
+    if let Some(screen) = &err.at.screen {
+        failure["screen"] = serde_json::json!(screen);
+    }
+    let mut payload = serde_json::json!({ "error": message, "failure": failure });
+    if let flowproof_agent::RecordError::NeedsClarification(c) = &err.error {
+        payload["needs_clarification"] = serde_json::json!(c);
+    }
+    payload
+}
+
+/// The same shape for a failure before recording could start (the flow
+/// does not load, the driver cannot be built): no step, no screen.
+fn setup_failure_json(message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "error": message,
+        "failure": {
+            "kind": "flow_setup",
+            "message": message,
+            "hint": failure_hint("flow_setup", None),
+        },
+    })
+}
+
+/// When the app's own message line shows an error, that message is the
+/// reason: whatever the step then failed to find or read followed from it.
+fn failure_kind(
+    kind: &'static str,
+    screen: Option<&flowproof_driver::FailureScreen>,
+) -> &'static str {
+    let app_refused = screen
+        .and_then(|s| s.status.as_ref())
+        .is_some_and(|status| matches!(status.severity.as_str(), "error" | "abort"));
+    match kind {
+        "app_error" | "element_not_found" | "assertion_failed" | "page_not_ready"
+            if app_refused =>
+        {
+            "rejected_by_app"
         }
-        _ => None,
+        other => other,
+    }
+}
+
+/// What a person can do about a failure of `kind`, in their words.
+fn failure_hint(kind: &str, screen: Option<&flowproof_driver::FailureScreen>) -> String {
+    let popup = screen.and_then(|s| s.popup.as_ref());
+    let answer_popup = |title: &str| {
+        format!(
+            "A window{} is open over the screen. Add a step that answers it before this one, \
+             or record again once it no longer appears.",
+            if title.is_empty() {
+                String::new()
+            } else {
+                format!(" \"{title}\"")
+            }
+        )
+    };
+    match kind {
+        "rejected_by_app" => {
+            let said = screen
+                .and_then(|s| s.status.as_ref())
+                .map(|status| format!("The app said \"{}\". ", status.text))
+                .unwrap_or_default();
+            format!(
+                "{said}Check the values this step enters (the flow's test data or the \
+                 environment's values) and that the user is allowed to do this."
+            )
+        }
+        "element_not_found" => match (popup, screen.and_then(|s| s.title.as_deref())) {
+            (Some(popup), _) => answer_popup(&popup.title),
+            (None, Some(title)) => format!(
+                "The field or button is not on \"{title}\"{}. The flow probably reached a \
+                 different screen than when it was written: check the step before this one.",
+                screen
+                    .and_then(|s| s.transaction.as_deref())
+                    .map(|t| format!(" ({t})"))
+                    .unwrap_or_default()
+            ),
+            (None, None) => "The field or button is not on the screen. Check that the step \
+                             before this one reached the screen this step expects."
+                .into(),
+        },
+        "app_error" => match popup {
+            Some(popup) => answer_popup(&popup.title),
+            None => "The app or its driver reported the error above. Check the app is open, \
+                     logged in and on the screen this step expects."
+                .into(),
+        },
+        "assertion_failed" => "The screen does not show what this step expects. If the app \
+                               changed on purpose, update the expected value; otherwise check \
+                               the step before this one."
+            .into(),
+        "unexpected_dialog" => "A dialog opened that the flow does not expect. Add a step that \
+                                answers it before this one."
+            .into(),
+        "needs_clarification" => "Reword the step so it names one thing on the screen: the \
+                                  field's label or the button's caption."
+            .into(),
+        "page_not_ready" => "The previous step had not finished when this one started. Add a \
+                             step that waits for what the previous step should show."
+            .into(),
+        "authoring" => "flowproof could not turn this step into an action. Name the field or \
+                        button exactly as the screen shows it, or configure an authoring model \
+                        with `flowproof config ai`."
+            .into(),
+        "missing_value" => "A value the flow uses is not set. Add it to the environment or the \
+                            flow's values, then record again."
+            .into(),
+        "secret_leak" => "A secret value showed up where the flow asserts it must not. That is \
+                          a finding about the app, not a problem with the flow."
+            .into(),
+        "flow_setup" => "The flow cannot record as written. Fix what the message names, then \
+                         record again."
+            .into(),
+        _ => "flowproof could not finish the recording. Check the disk has space and the \
+              folder is writable, then record again."
+            .into(),
     }
 }
 
@@ -756,7 +879,10 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
         no_repair,
         agent_conversation,
     } = options;
-    let (spec, _env_overlay) = load_prepared_spec(spec_path, &values)?;
+    let (spec, _env_overlay) = match load_prepared_spec(spec_path, &values) {
+        Ok(prepared) => prepared,
+        Err(message) => return setup_failure_result(message, json),
+    };
     if let Some(reason) = spec.skip_reason() {
         if json {
             println!("{}", serde_json::json!({ "skipped": reason }));
@@ -832,7 +958,10 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
     }
 
     recording_progress("Preparing recording");
-    let mut driver = record_driver(&spec)?;
+    let mut driver = match record_driver(&spec) {
+        Ok(driver) => driver,
+        Err(message) => return setup_failure_result(message, json),
+    };
     // --reuse: consult the existing trace per step, re-authoring only
     // drift; the old steps come from the trace being replaced.
     let old_steps = if reuse {
@@ -843,23 +972,14 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
         None
     };
     recording_progress("Recording steps");
-    let result = match &old_steps {
-        Some(steps) => flowproof_agent::record_incremental_with_options(
-            &spec,
-            &mut driver,
-            &out,
-            author.into(),
-            steps,
-            recording,
-        ),
-        None => flowproof_agent::record_with_author_and_options(
-            &spec,
-            &mut driver,
-            &out,
-            author.into(),
-            recording,
-        ),
-    };
+    let result = flowproof_agent::record_located(
+        &spec,
+        &mut driver,
+        &out,
+        author.into(),
+        old_steps.as_deref(),
+        recording,
+    );
     let summary = match result {
         Ok(summary) => summary,
         Err(err) => {
@@ -931,7 +1051,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                                     },
                                 };
                                 write_json_report(&out, &combined)?;
-                                return Err(setup_err);
+                                return setup_failure_result(setup_err, json);
                             }
                             Err(FreshRetryError::Record(retry_err)) => {
                                 match run_repair_loop(
@@ -961,7 +1081,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                                                     attempts: Vec::new(),
                                                     outcome:
                                                         flowproof_agent::RepairOutcome::NotApplicable {
-                                                            reason: final_err.to_string(),
+                                                            reason: final_err.error.to_string(),
                                                         },
                                                 },
                                             },
@@ -1044,20 +1164,36 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
 
 /// Emit a `record` failure the way this CLI always has, when the repair
 /// loop did not run at all (no model configured, or `--reuse`/`--no-repair`).
-fn record_failure_result(err: &flowproof_agent::RecordError, json: bool) -> Result<u8, String> {
-    // A clarification is data, not just a message: with --json the payload
-    // goes to stdout so the driving agent can enumerate the live screen and
-    // rewrite the vague step before re-recording.
+fn record_failure_result(
+    err: &flowproof_agent::LocatedRecordError,
+    json: bool,
+) -> Result<u8, String> {
+    // The failure is data, not just a message: with --json it goes to stdout
+    // so a caller can show the step, the app's own message and a next step.
+    // stderr keeps the line it always had.
     if json {
-        if let Some(payload) = record_failure_json(err) {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
-            );
-            return Ok(EXIT_ERROR);
-        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&record_failure_json(err)).map_err(|e| e.to_string())?
+        );
+        eprintln!("error: {}", err.error);
+        return Ok(EXIT_ERROR);
     }
-    Err(err.to_string())
+    Err(err.error.to_string())
+}
+
+/// [`record_failure_result`] for a failure before recording could start.
+fn setup_failure_result(message: String, json: bool) -> Result<u8, String> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&setup_failure_json(&message))
+                .map_err(|e| e.to_string())?
+        );
+        eprintln!("error: {message}");
+        return Ok(EXIT_ERROR);
+    }
+    Err(message)
 }
 
 /// Either half of what [`fresh_record_attempt`] can fail with: a setup
@@ -1067,7 +1203,7 @@ fn record_failure_result(err: &flowproof_agent::RecordError, json: bool) -> Resu
 /// [`run_repair_loop`] as it would any other failure.
 enum FreshRetryError {
     Setup(String),
-    Record(flowproof_agent::RecordError),
+    Record(flowproof_agent::LocatedRecordError),
 }
 
 /// One completely fresh `record` attempt: reload the spec, rebuild the
@@ -1085,14 +1221,8 @@ fn fresh_record_attempt(
     let (spec, _env_overlay) =
         load_prepared_spec(spec_path, values).map_err(FreshRetryError::Setup)?;
     let mut driver = record_driver(&spec).map_err(FreshRetryError::Setup)?;
-    flowproof_agent::record_with_author_and_options(
-        &spec,
-        &mut driver,
-        out,
-        author.into(),
-        recording,
-    )
-    .map_err(FreshRetryError::Record)
+    flowproof_agent::record_located(&spec, &mut driver, out, author.into(), None, recording)
+        .map_err(FreshRetryError::Record)
 }
 
 /// Report a final repair failure, in whichever shape the caller has:
@@ -1101,23 +1231,23 @@ fn fresh_record_attempt(
 /// fresh retry, a [`RepairReportWithFreshRetry`]); `human_report` is the
 /// most relevant single report for the human-readable printout.
 fn emit_repair_failure(
-    err: &flowproof_agent::RecordError,
+    err: &flowproof_agent::LocatedRecordError,
     repair_payload: &impl serde::Serialize,
     human_report: &flowproof_agent::RepairReport,
     json: bool,
 ) -> Result<u8, String> {
     if json {
-        let mut payload = record_failure_json(err)
-            .unwrap_or_else(|| serde_json::json!({ "error": err.to_string() }));
+        let mut payload = record_failure_json(err);
         payload["repair"] = serde_json::to_value(repair_payload).map_err(|e| e.to_string())?;
         println!(
             "{}",
             serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
         );
+        eprintln!("error: {}", err.error);
         return Ok(EXIT_ERROR);
     }
     print_repair_report(human_report);
-    Err(err.to_string())
+    Err(err.error.to_string())
 }
 
 enum RepairLoopOutcome {
@@ -1127,8 +1257,11 @@ enum RepairLoopOutcome {
     },
     /// Repair never engaged: no authoring model is configured. The original
     /// failure is reported exactly as it would be without plan 007.
-    NotRepaired(flowproof_agent::RecordError),
-    GaveUp(flowproof_agent::RecordError, flowproof_agent::RepairReport),
+    NotRepaired(flowproof_agent::LocatedRecordError),
+    GaveUp(
+        flowproof_agent::LocatedRecordError,
+        flowproof_agent::RepairReport,
+    ),
 }
 
 /// Plan 007's autonomous repair loop: on a `record` failure, diagnose it,
@@ -1144,9 +1277,9 @@ fn run_repair_loop(
     out: &Path,
     author: AuthorArg,
     recording: flowproof_driver::RecordingOptions,
-    first_err: flowproof_agent::RecordError,
+    first_err: flowproof_agent::LocatedRecordError,
 ) -> RepairLoopOutcome {
-    if first_err.is_setup_error() {
+    if first_err.error.is_setup_error() {
         return RepairLoopOutcome::NotRepaired(first_err);
     }
     let Some(mut client) = flowproof_agent::HttpModelClient::from_env() else {
@@ -1159,7 +1292,7 @@ fn run_repair_loop(
     let mut last_signature: Option<(String, String)> = None;
 
     for attempt in 1..=budget.max_attempts {
-        let ctx = flowproof_agent::diagnose(&err);
+        let ctx = flowproof_agent::diagnose(&err.error);
         let Some(failing_intent) = ctx.failing_intent.clone() else {
             attempts.push(flowproof_agent::RepairAttempt {
                 attempt,
@@ -1232,7 +1365,7 @@ fn run_repair_loop(
                 )
             }
         };
-        let completed_steps = match &err {
+        let completed_steps = match &err.error {
             flowproof_agent::RecordError::NeedsClarification(c) => c.completed_steps.clone(),
             _ => Vec::new(),
         };
@@ -1401,11 +1534,12 @@ fn run_repair_loop(
                 )
             }
         };
-        match flowproof_agent::record_with_author_and_options(
+        match flowproof_agent::record_located(
             &rerun_spec,
             &mut driver,
             out,
             author.into(),
+            None,
             recording,
         ) {
             Ok(summary) => {
@@ -1421,7 +1555,7 @@ fn run_repair_loop(
         }
     }
 
-    let last_error = err.to_string();
+    let last_error = err.error.to_string();
     RepairLoopOutcome::GaveUp(
         err,
         flowproof_agent::RepairReport {
@@ -5059,7 +5193,7 @@ mod tests {
     }
 
     #[test]
-    fn record_failure_json_shapes_only_clarifications() {
+    fn record_failure_json_keeps_the_clarification_payload() {
         let c = flowproof_agent::Clarification {
             step: "make required field changes".into(),
             step_index: 3,
@@ -5072,16 +5206,86 @@ mod tests {
             scene: vec![],
             hint: flowproof_agent::Clarification::HINT.into(),
         };
-        let err = flowproof_agent::RecordError::NeedsClarification(Box::new(c));
-        let payload = record_failure_json(&err).expect("clarification is structured");
+        let err = flowproof_agent::RecordError::NeedsClarification(Box::new(c)).into();
+        let payload = record_failure_json(&err);
         assert_eq!(
             payload["needs_clarification"]["step"],
             "make required field changes"
         );
         assert_eq!(payload["needs_clarification"]["stage"], "no_model");
+        assert_eq!(payload["failure"]["kind"], "needs_clarification");
 
-        let other = flowproof_agent::RecordError::UnknownApp("oracle".into());
-        assert!(record_failure_json(&other).is_none());
+        // Every other failure is structured too, never a bare stderr line.
+        let other = flowproof_agent::RecordError::UnknownApp("oracle".into()).into();
+        let payload = record_failure_json(&other);
+        assert_eq!(payload["failure"]["kind"], "flow_setup");
+        assert!(payload["error"].as_str().unwrap().contains("oracle"));
+        assert!(payload.get("needs_clarification").is_none());
+    }
+
+    #[test]
+    fn a_step_sap_refused_reports_sap_s_own_message() {
+        let err = flowproof_agent::LocatedRecordError {
+            error: flowproof_agent::RecordError::ElementNotFound {
+                intent: "Enter the material".into(),
+                selector: "id:wnd[0]/usr/ctxtRMMG1-MATNR".into(),
+            },
+            at: flowproof_agent::FailurePoint {
+                step: Some(flowproof_agent::FailedStep {
+                    number: 4,
+                    id: "s0004".into(),
+                    intent: "Enter the material".into(),
+                }),
+                screen: Some(flowproof_driver::FailureScreen {
+                    title: Some("Create Material (Initial Screen)".into()),
+                    transaction: Some("MM01".into()),
+                    status: Some(flowproof_driver::StatusMessage {
+                        severity: "error".into(),
+                        text: "Material TEST-1 does not exist".into(),
+                    }),
+                    ..Default::default()
+                }),
+            },
+        };
+        let payload = record_failure_json(&err);
+        let failure = &payload["failure"];
+        assert_eq!(failure["kind"], "rejected_by_app");
+        assert_eq!(failure["step"]["id"], "s0004");
+        assert_eq!(failure["screen"]["transaction"], "MM01");
+        assert_eq!(
+            failure["screen"]["status"]["text"],
+            "Material TEST-1 does not exist"
+        );
+        assert!(failure["hint"]
+            .as_str()
+            .unwrap()
+            .contains("Material TEST-1 does not exist"));
+    }
+
+    #[test]
+    fn a_missing_field_names_the_screen_or_the_popup_over_it() {
+        let screen = flowproof_driver::FailureScreen {
+            title: Some("Create Sales Order".into()),
+            transaction: Some("VA01".into()),
+            ..Default::default()
+        };
+        let hint = failure_hint("element_not_found", Some(&screen));
+        assert!(hint.contains("\"Create Sales Order\" (VA01)"), "{hint}");
+
+        let covered = flowproof_driver::FailureScreen {
+            popup: Some(flowproof_driver::PopupText {
+                title: "Information".into(),
+                text: "Pricing date is in the past".into(),
+            }),
+            ..screen
+        };
+        let hint = failure_hint("element_not_found", Some(&covered));
+        assert!(hint.contains("\"Information\""), "{hint}");
+        // A warning on the status bar is not a refusal.
+        assert_eq!(
+            failure_kind("element_not_found", Some(&covered)),
+            "element_not_found"
+        );
     }
 
     #[test]

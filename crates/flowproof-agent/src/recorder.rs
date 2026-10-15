@@ -177,6 +177,29 @@ impl RecordError {
             Self::Secret(_) | Self::UnknownApp(_) | Self::MissingUrl | Self::MissingWindow
         )
     }
+
+    /// What kind of failure this is, in the words `record --json` reports
+    /// as `failure.kind`. Exhaustive on purpose: a new variant must choose.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::ElementNotFound { .. } => "element_not_found",
+            Self::AssertMismatch { .. } => "assertion_failed",
+            Self::Dialog { .. } => "unexpected_dialog",
+            Self::NeedsClarification(_) => "needs_clarification",
+            Self::Driver(_) => "app_error",
+            Self::Agent(crate::AgentError::PreviousStepIncomplete { .. }) => "page_not_ready",
+            Self::Rules(_) | Self::Agent(_) | Self::NoAuthor { .. } | Self::NoScene(_) => {
+                "authoring"
+            }
+            Self::Secret(_) => "missing_value",
+            Self::SecretLeak(_) => "secret_leak",
+            Self::UnknownApp(_)
+            | Self::MissingUrl
+            | Self::MissingWindow
+            | Self::BlankStart { .. } => "flow_setup",
+            Self::Io { .. } | Self::Serialize(_) => "engine",
+        }
+    }
 }
 
 /// Outcome of a recording session.
@@ -2998,6 +3021,85 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
     old_steps: Option<&[Step]>,
     recording_options: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, RecordError> {
+    record_with_reuse_located(
+        spec,
+        driver,
+        out,
+        author,
+        client,
+        old_steps,
+        recording_options,
+    )
+    .map_err(|located| located.error)
+}
+
+/// Where a recording failed: the step that was running (none when the
+/// failure came before the first step or between steps) and what the app
+/// was showing. Read straight after the failure, before anything moves on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct FailurePoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<FailedStep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<flowproof_driver::FailureScreen>,
+}
+
+/// The step a recording failed on. `id` is the `sNNNN` the live progress
+/// line printed for it, so a reader can match the two.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FailedStep {
+    pub number: usize,
+    pub id: String,
+    pub intent: String,
+}
+
+/// A [`RecordError`] with the [`FailurePoint`] it happened at.
+#[derive(Debug)]
+pub struct LocatedRecordError {
+    pub error: RecordError,
+    pub at: FailurePoint,
+}
+
+impl From<RecordError> for LocatedRecordError {
+    fn from(error: RecordError) -> Self {
+        Self {
+            error,
+            at: FailurePoint::default(),
+        }
+    }
+}
+
+/// Record with the env-configured model backend, fresh (`old_steps` None)
+/// or reusing a previous trace, and say where a failure happened.
+pub fn record_located<D: AppDriver>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+    old_steps: Option<&[Step]>,
+    recording: flowproof_driver::RecordingOptions,
+) -> Result<RecordSummary, LocatedRecordError> {
+    let mut client = HttpModelClient::from_env_result()?;
+    record_with_reuse_located(
+        spec,
+        driver,
+        out,
+        author,
+        client.as_mut(),
+        old_steps,
+        recording,
+    )
+}
+
+fn record_with_reuse_located<D: AppDriver, C: ModelClient>(
+    spec: &FlowSpec,
+    driver: &mut D,
+    out: &Path,
+    author: Author,
+    client: Option<&mut C>,
+    old_steps: Option<&[Step]>,
+    recording_options: flowproof_driver::RecordingOptions,
+) -> Result<RecordSummary, LocatedRecordError> {
     let mut live = LiveSteps::from_env();
     let result = record_steps(
         spec,
@@ -3009,10 +3111,24 @@ pub fn record_with_reuse_and_options<D: AppDriver, C: ModelClient>(
         recording_options,
         &mut live,
     );
-    if result.is_err() {
+    result.map_err(|error| {
+        let step = live.current.as_ref().map(|(intent, _)| {
+            let number = live.finished + 1;
+            FailedStep {
+                number,
+                id: format!("s{number:04}"),
+                intent: intent.clone(),
+            }
+        });
         live.finish("FAIL");
-    }
-    result
+        LocatedRecordError {
+            error,
+            at: FailurePoint {
+                step,
+                screen: driver.failure_screen(),
+            },
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
