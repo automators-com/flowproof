@@ -138,6 +138,10 @@ pub struct MockAppDriver {
     pub revealed: Vec<String>,
     /// What `typed_value_arrived` answers (None = cannot tell, the default).
     pub typed_arrived: Option<bool>,
+    /// A form whose fields sit BELOW their labels: `typed_value_arrived`
+    /// answers yes only for typing aimed `below`, and records each aim.
+    pub fields_below: bool,
+    pub typed_relations: Vec<Option<String>>,
 }
 
 impl MockAppDriver {
@@ -389,6 +393,7 @@ impl AppDriver for MockAppDriver {
         // Typing appends to the element's text, like a real edit control.
         self.texts.entry(id.to_string()).or_default().push_str(text);
         self.typed.push((id.to_string(), text.to_string()));
+        self.typed_relations.push(selector.relation.clone());
         Ok(())
     }
 
@@ -475,6 +480,10 @@ impl AppDriver for MockAppDriver {
     }
 
     fn typed_value_arrived(&mut self, _text: &str) -> Result<Option<bool>, DriverError> {
+        if self.fields_below {
+            let aimed = self.typed_relations.last().cloned().flatten();
+            return Ok(Some(aimed.as_deref() == Some("below")));
+        }
         Ok(self.typed_arrived)
     }
 
