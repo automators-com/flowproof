@@ -428,6 +428,40 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         Ok(())
     }
 
+    /// Where a checkbox or radio button is drawn: the square-ish region just
+    /// LEFT of its label, three label-heights wide and two tall - where both
+    /// a browser and SAP GUI put the box.
+    fn box_region(label: &OcrHit) -> PixelRect {
+        let (x, y, _, h) = label.rect;
+        let h = h.max(1) as i32;
+        let left = (x - 3 * h).max(0);
+        (
+            (left),
+            (y - h / 2).max(0),
+            (x - left).max(1) as u32,
+            (2 * h) as u32,
+        )
+    }
+
+    /// "Ink" in a region of the current frame: pixels dark enough or
+    /// coloured enough to be a tick, a dot or a filled box rather than the
+    /// white or grey of an empty one.
+    fn ink(&mut self, (rx, ry, rw, rh): PixelRect) -> Result<u32, DriverError> {
+        let frame = self.screen.frame()?;
+        let mut ink = 0;
+        for py in ry.max(0) as u32..((ry as u32 + rh).min(frame.height())) {
+            for px in rx.max(0) as u32..((rx as u32 + rw).min(frame.width())) {
+                let [r, g, b, _] = frame.get_pixel(px, py).0;
+                let luma = (u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114) / 1000;
+                let chroma = r.max(g).max(b) - r.min(g).min(b);
+                if luma < 140 || chroma > 80 {
+                    ink += 1;
+                }
+            }
+        }
+        Ok(ink)
+    }
+
     fn same_text(a: &[OcrLine], b: &[OcrLine]) -> bool {
         a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.text == y.text)
     }
@@ -618,6 +652,44 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     fn double_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         let (_, (x, y)) = self.locate(selector, "inside")?;
         self.screen.double_click(x, y)
+    }
+
+    /// SET-state from pixels (plan 15, finding 15). Pixels give no checkbox
+    /// state to read, but they do show which way a click flipped it: a tick,
+    /// dot or fill appearing beside the label is more ink, its disappearing
+    /// less. Click, look; if that is the wrong way, click again and confirm
+    /// it came back. A click that changes nothing visible is refused rather
+    /// than assumed - a disabled box, or a radio button already selected,
+    /// cannot be told apart from a miss.
+    fn set_checked(&mut self, selector: &UiaSelector, checked: bool) -> Result<(), DriverError> {
+        let (hit, (x, y)) = self.locate(selector, "inside")?;
+        let region = Self::box_region(&hit);
+        let threshold = (region.2 * region.3 / 50).max(4);
+        let before = self.ink(region)?;
+        self.screen.click(x, y)?;
+        let after = self.ink(region)?;
+        if before.abs_diff(after) < threshold {
+            return Err(DriverError::Uia(format!(
+                "vision: clicking [{selector}] changed nothing visible beside it, so whether it \
+                 is now {} cannot be told - a disabled box, a radio button already selected, or \
+                 a click that missed",
+                if checked { "checked" } else { "unchecked" }
+            )));
+        }
+        if (after > before) == checked {
+            return Ok(());
+        }
+        // It already held the wanted state, and the click flipped it away.
+        self.screen.click(x, y)?;
+        let restored = self.ink(region)?;
+        if restored.abs_diff(before) < threshold {
+            Ok(())
+        } else {
+            Err(DriverError::Uia(format!(
+                "vision: [{selector}] did not return to {} on a second click",
+                if checked { "checked" } else { "unchecked" }
+            )))
+        }
     }
 
     fn context_click(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
@@ -1570,6 +1642,65 @@ mod scroll_search_tests {
             None,
             "only the value last typed"
         );
+    }
+
+    /// A box left of its label: frame "U" draws it empty, "C" with a dark
+    /// tick. The page index rides in pixel (0,0) for `PagedOcr`.
+    fn checkbox_frames(states: &[bool]) -> VisionAppDriver<FakeScreen, PagedOcr> {
+        let label = vec![OcrLine::new("Checkbox one", (60, 20, 100, 16))];
+        let mut d = page_driver(vec![label.clone(); states.len()], 0);
+        for (i, (frame, checked)) in d.screen.frames.iter_mut().zip(states).enumerate() {
+            // A white page, as a real one is: `page_driver` tints the whole
+            // frame with its index, and that tint reads as ink. Only pixel
+            // (0,0) needs to carry the index.
+            *frame = RgbaImage::from_pixel(400, 200, image::Rgba([255, 255, 255, 255]));
+            frame.put_pixel(0, 0, image::Rgba([i as u8, 255, 255, 255]));
+            if *checked {
+                for py in 22..34 {
+                    for px in 40..52 {
+                        frame.put_pixel(px, py, image::Rgba([0, 0, 0, 255]));
+                    }
+                }
+            }
+        }
+        d.screen.advance_on_click = Some((0, 0, 400, 200));
+        d
+    }
+
+    #[test]
+    fn checking_an_unchecked_box_clicks_once_and_sees_the_tick() {
+        let mut d = checkbox_frames(&[false, true]);
+        d.set_checked(&anchor("Checkbox one"), true)
+            .expect("checks");
+        assert_eq!(d.screen.clicks.len(), 1);
+    }
+
+    /// SET, not toggle: a box already checked is flipped away by the click,
+    /// seen to go the wrong way, and clicked back.
+    #[test]
+    fn checking_a_box_already_checked_leaves_it_checked() {
+        let mut d = checkbox_frames(&[true, false, true]);
+        d.set_checked(&anchor("Checkbox one"), true)
+            .expect("stays checked");
+        assert_eq!(d.screen.clicks.len(), 2);
+        assert_eq!(d.screen.current, 2);
+    }
+
+    #[test]
+    fn unchecking_a_checked_box_clicks_once() {
+        let mut d = checkbox_frames(&[true, false]);
+        d.set_checked(&anchor("Checkbox one"), false)
+            .expect("unchecks");
+        assert_eq!(d.screen.clicks.len(), 1);
+    }
+
+    #[test]
+    fn a_click_that_changes_nothing_is_refused_not_assumed() {
+        let mut d = checkbox_frames(&[false]);
+        let err = d
+            .set_checked(&anchor("Checkbox one"), true)
+            .expect_err("disabled, or missed");
+        assert!(err.to_string().contains("changed nothing visible"), "{err}");
     }
 
     /// Plan 15: the caret beside freshly typed `Quokka77` made OCR read
