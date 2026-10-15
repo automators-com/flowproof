@@ -91,6 +91,9 @@ pub trait SapEngine {
     fn set_focus(&mut self, id: &str) -> Result<(), DriverError>;
     /// Send a virtual key to the active window (Enter = 0, F1–F12 = 1–12…).
     fn send_vkey(&mut self, vkey: u16) -> Result<(), DriverError>;
+    /// Close the active (topmost) window, as `Alt+F4` does for a user. The
+    /// VKey table has no Alt chords, so this is the only way to send it.
+    fn close_window(&mut self) -> Result<(), DriverError>;
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError>;
 }
 
@@ -337,10 +340,13 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
     }
 
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
+        if key.eq_ignore_ascii_case("F4") && modifiers == [KeyMod::Alt] {
+            return self.engine.close_window();
+        }
         let vkey = vkey_for(key, modifiers).ok_or_else(|| {
             DriverError::Uia(format!(
                 "sap: no virtual key for '{key}' with these modifiers \
-                 (supported: Enter, F1–F12, Shift/Ctrl+F1–F12)"
+                 (supported: Enter, F1–F12, Shift/Ctrl+F1–F12, Alt+F4)"
             ))
         })?;
         self.engine.send_vkey(vkey)?;
@@ -592,6 +598,15 @@ pub mod fake {
 
         fn send_vkey(&mut self, vkey: u16) -> Result<(), DriverError> {
             self.vkeys.push(vkey);
+            Ok(())
+        }
+
+        /// The topmost window and everything in it disappears.
+        fn close_window(&mut self) -> Result<(), DriverError> {
+            let active = super::active_window(&self.elements)
+                .ok_or_else(|| DriverError::Uia("fake sap: no window to close".into()))?;
+            self.elements
+                .retain(|e| super::window_index(&e.id) != Some(active));
             Ok(())
         }
 
@@ -1352,6 +1367,13 @@ pub mod com {
                 .map(|_| ())
         }
 
+        fn close_window(&mut self) -> Result<(), DriverError> {
+            self.session()?
+                .get_disp("ActiveWindow")?
+                .call("Close", vec![])
+                .map(|_| ())
+        }
+
         fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
             let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
             Ok((w.unsigned_abs().max(1), h.unsigned_abs().max(1)))
@@ -1774,6 +1796,44 @@ mod tests {
             !scene.contains("id:wnd[0]/tbar[0]/btn[11]"),
             "background controls must not be actionable through an active modal: {scene}"
         );
+    }
+
+    /// SAP's VKey table has no Alt chords, so `Alt+F4` used to be refused
+    /// outright — and it is how a flow closes a window, because a title-bar
+    /// caption button is not in the scripting tree. It now closes the active
+    /// window natively, like the keystroke it stands for: the modal on top
+    /// goes, the window underneath stays.
+    #[test]
+    fn alt_f4_closes_the_active_window_natively() {
+        let mut d = SapAppDriver::with_engine(FakeEngine::with_elements(vec![
+            SapElement {
+                id: "wnd[0]".into(),
+                kind: "GuiMainWindow".into(),
+                text: "SAP Easy Access".into(),
+                ..Default::default()
+            },
+            SapElement {
+                id: "wnd[1]".into(),
+                kind: "GuiModalWindow".into(),
+                text: "Information".into(),
+                ..Default::default()
+            },
+        ]));
+
+        d.press_key("F4", &[KeyMod::Alt])
+            .expect("Alt+F4 closes the active window");
+
+        assert!(
+            d.engine.vkeys.is_empty(),
+            "Alt+F4 has no VKey; nothing may be sent as one"
+        );
+        let surface = d.surface_text().expect("surface");
+        assert!(surface.contains("SAP Easy Access"), "{surface}");
+        assert!(!surface.contains("Information"), "{surface}");
+
+        // Other Alt chords still have no SAP equivalent and stay refused.
+        d.press_key("F3", &[KeyMod::Alt])
+            .expect_err("Alt+F3 is not a SAP key");
     }
 
     /// The process the test plays: start a long-lived program the way SAP

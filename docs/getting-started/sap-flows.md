@@ -98,7 +98,8 @@ steps:
                                                     #   name (VBAK-AUART)
   - Type 4711 into the "id:wnd[0]/usr/txtVBAK-KUNNR" field   # scripting id, direct
   - Press Enter                                     # SAP virtual keys: Enter,
-                                                    #   F1–F12, Shift/Ctrl+F1–F12
+                                                    #   F1–F12, Shift/Ctrl+F1–F12;
+                                                    #   Alt+F4 closes the active window
   - assert: page shows Create Standard Order        # the whole session surface
 ```
 
