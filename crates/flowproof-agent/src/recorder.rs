@@ -3057,14 +3057,15 @@ pub struct FailedStep {
 #[derive(Debug)]
 pub struct LocatedRecordError {
     pub error: RecordError,
-    pub at: FailurePoint,
+    /// Boxed so a `Result` carrying this stays small (clippy::result_large_err).
+    pub at: Box<FailurePoint>,
 }
 
 impl From<RecordError> for LocatedRecordError {
     fn from(error: RecordError) -> Self {
         Self {
             error,
-            at: FailurePoint::default(),
+            at: Box::default(),
         }
     }
 }
@@ -3123,10 +3124,10 @@ fn record_with_reuse_located<D: AppDriver, C: ModelClient>(
         live.finish("FAIL");
         LocatedRecordError {
             error,
-            at: FailurePoint {
+            at: Box::new(FailurePoint {
                 step,
                 screen: driver.failure_screen(),
-            },
+            }),
         }
     })
 }

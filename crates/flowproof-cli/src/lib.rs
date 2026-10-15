@@ -3832,14 +3832,7 @@ fn cmd_heal(
         match flowproof_agent::heal_with_author(&spec, &mut driver, &trace_path, author.into()) {
             Ok(report) => report,
             Err(flowproof_agent::HealError::Record(err)) if json => {
-                if let Some(payload) = record_failure_json(&err) {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
-                    );
-                    return Ok(EXIT_ERROR);
-                }
-                return Err(err.to_string());
+                return record_failure_result(&err.into(), json);
             }
             Err(err) => return Err(err.to_string()),
         };
@@ -5230,7 +5223,7 @@ mod tests {
                 intent: "Enter the material".into(),
                 selector: "id:wnd[0]/usr/ctxtRMMG1-MATNR".into(),
             },
-            at: flowproof_agent::FailurePoint {
+            at: Box::new(flowproof_agent::FailurePoint {
                 step: Some(flowproof_agent::FailedStep {
                     number: 4,
                     id: "s0004".into(),
@@ -5245,7 +5238,7 @@ mod tests {
                     }),
                     ..Default::default()
                 }),
-            },
+            }),
         };
         let payload = record_failure_json(&err);
         let failure = &payload["failure"];
