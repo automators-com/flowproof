@@ -117,8 +117,14 @@ pub enum RecordError {
          opened blank. Start with `Go to https://…` (a full address), or set the flow's `url:`"
     )]
     BlankStart { intent: String },
-    #[error("element for step '{intent}' not found: [{selector}]")]
-    ElementNotFound { intent: String, selector: String },
+    /// `hint` says why, when the driver knows: Calculator's `=` key, drawn
+    /// only as strokes, is not text to OCR and is never found by vision.
+    #[error("element for step '{intent}' not found: [{selector}]{}", .hint.as_deref().map(|h| format!(". {h}")).unwrap_or_default())]
+    ElementNotFound {
+        intent: String,
+        selector: String,
+        hint: Option<String>,
+    },
     /// `expected` and `actual` are complete phrases, not bare values: the
     /// subject differs per assertion (an element, the whole surface, a
     /// checkbox, an occurrence count) and a template that names one of them
@@ -1186,6 +1192,24 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
 /// Why a target was never read. For a framed target this asks the driver
 /// what it actually saw, so record-time failures carry the same reason
 /// replay reports; anything else keeps the ordinary wording.
+/// Why a target an OCR driver could not find may never be found: a control
+/// that shows only a symbol - Calculator's `=` - is not text to OCR. `None`
+/// for any other driver or target.
+fn ocr_symbol_hint<D: AppDriver + ?Sized>(
+    driver: &mut D,
+    selector: &UiaSelector,
+) -> Result<Option<String>, RecordError> {
+    let symbol_only = selector
+        .name
+        .as_deref()
+        .is_some_and(|name| !name.trim().is_empty() && !name.chars().any(char::is_alphanumeric));
+    Ok((symbol_only && driver.reads_text_by_ocr()?).then(|| {
+        "OCR often cannot read a control that shows only a symbol; if the app takes \
+         keyboard input, a bare `Type <symbol>` presses that key instead"
+            .to_string()
+    }))
+}
+
 fn frame_miss_detail<D: AppDriver + ?Sized>(driver: &mut D, selector: &UiaSelector) -> String {
     let Some(query) = &selector.frame else {
         return "element not found".to_string();
@@ -3713,6 +3737,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                         return Err(RecordError::ElementNotFound {
                             intent: spec_step.intent().to_string(),
                             selector: selector.to_string(),
+                            hint: ocr_symbol_hint(driver, selector)?,
                         });
                     }
                 }
@@ -6163,10 +6188,44 @@ steps:
         let not_found = RecordError::ElementNotFound {
             intent: "Click Save".into(),
             selector: "css:#save".into(),
+            hint: None,
         };
         assert!(
             !not_found.is_setup_error(),
             "a missing element may be repairable"
+        );
+    }
+
+    /// Calculator's `=` is drawn only as strokes, and vision never finds it.
+    /// The recording says why, and what to write instead - only for a
+    /// driver that reads by OCR, and only for a symbol.
+    #[test]
+    fn a_symbol_an_ocr_driver_cannot_find_says_why() {
+        let symbol = UiaSelector {
+            name: Some("=".into()),
+            ..UiaSelector::default()
+        };
+        let word = UiaSelector {
+            name: Some("Submit".into()),
+            ..UiaSelector::default()
+        };
+        let mut vision = flowproof_driver::mock::MockAppDriver::new(&[]);
+        vision.ocr = true;
+        let hint = ocr_symbol_hint(&mut vision, &symbol)
+            .expect("asks")
+            .expect("a hint");
+        assert!(hint.contains("`Type <symbol>`"), "{hint}");
+        assert!(ocr_symbol_hint(&mut vision, &word).expect("asks").is_none());
+        let mut uia = flowproof_driver::mock::MockAppDriver::new(&[]);
+        assert!(ocr_symbol_hint(&mut uia, &symbol).expect("asks").is_none());
+        let err = RecordError::ElementNotFound {
+            intent: "Click the \"=\" button".into(),
+            selector: "name==".into(),
+            hint: Some(hint),
+        };
+        assert!(
+            err.to_string().ends_with("presses that key instead"),
+            "{err}"
         );
     }
 
