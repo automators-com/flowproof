@@ -802,6 +802,14 @@ fn strip_suffix_ci<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
 /// enforced: it never changes which element resolves. `checkbox is
 /// checked` is untouched (`is checked` is not in this tail set), so that
 /// noun stays required and load-bearing.
+/// The nouns a `Click` may name after its quoted label. Dropped, like
+/// [`strip_role_noun`]'s: what resolves is the label.
+fn is_click_noun(tail: &str) -> bool {
+    ["button", "link", "tab", "key", "icon"]
+        .iter()
+        .any(|noun| tail.eq_ignore_ascii_case(noun))
+}
+
 fn strip_role_noun(tail: &str) -> &str {
     const NOUNS: [&str; 5] = ["field", "button", "link", "dropdown", "checkbox"];
     const STATE_TAILS: [&str; 6] = [
@@ -3321,7 +3329,13 @@ mod web {
                     // in the assertion resolver.
                     let (dialog, tail) = split_dialog(trimmed, tail)?;
                     let (scope, tail) = split_scope(trimmed, &tail)?;
-                    if tail.is_empty() {
+                    // A role noun after the label is how people write it -
+                    // `Click the "5" button`, `Click the "Reports" tab` - and
+                    // it never changes which element resolves. Refused, the
+                    // step fell through to the model, which on `app: vision`
+                    // answered a Calculator keypad with a `click_at` the
+                    // vision driver could not perform.
+                    if tail.is_empty() || is_click_noun(&tail) {
                         return Ok(vec![ResolvedAction::Press {
                             target: scoped_target(trimmed, nth, label, scope)?,
                             label: label.to_string(),
@@ -3332,7 +3346,7 @@ mod web {
             }
             return Err(unresolvable(
                 trimmed,
-                "expected 'Click \"<text>\"' or 'Click the [2nd ]\"<text>\"'",
+                "expected 'Click \"<text>\"' or 'Click the [2nd ]\"<text>\"[ button|link|tab|key|icon]'",
             ));
         }
 
@@ -5673,6 +5687,40 @@ mod framed_target_tests {
             plain(r#"Click "Save" at 50.5%,50%"#).expect("parses").first(),
             Some(ResolvedAction::ClickAt { x_pct, .. }) if (*x_pct - 50.5).abs() < 1e-9
         ));
+    }
+
+    /// `Click the "5" button` is how a person writes a Calculator step. It
+    /// was refused for its trailing noun, so on `app: vision` it went to
+    /// the model, which answered with a `click_at` the vision driver could
+    /// not perform - the first step of the simplest calculator flow failed.
+    #[test]
+    fn a_click_may_name_its_role_noun() {
+        for step in [
+            r#"Click the "5" button"#,
+            r#"Click the "5" key"#,
+            r#"Click "5" button"#,
+        ] {
+            assert_eq!(
+                resolve_step("vision", &SpecStep::Plain(step.into())).expect(step),
+                vec![ResolvedAction::Press {
+                    target: Target::Text("5".into()),
+                    label: "5".into(),
+                    dialog: None,
+                }],
+                "{step}"
+            );
+        }
+        assert!(matches!(
+            plain(r#"Click the 2nd "Reports" tab"#)
+                .expect("parses")
+                .first(),
+            Some(ResolvedAction::Press {
+                target: Target::Nth(2, _),
+                ..
+            })
+        ));
+        // Anything else after the label is still not a click.
+        assert!(plain(r#"Click the "5" banana"#).is_err());
     }
 
     /// Out-of-range is refused rather than clamped. A clamp would turn

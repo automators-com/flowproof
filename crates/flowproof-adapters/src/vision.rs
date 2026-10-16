@@ -738,6 +738,31 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         self.screen.double_click(x, y)
     }
 
+    /// A point inside the matched text's box. OCR reads a Calculator keypad
+    /// row as one line - `7 8 9 ×` - and a model shown that line reaches the
+    /// `8` as a click a third of the way along it. Refused, the simplest
+    /// calculator flow failed on its first step.
+    fn click_at(
+        &mut self,
+        selector: &UiaSelector,
+        x_pct: f64,
+        y_pct: f64,
+    ) -> Result<(), DriverError> {
+        let (hit, _) = self.locate(selector, "inside")?;
+        let (x, y, w, h) = hit.rect;
+        let at = |origin: i32, extent: u32, pct: f64| {
+            origin + (f64::from(extent) * pct.clamp(0.0, 100.0) / 100.0).round() as i32
+        };
+        let point = (at(x, w, x_pct), at(y, h, y_pct));
+        vision_log(|| {
+            format!(
+                "[{selector}] clicking {x_pct}%,{y_pct}% of {:?} at {point:?}",
+                hit.rect
+            )
+        });
+        self.screen.click(point.0, point.1)
+    }
+
     /// SET-state from pixels (plan 15, finding 15). Pixels give no checkbox
     /// state to read, but they do show which way a click flipped it: a tick,
     /// dot or fill appearing beside the label is more ink, its disappearing
@@ -1531,6 +1556,19 @@ mod tests {
         assert_eq!(d.screen.double_clicks, vec![(55, 110)]);
         assert_eq!(d.screen.right_clicks, vec![(60, 68)]);
         assert!(d.screen.clicks.is_empty(), "not two single clicks");
+    }
+
+    /// A keypad row OCR'd as one line: the model reaches the `8` in
+    /// `7 8 9 x` by a point along the line. That used to be refused as
+    /// "clicking at an offset is not supported by this driver".
+    #[test]
+    fn click_at_lands_at_that_fraction_of_the_text() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            FakeOcr::with_lines(vec![OcrLine::new("7 8 9 x", (20, 60, 300, 40))]),
+        );
+        d.click_at(&anchor("7 8 9 x"), 37.5, 50.0).expect("clicks");
+        assert_eq!(d.screen.clicks, vec![(133, 80)]);
     }
 
     #[test]
