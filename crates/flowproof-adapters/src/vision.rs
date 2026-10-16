@@ -113,6 +113,17 @@ fn union(a: PixelRect, b: PixelRect) -> PixelRect {
 /// Text recognition over a captured frame.
 pub trait OcrEngine {
     fn recognize(&mut self, frame: &RgbaImage) -> Result<Vec<OcrLine>, DriverError>;
+
+    /// A closer reading of the same frame, `scale` times its size, taken
+    /// when a target was not found in the first. Coordinates are the
+    /// frame's own.
+    fn recognize_closer(
+        &mut self,
+        frame: &RgbaImage,
+        _scale: u32,
+    ) -> Result<Vec<OcrLine>, DriverError> {
+        self.recognize(frame)
+    }
 }
 
 /// The pixels-only view of an app: frames in, coordinates out.
@@ -194,6 +205,9 @@ pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     typed_baseline: Option<(Vec<String>, Vec<usize>)>,
     /// Height of the last frame read, to keep action points inside it.
     frame_height: u32,
+    /// The last frame read and its reading, at screen size and each closer
+    /// scale.
+    read_cache: [Option<(RgbaImage, Vec<OcrLine>)>; 1 + CLOSER_SCALES.len()],
 }
 
 impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
@@ -203,6 +217,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             ocr,
             typed_baseline: None,
             frame_height: 0,
+            read_cache: [None, None, None],
         }
     }
 
@@ -285,10 +300,34 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             .sum()
     }
 
+    /// OCR a frame, reusing the reading of the last identical one. OCR is
+    /// deterministic, and one step reads the same screen several times -
+    /// reveal, wait, act - so a replayed Calculator flow spent a minute and
+    /// a half re-reading pixels it had already read, its closer looks the
+    /// costliest of all.
+    fn read(&mut self, frame: &RgbaImage, scale: u32) -> Result<Vec<OcrLine>, DriverError> {
+        let slot = CLOSER_SCALES
+            .iter()
+            .position(|s| *s == scale)
+            .map_or(0, |i| i + 1);
+        if let Some((cached, lines)) = &self.read_cache[slot] {
+            if cached == frame {
+                return Ok(lines.clone());
+            }
+        }
+        let lines = if scale > 1 {
+            self.ocr.recognize_closer(frame, scale)?
+        } else {
+            self.ocr.recognize(frame)?
+        };
+        self.read_cache[slot] = Some((frame.clone(), lines.clone()));
+        Ok(lines)
+    }
+
     fn lines(&mut self) -> Result<Vec<OcrLine>, DriverError> {
         let frame = self.screen.frame()?;
         self.frame_height = frame.height();
-        self.ocr.recognize(&frame)
+        self.read(&frame, 1)
     }
 
     /// One reading per distinct frame across a caret blink. A text caret
@@ -305,9 +344,9 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         }
         let second = self.screen.frame()?;
         self.frame_height = second.height();
-        let mut readings = vec![self.ocr.recognize(&second)?];
+        let mut readings = vec![self.read(&second, 1)?];
         if first != second {
-            readings.push(self.ocr.recognize(&first)?);
+            readings.push(self.read(&first, 1)?);
         }
         Ok(readings)
     }
@@ -375,8 +414,32 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// tier that has matches but not an `nth`th one falls through to the
     /// next, which is how line-then-prefix already behaved.
     fn resolve(&mut self, selector: &UiaSelector) -> Result<Option<OcrHit>, DriverError> {
-        let lines = self.lines()?;
-        Ok(Self::resolve_in(&lines, selector))
+        Ok(self.look(selector)?.1)
+    }
+
+    /// One frame's reading and the target in it - read again, closer and
+    /// then closer still, when a reading misses it (see
+    /// [`OcrEngine::recognize_closer`]). The lines returned are the first
+    /// reading's: they describe the screen, and scrolling compares them to
+    /// tell whether the view moved.
+    fn look(
+        &mut self,
+        selector: &UiaSelector,
+    ) -> Result<(Vec<OcrLine>, Option<OcrHit>), DriverError> {
+        let frame = self.screen.frame()?;
+        self.frame_height = frame.height();
+        let lines = self.read(&frame, 1)?;
+        if let Some(hit) = Self::resolve_in(&lines, selector) {
+            return Ok((lines, Some(hit)));
+        }
+        for scale in CLOSER_SCALES {
+            let closer = self.read(&frame, scale)?;
+            if let Some(hit) = Self::resolve_in(&closer, selector) {
+                vision_log(|| format!("[{selector}] found only at {scale}x: '{}'", hit.text));
+                return Ok((lines, Some(hit)));
+            }
+        }
+        Ok((lines, None))
     }
 
     fn resolve_in(lines: &[OcrLine], selector: &UiaSelector) -> Option<OcrHit> {
@@ -472,11 +535,14 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// current frame, because it is what auto-wait polls: a poll that
     /// scrolled would move the page on every tick.
     fn resolve_scrolling(&mut self, selector: &UiaSelector) -> Result<Option<OcrHit>, DriverError> {
-        let mut lines = self.lines()?;
-        if let Some(hit) = Self::resolve_in(&lines, selector) {
-            return Ok(Some(hit));
+        let (mut lines, hit) = self.look(selector)?;
+        if hit.is_some() {
+            return Ok(hit);
         }
-        vision_log(|| format!("[{selector}] not on screen - searching by scrolling"));
+        vision_log(|| {
+            let read: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+            format!("[{selector}] not on screen - searching by scrolling. OCR read: {read:?}")
+        });
         for notches in [-SCROLL_NOTCHES_PER_PAGE, SCROLL_NOTCHES_PER_PAGE] {
             for _ in 0..MAX_SCROLL_PAGES {
                 self.screen.scroll(notches)?;
@@ -1035,6 +1101,57 @@ fn segment_words(chars: &[ocrs::TextChar], boxes: &[PixelRect]) -> Vec<OcrWord> 
         .collect()
 }
 
+/// The axis-aligned box around a detected word's corners.
+fn corner_bounds(points: impl Iterator<Item = (f32, f32)>) -> PixelRect {
+    let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for (x, y) in points {
+        left = left.min(x);
+        right = right.max(x);
+        top = top.min(y);
+        bottom = bottom.max(y);
+    }
+    to_rect(
+        left.round() as i32,
+        top.round() as i32,
+        right.round() as i32,
+        bottom.round() as i32,
+    )
+}
+
+/// The closer looks a missed target gets, in order: the frame at twice its
+/// size, then three times. Calculator's `1` was found at 2x in one framing
+/// and only at 3x in another a few pixels narrower.
+const CLOSER_SCALES: [u32; 2] = [2, 3];
+
+/// A gap wider than this many line heights ends a line. Words in running
+/// text sit a fraction of a height apart; separate controls on one row - a
+/// keypad's buttons, a toolbar, a grid's columns - sit several apart.
+const LINE_BREAK_GAPS: f32 = 2.0;
+
+/// Cut a detected line, as runs of word indices, wherever two neighbours
+/// stand further apart than any words of one phrase. ocrs groups every
+/// word on a row into one line, so a Calculator keypad row became the
+/// single line `7 8 9 ×`, recognised as `8 9X` - the `7` lost across the
+/// gaps and the `8` reachable only as part of a phrase. Recognised apart,
+/// each button is a line of its own, the way a person reads it.
+fn split_at_gaps(boxes: &[PixelRect]) -> Vec<std::ops::Range<usize>> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for i in 1..boxes.len() {
+        let (px, _, pw, ph) = boxes[i - 1];
+        let (x, _, _, h) = boxes[i];
+        let gap = (x - (px + pw as i32)) as f32;
+        if gap > LINE_BREAK_GAPS * ph.max(h).max(1) as f32 {
+            runs.push(start..i);
+            start = i;
+        }
+    }
+    if !boxes.is_empty() {
+        runs.push(start..boxes.len());
+    }
+    runs
+}
+
 /// ocrs reports bounding boxes as edges; flowproof rects are
 /// origin + size. Takes the edges rather than ocrs' rect type, which
 /// comes from a transitive crate this one does not depend on directly.
@@ -1049,6 +1166,42 @@ fn to_rect(left: i32, top: i32, right: i32, bottom: i32) -> PixelRect {
 
 impl OcrEngine for OcrsEngine {
     fn recognize(&mut self, frame: &RgbaImage) -> Result<Vec<OcrLine>, DriverError> {
+        self.recognize_raw(frame, false)
+    }
+
+    /// The frame read at `scale` times its size, each lone glyph with a
+    /// margin. A thin glyph alone on a button - Calculator's `1` - is too
+    /// slight for the text detector at screen size; enlarged and given the
+    /// margin a line of text would have, it is found. Reading every frame
+    /// this way instead loses ordinary text, and costs far more time, so
+    /// these are second looks, not the first.
+    fn recognize_closer(
+        &mut self,
+        frame: &RgbaImage,
+        scale: u32,
+    ) -> Result<Vec<OcrLine>, DriverError> {
+        let scale = scale.max(1);
+        let enlarged = image::imageops::resize(
+            frame,
+            frame.width() * scale,
+            frame.height() * scale,
+            image::imageops::FilterType::CatmullRom,
+        );
+        let s = scale as i32;
+        let shrink = |(x, y, w, h): PixelRect| (x / s, y / s, w / scale, h / scale);
+        let mut lines = self.recognize_raw(&enlarged, true)?;
+        for line in &mut lines {
+            line.rect = shrink(line.rect);
+            for word in &mut line.words {
+                word.rect = shrink(word.rect);
+            }
+        }
+        Ok(lines)
+    }
+}
+
+impl OcrsEngine {
+    fn recognize_raw(&mut self, frame: &RgbaImage, pad: bool) -> Result<Vec<OcrLine>, DriverError> {
         use ocrs::TextItem;
 
         let rgb = image::DynamicImage::ImageRgba8(frame.clone()).into_rgb8();
@@ -1062,7 +1215,28 @@ impl OcrEngine for OcrsEngine {
             .engine
             .detect_words(&input)
             .map_err(|e| DriverError::Uia(format!("vision: detecting words: {e}")))?;
-        let line_rects = self.engine.find_text_lines(&input, &words);
+        let line_rects: Vec<_> = self
+            .engine
+            .find_text_lines(&input, &words)
+            .into_iter()
+            .flat_map(|line| {
+                let boxes: Vec<PixelRect> = line
+                    .iter()
+                    .map(|w| corner_bounds(w.corners().iter().map(|p| (p.x, p.y))))
+                    .collect();
+                split_at_gaps(&boxes)
+                    .into_iter()
+                    .map(|run| match &line[run.clone()] {
+                        // A lone glyph cut out tight to its box touches the
+                        // edges of the crop, and the recogniser, trained on
+                        // lines of text with margins, misreads it. Half a
+                        // height of margin each side, on the closer look.
+                        [word] if pad => vec![word.expanded(word.height(), word.height() * 0.3)],
+                        words => words.to_vec(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let lines = self
             .engine
             .recognize_text(&input, &line_rects)
@@ -1080,24 +1254,7 @@ impl OcrEngine for OcrsEngine {
                 }
                 let boxes: Vec<PixelRect> = detected
                     .iter()
-                    // `corners` is inherent; the bounding-rect trait lives
-                    // in a crate this one does not depend on directly.
-                    .map(|word| {
-                        let corners = word.corners();
-                        let xs = corners.iter().map(|p| p.x);
-                        let ys = corners.iter().map(|p| p.y);
-                        let fold = |it: &mut dyn Iterator<Item = f32>| {
-                            it.fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
-                        };
-                        let (left, right) = fold(&mut xs.into_iter());
-                        let (top, bottom) = fold(&mut ys.into_iter());
-                        to_rect(
-                            left.round() as i32,
-                            top.round() as i32,
-                            right.round() as i32,
-                            bottom.round() as i32,
-                        )
-                    })
+                    .map(|w| corner_bounds(w.corners().iter().map(|p| (p.x, p.y))))
                     .collect();
                 let words = segment_words(line.chars(), &boxes);
                 Some(OcrLine {
@@ -1556,6 +1713,80 @@ mod tests {
         assert_eq!(d.screen.double_clicks, vec![(55, 110)]);
         assert_eq!(d.screen.right_clicks, vec![(60, 68)]);
         assert!(d.screen.clicks.is_empty(), "not two single clicks");
+    }
+
+    #[test]
+    fn a_line_splits_where_its_words_stand_controls_apart() {
+        // A keypad row: four 17px glyphs about 80px apart.
+        let keypad = [
+            (40, 300, 10, 17),
+            (118, 300, 10, 17),
+            (196, 300, 10, 17),
+            (272, 300, 12, 17),
+        ];
+        assert_eq!(split_at_gaps(&keypad), vec![0..1, 1..2, 2..3, 3..4]);
+        // Running text: words a fraction of a height apart stay one line.
+        let phrase = [(20, 20, 40, 16), (66, 20, 30, 16), (102, 20, 50, 16)];
+        assert_eq!(split_at_gaps(&phrase), vec![0..3]);
+        // A label and its value across a form's column gap come apart.
+        let row = [(20, 60, 50, 16), (76, 60, 30, 16), (300, 60, 60, 16)];
+        assert_eq!(split_at_gaps(&row), vec![0..2, 2..3]);
+        assert!(split_at_gaps(&[]).is_empty());
+    }
+
+    /// An engine that sees Calculator's `1` only at three times the size,
+    /// and remembers which scales it was asked for.
+    struct CloserStill {
+        first: Vec<OcrLine>,
+        at_3x: Vec<OcrLine>,
+        scales: Vec<u32>,
+    }
+
+    impl OcrEngine for CloserStill {
+        fn recognize(&mut self, _frame: &RgbaImage) -> Result<Vec<OcrLine>, DriverError> {
+            Ok(self.first.clone())
+        }
+        fn recognize_closer(
+            &mut self,
+            _frame: &RgbaImage,
+            scale: u32,
+        ) -> Result<Vec<OcrLine>, DriverError> {
+            self.scales.push(scale);
+            Ok(if scale == 3 {
+                self.at_3x.clone()
+            } else {
+                self.first.clone()
+            })
+        }
+    }
+
+    /// Calculator's `1` was too thin to be found at screen size, found at
+    /// twice it in one framing and only at three times in
+    /// another. Closer looks are taken only on a miss, and an unchanged
+    /// frame is not read twice.
+    #[test]
+    fn a_target_missed_at_screen_size_is_found_on_a_closer_look() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            CloserStill {
+                first: vec![OcrLine::new("2", (120, 100, 10, 17))],
+                at_3x: vec![
+                    OcrLine::new("1", (40, 100, 6, 17)),
+                    OcrLine::new("2", (120, 100, 10, 17)),
+                ],
+                scales: Vec::new(),
+            },
+        );
+        d.invoke(&anchor("1")).expect("clicks the 1");
+        assert_eq!(d.screen.clicks, vec![(43, 108)]);
+        assert_eq!(d.ocr.scales, vec![2, 3]);
+        d.invoke(&anchor("1")).expect("clicks the 1 again");
+        d.invoke(&anchor("2")).expect("clicks the 2");
+        assert_eq!(
+            d.ocr.scales,
+            vec![2, 3],
+            "the same frame is not read again, and a hit needs no closer look"
+        );
     }
 
     /// A keypad row OCR'd as one line: the model reaches the `8` in

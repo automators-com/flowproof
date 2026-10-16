@@ -22,7 +22,11 @@ steps:
 ```
 
 Text anchors match OCR lines exactly first, then by prefix; `the 2nd
-"Amount" field` disambiguates repeats in reading order. The recorded
+"Amount" field` disambiguates repeats in reading order. Words far apart on
+one row - a keypad's keys, a toolbar, a grid's columns - are read as
+separate lines, so each is its own target. A target not found at screen
+size is looked for again in the same frame read at two and then three times
+the size, which finds a thin glyph such as a lone `1`. The recorded
 trace carries `provenance: vision` text anchors with their spatial
 `relation` (`inside` for clicks, `right_of` for fields), and freeform
 steps work through the LLM author; the OCR lines are the scene. OCR
