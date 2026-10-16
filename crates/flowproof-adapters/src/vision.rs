@@ -1098,7 +1098,7 @@ pub mod native {
     use flowproof_driver::{DriverError, Input, InputEvent, KeyMod, MouseButton, PlatformBackend};
     use image::RgbaImage;
 
-    use super::VisionScreen;
+    use super::{vision_log, VisionScreen};
 
     // Key mapping lives in the driver crate (`virtual_key`,
     // `modifier_virtual_key`) — one table for every SendInput-based
@@ -1124,6 +1124,53 @@ pub mod native {
                 .ok_or_else(|| DriverError::Uia("vision: not attached: call launch first".into()))
         }
 
+        /// The attached window, raised again first if another process has
+        /// taken the foreground since the last look. Capture copies the
+        /// screen and input goes to whatever is in front, so a window
+        /// covered mid-run - by a notification, or by the terminal the
+        /// run was started from - would otherwise be read and clicked as
+        /// the window on top.
+        fn front(&mut self) -> Result<&mut WindowInfo, DriverError> {
+            let window = self.window()?;
+            if !window.holds_foreground() {
+                vision_log(|| {
+                    format!(
+                        "'{}' lost the foreground to '{}' - raising it",
+                        window.title,
+                        flowproof_driver::window::foreground_title()
+                    )
+                });
+                window.focus()?;
+                Self::settle(window)?;
+            }
+            self.window()
+        }
+
+        /// Wait for a just-raised window to finish painting over what
+        /// covered it. Being the foreground window is not being on screen:
+        /// Windows animates the switch, and the first capture of a Calculator
+        /// run, taken 200ms after it was raised, still showed the window
+        /// in front of it. Two identical captures 100ms apart mean the
+        /// switch is over; bounded, because a window with an animation of
+        /// its own never holds still.
+        fn settle(window: &mut WindowInfo) -> Result<(), DriverError> {
+            let grab = |window: &mut WindowInfo| -> Result<RgbaImage, DriverError> {
+                let (x, y, w, h) = window.refresh_rect()?;
+                flowproof_driver::gdi::capture_region(x, y, w as i32, h as i32)
+            };
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            let mut last = grab(window)?;
+            while Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
+                let next = grab(window)?;
+                if next == last {
+                    return Ok(());
+                }
+                last = next;
+            }
+            Ok(())
+        }
+
         fn inject(&mut self, event: InputEvent) -> Result<(), DriverError> {
             self.backend.inject(&event)
         }
@@ -1139,7 +1186,7 @@ pub mod native {
             button: MouseButton,
             presses: u32,
         ) -> Result<(), DriverError> {
-            let (wx, wy, _, _) = self.window()?.refresh_rect()?;
+            let (wx, wy, _, _) = self.front()?.refresh_rect()?;
             self.inject(InputEvent::MouseMove {
                 x: wx + x,
                 y: wy + y,
@@ -1172,9 +1219,9 @@ pub mod native {
             }
             let deadline = Instant::now() + timeout;
             loop {
-                if let Some(info) = find_window(window)? {
+                if let Some(mut info) = find_window(window)? {
                     info.focus()?;
-                    std::thread::sleep(Duration::from_millis(200));
+                    Self::settle(&mut info)?;
                     self.window = Some(info);
                     return Ok(());
                 }
@@ -1191,12 +1238,12 @@ pub mod native {
             // The window's own rectangle, wherever it is on the desktop:
             // the same origin `click` adds, so OCR coordinates and clicks
             // agree on every monitor (plan 15, finding 3).
-            let (x, y, w, h) = self.window()?.refresh_rect()?;
+            let (x, y, w, h) = self.front()?.refresh_rect()?;
             flowproof_driver::gdi::capture_region(x, y, w as i32, h as i32)
         }
 
         fn click(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
-            let (wx, wy, _, _) = self.window()?.refresh_rect()?;
+            let (wx, wy, _, _) = self.front()?.refresh_rect()?;
             let (ax, ay) = (wx + x, wy + y);
             self.inject(InputEvent::MouseMove { x: ax, y: ay })?;
             std::thread::sleep(Duration::from_millis(60));
@@ -1222,6 +1269,7 @@ pub mod native {
         fn type_text(&mut self, text: &str) -> Result<(), DriverError> {
             // As key strokes, not Unicode packets: the window is usually a
             // Citrix or RDP client, and those forward scan codes only.
+            self.front()?;
             self.inject(InputEvent::KeyText {
                 text: text.to_string(),
             })?;
@@ -1232,6 +1280,7 @@ pub mod native {
         fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
             let vk = virtual_key(key)
                 .ok_or_else(|| DriverError::Uia(format!("vision: no virtual key for '{key}'")))?;
+            self.front()?;
             for m in modifiers {
                 self.inject(InputEvent::KeyDown {
                     virtual_key: modifier_key(m),
@@ -1251,7 +1300,7 @@ pub mod native {
         fn scroll(&mut self, notches: i32) -> Result<(), DriverError> {
             // The wheel goes to whatever is under the cursor, so park it
             // mid-window first: over the content, not the title bar.
-            let (wx, wy, w, h) = self.window()?.refresh_rect()?;
+            let (wx, wy, w, h) = self.front()?.refresh_rect()?;
             self.inject(InputEvent::MouseMove {
                 x: wx + w as i32 / 2,
                 y: wy + h as i32 / 2,

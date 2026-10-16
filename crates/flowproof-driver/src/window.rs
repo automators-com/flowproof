@@ -4,11 +4,17 @@
 
 #![cfg(windows)]
 
+use std::time::{Duration, Instant};
+
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_MENU,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetAncestor, GetClassNameW, GetWindowRect, GetWindowTextW, IsIconic,
-    IsWindowVisible, SetForegroundWindow, SetWindowPos, ShowWindow, GA_ROOT, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_RESTORE,
+    BringWindowToTop, EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowRect,
+    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
+    SetWindowPos, ShowWindow, GA_ROOT, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE,
 };
 
 use crate::app::PixelRect;
@@ -46,6 +52,46 @@ extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL 
     true.into()
 }
 
+fn window_process(hwnd: HWND) -> u32 {
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    pid
+}
+
+/// The title of whatever window holds the foreground now.
+pub fn foreground_title() -> String {
+    let mut buf = [0u16; 512];
+    let len = unsafe { GetWindowTextW(GetForegroundWindow(), &mut buf) };
+    if len <= 0 {
+        return "an untitled window".into();
+    }
+    String::from_utf16_lossy(&buf[..len as usize])
+}
+
+/// The window's rectangle as it is drawn. `GetWindowRect` includes the
+/// invisible resize border Windows 10 and 11 put around a window - 7px or
+/// so each side - so a capture of it took in a strip of whatever stood
+/// behind, and OCR read stray letters there: a `C` on Calculator's left
+/// edge that was not its `C` key. DWM knows the visible frame; a window
+/// it does not compose falls back to the plain rectangle.
+fn visible_rect(hwnd: HWND, title: &str) -> Result<RECT, DriverError> {
+    let mut rect = RECT::default();
+    let framed = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&mut rect as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+    };
+    if framed.is_ok() && rect.right > rect.left && rect.bottom > rect.top {
+        return Ok(rect);
+    }
+    unsafe { GetWindowRect(hwnd, &mut rect) }
+        .map_err(|e| DriverError::Uia(format!("reading bounds of '{title}': {e}")))?;
+    Ok(rect)
+}
+
 /// First visible top-level window whose title contains `title_contains`
 /// (case-insensitive). `Ok(None)` = no such window right now.
 pub fn find_window(title_contains: &str) -> Result<Option<WindowInfo>, DriverError> {
@@ -64,9 +110,7 @@ pub fn find_window(title_contains: &str) -> Result<Option<WindowInfo>, DriverErr
     let Some((hwnd, title)) = state.found else {
         return Ok(None);
     };
-    let mut rect = RECT::default();
-    unsafe { GetWindowRect(HWND(hwnd as *mut _), &mut rect) }
-        .map_err(|e| DriverError::Uia(format!("reading bounds of '{title}': {e}")))?;
+    let rect = visible_rect(HWND(hwnd as *mut _), &title)?;
     Ok(Some(WindowInfo {
         title,
         rect: (
@@ -81,25 +125,85 @@ pub fn find_window(title_contains: &str) -> Result<Option<WindowInfo>, DriverErr
 
 impl WindowInfo {
     /// Bring the window to the foreground (restoring it if minimized) so
-    /// capture and injected input reach it.
+    /// capture and injected input reach it, and confirm it got there.
+    ///
+    /// Windows refuses `SetForegroundWindow` to a process the user is not
+    /// working in - which is flowproof whenever it is started from a
+    /// terminal or an IDE. The refusal used to be ignored: a vision run
+    /// against Calculator, sitting behind the window flowproof was started
+    /// from, OCR'd that window's pixels and clicked into it, and reported
+    /// "5" as not on screen. A synthetic Alt tap lifts the foreground lock
+    /// (the system lets a pressed Alt switch windows), which is how
+    /// automation tools get past it; a window still not in front after
+    /// that is an error naming what covers it.
     pub fn focus(&self) -> Result<(), DriverError> {
         let hwnd = HWND(self.hwnd as *mut _);
         unsafe {
             if IsIconic(hwnd).as_bool() {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
             }
-            // Foregrounding can be refused (focus-steal prevention); the
-            // caller re-checks by capturing, so a refusal is not fatal.
+        }
+        if self.holds_foreground() {
+            return Ok(());
+        }
+        unsafe {
             let _ = SetForegroundWindow(hwnd);
         }
-        Ok(())
+        if self.await_foreground(Duration::from_millis(300)) {
+            return Ok(());
+        }
+        unsafe {
+            keybd_event(VK_MENU.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+            keybd_event(VK_MENU.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = BringWindowToTop(hwnd);
+        }
+        if self.await_foreground(Duration::from_secs(1)) {
+            return Ok(());
+        }
+        Err(DriverError::Uia(format!(
+            "could not bring '{}' to the front: '{}' holds the foreground. Capture and \
+             input would reach that window instead - click '{}' once, or close what \
+             covers it, and run again",
+            self.title,
+            foreground_title(),
+            self.title
+        )))
     }
 
-    /// Re-read the window's current screen rectangle.
+    /// Whether the foreground window is this one, inside it, or belongs to
+    /// its process. A process, not just a handle: an app's own dialogs,
+    /// popups and context menus are separate top-level windows, and taking
+    /// the foreground back from one of them would close a menu a step had
+    /// just opened. Inside it too: a UWP app's frame belongs to
+    /// ApplicationFrameHost while the content that takes focus on a click
+    /// belongs to the app's own process.
+    pub fn holds_foreground(&self) -> bool {
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground.is_invalid() {
+            return false;
+        }
+        let own = HWND(self.hwnd as *mut _);
+        let root = unsafe { GetAncestor(foreground, GA_ROOT) };
+        foreground == own || root == own || window_process(foreground) == window_process(own)
+    }
+
+    fn await_foreground(&self, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        loop {
+            if self.holds_foreground() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Re-read the window's current screen rectangle, as it is drawn.
     pub fn refresh_rect(&mut self) -> Result<PixelRect, DriverError> {
-        let mut rect = RECT::default();
-        unsafe { GetWindowRect(HWND(self.hwnd as *mut _), &mut rect) }
-            .map_err(|e| DriverError::Uia(format!("reading bounds of '{}': {e}", self.title)))?;
+        let rect = visible_rect(HWND(self.hwnd as *mut _), &self.title)?;
         self.rect = (
             rect.left,
             rect.top,
