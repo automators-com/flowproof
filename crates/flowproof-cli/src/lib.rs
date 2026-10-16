@@ -5225,6 +5225,7 @@ mod tests {
             error: flowproof_agent::RecordError::ElementNotFound {
                 intent: "Enter the material".into(),
                 selector: "id:wnd[0]/usr/ctxtRMMG1-MATNR".into(),
+                hint: None,
             },
             at: Box::new(flowproof_agent::FailurePoint {
                 step: Some(flowproof_agent::FailedStep {

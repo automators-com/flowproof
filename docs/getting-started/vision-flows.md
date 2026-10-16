@@ -21,12 +21,18 @@ steps:
   - assert: page shows Order saved          # asserts on the OCR'd frame
 ```
 
-Text anchors match OCR lines exactly first, then by prefix; `the 2nd
-"Amount" field` disambiguates repeats in reading order. Words far apart on
-one row - a keypad's keys, a toolbar, a grid's columns - are read as
-separate lines, so each is its own target. A target not found at screen
-size is looked for again in the same frame read at two and then three times
-the size, which finds a thin glyph such as a lone `1`. The recorded
+Text anchors match a whole OCR line or word exactly first, then a line by
+prefix (for anchors of three characters or more - `"1"` never matches a
+`1/x` key); `the 2nd "Amount" field` disambiguates repeats in reading
+order. Words far apart on one row - a keypad's keys, a toolbar, a grid's
+columns - are read as separate lines, so each is its own target. A target
+not found at screen size is looked for again in the same frame read at two
+and then three times the size, which finds a thin glyph such as a lone `1`.
+An anchor of a character or two is a key: it is looked for as a line of its
+own at every size before it may match a character inside a phrase. A glyph
+matches what OCR reads it as (`×` as `X`, `−` as `-`, `÷` as `/`, `1` as
+`I`), and a character or two in the window's caption band is never a
+target: those are its minimize, maximize and close buttons. The recorded
 trace carries `provenance: vision` text anchors with their spatial
 `relation` (`inside` for clicks, `right_of` for fields), and freeform
 steps work through the LLM author; the OCR lines are the scene. OCR
@@ -67,6 +73,20 @@ of `Hello Adal`. Punctuation inside a word still counts (`$10.00` is not
   whether a box *is* checked is not something pixels can answer on their own.
 - **Reading.** Checks read the screen twice, half a caret blink apart, so a
   blinking text cursor beside freshly typed text cannot garble it.
+- **Keys.** `Press Enter`, `Press Ctrl+S` and the like are keystrokes; a
+  symbol with no key name (`*`, `=`) is sent as the keystroke that types it.
+  A bare `Type 12+30=` types into whatever has focus, and is read back by its
+  operands (`12`, `30` - too short, so not at all), since an app like a
+  calculator shows the result, not the keys.
+
+## Keypads and symbol-only buttons
+
+OCR reads words better than lone glyphs. On Windows Calculator at its normal
+size every digit, `+` and `×` is found by clicking - `Click the "7" button` -
+but a key drawn only as strokes (`=`, `−`) is not text to OCR and is never
+found, and at large sizes OCR misreads lone digits. When the app takes
+keyboard input, type the keys instead: `Type 12*7=`, or `Type =` for the one
+key OCR cannot see. A step whose symbol target is not found says so.
 
 ## Know the current limits
 

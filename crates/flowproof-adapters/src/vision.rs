@@ -229,21 +229,31 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// `Quokka/`; the near-tail, because a value longer than its field
     /// scrolls and leaves only the end in view. A shorter value is its own
     /// key; under three characters, none - too short to tell from the page.
+    ///
+    /// Arithmetic operators split a value into pieces keyed apart: keystrokes
+    /// like `12+30=` are an instruction to the app, not text it shows back -
+    /// Calculator showed `42`, and the key `1230` failed a typing that had
+    /// worked.
     fn readback_keys(text: &str) -> Vec<String> {
-        let chars: Vec<char> = text
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
+        let mut keys: Vec<String> = text
+            .split(['+', '*', '/', '=', '×', '÷'])
+            .flat_map(|piece| {
+                let chars: Vec<char> = piece
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect();
+                let n = chars.len();
+                match n {
+                    0..=2 => Vec::new(),
+                    3..=7 => vec![chars.iter().collect()],
+                    _ => vec![
+                        chars[..6].iter().collect(),
+                        chars[n - 8..n - 2].iter().collect(),
+                    ],
+                }
+            })
             .collect();
-        let n = chars.len();
-        let mut keys: Vec<String> = match n {
-            0..=2 => Vec::new(),
-            3..=7 => vec![chars.iter().collect()],
-            _ => vec![
-                chars[..6].iter().collect(),
-                chars[n - 8..n - 2].iter().collect(),
-            ],
-        };
         keys.dedup();
         keys
     }
@@ -422,6 +432,13 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// [`OcrEngine::recognize_closer`]). The lines returned are the first
     /// reading's: they describe the screen, and scrolling compares them to
     /// tell whether the view moved.
+    ///
+    /// An anchor of a character or two is a key, and a key stands alone: it
+    /// is looked for as a whole line at every scale before it may match a
+    /// character inside a phrase. OCR missed Calculator's `5` key at screen
+    /// size and read the Keep-on-top icon beside "Standard" as `5`; the
+    /// click put Calculator in compact mode. A dense keypad whose row reads
+    /// as one line still resolves by word, after.
     fn look(
         &mut self,
         selector: &UiaSelector,
@@ -429,14 +446,26 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let frame = self.screen.frame()?;
         self.frame_height = frame.height();
         let lines = self.read(&frame, 1)?;
-        if let Some(hit) = Self::resolve_in(&lines, selector) {
-            return Ok((lines, Some(hit)));
-        }
-        for scale in CLOSER_SCALES {
-            let closer = self.read(&frame, scale)?;
-            if let Some(hit) = Self::resolve_in(&closer, selector) {
-                vision_log(|| format!("[{selector}] found only at {scale}x: '{}'", hit.text));
-                return Ok((lines, Some(hit)));
+        let scales = std::iter::once(1).chain(CLOSER_SCALES);
+        let short = selector
+            .name
+            .as_deref()
+            .is_some_and(|name| name.trim().chars().count() <= 2);
+        let passes: &[bool] = if short { &[true, false] } else { &[false] };
+        for &whole_lines in passes {
+            for scale in scales.clone() {
+                let mut reading = self.read(&frame, scale)?;
+                if whole_lines {
+                    reading.iter_mut().for_each(|line| line.words.clear());
+                }
+                if let Some(hit) = Self::resolve_in(&reading, selector) {
+                    if scale > 1 {
+                        vision_log(|| {
+                            format!("[{selector}] found only at {scale}x: '{}'", hit.text)
+                        });
+                    }
+                    return Ok((lines, Some(hit)));
+                }
             }
         }
         Ok((lines, None))
@@ -448,6 +477,17 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             return None;
         }
         let nth = selector.nth.unwrap_or(1).max(1) as usize;
+        // A window's minimize, maximize and close buttons are glyphs OCR
+        // reads as a character or two, and they are read first, top to
+        // bottom: `0` matched Calculator's maximize box and maximised it,
+        // `×` its close button and closed it. No step means the window's
+        // chrome; words up there - the title - stay.
+        let lines: Vec<OcrLine> = lines
+            .iter()
+            .filter(|l| l.rect.1 >= CAPTION_BAND || l.text.trim().chars().count() > 2)
+            .cloned()
+            .collect();
+        let lines = lines.as_slice();
         // Strongest first, each a fallback for the one before: as written;
         // then case-insensitive - OCR's capitals wobble between runs, a field
         // recorded as `Fake@email.com` read back as `fake@email.com`; then
@@ -465,9 +505,28 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 .join(" ")
                 .to_lowercase()
         };
-        Self::match_tiers(lines, needle, nth)
-            .or_else(|| Self::match_reshaped(lines, needle, nth, fold))
-            .or_else(|| Self::match_reshaped(lines, needle, nth, loosen))
+        // Last, glyphs OCR reads as one another, for whole lines and words
+        // only: on Calculator's keypad `×` read as `X`, and its thin `1` as
+        // `I`, and an author writes what the key shows. Not `O` as `0`: OCR
+        // misread Calculator's `9` as `O`, and that fold would have clicked
+        // the wrong key. Not `|` as `1`: a toolbar's separators stand alone.
+        // Case kept: the italic `x` of `x²` beside the keypad is a letter,
+        // and matched `×` when the fold lowercased.
+        let look_alike = |text: &str| {
+            text.chars()
+                .map(|c| match c {
+                    '×' | 'X' | '*' => 'X',
+                    '−' | '–' | '—' => '-',
+                    '÷' => '/',
+                    'I' | 'l' => '1',
+                    other => other,
+                })
+                .collect::<String>()
+        };
+        Self::match_tiers(lines, needle, nth, true)
+            .or_else(|| Self::match_reshaped(lines, needle, nth, fold, true))
+            .or_else(|| Self::match_reshaped(lines, needle, nth, loosen, true))
+            .or_else(|| Self::match_reshaped(lines, needle, nth, look_alike, false))
     }
 
     /// [`Self::match_tiers`] over lines and needle passed through `shape`,
@@ -477,6 +536,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         needle: &str,
         nth: usize,
         shape: impl Fn(&str) -> String,
+        prefix: bool,
     ) -> Option<OcrHit> {
         let shaped_needle = shape(needle);
         if shaped_needle.is_empty() {
@@ -498,7 +558,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                     .collect(),
             })
             .collect();
-        let hit = Self::match_tiers(&shaped, &shaped_needle, nth)?;
+        let hit = Self::match_tiers(&shaped, &shaped_needle, nth, prefix)?;
         let text = lines
             .iter()
             .find(|l| l.rect == hit.rect)
@@ -506,8 +566,11 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         Some(OcrHit { text, ..hit })
     }
 
-    fn match_tiers(lines: &[OcrLine], needle: &str, nth: usize) -> Option<OcrHit> {
-        for tier in [Self::exact_lines, Self::exact_words, Self::prefix_lines] {
+    /// `prefix: false` keeps to whole lines and words.
+    fn match_tiers(lines: &[OcrLine], needle: &str, nth: usize, prefix: bool) -> Option<OcrHit> {
+        let all = [Self::exact_lines, Self::exact_words, Self::prefix_lines];
+        let tiers = if prefix { &all[..] } else { &all[..2] };
+        for tier in tiers {
             let mut hits = tier(lines, needle);
             hits.sort_by_key(|h| h.order);
             if let Some(hit) = hits.into_iter().nth(nth - 1) {
@@ -660,7 +723,13 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         hits
     }
 
+    /// Needs a needle of three characters or more: a shorter one is a key
+    /// on a keypad, not the start of a label, and `1` matched Calculator's
+    /// `1/x` button.
     fn prefix_lines(lines: &[OcrLine], needle: &str) -> Vec<OcrHit> {
+        if needle.chars().count() < 3 {
+            return Vec::new();
+        }
         lines
             .iter()
             .filter(|l| l.text.trim().starts_with(needle))
@@ -674,9 +743,21 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
 
     fn require(&mut self, selector: &UiaSelector) -> Result<OcrHit, DriverError> {
         self.resolve_scrolling(selector)?.ok_or_else(|| {
+            // Calculator's `=` and `−` are never read at all: a glyph made
+            // only of strokes is not text to an OCR detector. Saying so
+            // beats leaving an author to hunt for a key that is on screen.
+            let symbol_only = selector.name.as_deref().is_some_and(|name| {
+                !name.trim().is_empty() && !name.chars().any(char::is_alphanumeric)
+            });
             DriverError::Uia(format!(
                 "vision: no OCR line or word matches selector [{selector}], \
-                 after scrolling the window to the bottom and back to the top"
+                 after scrolling the window to the bottom and back to the top{}",
+                if symbol_only {
+                    ". OCR often cannot read a control that shows only a symbol; if the \
+                     app takes keyboard input, a bare `Type <symbol>` presses that key instead"
+                } else {
+                    ""
+                }
             ))
         })
     }
@@ -792,6 +873,16 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     }
 
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError> {
+        // A symbol has no key NAME - `*` is Shift+8 on one layout and its
+        // own key on another - so it goes out as the keystroke that types
+        // it. A model asked to "Press times" on Calculator answered `*`, and
+        // the step failed for want of a virtual key.
+        let mut chars = key.chars();
+        if let (Some(c), None, true) = (chars.next(), chars.next(), modifiers.is_empty()) {
+            if !c.is_alphanumeric() && !c.is_whitespace() {
+                return self.screen.type_text(key);
+            }
+        }
         self.screen.press_key(key, modifiers)
     }
 
@@ -1120,8 +1211,14 @@ fn corner_bounds(points: impl Iterator<Item = (f32, f32)>) -> PixelRect {
 
 /// The closer looks a missed target gets, in order: the frame at twice its
 /// size, then three times. Calculator's `1` was found at 2x in one framing
-/// and only at 3x in another a few pixels narrower.
+/// and only at 3x - read as `I` - in another a few pixels narrower.
 const CLOSER_SCALES: [u32; 2] = [2, 3];
+
+/// The top of a frame where a window draws its caption buttons, in
+/// physical pixels: 32px tall at 100% scaling, 48px at 150%. Windows
+/// reports no button rectangles for a UWP frame (Calculator's come back
+/// empty), so the band is fixed rather than asked for.
+const CAPTION_BAND: i32 = 48;
 
 /// A gap wider than this many line heights ends a line. Words in running
 /// text sit a fraction of a height apart; separate controls on one row - a
@@ -1734,8 +1831,63 @@ mod tests {
         assert!(split_at_gaps(&[]).is_empty());
     }
 
+    /// Calculator's `×` as OCR reads it: `X`. The author writes the symbol
+    /// the key shows, and it must still be found - but never on the
+    /// caption's close button, and a letter never stands in for a digit.
+    #[test]
+    fn keypad_symbols_match_what_ocr_reads_them_as() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            FakeOcr::with_lines(vec![
+                // The caption buttons as OCR read them live: maximize's
+                // square as `O`, close as `X`. Matched first, top to bottom,
+                // the close button shut Calculator.
+                OcrLine::new("O", (350, 10, 11, 11)),
+                OcrLine::new("X", (390, 9, 16, 14)),
+                // The keys above the digits: `1/x` and the italic `x` of
+                // `x²`, both read before the keypad, top to bottom.
+                OcrLine::new("1x", (44, 52, 14, 13)),
+                OcrLine::new("x", (118, 52, 18, 16)),
+                OcrLine::new("X", (200, 60, 12, 16)),
+                // Calculator's `9`, misread.
+                OcrLine::new("O", (100, 120, 12, 16)),
+            ]),
+        );
+        assert_eq!(
+            d.resolve(&anchor("×")).expect("reads").map(|h| h.rect),
+            Some((200, 60, 12, 16))
+        );
+        assert!(d.resolve(&anchor("0")).expect("reads").is_none());
+        assert!(
+            d.resolve(&anchor("1")).expect("reads").is_none(),
+            "`1` is not `1/x`"
+        );
+    }
+
+    /// OCR read Calculator's maximize box as a literal `0`, above the
+    /// keypad, so `Click the "0" button` maximised the window mid-flow.
+    #[test]
+    fn the_window_caption_buttons_are_never_a_target() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            FakeOcr::with_lines(vec![
+                OcrLine::new("Calculator", (26, 8, 70, 14)),
+                OcrLine::new("0", (250, 9, 15, 13)),
+                OcrLine::new("0", (125, 140, 10, 14)),
+            ]),
+        );
+        assert_eq!(
+            d.resolve(&anchor("0")).expect("reads").map(|h| h.rect),
+            Some((125, 140, 10, 14))
+        );
+        assert!(
+            d.resolve(&anchor("Calculator")).expect("reads").is_some(),
+            "a word in the caption band is still text"
+        );
+    }
+
     /// An engine that sees Calculator's `1` only at three times the size,
-    /// and remembers which scales it was asked for.
+    /// as `I`, and remembers which scales it was asked for.
     struct CloserStill {
         first: Vec<OcrLine>,
         at_3x: Vec<OcrLine>,
@@ -1761,7 +1913,7 @@ mod tests {
     }
 
     /// Calculator's `1` was too thin to be found at screen size, found at
-    /// twice it in one framing and only at three times in
+    /// twice it in one framing and only at three times - as `I` - in
     /// another. Closer looks are taken only on a miss, and an unchanged
     /// frame is not read twice.
     #[test]
@@ -1771,7 +1923,7 @@ mod tests {
             CloserStill {
                 first: vec![OcrLine::new("2", (120, 100, 10, 17))],
                 at_3x: vec![
-                    OcrLine::new("1", (40, 100, 6, 17)),
+                    OcrLine::new("I", (40, 100, 6, 17)),
                     OcrLine::new("2", (120, 100, 10, 17)),
                 ],
                 scales: Vec::new(),
@@ -1787,6 +1939,55 @@ mod tests {
             vec![2, 3],
             "the same frame is not read again, and a hit needs no closer look"
         );
+    }
+
+    /// OCR read Calculator's Keep-on-top icon, beside "Standard", as `5`,
+    /// and missed the `5` key at screen size. The key is looked for closer
+    /// before the `5` inside the phrase may stand in for it.
+    #[test]
+    fn a_short_anchor_prefers_a_key_found_closer_to_a_glyph_inside_a_phrase() {
+        let header = OcrLine::new("E Standard 5", (20, 48, 140, 17));
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            CloserStill {
+                first: vec![header.clone()],
+                at_3x: vec![header, OcrLine::new("5", (124, 140, 10, 14))],
+                scales: Vec::new(),
+            },
+        );
+        d.invoke(&anchor("5")).expect("clicks the 5 key");
+        assert_eq!(d.screen.clicks, vec![(129, 147)]);
+    }
+
+    #[test]
+    fn pressing_a_symbol_types_it() {
+        let mut d = driver();
+        d.press_key("*", &[]).expect("presses");
+        d.press_key("Enter", &[]).expect("presses");
+        d.press_key("a", &[KeyMod::Ctrl]).expect("presses");
+        assert_eq!(d.screen.typed, vec!["*"]);
+        assert_eq!(
+            d.screen.keys,
+            vec![
+                ("Enter".to_string(), vec![]),
+                ("a".to_string(), vec![KeyMod::Ctrl])
+            ]
+        );
+    }
+
+    #[test]
+    fn keystrokes_for_a_calculation_are_keyed_by_their_operands() {
+        type D = VisionAppDriver<FakeScreen, FakeOcr>;
+        // Calculator shows `42` for `12+30=`, never `1230`: no key, no
+        // false "never appeared".
+        assert!(D::readback_keys("12+30=").is_empty());
+        assert_eq!(D::readback_keys("1234*5678="), vec!["1234", "5678"]);
+        // Text keeps its keys across the punctuation it carries.
+        assert_eq!(
+            D::readback_keys("slow.typing@email.com"),
+            vec!["slowty", "emailc"]
+        );
+        assert_eq!(D::readback_keys("ORD-1234"), vec!["ord1234"]);
     }
 
     /// A keypad row OCR'd as one line: the model reaches the `8` in

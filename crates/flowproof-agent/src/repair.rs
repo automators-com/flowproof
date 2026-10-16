@@ -53,7 +53,9 @@ pub struct FailureContext {
 /// (see [`find_step_index`]).
 pub fn diagnose(err: &RecordError) -> FailureContext {
     match err {
-        RecordError::ElementNotFound { intent, selector } => FailureContext {
+        RecordError::ElementNotFound {
+            intent, selector, ..
+        } => FailureContext {
             category: "missing-target",
             failing_intent: Some(intent.clone()),
             detail: format!("element for step '{intent}' not found: [{selector}]"),
@@ -497,6 +499,7 @@ steps:
         let err = RecordError::ElementNotFound {
             intent: "Click \"Submit\"".to_string(),
             selector: "text=Submit".to_string(),
+            hint: None,
         };
         let ctx = diagnose(&err);
         assert_eq!(ctx.category, "missing-target");
