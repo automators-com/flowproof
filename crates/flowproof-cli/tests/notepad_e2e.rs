@@ -247,3 +247,53 @@ fn drives_an_arbitrary_app_through_the_mapping_form_with_pinned_geometry() {
     std::env::remove_var("FLOWPROOF_E2E_WINDOW");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Vision attaches to a window by title and reads the screen where it is.
+/// Started from a terminal that covered the app, it read and clicked the
+/// terminal: Windows refused `SetForegroundWindow` to a background process
+/// and the refusal was ignored. Bringing a covered window to the front must
+/// actually put it there.
+#[test]
+fn a_covered_window_is_brought_to_the_front() {
+    use std::os::windows::process::CommandExt;
+    let _desktop = exclusive_desktop();
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping covered-window E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    kill_notepad();
+    std::process::Command::new("notepad.exe")
+        .spawn()
+        .expect("notepad starts");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let window = loop {
+        if let Some(window) = flowproof_driver::window::find_window("Notepad").expect("lookup") {
+            break window;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "notepad never showed a window"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
+    // A console opened after it takes the foreground and covers it.
+    const CREATE_NEW_CONSOLE: u32 = 0x10;
+    let mut cover = std::process::Command::new("cmd.exe")
+        .args(["/k", "title flowproof-cover"])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .expect("a console opens");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    if window.holds_foreground() {
+        eprintln!("the console did not take the foreground; the raise is still checked");
+    }
+    let raised = window.focus();
+    let in_front = window.holds_foreground();
+    cover.kill().ok();
+    kill_notepad();
+    raised.expect("a covered window is raised");
+    assert!(
+        in_front,
+        "focus() returned Ok, so the window must hold the foreground"
+    );
+}

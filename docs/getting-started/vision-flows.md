@@ -42,6 +42,13 @@ of `Hello Adal`. Punctuation inside a word still counts (`$10.00` is not
 
 ## How vision acts
 
+- **The window.** Vision brings its window to the front before it reads or
+  acts, and again whenever another program has taken the foreground since -
+  a capture copies the screen and input goes to whatever is in front, so a
+  covered window would be read and clicked as the window on top of it. If
+  Windows will not hand over the foreground, the step fails and names the
+  window in the way. Capture covers the window as drawn, not its invisible
+  resize border.
 - **Fields.** A field is typed beside its label (the SAP GUI layout) or, when
   the value does not appear there, below it - recording reads the screen back
   after typing and keeps whichever worked, so the trace records where the
