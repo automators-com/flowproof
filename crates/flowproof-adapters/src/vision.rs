@@ -205,6 +205,17 @@ pub trait VisionScreen {
     /// Turn the mouse wheel over the window by `notches` (negative scrolls
     /// the view down) and let the frame settle.
     fn scroll(&mut self, notches: i32) -> Result<(), DriverError>;
+    /// How long a click's effect may take to show before the click is taken
+    /// to have gone nowhere and is made once more - see
+    /// [`VisionAppDriver::press`]. Zero checks nothing.
+    fn click_wait(&self) -> Duration {
+        Duration::ZERO
+    }
+    /// Rest the pointer on window-relative `(x, y)` long enough for a hover
+    /// tint, not a tooltip, so the frame before a click already shows it.
+    fn point_at(&mut self, _x: i32, _y: i32) -> Result<(), DriverError> {
+        Ok(())
+    }
     /// How long to wait between two captures so a blinking text caret is
     /// on in one and off in the other: half a blink. Zero for a screen
     /// that does not blink.
@@ -1070,6 +1081,61 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             .collect()
     }
 
+    /// Click, and check the screen answered. A computer-use model looks at
+    /// the screen after every action and clicks again when nothing
+    /// happened; replayed over pixels, a click a slow remote session
+    /// swallowed passed silently, and the step after it failed for a reason
+    /// that was not its own. So the frame before the click - pointer
+    /// already resting on the target, its hover tint drawn - is compared
+    /// with the frames after it for up to [`VisionScreen::click_wait`], and
+    /// a click that changed nothing but a caret is made once more.
+    ///
+    /// Once more, not until something changes, and never failing: a click
+    /// can rightly change nothing (`0` on a Calculator showing 0, a tab
+    /// already open), and a second press on a toggle the app took but did
+    /// not yet draw would undo it - so the wait is long before the one
+    /// retry, and a click still answered by nothing is logged and the step
+    /// goes on to be judged by what follows it.
+    fn press(&mut self, selector: &UiaSelector, (x, y): (i32, i32)) -> Result<(), DriverError> {
+        let wait = self.screen.click_wait();
+        if wait.is_zero() {
+            return self.screen.click(x, y);
+        }
+        self.screen.point_at(x, y)?;
+        self.screen.settle()?;
+        let before = self.screen.frame()?;
+        for attempt in 0..2 {
+            self.screen.click(x, y)?;
+            if self.answered(&before, wait)? {
+                return Ok(());
+            }
+            if attempt == 0 {
+                vision_log(|| {
+                    format!("[{selector}] nothing changed {wait:?} after the click - clicking once more")
+                });
+            }
+        }
+        vision_log(|| {
+            format!("[{selector}] still nothing changed after a second click - going on: a click may rightly do nothing")
+        });
+        Ok(())
+    }
+
+    /// Whether a frame within `wait` differs from `before` by more than a
+    /// caret.
+    fn answered(&mut self, before: &RgbaImage, wait: Duration) -> Result<bool, DriverError> {
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            if !only_caret_differs(before, &self.screen.frame()?) {
+                return Ok(true);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(CLICK_POLL.min(wait));
+        }
+    }
+
     fn require(&mut self, selector: &UiaSelector) -> Result<OcrHit, DriverError> {
         self.resolve_scrolling(selector)?.ok_or_else(|| {
             // Calculator's `=` and `−` are never read at all: a glyph made
@@ -1202,7 +1268,7 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
 
     fn invoke(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         let (_, (x, y)) = self.locate(selector, "inside")?;
-        self.screen.click(x, y)
+        self.press(selector, (x, y))
     }
 
     fn read_text(&mut self, selector: &UiaSelector) -> Result<String, DriverError> {
@@ -1314,7 +1380,7 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
                 hit.rect
             )
         });
-        self.screen.click(point.0, point.1)
+        self.press(selector, point)
     }
 
     /// SET-state from pixels (plan 15, finding 15). Pixels give no checkbox
@@ -1749,6 +1815,36 @@ fn nearly_same(a: &RgbaImage, b: &RgbaImage) -> bool {
         .count()
         <= allowed
 }
+
+/// Two frames the same but for a text caret: nothing differs, or all that
+/// differs fits in a strip a caret's width. Stricter than [`nearly_same`],
+/// which forgives a few hundred pixels anywhere: a checkbox's tick is fewer
+/// than that, and a tick taken for "nothing happened" would be clicked
+/// off again.
+fn only_caret_differs(a: &RgbaImage, b: &RgbaImage) -> bool {
+    if a.dimensions() != b.dimensions() {
+        return false;
+    }
+    let (mut left, mut right, mut top, mut bottom) = (u32::MAX, 0, u32::MAX, 0);
+    for ((x, y, p), q) in a.enumerate_pixels().zip(b.pixels()) {
+        if p != q {
+            left = left.min(x);
+            right = right.max(x);
+            top = top.min(y);
+            bottom = bottom.max(y);
+        }
+    }
+    left == u32::MAX || (right - left < CARET_WIDTH && bottom - top < CARET_HEIGHT)
+}
+
+/// A text caret at 150% scaling, with a pixel of anti-aliasing each side.
+const CARET_WIDTH: u32 = 4;
+
+/// A caret is a line tall: a large font at 150%, with room.
+const CARET_HEIGHT: u32 = 64;
+
+/// How often a click's effect is looked for.
+const CLICK_POLL: Duration = Duration::from_millis(100);
 
 /// The name a key is spoken by in an accessibility tree, for an anchor
 /// that is the glyph on the key - what Windows Calculator, and screen
@@ -2237,6 +2333,22 @@ pub mod native {
                 .collect())
         }
 
+        fn click_wait(&self) -> Duration {
+            // Long, before the one retry it decides: over Citrix a click
+            // can take a second to draw, and pressed again before it does,
+            // a toggle is undone.
+            Duration::from_millis(1500)
+        }
+        fn point_at(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
+            let (wx, wy, _, _) = self.front()?.refresh_rect()?;
+            self.inject(InputEvent::MouseMove {
+                x: wx + x,
+                y: wy + y,
+            })?;
+            // A hover tint fades in over about 150ms; a tooltip waits 400.
+            std::thread::sleep(Duration::from_millis(150));
+            Ok(())
+        }
         fn blink_gap(&self) -> Duration {
             // Windows' default caret blink: 530ms on, 530ms off. Two
             // captures 300ms apart straddle a transition far more often
@@ -2422,6 +2534,12 @@ pub mod fake {
         /// Window-relative areas another window is drawn over.
         pub covered: Vec<PixelRect>,
         pub drags: Vec<((i32, i32), (i32, i32))>,
+        /// See [`VisionScreen::click_wait`]; zero, as for most tests,
+        /// checks nothing.
+        pub click_wait: Duration,
+        /// Clicks the "app" takes but does nothing with, first ones first -
+        /// what a remote session that swallowed them looks like.
+        pub swallow_clicks: usize,
     }
 
     impl FakeScreen {
@@ -2454,6 +2572,10 @@ pub mod fake {
 
         fn click(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
             self.clicks.push((x, y));
+            if self.swallow_clicks > 0 {
+                self.swallow_clicks -= 1;
+                return Ok(());
+            }
             if let Some((rx, ry, rw, rh)) = self.advance_on_click {
                 let inside = x >= rx && y >= ry && x < rx + rw as i32 && y < ry + rh as i32;
                 if inside && self.current + 1 < self.frames.len() {
@@ -2502,6 +2624,10 @@ pub mod fake {
 
         fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
             Ok((1920, 1080))
+        }
+
+        fn click_wait(&self) -> Duration {
+            self.click_wait
         }
 
         fn accessible_controls(&mut self) -> Result<Vec<AccessibleControl>, DriverError> {
@@ -2961,6 +3087,78 @@ mod tests {
         );
         d.click_at(&anchor("7 8 9 x"), 37.5, 50.0).expect("clicks");
         assert_eq!(d.screen.clicks, vec![(133, 80)]);
+    }
+
+    /// A screen whose second frame is the first with a block drawn: what
+    /// clicking "Sign in" leads to, when the click is taken.
+    fn checked_click_screen(swallow: usize) -> FakeScreen {
+        let before = blank_frame();
+        let mut after = before.clone();
+        for x in 200..240 {
+            for y in 150..190 {
+                after.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+            }
+        }
+        FakeScreen {
+            advance_on_click: Some((20, 100, 70, 20)),
+            click_wait: Duration::from_millis(20),
+            swallow_clicks: swallow,
+            ..FakeScreen::with_frames(vec![before, after])
+        }
+    }
+
+    #[test]
+    fn a_click_the_screen_answers_is_made_once() {
+        let mut d = VisionAppDriver::with_parts(
+            checked_click_screen(0),
+            FakeOcr::with_lines(login_lines()),
+        );
+        d.invoke(&anchor("Sign in")).expect("clicks");
+        assert_eq!(d.screen.clicks.len(), 1);
+    }
+
+    /// Over Citrix a click can go nowhere; a computer-use model sees
+    /// nothing happened and clicks again, and so does vision - once.
+    #[test]
+    fn a_click_that_changed_nothing_is_made_once_more() {
+        let mut d = VisionAppDriver::with_parts(
+            checked_click_screen(1),
+            FakeOcr::with_lines(login_lines()),
+        );
+        d.invoke(&anchor("Sign in")).expect("clicks");
+        assert_eq!(d.screen.clicks.len(), 2);
+        assert_eq!(d.screen.current, 1, "the second click was taken");
+    }
+
+    /// `0` on a Calculator showing 0 changes nothing, rightly: one retry,
+    /// then the step goes on rather than failing.
+    #[test]
+    fn a_click_that_rightly_changes_nothing_is_retried_once_and_does_not_fail() {
+        let mut d = VisionAppDriver::with_parts(
+            checked_click_screen(5),
+            FakeOcr::with_lines(login_lines()),
+        );
+        d.invoke(&anchor("Sign in")).expect("goes on");
+        assert_eq!(d.screen.clicks.len(), 2);
+    }
+
+    #[test]
+    fn a_blinking_caret_is_not_a_click_answered_but_a_ticked_box_is() {
+        let before = blank_frame();
+        let mut caret = before.clone();
+        for y in 40..60 {
+            caret.put_pixel(100, y, image::Rgba([0, 0, 0, 255]));
+            caret.put_pixel(101, y, image::Rgba([0, 0, 0, 255]));
+        }
+        assert!(only_caret_differs(&before, &caret));
+        let mut tick = before.clone();
+        for i in 0..8 {
+            tick.put_pixel(30 + i, 30 + i, image::Rgba([0, 0, 0, 255]));
+        }
+        assert!(
+            !only_caret_differs(&before, &tick),
+            "a few pixels of tick still count"
+        );
     }
 
     #[test]

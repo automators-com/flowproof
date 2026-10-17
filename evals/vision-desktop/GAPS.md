@@ -17,7 +17,7 @@ that a replayed step does not carry?
 | Icon-only buttons (Paint's tools, Save, Copilot) | It recognises the icon: a floppy disk means Save. OmniParser does this as a detector plus a captioning model | A detector and a 64-bit pixel hash (`icon:<hash>`). The recording model picks the icon from the screenshot, and replay finds it by hash | Works for recorded flows. A hand-written `Click "Save"` on an icon still can't be resolved without a model |
 | Glyph keys: ⌫, √x, x², ., ± | It reads the glyph | Stroke detection for − = ÷ + × only | Open, small |
 | Placeholder text taken for a label ("Search Home") | Grey hint text inside a box reads as a hint | Text is text | Open: detecting low-contrast text would separate the two |
-| Wrong click goes unnoticed | A screenshot after every action, and a retry if nothing happened | No check that a click changed the screen. A wrong click surfaces at the next step or assertion | Open |
+| A click that went nowhere goes unnoticed | A screenshot after every action, and a retry if nothing happened | Before each click, the pointer rests on the target (hover tint drawn) and the frame is kept; for 1.5s after it, anything beyond a caret changing counts as an answer | **Closed** for a click nothing answered: it is made once more, then the step goes on, logged, since a click can rightly change nothing. A click that lands on the *wrong* thing still changes the screen, and is caught by the next step or assertion |
 | Small text | `zoom` on a region at full resolution | OCR again at 2x and 3x | At parity |
 | No usable anchor at all | Raw coordinates | `click_at` with `x_pct`/`y_pct` | At parity |
 
