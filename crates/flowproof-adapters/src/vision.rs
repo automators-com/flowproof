@@ -182,8 +182,8 @@ pub trait VisionScreen {
     /// Press a key chord (canonical key names, e.g. `Enter`, `F5`, `a`).
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError>;
     /// Wait, bounded, for the window to stop changing: an action's effect
-    /// - a menu fading in, a page loading, a mode switch redrawing the
-    /// keypad - takes frames to finish, and a target read mid-way is read
+    /// (a menu fading in, a page loading, a mode switch redrawing the
+    /// keypad) takes frames to finish, and a target read mid-way is read
     /// wrong or not at all. Anthropic's reference computer-use loop waits
     /// after every action for the same reason. A screen that never changes
     /// on its own need not wait.
@@ -1603,6 +1603,7 @@ const CLOSER_SCALES: [u32; 2] = [2, 3];
 /// caret: a 2px-wide, line-tall strip, or a few hundred pixels of a large
 /// window. A screen that holds still apart from its caret has settled; one
 /// whose caret alone kept frames from matching never would.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn nearly_same(a: &RgbaImage, b: &RgbaImage) -> bool {
     if a.dimensions() != b.dimensions() {
         return false;
