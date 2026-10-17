@@ -551,6 +551,30 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             .name
             .as_deref()
             .is_some_and(|name| name.trim().chars().count() <= 2);
+        // An icon named by its pixels (see `vision_elements::icon_hash`): the
+        // nearest-looking icon on screen, within a tolerance.
+        if let Some(hash) = selector
+            .name
+            .as_deref()
+            .and_then(|n| n.trim().strip_prefix(ICON_PREFIX))
+        {
+            let text: Vec<PixelRect> = lines.iter().map(|l| l.rect).collect();
+            let hit = Self::icons(&frame, &text)
+                .into_iter()
+                .filter_map(|(name, rect)| {
+                    crate::vision_elements::hash_distance(&name[ICON_PREFIX.len()..], hash)
+                        .filter(|d| *d <= ICON_TOLERANCE)
+                        .map(|_| rect)
+                })
+                .nth(selector.nth.unwrap_or(1).max(1) as usize - 1)
+                .map(|rect| OcrHit {
+                    text: selector.name.clone().unwrap_or_default(),
+                    rect,
+                    order: (rect.1, rect.0),
+                    control: true,
+                });
+            return Ok((lines, hit));
+        }
         // A control the tree names EXACTLY is the strongest evidence there
         // is: text can repeat - a page heading reads "Windows Update" above
         // the nav item of that name, and reading order took the heading.
@@ -644,6 +668,27 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             }
         }
         Ok((lines, None))
+    }
+
+    /// Every icon on the frame - a small shape that is not text - named by
+    /// its pixels, in reading order. Below the caption band: the window's
+    /// own buttons are not a step's target.
+    fn icons(frame: &RgbaImage, text: &[PixelRect]) -> Vec<(String, PixelRect)> {
+        crate::vision_elements::detect(frame, text)
+            .into_iter()
+            .filter(|e| {
+                e.kind == crate::vision_elements::ElementKind::Icon && e.rect.1 >= CAPTION_BAND
+            })
+            .map(|e| {
+                (
+                    format!(
+                        "{ICON_PREFIX}{}",
+                        crate::vision_elements::icon_hash(frame, e.rect)
+                    ),
+                    e.rect,
+                )
+            })
+            .collect()
     }
 
     /// The accessible controls of the window as `frame` shows it, inside it
@@ -1056,6 +1101,10 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         for control in self.controls_for(&frame)? {
             targets.push(target(&control.name, control.rect));
         }
+        let text: Vec<PixelRect> = targets.iter().map(|t| t.rect).collect();
+        for (name, rect) in Self::icons(&frame, &text) {
+            targets.push(target(&name, rect));
+        }
         Ok(targets)
     }
 
@@ -1421,6 +1470,29 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
                 "source": "accessibility",
             }));
         }
+        // Icons, named by their pixels - which icon is which is for the
+        // model to see in the screenshot. Not one the tree already named: a
+        // name a person can read beats a hash.
+        let text: Vec<PixelRect> = lines.iter().map(|l| l.rect).collect();
+        let named: Vec<PixelRect> = self.controls_for(&frame)?.iter().map(|c| c.rect).collect();
+        for (name, rect) in Self::icons(&frame, &text) {
+            if entries.len() >= 200 {
+                break;
+            }
+            let (x, y, w, h) = rect;
+            let (cx, cy) = (x + w as i32 / 2, y + h as i32 / 2);
+            let inside_named = named.iter().any(|&(nx, ny, nw, nh)| {
+                cx >= nx && cy >= ny && cx < nx + nw as i32 && cy < ny + nh as i32
+            });
+            if inside_named {
+                continue;
+            }
+            entries.push(serde_json::json!({
+                "target": format!("text:{name}"),
+                "rect": [x, y, w, h],
+                "kind": "icon",
+            }));
+        }
         serde_json::to_string(&entries)
             .map(Some)
             .map_err(|e| DriverError::Uia(format!("vision: serializing scene: {e}")))
@@ -1598,6 +1670,13 @@ fn corner_bounds(points: impl Iterator<Item = (f32, f32)>) -> PixelRect {
 /// size, then three times. Calculator's `1` was found at 2x in one framing
 /// and only at 3x - read as `I` - in another a few pixels narrower.
 const CLOSER_SCALES: [u32; 2] = [2, 3];
+
+/// An anchor naming an icon by its pixels: `icon:` and the icon's hash.
+const ICON_PREFIX: &str = "icon:";
+
+/// Bits of an icon hash that may differ and still be the same icon: room
+/// for anti-aliasing and a hover tint, not for a different glyph.
+const ICON_TOLERANCE: u32 = 10;
 
 /// Two captures of one window that differ in no more than a blinking
 /// caret: a 2px-wide, line-tall strip, or a few hundred pixels of a large
@@ -2472,6 +2551,36 @@ mod tests {
             Vec::<i32>::new(),
             "no search: it is on screen"
         );
+    }
+
+    /// A toolbar button drawn only as an icon, over Citrix: the scene names
+    /// it by its pixels, and a step using that name clicks it - wherever it
+    /// is on the next run.
+    #[test]
+    fn an_icon_offered_in_the_scene_is_clicked_by_its_name() {
+        let mut frame = blank_frame();
+        for i in 0..16 {
+            for t in 0..3 {
+                frame.put_pixel(300 + i, 80 + i.min(13) + t, image::Rgba([20, 20, 20, 255]));
+                frame.put_pixel(300 + t, 80 + i, image::Rgba([20, 20, 20, 255]));
+            }
+        }
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![frame]),
+            FakeOcr::with_lines(login_lines()),
+        );
+        let scene = d.scene().expect("scene").expect("some");
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&scene).expect("json");
+        let icon = entries
+            .iter()
+            .find(|e| e["kind"] == "icon")
+            .and_then(|e| e["target"].as_str())
+            .expect("an icon in the scene")
+            .trim_start_matches("text:")
+            .to_string();
+        d.invoke(&anchor(&icon)).expect("clicks the icon");
+        let (x, y) = d.screen.clicks[0];
+        assert!((300..318).contains(&x) && (80..98).contains(&y), "{x},{y}");
     }
 
     #[test]

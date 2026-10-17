@@ -1,0 +1,11 @@
+name: Calculator by its keys
+app: vision
+window:
+  title: Calculator
+steps:
+  - Press Escape
+  - Click "7"
+  - Click "+"
+  - Click "8"
+  - Click "="
+  - assert: page shows 15

@@ -154,7 +154,7 @@ fn border_drawn(map: &[bool], w: u32, (x, y, rw, rh): PixelRect) -> f32 {
 pub fn detect(frame: &RgbaImage, text: &[PixelRect]) -> Vec<Element> {
     let (map, w, h) = edges(frame);
     let mut boxes = Vec::new();
-    let mut icons = Vec::new();
+    let mut pieces: Vec<PixelRect> = Vec::new();
     for rect in shapes(&map, w, h) {
         let (_, _, rw, rh) = rect;
         // The frame's own border, a window-wide divider: structure.
@@ -168,21 +168,86 @@ pub fn detect(frame: &RgbaImage, text: &[PixelRect]) -> Vec<Element> {
                 kind: ElementKind::Box,
                 rect,
             });
-        } else if (6..=48).contains(&rw.max(rh))
-            && rw.min(rh) >= 4
-            && !text.iter().any(|t| overlap(*t, rect) > 0.5)
-        {
-            icons.push(Element {
-                kind: ElementKind::Icon,
-                rect,
-            });
+        } else if rw.max(rh) <= ICON_MAX && !text.iter().any(|t| overlap(*t, rect) > 0.5) {
+            pieces.push(rect);
         }
     }
+    let mut icons: Vec<Element> = icon_clusters(pieces)
+        .into_iter()
+        .filter(|&(_, _, rw, rh)| rw.max(rh) >= 8 && rw.min(rh) >= 6)
+        .map(|rect| Element {
+            kind: ElementKind::Icon,
+            rect,
+        })
+        .collect();
     let order = |e: &Element| (e.rect.1, e.rect.0);
     boxes.sort_by_key(order);
     icons.sort_by_key(order);
     boxes.extend(icons);
     boxes
+}
+
+/// The largest side an icon is drawn at: toolbar icons are 16-32px, at
+/// 150% scaling up to 48.
+const ICON_MAX: u32 = 56;
+
+/// An icon is often several shapes - a pencil's tip and body, a folder's
+/// tab - so shapes within a few pixels of one another are one icon, as long
+/// as the whole stays icon-sized.
+fn icon_clusters(mut pieces: Vec<PixelRect>) -> Vec<PixelRect> {
+    let near = |a: PixelRect, b: PixelRect| {
+        let gap_x = (a.0 - (b.0 + b.2 as i32)).max(b.0 - (a.0 + a.2 as i32));
+        let gap_y = (a.1 - (b.1 + b.3 as i32)).max(b.1 - (a.1 + a.3 as i32));
+        gap_x <= 3 && gap_y <= 3
+    };
+    let mut merged = true;
+    while merged {
+        merged = false;
+        'outer: for i in 0..pieces.len() {
+            for j in i + 1..pieces.len() {
+                let joined = union(pieces[i], pieces[j]);
+                if near(pieces[i], pieces[j]) && joined.2.max(joined.3) <= ICON_MAX {
+                    pieces[i] = joined;
+                    pieces.swap_remove(j);
+                    merged = true;
+                    break 'outer;
+                }
+            }
+        }
+    }
+    pieces
+}
+
+/// A name for an icon made from its pixels: a 64-bit difference hash, as
+/// 16 hex digits. Brightness rising or falling between neighbouring cells
+/// of the icon shrunk to 9x8 - what a person recognises an icon by, its
+/// shape and shading, and stable across the small rendering differences
+/// between two runs. Over Citrix an icon-only button has no text and no
+/// accessibility name; this is the name a step can use for it.
+pub fn icon_hash(frame: &RgbaImage, (x, y, w, h): PixelRect) -> String {
+    let (fw, fh) = frame.dimensions();
+    let x0 = x.clamp(0, fw as i32 - 1) as u32;
+    let y0 = y.clamp(0, fh as i32 - 1) as u32;
+    let crop =
+        image::imageops::crop_imm(frame, x0, y0, w.min(fw - x0).max(1), h.min(fh - y0).max(1))
+            .to_image();
+    let small = image::imageops::resize(&crop, 9, 8, image::imageops::FilterType::Triangle);
+    let mut bits: u64 = 0;
+    for row in 0..8 {
+        for col in 0..8 {
+            let l = luma(&small, col, row);
+            let r = luma(&small, col + 1, row);
+            bits = (bits << 1) | u64::from(l < r);
+        }
+    }
+    format!("{bits:016x}")
+}
+
+/// Bits two icon hashes differ in.
+pub fn hash_distance(a: &str, b: &str) -> Option<u32> {
+    let a = u64::from_str_radix(a, 16).ok()?;
+    let b = u64::from_str_radix(b, 16).ok()?;
+    Some((a ^ b).count_ones())
 }
 
 /// The operator glyphs OCR does not read: a key drawn only as strokes is
@@ -625,6 +690,51 @@ mod tests {
         );
         // A word's strokes are OCR's to read.
         assert!(find_symbols(&img, &[(10, 40, 400, 30)]).is_empty());
+    }
+
+    /// Over Citrix a toolbar button drawn as an icon is clicked by the
+    /// name its pixels give it, and found again wherever it has moved.
+    #[test]
+    fn an_icon_is_named_by_its_pixels_and_found_again_after_moving() {
+        let draw = |img: &mut RgbaImage, x: u32, y: u32, kind: u8| {
+            for i in 0..18 {
+                for j in 0..18 {
+                    let on = match kind {
+                        0 => i < 3 || j < 3 || i > 14 || j > 14, // a hollow square
+                        _ => (i as i32 - j as i32).abs() < 3 || i > 14, // a slash on a base
+                    };
+                    if on {
+                        img.put_pixel(x + i, y + j, Rgba([40, 40, 40, 255]));
+                    }
+                }
+            }
+        };
+        let mut before = screen();
+        draw(&mut before, 30, 30, 0);
+        draw(&mut before, 80, 30, 1);
+        let icons: Vec<PixelRect> = detect(&before, &[])
+            .into_iter()
+            .filter(|e| e.kind == ElementKind::Icon)
+            .map(|e| e.rect)
+            .collect();
+        assert_eq!(icons.len(), 2, "{icons:?}");
+        let square = icon_hash(&before, icons[0]);
+        let slash = icon_hash(&before, icons[1]);
+        assert!(
+            hash_distance(&square, &slash).expect("hex") > 12,
+            "{square} {slash}"
+        );
+
+        let mut after = screen();
+        draw(&mut after, 200, 120, 1);
+        draw(&mut after, 250, 120, 0);
+        let moved: Vec<String> = detect(&after, &[])
+            .into_iter()
+            .filter(|e| e.kind == ElementKind::Icon)
+            .map(|e| icon_hash(&after, e.rect))
+            .collect();
+        assert_eq!(hash_distance(&moved[0], &slash), Some(0));
+        assert_eq!(hash_distance(&moved[1], &square), Some(0));
     }
 
     #[test]

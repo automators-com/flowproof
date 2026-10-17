@@ -1,0 +1,35 @@
+{
+  "attempts": [
+    {
+      "attempt": 1,
+      "category": "page-not-ready",
+      "failing_intent": null,
+      "error_detail": "UIA query failed: clicking at an offset is not supported by this driver",
+      "rationale": null,
+      "applied": false
+    }
+  ],
+  "outcome": {
+    "outcome": "engine-gap",
+    "reason": "UIA query failed: clicking at an offset is not supported by this driver"
+  },
+  "fresh_retry": {
+    "retry_outcome": "failed-again",
+    "report": {
+      "attempts": [
+        {
+          "attempt": 1,
+          "category": "engine-gap",
+          "failing_intent": null,
+          "error_detail": "backend configuration error: model call failed (anthropic): io: A socket operation was attempted to an unreachable network. (os error 10051)",
+          "rationale": null,
+          "applied": false
+        }
+      ],
+      "outcome": {
+        "outcome": "engine-gap",
+        "reason": "backend configuration error: model call failed (anthropic): io: A socket operation was attempted to an unreachable network. (os error 10051)"
+      }
+    }
+  }
+}

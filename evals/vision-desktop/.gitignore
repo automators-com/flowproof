@@ -1,0 +1,3 @@
+*.trace.jsonl*
+.flowproof/
+*.baselines/

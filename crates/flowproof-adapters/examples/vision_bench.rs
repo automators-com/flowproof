@@ -33,9 +33,10 @@ fn main() {
             eprintln!("{title}: no such window - skipped");
             continue;
         };
-        driver
-            .launch("", title, std::time::Duration::from_secs(5))
-            .expect("attach");
+        if let Err(e) = driver.launch("", title, std::time::Duration::from_secs(5)) {
+            eprintln!("{title}: could not attach ({e}) - skipped");
+            continue;
+        }
         let controls = flowproof_driver::uia_scan::window_controls(info.hwnd())
             .expect("UIA scan")
             .into_iter()
