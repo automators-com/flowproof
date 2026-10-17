@@ -21,11 +21,11 @@ that a replayed step does not carry?
 | Small text | `zoom` on a region at full resolution | OCR again at 2x and 3x | At parity |
 | No usable anchor at all | Raw coordinates | `click_at` with `x_pct`/`y_pct` | At parity |
 
-Two things the benchmark scores that a computer-use model doesn't do either,
-now left out of the answer key: a window's own chrome (System menu, Minimize,
-Maximize, Close), and an icon-only control asked for by its accessible name,
-which pixels never spell. Its name accuracy therefore measures text
-grounding; icons are measured by coverage.
+The benchmark no longer scores a window's own chrome (System menu,
+Minimize, Maximize, Close), which no step means and vision refuses on
+purpose. It still asks for every icon-only control by its accessible name,
+which pixels never spell, so most of its name-accuracy misses are icons by
+construction; how far vision reaches icons shows in coverage instead.
 
 ## Not done
 
