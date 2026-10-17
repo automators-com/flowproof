@@ -65,7 +65,10 @@ fn main() {
                 for (symbol, rect) in flowproof_adapters::vision_elements::find_symbols(&frame, &text) {
                     eprintln!("    drawn {symbol:?} at {rect:?}");
                 }
-                let _ = frame.save("vision_bench_frame.png");
+                let path = std::env::temp_dir().join("vision_bench_frame.png");
+                if frame.save(&path).is_ok() {
+                    eprintln!("    frame saved to {}", path.display());
+                }
             }
         }
         let targets: Vec<(i32, i32)> = offered
