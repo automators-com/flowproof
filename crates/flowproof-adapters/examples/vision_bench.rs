@@ -74,6 +74,12 @@ fn main() {
                 }
             }
         }
+        if args.iter().any(|a| a == "--scene") {
+            let scene = driver.scene().ok().flatten().unwrap_or_default();
+            check_scene_ordinals(&scene, &info.title, |name, n| {
+                driver.locate_point(name, n, "inside").ok().flatten()
+            });
+        }
         let targets: Vec<(i32, i32)> = offered
             .iter()
             .map(|t| (t.point.0 + ox, t.point.1 + oy))
@@ -130,6 +136,51 @@ fn main() {
     if json {
         println!("{}", serde_json::to_string_pretty(&reports).expect("json"));
     }
+}
+
+/// `--scene`: every entry the recording scene offers by ordinal
+/// (`nth:2:text:Home`) must replay onto that same entry - the scene's count
+/// and resolution's agreeing on a live screen, not only in a unit test.
+#[cfg(windows)]
+fn check_scene_ordinals(
+    scene: &str,
+    title: &str,
+    mut locate: impl FnMut(&str, u32) -> Option<(i32, i32)>,
+) {
+    let entries: Vec<serde_json::Value> = serde_json::from_str(scene).unwrap_or_default();
+    let (mut checked, mut agreed) = (0, 0);
+    for entry in &entries {
+        let Some(token) = entry["target"].as_str() else {
+            continue;
+        };
+        let Some((n, inner)) = token
+            .strip_prefix("nth:")
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(n, inner)| Some((n.parse::<u32>().ok()?, inner)))
+        else {
+            continue;
+        };
+        let name = inner.strip_prefix("text:").unwrap_or(inner);
+        let rect: Vec<i64> = entry["rect"]
+            .as_array()
+            .map(|r| r.iter().filter_map(serde_json::Value::as_i64).collect())
+            .unwrap_or_default();
+        let [x, y, w, h] = rect[..] else {
+            continue;
+        };
+        checked += 1;
+        let landed = locate(name, n);
+        let inside = landed.is_some_and(|(px, py)| {
+            let (px, py) = (i64::from(px), i64::from(py));
+            px >= x && py >= y && px < x + w && py < y + h
+        });
+        if inside {
+            agreed += 1;
+        } else {
+            eprintln!("    scene {token} at {rect:?} replays to {landed:?}");
+        }
+    }
+    eprintln!("{title}: scene ordinals replay to their own entry {agreed}/{checked}");
 }
 
 #[cfg(not(windows))]

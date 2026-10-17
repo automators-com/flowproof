@@ -1441,6 +1441,13 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         let frame = self.screen.frame()?;
         self.frame_height = frame.height();
         let lines = self.read(&frame, 1)?;
+        // A text shown more than once is offered once per place, each with
+        // its ordinal - `nth:2:text:Home` - counted the way resolution counts
+        // (top to bottom, then left to right, the caption's glyphs aside).
+        // A computer-use model tells two "Home"s apart by where they are;
+        // offered alike as `text:Home`, every one it picked replayed as the
+        // first.
+        let reachable = |l: &OcrLine| l.rect.1 >= CAPTION_BAND || l.text.trim().chars().count() > 2;
         for line in &lines {
             if entries.len() >= 100 {
                 break;
@@ -1449,8 +1456,21 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
             if text.is_empty() {
                 continue;
             }
+            let nth = 1 + lines
+                .iter()
+                .filter(|m| {
+                    reachable(m)
+                        && m.text.trim() == text
+                        && (m.rect.1, m.rect.0) < (line.rect.1, line.rect.0)
+                })
+                .count();
+            let target = if nth > 1 && reachable(line) {
+                format!("nth:{nth}:text:{text}")
+            } else {
+                format!("text:{text}")
+            };
             entries.push(serde_json::json!({
-                "target": format!("text:{text}"),
+                "target": target,
                 "text": text,
                 "rect": [line.rect.0, line.rect.1, line.rect.2, line.rect.3],
             }));
@@ -1493,11 +1513,27 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // name a person can read beats a hash.
         let text: Vec<PixelRect> = lines.iter().map(|l| l.rect).collect();
         let named: Vec<PixelRect> = self.controls_for(&frame)?.iter().map(|c| c.rect).collect();
-        for (name, rect) in Self::icons(&frame, &text) {
+        let icons = Self::icons(&frame, &text);
+        for (i, (name, rect)) in icons.iter().enumerate() {
             if entries.len() >= 200 {
                 break;
             }
-            let (x, y, w, h) = rect;
+            // Two icons alike - a toolbar's identical buttons - are told apart
+            // by ordinal, as resolution counts: the alike icons before it.
+            let hash = &name[ICON_PREFIX.len()..];
+            let nth = 1 + icons[..i]
+                .iter()
+                .filter(|(other, _)| {
+                    crate::vision_elements::hash_distance(&other[ICON_PREFIX.len()..], hash)
+                        .is_some_and(|d| d <= ICON_TOLERANCE)
+                })
+                .count();
+            let target = if nth > 1 {
+                format!("nth:{nth}:text:{name}")
+            } else {
+                format!("text:{name}")
+            };
+            let (x, y, w, h) = *rect;
             let (cx, cy) = (x + w as i32 / 2, y + h as i32 / 2);
             let inside_named = named.iter().any(|&(nx, ny, nw, nh)| {
                 cx >= nx && cy >= ny && cx < nx + nw as i32 && cy < ny + nh as i32
@@ -1506,7 +1542,7 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
                 continue;
             }
             entries.push(serde_json::json!({
-                "target": format!("text:{name}"),
+                "target": target,
                 "rect": [x, y, w, h],
                 "kind": "icon",
             }));
@@ -2971,6 +3007,37 @@ mod tests {
             .expect("resolves")
             .expect("found");
         assert_eq!(file, (20, 20, 120, 12));
+    }
+
+    /// File Explorer, pixels only: "Home" in the breadcrumb and again in the
+    /// navigation pane. The scene names each by its place, and the ordinal
+    /// it gives the lower one is the one resolution clicks.
+    #[test]
+    fn a_text_shown_twice_is_offered_by_ordinal_and_that_ordinal_clicks_it() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            FakeOcr::with_lines(vec![
+                OcrLine::new("Home", (20, 160, 40, 14)),
+                OcrLine::new("Home", (200, 60, 40, 14)),
+                OcrLine::new("Search Home", (400, 60, 90, 14)),
+            ]),
+        );
+        let scene = d.scene().expect("scene").expect("some");
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&scene).expect("json");
+        let target = |x: i64| {
+            entries
+                .iter()
+                .find(|e| e["rect"][0] == x)
+                .and_then(|e| e["target"].as_str())
+                .expect("listed")
+                .to_string()
+        };
+        assert_eq!(target(200), "text:Home");
+        assert_eq!(target(20), "nth:2:text:Home");
+        assert_eq!(target(400), "text:Search Home");
+        d.invoke(&anchor("Home").with_nth(Some(2))).expect("clicks");
+        let (x, y) = d.screen.clicks[0];
+        assert!((20..60).contains(&x) && (160..174).contains(&y), "{x},{y}");
     }
 
     #[test]
