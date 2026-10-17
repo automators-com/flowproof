@@ -66,7 +66,8 @@ fn edges(frame: &RgbaImage) -> (Vec<bool>, u32, u32) {
         for x in 0..w - 1 {
             let i = (y * w + x) as usize;
             let here = lum[i];
-            if (here - lum[i + 1]).abs() >= EDGE_STEP || (here - lum[i + w as usize]).abs() >= EDGE_STEP
+            if (here - lum[i + 1]).abs() >= EDGE_STEP
+                || (here - lum[i + w as usize]).abs() >= EDGE_STEP
             {
                 map[i] = true;
             }
@@ -118,7 +119,11 @@ fn shapes(map: &[bool], w: u32, h: u32) -> Vec<PixelRect> {
 fn border_drawn(map: &[bool], w: u32, (x, y, rw, rh): PixelRect) -> f32 {
     let rows = (map.len() / w.max(1) as usize) as i32;
     let edge = |px: i32, py: i32| {
-        px >= 0 && py >= 0 && px < w as i32 && py < rows && map[(py as u32 * w + px as u32) as usize]
+        px >= 0
+            && py >= 0
+            && px < w as i32
+            && py < rows
+            && map[(py as u32 * w + px as u32) as usize]
     };
     let at = |px: i32, py: i32| {
         [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -294,10 +299,16 @@ fn cross(mask: &[bool], (_, _, w, h): PixelRect) -> Option<Symbol> {
     // Two pixels square at the middle: a 1px stroke crossing it fills a
     // quarter or more of that.
     let centre = filled(mask, w, (w / 2 - 1, h / 2 - 1, w / 2 + 1, h / 2 + 1));
-    let mid_row_ends = filled(mask, w, (0, h / 2 - 1, qw, h / 2 + 1))
-        .min(filled(mask, w, (w - qw, h / 2 - 1, w, h / 2 + 1)));
-    let mid_col_ends = filled(mask, w, (w / 2 - 1, 0, w / 2 + 1, qh))
-        .min(filled(mask, w, (w / 2 - 1, h - qh, w / 2 + 1, h)));
+    let mid_row_ends = filled(mask, w, (0, h / 2 - 1, qw, h / 2 + 1)).min(filled(
+        mask,
+        w,
+        (w - qw, h / 2 - 1, w, h / 2 + 1),
+    ));
+    let mid_col_ends = filled(mask, w, (w / 2 - 1, 0, w / 2 + 1, qh)).min(filled(
+        mask,
+        w,
+        (w / 2 - 1, h - qh, w / 2 + 1, h),
+    ));
     if centre < 0.25 {
         return None;
     }
@@ -316,14 +327,21 @@ fn cross(mask: &[bool], (_, _, w, h): PixelRect) -> Option<Symbol> {
 fn bands(mask: &[bool], (_, _, w, h): PixelRect) -> Vec<PixelRect> {
     let mut out = Vec::new();
     let mut start: Option<u32> = None;
-    let row_ink = |y: u32| (0..w).filter(|&x| mask[(y * w + x) as usize]).collect::<Vec<_>>();
+    let row_ink = |y: u32| {
+        (0..w)
+            .filter(|&x| mask[(y * w + x) as usize])
+            .collect::<Vec<_>>()
+    };
     for y in 0..=h {
         let inked = y < h && !row_ink(y).is_empty();
         match (inked, start) {
             (true, None) => start = Some(y),
             (false, Some(y0)) => {
                 let cols: Vec<u32> = (y0..y).flat_map(row_ink).collect();
-                let (x0, x1) = (*cols.iter().min().unwrap_or(&0), *cols.iter().max().unwrap_or(&0));
+                let (x0, x1) = (
+                    *cols.iter().min().unwrap_or(&0),
+                    *cols.iter().max().unwrap_or(&0),
+                );
                 out.push((x0 as i32, y0 as i32, x1 - x0 + 1, y - y0));
                 start = None;
             }
@@ -528,10 +546,20 @@ mod tests {
         fill(&mut img, (30, 120, 16, 16));
         let found = detect(&img, &[]);
         let kinds: Vec<_> = found.iter().map(|e| e.kind).collect();
-        assert_eq!(kinds, vec![ElementKind::Box, ElementKind::Icon], "{found:?}");
+        assert_eq!(
+            kinds,
+            vec![ElementKind::Box, ElementKind::Icon],
+            "{found:?}"
+        );
         let (x, y, w, h) = found[0].rect;
-        assert!((119..=121).contains(&x) && (39..=41).contains(&y), "{found:?}");
-        assert!((198..=202).contains(&w) && (26..=30).contains(&h), "{found:?}");
+        assert!(
+            (119..=121).contains(&x) && (39..=41).contains(&y),
+            "{found:?}"
+        );
+        assert!(
+            (198..=202).contains(&w) && (26..=30).contains(&h),
+            "{found:?}"
+        );
     }
 
     /// Calculator's operator keys, drawn as strokes: dark glyphs, a little
@@ -539,7 +567,8 @@ mod tests {
     #[test]
     fn operator_keys_drawn_as_strokes_are_recognised_by_their_shape() {
         let mut img = RgbaImage::from_pixel(400, 120, Rgba([243, 243, 243, 255]));
-        let ink = |img: &mut RgbaImage, x: u32, y: u32| img.put_pixel(x, y, Rgba([30, 30, 30, 255]));
+        let ink =
+            |img: &mut RgbaImage, x: u32, y: u32| img.put_pixel(x, y, Rgba([30, 30, 30, 255]));
         // `=` at x 20: two 16x2 bars, 4px apart.
         for x in 20..36 {
             for y in [50, 51, 56, 57] {
@@ -577,12 +606,21 @@ mod tests {
                 ink(&mut img, x, y);
             }
         }
-        let found: Vec<Symbol> = find_symbols(&img, &[]).into_iter().map(|(s, _)| s).collect();
+        let found: Vec<Symbol> = find_symbols(&img, &[])
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect();
         let mut sorted = found.clone();
         sorted.sort_by_key(|s| *s as u8);
         assert_eq!(
             sorted,
-            vec![Symbol::Minus, Symbol::Equals, Symbol::Divide, Symbol::Plus, Symbol::Times],
+            vec![
+                Symbol::Minus,
+                Symbol::Equals,
+                Symbol::Divide,
+                Symbol::Plus,
+                Symbol::Times
+            ],
             "{found:?}"
         );
         // A word's strokes are OCR's to read.
@@ -613,7 +651,10 @@ mod tests {
             field_box(&elements, label, "right_of"),
             Some((160, 38, 200, 28))
         );
-        assert_eq!(field_box(&elements, (300, 60, 60, 16), "below"), Some((300, 100, 150, 26)));
+        assert_eq!(
+            field_box(&elements, (300, 60, 60, 16), "below"),
+            Some((300, 100, 150, 26))
+        );
         assert_eq!(field_box(&elements, (40, 150, 80, 16), "right_of"), None);
     }
 }

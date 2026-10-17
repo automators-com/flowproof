@@ -193,7 +193,9 @@ pub trait VisionScreen {
     /// Move the pointer onto window-relative coordinates, pressing nothing:
     /// what opens a tooltip or a hover menu.
     fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), DriverError> {
-        Err(DriverError::Uia("vision: this screen cannot move the pointer".into()))
+        Err(DriverError::Uia(
+            "vision: this screen cannot move the pointer".into(),
+        ))
     }
     /// Press the left button at `from`, move to `to` in steps an app sees as
     /// a drag, release there.
@@ -496,7 +498,9 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let frame = self.screen.frame()?;
         let text: Vec<PixelRect> = self.read(&frame, 1)?.iter().map(|l| l.rect).collect();
         let elements = crate::vision_elements::detect(&frame, &text);
-        Ok(crate::vision_elements::field_box(&elements, hit.rect, relation))
+        Ok(crate::vision_elements::field_box(
+            &elements, hit.rect, relation,
+        ))
     }
 
     /// Match a text anchor over BOTH granularities, strongest first:
@@ -554,7 +558,12 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         if let Some(hit) = Self::resolve_named(&controls, selector) {
             let (x, y) = hit.center();
             if self.screen.reaches(x, y)? {
-                vision_log(|| format!("[{selector}] the accessibility tree names it: {:?}", hit.rect));
+                vision_log(|| {
+                    format!(
+                        "[{selector}] the accessibility tree names it: {:?}",
+                        hit.rect
+                    )
+                });
                 return Ok((lines, Some(hit)));
             }
             vision_log(|| format!("[{selector}] named control at {:?} is covered", hit.rect));
@@ -1069,12 +1078,10 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             return Ok(None);
         };
         let point = Self::action_point(&hit, &selector, relation);
-        Ok(Some(
-            match self.drawn_field(&hit, &selector, relation)? {
-                Some((x, y, w, h)) => (x + w as i32 / 2, y + h as i32 / 2),
-                None => point,
-            },
-        ))
+        Ok(Some(match self.drawn_field(&hit, &selector, relation)? {
+            Some((x, y, w, h)) => (x + w as i32 / 2, y + h as i32 / 2),
+            None => point,
+        }))
     }
 
     /// Screen origin of the attached window.
@@ -1601,7 +1608,12 @@ fn nearly_same(a: &RgbaImage, b: &RgbaImage) -> bool {
         return false;
     }
     let allowed = (a.width() as usize * a.height() as usize / 4000).max(64);
-    a.pixels().zip(b.pixels()).filter(|(p, q)| p != q).take(allowed + 1).count() <= allowed
+    a.pixels()
+        .zip(b.pixels())
+        .filter(|(p, q)| p != q)
+        .take(allowed + 1)
+        .count()
+        <= allowed
 }
 
 /// The name a key is spoken by in an accessibility tree, for an anchor
@@ -2451,15 +2463,21 @@ mod tests {
             control("Settings", (360, 0, 30, 30)),
         ];
         d.invoke(&anchor("=")).expect("found as Equals");
-        d.invoke(&anchor("settings")).expect("found by name, any case");
+        d.invoke(&anchor("settings"))
+            .expect("found by name, any case");
         assert_eq!(d.screen.clicks, vec![(330, 170), (375, 15)]);
-        assert_eq!(d.screen.scrolls, Vec::<i32>::new(), "no search: it is on screen");
+        assert_eq!(
+            d.screen.scrolls,
+            Vec::<i32>::new(),
+            "no search: it is on screen"
+        );
     }
 
     #[test]
     fn drag_presses_on_one_anchor_and_releases_on_the_other_and_hover_presses_nothing() {
         let mut d = driver();
-        d.drag(&anchor("Sign in"), &anchor("Password")).expect("drags");
+        d.drag(&anchor("Sign in"), &anchor("Password"))
+            .expect("drags");
         d.hover(&anchor("User name")).expect("hovers");
         assert_eq!(d.screen.drags, vec![((55, 110), (60, 68))]);
         assert_eq!(d.screen.hovers, vec![(65, 28)]);
@@ -2533,7 +2551,10 @@ mod tests {
         ];
         let scene = d.scene().expect("scene").expect("some");
         let entries: Vec<serde_json::Value> = serde_json::from_str(&scene).expect("json");
-        let targets: Vec<&str> = entries.iter().filter_map(|e| e["target"].as_str()).collect();
+        let targets: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e["target"].as_str())
+            .collect();
         assert_eq!(targets.iter().filter(|t| **t == "text:Sign in").count(), 1);
         assert!(targets.contains(&"text:Back"), "{targets:?}");
     }
@@ -2559,7 +2580,10 @@ mod tests {
         );
         d.type_text(&anchor("User name"), "ada").expect("types");
         let (cx, cy) = d.screen.clicks[0];
-        assert!((290..=310).contains(&cx) && (24..=32).contains(&cy), "{cx},{cy}");
+        assert!(
+            (290..=310).contains(&cx) && (24..=32).contains(&cy),
+            "{cx},{cy}"
+        );
     }
 
     #[test]

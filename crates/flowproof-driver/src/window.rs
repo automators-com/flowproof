@@ -12,9 +12,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_MENU,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EnumWindows, GetAncestor, WindowFromPoint, GetClassNameW, GetForegroundWindow, GetWindowRect,
+    BringWindowToTop, EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowRect,
     GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
-    SetWindowPos, ShowWindow, GA_ROOT, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE,
+    SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE,
 };
 
 use crate::app::PixelRect;

@@ -186,7 +186,11 @@ pub fn score(
             .map(|k| k.rect)
             .collect();
         namesakes.sort_by_key(|(x, y, _, _)| (*y, *x));
-        let nth = namesakes.iter().position(|r| *r == control.rect).unwrap_or(0) as u32 + 1;
+        let nth = namesakes
+            .iter()
+            .position(|r| *r == control.rect)
+            .unwrap_or(0) as u32
+            + 1;
         let covered = targets.iter().any(|p| contains(control.rect, *p));
         let (point, outcome) = if control.name.is_empty() {
             (None, Outcome::Unnamed)
@@ -267,9 +271,13 @@ mod tests {
     #[test]
     fn a_repeated_name_is_asked_for_by_its_place_among_namesakes() {
         let key = vec![gt("Start", (0, 50, 10, 10)), gt("Start", (0, 0, 10, 10))];
-        let report = score("clock", &key, &[], |_, nth, _| Some((5, 5 + 50 * (nth as i32 - 1))));
+        let report = score("clock", &key, &[], |_, nth, _| {
+            Some((5, 5 + 50 * (nth as i32 - 1)))
+        });
         assert_eq!(report.hits, 2, "the lower Start is the 2nd: {report:?}");
-        let report = score("clock", &key, &[], |_, nth, _| Some((5, 55 - 50 * (nth as i32 - 1))));
+        let report = score("clock", &key, &[], |_, nth, _| {
+            Some((5, 55 - 50 * (nth as i32 - 1)))
+        });
         assert_eq!(report.hits, 0, "the other way round, both miss: {report:?}");
     }
 

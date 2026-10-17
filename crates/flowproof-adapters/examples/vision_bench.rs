@@ -62,7 +62,9 @@ fn main() {
             }
             if let Ok(Some(frame)) = driver.capture() {
                 let text: Vec<_> = offered.iter().map(|t| t.rect).collect();
-                for (symbol, rect) in flowproof_adapters::vision_elements::find_symbols(&frame, &text) {
+                for (symbol, rect) in
+                    flowproof_adapters::vision_elements::find_symbols(&frame, &text)
+                {
                     eprintln!("    drawn {symbol:?} at {rect:?}");
                 }
                 let path = std::env::temp_dir().join("vision_bench_frame.png");
@@ -96,7 +98,8 @@ fn main() {
                     case.name,
                     case.rect,
                     if case.covered { " (covered)" } else { "" },
-                    case.point.map_or(String::new(), |p| format!(" -> clicked {p:?}"))
+                    case.point
+                        .map_or(String::new(), |p| format!(" -> clicked {p:?}"))
                 );
             }
         }
@@ -111,7 +114,13 @@ fn main() {
             a.4 + r.wrong_control,
         )
     });
-    let pct = |n: usize, d: usize| if d == 0 { 0.0 } else { 100.0 * n as f64 / d as f64 };
+    let pct = |n: usize, d: usize| {
+        if d == 0 {
+            0.0
+        } else {
+            100.0 * n as f64 / d as f64
+        }
+    };
     eprintln!(
         "TOTAL: coverage {covered}/{controls} ({:.0}%), name accuracy {hits}/{named} ({:.0}%), wrong clicks {wrong}",
         pct(covered, controls),

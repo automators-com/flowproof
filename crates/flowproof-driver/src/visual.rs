@@ -203,8 +203,14 @@ mod tests {
         assert_eq!(scale, 1.0, "an XGA window is shown as it is");
         let (png, scale) = model_png(&img(2560, 1440, [255; 4])).expect("png");
         let shown = image::load_from_memory(&png).expect("decodes");
-        assert!(shown.width() <= 1568 && u64::from(shown.width()) * u64::from(shown.height()) <= 1_150_000);
-        assert!((scale - f64::from(shown.width()) / 2560.0).abs() < 0.01, "{scale}");
+        assert!(
+            shown.width() <= 1568
+                && u64::from(shown.width()) * u64::from(shown.height()) <= 1_150_000
+        );
+        assert!(
+            (scale - f64::from(shown.width()) / 2560.0).abs() < 0.01,
+            "{scale}"
+        );
     }
 
     #[test]
