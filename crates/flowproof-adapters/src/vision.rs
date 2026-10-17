@@ -84,6 +84,11 @@ struct OcrHit {
     /// than its own top edge, which wobbles by a pixel or two across a
     /// line of mixed-height glyphs.
     order: (i32, i32),
+    /// The box is the CONTROL itself - found in the accessibility tree -
+    /// not text standing for it. A label's relation (`right_of`, `below`)
+    /// says where its field is from the label; a control needs no such
+    /// guess, and an action lands inside it whatever the relation.
+    control: bool,
 }
 
 impl OcrHit {
@@ -93,9 +98,18 @@ impl OcrHit {
     }
 }
 
+/// An element vision can address on the current frame, and where a click
+/// on it lands - both window-relative.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisionTarget {
+    pub text: String,
+    pub rect: PixelRect,
+    pub point: (i32, i32),
+}
+
 /// The smallest box containing both, used to join a run of adjacent words
 /// into one clickable anchor.
-fn union(a: PixelRect, b: PixelRect) -> PixelRect {
+pub(crate) fn union(a: PixelRect, b: PixelRect) -> PixelRect {
     let (ax, ay, aw, ah) = a;
     let (bx, by, bw, bh) = b;
     let left = ax.min(bx);
@@ -126,8 +140,25 @@ pub trait OcrEngine {
     }
 }
 
+/// A control the window's accessibility tree names, window-relative.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibleControl {
+    pub name: String,
+    pub control_type: String,
+    pub rect: PixelRect,
+}
+
 /// The pixels-only view of an app: frames in, coordinates out.
 pub trait VisionScreen {
+    /// The named, interactive controls the attached window's accessibility
+    /// tree reports, window-relative: a second source of elements beside
+    /// OCR, as Microsoft's UFO2 agent fuses UIA with vision on Windows. An
+    /// icon-only button has no text for OCR, but has a name. Empty for a
+    /// screen with no tree - over Citrix or RDP the client reports one
+    /// opaque pane, and vision stays pixels-only there.
+    fn accessible_controls(&mut self) -> Result<Vec<AccessibleControl>, DriverError> {
+        Ok(Vec::new())
+    }
     /// Attach to the window whose title contains `window` (bring it to the
     /// foreground). Called by `launch`.
     fn attach(&mut self, window: &str, timeout: Duration) -> Result<(), DriverError>;
@@ -144,6 +175,25 @@ pub trait VisionScreen {
     fn type_text(&mut self, text: &str) -> Result<(), DriverError>;
     /// Press a key chord (canonical key names, e.g. `Enter`, `F5`, `a`).
     fn press_key(&mut self, key: &str, modifiers: &[KeyMod]) -> Result<(), DriverError>;
+    /// Wait, bounded, for the window to stop changing: an action's effect
+    /// - a menu fading in, a page loading, a mode switch redrawing the
+    /// keypad - takes frames to finish, and a target read mid-way is read
+    /// wrong or not at all. Anthropic's reference computer-use loop waits
+    /// after every action for the same reason. A screen that never changes
+    /// on its own need not wait.
+    fn settle(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    /// Move the pointer onto window-relative coordinates, pressing nothing:
+    /// what opens a tooltip or a hover menu.
+    fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), DriverError> {
+        Err(DriverError::Uia("vision: this screen cannot move the pointer".into()))
+    }
+    /// Press the left button at `from`, move to `to` in steps an app sees as
+    /// a drag, release there.
+    fn drag(&mut self, _from: (i32, i32), _to: (i32, i32)) -> Result<(), DriverError> {
+        Err(DriverError::Uia("vision: this screen cannot drag".into()))
+    }
     /// Turn the mouse wheel over the window by `notches` (negative scrolls
     /// the view down) and let the frame settle.
     fn scroll(&mut self, notches: i32) -> Result<(), DriverError>;
@@ -208,6 +258,10 @@ pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     /// The last frame read and its reading, at screen size and each closer
     /// scale.
     read_cache: [Option<(RgbaImage, Vec<OcrLine>)>; 1 + CLOSER_SCALES.len()],
+    /// The accessible controls read with the last frame, for as long as
+    /// that frame is what the screen shows: a tree walk costs more than a
+    /// look, and one step looks several times.
+    controls_cache: Option<(RgbaImage, Vec<AccessibleControl>)>,
 }
 
 impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
@@ -218,6 +272,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             typed_baseline: None,
             frame_height: 0,
             read_cache: [None, None, None],
+            controls_cache: None,
         }
     }
 
@@ -372,9 +427,14 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         selector: &UiaSelector,
         default_relation: &str,
     ) -> Result<(OcrHit, (i32, i32)), DriverError> {
+        self.screen.settle()?;
         let mut hit = self.require(selector)?;
         let mut point = Self::action_point(&hit, selector, default_relation);
         for _ in 0..2 {
+            // A control's box is the tree's, already inside the window.
+            if hit.control {
+                break;
+            }
             let line = hit.rect.3 as i32;
             // Two lines clear of the bottom edge, not one: live, a Coupon Code
             // box just inside the edge took its value but showed it half cut
@@ -396,6 +456,10 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             hit = self.require(selector)?;
             point = Self::action_point(&hit, selector, default_relation);
         }
+        if let Some(field) = self.drawn_field(&hit, selector, default_relation)? {
+            vision_log(|| format!("[{selector}] field drawn at {field:?} - acting inside it"));
+            point = (field.0 + field.2 as i32 / 2, field.1 + field.3 as i32 / 2);
+        }
         vision_log(|| {
             format!(
                 "[{selector}] matched '{}' at {:?}; acting {} at {point:?}",
@@ -405,6 +469,28 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             )
         });
         Ok((hit, point))
+    }
+
+    /// The input box a label's field is drawn in, when the action lands
+    /// beside or below a label: the offset from the label is a guess about
+    /// the layout, and a box drawn there is not. A form with a wide gap
+    /// between label and field, or a tall multi-line field, put the guessed
+    /// point in the gap. `None` - and the guess stands - when the hit is a
+    /// control already, the relation is `inside`, or nothing is drawn there.
+    fn drawn_field(
+        &mut self,
+        hit: &OcrHit,
+        selector: &UiaSelector,
+        default_relation: &str,
+    ) -> Result<Option<PixelRect>, DriverError> {
+        let relation = selector.relation.as_deref().unwrap_or(default_relation);
+        if hit.control || !matches!(relation, "right_of" | "below") {
+            return Ok(None);
+        }
+        let frame = self.screen.frame()?;
+        let text: Vec<PixelRect> = self.read(&frame, 1)?.iter().map(|l| l.rect).collect();
+        let elements = crate::vision_elements::detect(&frame, &text);
+        Ok(crate::vision_elements::field_box(&elements, hit.rect, relation))
     }
 
     /// Match a text anchor over BOTH granularities, strongest first:
@@ -439,6 +525,11 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// size and read the Keep-on-top icon beside "Standard" as `5`; the
     /// click put Calculator in compact mode. A dense keypad whose row reads
     /// as one line still resolves by word, after.
+    ///
+    /// Between the screen-size reading and the closer ones, the window's
+    /// accessibility tree is asked (see [`VisionScreen::accessible_controls`]):
+    /// a closer look is where OCR misreads - an icon as `5` - and a name the
+    /// tree reports is not a guess.
     fn look(
         &mut self,
         selector: &UiaSelector,
@@ -446,29 +537,130 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let frame = self.screen.frame()?;
         self.frame_height = frame.height();
         let lines = self.read(&frame, 1)?;
-        let scales = std::iter::once(1).chain(CLOSER_SCALES);
         let short = selector
             .name
             .as_deref()
             .is_some_and(|name| name.trim().chars().count() <= 2);
-        let passes: &[bool] = if short { &[true, false] } else { &[false] };
-        for &whole_lines in passes {
-            for scale in scales.clone() {
-                let mut reading = self.read(&frame, scale)?;
-                if whole_lines {
-                    reading.iter_mut().for_each(|line| line.words.clear());
-                }
-                if let Some(hit) = Self::resolve_in(&reading, selector) {
-                    if scale > 1 {
-                        vision_log(|| {
-                            format!("[{selector}] found only at {scale}x: '{}'", hit.text)
-                        });
-                    }
+        // (scale, whole lines only) per OCR look; `None` asks the tree.
+        let [near, nearer] = CLOSER_SCALES;
+        let attempts: &[Option<(u32, bool)>] = if short {
+            &[
+                Some((1, true)),
+                None,
+                Some((near, true)),
+                Some((nearer, true)),
+                Some((1, false)),
+                Some((near, false)),
+                Some((nearer, false)),
+            ]
+        } else {
+            &[
+                Some((1, false)),
+                None,
+                Some((near, false)),
+                Some((nearer, false)),
+            ]
+        };
+        for attempt in attempts {
+            let Some((scale, whole_lines)) = *attempt else {
+                let controls = self.controls_for(&frame)?;
+                if let Some(hit) = Self::resolve_accessible(&controls, selector) {
+                    vision_log(|| {
+                        format!(
+                            "[{selector}] not read by OCR; the accessibility tree names '{}'",
+                            hit.text
+                        )
+                    });
                     return Ok((lines, Some(hit)));
                 }
+                continue;
+            };
+            let mut reading = self.read(&frame, scale)?;
+            if whole_lines {
+                reading.iter_mut().for_each(|line| line.words.clear());
+            }
+            if let Some(hit) = Self::resolve_in(&reading, selector) {
+                if scale > 1 {
+                    vision_log(|| format!("[{selector}] found only at {scale}x: '{}'", hit.text));
+                }
+                return Ok((lines, Some(hit)));
             }
         }
         Ok((lines, None))
+    }
+
+    /// The accessible controls of the window as `frame` shows it, inside it
+    /// and below its caption buttons.
+    fn controls_for(&mut self, frame: &RgbaImage) -> Result<Vec<AccessibleControl>, DriverError> {
+        if let Some((cached, controls)) = &self.controls_cache {
+            if cached == frame {
+                return Ok(controls.clone());
+            }
+        }
+        let (w, h) = (frame.width() as i32, frame.height() as i32);
+        let controls: Vec<AccessibleControl> = self
+            .screen
+            .accessible_controls()?
+            .into_iter()
+            .filter(|c| {
+                let (x, y, cw, ch) = c.rect;
+                let (cx, cy) = (x + cw as i32 / 2, y + ch as i32 / 2);
+                !c.name.trim().is_empty() && cx >= 0 && cy >= 0 && cx < w && cy < h
+            })
+            .collect();
+        self.controls_cache = Some((frame.clone(), controls.clone()));
+        Ok(controls)
+    }
+
+    /// A control the anchor names: its accessible name exactly, ignoring
+    /// case and punctuation at word edges; then by the name a key is SPOKEN
+    /// by - Calculator names its `=` key `Equals` and its `7` `Seven`, and an
+    /// author writes what the key shows; then a name the anchor begins on a
+    /// word boundary (`Save` for `Save as`), for three characters or more.
+    /// `nth` counts top-to-bottom, left-to-right, as for text.
+    fn resolve_accessible(
+        controls: &[AccessibleControl],
+        selector: &UiaSelector,
+    ) -> Option<OcrHit> {
+        let needle = selector.name.as_deref().map(str::trim)?;
+        let nth = selector.nth.unwrap_or(1).max(1) as usize;
+        let norm = |text: &str| {
+            text.split_whitespace()
+                .map(|w| {
+                    w.trim_matches(|c: char| c.is_ascii_punctuation() && !"+=-*/%.".contains(c))
+                })
+                .filter(|w| !w.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let wanted = norm(needle);
+        let spoken = spoken_key_name(needle);
+        let exact = |name: &str| !wanted.is_empty() && name == wanted;
+        let said = |name: &str| spoken.is_some_and(|s| name == s);
+        let begun = |name: &str| {
+            wanted.chars().count() >= 3
+                && name.starts_with(&wanted)
+                && name[wanted.len()..].starts_with(' ')
+        };
+        let tiers: [&dyn Fn(&str) -> bool; 3] = [&exact, &said, &begun];
+        for matches in tiers {
+            let mut hits: Vec<OcrHit> = controls
+                .iter()
+                .filter(|c| matches(&norm(&c.name)))
+                .map(|c| OcrHit {
+                    text: c.name.clone(),
+                    rect: c.rect,
+                    order: (c.rect.1, c.rect.0),
+                    control: true,
+                })
+                .collect();
+            hits.sort_by_key(|h| h.order);
+            if let Some(hit) = hits.into_iter().nth(nth - 1) {
+                return Some(hit);
+            }
+        }
+        None
     }
 
     fn resolve_in(lines: &[OcrLine], selector: &UiaSelector) -> Option<OcrHit> {
@@ -683,6 +875,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 text: l.text.clone(),
                 rect: l.rect,
                 order: (l.rect.1, l.rect.0),
+                control: false,
             })
             .collect()
     }
@@ -717,6 +910,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                     // on one visual row sort left to right among
                     // themselves regardless of glyph height.
                     order: (line.rect.1, rect.0),
+                    control: false,
                 });
             }
         }
@@ -737,6 +931,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 text: l.text.clone(),
                 rect: l.rect,
                 order: (l.rect.1, l.rect.0),
+                control: false,
             })
             .collect()
     }
@@ -762,9 +957,66 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         })
     }
 
+    /// Everything on the current frame an anchor could address - each OCR
+    /// line and each word of a line with more than one - and the point a
+    /// click on it would land, window-relative. What the grounding
+    /// benchmark scores; it reads the screen and touches nothing.
+    pub fn targets(&mut self) -> Result<Vec<VisionTarget>, DriverError> {
+        let target = |text: &str, rect: PixelRect| {
+            let (x, y, w, h) = rect;
+            VisionTarget {
+                text: text.trim().to_string(),
+                rect,
+                point: (x + w as i32 / 2, y + h as i32 / 2),
+            }
+        };
+        let mut targets = Vec::new();
+        let frame = self.screen.frame()?;
+        self.frame_height = frame.height();
+        for line in self.read(&frame, 1)? {
+            if line.text.trim().is_empty() {
+                continue;
+            }
+            targets.push(target(&line.text, line.rect));
+            if line.words.len() > 1 {
+                targets.extend(line.words.iter().map(|w| target(&w.text, w.rect)));
+            }
+        }
+        for control in self.controls_for(&frame)? {
+            targets.push(target(&control.name, control.rect));
+        }
+        Ok(targets)
+    }
+
+    /// Where `Click the nth "<name>"` would land on the current frame, window-
+    /// relative, without scrolling or clicking - `None` when nothing
+    /// matches. The same resolution an action takes, minus the search.
+    pub fn locate_point(
+        &mut self,
+        name: &str,
+        nth: u32,
+    ) -> Result<Option<(i32, i32)>, DriverError> {
+        let selector = UiaSelector {
+            name: Some(name.to_string()),
+            nth: (nth > 1).then_some(nth),
+            ..UiaSelector::default()
+        };
+        Ok(self
+            .resolve(&selector)?
+            .map(|hit| Self::action_point(&hit, &selector, "inside")))
+    }
+
+    /// Screen origin of the attached window.
+    pub fn window_origin(&mut self) -> Result<(i32, i32), DriverError> {
+        self.screen.window_origin()
+    }
+
     /// The action point for a matched anchor, honoring the selector's
     /// spatial relation (`default_relation` when the trace predates it).
     fn action_point(hit: &OcrHit, selector: &UiaSelector, default_relation: &str) -> (i32, i32) {
+        if hit.control {
+            return hit.center();
+        }
         let relation = selector.relation.as_deref().unwrap_or(default_relation);
         let (x, y, w, h) = hit.rect;
         match relation {
@@ -963,6 +1215,25 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         self.screen.right_click(x, y)
     }
 
+    /// The pointer onto the matched text, nothing pressed - a tooltip, a
+    /// menu that opens on hover. Computer-use agents have `mouse_move` for
+    /// exactly this; vision refused it.
+    fn hover(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
+        let (_, (x, y)) = self.locate(selector, "inside")?;
+        self.screen.move_to(x, y)
+    }
+
+    /// Press on one anchor, release on the other: a file onto a folder, a
+    /// card onto a column, a slider's thumb along its track. Both are found
+    /// before the button goes down, so a target that is not there fails
+    /// the step without leaving anything half-dragged.
+    fn drag(&mut self, from: &UiaSelector, to: &UiaSelector) -> Result<(), DriverError> {
+        let (_, start) = self.locate(from, "inside")?;
+        let (_, end) = self.locate(to, "inside")?;
+        vision_log(|| format!("dragging from {start:?} to {end:?}"));
+        self.screen.drag(start, end)
+    }
+
     fn scroll(&mut self, selector: Option<&UiaSelector>, to: ScrollTo) -> Result<(), DriverError> {
         match (selector, to) {
             (Some(selector), ScrollTo::IntoView) => self.require(selector).map(|_| ()),
@@ -1022,7 +1293,10 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // as a `text:` TARGET TOKEN — the same neutral contract as every
         // other provenance; the agent needs no vision-specific handling.
         let mut entries: Vec<serde_json::Value> = Vec::new();
-        for line in self.lines()? {
+        let frame = self.screen.frame()?;
+        self.frame_height = frame.height();
+        let lines = self.read(&frame, 1)?;
+        for line in &lines {
             if entries.len() >= 100 {
                 break;
             }
@@ -1034,6 +1308,39 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
                 "target": format!("text:{text}"),
                 "text": text,
                 "rect": [line.rect.0, line.rect.1, line.rect.2, line.rect.3],
+            }));
+        }
+        // What OCR did not read but the accessibility tree names - an icon
+        // button, a key drawn as a symbol - offered by that name, which is
+        // what resolution falls back to. A control whose name OCR already
+        // read inside it is listed once, as the text.
+        let read_inside = |c: &AccessibleControl| {
+            let name = c.name.trim().to_lowercase();
+            lines.iter().any(|l| {
+                let (x, y, w, h) = l.rect;
+                let (cx, cy, cw, ch) = c.rect;
+                let (mx, my) = (x + w as i32 / 2, y + h as i32 / 2);
+                l.text.trim().to_lowercase() == name
+                    && mx >= cx
+                    && my >= cy
+                    && mx < cx + cw as i32
+                    && my < cy + ch as i32
+            })
+        };
+        for control in self.controls_for(&frame)? {
+            if entries.len() >= 150 {
+                break;
+            }
+            if read_inside(&control) {
+                continue;
+            }
+            let (x, y, w, h) = control.rect;
+            entries.push(serde_json::json!({
+                "target": format!("text:{}", control.name.trim()),
+                "text": control.name.trim(),
+                "rect": [x, y, w, h],
+                "control_type": control.control_type,
+                "source": "accessibility",
             }));
         }
         serde_json::to_string(&entries)
@@ -1214,6 +1521,48 @@ fn corner_bounds(points: impl Iterator<Item = (f32, f32)>) -> PixelRect {
 /// and only at 3x - read as `I` - in another a few pixels narrower.
 const CLOSER_SCALES: [u32; 2] = [2, 3];
 
+/// Two captures of one window that differ in no more than a blinking
+/// caret: a 2px-wide, line-tall strip, or a few hundred pixels of a large
+/// window. A screen that holds still apart from its caret has settled; one
+/// whose caret alone kept frames from matching never would.
+fn nearly_same(a: &RgbaImage, b: &RgbaImage) -> bool {
+    if a.dimensions() != b.dimensions() {
+        return false;
+    }
+    let allowed = (a.width() as usize * a.height() as usize / 4000).max(64);
+    a.pixels().zip(b.pixels()).filter(|(p, q)| p != q).take(allowed + 1).count() <= allowed
+}
+
+/// The name a key is spoken by in an accessibility tree, for an anchor
+/// that is the glyph on the key - what Windows Calculator, and screen
+/// readers generally, call them.
+fn spoken_key_name(glyph: &str) -> Option<&'static str> {
+    Some(match glyph.trim() {
+        "0" => "zero",
+        "1" => "one",
+        "2" => "two",
+        "3" => "three",
+        "4" => "four",
+        "5" => "five",
+        "6" => "six",
+        "7" => "seven",
+        "8" => "eight",
+        "9" => "nine",
+        "+" => "plus",
+        "-" | "\u{2212}" | "\u{2013}" => "minus",
+        "*" | "x" | "X" | "\u{d7}" => "multiply by",
+        "/" | "\u{f7}" => "divide by",
+        "=" => "equals",
+        "." | "," => "decimal separator",
+        "%" => "percent",
+        "\u{b1}" | "+/-" => "positive negative",
+        "C" => "clear",
+        "CE" => "clear entry",
+        "\u{232b}" => "backspace",
+        _ => return None,
+    })
+}
+
 /// The top of a frame where a window draws its caption buttons, in
 /// physical pixels: 32px tall at 100% scaling, 48px at 150%. Windows
 /// reports no button rectangles for a UWP frame (Calculator's come back
@@ -1231,7 +1580,7 @@ const LINE_BREAK_GAPS: f32 = 2.0;
 /// single line `7 8 9 ×`, recognised as `8 9X` - the `7` lost across the
 /// gaps and the `8` reachable only as part of a phrase. Recognised apart,
 /// each button is a line of its own, the way a person reads it.
-fn split_at_gaps(boxes: &[PixelRect]) -> Vec<std::ops::Range<usize>> {
+pub(crate) fn split_at_gaps(boxes: &[PixelRect]) -> Vec<std::ops::Range<usize>> {
     let mut runs = Vec::new();
     let mut start = 0;
     for i in 1..boxes.len() {
@@ -1377,7 +1726,7 @@ pub mod native {
     use flowproof_driver::{DriverError, Input, InputEvent, KeyMod, MouseButton, PlatformBackend};
     use image::RgbaImage;
 
-    use super::{vision_log, VisionScreen};
+    use super::{vision_log, AccessibleControl, VisionScreen};
 
     // Key mapping lives in the driver crate (`virtual_key`,
     // `modifier_virtual_key`) — one table for every SendInput-based
@@ -1420,7 +1769,7 @@ pub mod native {
                     )
                 });
                 window.focus()?;
-                Self::settle(window)?;
+                Self::settle_window(window)?;
             }
             self.window()
         }
@@ -1432,7 +1781,7 @@ pub mod native {
         /// in front of it. Two identical captures 100ms apart mean the
         /// switch is over; bounded, because a window with an animation of
         /// its own never holds still.
-        fn settle(window: &mut WindowInfo) -> Result<(), DriverError> {
+        fn settle_window(window: &mut WindowInfo) -> Result<(), DriverError> {
             let grab = |window: &mut WindowInfo| -> Result<RgbaImage, DriverError> {
                 let (x, y, w, h) = window.refresh_rect()?;
                 flowproof_driver::gdi::capture_region(x, y, w as i32, h as i32)
@@ -1442,7 +1791,7 @@ pub mod native {
             while Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(100));
                 let next = grab(window)?;
-                if next == last {
+                if super::nearly_same(&next, &last) {
                     return Ok(());
                 }
                 last = next;
@@ -1500,7 +1849,7 @@ pub mod native {
             loop {
                 if let Some(mut info) = find_window(window)? {
                     info.focus()?;
-                    Self::settle(&mut info)?;
+                    Self::settle_window(&mut info)?;
                     self.window = Some(info);
                     return Ok(());
                 }
@@ -1576,6 +1925,55 @@ pub mod native {
             Ok(())
         }
 
+        fn settle(&mut self) -> Result<(), DriverError> {
+            Self::settle_window(self.front()?)
+        }
+
+        fn move_to(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
+            let (wx, wy, _, _) = self.front()?.refresh_rect()?;
+            self.inject(InputEvent::MouseMove {
+                x: wx + x,
+                y: wy + y,
+            })?;
+            // Long enough for a tooltip or a hover menu to open.
+            std::thread::sleep(Duration::from_millis(600));
+            Ok(())
+        }
+
+        /// A drag an app recognises as one: Windows starts a drag only once
+        /// the pointer has moved a few pixels with the button down
+        /// (SM_CXDRAG), and drop targets track the pointer as it moves, so
+        /// the path is walked in steps rather than jumped.
+        fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), DriverError> {
+            let (wx, wy, _, _) = self.front()?.refresh_rect()?;
+            let at = |(x, y): (i32, i32)| InputEvent::MouseMove {
+                x: wx + x,
+                y: wy + y,
+            };
+            self.inject(at(from))?;
+            std::thread::sleep(Duration::from_millis(80));
+            self.inject(InputEvent::MouseDown {
+                button: MouseButton::Left,
+            })?;
+            std::thread::sleep(Duration::from_millis(120));
+            const STEPS: i32 = 16;
+            for i in 1..=STEPS {
+                let point = (
+                    from.0 + (to.0 - from.0) * i / STEPS,
+                    from.1 + (to.1 - from.1) * i / STEPS,
+                );
+                self.inject(at(point))?;
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            // Let the target see the pointer settle over it before the drop.
+            std::thread::sleep(Duration::from_millis(150));
+            self.inject(InputEvent::MouseUp {
+                button: MouseButton::Left,
+            })?;
+            std::thread::sleep(Duration::from_millis(200));
+            Ok(())
+        }
+
         fn scroll(&mut self, notches: i32) -> Result<(), DriverError> {
             // The wheel goes to whatever is under the cursor, so park it
             // mid-window first: over the content, not the title bar.
@@ -1590,6 +1988,30 @@ pub mod native {
             // remote display adds its own repaint latency on top.
             std::thread::sleep(Duration::from_millis(400));
             Ok(())
+        }
+
+        /// `FLOWPROOF_VISION_UIA=0` keeps vision to pixels alone, as it is
+        /// over a remote session anyway - to measure what the tree adds, or
+        /// to prove a flow does not lean on it.
+        fn accessible_controls(&mut self) -> Result<Vec<AccessibleControl>, DriverError> {
+            if std::env::var("FLOWPROOF_VISION_UIA").is_ok_and(|v| v == "0") {
+                return Ok(Vec::new());
+            }
+            let window = self.front()?;
+            let (wx, wy, _, _) = window.refresh_rect()?;
+            // A tree that cannot be read is no tree: pixels still work.
+            let Ok(controls) = flowproof_driver::uia_scan::window_controls(window.hwnd()) else {
+                return Ok(Vec::new());
+            };
+            Ok(controls
+                .into_iter()
+                .filter(|c| c.is_interactive() && c.enabled && !c.name.is_empty())
+                .map(|c| AccessibleControl {
+                    name: c.name,
+                    control_type: c.control_type,
+                    rect: (c.rect.0 - wx, c.rect.1 - wy, c.rect.2, c.rect.3),
+                })
+                .collect())
         }
 
         fn blink_gap(&self) -> Duration {
@@ -1611,17 +2033,77 @@ pub mod native {
     }
 }
 
+/// The production OCR: Windows' own engine where it is available, `ocrs`
+/// otherwise. `FLOWPROOF_VISION_OCR=ocrs` or `=windows` pins one - the
+/// second an error when Windows cannot read the profile's languages.
+pub enum AutoOcr {
+    #[cfg(windows)]
+    Windows(crate::vision_winocr::WindowsOcr),
+    Ocrs(OcrsEngine),
+}
+
+impl AutoOcr {
+    pub fn new() -> Result<Self, DriverError> {
+        let wanted = std::env::var("FLOWPROOF_VISION_OCR").unwrap_or_default();
+        #[cfg(windows)]
+        if wanted != "ocrs" {
+            match crate::vision_winocr::WindowsOcr::new() {
+                Ok(engine) => return Ok(Self::Windows(engine)),
+                Err(e) if wanted == "windows" => return Err(e),
+                Err(e) => vision_log(|| format!("{e} - reading with ocrs instead")),
+            }
+        }
+        #[cfg(not(windows))]
+        if wanted == "windows" {
+            return Err(DriverError::Uia(
+                "vision: FLOWPROOF_VISION_OCR=windows needs Windows".into(),
+            ));
+        }
+        Ok(Self::Ocrs(OcrsEngine::new()?))
+    }
+
+    /// Which engine reads: `windows` or `ocrs`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(_) => "windows",
+            Self::Ocrs(_) => "ocrs",
+        }
+    }
+}
+
+impl OcrEngine for AutoOcr {
+    fn recognize(&mut self, frame: &RgbaImage) -> Result<Vec<OcrLine>, DriverError> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(e) => e.recognize(frame),
+            Self::Ocrs(e) => e.recognize(frame),
+        }
+    }
+
+    fn recognize_closer(
+        &mut self,
+        frame: &RgbaImage,
+        scale: u32,
+    ) -> Result<Vec<OcrLine>, DriverError> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(e) => e.recognize_closer(frame, scale),
+            Self::Ocrs(e) => e.recognize_closer(frame, scale),
+        }
+    }
+}
+
 #[cfg(windows)]
-impl VisionAppDriver<native::NativeScreen, OcrsEngine> {
-    /// The production driver: GDI + SendInput + ocrs.
+impl VisionAppDriver<native::NativeScreen, AutoOcr> {
+    /// The production driver: GDI + SendInput + [`AutoOcr`].
     pub fn new() -> Result<Self, DriverError> {
         // Before any window rectangle or capture: at display scaling, an
         // unaware process gets scaled rectangles and physical captures.
         flowproof_driver::gdi::ensure_dpi_aware();
-        Ok(Self::with_parts(
-            native::NativeScreen::new(),
-            OcrsEngine::new()?,
-        ))
+        let ocr = AutoOcr::new()?;
+        vision_log(|| format!("reading with {} OCR", ocr.name()));
+        Ok(Self::with_parts(native::NativeScreen::new(), ocr))
     }
 }
 
@@ -1655,6 +2137,10 @@ pub mod fake {
         pub blink_frame: Option<RgbaImage>,
         pub blink_on: bool,
         pub right_clicks: Vec<(i32, i32)>,
+        /// What the accessibility tree reports, window-relative.
+        pub controls: Vec<AccessibleControl>,
+        pub hovers: Vec<(i32, i32)>,
+        pub drags: Vec<((i32, i32), (i32, i32))>,
     }
 
     impl FakeScreen {
@@ -1736,6 +2222,20 @@ pub mod fake {
         fn screen_size(&mut self) -> Result<(u32, u32), DriverError> {
             Ok((1920, 1080))
         }
+
+        fn accessible_controls(&mut self) -> Result<Vec<AccessibleControl>, DriverError> {
+            Ok(self.controls.clone())
+        }
+
+        fn move_to(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
+            self.hovers.push((x, y));
+            Ok(())
+        }
+
+        fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), DriverError> {
+            self.drags.push((from, to));
+            Ok(())
+        }
     }
 
     /// Scripted OCR: returns a fixed line set per frame content hash — or
@@ -1788,6 +2288,107 @@ mod tests {
             name: Some(text.into()),
             ..UiaSelector::default()
         }
+    }
+
+    fn control(name: &str, rect: PixelRect) -> AccessibleControl {
+        AccessibleControl {
+            name: name.into(),
+            control_type: "Button".into(),
+            rect,
+        }
+    }
+
+    /// Calculator draws `=` as strokes OCR never reads, and names the key
+    /// `Equals`; an icon-only toolbar button has no text at all. Where the
+    /// window has an accessibility tree, the name it reports is found when
+    /// OCR finds nothing.
+    #[test]
+    fn a_key_ocr_cannot_read_is_found_by_the_name_the_tree_gives_it() {
+        let mut d = driver();
+        d.screen.controls = vec![
+            control("Equals", (300, 150, 60, 40)),
+            control("Settings", (360, 0, 30, 30)),
+        ];
+        d.invoke(&anchor("=")).expect("found as Equals");
+        d.invoke(&anchor("settings")).expect("found by name, any case");
+        assert_eq!(d.screen.clicks, vec![(330, 170), (375, 15)]);
+        assert_eq!(d.screen.scrolls, Vec::<i32>::new(), "no search: it is on screen");
+    }
+
+    #[test]
+    fn drag_presses_on_one_anchor_and_releases_on_the_other_and_hover_presses_nothing() {
+        let mut d = driver();
+        d.drag(&anchor("Sign in"), &anchor("Password")).expect("drags");
+        d.hover(&anchor("User name")).expect("hovers");
+        assert_eq!(d.screen.drags, vec![((55, 110), (60, 68))]);
+        assert_eq!(d.screen.hovers, vec![(65, 28)]);
+        assert!(d.screen.clicks.is_empty());
+        // A drop target that is not there fails before the button goes down.
+        assert!(d.drag(&anchor("Sign in"), &anchor("Nowhere")).is_err());
+        assert_eq!(d.screen.drags.len(), 1);
+    }
+
+    #[test]
+    fn text_on_screen_is_found_before_the_tree_is_asked() {
+        let mut d = driver();
+        // A control of the same name elsewhere must not win over the text.
+        d.screen.controls = vec![control("Sign in", (300, 150, 60, 40))];
+        d.invoke(&anchor("Sign in")).expect("clicks");
+        assert_eq!(d.screen.clicks, vec![(55, 110)]);
+    }
+
+    /// A control is the field itself: typing into an edit box the tree
+    /// names lands inside it, not a label-height to its right.
+    #[test]
+    fn typing_into_a_named_control_lands_inside_it() {
+        let mut d = driver();
+        d.screen.controls = vec![AccessibleControl {
+            name: "Search".into(),
+            control_type: "Edit".into(),
+            rect: (100, 160, 200, 30),
+        }];
+        d.type_text(&anchor("Search"), "cats").expect("types");
+        assert_eq!(d.screen.clicks, vec![(200, 175)]);
+    }
+
+    /// The tree's controls are offered to the authoring model by name - but
+    /// a button whose caption OCR already read is listed once, as text.
+    #[test]
+    fn the_scene_offers_what_only_the_tree_names() {
+        let mut d = driver();
+        d.screen.controls = vec![
+            control("Sign in", (10, 95, 100, 30)),
+            control("Back", (360, 60, 30, 30)),
+        ];
+        let scene = d.scene().expect("scene").expect("some");
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&scene).expect("json");
+        let targets: Vec<&str> = entries.iter().filter_map(|e| e["target"].as_str()).collect();
+        assert_eq!(targets.iter().filter(|t| **t == "text:Sign in").count(), 1);
+        assert!(targets.contains(&"text:Back"), "{targets:?}");
+    }
+
+    /// A label with its field drawn well to the right: the click lands in
+    /// the drawn box, not a label-height past the label's end, in the gap.
+    #[test]
+    fn typing_beside_a_label_lands_in_the_box_drawn_there() {
+        let mut frame = blank_frame();
+        let grey = image::Rgba([140, 140, 140, 255]);
+        let (x0, y0, w, h) = (220u32, 14u32, 160u32, 28u32);
+        for x in x0..x0 + w {
+            frame.put_pixel(x, y0, grey);
+            frame.put_pixel(x, y0 + h - 1, grey);
+        }
+        for y in y0..y0 + h {
+            frame.put_pixel(x0, y, grey);
+            frame.put_pixel(x0 + w - 1, y, grey);
+        }
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![frame]),
+            FakeOcr::with_lines(login_lines()),
+        );
+        d.type_text(&anchor("User name"), "ada").expect("types");
+        let (cx, cy) = d.screen.clicks[0];
+        assert!((290..=310).contains(&cx) && (24..=32).contains(&cy), "{cx},{cy}");
     }
 
     #[test]

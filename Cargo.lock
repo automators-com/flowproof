@@ -951,6 +951,7 @@ dependencies = [
 name = "flowproof-agent"
 version = "0.23.22"
 dependencies = [
+ "base64",
  "chrono",
  "flowproof-driver",
  "flowproof-trace",

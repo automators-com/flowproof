@@ -122,6 +122,48 @@ pub fn load_baseline(dir: &Path, name: &str) -> Result<image::RgbaImage, String>
     Ok(img.to_rgba8())
 }
 
+/// Longest edge, and pixel count, of a screenshot a model is shown. Past
+/// either the provider downscales it anyway - Anthropic documents 1568px
+/// and about 1.15 megapixels - and a click it then grounds lands where the
+/// shrunken image put it, not where the screen does.
+const MODEL_LONG_EDGE: f64 = 1568.0;
+const MODEL_PIXELS: f64 = 1_150_000.0;
+
+/// A frame as PNG for a model to look at, shrunk to fit what the model
+/// reads at full detail, and the factor it was shrunk by (1.0 when it fit):
+/// a point in the image times the factor's inverse is the frame's point.
+pub fn model_png(frame: &image::RgbaImage) -> Option<(Vec<u8>, f64)> {
+    let (w, h) = (f64::from(frame.width()), f64::from(frame.height()));
+    if w < 1.0 || h < 1.0 {
+        return None;
+    }
+    let scale = (MODEL_LONG_EDGE / w.max(h))
+        .min((MODEL_PIXELS / (w * h)).sqrt())
+        .min(1.0);
+    let shrunk;
+    let image = if scale < 1.0 {
+        shrunk = image::imageops::resize(
+            frame,
+            (w * scale).round().max(1.0) as u32,
+            (h * scale).round().max(1.0) as u32,
+            image::imageops::FilterType::Triangle,
+        );
+        &shrunk
+    } else {
+        frame
+    };
+    let mut png = Vec::new();
+    image::ImageEncoder::write_image(
+        image::codecs::png::PngEncoder::new(&mut png),
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        image::ExtendedColorType::Rgba8,
+    )
+    .ok()?;
+    Some((png, scale))
+}
+
 /// Write any PNG (diff/actual artifacts), creating parent directories.
 pub fn save_png(path: &Path, img: &image::RgbaImage) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -153,6 +195,16 @@ mod tests {
 
     fn img(w: u32, h: u32, fill: [u8; 4]) -> image::RgbaImage {
         image::RgbaImage::from_pixel(w, h, image::Rgba(fill))
+    }
+
+    #[test]
+    fn a_model_screenshot_fits_the_documented_limits_and_says_by_how_much() {
+        let (_, scale) = model_png(&img(1024, 768, [255; 4])).expect("png");
+        assert_eq!(scale, 1.0, "an XGA window is shown as it is");
+        let (png, scale) = model_png(&img(2560, 1440, [255; 4])).expect("png");
+        let shown = image::load_from_memory(&png).expect("decodes");
+        assert!(shown.width() <= 1568 && u64::from(shown.width()) * u64::from(shown.height()) <= 1_150_000);
+        assert!((scale - f64::from(shown.width()) / 2560.0).abs() < 0.01, "{scale}");
     }
 
     #[test]

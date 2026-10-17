@@ -15,6 +15,8 @@ pub mod oob;
 pub mod recording;
 pub mod redact;
 pub mod surface;
+#[cfg(windows)]
+pub mod uia_scan;
 pub mod visual;
 #[cfg(windows)]
 pub mod window;

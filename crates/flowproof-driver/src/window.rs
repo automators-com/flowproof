@@ -124,6 +124,11 @@ pub fn find_window(title_contains: &str) -> Result<Option<WindowInfo>, DriverErr
 }
 
 impl WindowInfo {
+    /// The native window handle, for APIs that address a window by it (UIA).
+    pub fn hwnd(&self) -> isize {
+        self.hwnd
+    }
+
     /// Bring the window to the foreground (restoring it if minimized) so
     /// capture and injected input reach it, and confirm it got there.
     ///
