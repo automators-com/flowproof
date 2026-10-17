@@ -60,6 +60,13 @@ fn main() {
             for t in &offered {
                 eprintln!("    read '{}' at {:?}", t.text, t.rect);
             }
+            if let Ok(Some(frame)) = driver.capture() {
+                let text: Vec<_> = offered.iter().map(|t| t.rect).collect();
+                for (symbol, rect) in flowproof_adapters::vision_elements::find_symbols(&frame, &text) {
+                    eprintln!("    drawn {symbol:?} at {rect:?}");
+                }
+                let _ = frame.save("vision_bench_frame.png");
+            }
         }
         let targets: Vec<(i32, i32)> = offered
             .iter()

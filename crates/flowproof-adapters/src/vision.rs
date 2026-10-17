@@ -559,6 +559,33 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             }
             vision_log(|| format!("[{selector}] named control at {:?} is covered", hit.rect));
         }
+        // An operator key drawn only as strokes, which no OCR reads - and
+        // which OCR's look-alike folding would otherwise match to a speck:
+        // `−` matched a 5px fragment above Calculator's display, and the
+        // subtraction never happened.
+        if let Some(symbol) = selector
+            .name
+            .as_deref()
+            .and_then(crate::vision_elements::Symbol::named)
+        {
+            let text: Vec<PixelRect> = lines.iter().map(|l| l.rect).collect();
+            let nth = selector.nth.unwrap_or(1).max(1) as usize;
+            let hit = crate::vision_elements::find_symbols(&frame, &text)
+                .into_iter()
+                // Not the window's minimize button, a bar in the caption.
+                .filter(|(s, (_, y, _, _))| *s == symbol && *y >= CAPTION_BAND)
+                .nth(nth - 1)
+                .map(|(_, rect)| OcrHit {
+                    text: selector.name.clone().unwrap_or_default(),
+                    rect,
+                    order: (rect.1, rect.0),
+                    control: false,
+                });
+            if let Some(hit) = hit {
+                vision_log(|| format!("[{selector}] drawn as strokes at {:?}", hit.rect));
+                return Ok((lines, Some(hit)));
+            }
+        }
         // (scale, whole lines only) per OCR look; `None` asks the tree.
         let [near, nearer] = CLOSER_SCALES;
         let attempts: &[Option<(u32, bool)>] = if short {

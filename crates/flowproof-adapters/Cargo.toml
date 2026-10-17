@@ -94,3 +94,9 @@ workspace = true
 [[example]]
 name = "vision_bench"
 required-features = ["vision"]
+
+# One vision action per argument against a live window, for checking the
+# action half of what vision_bench scores.
+[[example]]
+name = "vision_do"
+required-features = ["vision"]
