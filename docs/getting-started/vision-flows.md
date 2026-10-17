@@ -35,9 +35,35 @@ matches what OCR reads it as (`×` as `X`, `−` as `-`, `÷` as `/`, `1` as
 target: those are its minimize, maximize and close buttons. The recorded
 trace carries `provenance: vision` text anchors with their spatial
 `relation` (`inside` for clicks, `right_of` for fields), and freeform
-steps work through the LLM author; the OCR lines are the scene. OCR
-models (pure-Rust [ocrs](https://github.com/robertknight/ocrs), ~12 MB)
-download on first use to `~/.cache/flowproof/ocrs`.
+steps work through the LLM author. The model is given the OCR lines as the
+scene, plus a screenshot of the window, so it can tell which listed
+element the step means.
+
+Two OCR engines read each frame, and their readings are merged. Windows'
+own engine (`Windows.Media.Ocr`, part of Windows 10 and 11) reads interface
+text. Pure-Rust [ocrs](https://github.com/robertknight/ocrs) reads the lone
+glyphs Windows drops, such as a keypad's digits, and also does the closer
+second looks. The ocrs models (~12 MB) download on first use to
+`~/.cache/flowproof/ocrs`. `FLOWPROOF_VISION_OCR=windows` or `=ocrs` pins
+one engine.
+
+## The accessibility tree, when there is one
+
+A window running on your own machine usually has an accessibility tree, and
+vision reads it alongside the pixels. Microsoft's UFO2 agent fuses the two
+the same way.
+
+- A control the tree names exactly is the target, so `Click "Back"` finds
+  an icon-only button, and a label that also appears as a heading elsewhere
+  resolves to the control. If another window (a popup menu, a dialog) is
+  drawn over that control, the text on screen wins instead.
+- A key matches the name it is spoken by: `=` matches `Equals`, `7`
+  matches `Seven`.
+- A field the tree names is typed into directly.
+
+A Citrix or RDP client reports one opaque pane, so over a remote session
+vision is pixels-only, as before. `FLOWPROOF_VISION_UIA=0` makes a local
+window behave the same way, which proves a flow does not lean on the tree.
 
 An action whose text is not on screen is looked for by scrolling: the
 mouse wheel turns a page at a time, down to the bottom and back up, and
@@ -65,9 +91,18 @@ of `Hello Adal`. Punctuation inside a word still counts (`$10.00` is not
   field is. A typed value that never appears on screen fails the step instead
   of passing; a value from a `${...}` reference is never read back, since a
   password field shows dots.
-- **Clicks.** Click, double-click and right-click land on the matched text.
-  A right-click in a browser also opens the browser's own menu, which takes
-  focus - add `Press Escape` after it before typing.
+- **Waiting.** Before reading a target, vision waits (up to 1.5s) for the
+  window to stop changing - a menu fading in, a page loading - so it does not
+  read a frame mid-animation. A blinking caret does not count as change.
+- **Clicks.** Click, double-click and right-click land on the matched text,
+  or inside the control when the accessibility tree named it. A field is
+  typed into inside the input box drawn beside or below its label, when one
+  is drawn there. A right-click in a browser also opens the browser's own
+  menu, which takes focus - add `Press Escape` after it before typing.
+- **Drag and hover.** A drag presses on one target and releases on the
+  other, moving in steps so the app sees it as a drag. Both targets are
+  found before the button goes down. Hover moves the pointer onto a target
+  without pressing, to open a tooltip or a hover menu.
 - **Checkboxes.** `Check` and `Uncheck` click the label and watch the box
   beside it change; a click that changes nothing visible is refused. Asking
   whether a box *is* checked is not something pixels can answer on their own.
@@ -81,12 +116,33 @@ of `Hello Adal`. Punctuation inside a word still counts (`$10.00` is not
 
 ## Keypads and symbol-only buttons
 
-OCR reads words better than lone glyphs. On Windows Calculator at its normal
-size every digit, `+` and `×` is found by clicking - `Click the "7" button` -
-but a key drawn only as strokes (`=`, `−`) is not text to OCR and is never
-found, and at large sizes OCR misreads lone digits. When the app takes
-keyboard input, type the keys instead: `Type 12*7=`, or `Type =` for the one
-key OCR cannot see. A step whose symbol target is not found says so.
+OCR reads words better than lone glyphs. A key drawn only as strokes is not
+text to OCR at all, so vision recognises the operators by their shape:
+
+- `−` is one bar
+- `=` is two bars of one width
+- `÷` is a bar between two dots
+- `+` and `×` are a square cross and a diagonal one
+
+With pixels alone, every key on Windows Calculator can be clicked:
+`Click "="`, `Click "÷"`. A symbol anchor looks for a shape before it falls
+back to OCR. OCR still misreads lone digits at large sizes. When the app
+takes keyboard input, typing the keys (`Type 12*7=`) is the surest route.
+
+## Measuring vision on your machine
+
+`scripts/vision-bench/run.ps1` opens a set of desktop apps and scores
+vision against each app's own accessibility tree. The tree is the answer
+key: for each named control, does `Click "<name>"` land inside it? Each
+mode is scored in turn:
+
+- `ocrs` and `windows`, one engine each
+- `auto`, both engines on pixels alone
+- `auto+uia`, with the tree
+
+Each mode reports three numbers: coverage, accuracy by name, and wrong
+clicks. A wrong click is one that lands on a different control, which is
+worse than a miss.
 
 ## Know the current limits
 
