@@ -11,9 +11,10 @@ authors.workspace = true
 default = []
 sap-com = ["dep:windows"]
 web = ["dep:headless_chrome", "dep:ureq"]
-# Pixels-only (Citrix/RDP) driving: OCR perception via ocrs/rten, model
-# download via ureq.
-vision = ["dep:ocrs", "dep:rten", "dep:ureq"]
+# Pixels-only (Citrix/RDP) driving: OCR perception via Windows.Media.Ocr
+# where it exists and ocrs/rten otherwise, model download via ureq. The
+# windows dependency is Windows-only, so Linux and macOS pull nothing more.
+vision = ["dep:ocrs", "dep:rten", "dep:ureq", "dep:windows"]
 # Agent-boundary testing: the model-API proxy, and record mode forwarding
 # to a real model over ureq (TLS via platform-verifier, already in-tree).
 # `dep:windows` is listed for the Windows containment probe; the dependency
@@ -77,7 +78,25 @@ windows = { version = "0.62", features = [
     "Win32_System_SystemInformation",
     # The inheritable temp files a contained child's stdout/stderr land in.
     "Win32_Storage_FileSystem",
+    # vision: Windows' own OCR engine over a captured frame.
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Storage_Streams",
+    "Foundation_Collections",
+    "Globalization",
 ], optional = true }
 
 [lints]
 workspace = true
+
+# Grounding accuracy of the vision adapter against a live window, scored
+# against its UIA tree (see src/vision_bench.rs). Windows-only at runtime.
+[[example]]
+name = "vision_bench"
+required-features = ["vision"]
+
+# One vision action per argument against a live window, for checking the
+# action half of what vision_bench scores.
+[[example]]
+name = "vision_do"
+required-features = ["vision"]

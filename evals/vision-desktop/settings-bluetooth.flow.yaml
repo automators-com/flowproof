@@ -1,0 +1,9 @@
+name: Settings opens a section
+app: vision
+window:
+  title: Settings
+steps:
+  - Open Bluetooth & devices
+  - assert: page shows Bluetooth
+  - Open Windows Update
+  - assert: page shows Check for updates

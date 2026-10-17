@@ -14,7 +14,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowRect,
     GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
-    SetWindowPos, ShowWindow, GA_ROOT, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE,
+    SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE,
 };
 
 use crate::app::PixelRect;
@@ -56,6 +56,15 @@ fn window_process(hwnd: HWND) -> u32 {
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     pid
+}
+
+/// The top-level window drawn at screen point `(x, y)` - what a click
+/// there reaches. A control the accessibility tree reports can be covered by
+/// another top-level window (a popup menu, a dialog, a notification), and
+/// the tree does not say so.
+pub fn root_window_at(x: i32, y: i32) -> isize {
+    let hwnd = unsafe { WindowFromPoint(windows::Win32::Foundation::POINT { x, y }) };
+    unsafe { GetAncestor(hwnd, GA_ROOT) }.0 as isize
 }
 
 /// The title of whatever window holds the foreground now.
@@ -124,6 +133,11 @@ pub fn find_window(title_contains: &str) -> Result<Option<WindowInfo>, DriverErr
 }
 
 impl WindowInfo {
+    /// The native window handle, for APIs that address a window by it (UIA).
+    pub fn hwnd(&self) -> isize {
+        self.hwnd
+    }
+
     /// Bring the window to the foreground (restoring it if minimized) so
     /// capture and injected input reach it, and confirm it got there.
     ///

@@ -1175,6 +1175,9 @@ fn resolve_step_inner(app: &str, step: &SpecStep) -> Result<Vec<ResolvedAction>,
 /// scene entry ever grounds to. Everything else is a text anchor,
 /// meaningful on every provenance.
 fn target_from_label(label: &str) -> Target {
+    if let Some((n, inner)) = split_nth_token(label) {
+        return Target::nth(n, target_from_label(inner));
+    }
     if let Some(css) = label.strip_prefix("css:") {
         if !css.trim().is_empty() {
             return Target::css(css.trim());
@@ -1199,6 +1202,9 @@ fn target_from_label(label: &str) -> Target {
 /// literal `surface` (the whole readable surface, assert-only). Returns
 /// None for anything that isn't a well-formed token.
 pub(crate) fn target_from_token(token: &str) -> Option<Target> {
+    if let Some((n, inner)) = split_nth_token(token) {
+        return target_from_token(inner).map(|t| Target::nth(n, t));
+    }
     if token == "surface" {
         return Some(Target::Surface);
     }
@@ -1212,6 +1218,16 @@ pub(crate) fn target_from_token(token: &str) -> Option<Target> {
         return (!text.trim().is_empty()).then(|| Target::text(text.trim()));
     }
     None
+}
+
+/// `nth:<n>:<token>` - the nth of several scene elements showing the same
+/// text, in reading order. A pixels-only scene lists every `Home` on the
+/// screen; offered alike as `text:Home`, whichever one the model picked was
+/// recorded as the first.
+fn split_nth_token(token: &str) -> Option<(u32, &str)> {
+    let (n, inner) = token.strip_prefix("nth:")?.split_once(':')?;
+    let n = n.parse::<u32>().ok().filter(|n| *n >= 1)?;
+    (!inner.trim().is_empty()).then_some((n, inner))
 }
 
 /// Parse an optional leading 1-based ordinal (`2nd `, `3rd `, `10th `)
@@ -4071,6 +4087,30 @@ mod tests {
             &SpecStep::Plain("Type x into the \"Field Name\" box".into()),
         )
         .expect_err("bad tail must fail");
+    }
+
+    /// A pixels-only scene names the 2nd of two `Home`s on screen
+    /// `nth:2:text:Home`; copied into quotes or used as a JSON target, it is
+    /// the 2nd "Home", not the first.
+    #[test]
+    fn an_nth_scene_token_is_that_ordinal_of_its_inner_target() {
+        let actions = resolve_step(
+            "vision",
+            &SpecStep::Plain("Click \"nth:2:text:Home\"".into()),
+        )
+        .expect("resolves");
+        assert!(matches!(
+            &actions[0],
+            ResolvedAction::Press { target: Target::Nth(2, inner), .. }
+                if matches!(&**inner, Target::Text(text) if text == "Home")
+        ));
+        assert_eq!(
+            target_from_token("nth:3:text:Search Home"),
+            Some(Target::nth(3, Target::text("Search Home")))
+        );
+        // Not an ordinal token: a label that only starts like one.
+        assert_eq!(target_from_token("nth:two:text:Home"), None);
+        assert_eq!(target_from_token("nth:2:"), None);
     }
 
     #[test]

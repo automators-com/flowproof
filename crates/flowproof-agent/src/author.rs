@@ -113,6 +113,9 @@ one remembered capture can fit. If more than one could fit, respond with \
 {\"action\":\"capture_ambiguity\"}. Never guess; flowproof supplies the safe \
 intent-derived reference and candidates.
 - `target` MUST be copied verbatim from one of the listed elements. \
+A token beginning `nth:<n>:` is the nth of several elements showing the same \
+text, top to bottom: pick the one at the place the step means (see its rect), \
+and copy it whole, in quotes too. \
 Scoped targets beginning with `scoped:` already encode a stable container, \
 anchor and inner element; copy the whole token exactly like any other target. \
 For assert_text you may also use \"surface\" to check everything readable \

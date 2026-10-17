@@ -8,6 +8,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# The screenshot a vision step is authored against travels to the model as
+# base64. Already in the build graph via ureq.
+base64 = "0.22"
 chrono = { workspace = true }
 flowproof-driver = { workspace = true, features = ["oob"] }
 flowproof-trace = { workspace = true }

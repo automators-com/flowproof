@@ -281,7 +281,9 @@ before/after frames; applied only with explicit `--apply`.
   launch/connection selection, and optional environment-backed login; an
   in-memory fake engine keeps the pipeline tested on every platform
 - `app: vision`: pixels-only driving for Citrix/RDP: OCR perception
-  (pure-Rust ocrs), spatial text anchors, real input injection
+  (Windows OCR and pure-Rust ocrs, merged), the accessibility tree when the
+  window has one, operator glyphs recognised by shape, spatial text anchors,
+  real input injection
 - `app: api`: no UI at all: flows made of HTTP and SQL assertions
 - `app: agent`: test an AI agent at the model boundary. Record its
   trajectory once against a real model, replay it deterministically with

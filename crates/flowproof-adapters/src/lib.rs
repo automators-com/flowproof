@@ -61,6 +61,15 @@ pub mod sap_com;
 #[cfg(feature = "vision")]
 pub mod vision;
 
+#[cfg(feature = "vision")]
+pub mod vision_bench;
+
+#[cfg(feature = "vision")]
+pub mod vision_elements;
+
+#[cfg(all(feature = "vision", windows))]
+pub mod vision_winocr;
+
 #[cfg(feature = "web")]
 pub mod web;
 

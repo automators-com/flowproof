@@ -1,0 +1,11 @@
+name: Calculator switches mode
+app: vision
+window:
+  title: Calculator
+steps:
+  - Open the navigation menu
+  - Choose the Scientific calculator
+  - assert: page shows Scientific
+  - Open the navigation menu
+  - Choose the Standard calculator
+  - assert: page shows Standard

@@ -1,0 +1,19 @@
+name: File Explorer opens Downloads and goes home
+app: vision
+window:
+  title: File Explorer
+steps:
+  - Open Downloads from the navigation pane on the left
+  - assert: page shows vsbootstrap
+  - Open Home from the navigation pane on the left
+  - Open Documents from the navigation pane on the left
+  - assert: page shows IISExpress
+  - Go back to the previous folder using the Back arrow
+  - Open Videos from the navigation pane on the left
+  - assert: page shows Captures
+  - Open the Captures folder
+  - assert: page shows This folder is empty
+  - Open Documents from the navigation pane on the left
+  - Sort the files by name in descending order
+  - Search for GUI using the search box
+  - assert: page shows SAP GUI
