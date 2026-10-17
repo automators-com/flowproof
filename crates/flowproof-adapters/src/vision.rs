@@ -831,10 +831,28 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 })
                 .collect::<String>()
         };
-        Self::match_tiers(lines, needle, nth, true)
+        // Also ignoring spaces, for an anchor of three characters or more:
+        // OCR breaks a name after its underscores, and File Explorer's
+        // `ssis_pc_data` read as `ssis_ pc_ data`.
+        let squeeze = |text: &str| {
+            let squeezed: String = text.split_whitespace().collect();
+            if squeezed.chars().count() < 3 {
+                String::new()
+            } else {
+                squeezed.to_lowercase()
+            }
+        };
+        // Every whole match before any prefix: with the prefix tried first,
+        // that `ssis_ pc_ data` lost to the file `ssis_pc_data.dtproj`, and
+        // the click opened the project instead of the folder.
+        Self::match_tiers(lines, needle, nth, false)
+            .or_else(|| Self::match_reshaped(lines, needle, nth, fold, false))
+            .or_else(|| Self::match_reshaped(lines, needle, nth, loosen, false))
+            .or_else(|| Self::match_reshaped(lines, needle, nth, squeeze, false))
+            .or_else(|| Self::match_reshaped(lines, needle, nth, look_alike, false))
+            .or_else(|| Self::match_tiers(lines, needle, nth, true))
             .or_else(|| Self::match_reshaped(lines, needle, nth, fold, true))
             .or_else(|| Self::match_reshaped(lines, needle, nth, loosen, true))
-            .or_else(|| Self::match_reshaped(lines, needle, nth, look_alike, false))
     }
 
     /// [`Self::match_tiers`] over lines and needle passed through `shape`,
@@ -2928,6 +2946,31 @@ mod tests {
         assert_eq!(rect, (20, 100, 70, 20));
         // Prefix matching still works when no exact line exists.
         assert!(d.element_exists(&anchor("Sign in with")).expect("walks"));
+    }
+
+    /// File Explorer, pixels only: the folder read with OCR's spaces after
+    /// its underscores, and a file whose name starts with the folder's. The
+    /// folder is the whole match, and the file must not be clicked for it.
+    #[test]
+    fn a_name_ocr_broke_after_its_underscores_beats_a_longer_name_it_begins() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            FakeOcr::with_lines(vec![
+                OcrLine::new("ssis_pc_data.dtproj", (20, 20, 120, 12)),
+                OcrLine::new("ssis_ pc_ data", (20, 60, 64, 12)),
+            ]),
+        );
+        let rect = d
+            .element_rect(&anchor("ssis_pc_data"))
+            .expect("resolves")
+            .expect("found");
+        assert_eq!(rect, (20, 60, 64, 12));
+        // The file is still found by its own name.
+        let file = d
+            .element_rect(&anchor("ssis_pc_data.dtproj"))
+            .expect("resolves")
+            .expect("found");
+        assert_eq!(file, (20, 20, 120, 12));
     }
 
     #[test]

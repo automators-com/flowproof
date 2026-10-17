@@ -132,10 +132,36 @@ pub fn answer_key(controls: Vec<GroundTruth>, window: PixelRect) -> Vec<GroundTr
         match kept.iter_mut().find(|k| k.rect == c.rect) {
             Some(k) if k.name.is_empty() => *k = c,
             Some(_) => {}
-            None => kept.push(c),
+            None => match kept.iter_mut().find(|k| is_split_half(k, &c)) {
+                // File Explorer's breadcrumb is two controls named "Home" -
+                // its icon and its text - for the one word on screen, and
+                // asking for the 2nd "Home" meant the half with no text.
+                Some(k) => k.rect = union(k.rect, c.rect),
+                None => kept.push(c),
+            },
         }
     }
     kept
+}
+
+/// Two halves of one control: the same name and type, on one row, touching
+/// side by side - a split button's face and its arrow.
+fn is_split_half(a: &GroundTruth, b: &GroundTruth) -> bool {
+    let (ax, ay, aw, ah) = a.rect;
+    let (bx, by, bw, bh) = b.rect;
+    !a.name.is_empty()
+        && a.name == b.name
+        && a.control_type == b.control_type
+        && ay == by
+        && ah == bh
+        && ((ax + aw as i32 - bx).abs() <= 2 || (bx + bw as i32 - ax).abs() <= 2)
+}
+
+fn union((ax, ay, aw, ah): PixelRect, (bx, by, bw, bh): PixelRect) -> PixelRect {
+    let (x, y) = (ax.min(bx), ay.min(by));
+    let right = (ax + aw as i32).max(bx + bw as i32);
+    let bottom = (ay + ah as i32).max(by + bh as i32);
+    (x, y, (right - x) as u32, (bottom - y) as u32)
 }
 
 /// The window's system menu and caption buttons, which vision refuses on
@@ -352,6 +378,25 @@ mod tests {
         );
         let names: Vec<&str> = key.iter().map(|k| k.name.as_str()).collect();
         assert_eq!(names, ["Close Tab", "Close document"]);
+    }
+
+    #[test]
+    fn a_split_buttons_two_halves_are_one_control_of_the_answer_key() {
+        let key = answer_key(
+            vec![
+                gt("Home", (100, 50, 50, 24)),
+                gt("Home", (150, 50, 80, 24)),
+                gt("Home", (10, 140, 40, 30)),
+            ],
+            (0, 0, 400, 300),
+        );
+        assert_eq!(
+            key,
+            vec![
+                gt("Home", (100, 50, 130, 24)),
+                gt("Home", (10, 140, 40, 30))
+            ]
+        );
     }
 
     #[test]
