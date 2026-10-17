@@ -108,8 +108,8 @@ pub fn contains((x, y, w, h): PixelRect, (px, py): (i32, i32)) -> bool {
     px >= x && py >= y && px < x + w as i32 && py < y + h as i32
 }
 
-/// The controls worth scoring: inside the window, big enough to aim at, and
-/// one per rectangle - UIA nests a button's text inside the button, and a
+/// The controls worth scoring: inside the window, big enough to aim at, not
+/// the window's own chrome (see [`is_window_chrome`]), and one per rectangle - UIA nests a button's text inside the button, and a
 /// list item inside its row, and one target should count once. The
 /// innermost NAMED control of a rectangle is kept, since that is the name
 /// a step would use.
@@ -126,6 +126,9 @@ pub fn answer_key(controls: Vec<GroundTruth>, window: PixelRect) -> Vec<GroundTr
         if w >= ww * 9 / 10 && h >= wh * 9 / 10 {
             continue;
         }
+        if is_window_chrome(&c, window) {
+            continue;
+        }
         match kept.iter_mut().find(|k| k.rect == c.rect) {
             Some(k) if k.name.is_empty() => *k = c,
             Some(_) => {}
@@ -134,6 +137,37 @@ pub fn answer_key(controls: Vec<GroundTruth>, window: PixelRect) -> Vec<GroundTr
     }
     kept
 }
+
+/// The window's system menu and caption buttons, which vision refuses on
+/// purpose - no step means them, and OCR reads their glyphs as `0` and `X`,
+/// so Calculator was maximised and closed by steps that meant a key. Scored,
+/// they were a fifth of the misses on every window, for a behaviour that is
+/// right. Known by name AND place - the caption band, the buttons at its
+/// right end - since an app's own buttons in the title bar (File Explorer's
+/// tabs) are not chrome, and a "Close" lower down is the app's own.
+pub fn is_window_chrome(control: &GroundTruth, (wx, wy, ww, _): PixelRect) -> bool {
+    let (x, y, w, h) = control.rect;
+    let (cx, cy) = (x + w as i32 / 2, y + h as i32 / 2);
+    if cy - wy >= CAPTION_HEIGHT {
+        return false;
+    }
+    // Calculator names them for itself: "Close Calculator".
+    let first = control.name.split_whitespace().next().unwrap_or("");
+    match control.control_type.as_str() {
+        "MenuItem" => control.name == "System",
+        "Button" => {
+            matches!(first, "Minimize" | "Maximize" | "Restore" | "Close")
+                && cx >= wx + ww as i32 - CAPTION_BUTTONS_WIDTH
+        }
+        _ => false,
+    }
+}
+
+/// The caption band, as vision's driver draws it (48px at 150% scaling).
+const CAPTION_HEIGHT: i32 = 48;
+
+/// Three caption buttons at their widest, 47px each at 150%, with room.
+const CAPTION_BUTTONS_WIDTH: i32 = 160;
 
 /// What a keypad key SHOWS, for the name an accessibility tree speaks it
 /// by: an author looking at Calculator writes `Click "7"`, not "Seven", and
@@ -161,6 +195,12 @@ pub fn shown_glyph(name: &str) -> Option<&'static str> {
         "clear entry" => "CE",
         "clear" => "C",
         "positive negative" => "+/-",
+        "reciprocal" => "1/x",
+        "memory add" => "M+",
+        "memory subtract" => "M-",
+        "memory store" => "MS",
+        "memory recall" => "MR",
+        "clear all memory" => "MC",
         _ => return None,
     })
 }
@@ -294,5 +334,32 @@ mod tests {
             (0, 0, 200, 200),
         );
         assert_eq!(key, vec![gt("Back", (10, 10, 20, 20))]);
+    }
+
+    #[test]
+    fn the_answer_key_leaves_out_the_window_chrome_but_not_an_apps_own_title_bar_buttons() {
+        let mut system = gt("System", (2, 2, 20, 20));
+        system.control_type = "MenuItem".into();
+        let key = answer_key(
+            vec![
+                system,
+                gt("Minimize", (300, 2, 40, 20)),
+                gt("Close Calculator", (350, 2, 40, 20)),
+                gt("Close Tab", (120, 2, 20, 20)),
+                gt("Close document", (60, 100, 20, 20)),
+            ],
+            (0, 0, 400, 300),
+        );
+        let names: Vec<&str> = key.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, ["Close Tab", "Close document"]);
+    }
+
+    #[test]
+    fn a_memory_key_is_asked_for_by_what_it_shows() {
+        let key = vec![gt("Memory add", (0, 0, 40, 20))];
+        let report = score("calc", &key, &[], |name, _, _| {
+            (name == "M+").then_some((10, 10))
+        });
+        assert_eq!(report.hits, 1, "{report:?}");
     }
 }
