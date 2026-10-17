@@ -65,9 +65,9 @@ fn main() {
             .iter()
             .map(|t| (t.point.0 + ox, t.point.1 + oy))
             .collect();
-        let report = score(&info.title, &key, &targets, |name, nth| {
+        let report = score(&info.title, &key, &targets, |name, nth, relation| {
             driver
-                .locate_point(name, nth)
+                .locate_point(name, nth, relation)
                 .ok()
                 .flatten()
                 .map(|(x, y)| (x + ox, y + oy))

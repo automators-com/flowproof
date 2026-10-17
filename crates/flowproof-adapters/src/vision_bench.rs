@@ -166,16 +166,17 @@ pub fn shown_glyph(name: &str) -> Option<&'static str> {
 }
 
 /// Score one window. `targets` are the points vision offers (screen
-/// coordinates); `locate(name, nth)` answers where `Click the nth "<name>"`
-/// lands - `nth` the control's place among those of its name, top to
-/// bottom then left to right, as an author disambiguates - asked
+/// coordinates); `locate(name, nth, relation)` answers where an action on
+/// the nth "<name>" lands - `nth` the control's place among those of its
+/// name, top to bottom then left to right, as an author disambiguates;
+/// `relation` `right_of` for a field, where `Type` aims - asked
 /// for a keypad key's glyph too (see [`shown_glyph`]) when its name is
 /// not found.
 pub fn score(
     window: &str,
     key: &[GroundTruth],
     targets: &[(i32, i32)],
-    mut locate: impl FnMut(&str, u32) -> Option<(i32, i32)>,
+    mut locate: impl FnMut(&str, u32, &str) -> Option<(i32, i32)>,
 ) -> GroundingReport {
     let mut cases = Vec::new();
     for control in key {
@@ -190,8 +191,15 @@ pub fn score(
         let (point, outcome) = if control.name.is_empty() {
             (None, Outcome::Unnamed)
         } else {
-            let found = locate(&control.name, nth)
-                .or_else(|| shown_glyph(&control.name).and_then(|glyph| locate(glyph, nth)));
+            // A field is typed into, and `Type` lands beside its label.
+            let relation = if matches!(control.control_type.as_str(), "Edit" | "ComboBox") {
+                "right_of"
+            } else {
+                "inside"
+            };
+            let found = locate(&control.name, nth, relation).or_else(|| {
+                shown_glyph(&control.name).and_then(|glyph| locate(glyph, nth, relation))
+            });
             match found {
                 None => (None, Outcome::NotFound),
                 Some(p) if contains(control.rect, p) => (Some(p), Outcome::Hit),
@@ -245,7 +253,7 @@ mod tests {
     #[test]
     fn a_click_inside_another_control_is_a_wrong_click_not_a_miss() {
         let key = vec![gt("Seven", (0, 0, 10, 10)), gt("Eight", (20, 0, 10, 10))];
-        let report = score("calc", &key, &[(5, 5)], |name, _| match name {
+        let report = score("calc", &key, &[(5, 5)], |name, _, _| match name {
             "Seven" => Some((25, 5)),
             _ => None,
         });
@@ -259,9 +267,9 @@ mod tests {
     #[test]
     fn a_repeated_name_is_asked_for_by_its_place_among_namesakes() {
         let key = vec![gt("Start", (0, 50, 10, 10)), gt("Start", (0, 0, 10, 10))];
-        let report = score("clock", &key, &[], |_, nth| Some((5, 5 + 50 * (nth as i32 - 1))));
+        let report = score("clock", &key, &[], |_, nth, _| Some((5, 5 + 50 * (nth as i32 - 1))));
         assert_eq!(report.hits, 2, "the lower Start is the 2nd: {report:?}");
-        let report = score("clock", &key, &[], |_, nth| Some((5, 55 - 50 * (nth as i32 - 1))));
+        let report = score("clock", &key, &[], |_, nth, _| Some((5, 55 - 50 * (nth as i32 - 1))));
         assert_eq!(report.hits, 0, "the other way round, both miss: {report:?}");
     }
 

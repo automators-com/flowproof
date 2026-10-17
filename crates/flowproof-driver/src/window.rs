@@ -12,7 +12,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_MENU,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowRect,
+    BringWindowToTop, EnumWindows, GetAncestor, WindowFromPoint, GetClassNameW, GetForegroundWindow, GetWindowRect,
     GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
     SetWindowPos, ShowWindow, GA_ROOT, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE,
 };
@@ -56,6 +56,15 @@ fn window_process(hwnd: HWND) -> u32 {
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     pid
+}
+
+/// The top-level window drawn at screen point `(x, y)` - what a click
+/// there reaches. A control the accessibility tree reports can be covered by
+/// another top-level window (a popup menu, a dialog, a notification), and
+/// the tree does not say so.
+pub fn root_window_at(x: i32, y: i32) -> isize {
+    let hwnd = unsafe { WindowFromPoint(windows::Win32::Foundation::POINT { x, y }) };
+    unsafe { GetAncestor(hwnd, GA_ROOT) }.0 as isize
 }
 
 /// The title of whatever window holds the foreground now.

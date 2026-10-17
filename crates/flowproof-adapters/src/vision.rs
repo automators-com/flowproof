@@ -159,6 +159,12 @@ pub trait VisionScreen {
     fn accessible_controls(&mut self) -> Result<Vec<AccessibleControl>, DriverError> {
         Ok(Vec::new())
     }
+    /// Whether a click at window-relative `(x, y)` reaches this window, not
+    /// another drawn over it. Asked before acting on a control found in the
+    /// tree, which reports a control under a popup menu as if it showed.
+    fn reaches(&mut self, _x: i32, _y: i32) -> Result<bool, DriverError> {
+        Ok(true)
+    }
     /// Attach to the window whose title contains `window` (bring it to the
     /// foreground). Called by `launch`.
     fn attach(&mut self, window: &str, timeout: Duration) -> Result<(), DriverError>;
@@ -541,6 +547,18 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             .name
             .as_deref()
             .is_some_and(|name| name.trim().chars().count() <= 2);
+        // A control the tree names EXACTLY is the strongest evidence there
+        // is: text can repeat - a page heading reads "Windows Update" above
+        // the nav item of that name, and reading order took the heading.
+        let controls = self.controls_for(&frame)?;
+        if let Some(hit) = Self::resolve_named(&controls, selector) {
+            let (x, y) = hit.center();
+            if self.screen.reaches(x, y)? {
+                vision_log(|| format!("[{selector}] the accessibility tree names it: {:?}", hit.rect));
+                return Ok((lines, Some(hit)));
+            }
+            vision_log(|| format!("[{selector}] named control at {:?} is covered", hit.rect));
+        }
         // (scale, whole lines only) per OCR look; `None` asks the tree.
         let [near, nearer] = CLOSER_SCALES;
         let attempts: &[Option<(u32, bool)>] = if short {
@@ -563,8 +581,11 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         };
         for attempt in attempts {
             let Some((scale, whole_lines)) = *attempt else {
-                let controls = self.controls_for(&frame)?;
                 if let Some(hit) = Self::resolve_accessible(&controls, selector) {
+                    let (x, y) = hit.center();
+                    if !self.screen.reaches(x, y)? {
+                        continue;
+                    }
                     vision_log(|| {
                         format!(
                             "[{selector}] not read by OCR; the accessibility tree names '{}'",
@@ -622,6 +643,19 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         controls: &[AccessibleControl],
         selector: &UiaSelector,
     ) -> Option<OcrHit> {
+        Self::resolve_controls(controls, selector, false)
+    }
+
+    /// The exact-name tier of [`Self::resolve_accessible`] alone.
+    fn resolve_named(controls: &[AccessibleControl], selector: &UiaSelector) -> Option<OcrHit> {
+        Self::resolve_controls(controls, selector, true)
+    }
+
+    fn resolve_controls(
+        controls: &[AccessibleControl],
+        selector: &UiaSelector,
+        exact_only: bool,
+    ) -> Option<OcrHit> {
         let needle = selector.name.as_deref().map(str::trim)?;
         let nth = selector.nth.unwrap_or(1).max(1) as usize;
         let norm = |text: &str| {
@@ -644,6 +678,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 && name[wanted.len()..].starts_with(' ')
         };
         let tiers: [&dyn Fn(&str) -> bool; 3] = [&exact, &said, &begun];
+        let tiers = if exact_only { &tiers[..1] } else { &tiers[..] };
         for matches in tiers {
             let mut hits: Vec<OcrHit> = controls
                 .iter()
@@ -995,15 +1030,24 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         &mut self,
         name: &str,
         nth: u32,
+        relation: &str,
     ) -> Result<Option<(i32, i32)>, DriverError> {
         let selector = UiaSelector {
             name: Some(name.to_string()),
             nth: (nth > 1).then_some(nth),
+            relation: Some(relation.to_string()),
             ..UiaSelector::default()
         };
-        Ok(self
-            .resolve(&selector)?
-            .map(|hit| Self::action_point(&hit, &selector, "inside")))
+        let Some(hit) = self.resolve(&selector)? else {
+            return Ok(None);
+        };
+        let point = Self::action_point(&hit, &selector, relation);
+        Ok(Some(
+            match self.drawn_field(&hit, &selector, relation)? {
+                Some((x, y, w, h)) => (x + w as i32 / 2, y + h as i32 / 2),
+                None => point,
+            },
+        ))
     }
 
     /// Screen origin of the attached window.
@@ -1990,6 +2034,12 @@ pub mod native {
             Ok(())
         }
 
+        fn reaches(&mut self, x: i32, y: i32) -> Result<bool, DriverError> {
+            let window = self.front()?;
+            let (wx, wy, _, _) = window.refresh_rect()?;
+            Ok(flowproof_driver::window::root_window_at(wx + x, wy + y) == window.hwnd())
+        }
+
         /// `FLOWPROOF_VISION_UIA=0` keeps vision to pixels alone, as it is
         /// over a remote session anyway - to measure what the tree adds, or
         /// to prove a flow does not lean on it.
@@ -2092,11 +2142,16 @@ impl AutoOcr {
 /// anchor matches whichever is right.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn merge_readings(first: Vec<OcrLine>, second: Vec<OcrLine>) -> Vec<OcrLine> {
+    // Case and punctuation aside - one engine keeps a colon the other
+    // drops - but not spacing: `Sta ndard` is a different reading.
     let fold = |t: &str| {
         t.chars()
-            .filter(|c| c.is_alphanumeric())
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace())
             .flat_map(char::to_lowercase)
             .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
     };
     let centre_in = |(x, y, w, h): PixelRect, (ox, oy, ow, oh): PixelRect| {
         let (cx, cy) = (x + w as i32 / 2, y + h as i32 / 2);
@@ -2191,6 +2246,8 @@ pub mod fake {
         /// What the accessibility tree reports, window-relative.
         pub controls: Vec<AccessibleControl>,
         pub hovers: Vec<(i32, i32)>,
+        /// Window-relative areas another window is drawn over.
+        pub covered: Vec<PixelRect>,
         pub drags: Vec<((i32, i32), (i32, i32))>,
     }
 
@@ -2276,6 +2333,12 @@ pub mod fake {
 
         fn accessible_controls(&mut self) -> Result<Vec<AccessibleControl>, DriverError> {
             Ok(self.controls.clone())
+        }
+
+        fn reaches(&mut self, x: i32, y: i32) -> Result<bool, DriverError> {
+            Ok(!self.covered.iter().any(|&(cx, cy, cw, ch)| {
+                x >= cx && y >= cy && x < cx + cw as i32 && y < cy + ch as i32
+            }))
         }
 
         fn move_to(&mut self, x: i32, y: i32) -> Result<(), DriverError> {
@@ -2396,11 +2459,24 @@ mod tests {
         assert_eq!(texts, vec!["Total", "Sta ndard", "Standard", "7"]);
     }
 
+    /// Windows Settings shows "Windows Update" as the page heading above
+    /// the nav item of that name; reading order took the heading, and the
+    /// click did nothing. A control the tree names exactly is the target.
     #[test]
-    fn text_on_screen_is_found_before_the_tree_is_asked() {
+    fn a_control_named_exactly_beats_the_same_text_elsewhere() {
         let mut d = driver();
-        // A control of the same name elsewhere must not win over the text.
         d.screen.controls = vec![control("Sign in", (300, 150, 60, 40))];
+        d.invoke(&anchor("Sign in")).expect("clicks");
+        assert_eq!(d.screen.clicks, vec![(330, 170)]);
+    }
+
+    /// The tree reports a control under a popup menu as if it showed; a
+    /// click there reaches the menu. Covered, the text that shows wins.
+    #[test]
+    fn a_named_control_something_covers_gives_way_to_the_text_on_screen() {
+        let mut d = driver();
+        d.screen.controls = vec![control("Sign in", (300, 150, 60, 40))];
+        d.screen.covered = vec![(280, 140, 100, 60)];
         d.invoke(&anchor("Sign in")).expect("clicks");
         assert_eq!(d.screen.clicks, vec![(55, 110)]);
     }
