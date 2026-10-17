@@ -2695,10 +2695,17 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             intent,
             scene: &scene,
         };
-        let authored = if natural_check {
-            crate::author::author_checks(*client, &ctx)
-        } else {
-            crate::author::author_steps_continuable(*client, &ctx)
+        let authored = match model_screenshot(driver, app_id) {
+            Some((png, scale)) => {
+                let mut seeing = crate::llm::Seeing::new(*client, png, scale);
+                if natural_check {
+                    crate::author::author_checks(&mut seeing, &ctx)
+                } else {
+                    crate::author::author_steps_continuable(&mut seeing, &ctx)
+                }
+            }
+            None if natural_check => crate::author::author_checks(*client, &ctx),
+            None => crate::author::author_steps_continuable(*client, &ctx),
         };
         return match authored {
             Ok((actions, continues)) => {
@@ -2783,6 +2790,19 @@ const MAX_STEP_REPLANS: u32 = 3;
 /// prompt. Typed values are included because "typed BMW into make" is what
 /// stops a model re-typing it; a captured or environment reference is
 /// elided, exactly as it is everywhere else the recorder renders an action.
+/// The window as a picture for the authoring model, on a pixels-only
+/// surface. Its scene is OCR text, which says nothing of icons, empty
+/// fields or which box belongs to which label - the screenshot is how a
+/// computer-use model sees those, and the only way this one can. Tree-backed
+/// surfaces describe all of it in the scene already, so they send none.
+fn model_screenshot<D: AppDriver>(driver: &mut D, app_id: &str) -> Option<(Vec<u8>, f64)> {
+    if app_id != "vision" {
+        return None;
+    }
+    let frame = driver.capture().ok().flatten()?;
+    flowproof_driver::visual::model_png(&frame)
+}
+
 fn action_summary(action: &ResolvedAction) -> String {
     let where_ = |target: &Target| format!("{target:?}");
     match action {
@@ -2931,7 +2951,13 @@ fn replan_remainder<D: AppDriver, C: ModelClient>(
         refusal,
         page_text: &page_text,
     };
-    let outcome = crate::author::author_remainder(*client, &ctx, &progress);
+    let outcome = match model_screenshot(driver, app_id) {
+        Some((png, scale)) => {
+            let mut seeing = crate::llm::Seeing::new(*client, png, scale);
+            crate::author::author_remainder(&mut seeing, &ctx, &progress)
+        }
+        None => crate::author::author_remainder(*client, &ctx, &progress),
+    };
     match outcome? {
         crate::author::Remainder::Complete => Ok(None),
         crate::author::Remainder::Actions(actions, continues) => Ok(Some((actions, continues))),

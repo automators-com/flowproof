@@ -1,0 +1,7 @@
+name: Character Map copies characters
+app: vision
+window:
+  title: Character Map
+steps:
+  - Type "abc" into the "Characters to copy" field
+  - assert: page shows abc

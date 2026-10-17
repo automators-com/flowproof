@@ -1,0 +1,9 @@
+name: Clock runs the stopwatch
+app: vision
+window:
+  title: Clock
+steps:
+  - Open the Stopwatch
+  - Start the stopwatch
+  - Pause the stopwatch
+  - assert: page shows Stopwatch

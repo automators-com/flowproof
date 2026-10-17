@@ -1,0 +1,4 @@
+*.trace.jsonl*
+*.repair.json
+.flowproof/
+*.baselines/

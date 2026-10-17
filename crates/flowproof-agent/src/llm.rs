@@ -27,8 +27,75 @@ const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 /// A minimal chat completion: system + user in, text out.
 pub trait ModelClient {
     fn complete(&mut self, system: &str, user: &str) -> Result<String, AgentError>;
+    /// [`Self::complete`] with a PNG screenshot ahead of the user text: the
+    /// screen the step is authored against, as a person would see it. What
+    /// frontier computer-use agents ground on; a pixels-only surface has no
+    /// tree to describe its icons, its empty fields or which control is
+    /// which, and the picture does. A client that cannot see ignores it.
+    fn complete_with_image(
+        &mut self,
+        system: &str,
+        user: &str,
+        _png: &[u8],
+    ) -> Result<String, AgentError> {
+        self.complete(system, user)
+    }
     /// `backend/model` identity recorded into the trace header.
     fn identity(&self) -> (String, String);
+}
+
+/// A client shown the screen with every request it makes: the authoring
+/// calls of one step go through this when the surface is pixels-only, so
+/// the model grounds on the picture as well as the OCR'd element list.
+pub struct Seeing<'a, C: ModelClient> {
+    inner: &'a mut C,
+    png: Vec<u8>,
+    note: String,
+}
+
+impl<'a, C: ModelClient> Seeing<'a, C> {
+    /// `scale` is what the frame was shrunk by to make `png`
+    /// (see `flowproof_driver::visual::model_png`).
+    pub fn new(inner: &'a mut C, png: Vec<u8>, scale: f64) -> Self {
+        let size = if scale < 1.0 {
+            format!(
+                "It is shown at {:.0}% of the window's size: each element's `rect` is in                  window pixels, so its place in the picture is that rect times {scale:.3}.",
+                scale * 100.0
+            )
+        } else {
+            "It is shown at the window's own size, so each element's `rect` is in its              pixels."
+                .to_string()
+        };
+        Self {
+            inner,
+            png,
+            note: format!(
+                "
+
+The attached screenshot is the window as it looks now. {size} Use it to                  tell which listed element the step means - the icon, the empty field beside                  a label, the control in the state the step expects - and answer with a target                  copied from the list, as always: the picture shows the screen, the list is                  what can be addressed."
+            ),
+        }
+    }
+}
+
+impl<C: ModelClient> ModelClient for Seeing<'_, C> {
+    fn complete(&mut self, system: &str, user: &str) -> Result<String, AgentError> {
+        let user = format!("{user}{}", self.note);
+        self.inner.complete_with_image(system, &user, &self.png)
+    }
+
+    fn complete_with_image(
+        &mut self,
+        system: &str,
+        user: &str,
+        png: &[u8],
+    ) -> Result<String, AgentError> {
+        self.inner.complete_with_image(system, user, png)
+    }
+
+    fn identity(&self) -> (String, String) {
+        self.inner.identity()
+    }
 }
 
 /// HTTP-backed client for the configured backend.
@@ -148,6 +215,36 @@ impl HttpModelClient {
     }
 
     fn complete_anthropic(&mut self, system: &str, user: &str) -> Result<String, AgentError> {
+        self.complete_anthropic_content(system, json!(user))
+    }
+
+    /// The user turn as content blocks: the screenshot, then the text - the
+    /// order Anthropic recommends, image before the question about it.
+    fn anthropic_image_content(user: &str, png: &[u8]) -> serde_json::Value {
+        json!([
+            {"type": "image", "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64_png(png),
+            }},
+            {"type": "text", "text": user},
+        ])
+    }
+
+    fn openai_image_content(user: &str, png: &[u8]) -> serde_json::Value {
+        json!([
+            {"type": "text", "text": user},
+            {"type": "image_url", "image_url": {
+                "url": format!("data:image/png;base64,{}", base64_png(png)),
+            }},
+        ])
+    }
+
+    fn complete_anthropic_content(
+        &mut self,
+        system: &str,
+        content: serde_json::Value,
+    ) -> Result<String, AgentError> {
         let base = self
             .config
             .base_url
@@ -181,7 +278,7 @@ impl HttpModelClient {
                 "model": self.model(),
                 "max_tokens": ANTHROPIC_MAX_TOKENS,
                 "system": system,
-                "messages": [{"role": "user", "content": user}],
+                "messages": [{"role": "user", "content": content}],
             }))
             .map_err(|e| Self::http_err("anthropic", e))?;
         let response: serde_json::Value =
@@ -220,6 +317,14 @@ impl HttpModelClient {
     }
 
     fn complete_openai(&mut self, system: &str, user: &str) -> Result<String, AgentError> {
+        self.complete_openai_content(system, json!(user))
+    }
+
+    fn complete_openai_content(
+        &mut self,
+        system: &str,
+        content: serde_json::Value,
+    ) -> Result<String, AgentError> {
         let base = self
             .config
             .base_url
@@ -235,7 +340,7 @@ impl HttpModelClient {
             "model": self.model(),
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": content},
             ],
         });
         if self.config.kind == BackendKind::OpenAi {
@@ -274,6 +379,26 @@ impl ModelClient for HttpModelClient {
         }
     }
 
+    fn complete_with_image(
+        &mut self,
+        system: &str,
+        user: &str,
+        png: &[u8],
+    ) -> Result<String, AgentError> {
+        match self.config.kind {
+            BackendKind::Anthropic => {
+                self.complete_anthropic_content(system, Self::anthropic_image_content(user, png))
+            }
+            // A local OpenAI-compatible server may serve a text-only model,
+            // which rejects image parts outright; only the hosted API is
+            // known to see.
+            BackendKind::OpenAi => {
+                self.complete_openai_content(system, Self::openai_image_content(user, png))
+            }
+            BackendKind::OpenAiCompatible => self.complete_openai(system, user),
+        }
+    }
+
     fn identity(&self) -> (String, String) {
         let backend = match self.config.kind {
             BackendKind::Anthropic => "anthropic",
@@ -284,9 +409,30 @@ impl ModelClient for HttpModelClient {
     }
 }
 
+fn base64_png(png: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(png)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_screenshot_goes_ahead_of_the_text_for_anthropic_and_after_it_for_openai() {
+        let png = [0x89, b'P', b'N', b'G'];
+        let anthropic = HttpModelClient::anthropic_image_content("click 5", &png);
+        assert_eq!(anthropic[0]["type"], "image");
+        assert_eq!(anthropic[0]["source"]["media_type"], "image/png");
+        assert_eq!(anthropic[0]["source"]["data"], "iVBORw==");
+        assert_eq!(anthropic[1]["text"], "click 5");
+        let openai = HttpModelClient::openai_image_content("click 5", &png);
+        assert_eq!(openai[0]["text"], "click 5");
+        assert_eq!(
+            openai[1]["image_url"]["url"],
+            "data:image/png;base64,iVBORw=="
+        );
+    }
 
     #[test]
     fn identity_uses_provider_specific_default_models() {

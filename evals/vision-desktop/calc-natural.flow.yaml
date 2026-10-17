@@ -1,0 +1,8 @@
+name: Calculator from plain English
+app: vision
+window:
+  title: Calculator
+steps:
+  - Clear the calculator
+  - Multiply 12 by 3 using the keypad buttons
+  - assert: page shows 36
