@@ -2033,12 +2033,22 @@ pub mod native {
     }
 }
 
-/// The production OCR: Windows' own engine where it is available, `ocrs`
-/// otherwise. `FLOWPROOF_VISION_OCR=ocrs` or `=windows` pins one - the
-/// second an error when Windows cannot read the profile's languages.
+/// The production OCR. On Windows, BOTH engines, merged: Windows' own
+/// reads interface text faster and better - a menu, a grey caption, a
+/// tinted button - but drops a glyph standing alone, and a keypad is
+/// nothing but; `ocrs` reads those. Measured on Windows Calculator: `ocrs`
+/// found text inside 81% of the keys, Windows OCR 6%. A reading is every
+/// Windows line plus each `ocrs` line it did not already read, and the
+/// closer second looks are `ocrs`'s, which is what finds a thin `1`.
+///
+/// `FLOWPROOF_VISION_OCR=ocrs` or `=windows` pins one engine - the second
+/// an error when Windows cannot read the profile's languages. Elsewhere,
+/// and where Windows has no OCR language, `ocrs` alone.
 pub enum AutoOcr {
     #[cfg(windows)]
     Windows(crate::vision_winocr::WindowsOcr),
+    #[cfg(windows)]
+    Both(crate::vision_winocr::WindowsOcr, OcrsEngine),
     Ocrs(OcrsEngine),
 }
 
@@ -2048,9 +2058,10 @@ impl AutoOcr {
         #[cfg(windows)]
         if wanted != "ocrs" {
             match crate::vision_winocr::WindowsOcr::new() {
-                Ok(engine) => return Ok(Self::Windows(engine)),
+                Ok(engine) if wanted == "windows" => return Ok(Self::Windows(engine)),
+                Ok(engine) => return Ok(Self::Both(engine, OcrsEngine::new()?)),
                 Err(e) if wanted == "windows" => return Err(e),
-                Err(e) => vision_log(|| format!("{e} - reading with ocrs instead")),
+                Err(e) => vision_log(|| format!("{e} - reading with ocrs alone")),
             }
         }
         #[cfg(not(windows))]
@@ -2062,14 +2073,47 @@ impl AutoOcr {
         Ok(Self::Ocrs(OcrsEngine::new()?))
     }
 
-    /// Which engine reads: `windows` or `ocrs`.
+    /// Which engine reads: `windows+ocrs`, `windows` or `ocrs`.
     pub fn name(&self) -> &'static str {
         match self {
             #[cfg(windows)]
             Self::Windows(_) => "windows",
+            #[cfg(windows)]
+            Self::Both(..) => "windows+ocrs",
             Self::Ocrs(_) => "ocrs",
         }
     }
+}
+
+/// `first`'s lines, then each of `second`'s that is not the same text in
+/// the same place - a line both read once, so `the 2nd "Total"` still
+/// counts what is on screen. Readings that DIFFER where they overlap are
+/// both kept: `Sta ndard` from one and `Standard` from the other, and an
+/// anchor matches whichever is right.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn merge_readings(first: Vec<OcrLine>, second: Vec<OcrLine>) -> Vec<OcrLine> {
+    let fold = |t: &str| {
+        t.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    let centre_in = |(x, y, w, h): PixelRect, (ox, oy, ow, oh): PixelRect| {
+        let (cx, cy) = (x + w as i32 / 2, y + h as i32 / 2);
+        cx >= ox && cy >= oy && cx < ox + ow as i32 && cy < oy + oh as i32
+    };
+    let mut merged = first;
+    let kept = merged.len();
+    for line in second {
+        let seen = merged[..kept].iter().any(|m| {
+            fold(&m.text) == fold(&line.text)
+                && (centre_in(line.rect, m.rect) || centre_in(m.rect, line.rect))
+        });
+        if !seen {
+            merged.push(line);
+        }
+    }
+    merged
 }
 
 impl OcrEngine for AutoOcr {
@@ -2077,6 +2121,11 @@ impl OcrEngine for AutoOcr {
         match self {
             #[cfg(windows)]
             Self::Windows(e) => e.recognize(frame),
+            #[cfg(windows)]
+            Self::Both(windows, ocrs) => {
+                let first = windows.recognize(frame)?;
+                Ok(merge_readings(first, ocrs.recognize(frame)?))
+            }
             Self::Ocrs(e) => e.recognize(frame),
         }
     }
@@ -2089,6 +2138,8 @@ impl OcrEngine for AutoOcr {
         match self {
             #[cfg(windows)]
             Self::Windows(e) => e.recognize_closer(frame, scale),
+            #[cfg(windows)]
+            Self::Both(_, ocrs) => ocrs.recognize_closer(frame, scale),
             Self::Ocrs(e) => e.recognize_closer(frame, scale),
         }
     }
@@ -2326,6 +2377,23 @@ mod tests {
         // A drop target that is not there fails before the button goes down.
         assert!(d.drag(&anchor("Sign in"), &anchor("Nowhere")).is_err());
         assert_eq!(d.screen.drags.len(), 1);
+    }
+
+    #[test]
+    fn two_engines_reading_one_line_count_it_once_and_differing_readings_both_stay() {
+        let merged = merge_readings(
+            vec![
+                OcrLine::new("Total", (10, 10, 50, 16)),
+                OcrLine::new("Sta ndard", (10, 40, 80, 16)),
+            ],
+            vec![
+                OcrLine::new("total:", (11, 11, 52, 15)),
+                OcrLine::new("Standard", (10, 40, 80, 16)),
+                OcrLine::new("7", (200, 200, 10, 16)),
+            ],
+        );
+        let texts: Vec<&str> = merged.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, vec!["Total", "Sta ndard", "Standard", "7"]);
     }
 
     #[test]
