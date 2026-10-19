@@ -62,14 +62,18 @@ flowproof author-from-goal find-product.flow.yaml --budget 20
 It needs a model backend (`flowproof config ai`). It explores the live app
 toward the goal in rounds: each round checks whether the goal holds, and if
 not, asks the model for the next action (or a short sequence of them) and
-performs it. It writes a DRAFT `.flow.yaml` of the steps it took. Only when
-the goal is reached does the draft end with the goal as a check; otherwise
-the draft stops where exploration did. Like `author-from-doc`, it never
-writes a trace: review the draft, then `flowproof record` it.
+performs it. It writes a DRAFT `.flow.yaml` of the steps it took, ending
+with the goal as a check whether or not exploration reached it: `record`
+then proves the goal or fails on it. Like `author-from-doc`, it never writes
+a trace: review the draft, then `flowproof record` it.
 
 - `--budget` caps the actions tried (default 40), counting refused actions
   as well as performed ones. The outcome is `reached`, `budget-exhausted`, or
-  `no-progress` when the same failure keeps recurring.
+  `no-progress`: the same failure kept recurring, or a round could not be
+  tied to the screen (a check or action naming something not on it, or a
+  page that reports a problem, such as a captcha). Every outcome writes the
+  draft and the recording so far; only a missing model backend fails the
+  run.
 - `--recording-detail` (`full`, `low`, or `off`) controls the recording of
   the attempt, saved under `.flowproof/explorations/` next to the draft.
   Unless it is `off`, a GIF of everything tried, including abandoned
