@@ -30,6 +30,15 @@ impl VisionScreen for Screen {
             .push((x + self.origin.0, y + self.origin.1));
         Ok(())
     }
+    fn double_click(&mut self, _: i32, _: i32) -> Result<(), DriverError> {
+        panic!("unexpected double click")
+    }
+    fn right_click(&mut self, _: i32, _: i32) -> Result<(), DriverError> {
+        panic!("unexpected right click")
+    }
+    fn scroll(&mut self, _: i32) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn type_text(&mut self, _: &str) -> Result<(), DriverError> {
         panic!("unexpected typing")
     }

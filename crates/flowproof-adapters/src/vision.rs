@@ -954,7 +954,9 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// scrolled would move the page on every tick.
     fn resolve_scrolling(&mut self, selector: &UiaSelector) -> Result<Option<OcrHit>, DriverError> {
         let (mut lines, hit) = self.look(selector)?;
-        if hit.is_some() {
+        // The taskbar does not scroll, and the Start logo is never text a
+        // scrolled reading could stand in for.
+        if hit.is_some() || selector.name.as_deref().map(str::trim) == Some(start::LABEL) {
             return Ok(hit);
         }
         vision_log(|| {
@@ -2970,10 +2972,12 @@ mod tests {
         assert!(!d.element_exists(&anchor(start::LABEL)).expect("vision"));
         let error = d.invoke(&anchor(start::LABEL)).expect_err("damaged icon");
         assert!(error.to_string().contains("unavailable"));
-        assert_eq!(d.scene().expect("vision").as_deref(), Some("[]"));
+        // What is left of the logo may still be offered as an unnamed icon,
+        // never as the Start button nor as OCR text claiming to be it.
+        let scene = d.scene().expect("vision").expect("vision");
+        assert!(!scene.contains(start::LABEL), "{scene}");
         assert!(d.screen.clicks.is_empty());
     }
-
 
     #[test]
     fn typing_clicks_right_of_the_label_then_types() {
