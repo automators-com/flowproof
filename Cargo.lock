@@ -930,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-adapters"
-version = "0.23.23"
+version = "0.23.24"
 dependencies = [
  "anyhow",
  "flowproof-driver",
@@ -949,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-agent"
-version = "0.23.23"
+version = "0.23.24"
 dependencies = [
  "base64",
  "chrono",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-cli"
-version = "0.23.23"
+version = "0.23.24"
 dependencies = [
  "ab_glyph",
  "chrono",
@@ -994,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-driver"
-version = "0.23.23"
+version = "0.23.24"
 dependencies = [
  "calamine",
  "flowproof-trace",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-python"
-version = "0.23.23"
+version = "0.23.24"
 dependencies = [
  "flowproof-agent",
  "flowproof-cli",
@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-replay"
-version = "0.23.23"
+version = "0.23.24"
 dependencies = [
  "chrono",
  "flowproof-agent",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "flowproof-trace"
-version = "0.23.23"
+version = "0.23.24"
 dependencies = [
  "jsonschema",
  "regex",
