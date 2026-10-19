@@ -810,6 +810,10 @@ fn failure_hint(kind: &str, screen: Option<&flowproof_driver::FailureScreen>) ->
                         button exactly as the screen shows it, or configure an authoring model \
                         with `flowproof config ai`."
             .into(),
+        "model_auth" => "The model provider refused the API key: it may have expired, been \
+                         revoked, or not be allowed to use this model. Set a working key with \
+                         `flowproof config ai`, then record again."
+            .into(),
         "missing_value" => "A value the flow uses is not set. Add it to the environment or the \
                             flow's values, then record again."
             .into(),
@@ -5217,6 +5221,25 @@ mod tests {
             .expect("error is a string")
             .contains("oracle"));
         assert!(payload.get("needs_clarification").is_none());
+    }
+
+    /// The hint for a refused key points at the key, never at the step.
+    #[test]
+    fn a_refused_key_reports_model_auth_with_a_key_hint() {
+        let err =
+            flowproof_agent::RecordError::Agent(flowproof_agent::AgentError::ModelRefusedKey {
+                provider: "Anthropic".into(),
+                status: 401,
+                detail: ": invalid x-api-key".into(),
+            })
+            .into();
+        let payload = record_failure_json(&err);
+        assert_eq!(payload["failure"]["kind"], "model_auth");
+        let hint = payload["failure"]["hint"]
+            .as_str()
+            .expect("hint is a string");
+        assert!(hint.contains("flowproof config ai"), "{hint}");
+        assert!(!hint.contains("Name the field"), "{hint}");
     }
 
     #[test]

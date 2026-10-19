@@ -203,6 +203,17 @@ impl HttpModelClient {
             } else {
                 format!(": {detail}")
             };
+            if matches!(status.as_u16(), 401 | 403) {
+                let provider = match context {
+                    "anthropic" => "Anthropic",
+                    _ => "The model provider",
+                };
+                return Err(AgentError::ModelRefusedKey {
+                    provider: provider.to_string(),
+                    status: status.as_u16(),
+                    detail: suffix,
+                });
+            }
             return Err(AgentError::Config(format!(
                 "model call failed ({context}): http status {}{suffix}",
                 status.as_u16()

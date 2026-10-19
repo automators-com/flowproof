@@ -174,13 +174,17 @@ pub enum RecordError {
 }
 
 impl RecordError {
-    /// The flow cannot run as configured: a `${VAR}` with no value, or no app
-    /// to drive. Rewording a step or starting over cannot change that, so
+    /// The flow cannot run as configured: a `${VAR}` with no value, no app
+    /// to drive, or a model key the provider refuses. Rewording a step or starting over cannot change that, so
     /// the repair loop and its fresh retry must not spend a second run on it.
     pub fn is_setup_error(&self) -> bool {
         matches!(
             self,
-            Self::Secret(_) | Self::UnknownApp(_) | Self::MissingUrl | Self::MissingWindow
+            Self::Secret(_)
+                | Self::UnknownApp(_)
+                | Self::MissingUrl
+                | Self::MissingWindow
+                | Self::Agent(crate::AgentError::ModelRefusedKey { .. })
         )
     }
 
@@ -194,6 +198,7 @@ impl RecordError {
             Self::NeedsClarification(_) => "needs_clarification",
             Self::Driver(_) => "app_error",
             Self::Agent(crate::AgentError::PreviousStepIncomplete { .. }) => "page_not_ready",
+            Self::Agent(crate::AgentError::ModelRefusedKey { .. }) => "model_auth",
             Self::Rules(_) | Self::Agent(_) | Self::NoAuthor { .. } | Self::NoScene(_) => {
                 "authoring"
             }
@@ -7118,6 +7123,49 @@ steps:
     struct CountingClient {
         reply: String,
         calls: usize,
+    }
+
+    struct RefusingClient {
+        calls: usize,
+    }
+
+    impl crate::ModelClient for RefusingClient {
+        fn complete(&mut self, _system: &str, _user: &str) -> Result<String, crate::AgentError> {
+            self.calls += 1;
+            Err(crate::AgentError::ModelRefusedKey {
+                provider: "Anthropic".into(),
+                status: 401,
+                detail: ": invalid x-api-key".into(),
+            })
+        }
+
+        fn identity(&self) -> (String, String) {
+            ("anthropic".into(), "test-model".into())
+        }
+    }
+
+    /// An expired key used to surface as an `authoring` failure whose hint
+    /// asked for the step to be reworded, after repair and a fresh retry had
+    /// each spent another call on the same refusal. It is a setup failure:
+    /// one call, nothing done to the app, and a kind that names the key.
+    #[test]
+    fn a_refused_key_stops_the_recording_as_a_setup_failure() {
+        let spec = FlowSpec::parse(
+            "name: Key\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Open the link that leads to more information\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["#more"]);
+        driver.scene = Some(r##"[{"target":"css:#more","tag":"a","text":"More"}]"##.into());
+        let mut client = RefusingClient { calls: 0 };
+        let out = std::env::temp_dir().join("flowproof-refused-key.trace.jsonl");
+        let err = record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect_err("a refused key cannot record");
+        assert_eq!(err.kind(), "model_auth");
+        assert!(err.is_setup_error(), "repair must not spend a run on it");
+        assert_eq!(client.calls, 1, "a refused key is not asked twice");
+        assert!(driver.invoked.is_empty());
+        std::fs::remove_file(&out).ok();
     }
 
     impl crate::ModelClient for CountingClient {

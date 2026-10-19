@@ -3,7 +3,7 @@
 //! the error path are the things under test, and a mock client would prove
 //! nothing about either.
 
-use flowproof_agent::{BackendConfig, BackendKind, HttpModelClient, ModelClient};
+use flowproof_agent::{AgentError, BackendConfig, BackendKind, HttpModelClient, ModelClient};
 
 /// Serve one request: capture its body, answer with `(status, body)`.
 fn serve_once(status: u16, body: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
@@ -113,6 +113,34 @@ fn a_provider_error_quotes_the_providers_own_explanation() {
         text.contains("`temperature` is deprecated for this model."),
         "the provider's explanation must reach the user: {text}"
     );
+}
+
+/// An expired or revoked key is not a backend misconfiguration to puzzle
+/// over: it is its own error, naming the provider and keeping its words.
+#[test]
+fn a_refused_key_is_its_own_error() {
+    for status in [401, 403] {
+        let (base, _rx) = serve_once(
+            status,
+            r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#,
+        );
+        let err = anthropic_client(&base)
+            .complete("system", "user")
+            .expect_err("a refused key must fail");
+        let AgentError::ModelRefusedKey { status: got, .. } = &err else {
+            panic!("{status} must be ModelRefusedKey, not: {err:?}");
+        };
+        assert_eq!(*got, status);
+        let text = err.to_string();
+        assert!(
+            text.starts_with("Anthropic refused the API key"),
+            "the provider is named: {text}"
+        );
+        assert!(
+            text.contains("invalid x-api-key"),
+            "and its own explanation survives: {text}"
+        );
+    }
 }
 
 /// This text is what someone pastes into a bug report. A gateway that echoes
