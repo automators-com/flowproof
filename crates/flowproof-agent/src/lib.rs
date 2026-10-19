@@ -52,6 +52,15 @@ pub enum AgentError {
         "cannot record '{step}': the previous step left a problem behind — the page reports: {evidence}"
     )]
     PreviousStepIncomplete { step: String, evidence: String },
+    /// The provider answered 401 or 403: the key is expired, revoked, wrong,
+    /// or not allowed this model. Rewording a step or retrying cannot change
+    /// that, so it is its own error rather than a backend `Config` string.
+    #[error("{provider} refused the API key (http status {status}){detail}")]
+    ModelRefusedKey {
+        provider: String,
+        status: u16,
+        detail: String,
+    },
 }
 
 /// Which model backend drives the authoring loop.
