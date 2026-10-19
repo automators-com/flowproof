@@ -6,6 +6,164 @@ together).
 
 ## Unreleased
 
+## 0.23.23
+
+- **`app: vision` grounds like a computer-use agent, and is measured doing
+  it.** Vision found a control only if OCR read its text. A button drawn as an
+  icon, a key drawn as strokes (`=`, `−`, `÷` on Windows Calculator), or a
+  label that repeats on the page (Settings shows "Windows Update" as a heading
+  above the nav item of that name) was missed or, worse, clicked in the wrong
+  place. And nothing measured how often. A grounding benchmark now does
+  (`examples/vision_bench`, `scripts/vision-bench/run.ps1`). It asks the
+  window's own accessibility tree for the answer, checks whether `Click
+  "<name>"` lands inside the named control, and runs on eight desktop apps.
+  Pixels alone scored 26%. Four changes, borrowed from how Microsoft's UFO2
+  and the frontier computer-use agents work, raise that:
+
+  - On a local window, vision now also reads the accessibility tree, as UFO2
+    does. A control the tree names exactly is the target, unless another
+    window is drawn over it, in which case the text on screen wins. With the
+    tree, the benchmark scores 100% on seven of eight apps, with no wrong
+    clicks. A Citrix or RDP client reports no tree, so vision stays
+    pixels-only there.
+  - Operator keys are recognised by their shape: `=` is two bars of one width,
+    `÷` a bar between two dots. Pixels-only, Calculator now computes `9−4=5`,
+    `÷5`, `×7` and `+3` by clicking.
+  - Reading is done by two OCR engines, merged. Windows' own engine reads
+    interface text faster, and `ocrs` reads the lone glyphs Windows drops.
+  - A field addressed by its label lands inside the box drawn there, not at a
+    fixed offset.
+
+  Vision also gains `drag` and `hover`, and waits for the window to stop
+  changing before it reads a target. Recording a vision step sends the model
+  the screenshot as well as the OCR'd element list, so it can see which of the
+  listed elements the step means.
+
+- **`app: vision` reads and clicks its own window, not the one in front of
+  it.** Vision captured the screen where its window was and injected input
+  there, but never confirmed the window was in front: Windows refuses
+  `SetForegroundWindow` to a process the user is not working in, which is
+  flowproof whenever it is started from a terminal or an IDE, and the refusal
+  was ignored. A Calculator flow started from a window covering Calculator
+  OCR'd that window's sidebar and reported `5` as not on screen - a likely
+  reading of "vision struggles with a simple calculator". Vision now lifts the
+  foreground lock when Windows refuses, waits for the window to finish
+  painting before its first read, raises it again whenever another program
+  takes the foreground mid-run (its own popups and menus are left alone), and
+  fails naming the window in the way when it still cannot. Capture also stops
+  taking in the strip behind a window's invisible resize border, where OCR
+  read stray letters that were not the window's own.
+
+- **`app: vision` clicks again when its click went nowhere.** A computer-use
+  model looks at the screen after every action and tries again when nothing
+  happened. Replayed over pixels, a click a slow remote session swallowed
+  passed silently, and the step after it failed for a reason that was not its
+  own. Now the pointer rests on the target first, so its hover tint is in the
+  frame before the click, and for 1.5s after the click anything more than a
+  blinking caret changing counts as the click answered. If nothing changed,
+  the click is made once more. Only once, and it never fails the step: `0` on
+  a Calculator already showing 0 rightly changes nothing, and pressing a
+  toggle again before a slow app draws it would undo it. Such a click costs
+  about three seconds and is logged under `FLOWPROOF_VISION_LOG`. Double and
+  right clicks are not repeated.
+
+- **`app: vision` reads a keypad key by key.** OCR grouped every word on a row
+  into one line, so Windows Calculator's keypad row `7 8 9 ×` - four buttons
+  with gaps several glyphs wide - was recognised as `8 9X`: the `7` lost
+  across the gaps, and the `8` reachable only as part of a phrase. A row is
+  now split wherever its words stand further apart than any words of one
+  phrase, so a keypad's keys, a toolbar's buttons and a grid's columns are
+  each a line of their own. A thin glyph alone on a key, like Calculator's
+  `1`, is too slight for the text detector at screen size: a target that is
+  missed is now looked for again in the same frame read at two and then three
+  times the size, each lone glyph given the margin a line of text would have.
+  And a frame already read is not read again - one step reads the screen
+  several times (reveal, wait, act), which cost a replayed Calculator flow a
+  minute and a half of re-reading; it now replays in eleven seconds.
+
+- **`app: vision` clicks the Calculator key it was asked for, not one that
+  looks like it.** Four matches clicked the wrong thing: `1` matched the `1/x`
+  key by prefix, `×` matched the italic `x` of `x²`, `5` matched the
+  Keep-on-top icon OCR read as `5` (switching Calculator to compact mode), and
+  `0` and `×` matched the window's own maximize and close buttons - the last
+  closed Calculator mid-flow. A one- or two-character anchor now never matches
+  by prefix, is looked for as a key of its own at every scale before it may
+  match inside a phrase, and the caption buttons are never a target; `×`
+  matches the `X` OCR reads it as, and a thin `1` the `I`. `Type 12+30=` is no
+  longer failed for not showing `1230`, a model's `*` is typed rather than
+  refused, and a key OCR cannot read at all - Calculator's `=` - fails saying
+  so, and that `Type =` presses it.
+
+- **`app: vision` clicks the name it was asked for before one that merely
+  begins with it.** In File Explorer, `Click "ssis_pc_data"` opened the
+  project file `ssis_pc_data.dtproj` instead of the folder: OCR had read the
+  folder as `ssis_ pc_ data`, with spaces after its underscores, and a prefix
+  match on the name as written was tried before any looser whole match. Every
+  whole match - as written, ignoring case, ignoring edge punctuation, ignoring
+  the spaces OCR inserts - is now tried before any prefix, so a prefix is
+  reached only when nothing on screen is the name itself.
+
+- **A flow recorded over pixels clicks the "Home" the model picked, not the
+  first one on screen.** A computer-use model tells two things of one name
+  apart by where they are; `app: vision`'s recording scene offered every
+  `Home` in File Explorer - breadcrumb, navigation pane, search placeholder -
+  as the same `text:Home`, so whichever one the model chose was recorded as
+  the first, and replay clicked that. A text shown more than once, and an icon
+  drawn more than once, are now offered once per place with their ordinal
+  (`nth:2:text:Home`), counted the way replay counts; the recorder turns that
+  into `the 2nd "Home"`. Live, every one of the 51 repeated entries on four
+  desktop apps replays onto the entry the scene described.
+
+- **`Click the "5" button` is a click, and vision can click inside a phrase.**
+  The grammar refused a `Click` with a role noun after its label, though that
+  is how people write it and `Press the "Save" button` always took one. On
+  `app: vision` a step the grammar refuses goes to the model, and the model,
+  shown a Calculator keypad row as the one OCR line `7 8 9 ×`, answered with a
+  click a third of the way along it - which the vision driver refused as
+  "clicking at an offset is not supported by this driver". The simplest
+  calculator flow failed on its first step. `Click` now takes an optional
+  `button`, `link`, `tab`, `key` or `icon` after the label, which never
+  changes what resolves, and vision performs a click at a point inside the
+  matched text's box.
+
+- **Windows Start no longer needs an OCR guess.** Vision flows can target the
+  visible four-pane taskbar logo, resolving it again during replay after the
+  window moves or scales. Missing or ambiguous logos fail without clicking
+  nearby text; the Citrix title is marked non-actionable in the scene.
+  Standalone Meta/Win/Windows key steps now reach the Windows key mapping.
+  Live Citrix forwarding and capture still need validation on the Windows demo
+  machine.
+
+- **Start detection now covers the compressed glyph from the Citrix demo.** A
+  stricter foreground threshold preserves the gaps between its four panes, and
+  alignment tolerances scale with pane size. Tests retain only the sanitized
+  Windows glyph from the screenshot and exercise three scales. A
+  recording/replay test checks that the menu actually opens after the click,
+  and fails with the icon removed. The synthetic icon label is not accepted as
+  readable text.
+
+- **Model-authored shortcuts now reach native input as keys and modifiers.**
+  `Control+l` was passed as one literal key name, so opening a browser address
+  bar in Citrix failed with “no virtual key”. Model actions now use the rule
+  grammar's chord parser and reject malformed shortcuts before execution.
+  Standalone `Meta`, `Win` and `Windows` also map to the native Windows key.
+  These fixes do not change Citrix's own local-versus-remote key forwarding.
+
+- **The vision grounding benchmark stops scoring vision for refusing what it
+  should refuse, and asks for a Calculator key by what it shows.** A window's
+  system menu and its Minimize, Maximize and Close buttons were in the answer
+  key, so every window lost three or four controls to a refusal that is right
+  - a step never means the chrome, and OCR reads its glyphs as `0` and `X`.
+  They are left out now, by name and place, so File Explorer's tab buttons in
+  the title bar still count. And a memory or reciprocal key is asked for as an
+  author sees it - `M+`, `MS`, `1/x` - not as "Memory add", which no pixel
+  spells. A split button reported as two controls of one name - File
+  Explorer's breadcrumb `Home`, its icon and its text - is one control of the
+  key, as it is one word on screen. Pixels-only name accuracy on five desktop
+  apps reads 33% (Calculator 73%); the rest is mostly icons, which a model
+  reaches through their `icon:` names in the scene, and which this score
+  cannot ask for by name.
+
 ## 0.23.22
 
 - **`app: vision` scrolls to find what is below the fold.** Pixels-only mode
