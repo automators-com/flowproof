@@ -741,21 +741,23 @@ fn ground_one(
         // A model writes a chord as one string (`Alt+F4`). Passed through
         // whole, it reached the driver as a single key name nothing maps.
         // Resolve it with the same grammar a `Press Alt+F4` step uses.
-        if let Some((key, modifiers)) = crate::rules::parse_key_chord(&key) {
+        let key = key.trim();
+        if let Some((key, modifiers)) = crate::rules::parse_key_chord(key) {
             return Ok(vec![ResolvedAction::PressKey { key, modifiers }]);
         }
-        // Looks like a chord but isn't one: refuse it now, while the model
-        // can still correct it, rather than at the driver.
-        if key.trim().len() > 1 && key.contains('+') {
-            return Err(GroundingError::Rejected(format!(
-                "press_key '{key}' is not a key chord: write modifiers and key as \
-                 'Ctrl+V' or 'Alt+F4' (modifiers: Ctrl, Alt, Shift, Win)"
-            )));
+        // Models may press a bare character; rule grammar uses Type for that.
+        if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() {
+            return Ok(vec![ResolvedAction::PressKey {
+                key: key.to_ascii_lowercase(),
+                modifiers: Vec::new(),
+            }]);
         }
-        return Ok(vec![ResolvedAction::PressKey {
-            key,
-            modifiers: Vec::new(),
-        }]);
+        // Not a key the grammar knows: refuse it now, while the model can
+        // still correct it, rather than at the driver.
+        return Err(GroundingError::Rejected(format!(
+            "press_key '{key}' is not a key chord: write modifiers and key as \
+             'Ctrl+V' or 'Alt+F4' (modifiers: Ctrl, Alt, Shift, Win)"
+        )));
     }
 
     let token = authored.target.trim();
@@ -1392,6 +1394,54 @@ pub fn author_step<C: ModelClient>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_key_chords_are_split_before_they_reach_native_input() {
+        use flowproof_trace::format::KeyModifier;
+        for (chord, key, modifiers) in [
+            ("Control+l", "l", vec![KeyModifier::Ctrl]),
+            (
+                "Ctrl+Shift+L",
+                "l",
+                vec![KeyModifier::Ctrl, KeyModifier::Shift],
+            ),
+            ("Alt+F4", "F4", vec![KeyModifier::Alt]),
+            ("Meta", "Meta", vec![]),
+            ("Win", "Meta", vec![]),
+            ("Windows", "Meta", vec![]),
+            ("L", "l", vec![]),
+        ] {
+            let actions = ground_one(
+                serde_json::json!({"action":"press_key", "key":chord}),
+                &[],
+                "[]",
+                "vision",
+                "Focus the address bar",
+                &[],
+                &mut std::collections::BTreeSet::new(),
+            )
+            .expect("valid key chord");
+            assert_eq!(
+                actions,
+                vec![ResolvedAction::PressKey {
+                    key: key.into(),
+                    modifiers
+                }]
+            );
+        }
+        for invalid in ["Hyper+l", "Control+", "the \"Delete\" button"] {
+            assert!(ground_one(
+                serde_json::json!({"action":"press_key", "key":invalid}),
+                &[],
+                "[]",
+                "vision",
+                "Focus the address bar",
+                &[],
+                &mut std::collections::BTreeSet::new()
+            )
+            .is_err());
+        }
+    }
+
     #[test]
     fn the_blank_start_page_is_named_as_intentional() {
         let ctx = |url| AuthorContext {
