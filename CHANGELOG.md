@@ -6,6 +6,30 @@ together).
 
 ## Unreleased
 
+## 0.23.25
+
+- **The model recording a step is told what the earlier steps did, not only
+  what they said.** A computer-use model keeps the actions it took in its
+  context. flowproof told the model authoring a step only the wording of the
+  ones before it - "Work out 7 plus 8" - so a follow-on step such as "now
+  multiply it by 3" or "close it" had to be worded as if nothing had happened.
+  Each earlier step is now listed with what it did: which controls were
+  clicked, what was typed, what was remembered (by name; a `${...}` value and
+  a remembered value are never shown), at most twelve actions per step. Only
+  recording changes: the trace format is the same and replay still makes no
+  model calls.
+
+- **A check that finds its element by the very text it expects is flagged.**
+  `assert: Verify that the calculator displays "8"` on `app: vision` was
+  recorded as "the element reading 8 shows 8". That always holds, so on replay
+  it passed with the display showing 5, by matching the keypad's 8 key. It was
+  a false green that nothing reported. `record` now warns on such a step
+  (`WARNING: step N: … it cannot fail`, and as the step's `warning` in
+  `--json`), the same way it already warns about a `page shows` that held
+  before the steps it follows. It is a warning, not a refusal: check a value
+  no key or label on the screen also shows, or name the element some other
+  way.
+
 ## 0.23.24
 
 - **A rejected model API key is reported as a key problem.** When the provider
