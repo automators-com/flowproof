@@ -2519,6 +2519,50 @@ fn vacuous_check(intent: &str, actions: &[ResolvedAction], before: Option<&str>)
     })
 }
 
+/// A check whose target is FOUND by the text it then expects to see: the
+/// element is located by "8" and asked whether it shows "8", which it
+/// always does - so it passes wherever that text is on screen. Found on
+/// `app: vision` Calculator: "Verify that the calculator displays 8" was
+/// recorded against the text "8", and replayed green with the display
+/// showing 5, on the keypad's 8 key. A model verifying by eye looks at the
+/// display; a replayed text anchor cannot tell the display from a key.
+///
+/// A warning like [`vacuous_check`]'s, since only the author can say which
+/// element was meant: check a value no label or key on the screen also
+/// shows, or name the element by something other than that value.
+fn self_matching_check(intent: &str, actions: &[ResolvedAction]) -> Option<String> {
+    fn anchor_text(target: &Target) -> Option<&str> {
+        match target {
+            Target::Text(text) => Some(text),
+            Target::Nth(_, inner) => anchor_text(inner),
+            _ => None,
+        }
+    }
+    actions.iter().find_map(|action| match action {
+        ResolvedAction::AssertText {
+            target,
+            expected,
+            matcher: TextMatch::Contains | TextMatch::Equals,
+            ..
+        } => {
+            let anchor = anchor_text(target)?;
+            let expected = expected.trim();
+            (!expected.is_empty()
+                && !expected.contains("${")
+                && flowproof_driver::text_contains(anchor, expected))
+            .then(|| {
+                format!(
+                    "'{intent}' finds its element by the text '{anchor}' and then expects it \
+                     to show '{expected}', which that text always does: it passes wherever \
+                     '{anchor}' is on screen (a key or label showing it too), so it cannot \
+                     fail; check a value nothing else on the screen shows"
+                )
+            })
+        }
+        _ => None,
+    })
+}
+
 fn surface_words<D: AppDriver>(driver: &mut D) -> Option<String> {
     let text = driver.surface_text().ok()?;
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -3589,7 +3633,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             route: authored.route,
             warning: authored.warning.clone().or_else(|| {
                 is_check
-                    .then(|| vacuous_check(&intent, &authored.actions, before_actions.as_deref()))
+                    .then(|| {
+                        self_matching_check(&intent, &authored.actions).or_else(|| {
+                            vacuous_check(&intent, &authored.actions, before_actions.as_deref())
+                        })
+                    })
                     .flatten()
             }),
         });
@@ -5438,6 +5486,72 @@ mod tests {
             vacuous_check("x", &[shows("Double click")], None).is_none(),
             "no snapshot (not vision, or no actions before it): nothing to judge"
         );
+    }
+
+    /// "the 8 shows 8" is found by the very text it checks for, so it passes
+    /// on a Calculator showing 5 - on the 8 key. A target found by something
+    /// else, or a value the anchor does not contain, is a real check.
+    #[test]
+    fn a_check_found_by_the_text_it_expects_is_flagged() {
+        let check = |target: Target, expected: &str| ResolvedAction::AssertText {
+            target,
+            expected: expected.into(),
+            matcher: TextMatch::Contains,
+            timeout_ms: 1000,
+        };
+        let warning = self_matching_check(
+            "Verify that the calculator displays \"8\"",
+            &[check(Target::text("8"), "8")],
+        )
+        .expect("the 8 shows 8 cannot fail");
+        assert!(warning.contains("cannot fail"), "{warning}");
+        assert!(
+            self_matching_check("x", &[check(Target::nth(2, Target::text("Total: 8")), "8")])
+                .is_some()
+        );
+        assert!(self_matching_check("x", &[check(Target::text("Total"), "8")]).is_none());
+        assert!(self_matching_check("x", &[check(Target::css("#display"), "8")]).is_none());
+        assert!(self_matching_check("x", &[check(Target::Surface, "8")]).is_none());
+        assert!(
+            self_matching_check(
+                "x",
+                &[check(
+                    Target::text("${captured.total}"),
+                    "${captured.total}"
+                )]
+            )
+            .is_none(),
+            "a reference is resolved at run time, not judged here"
+        );
+    }
+
+    /// End to end through the recorder: the warning reaches the step's
+    /// routing diagnostic, which `record` prints and `--json` carries.
+    #[test]
+    fn recording_a_self_matching_check_warns_on_that_step() {
+        let spec = FlowSpec::parse(
+            "name: Calc\napp: web\nurl: https://e.test/x\nsteps:\n  \
+             - Click the \"8\"\n  \
+             - assert: the \"8\" shows 8\n",
+        )
+        .expect("parses");
+        let mut driver = MockAppDriver::new(&["8"]).with_text("8", "8");
+        let out = std::env::temp_dir().join("flowproof-self-matching-check.trace.jsonl");
+        let summary = record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Rules,
+            None::<&mut CountingClient>,
+        )
+        .expect("records - a warning, not a refusal");
+        assert!(summary.routing[0].warning.is_none());
+        let warning = summary.routing[1]
+            .warning
+            .as_deref()
+            .expect("the check is flagged");
+        assert!(warning.contains("cannot fail"), "{warning}");
+        std::fs::remove_file(out).ok();
     }
 
     #[test]
