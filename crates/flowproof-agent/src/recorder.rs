@@ -2540,6 +2540,8 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     author: Author,
     client: &mut Option<&mut C>,
     prior: &[String],
+    // What the model is told the earlier steps did - see [`step_history`].
+    history: &[String],
     captures: &[String],
     spec_step: &crate::spec::SpecStep,
     llm_used: &mut bool,
@@ -2695,7 +2697,7 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             flow_name: &spec.name,
             app: app_id,
             url: spec.url.as_deref().or(live_url.as_deref()),
-            prior_steps: prior,
+            prior_steps: history,
             captures,
             intent,
             scene: &scene,
@@ -2834,6 +2836,34 @@ fn action_summary(action: &ResolvedAction) -> String {
         other => format!("performed {other:?}"),
     }
 }
+
+/// A finished step as the model is told of it when authoring a later one:
+/// its wording, and what it did. A computer-use model keeps the actions it
+/// took in its context; told only "Work out 7 plus 8", the model authoring
+/// "now multiply it by 3" could not see which keys were pressed, what was
+/// typed or what was remembered. Values written as `${...}` stay hidden, as
+/// in [`action_summary`]; a check is its wording alone.
+fn step_history(intent: &str, done: &[String], is_check: bool) -> String {
+    if is_check || done.is_empty() {
+        return intent.to_string();
+    }
+    let shown = done
+        .iter()
+        .take(HISTORY_ACTIONS_PER_STEP)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = done.len().saturating_sub(HISTORY_ACTIONS_PER_STEP);
+    if more > 0 {
+        format!("{intent} (did: {shown}, and {more} more)")
+    } else {
+        format!("{intent} (did: {shown})")
+    }
+}
+
+/// Actions of one earlier step spelled out to the model: enough for a
+/// keypad sum or a short form, bounded so a long flow's prompt stays small.
+const HISTORY_ACTIONS_PER_STEP: usize = 12;
 
 /// Fields the page has REJECTED, with the rule it stated for each.
 ///
@@ -3337,6 +3367,8 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     // line a person would have left, not the fumble that got there.
     let mut superseded_steps: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let mut prior_intents: Vec<String> = Vec::new();
+    // The same steps as the model is told of them: each with what it did.
+    let mut prior_history: Vec<String> = Vec::new();
     let mut llm_used = false;
     let mut routing = Vec::new();
     // A vision form's field layout, once a typed value has SHOWN it: a
@@ -3533,6 +3565,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             author,
             &mut client,
             &prior_intents,
+            &prior_history,
             &capture_names,
             spec_step,
             &mut llm_used,
@@ -3573,6 +3606,9 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         // `intent` is moved into `prior_intents` above; the cursor needs its
         // own copy to name the step in a continuation prompt.
         let step_intent = spec_step.intent().to_string();
+        // Pushed now, as `prior_intents` is, so a step that ends early is
+        // still listed; filled in with what it did once it finishes.
+        prior_history.push(step_intent.clone());
         let mut plan: std::collections::VecDeque<ResolvedAction> = authored.actions.into();
         let mut executed_summaries: Vec<String> = Vec::new();
         let mut replans = 0u32;
@@ -3635,7 +3671,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     &step_app,
                     driver,
                     &mut client,
-                    &prior_intents,
+                    &prior_history,
                     &capture_names,
                     &step_intent,
                     &executed_summaries,
@@ -3744,7 +3780,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                                 &step_app,
                                 driver,
                                 &mut client,
-                                &prior_intents,
+                                &prior_history,
                                 &capture_names,
                                 &step_intent,
                                 &executed_summaries,
@@ -3811,7 +3847,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             &step_app,
                             driver,
                             &mut client,
-                            &prior_intents,
+                            &prior_history,
                             &capture_names,
                             &step_intent,
                             &executed_summaries,
@@ -3919,7 +3955,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                                 &step_app,
                                 driver,
                                 &mut client,
-                                &prior_intents,
+                                &prior_history,
                                 &capture_names,
                                 &step_intent,
                                 &executed_summaries,
@@ -4827,6 +4863,9 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 "the surface text at a step boundary".to_string(),
                 driver.surface_text()?,
             ));
+        }
+        if let Some(last) = prior_history.last_mut() {
+            *last = step_history(&step_intent, &executed_summaries, is_check);
         }
         live.finish("PASS");
     }
@@ -7619,6 +7658,62 @@ steps:
             ]
         );
         std::fs::remove_file(&out).ok();
+    }
+
+    /// The model authoring a later step is told what the earlier ones DID,
+    /// not only what they said - the actions a computer-use model keeps in
+    /// its context. A remembered value is named, never shown.
+    #[test]
+    fn model_context_tells_what_earlier_steps_did() {
+        let spec = FlowSpec::parse(
+            "name: History\napp: web\nurl: https://e.test/x\nsteps:\n  \
+             - rules: Type 12 into the \"Amount\" field\n  \
+             - rules: Remember the \"Total\" as total\n  \
+             - Type it into the destination field\n",
+        )
+        .expect("parses");
+        let mut driver =
+            MockAppDriver::new(&["Amount", "Total", "Destination"]).with_text("Total", "4711");
+        driver.scene = Some(r##"[{"target":"text:Destination","tag":"input"}]"##.into());
+        let mut client = PromptClient {
+            reply: r##"{"action":"type_captured","target":"text:Destination","capture":"total"}"##
+                .into(),
+            prompts: Vec::new(),
+        };
+        let out = std::env::temp_dir().join("flowproof-model-history.trace.jsonl");
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("records");
+        assert_eq!(client.prompts.len(), 1);
+        let prompt = &client.prompts[0];
+        assert!(
+            prompt.contains("Type 12 into the \"Amount\" field (did: typed \"12\" into"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("Remember the \"Total\" as total (did: remembered"),
+            "{prompt}"
+        );
+        assert!(
+            !prompt.contains("4711"),
+            "a remembered value stays out: {prompt}"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn step_history_bounds_a_long_step_and_leaves_a_check_as_worded() {
+        let done: Vec<String> = (1..=15).map(|n| format!("clicked {n}")).collect();
+        let line = step_history("Fill the form", &done, false);
+        assert!(
+            line.starts_with("Fill the form (did: clicked 1, clicked 2"),
+            "{line}"
+        );
+        assert!(line.ends_with("clicked 12, and 3 more)"), "{line}");
+        assert_eq!(
+            step_history("page shows 36", &["performed AssertText".into()], true),
+            "page shows 36"
+        );
+        assert_eq!(step_history("Wait", &[], false), "Wait");
     }
 
     #[test]
