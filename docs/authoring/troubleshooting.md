@@ -61,6 +61,21 @@ flowproof author-from-doc test-set.pdf --check
 flowproof author-from-doc test-set.pdf --test-case M-040-090-020-1 --app sap --name "TECO production order" --out teco.flow.yaml
 ```
 
+To draft several test cases, repeat `--test-case`, or give `--test-case all`.
+`--out` is then a folder, and each test case is drafted into its own flow
+there. The flow is named after its test case without the ID, unless two
+names would then be the same. Its file is named after the test case too, e.g.
+`m-040-090-020-1-teco-production-order.flow.yaml`. Nothing is drafted if
+any of those files already exists. A test case the model fails on is
+reported and the others are still drafted. The exit code is 1 when some
+failed and 2 when none were drafted. With `--json`, the result is
+`{"drafts": [...], "failed": [{"test_case", "error"}]}`, where each draft
+has the same fields as a single draft's JSON.
+
+```bash
+flowproof author-from-doc test-set.pdf --test-case all --app sap --out drafts/
+```
+
 When the document contains concrete non-secret business data, such as a
 material, supplier, plant, customer, or order id, the draft can use
 `${NAME}` placeholders and `author-from-doc` writes a sibling values file

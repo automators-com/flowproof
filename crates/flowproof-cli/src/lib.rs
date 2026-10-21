@@ -511,16 +511,20 @@ enum Command {
         /// Target app id (e.g. sap, web, calc).
         #[arg(long, required_unless_present = "check")]
         app: Option<String>,
-        /// Flow name, written into the draft's `name:` field.
-        #[arg(long, required_unless_present = "check")]
+        /// Flow name, written into the draft's `name:` field. Not used with
+        /// several test cases: each flow is named after its test case.
+        #[arg(long)]
         name: Option<String>,
+        /// The draft file, or with several test cases the folder each one's
+        /// flow is written into.
         #[arg(short, long, required_unless_present = "check")]
         out: Option<PathBuf>,
         /// Which test case to draft when the document holds several (an
         /// ALM test-set report): its number as `--check` lists them, its
-        /// name, or its ID.
+        /// name, or its ID. Repeat it, or give `all`, to draft several, each
+        /// into its own flow.
         #[arg(long)]
-        test_case: Option<String>,
+        test_case: Vec<String>,
         /// Only read the document and report the test cases and steps it
         /// holds; nothing is sent to a model and nothing is written.
         #[arg(long)]
@@ -3707,7 +3711,7 @@ fn cmd_author_from_doc(
     app: Option<String>,
     name: Option<String>,
     out: Option<PathBuf>,
-    test_case: Option<String>,
+    test_case: Vec<String>,
     check: bool,
     json: bool,
 ) -> Result<u8, String> {
@@ -3732,7 +3736,7 @@ fn cmd_author_from_doc(
         } else {
             println!(
                 "{} test cases, {steps} steps, {with_expected} with an expected result \
-                 (draft one with --test-case <number>)",
+                 (choose with --test-case <number>, repeated, or all)",
                 found.len()
             );
             for (i, c) in found.iter().enumerate() {
@@ -3745,42 +3749,44 @@ fn cmd_author_from_doc(
     }
     // Like record and heal, drafting must see credentials saved by config ai.
     config::seed_env();
-    let (Some(app), Some(name), Some(out)) = (app, name, out) else {
-        return Err("--app, --name and --out are required to draft".into());
+    let (Some(app), Some(out)) = (app, out) else {
+        return Err("--app and --out are required to draft".into());
+    };
+    let several = test_case.len() > 1
+        || test_case
+            .iter()
+            .any(|c| c.trim().eq_ignore_ascii_case("all"));
+    if several {
+        if name.is_some() {
+            return Err(
+                "--name names one flow; with several test cases each is named after its test case"
+                    .into(),
+            );
+        }
+        let opts = doc_author::DocBatchOptions {
+            doc,
+            app,
+            out_dir: out,
+            test_cases: test_case,
+        };
+        return draft_many_from_doc(&opts, json);
+    }
+    let Some(name) = name else {
+        return Err("--name is required to draft one test case".into());
     };
     let opts = doc_author::DocAuthorOptions {
         doc,
         app,
         name,
         out,
-        test_case,
+        test_case: test_case.into_iter().next(),
     };
     let result = doc_author::author_from_doc_with_progress(&opts, &mut |done, total| {
         eprintln!("drafting step {} of {total}", done + 1);
     })
     .map_err(|e| e.to_string())?;
     if json {
-        use flowproof_agent::draft_assembly::DraftLine;
-        let steps: Vec<_> = result
-            .lines
-            .iter()
-            .map(|line| {
-                let kind = match line {
-                    DraftLine::Action(_) => "action",
-                    DraftLine::Assert(_) => "assert",
-                    DraftLine::Flagged(_) => "flagged",
-                    DraftLine::OutOfScope(_) => "out_of_scope",
-                };
-                let mut step = serde_json::json!({ "kind": kind, "text": line.step_text() });
-                if let DraftLine::Flagged(observed) | DraftLine::OutOfScope(observed) = line {
-                    step["observed"] = observed.clone().into();
-                }
-                step
-            })
-            .collect();
-        let report = serde_json::json!({ "flow": result.flow, "values": result.values,
-            "test_case": result.test_case, "steps": steps });
-        println!("{report}");
+        println!("{}", doc_draft_json(&result));
         return Ok(EXIT_PASS);
     }
     println!(
@@ -3796,6 +3802,85 @@ fn cmd_author_from_doc(
         );
     }
     Ok(EXIT_PASS)
+}
+
+/// One drafted test case as `author-from-doc --json` reports it: the files
+/// written and every drafted step with its kind.
+fn doc_draft_json(result: &flowproof_agent::doc_author::DocAuthorResult) -> serde_json::Value {
+    use flowproof_agent::draft_assembly::DraftLine;
+    let steps: Vec<_> = result
+        .lines
+        .iter()
+        .map(|line| {
+            let kind = match line {
+                DraftLine::Action(_) => "action",
+                DraftLine::Assert(_) => "assert",
+                DraftLine::Flagged(_) => "flagged",
+                DraftLine::OutOfScope(_) => "out_of_scope",
+            };
+            let mut step = serde_json::json!({ "kind": kind, "text": line.step_text() });
+            if let DraftLine::Flagged(observed) | DraftLine::OutOfScope(observed) = line {
+                step["observed"] = observed.clone().into();
+            }
+            step
+        })
+        .collect();
+    serde_json::json!({ "flow": result.flow, "values": result.values,
+        "test_case": result.test_case, "steps": steps })
+}
+
+/// Several test cases, each into its own flow. Exits 1 when some failed
+/// and the rest were drafted, 2 when none were.
+fn draft_many_from_doc(
+    opts: &flowproof_agent::doc_author::DocBatchOptions,
+    json: bool,
+) -> Result<u8, String> {
+    use flowproof_agent::doc_author;
+    let entries =
+        doc_author::author_many_from_doc_with_progress(opts, &mut |case, cases, done, total| {
+            eprintln!(
+                "drafting test case {} of {cases}, step {} of {total}",
+                case + 1,
+                done + 1
+            );
+        })
+        .map_err(|e| e.to_string())?;
+    let (drafted, failed): (Vec<_>, Vec<_>) = entries.iter().partition(|e| e.outcome.is_ok());
+    if json {
+        let drafts: Vec<_> = drafted
+            .iter()
+            .filter_map(|e| e.outcome.as_ref().ok())
+            .map(doc_draft_json)
+            .collect();
+        let failed: Vec<_> = failed
+            .iter()
+            .filter_map(|e| e.outcome.as_ref().err().map(|err| (e, err)))
+            .map(|(e, err)| serde_json::json!({ "test_case": e.test_case, "error": err.to_string() }))
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({ "drafts": drafts, "failed": failed })
+        );
+    } else {
+        for entry in &entries {
+            let name = entry.test_case.as_deref().unwrap_or("(unnamed)");
+            match &entry.outcome {
+                Ok(result) => println!("{name}: draft written to {}", result.flow.display()),
+                Err(err) => println!("{name}: not drafted: {err}"),
+            }
+        }
+        println!(
+            "{} of {} test cases drafted — DRAFTS; review every step (a flagged one needs \
+             the live app to resolve it), then `flowproof record` each",
+            drafted.len(),
+            entries.len()
+        );
+    }
+    Ok(match (drafted.is_empty(), failed.is_empty()) {
+        (_, true) => EXIT_PASS,
+        (false, false) => EXIT_FAIL,
+        (true, false) => EXIT_ERROR,
+    })
 }
 
 fn cmd_author_from_code(opts: code_author::CodeAuthorOptions, json: bool) -> Result<u8, String> {
