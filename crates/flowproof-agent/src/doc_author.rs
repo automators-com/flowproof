@@ -36,6 +36,8 @@ pub enum DocAuthorError {
     TestCaseRequired(usize),
     #[error("the document has no test case `{0}`; --check lists them")]
     UnknownTestCase(String),
+    #[error("'{0}' already exists; draft into an empty folder or move it first")]
+    WouldOverwrite(PathBuf),
     #[error("no steps were translated from the document's fields — nothing to draft")]
     NoStepsInferred,
     #[error("model produced a draft that does not parse as a flow spec: {0}")]
@@ -254,6 +256,32 @@ fn select_test_case(
         }
         return Err(DocAuthorError::TestCaseRequired(cases.len()));
     };
+    let at = position_of(&cases, choice)?;
+    Ok(cases.swap_remove(at))
+}
+
+/// The test cases `choices` name, each as [`select_test_case`] takes it,
+/// in document order and each once. `all` (in any case) names every one.
+fn select_test_cases(
+    cases: Vec<DocTestCase>,
+    choices: &[String],
+) -> Result<Vec<DocTestCase>, DocAuthorError> {
+    if choices.iter().any(|c| c.trim().eq_ignore_ascii_case("all")) {
+        return Ok(cases);
+    }
+    let mut picked = std::collections::BTreeSet::new();
+    for choice in choices {
+        picked.insert(position_of(&cases, choice)?);
+    }
+    Ok(cases
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| picked.contains(i))
+        .map(|(_, case)| case)
+        .collect())
+}
+
+fn position_of(cases: &[DocTestCase], choice: &str) -> Result<usize, DocAuthorError> {
     let wanted = choice.split_whitespace().collect::<Vec<_>>().join(" ");
     let at = match wanted.parse::<usize>() {
         Ok(n) => n.checked_sub(1).filter(|&i| i < cases.len()),
@@ -264,8 +292,7 @@ fn select_test_case(
             })
         }),
     };
-    at.map(|i| cases.swap_remove(i))
-        .ok_or_else(|| DocAuthorError::UnknownTestCase(choice.to_string()))
+    at.ok_or_else(|| DocAuthorError::UnknownTestCase(choice.to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,6 +372,145 @@ pub fn author_from_doc_with_progress(
     opts: &DocAuthorOptions,
     on_step: &mut dyn FnMut(usize, usize),
 ) -> Result<DocAuthorResult, DocAuthorError> {
+    let mut client = model_client()?;
+    let text = extract_pdf_text(&opts.doc)?;
+    let case = select_test_case(hp_alm::parse(&text)?, opts.test_case.as_deref())?;
+    draft_case(
+        case,
+        &opts.doc,
+        &opts.app,
+        &opts.name,
+        &opts.out,
+        &mut client,
+        on_step,
+    )
+}
+
+/// Several test cases of one document, each drafted into its own flow in
+/// `out_dir`, for [`author_many_from_doc_with_progress`].
+pub struct DocBatchOptions {
+    pub doc: PathBuf,
+    pub app: String,
+    pub out_dir: PathBuf,
+    /// The test cases to draft, each as [`DocAuthorOptions::test_case`]
+    /// takes it, or `all`.
+    pub test_cases: Vec<String>,
+}
+
+/// One test case of a batch: its draft, or why it has none. A failure
+/// stops only that test case.
+pub struct DocBatchEntry {
+    pub test_case: Option<String>,
+    pub outcome: Result<DocAuthorResult, DocAuthorError>,
+}
+
+/// Drafts each chosen test case into `<out_dir>/<id or name>.flow.yaml`,
+/// named after its test case, calling `on_step(case, cases, done, total)`
+/// before each document step is sent to the model. Nothing is drafted if
+/// a file it would write already exists.
+pub fn author_many_from_doc_with_progress(
+    opts: &DocBatchOptions,
+    on_step: &mut dyn FnMut(usize, usize, usize, usize),
+) -> Result<Vec<DocBatchEntry>, DocAuthorError> {
+    let mut client = model_client()?;
+    let text = extract_pdf_text(&opts.doc)?;
+    let cases = select_test_cases(hp_alm::parse(&text)?, &opts.test_cases)?;
+    draft_cases(cases, opts, &mut client, on_step)
+}
+
+fn draft_cases(
+    cases: Vec<DocTestCase>,
+    opts: &DocBatchOptions,
+    client: &mut dyn ModelClient,
+    on_step: &mut dyn FnMut(usize, usize, usize, usize),
+) -> Result<Vec<DocBatchEntry>, DocAuthorError> {
+    let mut taken = std::collections::HashSet::new();
+    let outs: Vec<PathBuf> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, case)| {
+            opts.out_dir
+                .join(flow_file_name(case.name.as_deref(), i + 1, &mut taken))
+        })
+        .collect();
+    for out in &outs {
+        if let Some(existing) = [out.clone(), default_values_path(out)]
+            .into_iter()
+            .find(|p| p.exists())
+        {
+            return Err(DocAuthorError::WouldOverwrite(existing));
+        }
+    }
+    std::fs::create_dir_all(&opts.out_dir).map_err(|e| io_err(&opts.out_dir, e))?;
+    // Two test cases that differ only by ID keep their IDs, so the
+    // flows can be told apart.
+    let short: Vec<String> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, case)| flow_name(case.name.as_deref(), i + 1))
+        .collect();
+    let total = cases.len();
+    let mut entries = Vec::new();
+    for (i, (case, out)) in cases.into_iter().zip(outs).enumerate() {
+        let test_case = case.name.clone();
+        let name = match &case.name {
+            Some(full) if short.iter().filter(|n| **n == short[i]).count() > 1 => full.clone(),
+            _ => short[i].clone(),
+        };
+        let outcome = draft_case(
+            case,
+            &opts.doc,
+            &opts.app,
+            &name,
+            &out,
+            client,
+            &mut |done, steps| on_step(i, total, done, steps),
+        );
+        entries.push(DocBatchEntry { test_case, outcome });
+    }
+    Ok(entries)
+}
+
+/// A test case's name without the ID before ` - `, as a flow name.
+fn flow_name(test_case: Option<&str>, n: usize) -> String {
+    let name = test_case.map(|name| name.split_once(" - ").map_or(name, |(_, rest)| rest).trim());
+    match name {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => format!("Test case {n}"),
+    }
+}
+
+/// `<test case name>.flow.yaml` with only letters, digits and dashes, so
+/// it is safe on any file system, numbered when two test cases share one.
+fn flow_file_name(
+    test_case: Option<&str>,
+    n: usize,
+    taken: &mut std::collections::HashSet<String>,
+) -> String {
+    let slug: String = test_case
+        .unwrap_or_default()
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+        .chars()
+        .take(80)
+        .collect();
+    let base = match slug.trim_end_matches('-') {
+        "" => format!("test-case-{n}"),
+        slug => slug.to_string(),
+    };
+    let mut stem = base.clone();
+    let mut k = 2;
+    while !taken.insert(stem.clone()) {
+        stem = format!("{base}-{k}");
+        k += 1;
+    }
+    format!("{stem}.flow.yaml")
+}
+
+fn model_client() -> Result<crate::llm::HttpModelClient, DocAuthorError> {
     let config = BackendConfig::from_env().map_err(DocAuthorError::from)?;
     if !config.is_usable() {
         return Err(DocAuthorError::Agent(AgentError::Config(
@@ -352,17 +518,24 @@ pub fn author_from_doc_with_progress(
                 .into(),
         )));
     }
+    Ok(crate::llm::HttpModelClient::new(config))
+}
 
-    let text = extract_pdf_text(&opts.doc)?;
-    let case = select_test_case(hp_alm::parse(&text)?, opts.test_case.as_deref())?;
+fn draft_case(
+    case: DocTestCase,
+    doc: &Path,
+    app: &str,
+    name: &str,
+    out: &Path,
+    client: &mut dyn ModelClient,
+    on_step: &mut dyn FnMut(usize, usize),
+) -> Result<DocAuthorResult, DocAuthorError> {
     let records = case.steps;
-    let mut client = crate::llm::HttpModelClient::new(config);
-
     let mut lines = Vec::new();
     let mut values = Vec::new();
     for (i, record) in records.iter().enumerate() {
         on_step(i, records.len());
-        let translated = translate_record_with_values(record, &mut client)?;
+        let translated = translate_record_with_values(record, client)?;
         lines.extend(translated.lines);
         values.extend(translated.values);
     }
@@ -371,8 +544,8 @@ pub fn author_from_doc_with_progress(
     }
 
     let source = match &case.name {
-        Some(name) => format!("{} (test case {name})", opts.doc.display()),
-        None => opts.doc.display().to_string(),
+        Some(name) => format!("{} (test case {name})", doc.display()),
+        None => doc.display().to_string(),
     };
     let header = format!(
         "# DRAFT generated by `flowproof author-from-doc` from {source}.\n\
@@ -382,17 +555,17 @@ pub fn author_from_doc_with_progress(
          # 'Expected' text, not a guarantee it's phrased the way you'd\n\
          # want.",
     );
-    let yaml = draft_assembly::assemble(&header, &opts.name, &opts.app, &lines)?;
-    std::fs::write(&opts.out, &yaml).map_err(|e| io_err(&opts.out, e))?;
+    let yaml = draft_assembly::assemble(&header, name, app, &lines)?;
+    std::fs::write(out, &yaml).map_err(|e| io_err(out, e))?;
     let values = if values.is_empty() {
         None
     } else {
-        let path = default_values_path(&opts.out);
+        let path = default_values_path(out);
         std::fs::write(&path, values_yaml(&values)?).map_err(|e| io_err(&path, e))?;
         Some(path)
     };
     Ok(DocAuthorResult {
-        flow: opts.out.clone(),
+        flow: out.to_path_buf(),
         test_case: case.name,
         values,
         lines,
@@ -441,6 +614,168 @@ mod tests {
 
     fn chosen(names: &[&str], choice: Option<&str>) -> Result<Option<String>, DocAuthorError> {
         select_test_case(cases(names), choice).map(|c| c.name)
+    }
+
+    fn batch_dir(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fp-doc-batch-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn batch(dir: &Path) -> DocBatchOptions {
+        DocBatchOptions {
+            doc: PathBuf::from("report.pdf"),
+            app: "web".into(),
+            out_dir: dir.to_path_buf(),
+            test_cases: vec!["all".into()],
+        }
+    }
+
+    fn with_one_step(names: &[&str]) -> Vec<DocTestCase> {
+        let mut cases = cases(names);
+        for case in &mut cases {
+            case.steps = vec![record("Click on the 'Save' button.", "")];
+        }
+        cases
+    }
+
+    #[test]
+    fn several_test_cases_are_chosen_once_each_in_document_order() {
+        let names = ["T-1 - Create", "T-2 - Change", "T-3 - Display"];
+        let picked = |choices: &[&str]| {
+            let choices: Vec<String> = choices.iter().map(|c| c.to_string()).collect();
+            select_test_cases(cases(&names), &choices).map(|cs| {
+                cs.into_iter()
+                    .map(|c| c.name.expect("as set up"))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            picked(&["3", "t-1", "3"]).expect("as set up"),
+            ["T-1 - Create", "T-3 - Display"]
+        );
+        assert_eq!(picked(&["2", "ALL"]).expect("as set up").len(), 3);
+        assert!(
+            matches!(picked(&["1", "T-9"]), Err(DocAuthorError::UnknownTestCase(c)) if c == "T-9")
+        );
+    }
+
+    /// Each test case is its own flow, named after the test case; a model
+    /// failure on one leaves the others drafted.
+    #[test]
+    fn each_test_case_is_its_own_flow_and_one_failing_stops_only_itself() {
+        let dir = batch_dir("each");
+        let mut client = ScriptedModel {
+            replies: [
+                "STEP: Press the \"Save\" button\nASSERT: NONE",
+                "STEP: NO_ACTION\nASSERT: NONE",
+                "STEP: Type ${PLANT} into the \"Plant\" field\nVALUE: PLANT=1000\nASSERT: NONE",
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let mut seen = Vec::new();
+        let entries = draft_cases(
+            with_one_step(&["T-1 - Create order", "T-2 - Note only", "Kanban (crates)"]),
+            &batch(&dir),
+            &mut client,
+            &mut |case, cases, done, steps| seen.push((case, cases, done, steps)),
+        )
+        .expect("drafts");
+        assert_eq!(seen, [(0, 3, 0, 1), (1, 3, 0, 1), (2, 3, 0, 1)]);
+        assert_eq!(entries.len(), 3);
+        let first = entries[0].outcome.as_ref().expect("first drafted");
+        assert_eq!(first.flow, dir.join("t-1-create-order.flow.yaml"));
+        let yaml = std::fs::read_to_string(&first.flow).expect("as set up");
+        assert!(yaml.contains("name: \"Create order\""), "{yaml}");
+        assert!(yaml.contains("(test case T-1 - Create order)"), "{yaml}");
+        assert!(matches!(
+            entries[1].outcome,
+            Err(DocAuthorError::NoStepsInferred)
+        ));
+        assert_eq!(entries[1].test_case.as_deref(), Some("T-2 - Note only"));
+        assert!(!dir.join("t-2-note-only.flow.yaml").exists());
+        let third = entries[2].outcome.as_ref().expect("third drafted");
+        assert_eq!(third.flow, dir.join("kanban-crates.flow.yaml"));
+        assert_eq!(third.values, Some(dir.join("kanban-crates.values.yaml")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_cases_sharing_a_name_or_without_one_get_their_own_files() {
+        let dir = batch_dir("names");
+        let mut cases = with_one_step(&[
+            "Order - Create",
+            "order  create",
+            "",
+            "%%%",
+            "T-1 - Pay",
+            "T-2 - Pay",
+        ]);
+        cases[2].name = None;
+        let mut client = ScriptedModel {
+            replies: std::iter::repeat_n("STEP: Press the \"Save\" button\nASSERT: NONE", 6)
+                .collect(),
+        };
+        let entries =
+            draft_cases(cases, &batch(&dir), &mut client, &mut |_, _, _, _| {}).expect("drafts");
+        let files: Vec<_> = entries
+            .iter()
+            .map(|e| {
+                e.outcome
+                    .as_ref()
+                    .expect("as set up")
+                    .flow
+                    .file_name()
+                    .expect("as set up")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            files[..4],
+            [
+                "order-create.flow.yaml",
+                "order-create-2.flow.yaml",
+                "test-case-3.flow.yaml",
+                "test-case-4.flow.yaml"
+            ]
+        );
+        let unnamed =
+            std::fs::read_to_string(dir.join("test-case-3.flow.yaml")).expect("as set up");
+        assert!(unnamed.contains("name: \"Test case 3\""), "{unnamed}");
+        let pay = std::fs::read_to_string(dir.join("t-2-pay.flow.yaml")).expect("as set up");
+        assert!(
+            pay.contains("name: \"T-2 - Pay\""),
+            "a clashing name keeps its ID: {pay}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rerun must not replace drafts someone has started editing, and
+    /// must say so before spending any model calls.
+    #[test]
+    fn a_batch_refuses_to_overwrite_before_any_model_call() {
+        let dir = batch_dir("overwrite");
+        std::fs::create_dir_all(&dir).expect("as set up");
+        std::fs::write(dir.join("t-2-change.values.yaml"), "KEEP: me\n").expect("as set up");
+        let mut client = ScriptedModel {
+            replies: Default::default(),
+        };
+        let err = draft_cases(
+            with_one_step(&["T-1 - Create", "T-2 - Change"]),
+            &batch(&dir),
+            &mut client,
+            &mut |_, _, _, _| {},
+        )
+        .err()
+        .expect("refused");
+        assert!(
+            matches!(&err, DocAuthorError::WouldOverwrite(p) if p.ends_with("t-2-change.values.yaml")),
+            "{err}"
+        );
+        assert!(!dir.join("t-1-create.flow.yaml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
