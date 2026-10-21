@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::doc_formats::hp_alm::{self, DocStepRecord, HpAlmParseError};
+use crate::doc_formats::hp_alm::{self, DocStepRecord, DocTestCase, HpAlmParseError};
 use crate::draft_assembly::{self, DraftLine, STEP_GRAMMAR_RULES};
 use crate::llm::ModelClient;
 use crate::{AgentError, BackendConfig};
@@ -29,6 +29,11 @@ pub enum DocAuthorError {
     PdfExtraction { path: String, reason: String },
     #[error(transparent)]
     Parse(#[from] HpAlmParseError),
+    #[error(
+        "the document holds {0} test cases (an ALM test-set report); \
+         a draft is one test case, and choosing one is not supported yet"
+    )]
+    TestCaseRequired(usize),
     #[error("no steps were translated from the document's fields — nothing to draft")]
     NoStepsInferred,
     #[error("model produced a draft that does not parse as a flow spec: {0}")]
@@ -198,6 +203,15 @@ pub struct DocAuthorResult {
     pub lines: Vec<DraftLine>,
 }
 
+/// The document's only test case. Drafting every test case of a
+/// test-set report into one flow would mix unrelated tests.
+fn single_test_case(mut cases: Vec<DocTestCase>) -> Result<DocTestCase, DocAuthorError> {
+    if cases.len() == 1 {
+        return Ok(cases.remove(0));
+    }
+    Err(DocAuthorError::TestCaseRequired(cases.len()))
+}
+
 /// What a document holds before anything is sent to a model: enough for
 /// a caller to confirm the format is readable and say how much it found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,9 +221,11 @@ pub struct DocInspection {
     pub with_expected: usize,
 }
 
-/// Reads and segments the document without a model call.
+/// Reads and segments the document without a model call, counting the
+/// steps of every test case in it.
 pub fn inspect_doc(doc: &Path) -> Result<DocInspection, DocAuthorError> {
-    let records = hp_alm::parse(&extract_pdf_text(doc)?)?;
+    let cases = hp_alm::parse(&extract_pdf_text(doc)?)?;
+    let records: Vec<_> = cases.iter().flat_map(|c| &c.steps).collect();
     Ok(DocInspection {
         steps: records.len(),
         with_expected: records
@@ -305,7 +321,7 @@ pub fn author_from_doc_with_progress(
     }
 
     let text = extract_pdf_text(&opts.doc)?;
-    let records = hp_alm::parse(&text)?;
+    let records = single_test_case(hp_alm::parse(&text)?)?.steps;
     let mut client = crate::llm::HttpModelClient::new(config);
 
     let mut lines = Vec::new();
@@ -373,6 +389,18 @@ mod tests {
             expected: expected.to_string(),
             actual: String::new(),
         }
+    }
+
+    #[test]
+    fn a_test_set_report_needs_a_test_case_chosen() {
+        let case = |n: &str| DocTestCase {
+            name: Some(n.to_string()),
+            ..Default::default()
+        };
+        let only = single_test_case(vec![case("T-1")]).expect("one test case");
+        assert_eq!(only.name.as_deref(), Some("T-1"));
+        let err = single_test_case(vec![case("T-1"), case("T-2")]).expect_err("two");
+        assert!(err.to_string().contains("holds 2 test cases"), "{err}");
     }
 
     #[test]
