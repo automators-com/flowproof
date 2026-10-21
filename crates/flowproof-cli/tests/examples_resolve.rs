@@ -19,6 +19,9 @@ const CONN_TEST_SPEC: &str = include_str!("../../../examples/api/connection-test
 const AGENT_NODE_SPEC: &str = include_str!("../../../examples/agent-demo/weather-node.flow.yaml");
 const AGENT_PY_SPEC: &str = include_str!("../../../examples/agent-demo/weather.flow.yaml");
 const DEMO_SPEC: &str = include_str!("../../../scripts/demo/order-status.flow.yaml");
+/// The README's opening UI example: the first spec a reader sees.
+const TRICENTIS_NATURAL_SPEC: &str =
+    include_str!("../../../examples/tricentis-insurance-natural.flow.yaml");
 /// The multi-turn example (#375). It is the only shipped flow that uses
 /// `conversation:`, so if the grammar drifts nothing else would catch it.
 const AGENT_CONVERSATION_SPEC: &str =
@@ -314,6 +317,33 @@ fn the_quickstart_quotes_the_shipped_agent_example_verbatim() {
         // And it must still parse, so the block a reader copies actually runs.
         FlowSpec::parse(block).expect("the quoted quickstart block parses");
     }
+}
+
+/// The README opens on the natural-language Tricentis flow, quoted without its
+/// `browser:` block. The steps are the claim the headline makes ("write it the
+/// way you would explain it"), so they must stay the shipped file's steps, and
+/// the quoted block must still parse on its own for a reader who copies it.
+#[test]
+fn the_readme_opening_quotes_the_shipped_ui_example() {
+    const README: &str = include_str!("../../../README.md");
+    let readme = README.replace("\r\n", "\n");
+
+    let marker = "```yaml\n# examples/tricentis-insurance-natural.flow.yaml\n";
+    let start = readme
+        .find(marker)
+        .expect("README.md quotes the Tricentis example")
+        + marker.len();
+    let block = &readme[start..];
+    let block = &block[..block.find("```").expect("fence closes")];
+
+    let quoted = FlowSpec::parse(block).expect("the quoted README block parses");
+    let shipped = FlowSpec::parse(TRICENTIS_NATURAL_SPEC).expect("shipped spec parses");
+    assert_eq!(quoted.name, shipped.name);
+    assert_eq!(quoted.app.id(), shipped.app.id());
+    assert_eq!(
+        quoted.steps, shipped.steps,
+        "README.md has drifted from examples/tricentis-insurance-natural.flow.yaml"
+    );
 }
 
 /// The flow behind the README's demo GIF. The GIF is a capture of this spec
