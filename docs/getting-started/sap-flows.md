@@ -73,7 +73,10 @@ What holds:
 - **The password never enters the trace.** It is not a header field, so
   there is nothing to redact and nothing to leak into a committed artifact.
   Only `login_user` travels, because a recording that cannot say which
-  identity produced it is not reviewable.
+  identity produced it is not reviewable. A replay checks it: if the flow's
+  `login.user` is no longer the user the recording was made as, or the
+  `login:` block was removed, the run stops with "The login changed. Record
+  this flow again." Changing only the password needs no new recording.
 - **Values resolve at the moment of use**, on record and on every replay,
   so `${TS3_PASSWORD}` picks up a rotated password rather than the one that
   was true when the trace was cut, and a literal password needs no
