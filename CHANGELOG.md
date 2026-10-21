@@ -6,6 +6,63 @@ together).
 
 ## Unreleased
 
+## 0.23.26
+
+- **`author-from-doc` reads an ALM report that went through Word.** Exported
+  to Word and printed to PDF, an HP ALM run report numbers its headings
+  (`1.1.1.1 Step Name : Step 1`). The parser only looked for `Step Name :` at
+  the start of a line, so it found no steps and refused a real ALM export as
+  having none. Numbered headings now read, the page header that lands mid-step
+  is dropped, a field mentioning "Actual" in its prose is no longer cut short,
+  and steps come out in step-number order. A test-set report holds a run per
+  test case, and drafting all of them into one flow would mix unrelated tests,
+  so such a report is now read as separate test cases (the latest run of each,
+  with each test configuration kept apart). `--check` lists them and
+  `--test-case` names the one to draft, by its number, name or ID; without it,
+  a report with several is refused rather than drafted as one.
+
+- **A flagged draft step says what the document leaves out.** Every step
+  `author-from-doc` could not map ended with "a keyboard-only action like
+  Enter may be the cause", a guess carried over from drafting from screen
+  recordings. Documents are flagged for other reasons: no URL or menu path,
+  a value they don't name, an unlabelled button. The guess sent the reader,
+  and the live authoring agent at `record` time, after a key press. The
+  flagged step now ends with the document's own gap instead, e.g. `Observed:
+  select the desired plant — does not specify which plant`.
+
+- **A document step that holds several actions drafts as several steps.**
+  ALM steps often read "select the plant, then click Save". `author-from-doc`
+  flagged such a step whole whenever one of its actions was vague, so the
+  concrete "Press the "Save" button" was lost in the flag too. Each action is
+  now judged on its own and drafted in order: the concrete ones as real steps,
+  only the vague one flagged. The Expected outcome still follows the step's
+  last action. Splitting doesn't license inventing: an action that needs a
+  URL, path, label or value the document doesn't give is flagged, not filled
+  in with a guess.
+
+- **`author-from-doc` drafts several test cases of a test-set report in one
+  go.** Repeat `--test-case`, or give `--test-case all`. `--out` is then a
+  folder, and each test case gets its own flow, named after it: the name
+  without the ID, unless two would then be the same. Before, each test case
+  of a 17-run report took a separate command, each re-reading the PDF.
+  - A test case the model fails on is reported, and the rest are still
+    drafted. The command exits 1 when some failed, 2 when none were drafted.
+  - Nothing is drafted if any file it would write already exists, so a rerun
+    can't replace drafts someone has started editing.
+  - Progress reads `drafting test case 3 of 17, step 2 of 6`.
+  - `--json` returns `{"drafts": [...], "failed": [...]}`.
+  - One `--test-case`, or none, works as before.
+
+- **A replay checks a single-surface flow's login user.** A multi-surface
+  flow already stopped when a surface's `login.user` no longer matched the
+  recording. A single-surface flow didn't check at all: change `login.user`
+  from `clerk` to `approver` and `run` replayed a clerk's walkthrough as the
+  approver, passing or failing on that user's authorisations with nothing to
+  say the identity had changed. It now stops with "The login changed. Record
+  this flow again." when the user differs, or when the `login:` block was
+  removed. A new password needs no new recording, and a recording whose
+  header names no user, made without a login or before 0.14, is not checked.
+
 ## 0.23.25
 
 - **The model recording a step is told what the earlier steps did, not only
