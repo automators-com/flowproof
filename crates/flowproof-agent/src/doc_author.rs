@@ -30,10 +30,12 @@ pub enum DocAuthorError {
     #[error(transparent)]
     Parse(#[from] HpAlmParseError),
     #[error(
-        "the document holds {0} test cases (an ALM test-set report); \
-         a draft is one test case, and choosing one is not supported yet"
+        "the document holds {0} test cases; choose one with --test-case \
+         (its number from 1 to {0} or its name, as --check lists them)"
     )]
     TestCaseRequired(usize),
+    #[error("the document has no test case `{0}`; --check lists them")]
+    UnknownTestCase(String),
     #[error("no steps were translated from the document's fields — nothing to draft")]
     NoStepsInferred,
     #[error("model produced a draft that does not parse as a flow spec: {0}")]
@@ -193,46 +195,77 @@ pub struct DocAuthorOptions {
     pub app: String,
     pub name: String,
     pub out: PathBuf,
+    /// Which test case to draft when the document holds several: its
+    /// 1-based number in document order, its name, or its ID (the part
+    /// of the name before ` - `).
+    pub test_case: Option<String>,
 }
 
 pub struct DocAuthorResult {
     pub flow: PathBuf,
+    /// The drafted test case's name, when the document gives one.
+    pub test_case: Option<String>,
     pub values: Option<PathBuf>,
     /// The drafted lines in file order, so a caller can show which steps
     /// were flagged without reading the `# TODO` comments back.
     pub lines: Vec<DraftLine>,
 }
 
-/// The document's only test case. Drafting every test case of a
-/// test-set report into one flow would mix unrelated tests.
-fn single_test_case(mut cases: Vec<DocTestCase>) -> Result<DocTestCase, DocAuthorError> {
-    if cases.len() == 1 {
-        return Ok(cases.remove(0));
-    }
-    Err(DocAuthorError::TestCaseRequired(cases.len()))
-}
-
-/// What a document holds before anything is sent to a model: enough for
-/// a caller to confirm the format is readable and say how much it found.
+/// What one test case in a document holds before anything is sent to a
+/// model: enough for a caller to confirm the format is readable, say how
+/// much it found and offer the test cases to choose from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocInspection {
+    pub name: Option<String>,
+    pub run_id: Option<String>,
     pub steps: usize,
     /// Steps whose `Expected` field is filled in, each a candidate assert.
     pub with_expected: usize,
 }
 
-/// Reads and segments the document without a model call, counting the
-/// steps of every test case in it.
-pub fn inspect_doc(doc: &Path) -> Result<DocInspection, DocAuthorError> {
+/// Reads and segments the document without a model call, one entry per
+/// test case in document order.
+pub fn inspect_doc(doc: &Path) -> Result<Vec<DocInspection>, DocAuthorError> {
     let cases = hp_alm::parse(&extract_pdf_text(doc)?)?;
-    let records: Vec<_> = cases.iter().flat_map(|c| &c.steps).collect();
-    Ok(DocInspection {
-        steps: records.len(),
-        with_expected: records
-            .iter()
-            .filter(|r| !r.expected.trim().is_empty())
-            .count(),
-    })
+    Ok(cases
+        .into_iter()
+        .map(|case| DocInspection {
+            with_expected: case
+                .steps
+                .iter()
+                .filter(|r| !r.expected.trim().is_empty())
+                .count(),
+            steps: case.steps.len(),
+            name: case.name,
+            run_id: case.run_id,
+        })
+        .collect())
+}
+
+/// The test case `choice` names (see [`DocAuthorOptions::test_case`]).
+/// A document with one test case needs no choice.
+fn select_test_case(
+    mut cases: Vec<DocTestCase>,
+    choice: Option<&str>,
+) -> Result<DocTestCase, DocAuthorError> {
+    let Some(choice) = choice else {
+        if cases.len() == 1 {
+            return Ok(cases.remove(0));
+        }
+        return Err(DocAuthorError::TestCaseRequired(cases.len()));
+    };
+    let wanted = choice.split_whitespace().collect::<Vec<_>>().join(" ");
+    let at = match wanted.parse::<usize>() {
+        Ok(n) => n.checked_sub(1).filter(|&i| i < cases.len()),
+        Err(_) => cases.iter().position(|c| {
+            c.name.as_deref().is_some_and(|name| {
+                let id = name.split(" - ").next().unwrap_or(name);
+                name.eq_ignore_ascii_case(&wanted) || id.eq_ignore_ascii_case(&wanted)
+            })
+        }),
+    };
+    at.map(|i| cases.swap_remove(i))
+        .ok_or_else(|| DocAuthorError::UnknownTestCase(choice.to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,7 +354,8 @@ pub fn author_from_doc_with_progress(
     }
 
     let text = extract_pdf_text(&opts.doc)?;
-    let records = single_test_case(hp_alm::parse(&text)?)?.steps;
+    let case = select_test_case(hp_alm::parse(&text)?, opts.test_case.as_deref())?;
+    let records = case.steps;
     let mut client = crate::llm::HttpModelClient::new(config);
 
     let mut lines = Vec::new();
@@ -336,14 +370,17 @@ pub fn author_from_doc_with_progress(
         return Err(DocAuthorError::NoStepsInferred);
     }
 
+    let source = match &case.name {
+        Some(name) => format!("{} (test case {name})", opts.doc.display()),
+        None => opts.doc.display().to_string(),
+    };
     let header = format!(
-        "# DRAFT generated by `flowproof author-from-doc` from {}.\n\
+        "# DRAFT generated by `flowproof author-from-doc` from {source}.\n\
          # Review every step below before `flowproof record` - a flagged\n\
          # step (marked TODO) needs the live app to resolve it, and any\n\
          # assert here is a light translation of the document's own\n\
          # 'Expected' text, not a guarantee it's phrased the way you'd\n\
          # want.",
-        opts.doc.display(),
     );
     let yaml = draft_assembly::assemble(&header, &opts.name, &opts.app, &lines)?;
     std::fs::write(&opts.out, &yaml).map_err(|e| io_err(&opts.out, e))?;
@@ -356,6 +393,7 @@ pub fn author_from_doc_with_progress(
     };
     Ok(DocAuthorResult {
         flow: opts.out.clone(),
+        test_case: case.name,
         values,
         lines,
     })
@@ -391,16 +429,49 @@ mod tests {
         }
     }
 
+    fn cases(names: &[&str]) -> Vec<DocTestCase> {
+        names
+            .iter()
+            .map(|n| DocTestCase {
+                name: Some(n.to_string()),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    fn chosen(names: &[&str], choice: Option<&str>) -> Result<Option<String>, DocAuthorError> {
+        select_test_case(cases(names), choice).map(|c| c.name)
+    }
+
+    #[test]
+    fn a_single_test_case_is_drafted_without_choosing_it() {
+        let only = chosen(&["T-1 - Only"], None).expect("no choice needed");
+        assert_eq!(only.as_deref(), Some("T-1 - Only"));
+    }
+
+    /// Drafting every test case of a test-set report into one flow mixed
+    /// unrelated tests; a report with several needs one named.
     #[test]
     fn a_test_set_report_needs_a_test_case_chosen() {
-        let case = |n: &str| DocTestCase {
-            name: Some(n.to_string()),
-            ..Default::default()
-        };
-        let only = single_test_case(vec![case("T-1")]).expect("one test case");
-        assert_eq!(only.name.as_deref(), Some("T-1"));
-        let err = single_test_case(vec![case("T-1"), case("T-2")]).expect_err("two");
+        let names = ["T-1 - Create order", "T-2 - Display order"];
+        let err = chosen(&names, None).expect_err("two test cases, no choice");
         assert!(err.to_string().contains("holds 2 test cases"), "{err}");
+
+        for (choice, want) in [
+            ("2", "T-2 - Display order"),
+            ("t-1 - create  order", "T-1 - Create order"),
+            ("t-2", "T-2 - Display order"),
+        ] {
+            let got = chosen(&names, Some(choice)).expect("chosen");
+            assert_eq!(got.as_deref(), Some(want), "--test-case {choice}");
+        }
+        for choice in ["0", "3", "T-3", "Create"] {
+            let err = chosen(&names, Some(choice)).expect_err("no such test case");
+            assert!(
+                matches!(err, DocAuthorError::UnknownTestCase(_)),
+                "{choice}"
+            );
+        }
     }
 
     #[test]

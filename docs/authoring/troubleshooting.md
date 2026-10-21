@@ -51,6 +51,16 @@ flowproof author-from-doc uat-export.pdf --app sap --name "Manage purchasing inf
 - `--name`: the flow name written into the draft's `name:` field.
 - `--out`: where the draft `.flow.yaml` is written.
 
+A draft is one test case. An ALM test-set report holds a run of each test
+case in the set, so name the one to draft with `--test-case`: its number
+as `--check` lists them, its name, or its ID (the part of the name before
+` - `). A test case run more than once is read from its latest run.
+
+```bash
+flowproof author-from-doc test-set.pdf --check
+flowproof author-from-doc test-set.pdf --test-case M-040-090-020-1 --app sap --name "TECO production order" --out teco.flow.yaml
+```
+
 When the document contains concrete non-secret business data, such as a
 material, supplier, plant, customer, or order id, the draft can use
 `${NAME}` placeholders and `author-from-doc` writes a sibling values file
@@ -92,10 +102,13 @@ to resolve any flagged ones against the live app before trusting it.
 For tools that call it (the desktop app does), two flags help:
 
 - `--check` reads the PDF and prints how many steps it holds and how many
-  have an expected result. Nothing is sent to a model and nothing is
-  written, so it is a fast way to confirm the export is readable.
+  have an expected result, and for a test-set report each test case with
+  its step count. Nothing is sent to a model and nothing is written, so it
+  is a fast way to confirm the export is readable. With `--json` it prints
+  `steps` and `with_expected` for the whole document and `test_cases`, each
+  with its `name` (or `null`), `run_id`, `steps` and `with_expected`.
 - `--json` prints one JSON object when the draft is written: `flow`,
-  `values` (or `null`), and `steps`, each with a `kind` (`action`,
+  `values` (or `null`), `test_case` (its name, or `null`), and `steps`, each with a `kind` (`action`,
   `assert`, `flagged`, `out_of_scope`), the exact `text` written to the
   file, and for the two flagged kinds the `observed` document wording.
 
