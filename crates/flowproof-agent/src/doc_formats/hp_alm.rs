@@ -1,9 +1,14 @@
-//! Parses the text layer of an HP ALM / Quality Center UAT test-run PDF
-//! export into per-step records. Scoped narrowly to the one export
-//! template observed so far (`Step Name :` / `Description:` / `Expected`
-//! / `Actual` / `Run Step Attachments` blocks) — a different export tool
-//! (qTest, Zephyr, Azure DevOps, a plain Word doc) gets its own sibling
-//! module in `doc_formats/`, not a rewrite of this one.
+//! Parses the text layer of an HP ALM / Quality Center test-run PDF
+//! export into test cases and their steps. Scoped narrowly to ALM's run
+//! report (`Run ID :` / `Step Name :` / `Description:` / `Expected` /
+//! `Actual` / `Run Step Attachments` blocks), whether it holds one run or
+//! a whole test set's, and whether or not the export numbered its
+//! headings (`1.1.1.1 Step Name : Step 1`, as it does once the report
+//! has been through Word) — a different export tool (qTest, Zephyr,
+//! Azure DevOps, a plain Word doc) gets its own sibling module in
+//! `doc_formats/`, not a rewrite of this one.
+
+use std::sync::LazyLock;
 
 use regex::Regex;
 
@@ -22,76 +27,185 @@ pub struct DocStepRecord {
     pub actual: String,
 }
 
+/// One test case's steps, from the latest run of it in the document.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DocTestCase {
+    /// The run's `Test: Test Case Name:` field. `None` when the document
+    /// has no run header to read it from.
+    pub name: Option<String>,
+    pub run_id: Option<String>,
+    pub steps: Vec<DocStepRecord>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum HpAlmParseError {
     #[error("no 'Step Name :' blocks found in the document — nothing to draft")]
     NoStepsFound,
 }
 
+fn re(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("static regex is well-formed")
+}
+
+/// A heading's optional outline number, as in `1.1.1.1 Step Name :`.
+const NUMBER: &str = r"(?:\d+(?:\.\d+)*[ \t]+)?";
+
+static ATTACHMENT: LazyLock<Regex> = LazyLock::new(|| re(r"\[Attachment:[^\]]*\]"));
+static PAGE_FURNITURE: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"(?m)^[ \t]*(?:Application Lifecycle Management|\d+[ \t]*\|[ \t]*Page)[ \t]*$")
+});
+static RUN_START: LazyLock<Regex> =
+    LazyLock::new(|| re(&format!(r"(?m)^{NUMBER}Run ID[ \t]+:[ \t]*(\S+)")));
+static TEST_CASE_NAME: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?s)Test:\s*Test Case\s+Name:(.*?)(?:\n[ \t]*\n|OS Build Number:|\z)"));
+static CONFIGURATION_ID: LazyLock<Regex> = LazyLock::new(|| re(r"Configuration ID:[ \t]*(\d+)"));
+static STEP_START: LazyLock<Regex> =
+    LazyLock::new(|| re(&format!(r"(?m)^{NUMBER}Step Name[ \t]+:[ \t]*(.+?)[ \t]*$")));
+// Each label sits on its own line in the real template; `Description:`
+// carries a literal colon, `Expected`/`Actual` do not. Anchoring to the
+// line keeps prose such as "Target/Actual - comparison" whole.
+static DESCRIPTION: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?ms)^[ \t]*Description:(.*?)^[ \t]*Expected[ \t]*$"));
+static EXPECTED: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?ms)^[ \t]*Expected[ \t]*$(.*?)^[ \t]*Actual[ \t]*$"));
+// Stops at "Run Step Attachments" OR end of this step's own block slice
+// (`\z` here means end of `block`, not end of the document) - a step
+// with no attachment still terminates cleanly.
+static ACTUAL: LazyLock<Regex> = LazyLock::new(|| {
+    re(&format!(
+        r"(?ms)^[ \t]*Actual[ \t]*$(.*?)(?:^[ \t]*{NUMBER}Run Step Attachments\b|\z)"
+    ))
+});
+
 /// Collapses arbitrary PDF-extraction whitespace (wrapped lines, runs of
-/// spaces, blank lines) into single-spaced prose.
+/// spaces, blank lines) into single-spaced prose, dropping the inline
+/// `[Attachment: name.png]` markers ALM leaves where a picture was.
 fn normalize(s: &str) -> String {
+    let s = ATTACHMENT.replace_all(s, " ");
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Segments the document's extracted text into step records. Anchors on
-/// `^Step Name\s*:\s*(.+)$` (line-start only, via multiline mode) to
-/// find block boundaries — the SAME label reappears mid-line later in
-/// each block's own metadata table ("Exec Time: ... Step Name: Step 1"),
-/// but never as the first token on its own line, so the anchor never
-/// double-matches within one block.
-pub fn parse(text: &str) -> Result<Vec<DocStepRecord>, HpAlmParseError> {
-    let step_start =
-        Regex::new(r"(?m)^Step Name\s*:\s*(.+)$").expect("static regex is well-formed");
-    let starts: Vec<_> = step_start.captures_iter(text).collect();
-    if starts.is_empty() {
+/// Removes the running header and page number ALM prints on every page.
+/// They land wherever the page broke, often mid-Description.
+fn without_page_furniture(text: &str) -> String {
+    PAGE_FURNITURE.replace_all(text, "").into_owned()
+}
+
+/// Segments the document's extracted text into test cases, one per run.
+///
+/// Block boundaries are headings at the start of a line, optionally
+/// numbered: `Run ID : 4066 - …` and `Step Name : Step 1`. The same
+/// labels reappear in each block's own metadata table ("Change Status:
+/// Run ID: 4066", "Exec Time: … Step Name: Step 1"), but never as the
+/// first token on a line and never with a space before the colon, so
+/// the anchors never double-match within one block.
+///
+/// A test case run more than once keeps only its highest Run ID, the
+/// latest run of it. Runs of one test case under different test
+/// configurations (its data variants) stay separate test cases. Steps
+/// are put in step-number order, since a step added to a test case
+/// later can be printed after the others.
+pub fn parse(text: &str) -> Result<Vec<DocTestCase>, HpAlmParseError> {
+    let text = without_page_furniture(text);
+    let mut bounds: Vec<(usize, Option<String>)> = vec![(0, None)];
+    bounds.extend(
+        RUN_START
+            .captures_iter(&text)
+            .map(|c| (c.get(0).expect("group 0").start(), Some(c[1].to_string()))),
+    );
+
+    let mut cases: Vec<DocTestCase> = Vec::new();
+    // Per case: its name and configuration, `None` when it has no name.
+    let mut keys: Vec<Option<(String, Option<String>)>> = Vec::new();
+    for (i, (start, run_id)) in bounds.iter().enumerate() {
+        let end = bounds.get(i + 1).map_or(text.len(), |b| b.0);
+        let run = &text[*start..end];
+        let steps = parse_steps(run);
+        if steps.is_empty() {
+            continue;
+        }
+        let case = DocTestCase {
+            name: test_case_name(run),
+            run_id: run_id.clone(),
+            steps,
+        };
+        let key = case.name.clone().map(|name| {
+            let configuration = CONFIGURATION_ID.captures(preamble(run));
+            (name, configuration.map(|c| c[1].to_string()))
+        });
+        let earlier = key
+            .as_ref()
+            .and_then(|key| keys.iter().position(|k| k.as_ref() == Some(key)));
+        match earlier {
+            Some(i) if run_number(&case) > run_number(&cases[i]) => cases[i] = case,
+            Some(_) => {}
+            None => {
+                cases.push(case);
+                keys.push(key);
+            }
+        }
+    }
+    if cases.is_empty() {
         return Err(HpAlmParseError::NoStepsFound);
     }
+    Ok(cases)
+}
 
-    // `Description:` carries a literal colon; `Expected`/`Actual` do
-    // not, in the real template - anchors mirror that exactly rather
-    // than normalizing the asymmetry away.
-    let description_re = Regex::new(r"(?s)Description:\s*(.*?)\s*\bExpected\b")
-        .expect("static regex is well-formed");
-    let expected_re =
-        Regex::new(r"(?s)\bExpected\b\s*(.*?)\s*\bActual\b").expect("static regex is well-formed");
-    // Stops at "Run Step Attachments" OR end of this step's own block
-    // slice (`\z` here means end of `block`, not end of the document) -
-    // a step with no attachment still terminates cleanly.
-    let actual_re = Regex::new(r"(?s)\bActual\b\s*(.*?)\s*(?:\bRun Step Attachments\b|\z)")
-        .expect("static regex is well-formed");
+fn run_number(case: &DocTestCase) -> u64 {
+    case.run_id
+        .as_deref()
+        .and_then(|id| id.parse().ok())
+        .unwrap_or(0)
+}
 
+/// A run's own fields, before its first step.
+fn preamble(run: &str) -> &str {
+    run.split("Step Name").next().unwrap_or(run)
+}
+
+/// The test case's name, wrapped over as many lines as the report's
+/// column needed, up to the next field or a blank line.
+fn test_case_name(run: &str) -> Option<String> {
+    TEST_CASE_NAME
+        .captures(preamble(run))
+        .map(|c| normalize(&c[1]))
+        .filter(|n| !n.is_empty())
+}
+
+fn parse_steps(run: &str) -> Vec<DocStepRecord> {
+    let starts: Vec<_> = STEP_START.captures_iter(run).collect();
     let mut records = Vec::with_capacity(starts.len());
     for (i, cap) in starts.iter().enumerate() {
         let block_start = cap.get(0).expect("group 0 always matches").start();
         let block_end = starts
             .get(i + 1)
             .map(|next| next.get(0).expect("group 0 always matches").start())
-            .unwrap_or(text.len());
-        let block = &text[block_start..block_end];
-
-        let step_name = normalize(cap.get(1).expect("capture group 1 is required").as_str());
-        let description = description_re
-            .captures(block)
-            .map(|c| normalize(&c[1]))
-            .unwrap_or_default();
-        let expected = expected_re
-            .captures(block)
-            .map(|c| normalize(&c[1]))
-            .unwrap_or_default();
-        let actual = actual_re
-            .captures(block)
-            .map(|c| normalize(&c[1]))
-            .unwrap_or_default();
+            .unwrap_or(run.len());
+        let block = &run[block_start..block_end];
+        let field = |r: &Regex| {
+            r.captures(block)
+                .map(|c| normalize(&c[1]))
+                .unwrap_or_default()
+        };
 
         records.push(DocStepRecord {
-            step_name,
-            description,
-            expected,
-            actual,
+            step_name: normalize(&cap[1]),
+            description: field(&DESCRIPTION),
+            expected: field(&EXPECTED),
+            actual: field(&ACTUAL),
         });
     }
-    Ok(records)
+
+    let numbers: Option<Vec<u32>> = records
+        .iter()
+        .map(|r| r.step_name.strip_prefix("Step ")?.parse().ok())
+        .collect();
+    if let Some(numbers) = numbers {
+        let mut numbered: Vec<_> = numbers.into_iter().zip(records).collect();
+        numbered.sort_by_key(|(n, _)| *n);
+        records = numbered.into_iter().map(|(_, r)| r).collect();
+    }
+    records
 }
 
 #[cfg(test)]
@@ -152,9 +266,16 @@ File Name: RichContentImage_sample_2.png
 Description: shows the widgets overview screen after loading
 ";
 
+    /// The steps of a document that holds exactly one test case.
+    fn steps(text: &str) -> Vec<DocStepRecord> {
+        let mut cases = parse(text).expect("parses");
+        assert_eq!(cases.len(), 1, "one test case");
+        cases.remove(0).steps
+    }
+
     #[test]
     fn parse_segments_a_realistic_export_into_step_records() {
-        let records = parse(SAMPLE_EXPORT).expect("parses");
+        let records = steps(SAMPLE_EXPORT);
         assert_eq!(records.len(), 2);
 
         assert_eq!(records[0].step_name, "Step 1");
@@ -191,7 +312,7 @@ Description: shows the widgets overview screen after loading
         // step's own `description`, nor bleed into a next step (there
         // isn't one here, so leakage would otherwise inflate `actual`
         // or fail to terminate correctly).
-        let records = parse(SAMPLE_EXPORT).expect("parses");
+        let records = steps(SAMPLE_EXPORT);
         let step2 = &records[1];
         assert!(!step2.description.contains("shows the widgets overview"));
         assert!(!step2.actual.contains("shows the widgets overview"));
@@ -203,7 +324,7 @@ Description: shows the widgets overview screen after loading
 
     #[test]
     fn parse_handles_a_blank_actual_field() {
-        let records = parse(SAMPLE_EXPORT).expect("parses");
+        let records = steps(SAMPLE_EXPORT);
         assert_eq!(records[0].actual, "");
     }
 
@@ -211,7 +332,7 @@ Description: shows the widgets overview screen after loading
     fn parse_ignores_document_preamble_before_the_first_step() {
         // The fixture's leading "Run ID : 1234 - Run_Sample" / baseline
         // metadata block must not become a phantom step 0.
-        let records = parse(SAMPLE_EXPORT).expect("parses");
+        let records = steps(SAMPLE_EXPORT);
         assert!(records.iter().all(|r| r.step_name.starts_with("Step ")));
     }
 
@@ -220,5 +341,151 @@ Description: shows the widgets overview screen after loading
         let err = parse("Just some unrelated document text.\nNo steps here.")
             .expect_err("no 'Step Name :' markers at all");
         assert!(matches!(err, HpAlmParseError::NoStepsFound));
+    }
+
+    /// A test-set report as `pdf-extract` reads one that went through
+    /// Word: numbered headings, a page header mid-Description, a step
+    /// printed out of order, and an older run of the same test case.
+    /// Synthetic content in the real layout.
+    const TEST_SET_REPORT: &str = "\
+1.1  Run ID : 1990  - Run_4-30_9-0-0 
+Change Status:    Run ID:  1990 
+Configuration ID:  700  Run Name:  Run_4-30_9-0-0 
+ Test: Test Case 
+Name:  T-001 - Create 
+sample order 
+
+1.1.1.1 Step Name : Step 1 
+  Description: 
+An older wording of the step 
+  Expected 
+Done 
+  Actual 
+
+1.2  Run ID : 2050  - Run_5-2_10-0-0 
+Change Status:    Run ID:  2050 
+Configuration ID:  700  Run Name:  Run_5-2_10-0-0 
+Name:  T-001 - Create  Test: Test Case Name:  T-001 - Create 
+sample order 
+OS Build Number:    Tester:  tester(Sample, Tester) 
+
+1.2.1.1 Step Name : Step 1 
+Exec Date:  5/2/25  Test Step Status:  Passed 
+Exec Time:  10:00:00  Step Name:  Step 1 
+  Description: 
+Open the sample app and go to the 
+
+      Application Lifecycle Management 
+
+ 2 |Page    
+
+orders screen 
+  Expected 
+Target/Actual - comparison displayed 
+  Actual 
+
+1.2.1.2 Step Name : Step 3 
+  Description: 
+[Attachment: snapshot.png]Press \"Save\" 
+  Expected 
+The order is saved 
+  Actual 
+saved 
+
+1.2.1.2.1  Run Step Attachments 
+1.2.1.2.1.1 File Name: snapshot.png 
+Description:  shows the saved order 
+
+1.2.1.3 Step Name : Step 2 
+  Description: 
+Enter the order details 
+  Expected 
+The details are accepted 
+  Actual 
+ok 
+
+1.10 Run ID : 2010  - Run_5-1_8-0-0 
+Change Status:    Run ID:  2010 
+ Test: Test Case Name:  T-002 - Display sample order 
+OS Build Number:    Tester:  tester(Sample, Tester) 
+
+1.10.1.1  Step Name : Step 1 
+  Description: 
+Open the order display 
+  Expected 
+The order is shown 
+  Actual 
+";
+
+    #[test]
+    fn a_test_set_report_is_one_test_case_per_run_named_from_the_report() {
+        let cases = parse(TEST_SET_REPORT).expect("parses");
+        let names: Vec<_> = cases.iter().map(|c| c.name.as_deref()).collect();
+        assert_eq!(
+            names,
+            [
+                Some("T-001 - Create sample order"),
+                Some("T-002 - Display sample order")
+            ]
+        );
+        assert_eq!(cases[1].run_id.as_deref(), Some("2010"));
+    }
+
+    #[test]
+    fn a_test_case_run_twice_keeps_only_its_latest_run() {
+        let cases = parse(TEST_SET_REPORT).expect("parses");
+        assert_eq!(cases[0].run_id.as_deref(), Some("2050"));
+        assert_eq!(cases[0].steps.len(), 3);
+        assert!(cases[0]
+            .steps
+            .iter()
+            .all(|s| !s.description.contains("older")));
+    }
+
+    #[test]
+    fn runs_under_another_test_configuration_stay_separate_test_cases() {
+        let report =
+            TEST_SET_REPORT.replacen("Configuration ID:  700", "Configuration ID:  701", 1);
+        let cases = parse(&report).expect("parses");
+        let runs: Vec<_> = cases.iter().map(|c| c.run_id.as_deref()).collect();
+        assert_eq!(runs, [Some("1990"), Some("2050"), Some("2010")]);
+    }
+
+    #[test]
+    fn numbered_headings_and_page_breaks_do_not_split_or_pollute_a_step() {
+        let first = &parse(TEST_SET_REPORT).expect("parses")[0].steps[0];
+        assert_eq!(
+            first.description,
+            "Open the sample app and go to the orders screen"
+        );
+        assert_eq!(first.expected, "Target/Actual - comparison displayed");
+        assert_eq!(first.actual, "");
+    }
+
+    #[test]
+    fn steps_come_out_in_step_number_order() {
+        let steps = &parse(TEST_SET_REPORT).expect("parses")[0].steps;
+        let names: Vec<_> = steps.iter().map(|s| s.step_name.as_str()).collect();
+        assert_eq!(names, ["Step 1", "Step 2", "Step 3"]);
+    }
+
+    #[test]
+    fn a_runs_last_step_stops_at_the_next_run_and_attachments_stay_out() {
+        let steps = &parse(TEST_SET_REPORT).expect("parses")[0].steps;
+        assert_eq!(steps[1].actual, "ok", "printed last, before run 2010");
+        assert_eq!(steps[2].description, "Press \"Save\"");
+        assert_eq!(steps[2].actual, "saved");
+    }
+
+    #[test]
+    fn steps_without_any_run_header_are_one_unnamed_test_case() {
+        let text = "Step Name : Step 1\n  Description:\nOpen it\n  Expected\nOpen\n  Actual\n";
+        let cases = parse(text).expect("parses");
+        assert_eq!(cases.len(), 1);
+        assert_eq!(
+            (cases[0].name.as_deref(), cases[0].run_id.as_deref()),
+            (None, None)
+        );
+        assert_eq!(cases[0].steps[0].description, "Open it");
     }
 }

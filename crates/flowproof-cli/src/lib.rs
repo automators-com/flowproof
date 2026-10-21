@@ -516,8 +516,13 @@ enum Command {
         name: Option<String>,
         #[arg(short, long, required_unless_present = "check")]
         out: Option<PathBuf>,
-        /// Only read the document and report how many steps it holds;
-        /// nothing is sent to a model and nothing is written.
+        /// Which test case to draft when the document holds several (an
+        /// ALM test-set report): its number as `--check` lists them, its
+        /// name, or its ID.
+        #[arg(long)]
+        test_case: Option<String>,
+        /// Only read the document and report the test cases and steps it
+        /// holds; nothing is sent to a model and nothing is written.
         #[arg(long)]
         check: bool,
         /// Print the result as one JSON object: the files written and every
@@ -3688,21 +3693,39 @@ fn cmd_author_from_doc(
     app: Option<String>,
     name: Option<String>,
     out: Option<PathBuf>,
+    test_case: Option<String>,
     check: bool,
     json: bool,
 ) -> Result<u8, String> {
     use flowproof_agent::doc_author;
     if check {
         let found = doc_author::inspect_doc(&doc).map_err(|e| e.to_string())?;
+        let steps: usize = found.iter().map(|c| c.steps).sum();
+        let with_expected: usize = found.iter().map(|c| c.with_expected).sum();
         if json {
-            let report =
-                serde_json::json!({ "steps": found.steps, "with_expected": found.with_expected });
+            let cases: Vec<_> = found
+                .iter()
+                .map(|c| {
+                    serde_json::json!({ "name": c.name, "run_id": c.run_id,
+                        "steps": c.steps, "with_expected": c.with_expected })
+                })
+                .collect();
+            let report = serde_json::json!({ "steps": steps, "with_expected": with_expected,
+                "test_cases": cases });
             println!("{report}");
+        } else if found.len() == 1 {
+            println!("{steps} steps, {with_expected} with an expected result");
         } else {
             println!(
-                "{} steps, {} with an expected result",
-                found.steps, found.with_expected
+                "{} test cases, {steps} steps, {with_expected} with an expected result \
+                 (draft one with --test-case <number>)",
+                found.len()
             );
+            for (i, c) in found.iter().enumerate() {
+                let name = c.name.as_deref().unwrap_or("(unnamed)");
+                let s = if c.steps == 1 { "" } else { "s" };
+                println!("{:>3}. {name} ({} step{s})", i + 1, c.steps);
+            }
         }
         return Ok(EXIT_PASS);
     }
@@ -3716,6 +3739,7 @@ fn cmd_author_from_doc(
         app,
         name,
         out,
+        test_case,
     };
     let result = doc_author::author_from_doc_with_progress(&opts, &mut |done, total| {
         eprintln!("drafting step {} of {total}", done + 1);
@@ -3740,8 +3764,8 @@ fn cmd_author_from_doc(
                 step
             })
             .collect();
-        let report =
-            serde_json::json!({ "flow": result.flow, "values": result.values, "steps": steps });
+        let report = serde_json::json!({ "flow": result.flow, "values": result.values,
+            "test_case": result.test_case, "steps": steps });
         println!("{report}");
         return Ok(EXIT_PASS);
     }
@@ -4301,9 +4325,10 @@ where
             app,
             name,
             out,
+            test_case,
             check,
             json,
-        } => cmd_author_from_doc(doc, app, name, out, check, json),
+        } => cmd_author_from_doc(doc, app, name, out, test_case, check, json),
         Command::AuthorFromCode {
             repo,
             goal,
