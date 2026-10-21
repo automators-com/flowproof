@@ -84,6 +84,15 @@ fn translation_system_prompt() -> String {
 Describe the action(s) the Description implies, each on its own line \
 prefixed `STEP: `, using ONLY these forms. {STEP_GRAMMAR_RULES}
 
+A Description often holds several actions (`select the plant, then click \
+Save`). Write one line per action, in the order they happen, and never fold \
+two actions into one line. Judge each action on its own: one you can map is \
+a STEP even when another action in the same Description is not, and only \
+the action you cannot map gets the OUT_OF_SCOPE or UNEXPLAINED line below. \
+Splitting never licenses inventing: use only a path, transaction code, label \
+or value the Description gives, and an action that needs one it does not give \
+is UNEXPLAINED.
+
 If the Description states no discrete action at all (purely informational, \
 e.g. a note or a pass/fail observation with nothing to do), respond with \
 exactly: STEP: NO_ACTION
@@ -93,15 +102,14 @@ different app or tool than the one under test (e.g. opening a downloaded \
 file in a spreadsheet program, sending an email, checking a filesystem) — \
 not ambiguity about which UI element to use, but the action clearly \
 happening somewhere else entirely — do NOT drop it and do NOT force it \
-into the forms above. Respond with exactly one line: `OUT_OF_SCOPE: ` \
-followed by a short factual restatement of what the Description asks for.
+into the forms above. Write one line for that action: `OUT_OF_SCOPE: ` \
+followed by a short factual restatement of what it asks for.
 
-If the Description implies SOME action within the app under test but you \
-cannot map it to any of the forms above, or it names more than one \
-plausible target with no way to tell which was meant, do NOT guess. \
-Respond with exactly one line: `UNEXPLAINED: ` followed by a short \
-factual restatement of what the Description asks for, then ` — ` and what \
-it leaves out that a step needs (e.g. `open the dashboard — no URL or menu \
+If an action is within the app under test but you cannot map it to any \
+of the forms above, or it names more than one plausible target with no way \
+to tell which was meant, do NOT guess. Write one line for that action: \
+`UNEXPLAINED: ` followed by a short factual restatement of what it asks \
+for, then ` — ` and what it leaves out that a step needs (e.g. `open the dashboard — no URL or menu \
 path given`, `pick a location — does not say which one`).
 
 Then, on its own line, translate the Expected outcome into flowproof's \
@@ -155,6 +163,9 @@ fn translate_record_with_values(
     let system = translation_system_prompt();
     let reply = client.complete(&system, &user_prompt(record))?;
     let mut translated = DocTranslation::default();
+    // The Expected outcome follows the step's last action, wherever the
+    // reply put its ASSERT line.
+    let mut asserts = Vec::new();
     for line in reply.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -179,7 +190,7 @@ fn translate_record_with_values(
             if assert.is_empty() || assert == "NONE" {
                 continue;
             }
-            translated.lines.push(DraftLine::Assert(assert.to_string()));
+            asserts.push(DraftLine::Assert(assert.to_string()));
         } else if let Some(value) = line.strip_prefix("VALUE:") {
             translated.values.push(parse_value_line(value.trim())?);
         }
@@ -188,6 +199,7 @@ fn translate_record_with_values(
         // instructions, and failing the whole step over one ignorable
         // line would be worse than tolerating it.
     }
+    translated.lines.extend(asserts);
     Ok(translated)
 }
 
@@ -507,6 +519,36 @@ mod tests {
         .expect("translates");
         assert_eq!(lines.len(), 1);
         assert!(matches!(&lines[0], DraftLine::Flagged(_)));
+    }
+
+    /// "Select a location, then click Production Schedule": the vague
+    /// half is flagged, the concrete half stays a real step, and the
+    /// Expected outcome follows both even when the reply leads with it.
+    #[test]
+    fn a_step_with_several_actions_flags_only_the_one_it_cannot_map() {
+        let mut client = ScriptedModel {
+            replies: ["ASSERT: page shows the production schedule\n\
+                 UNEXPLAINED: select a location — does not say which one\n\
+                 STEP: Press the \"Production Schedule\" button"]
+            .into_iter()
+            .collect(),
+        };
+        let lines = translate_record(
+            &record(
+                "Select the desired location, then click the Production Schedule button.",
+                "The production schedule is displayed.",
+            ),
+            &mut client,
+        )
+        .expect("translates");
+        assert_eq!(
+            lines,
+            vec![
+                DraftLine::Flagged("select a location — does not say which one".into()),
+                DraftLine::Action("Press the \"Production Schedule\" button".into()),
+                DraftLine::Assert("page shows the production schedule".into()),
+            ]
+        );
     }
 
     /// Regression: a real UAT document had a step ("open the exported
