@@ -58,6 +58,7 @@ static RUN_START: LazyLock<Regex> =
     LazyLock::new(|| re(&format!(r"(?m)^{NUMBER}Run ID[ \t]+:[ \t]*(\S+)")));
 static TEST_CASE_NAME: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?s)Test:\s*Test Case\s+Name:(.*?)(?:\n[ \t]*\n|OS Build Number:|\z)"));
+static CONFIGURATION_ID: LazyLock<Regex> = LazyLock::new(|| re(r"Configuration ID:[ \t]*(\d+)"));
 static STEP_START: LazyLock<Regex> =
     LazyLock::new(|| re(&format!(r"(?m)^{NUMBER}Step Name[ \t]+:[ \t]*(.+?)[ \t]*$")));
 // Each label sits on its own line in the real template; `Description:`
@@ -100,8 +101,10 @@ fn without_page_furniture(text: &str) -> String {
 /// the anchors never double-match within one block.
 ///
 /// A test case run more than once keeps only its highest Run ID, the
-/// latest run of it. Steps are put in step-number order, since a step
-/// added to a test case later can be printed after the others.
+/// latest run of it. Runs of one test case under different test
+/// configurations (its data variants) stay separate test cases. Steps
+/// are put in step-number order, since a step added to a test case
+/// later can be printed after the others.
 pub fn parse(text: &str) -> Result<Vec<DocTestCase>, HpAlmParseError> {
     let text = without_page_furniture(text);
     let mut bounds: Vec<(usize, Option<String>)> = vec![(0, None)];
@@ -112,6 +115,8 @@ pub fn parse(text: &str) -> Result<Vec<DocTestCase>, HpAlmParseError> {
     );
 
     let mut cases: Vec<DocTestCase> = Vec::new();
+    // Per case: its name and configuration, `None` when it has no name.
+    let mut keys: Vec<Option<(String, Option<String>)>> = Vec::new();
     for (i, (start, run_id)) in bounds.iter().enumerate() {
         let end = bounds.get(i + 1).map_or(text.len(), |b| b.0);
         let run = &text[*start..end];
@@ -124,13 +129,20 @@ pub fn parse(text: &str) -> Result<Vec<DocTestCase>, HpAlmParseError> {
             run_id: run_id.clone(),
             steps,
         };
-        let earlier = cases
-            .iter_mut()
-            .find(|c| c.name.is_some() && c.name == case.name);
+        let key = case.name.clone().map(|name| {
+            let configuration = CONFIGURATION_ID.captures(preamble(run));
+            (name, configuration.map(|c| c[1].to_string()))
+        });
+        let earlier = key
+            .as_ref()
+            .and_then(|key| keys.iter().position(|k| k.as_ref() == Some(key)));
         match earlier {
-            Some(earlier) if run_number(&case) > run_number(earlier) => *earlier = case,
+            Some(i) if run_number(&case) > run_number(&cases[i]) => cases[i] = case,
             Some(_) => {}
-            None => cases.push(case),
+            None => {
+                cases.push(case);
+                keys.push(key);
+            }
         }
     }
     if cases.is_empty() {
@@ -146,12 +158,16 @@ fn run_number(case: &DocTestCase) -> u64 {
         .unwrap_or(0)
 }
 
+/// A run's own fields, before its first step.
+fn preamble(run: &str) -> &str {
+    run.split("Step Name").next().unwrap_or(run)
+}
+
 /// The test case's name, wrapped over as many lines as the report's
 /// column needed, up to the next field or a blank line.
 fn test_case_name(run: &str) -> Option<String> {
-    let preamble = run.split("Step Name").next().unwrap_or(run);
     TEST_CASE_NAME
-        .captures(preamble)
+        .captures(preamble(run))
         .map(|c| normalize(&c[1]))
         .filter(|n| !n.is_empty())
 }
@@ -334,6 +350,7 @@ Description: shows the widgets overview screen after loading
     const TEST_SET_REPORT: &str = "\
 1.1  Run ID : 1990  - Run_4-30_9-0-0 
 Change Status:    Run ID:  1990 
+Configuration ID:  700  Run Name:  Run_4-30_9-0-0 
  Test: Test Case 
 Name:  T-001 - Create 
 sample order 
@@ -347,6 +364,7 @@ Done
 
 1.2  Run ID : 2050  - Run_5-2_10-0-0 
 Change Status:    Run ID:  2050 
+Configuration ID:  700  Run Name:  Run_5-2_10-0-0 
 Name:  T-001 - Create  Test: Test Case Name:  T-001 - Create 
 sample order 
 OS Build Number:    Tester:  tester(Sample, Tester) 
@@ -422,6 +440,15 @@ The order is shown
             .steps
             .iter()
             .all(|s| !s.description.contains("older")));
+    }
+
+    #[test]
+    fn runs_under_another_test_configuration_stay_separate_test_cases() {
+        let report =
+            TEST_SET_REPORT.replacen("Configuration ID:  700", "Configuration ID:  701", 1);
+        let cases = parse(&report).expect("parses");
+        let runs: Vec<_> = cases.iter().map(|c| c.run_id.as_deref()).collect();
+        assert_eq!(runs, [Some("1990"), Some("2050"), Some("2010")]);
     }
 
     #[test]

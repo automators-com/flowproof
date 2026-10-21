@@ -6,7 +6,7 @@
   is dropped, a field mentioning "Actual" in its prose is no longer cut short,
   and steps come out in step-number order. A test-set report holds a run per
   test case, and drafting all of them into one flow would mix unrelated tests,
-  so such a report is now read as separate test cases (the latest run of
-  each). `--check` lists them and `--test-case` names the one to draft, by its
-  number, name or ID; without it, a report with several is refused rather than
-  drafted as one.
+  so such a report is now read as separate test cases (the latest run of each,
+  with each test configuration kept apart). `--check` lists them and
+  `--test-case` names the one to draft, by its number, name or ID; without it,
+  a report with several is refused rather than drafted as one.
