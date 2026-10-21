@@ -67,8 +67,7 @@ impl DraftLine {
         match self {
             DraftLine::Action(step) | DraftLine::Assert(step) => step.clone(),
             DraftLine::Flagged(observed) => format!(
-                "resolve the action needed here against the live screen — a \
-                 keyboard-only action like Enter may be the cause. Observed: {observed}"
+                "resolve the action needed here against the live screen. Observed: {observed}"
             ),
             DraftLine::OutOfScope(observed) => format!(
                 "manual step — outside the app under test, flowproof cannot \
@@ -174,6 +173,19 @@ mod tests {
                 "{line:?} missing from {yaml}"
             );
         }
+    }
+
+    /// A flagged step carries the source's own reason. A guessed cause
+    /// (a key press, say) sends the reader and the live authoring agent
+    /// looking for the wrong thing.
+    #[test]
+    fn a_flagged_step_says_only_what_the_source_observed() {
+        let observed = "open the dashboard — the document gives no URL or menu path";
+        let text = DraftLine::Flagged(observed.to_string()).step_text();
+        assert_eq!(
+            text,
+            format!("resolve the action needed here against the live screen. Observed: {observed}")
+        );
     }
 
     /// An out-of-scope step must be visibly flagged, distinct from an
