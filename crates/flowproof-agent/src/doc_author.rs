@@ -100,7 +100,9 @@ If the Description implies SOME action within the app under test but you \
 cannot map it to any of the forms above, or it names more than one \
 plausible target with no way to tell which was meant, do NOT guess. \
 Respond with exactly one line: `UNEXPLAINED: ` followed by a short \
-factual restatement of what the Description asks for.
+factual restatement of what the Description asks for, then ` — ` and what \
+it leaves out that a step needs (e.g. `open the dashboard — no URL or menu \
+path given`, `pick a location — does not say which one`).
 
 Then, on its own line, translate the Expected outcome into flowproof's \
 assert prose, prefixed `ASSERT: ` (e.g. `ASSERT: page shows Widgets \
