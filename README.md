@@ -5,7 +5,69 @@
 [![npm](https://img.shields.io/npm/v/flowproof)](https://www.npmjs.com/package/flowproof)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
+## End-to-end tests an AI agent records for you
+
+flowproof is open-source E2E testing for the age of agents. Write the test the
+way you would explain it to a colleague. An AI agent performs it once against
+your real application, and while it works, flowproof records what it did: the
+element it found for every step, the action it took, and what it checked. That
+recording is the test. From then on a deterministic engine replays it on every
+commit with **zero LLM calls**: no API key, nothing billed, nothing left to
+sampling.
+
+```yaml
+# examples/tricentis-insurance-natural.flow.yaml
+name: Tricentis Insurance (natural)
+app: web
+url: https://sampleapp.tricentis.com/101
+steps:
+  - Open the truck insurance quote
+  - Fill out all the vehicle data and click next
+  - Fill out all the insurant data and click next
+  - Fill out all the product data and click next
+  - Pick one of the price options
+  - Fill in what sending the quote needs and send it
+  - assert: page shows Sending e-mail success! within 20s
+```
+
+```bash
+flowproof record examples/tricentis-insurance-natural.flow.yaml   # the agent drives the app, once
+flowproof run examples/tricentis-insurance-natural.flow.yaml      # replays the recording, no model
+```
+
+No selectors, no page objects. "Fill out all the vehicle data and click next"
+is one step: the agent fills every field it finds on the live page and clicks
+Next, and the committed trace holds that as fourteen actions, each replayed on
+its own. (The file also pins the viewport and the clock; the trace sits beside
+it.)
+
+**What the agent does while it records:**
+
+- **It works from what is on screen.** Each step is matched against the live
+  app's real elements (the DOM, the UI Automation tree, SAP scripting ids, OCR
+  on a Citrix screen), so it cannot invent a selector that is not there.
+- **It records a ladder, not one selector.** Native id, then structure, then a
+  text anchor, so a renamed id degrades a step instead of failing it
+  ([trace format](docs/trace-format.md)).
+- **It asks rather than guesses.** A step too vague to perform ("make the
+  required field changes") comes back as the stuck step plus the live screen's
+  field inventory, so you, or the coding agent driving flowproof, can say what
+  was meant ([self-help](docs/self-help.md)).
+
+**What happens after:** every run writes `report.html`, `junit.xml`,
+`result.json` and screenshot checkpoints. When the app changes, replay falls
+back rung by rung and flags the degraded match before the last rung dies;
+`flowproof heal` sends the agent back to re-author the broken steps against the
+live app and proposes a trace diff with before/after frames. Nothing changes
+until you pass `--apply` ([resilience and healing](docs/getting-started/resilience.md)).
+
+One spec format, every surface: web (Chromium over CDP), Windows desktop (UI
+Automation), SAP GUI, Citrix and RDP (pixels and OCR), HTTP and SQL, and AI
+agents themselves.
+
 ## Your bot behaved today. Prove it'll behave tomorrow.
+
+The same record-once, replay-forever mechanism tests an agent of your own.
 
 Software robots already do real work in production. They raise orders in SAP,
 update records, close tickets: jobs a person used to do by hand, and jobs
@@ -73,7 +135,7 @@ Product page: [automators.ai/flowproof](https://automators.ai/flowproof)
 
 | Goal | Start here |
 | --- | --- |
-| Record and replay your first agent or UI flow | [Record and replay](docs/getting-started/record-and-replay.md) |
+| Record and replay your first UI or agent flow | [Record and replay](docs/getting-started/record-and-replay.md) |
 | Add Flowproof to an existing project | [Adopting Flowproof](docs/adopting.md) |
 | Run multiple flows with shared data or dependencies | [Run a suite](docs/getting-started/suite-runs.md) |
 | Look up exact action and assertion syntax | [Authoring grammar](docs/authoring/index.md) |
