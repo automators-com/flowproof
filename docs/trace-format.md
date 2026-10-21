@@ -176,14 +176,16 @@ already follows.
 {"format":"flowproof-trace","version":1,
  "trace_id":"5f0f2f6e-6f0a-4c25-9b1c-1a2b3c4d5e6f",
  "recorded_at":"2026-07-18T10:12:33Z",
- "spec":{"name":"Create sales order","path":"flows/create-order.yaml","hash":"sha256:…"},
+ "spec":{"name":"Create sales order"},
  "app":{"name":"SAP GUI for Windows","adapter":"sap-com","window_title":"SAP Easy Access","version":"7.70"},
  "agent":{"backend":"anthropic","model":"<model-id>"},
  "env":{"os":"windows-11","resolution":[1920,1080],"dpi_scale":1.25,"locale":"en-US"}}
 ```
 
-- `spec` links the trace to the YAML flow spec it was recorded from; `hash`
-  lets replay detect drift between spec and trace.
+- `spec` names the YAML flow spec the trace was recorded from. Its optional
+  `path` and `hash` fields are reserved: the recorder does not write them
+  yet, and replay does not read them, so a trace cannot tell on its own
+  whether its flow has changed since it was recorded.
 - `adapter` is the *primary* perception/adapter mode: `uia`, `sap-com`,
   `web`, `vision` (vision = Citrix/RDP mode where only pixels exist), or
   `api` (no UI at all: the flow is out-of-band assertions only). The
