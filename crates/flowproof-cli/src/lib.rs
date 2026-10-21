@@ -1751,6 +1751,19 @@ fn discover_specs(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
 /// with a fresh driver each time. Deterministic replay should be stable,
 /// but the infrastructure under it (a dropped CDP frame, a momentarily
 /// slow backend) is not — a flow that passes on a second look should not
+/// A single-surface recording is made as `header.app.login_user`; replaying
+/// it as someone else replays a walkthrough recorded under another user's
+/// authorisations. A header with no user (no login at record, or a recording
+/// from before 0.14) is not checked.
+fn check_replay_login(spec: &FlowSpec, header: &flowproof_trace::Header) -> Result<(), String> {
+    match &header.app.login_user {
+        Some(recorded) if spec.login.as_ref().map(|l| &l.user) != Some(recorded) => {
+            Err("The login changed. Record this flow again.".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn stage_replay_surface_logins(
     driver: &mut dyn AppDriver,
     spec: &FlowSpec,
@@ -2021,6 +2034,7 @@ fn replay_with_retries(
     ),
     String,
 > {
+    check_replay_login(spec, header)?;
     let mut attempt = 0u32;
     loop {
         attempt += 1;
@@ -4448,6 +4462,31 @@ mod tests {
             assert!(error.contains("Record this flow again"));
             assert!(!error.contains("private"));
         }
+    }
+
+    #[test]
+    fn single_surface_replay_refuses_a_removed_or_changed_identity() {
+        let header = |user: &str| -> flowproof_trace::Header {
+            serde_json::from_str(&format!(r#"{{"format":"flowproof-trace","version":1,"trace_id":"t","recorded_at":"2026-08-05T00:00:00Z","app":{{"name":"sap","adapter":"sap-com","url":"QA"{user}}},"env":{{"os":"macos","resolution":[1,1]}}}}"#)).expect("valid login test fixture")
+        };
+        let spec = |login: &str| {
+            FlowSpec::parse(&format!(
+                "name: x\napp: sap\nconnection: QA\n{login}steps:\n  - Go to /nVA01\n"
+            ))
+            .expect("valid login test fixture")
+        };
+        let clerk = header(r#","login_user":"clerk""#);
+        for login in ["", "login: {user: approver, password: private}\n"] {
+            let error =
+                check_replay_login(&spec(login), &clerk).expect_err("changed identity must fail");
+            assert_eq!(error, "The login changed. Record this flow again.");
+        }
+        check_replay_login(&spec("login: {user: clerk, password: new-one}\n"), &clerk)
+            .expect("same user, new password");
+        // No user in the header: recorded without a login, or before 0.14.
+        check_replay_login(&spec("login: {user: clerk, password: p}\n"), &header(""))
+            .expect("unchecked");
+        check_replay_login(&spec(""), &header("")).expect("no login either side");
     }
 
     /// A surface's `browser:` config stages on its freshly built driver —
