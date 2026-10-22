@@ -1562,8 +1562,13 @@ fn driver_key_mod(m: &flowproof_trace::format::KeyModifier) -> flowproof_driver:
 /// the inverse of `selectors_for` for the shapes the recorder itself
 /// emits. `None` = not reconstructable (reuse falls back to fresh
 /// authoring, never to a guess).
+///
+/// An `a11y` selector is not the target the step was recorded with: it is a
+/// hint [`enrich_a11y_hint`] prepends afterwards so replay tries it first,
+/// and it carries a role and name, not a target. Read past it, or every web
+/// step with an accessible name is authored again on reuse.
 fn target_from_selector(selectors: &[Selector]) -> Option<Target> {
-    let primary = selectors.first()?;
+    let primary = selectors.iter().find(|s| s.tier != SelectorTier::A11y)?;
     let get = |key: &str| primary.payload.get(key).and_then(|v| v.as_str());
     let base = if let Some(css) = get("css") {
         Target::css(css)
@@ -7047,6 +7052,37 @@ steps:
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_step_with_an_a11y_hint_still_decodes_for_reuse() {
+        let click = ResolvedAction::Press {
+            target: Target::css("#greet"),
+            label: "Press the greet button".into(),
+            dialog: None,
+        };
+        let mut step = step_for(1, "Press the greet button", "web", &click);
+        enrich_a11y_hint(
+            &mut step,
+            &flowproof_driver::A11yHints {
+                role: "button".into(),
+                name: "Greet".into(),
+                ancestor_role: Some("RootWebArea".into()),
+                ancestor_name: Some("Greeter".into()),
+            },
+        );
+        assert_eq!(step.selectors[0].tier, SelectorTier::A11y, "the hint leads");
+        assert_eq!(decode_step(&step), Some(click));
+
+        let only_a_hint = Step {
+            selectors: step.selectors[..1].to_vec(),
+            ..step
+        };
+        assert_eq!(
+            decode_step(&only_a_hint),
+            None,
+            "a role and name alone are not a target to reuse"
+        );
     }
 
     #[test]
