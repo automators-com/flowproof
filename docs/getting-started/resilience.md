@@ -42,6 +42,12 @@ recorded, and reruns the flow. Repair stops after three attempts, or earlier
 when the same failure recurs without progress. Each attempt and edit is written
 to `<flow>.repair.json` beside the trace.
 
+Set a different limit, from 1 to 10, with `--repair-attempts`:
+
+```bash
+flowproof record shop.flow.yaml --repair-attempts 5
+```
+
 Disable automatic repair when you want the original failure immediately:
 
 ```bash
@@ -52,7 +58,8 @@ A model verdict that identifies an engine limitation without trying a fix is
 provisional. Flowproof gives the whole flow one independent attempt in a fresh
 driver session. If that attempt fails the same way, the repair report retains
 both failures as evidence. A repair that exhausted its edit budget does not get
-the extra attempt.
+the extra attempt. The fresh attempt does not reset the limit: if it fails, the
+repair loop gets only the attempts the first round left unused.
 
 ## Healing a stale trace
 
