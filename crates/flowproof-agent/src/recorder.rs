@@ -3108,6 +3108,12 @@ struct LiveSteps {
     finished: usize,
     current: Option<(String, std::time::Instant)>,
     lines: Vec<String>,
+    /// The trace steps of every flow step that passed, kept as each one
+    /// finishes so a failure can hand them back (see
+    /// [`LocatedRecordError::completed`]).
+    completed: Vec<Step>,
+    /// How far into the recorder's `steps` [`Self::completed`] has read.
+    kept_through: usize,
 }
 
 impl LiveSteps {
@@ -3120,6 +3126,20 @@ impl LiveSteps {
 
     fn start(&mut self, intent: &str) {
         self.current = Some((intent.to_string(), std::time::Instant::now()));
+    }
+
+    /// Keep the trace steps the flow step that just passed added, less the
+    /// writes the page refused - the same pruning the trace gets - so what a
+    /// failure hands back is exactly what the trace would have held.
+    fn keep_passed(&mut self, steps: &[Step], superseded: &std::collections::BTreeSet<usize>) {
+        for (index, step) in steps.iter().enumerate().skip(self.kept_through) {
+            if !superseded.contains(&index) {
+                let mut step = step.clone();
+                step.id = format!("s{:04}", self.completed.len() + 1);
+                self.completed.push(step);
+            }
+        }
+        self.kept_through = steps.len();
     }
 
     /// Closes the step in progress, if any: an error raised between steps
@@ -3188,6 +3208,11 @@ pub struct LocatedRecordError {
     pub error: RecordError,
     /// Boxed so a `Result` carrying this stays small (clippy::result_large_err).
     pub at: Box<FailurePoint>,
+    /// The trace steps of every flow step that passed before the failure,
+    /// pruned as the trace would be. Nothing of the step that failed is in
+    /// it, even the actions it got through. Held in memory only: a failed
+    /// recording writes no trace, and this is not one.
+    pub completed: Vec<Step>,
 }
 
 impl From<RecordError> for LocatedRecordError {
@@ -3195,6 +3220,7 @@ impl From<RecordError> for LocatedRecordError {
         Self {
             error,
             at: Box::default(),
+            completed: Vec::new(),
         }
     }
 }
@@ -3257,6 +3283,7 @@ fn record_with_reuse_located<D: AppDriver, C: ModelClient>(
                 step,
                 screen: driver.failure_screen(),
             }),
+            completed: std::mem::take(&mut live.completed),
         }
     })
 }
@@ -4915,6 +4942,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         if let Some(last) = prior_history.last_mut() {
             *last = step_history(&step_intent, &executed_summaries, is_check);
         }
+        live.keep_passed(&steps, &superseded_steps);
         live.finish("PASS");
     }
 
@@ -6039,6 +6067,82 @@ steps:
         let expected: Vec<String> = (1..=ids.len()).map(|n| format!("s{n:04}")).collect();
         assert_eq!(ids, expected, "step ids stay contiguous after the drop");
         std::fs::remove_file(&out).ok();
+    }
+
+    /// What a failed recording hands back is what a repair retry replays:
+    /// every step that passed, none of the one that failed, so the retry
+    /// asks the model only about the step it patched.
+    #[test]
+    fn a_failed_recording_hands_back_the_steps_that_passed() {
+        let spec = FlowSpec::parse(
+            "name: Signup\napp: web\nurl: https://example.test\nsteps:\n  \
+             - Fill in the email and continue\n  - Save the profile\n  - Publish it\n",
+        )
+        .expect("spec parses");
+        let scene = r##"[{"target":"css:#email","tag":"input","label":"Email"},
+             {"target":"css:#next","tag":"button","text":"Next"},
+             {"target":"css:#save","tag":"button","text":"Save"},
+             {"target":"css:#publish","tag":"button","text":"Publish"}]"##;
+        let dir = std::env::temp_dir().join("flowproof-failed-hands-back-passed");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("signup.trace.jsonl");
+        let _ = std::fs::remove_file(&out);
+        let options = flowproof_driver::RecordingOptions::default;
+
+        // The model answers the first two steps and has nothing for the third.
+        let mut driver = MockAppDriver::new(&["#email", "#next", "#save", "#publish"]);
+        driver.scene = Some(scene.into());
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"type_text","target":"css:#email","text":"me@work.example"},
+                 {"action":"click","target":"css:#next"}]"##,
+            r##"[{"action":"click","target":"css:#save"}]"##,
+        ]);
+        let failed = record_with_reuse_located(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Auto,
+            Some(&mut client),
+            None,
+            options(),
+        )
+        .expect_err("the third step has no answer");
+        let intents: Vec<&str> = failed.completed.iter().map(|s| s.intent.as_str()).collect();
+        assert_eq!(
+            intents,
+            [
+                "Fill in the email and continue",
+                "Fill in the email and continue",
+                "Save the profile"
+            ]
+        );
+        let ids: Vec<&str> = failed.completed.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["s0001", "s0002", "s0003"]);
+        assert!(!out.exists(), "a failed recording writes no trace");
+
+        // Replaying them, the model is asked about the third step only.
+        let mut driver = MockAppDriver::new(&["#email", "#next", "#save", "#publish"]);
+        driver.scene = Some(scene.into());
+        let mut client =
+            ScriptedClient::new(&[r##"[{"action":"click","target":"css:#publish"}]"##]);
+        let summary = record_with_reuse_located(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Auto,
+            Some(&mut client),
+            Some(&failed.completed),
+            options(),
+        )
+        .expect("the retry records");
+        assert_eq!(
+            client.prompts.len(),
+            1,
+            "only the step that failed is authored"
+        );
+        assert_eq!(summary.reused_steps, 3);
+        assert_eq!(summary.steps, 4);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The rejected-form guard is scoped to model authoring, and stays that
