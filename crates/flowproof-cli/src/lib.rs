@@ -332,6 +332,12 @@ enum Command {
         /// edits anything other than the failing `steps:` entry.
         #[arg(long)]
         no_repair: bool,
+        /// The most times the repair loop may ask the model for a fix, 1–10
+        /// (default 3). One budget for the whole recording: the fresh retry
+        /// after an engine-gap verdict spends what is left, not a new set.
+        /// The loop still stops sooner when a fix cannot help.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=10), conflicts_with = "no_repair")]
+        repair_attempts: Option<u8>,
         /// `app: agent` only: drive a live, interactive terminal
         /// conversation with the real agent instead of a one-shot recording.
         /// The spec's `steps:` must contain exactly one `conversation:
@@ -847,6 +853,7 @@ struct RecordOptions {
     verify: bool,
     recording: flowproof_driver::RecordingOptions,
     no_repair: bool,
+    repair_attempts: Option<u8>,
     agent_conversation: bool,
 }
 
@@ -890,8 +897,11 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
         verify,
         recording,
         no_repair,
+        repair_attempts,
         agent_conversation,
     } = options;
+    // One budget, shared by both repair loops below.
+    let mut budget = RepairBudget::new(repair_attempts);
     let (spec, _env_overlay) = match load_prepared_spec(spec_path, &values) {
         Ok(prepared) => prepared,
         Err(message) => return setup_failure_result(message, json),
@@ -1001,7 +1011,15 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
             // that reuse cursor, so repair does not engage on top of it.
             if !no_repair && !reuse {
                 recording_progress("Checking recording failure");
-                match run_repair_loop(spec_path, &values, &out, author, recording, err) {
+                match run_repair_loop(
+                    spec_path,
+                    &values,
+                    &out,
+                    author,
+                    recording,
+                    err,
+                    &mut budget,
+                ) {
                     RepairLoopOutcome::Passed { summary, report } => {
                         write_repair_report(&out, &report)?;
                         if !json {
@@ -1067,8 +1085,17 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                                 return setup_failure_result(setup_err, json);
                             }
                             Err(FreshRetryError::Record(retry_err)) => {
+                                // Whatever the first loop left: with none
+                                // left, this reports the retry's failure
+                                // without asking the model again.
                                 match run_repair_loop(
-                                    spec_path, &values, &out, author, recording, retry_err,
+                                    spec_path,
+                                    &values,
+                                    &out,
+                                    author,
+                                    recording,
+                                    retry_err,
+                                    &mut budget,
                                 ) {
                                     RepairLoopOutcome::Passed {
                                         summary,
@@ -1277,11 +1304,34 @@ enum RepairLoopOutcome {
     ),
 }
 
+/// How many times one recording may ask the model for a fix, and how many
+/// it has used. `--repair-attempts` sets the limit; unset, it is
+/// [`flowproof_agent::RepairOptions`]'s default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RepairBudget {
+    max_attempts: usize,
+    used: usize,
+}
+
+impl RepairBudget {
+    fn new(repair_attempts: Option<u8>) -> Self {
+        Self {
+            max_attempts: repair_attempts.map_or_else(
+                || flowproof_agent::RepairOptions::default().max_attempts,
+                usize::from,
+            ),
+            used: 0,
+        }
+    }
+}
+
 /// Plan 007's autonomous repair loop: on a `record` failure, diagnose it,
 /// ask the configured authoring model for a minimal `.flow.yaml` edit,
 /// apply it directly (no approval prompt — see the plan's "what's different
 /// from proposing-and-approving"), and rerun. Bounded by
-/// [`flowproof_agent::RepairOptions::max_attempts`]; stops early if the same
+/// `budget.max_attempts` model calls across every loop of one recording —
+/// `budget.used` carries the count between them, so a second loop resumes
+/// the numbering instead of starting a fresh budget; stops early if the same
 /// diagnosis category repeats against the same step with no progress, which
 /// this treats as an engine gap rather than something more patching can fix.
 fn run_repair_loop(
@@ -1291,6 +1341,7 @@ fn run_repair_loop(
     author: AuthorArg,
     recording: flowproof_driver::RecordingOptions,
     first_err: flowproof_agent::LocatedRecordError,
+    budget: &mut RepairBudget,
 ) -> RepairLoopOutcome {
     if first_err.error.is_setup_error() {
         return RepairLoopOutcome::NotRepaired(first_err);
@@ -1298,13 +1349,12 @@ fn run_repair_loop(
     let Some(mut client) = flowproof_agent::HttpModelClient::from_env() else {
         return RepairLoopOutcome::NotRepaired(first_err);
     };
-    let budget = flowproof_agent::RepairOptions::default();
     let mut attempts = Vec::new();
     let mut err = first_err;
     let mut previous_rationales: Vec<String> = Vec::new();
     let mut last_signature: Option<(String, String)> = None;
 
-    for attempt in 1..=budget.max_attempts {
+    for attempt in (budget.used + 1)..=budget.max_attempts {
         let ctx = flowproof_agent::diagnose(&err.error);
         let Some(failing_intent) = ctx.failing_intent.clone() else {
             attempts.push(flowproof_agent::RepairAttempt {
@@ -1387,6 +1437,7 @@ fn run_repair_loop(
             "Waiting for repair model · attempt {attempt} of {}",
             budget.max_attempts
         ));
+        budget.used = attempt;
         let patch = match flowproof_agent::propose_patch(
             &mut client,
             &raw,
@@ -4311,6 +4362,7 @@ where
             video,
             highlight_cursor,
             no_repair,
+            repair_attempts,
             agent_conversation,
         } => with_headed_mode(resolve_headed(headed, headless, true), || {
             with_keep_browser_open(keep_open, || {
@@ -4328,6 +4380,7 @@ where
                         verify,
                         recording: recording_options(recording_detail, video, highlight_cursor),
                         no_repair,
+                        repair_attempts,
                         agent_conversation,
                     },
                 )
@@ -5051,6 +5104,53 @@ mod tests {
             ])
             .is_err(),
             "interactive waiting and machine-readable output must not mix"
+        );
+    }
+
+    #[test]
+    fn repair_attempts_is_bounded_and_excludes_no_repair() {
+        let record = |extra: &[&str]| {
+            let mut args = vec!["flowproof", "record", "insurance.flow.yaml"];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        assert!(matches!(
+            record(&["--repair-attempts", "5"])
+                .expect("in range")
+                .command,
+            Command::Record {
+                repair_attempts: Some(5),
+                ..
+            }
+        ));
+        assert!(matches!(
+            record(&[]).expect("default parses").command,
+            Command::Record {
+                repair_attempts: None,
+                ..
+            }
+        ));
+        for out_of_range in ["0", "11"] {
+            assert!(
+                record(&["--repair-attempts", out_of_range]).is_err(),
+                "{out_of_range} is outside 1-10"
+            );
+        }
+        assert!(
+            record(&["--repair-attempts", "2", "--no-repair"]).is_err(),
+            "a budget for a loop that is switched off is a contradiction"
+        );
+    }
+
+    #[test]
+    fn an_unset_repair_budget_keeps_the_default_of_three() {
+        assert_eq!(RepairBudget::new(None).max_attempts, 3);
+        assert_eq!(
+            RepairBudget::new(Some(7)),
+            RepairBudget {
+                max_attempts: 7,
+                used: 0
+            }
         );
     }
 
