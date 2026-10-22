@@ -106,6 +106,19 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+      - name: Check the npm token
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # Prints the account the token belongs to, never the token. npm
+          # answers a publish with an unusable token with a misleading 404,
+          # so fail here first, before the build, with the real cause.
+          if ! user=$(npm whoami); then
+            echo "::error::NPM_TOKEN is not a valid npm token. Create a new one with read and write access to these packages and update the secret."
+            exit 1
+          fi
+          echo "Publishing as $user"
       - name: Add the cross-compilation target
         if: matrix.target != ''
         run: rustup target add ${{ matrix.target }}
@@ -178,6 +191,19 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+      - name: Check the npm token
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # Prints the account the token belongs to, never the token. npm
+          # answers a publish with an unusable token with a misleading 404,
+          # so fail here first, before the build, with the real cause.
+          if ! user=$(npm whoami); then
+            echo "::error::NPM_TOKEN is not a valid npm token. Create a new one with read and write access to these packages and update the secret."
+            exit 1
+          fi
+          echo "Publishing as $user"
       - name: Publish to npm
         working-directory: sdk/js
         shell: bash
