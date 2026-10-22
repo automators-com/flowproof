@@ -6,6 +6,12 @@ together).
 
 ## Unreleased
 
+## 0.23.27
+
+- Restore npm publishing with validated release credentials and the pre-build
+  token check from #757. A fresh patch version avoids the staged Windows
+  0.23.26 package that prevented the launcher release.
+
 ## 0.23.26
 
 - **`author-from-doc` reads an ALM report that went through Word.** Exported
