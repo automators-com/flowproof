@@ -1573,7 +1573,19 @@ fn run_repair_loop(
             applied: true,
         });
 
-        recording_progress("Retrying repaired flow");
+        // The steps before the failure already worked: replay them from the
+        // failed attempt instead of asking the model to author them again.
+        // Each is still checked against the live app, and one whose target
+        // has gone is authored fresh, exactly as `record --reuse` does.
+        let passed = (!err.completed.is_empty()).then(|| std::mem::take(&mut err.completed));
+        recording_progress(&match &passed {
+            Some(steps) => format!(
+                "Retrying repaired flow · replaying {} recorded step{} first",
+                steps.len(),
+                if steps.len() == 1 { "" } else { "s" }
+            ),
+            None => "Retrying repaired flow".to_string(),
+        });
         let (rerun_spec, _rerun_env_overlay) = match load_prepared_spec(spec_path, values) {
             Ok(result) => result,
             Err(e) => {
@@ -1603,7 +1615,7 @@ fn run_repair_loop(
             &mut driver,
             out,
             author.into(),
-            None,
+            passed.as_deref(),
             recording,
         ) {
             Ok(summary) => {
@@ -5499,6 +5511,7 @@ mod tests {
                 selector: "id:wnd[0]/usr/ctxtRMMG1-MATNR".into(),
                 hint: None,
             },
+            completed: Vec::new(),
             at: Box::new(flowproof_agent::FailurePoint {
                 step: Some(flowproof_agent::FailedStep {
                     number: 4,
