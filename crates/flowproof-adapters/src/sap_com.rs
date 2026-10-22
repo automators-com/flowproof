@@ -98,6 +98,13 @@ pub trait SapEngine {
     /// VKey table has no Alt chords, so this is the only way to send it.
     fn close_window(&mut self) -> Result<(), DriverError>;
     fn screen_size(&mut self) -> Result<(u32, u32), DriverError>;
+    /// Maximize the connected session's main window and bring it to the
+    /// foreground, as a headed browser is at launch, so a person watching
+    /// the run sees the screen being driven. Scripting works on a window
+    /// that is behind others, so this is for the watcher, not the driver.
+    fn present_window(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     /// The session's `Info`: where the user is, for a failure report.
     /// `Ok(None)` when the engine cannot say.
     fn session_info(&mut self) -> Result<Option<SapSessionInfo>, DriverError> {
@@ -307,7 +314,15 @@ impl<E: SapEngine> AppDriver for SapAppDriver<E> {
         // `command` carries the SAP Logon connection description (may be
         // empty: attach to whatever logged-in session exists).
         self.engine
-            .connect(command, self.credentials.as_ref(), timeout)
+            .connect(command, self.credentials.as_ref(), timeout)?;
+        // Every launch presents, including a multi-surface return visit, so
+        // coming back from the browser puts SAP in front again. A window
+        // that will not come forward is no reason to fail a run that can
+        // still drive it.
+        if let Err(error) = self.engine.present_window() {
+            eprintln!("sap: could not bring the SAP GUI window to the front: {error}");
+        }
+        Ok(())
     }
 
     fn stage_credentials(&mut self, credentials: LoginCredentials) -> Result<(), DriverError> {
@@ -577,6 +592,10 @@ pub mod fake {
         pub vkeys: Vec<u16>,
         pub set_texts: Vec<(String, String)>,
         pub session_info: Option<SapSessionInfo>,
+        /// How many times the window was maximized and brought to the front.
+        pub presented: u32,
+        /// Make `present_window` fail, as a refused foreground would.
+        pub refuse_present: bool,
     }
 
     impl FakeEngine {
@@ -693,6 +712,18 @@ pub mod fake {
             Ok((1920, 1080))
         }
 
+        /// Only a connected session has a window to present.
+        fn present_window(&mut self) -> Result<(), DriverError> {
+            if self.connected.is_none() {
+                return Err(DriverError::Uia("fake sap: not connected".into()));
+            }
+            if self.refuse_present {
+                return Err(DriverError::Uia("fake sap: foreground refused".into()));
+            }
+            self.presented += 1;
+            Ok(())
+        }
+
         fn session_info(&mut self) -> Result<Option<SapSessionInfo>, DriverError> {
             Ok(self.session_info.clone())
         }
@@ -748,6 +779,7 @@ pub mod com {
     use std::time::{Duration, Instant};
 
     use windows::core::{Interface, BSTR, GUID, PCWSTR};
+    use windows::Win32::Foundation::HWND;
     use windows::Win32::System::Com::{
         CoInitializeEx, CoTaskMemFree, CreateBindCtx, GetRunningObjectTable, IDispatch,
         COINIT_APARTMENTTHREADED, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
@@ -755,7 +787,9 @@ pub mod com {
     };
     use windows::Win32::System::Ole::DISPID_PROPERTYPUT;
     use windows::Win32::System::Variant::VARIANT;
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SetForegroundWindow, SM_CXSCREEN, SM_CYSCREEN,
+    };
 
     use super::{SapElement, SapEngine, SapSessionInfo};
     use flowproof_driver::{DriverError, LoginCredentials};
@@ -1462,6 +1496,25 @@ pub mod com {
             Ok((w.unsigned_abs().max(1), h.unsigned_abs().max(1)))
         }
 
+        /// The main window, not the active one: a popup open at launch is
+        /// owned by `wnd[0]` and comes forward with it, and maximizing the
+        /// popup itself would fill the screen with a dialog.
+        fn present_window(&mut self) -> Result<(), DriverError> {
+            let window = self
+                .find_disp("wnd[0]")?
+                .ok_or_else(|| DriverError::Uia("sap-com: no main window".into()))?;
+            // Maximize also restores a minimized window.
+            window.call("Maximize", vec![])?;
+            // `Handle` is the window's HWND as a Long; Windows sign-extends
+            // 32-bit handles, so the cast is the documented conversion.
+            if let Some(handle) = window.get_i32("Handle").filter(|handle| *handle != 0) {
+                // Foregrounding can be refused (focus-steal prevention); the
+                // window is still maximized and drivable, so not an error.
+                let _ = unsafe { SetForegroundWindow(HWND(handle as isize as *mut _)) };
+            }
+            Ok(())
+        }
+
         fn session_info(&mut self) -> Result<Option<SapSessionInfo>, DriverError> {
             let info = self.session()?.get_disp("Info")?;
             Ok(Some(SapSessionInfo {
@@ -1811,6 +1864,33 @@ mod tests {
             driver.engine.connections_opened, 0,
             "already the right identity: opening a second connection would be waste"
         );
+    }
+
+    /// A person watching a run sees SAP in front, as they see the browser,
+    /// and again on every return visit from another surface.
+    #[test]
+    fn every_launch_brings_the_connected_window_to_the_front() {
+        let mut driver = driver();
+        driver
+            .launch("TS3", "SAP", Duration::from_secs(1))
+            .expect("connects");
+        assert_eq!(driver.engine.presented, 1);
+        driver
+            .launch("TS3", "SAP", Duration::from_secs(1))
+            .expect("re-attaches");
+        assert_eq!(driver.engine.presented, 2);
+    }
+
+    #[test]
+    fn a_window_that_will_not_come_forward_does_not_fail_the_launch() {
+        let mut driver = SapAppDriver::with_engine(FakeEngine {
+            refuse_present: true,
+            ..FakeEngine::with_elements(order_screen())
+        });
+        driver
+            .launch("TS3", "SAP", Duration::from_secs(1))
+            .expect("scripting still drives a window behind others");
+        assert_eq!(driver.engine.connected.as_deref(), Some("TS3"));
     }
 
     /// A password that reaches a log line or an error is a password that
