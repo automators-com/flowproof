@@ -298,6 +298,14 @@ enum Command {
         /// resolves; re-author only what drifted (needs an existing trace).
         #[arg(long)]
         reuse: bool,
+        /// Pick up where the last recording of this flow stopped: replay the
+        /// steps a failed recording got through (its checkpoint), or else the
+        /// existing trace's, and author only from where they stop matching.
+        /// Each replayed step is checked against the live app first. Unlike
+        /// `--reuse`, repair still runs, and with nothing to resume from it
+        /// records from the start.
+        #[arg(long, conflicts_with = "reuse")]
+        resume: bool,
         /// Replay the trace once, immediately, and refuse the recording if it
         /// cannot reproduce itself. PERFORMS THE FLOW A SECOND TIME against
         /// the live app, repeating whatever it does - orders, e-mails,
@@ -850,6 +858,7 @@ struct RecordOptions {
     json: bool,
     author: AuthorArg,
     reuse: bool,
+    resume: bool,
     verify: bool,
     recording: flowproof_driver::RecordingOptions,
     no_repair: bool,
@@ -894,6 +903,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
         json,
         author,
         reuse,
+        resume,
         verify,
         recording,
         no_repair,
@@ -987,12 +997,24 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
     };
     // --reuse: consult the existing trace per step, re-authoring only
     // drift; the old steps come from the trace being replaced.
-    let old_steps = if reuse {
+    let (old_steps, resumed_from) = if reuse {
         let (_, steps) = flowproof_replay::load_trace(&out)
             .map_err(|e| format!("--reuse needs an existing trace at {}: {e}", out.display()))?;
-        Some(steps)
+        (Some(steps), None)
+    } else if resume {
+        match resume_steps(&out) {
+            Some((steps, from)) => {
+                recording_progress(&format!(
+                    "Resuming from the {from}: replaying up to {} recorded step{} first",
+                    steps.len(),
+                    if steps.len() == 1 { "" } else { "s" }
+                ));
+                (Some(steps), Some(from))
+            }
+            None => (None, None),
+        }
     } else {
-        None
+        (None, None)
     };
     recording_progress("Recording steps");
     let result = flowproof_agent::record_located(
@@ -1009,6 +1031,8 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
             // `--reuse` re-records against an existing trace's steps; the
             // repair loop rewrites the spec file itself, which would desync
             // that reuse cursor, so repair does not engage on top of it.
+            // `--resume` does: each repair rerun replays the steps this
+            // attempt got through, not the cursor it started from.
             if !no_repair && !reuse {
                 recording_progress("Checking recording failure");
                 match run_repair_loop(
@@ -1028,6 +1052,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                         summary
                     }
                     RepairLoopOutcome::NotRepaired(err) => {
+                        keep_checkpoint(&out, &spec, &err);
                         return record_failure_result(&err, json);
                     }
                     RepairLoopOutcome::GaveUp(err, report) => {
@@ -1044,6 +1069,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                         );
                         if !is_engine_gap {
                             write_repair_report(&out, &report)?;
+                            keep_checkpoint(&out, &spec, &err);
                             return emit_repair_failure(&err, &report, &report, json);
                         }
                         recording_progress("Retrying recording from a fresh start");
@@ -1127,6 +1153,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                                             },
                                         };
                                         write_json_report(&out, &combined)?;
+                                        keep_checkpoint(&out, &spec, &final_err);
                                         return emit_repair_failure(
                                             &final_err, &combined, &report, json,
                                         );
@@ -1146,6 +1173,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                                                  real problem, not a flake."
                                             );
                                         }
+                                        keep_checkpoint(&out, &spec, &final_err);
                                         return emit_repair_failure(
                                             &final_err,
                                             &combined,
@@ -1159,17 +1187,23 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
                     }
                 }
             } else {
+                keep_checkpoint(&out, &spec, &err);
                 return record_failure_result(&err, json);
             }
         }
     };
+    // A finished recording supersedes whatever an earlier one stopped at.
+    discard_checkpoint(&out);
     if json {
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "trace_path": summary.trace_path,
             "steps": summary.steps,
             "reused_steps": summary.reused_steps,
             "routing": summary.routing,
         });
+        if let Some(from) = resumed_from {
+            payload["resumed_from"] = from.into();
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
@@ -1580,7 +1614,9 @@ fn run_repair_loop(
         // failed attempt instead of asking the model to author them again.
         // Each is still checked against the live app, and one whose target
         // has gone is authored fresh, exactly as `record --reuse` does.
-        let passed = (!err.completed.is_empty()).then(|| std::mem::take(&mut err.completed));
+        // Cloned, not taken: a rerun that never starts leaves `err` as the
+        // final failure, and its passed steps are still the checkpoint.
+        let passed = (!err.completed.is_empty()).then(|| err.completed.clone());
         recording_progress(&match &passed {
             Some(steps) => format!(
                 "Retrying repaired flow · replaying {} recorded step{} first",
@@ -1672,6 +1708,82 @@ fn repair_report_path(out: &Path) -> PathBuf {
         .or_else(|| name.strip_suffix(".jsonl"))
         .unwrap_or(name);
     out.with_file_name(format!("{stem}.repair.json"))
+}
+
+/// Sibling checkpoint path for a trace, e.g. `flow.trace.jsonl` ->
+/// `flow.checkpoint.json`: where a failed recording leaves the steps it got
+/// through for `record --resume`.
+fn checkpoint_path(out: &Path) -> PathBuf {
+    let name = out
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("flow.trace.jsonl");
+    let stem = name
+        .strip_suffix(".trace.jsonl")
+        .or_else(|| name.strip_suffix(".jsonl"))
+        .unwrap_or(name);
+    out.with_file_name(format!("{stem}.checkpoint.json"))
+}
+
+/// What a failed recording got through. Deliberately not a trace: it has no
+/// header and nothing loads it as one, so a half recording cannot be replayed
+/// as if it were the flow.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Checkpoint {
+    /// The flow step the recording failed on, 1-based, as the live progress
+    /// line numbered it.
+    failed_at: Option<usize>,
+    steps: Vec<flowproof_trace::Step>,
+}
+
+/// Leave a failed recording's passed steps for `record --resume`, or clear a
+/// stale checkpoint when there are none. A flow that asserts
+/// `assert_no_secret_leak` gets none: its trace is only written once the
+/// whole run's leak scan has passed, and a checkpoint written before it
+/// would store what that scan exists to refuse. Best-effort - a checkpoint
+/// that cannot be written costs a resume, not the failure report.
+fn keep_checkpoint(out: &Path, spec: &FlowSpec, err: &flowproof_agent::LocatedRecordError) {
+    if err.completed.is_empty() || !spec.secret_leak_assertions().is_empty() {
+        discard_checkpoint(out);
+        return;
+    }
+    let checkpoint = Checkpoint {
+        failed_at: err.at.step.as_ref().map(|step| step.number),
+        steps: err.completed.clone(),
+    };
+    let path = checkpoint_path(out);
+    let written = serde_json::to_string_pretty(&checkpoint)
+        .map_err(|e| e.to_string())
+        .and_then(|json| std::fs::write(&path, json).map_err(|e| e.to_string()));
+    if let Err(e) = written {
+        eprintln!(
+            "WARNING: cannot keep a checkpoint at {}: {e}",
+            path.display()
+        );
+    }
+}
+
+fn discard_checkpoint(out: &Path) {
+    let _ = std::fs::remove_file(checkpoint_path(out));
+}
+
+/// The steps `record --resume` replays: a failed recording's checkpoint when
+/// there is one (it is always newer than the trace - a finished recording
+/// removes it), else the existing trace's. `None` = nothing to resume from.
+fn resume_steps(out: &Path) -> Option<(Vec<flowproof_trace::Step>, &'static str)> {
+    if let Ok(raw) = std::fs::read_to_string(checkpoint_path(out)) {
+        match serde_json::from_str::<Checkpoint>(&raw) {
+            Ok(checkpoint) if !checkpoint.steps.is_empty() => {
+                return Some((checkpoint.steps, "checkpoint"))
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("WARNING: ignoring an unreadable checkpoint: {e}"),
+        }
+    }
+    flowproof_replay::load_trace(out)
+        .ok()
+        .map(|(_, steps)| (steps, "trace"))
+        .filter(|(steps, _)| !steps.is_empty())
 }
 
 fn write_repair_report(out: &Path, report: &flowproof_agent::RepairReport) -> Result<(), String> {
@@ -4383,6 +4495,7 @@ where
             json,
             author,
             reuse,
+            resume,
             verify,
             keep_open,
             headed,
@@ -4406,6 +4519,7 @@ where
                         json,
                         author,
                         reuse,
+                        resume,
                         verify,
                         recording: recording_options(recording_detail, video, highlight_cursor),
                         no_repair,
@@ -5087,6 +5201,126 @@ mod tests {
         assert!(
             !suffix.contains("flowproof config"),
             "suite-minted data must not get credential-profile advice: {suffix}"
+        );
+    }
+
+    fn checkpoint_step(id: &str, intent: &str) -> flowproof_trace::Step {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "intent": intent,
+            "action": {"type": "click", "params": {}},
+            "selectors": [{"tier": "native_id", "provenance": "web", "payload": {"css": "#greet"}}],
+            "sync": {"pre": [], "post": []},
+            "artifacts": {},
+        }))
+        .expect("a minimal step")
+    }
+
+    fn failure_after(steps: Vec<flowproof_trace::Step>) -> flowproof_agent::LocatedRecordError {
+        flowproof_agent::LocatedRecordError {
+            error: flowproof_agent::RecordError::ElementNotFound {
+                intent: "Click reset".into(),
+                selector: "id:reset-button".into(),
+                hint: None,
+            },
+            at: Box::new(flowproof_agent::FailurePoint {
+                step: Some(flowproof_agent::FailedStep {
+                    number: 3,
+                    id: "s0003".into(),
+                    intent: "Click reset".into(),
+                }),
+                screen: None,
+            }),
+            completed: steps,
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_sits_beside_the_trace() {
+        assert_eq!(
+            checkpoint_path(Path::new("flows/greet.trace.jsonl")),
+            Path::new("flows/greet.checkpoint.json")
+        );
+    }
+
+    /// The round trip `--resume` depends on: a failure leaves its passed
+    /// steps, resume prefers them to the trace, and a finished recording
+    /// clears them.
+    #[test]
+    fn resume_prefers_the_checkpoint_and_a_finished_recording_clears_it() {
+        let dir = std::env::temp_dir().join("flowproof-resume-checkpoint");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("greet.trace.jsonl");
+        let spec = FlowSpec::parse(
+            "name: Greet\napp: web\nurl: https://example.test\nsteps:\n  - Press the greet button\n",
+        )
+        .expect("spec parses");
+        assert!(resume_steps(&out).is_none(), "nothing to resume from");
+
+        keep_checkpoint(
+            &out,
+            &spec,
+            &failure_after(vec![
+                checkpoint_step("s0001", "Type Ada into the name field"),
+                checkpoint_step("s0002", "Press the greet button"),
+            ]),
+        );
+        let (steps, from) = resume_steps(&out).expect("the checkpoint resumes");
+        assert_eq!(from, "checkpoint");
+        assert_eq!(steps.len(), 2);
+        let saved: Checkpoint = serde_json::from_str(
+            &std::fs::read_to_string(checkpoint_path(&out)).expect("the checkpoint was written"),
+        )
+        .expect("the checkpoint reads back");
+        assert_eq!(saved.failed_at, Some(3));
+
+        // Nothing passed this time: the old checkpoint is stale, not kept.
+        keep_checkpoint(&out, &spec, &failure_after(Vec::new()));
+        assert!(!checkpoint_path(&out).exists());
+
+        keep_checkpoint(
+            &out,
+            &spec,
+            &failure_after(vec![checkpoint_step("s0001", "x")]),
+        );
+        discard_checkpoint(&out);
+        assert!(
+            !checkpoint_path(&out).exists(),
+            "a finished recording clears it"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_flow_that_scans_for_secret_leaks_keeps_no_checkpoint() {
+        let dir = std::env::temp_dir().join("flowproof-resume-no-leak-checkpoint");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("login.trace.jsonl");
+        let spec = FlowSpec::parse(
+            "name: Login\napp: web\nurl: https://example.test\nsteps:\n  - Sign in\n  \
+             - assert_no_secret_leak: ${DB_PASSWORD}\n",
+        )
+        .expect("spec parses");
+        keep_checkpoint(
+            &out,
+            &spec,
+            &failure_after(vec![checkpoint_step("s0001", "Sign in")]),
+        );
+        assert!(
+            !checkpoint_path(&out).exists(),
+            "its trace waits for the leak scan, so a checkpoint must too"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resume_and_reuse_do_not_combine() {
+        assert!(Cli::try_parse_from(["flowproof", "record", "a.flow.yaml", "--resume"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["flowproof", "record", "a.flow.yaml", "--resume", "--reuse"])
+                .is_err()
         );
     }
 

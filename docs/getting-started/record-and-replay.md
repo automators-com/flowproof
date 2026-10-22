@@ -193,6 +193,24 @@ failing spec step with a bounded set of edits. Pass `--no-repair` to stop on the
 first failure. See [Resilience and healing](resilience.md) for selector fallback
 and reviewable healing.
 
+### Resume a recording that stopped
+
+When a recording fails, the steps it got through are kept in
+`<flow>.checkpoint.json` beside the trace. Record again with `--resume` to
+replay them and author only from the step that failed:
+
+```bash
+flowproof record shop.flow.yaml --resume
+```
+
+With no checkpoint, `--resume` replays the existing trace's steps instead, the
+way `--reuse` does, and with neither it records from the start. Unlike
+`--reuse`, repair stays on. Each replayed step is checked against the live app
+first, and one whose target has gone is authored fresh. A finished recording
+removes the checkpoint; it is a working file, not something to commit. A flow
+that asserts `assert_no_secret_leak` keeps no checkpoint, because its steps
+are only written once the whole run's leak scan has passed.
+
 Element actions wait until the target is enabled, stable, and able to receive
 events. A gate that does not clear reports the failed condition, such as
 `element exists but is disabled after 5000ms`.
