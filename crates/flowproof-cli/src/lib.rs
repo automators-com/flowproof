@@ -1378,9 +1378,12 @@ fn run_repair_loop(
                 )
             }
         };
+        // What the model is told already ran. Without it, a failed assert
+        // or a missing element read as a flow that never got going, and the
+        // model declined to patch the step on that basis.
         let completed_steps = match &err.error {
             flowproof_agent::RecordError::NeedsClarification(c) => c.completed_steps.clone(),
-            _ => Vec::new(),
+            _ => passed_intents(&err.completed),
         };
 
         recording_progress(&format!(
@@ -1588,6 +1591,20 @@ fn run_repair_loop(
             outcome: flowproof_agent::RepairOutcome::BudgetExhausted { last_error },
         },
     )
+}
+
+/// The flow steps behind a failure's passed trace steps, in order. One flow
+/// step can mint several trace steps, all carrying its intent, so a run of
+/// equal intents is one step - which also folds two identical steps in a
+/// row into one, a loss the prompt can bear.
+fn passed_intents(steps: &[flowproof_trace::Step]) -> Vec<String> {
+    let mut intents: Vec<String> = Vec::new();
+    for step in steps {
+        if intents.last() != Some(&step.intent) {
+            intents.push(step.intent.clone());
+        }
+    }
+    intents
 }
 
 /// Sibling report path for a trace, e.g. `flow.trace.jsonl` ->
@@ -5018,6 +5035,30 @@ mod tests {
             !suffix.contains("flowproof config"),
             "suite-minted data must not get credential-profile advice: {suffix}"
         );
+    }
+
+    #[test]
+    fn the_repair_prompt_names_each_passed_flow_step_once() {
+        let step = |intent: &str| -> flowproof_trace::Step {
+            serde_json::from_value(serde_json::json!({
+                "id": "s0001",
+                "intent": intent,
+                "action": {"type": "click", "params": {}},
+                "selectors": [],
+                "sync": {"pre": [], "post": []},
+                "artifacts": {},
+            }))
+            .expect("a minimal step")
+        };
+        assert_eq!(
+            passed_intents(&[
+                step("Fill in the email and continue"),
+                step("Fill in the email and continue"),
+                step("Save the profile"),
+            ]),
+            ["Fill in the email and continue", "Save the profile"]
+        );
+        assert!(passed_intents(&[]).is_empty());
     }
 
     #[test]
