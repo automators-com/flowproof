@@ -6,6 +6,60 @@ together).
 
 ## Unreleased
 
+## 0.23.28
+
+- **`record --resume` picks up where a failed recording stopped.** A recording
+  that failed at step 6 kept nothing, so recording it again asked the model to
+  author steps 1 to 5 again. A failed recording now leaves the steps it got
+  through in `<flow>.checkpoint.json`, and `record --resume` replays them (or,
+  with no checkpoint, the existing trace's steps) and authors only from where
+  they stop matching. Repair stays on, each replayed step is checked against the
+  live app first, and a finished recording removes the checkpoint. The JSON
+  result names what it resumed from (`resumed_from`). Flows that assert
+  `assert_no_secret_leak` keep no checkpoint.
+
+- **`record --repair-attempts` sets how many fixes the repair loop may try.**
+  The loop was fixed at three model calls, and an engine-gap verdict's fresh
+  retry started a second loop with three more, so one recording could ask for
+  anywhere from one fix to six, and the progress line counted "attempt 1 of 3"
+  twice. `--repair-attempts N` (1–10, default 3) is now the most model calls one
+  recording makes, across both loops: the fresh retry spends what the first loop
+  left and keeps counting from there. The loop still stops sooner when the same
+  failure repeats or the model says a fix cannot help.
+
+- **A repair retry replays the steps that already passed.** After the repair
+  loop patched a failing step, it re-recorded the whole flow from the first
+  step, asking the model to author every step before the failure again on
+  every attempt. A retry now replays those steps as the failed attempt recorded
+  them, checks each against the live app as `--reuse` does, and asks the model
+  only from the patched step on. The progress line says how many it replays.
+  The fresh retry after an engine-gap verdict is unchanged: it is meant to be
+  independent, so it still records from the start.
+
+- **The repair model is told which steps already ran.** For any recording
+  failure other than a clarification request - an element not found, an
+  assertion that did not hold - the repair prompt said no steps had completed
+  before the failure, even when several had. The model took the flow for one
+  that never got going and declined to patch the failing step on that basis.
+  The prompt now names every flow step that passed.
+
+- **`record --reuse` reuses web steps again.** Since web recording began
+  putting an accessibility selector (role and name) first in each step, reuse
+  rebuilt a step's target from that selector alone, could not, and quietly
+  asked the model to author the step again. Every web step with an accessible
+  name was re-authored on reuse, costing a model call each and saving nothing.
+  Reuse now reads past that hint to the selector the step was recorded with, so
+  a step whose target is still on screen replays with no model call.
+
+- **SAP GUI comes to the front when a run starts driving it.** A headed
+  browser is maximized and brought forward at launch, but an SAP session was
+  only attached to, so a person watching the run could be looking at whatever
+  window was on top while flowproof drove SAP behind it. Connecting now
+  maximizes the session's main window and brings it forward, and so does every
+  return to SAP in a run that also drives a browser. If Windows refuses to
+  bring the window forward, the run carries on, since scripting drives SAP
+  whether or not it is on top.
+
 ## 0.23.27
 
 - Restore npm publishing with validated release credentials and the pre-build
