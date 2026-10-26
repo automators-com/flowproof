@@ -42,7 +42,12 @@ steps:
 A flow without `url:` has to start with a full address: a relative
 `Go to /settings` has no site to resolve against.
 
-Set `CHROME=/path/to/chrome` if the browser isn't auto-detected. The web
+Web flows run in Google Chrome, Microsoft Edge, Chromium or Brave. flowproof
+finds one in the usual install locations, including per-user installs made
+without admin rights; set `CHROME=/path/to/chrome` to choose one yourself or
+if yours isn't found. With none installed, the run stops before it starts with
+a message beginning `no browser found` (`failure.kind` `no_browser` under
+`record --json`). The web
 live-app suite (`cargo test -p flowproof-cli --test web_e2e`,
 `FLOWPROOF_E2E=1`) runs in CI on ubuntu.
 

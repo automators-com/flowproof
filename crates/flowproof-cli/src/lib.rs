@@ -740,14 +740,20 @@ fn record_failure_json(err: &flowproof_agent::LocatedRecordError) -> serde_json:
 }
 
 /// The same shape for a failure before recording could start (the flow
-/// does not load, the driver cannot be built): no step, no screen.
+/// does not load, the driver cannot be built): no step, no screen. A missing
+/// browser is its own kind, because the fix is on the machine, not the flow.
 fn setup_failure_json(message: &str) -> serde_json::Value {
+    let kind = if message.contains(flowproof_adapters::NO_BROWSER) {
+        "no_browser"
+    } else {
+        "flow_setup"
+    };
     serde_json::json!({
         "error": message,
         "failure": {
-            "kind": "flow_setup",
+            "kind": kind,
             "message": message,
-            "hint": failure_hint("flow_setup", None),
+            "hint": failure_hint(kind, None),
         },
     })
 }
@@ -844,6 +850,10 @@ fn failure_hint(kind: &str, screen: Option<&flowproof_driver::FailureScreen>) ->
                           a finding about the app, not a problem with the flow."
             .into(),
         "flow_setup" => "The flow cannot record as written. Fix what the message names, then \
+                         record again."
+            .into(),
+        "no_browser" => "Web flows need Google Chrome, Microsoft Edge, Chromium or Brave on \
+                         this machine. Install one, or set CHROME to the path of one, then \
                          record again."
             .into(),
         _ => "flowproof could not finish the recording. Check the disk has space and the \
@@ -5757,6 +5767,26 @@ mod tests {
             .expect("error is a string")
             .contains("oracle"));
         assert!(payload.get("needs_clarification").is_none());
+    }
+
+    /// A missing browser reaches the CLI as a message, wrapped by whatever
+    /// built the driver; it must still come out as its own kind, with the
+    /// two ways to fix it, and every other setup failure must not.
+    #[test]
+    fn a_missing_browser_is_its_own_setup_failure() {
+        let missing = flowproof_adapters::AdapterError::NoBrowser("none installed".into());
+        let payload = setup_failure_json(&format!("opening the browser: {missing}"));
+        assert_eq!(payload["failure"]["kind"], "no_browser");
+        let hint = payload["failure"]["hint"]
+            .as_str()
+            .expect("hint is a string");
+        assert!(
+            hint.contains("Install") && hint.contains("CHROME"),
+            "{hint}"
+        );
+
+        let other = setup_failure_json("spec has no url");
+        assert_eq!(other["failure"]["kind"], "flow_setup");
     }
 
     /// The hint for a refused key points at the key, never at the step.
