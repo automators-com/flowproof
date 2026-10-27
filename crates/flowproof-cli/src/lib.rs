@@ -939,6 +939,9 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
         Ok(prepared) => prepared,
         Err(message) => return setup_failure_result(message, json),
     };
+    if let Err(message) = guard_launch_exec(&spec) {
+        return setup_failure_result(message, json);
+    }
     if let Some(reason) = spec.skip_reason() {
         if json {
             println!("{}", serde_json::json!({ "skipped": reason }));
@@ -2538,6 +2541,24 @@ pub(crate) fn guard_spec_exec(what: &str, command: &str) -> Result<(), String> {
     } else {
         Err(spec_exec_refusal(what, command))
     }
+}
+
+/// Refuse the arbitrary program a flow's `app: { command, window_title }`
+/// (Windows launch driver) would start on record, unless consented — the same
+/// gate and `--allow-exec` consent as `agent.command` (audit A2). Covers the
+/// top-level `app:` and every surface's `app:`. Record-only; a windows flow's
+/// command also launches on replay from the trace header, gated separately
+/// (tracked follow-up).
+fn guard_launch_exec(spec: &FlowSpec) -> Result<(), String> {
+    if let Some((command, _)) = spec.app.launch_parts() {
+        guard_spec_exec("the app command", command)?;
+    }
+    for surface in spec.apps.values() {
+        if let Some((command, _)) = surface.app.launch_parts() {
+            guard_spec_exec("the app command", command)?;
+        }
+    }
+    Ok(())
 }
 
 /// Run the manifest's `env_from` command (if any) and export its stdout as
