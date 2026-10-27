@@ -16,6 +16,10 @@ use std::path::PathBuf;
 /// "No such file or directory" and the run looked like a hook bug. The
 /// pid scopes the path to one process; each test still gets its own name.
 fn suite_dir(name: &str) -> PathBuf {
+    // Some tests here exercise before_each/after_each, which are gated by
+    // default; opt the whole test binary in. Hookless tests are unaffected,
+    // and `allow_suite_exec` only sets the flag on, so this is order-safe.
+    flowproof_cli::allow_suite_exec();
     let dir = std::env::temp_dir().join(format!(
         "flowproof-flow-isolation-{name}-{}",
         std::process::id()

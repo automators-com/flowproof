@@ -82,6 +82,20 @@ walking up from the spec. The selected manifest is named on stderr. Running a
 single spec can therefore execute that suite's `env_from` command and hooks.
 Treat a suite manifest as executable project configuration.
 
+Because `env_from` and the `before_each`/`after_each` hooks run arbitrary
+shell, flowproof does not run them by default — a flow replayed inside a
+folder you do not control would otherwise execute that folder's `suite.yaml`.
+Pass `--allow-exec` to `run` or `record` once you trust the suite, or set
+`FLOWPROOF_ALLOW_EXEC=1` for non-interactive callers such as CI:
+
+```bash
+flowproof run specs/ --allow-exec
+FLOWPROOF_ALLOW_EXEC=1 flowproof run specs/
+```
+
+Without it, a suite that declares `env_from` or a hook is refused before any
+shell runs, with the command and its source file named in the error.
+
 ## Select flows and enforce dependencies
 
 Use `flows` as an explicit allowlist and execution order:
