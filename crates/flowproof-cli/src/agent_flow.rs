@@ -2031,6 +2031,7 @@ pub fn record_interactive(
     input: &mut impl std::io::BufRead,
     output: &mut impl std::io::Write,
 ) -> Result<usize, String> {
+    guard_record_exec(spec)?;
     let raw = std::fs::read_to_string(spec_path)
         .map_err(|e| format!("reading {}: {e}", spec_path.display()))?;
     let placeholder_lines: Vec<usize> = raw
@@ -2214,6 +2215,23 @@ pub fn record_interactive(
     Ok(deliveries.len())
 }
 
+/// Refuse, before anything spawns, any program the record path would start
+/// from the spec — the `agent.command` and each stdio `mcp.*.command` — unless
+/// the user consented (`--allow-exec` / `FLOWPROOF_ALLOW_EXEC`). A spec is
+/// executable code, so recording one from an untrusted source would otherwise
+/// run its author's programs. Replay never reaches here.
+fn guard_record_exec(spec: &FlowSpec) -> Result<(), String> {
+    if let Some(command) = spec.agent.as_ref().and_then(|a| a.command.as_deref()) {
+        crate::guard_spec_exec("the agent command", command)?;
+    }
+    for server in &spec.mcp {
+        if let Some(command) = server.command.as_deref() {
+            crate::guard_spec_exec(&format!("MCP server `{}`", server.name), command)?;
+        }
+    }
+    Ok(())
+}
+
 /// The body. Takes `achieved` as an out-parameter rather than returning the
 /// tier, because the tier becomes known PART WAY THROUGH and every `?` before
 /// that point would otherwise have to name a tier it does not have yet. A run
@@ -2224,6 +2242,7 @@ fn record_inner(
     out: &Path,
     achieved: &mut Option<Containment>,
 ) -> Result<(), String> {
+    guard_record_exec(spec)?;
     let mut plan = plan(spec)?;
     warn_unprotected_tools(spec, &plan, "record");
     // Set up the MCP boundary BEFORE the agent starts: write the plans and
@@ -3963,6 +3982,10 @@ mod tests {
     struct ConversationTestDir(std::path::PathBuf);
     impl ConversationTestDir {
         fn new() -> Self {
+            // These tests record trusted agent/mcp commands they author
+            // themselves; opt the record-time exec gate in for the whole
+            // module (idempotent, flips on only).
+            crate::allow_suite_exec();
             let path = std::env::temp_dir().join(format!(
                 "conversation-safety-{}-{}",
                 std::process::id(),
@@ -4406,6 +4429,7 @@ for line in sys.stdin:
     /// deliveries metadata.
     #[test]
     fn record_interactive_writes_a_trace_and_substitutes_the_placeholder() {
+        crate::allow_suite_exec();
         let _guard = INTERACTIVE_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -4478,6 +4502,7 @@ for line in sys.stdin:
     /// accepted as an empty recording.
     #[test]
     fn record_interactive_refuses_zero_deliveries() {
+        crate::allow_suite_exec();
         let _guard = INTERACTIVE_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());

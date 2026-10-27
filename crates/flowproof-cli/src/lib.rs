@@ -2514,6 +2514,32 @@ fn guard_suite_exec(phase: &str, command: &str, source: &str) -> Result<(), Stri
     }
 }
 
+/// The refusal shown when a spec-authored program is blocked. Pure so a test
+/// can assert it names the command and both ways to allow it.
+fn spec_exec_refusal(what: &str, command: &str) -> String {
+    format!(
+        "refusing to run {what} without consent.\n\
+         It would execute this program, authored in the flow spec:\n    {command}\n\
+         flowproof does not run a spec's agent.command or MCP server command by \
+         default: recording a flow from an untrusted source would otherwise run \
+         its author's program. If you trust this flow, re-run with --allow-exec \
+         (or set FLOWPROOF_ALLOW_EXEC=1)."
+    )
+}
+
+/// Gate a program authored in the flow spec that `record` spawns as a real
+/// process — an `agent.command` or an `mcp.*.command`. A spec is executable
+/// code, so recording a flow from an untrusted source would otherwise run its
+/// author's program. Same consent as the suite shell (`--allow-exec` /
+/// `FLOWPROOF_ALLOW_EXEC`); only `record` reaches this, never replay.
+pub(crate) fn guard_spec_exec(what: &str, command: &str) -> Result<(), String> {
+    if suite_exec_allowed() {
+        Ok(())
+    } else {
+        Err(spec_exec_refusal(what, command))
+    }
+}
+
 /// Run the manifest's `env_from` command (if any) and export its stdout as
 /// env vars — the bridge from an external data CLI (DataMaker minting test
 /// data from SAP) into `${VAR}` references. Runs via `sh -c` from the
@@ -4829,13 +4855,16 @@ mod tests {
     }
 
     #[test]
-    fn guard_refuses_by_default_and_allows_once_opted_in() {
-        // Default deny (this test does not set the process flag, and relies on
-        // FLOWPROOF_ALLOW_EXEC being unset in the test environment).
-        std::env::remove_var("FLOWPROOF_ALLOW_EXEC");
-        assert!(guard_suite_exec("env_from", "echo hi", "s").is_err());
-        allow_suite_exec();
-        assert!(guard_suite_exec("env_from", "echo hi", "s").is_ok());
+    fn the_spec_exec_refusal_names_the_program_and_both_opt_ins() {
+        // Pure so it needs no global state: other tests set process-wide
+        // consent (which only ever flips on), so a guard-level default-deny
+        // assertion would race them. The decision is covered by
+        // `suite_is_allowed_only_when_process_or_env_opted_in`.
+        let msg = spec_exec_refusal("the agent command", "./sketchy-agent --spend");
+        assert!(msg.contains("the agent command"), "{msg}");
+        assert!(msg.contains("./sketchy-agent --spend"), "{msg}");
+        assert!(msg.contains("--allow-exec"), "{msg}");
+        assert!(msg.contains("FLOWPROOF_ALLOW_EXEC"), "{msg}");
     }
 
     #[test]

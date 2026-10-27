@@ -165,7 +165,7 @@ fn records_and_replays_an_agent_flow() {
 
     // RECORD against the fake model.
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "recording an agent flow should succeed");
 
     let trace = dir.join("weather.trace.jsonl");
@@ -329,7 +329,7 @@ fn records_and_replays_an_anthropic_agent_flow() {
 
     // RECORD against the fake Messages upstream.
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_anthropic_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "recording an Anthropic agent flow should succeed");
 
     let trace = dir.join("weather-anthropic.trace.jsonl");
@@ -522,7 +522,7 @@ fn a_streaming_agent_is_served_a_stream_at_record_and_at_replay() {
     // transport, so the proxy strips it before forwarding and synthesizes the
     // stream back to the agent itself. That synthesis is what this leg covers.
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "recording a streaming agent flow should succeed");
 
     let recorded = stream_frames(&log, 0);
@@ -692,7 +692,7 @@ fn a_streaming_anthropic_agent_is_served_a_stream_at_record_and_at_replay() {
 
     // RECORD against the fake Messages upstream, which answers non-streaming.
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_anthropic_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(
         code, 0,
         "recording a streaming Messages flow should succeed"
@@ -738,7 +738,7 @@ fn an_agent_that_cannot_start_blames_the_agent_and_prints_its_stderr() {
     let spec = write_spec(&dir, &agent_py);
 
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "the cassette must record cleanly first");
     std::env::remove_var("FLOWPROOF_AGENT_UPSTREAM");
 
@@ -797,7 +797,7 @@ fn a_failing_assertion_refuses_the_trace() {
     .expect("spec");
 
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_ne!(code, 0, "an unmet assertion must fail the record");
     assert!(
         !dir.join("bad.trace.jsonl").exists(),
@@ -1109,7 +1109,7 @@ fn a_recorded_agent_flow_replays_in_directory_mode() {
     let spec = write_spec(&dir, &agent_py);
 
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "recording an agent flow should succeed");
 
     // No model at all for the replay: a stray real call fails loudly.

@@ -114,7 +114,7 @@ fn flow_referencing_a_skipped_var_still_fails_at_use_naming_it() {
     .expect("spec");
     std::env::remove_var("LZU_API");
 
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 2, "moment-of-use failure is a hard error");
     // And a sibling flow that never references it is unaffected.
     let ok_spec = dir.join("clean.flow.yaml");
@@ -124,7 +124,7 @@ fn flow_referencing_a_skipped_var_still_fails_at_use_naming_it() {
     )
     .expect("spec");
     // (Fails on connection, not on env — proving env didn't block it.)
-    let code = flowproof_cli::run_cli(["record", ok_spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", ok_spec.to_str().expect("utf8")]);
     assert_eq!(code, 2, "fails on the unreachable host, not before");
     std::fs::remove_dir_all(&dir).ok();
 }

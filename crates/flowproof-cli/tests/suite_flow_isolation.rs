@@ -151,7 +151,7 @@ fn a_single_spec_run_honors_the_suites_hooks() {
     .expect("manifest");
 
     // Record so there is a trace to replay, then run the single spec.
-    flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     std::fs::remove_file(&before).ok();
     std::fs::remove_file(&after).ok();
     flowproof_cli::run_cli(["run", spec.to_str().expect("utf8")]);
@@ -179,7 +179,7 @@ fn a_single_spec_run_cleans_up_after_a_failing_flow() {
     )
     .expect("manifest");
 
-    flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     std::fs::remove_file(&after).ok();
     // Point the flow at a port nothing answers so replay fails.
     std::env::set_var("CLEANUP_BASE", "http://127.0.0.1:9");
