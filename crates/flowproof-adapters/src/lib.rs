@@ -112,6 +112,12 @@ pub use web::shutdown_shared_browser;
 #[cfg(feature = "web")]
 pub use web::SharedBrowserGuard;
 
+/// The words a missing-browser failure starts with. By the time it reaches a
+/// caller it is only a message (the driver, the CLI and the desktop app all
+/// carry it as a string), so these words are what tells it apart from any
+/// other launch failure. Changing them breaks those callers.
+pub const NO_BROWSER: &str = "no browser found";
+
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
     #[error("adapter '{0}' is not implemented yet")]
@@ -120,6 +126,11 @@ pub enum AdapterError {
     UnsupportedPlatform(&'static str),
     #[error("web adapter: {0}")]
     Web(String),
+    /// No Chromium browser to drive: not a launch that went wrong but one
+    /// that could not start, and installing a browser fixes it. Starts with
+    /// [`NO_BROWSER`]; the web adapter's tests hold the two together.
+    #[error("no browser found: {0}")]
+    NoBrowser(String),
 }
 
 /// Names of the adapters compiled into this build.

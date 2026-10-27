@@ -4,7 +4,7 @@
 //!
 //! Selector mapping: `css` payload key, else `#<automation_id>`. `launch`
 //! interprets `command` as the URL to open. The Chromium binary is found via
-//! the `CHROME` env var or platform auto-detection.
+//! the `CHROME` env var or platform auto-detection ([`find_browser`]).
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -897,19 +897,132 @@ fn present_headed_window(window: &impl HeadedTabWindow, headed: bool) -> Result<
     Ok(())
 }
 
+/// What a person reads when no browser is found: which browsers work, and the
+/// two ways to give flowproof one.
+const NO_BROWSER_HELP: &str = "web flows run in Google Chrome, Microsoft Edge, Chromium or \
+     Brave, and none is installed where flowproof looks. Install one, or set CHROME to the \
+     path of one.";
+
+/// The browser to launch. `CHROME` wins when set, and a `CHROME` naming a file
+/// that is not there is an error rather than a quiet fall-back to whatever
+/// else is installed: the person asked for that browser. Otherwise the places
+/// headless_chrome looks, first and unchanged, so nobody's browser changes
+/// under them; then the Chromium browsers it misses.
+fn find_browser() -> Result<std::path::PathBuf, AdapterError> {
+    pick_browser(
+        std::env::var_os("CHROME"),
+        headless_chrome::browser::default_executable,
+        &extra_browser_candidates(std::env::consts::OS, std::env::var_os),
+        |path| path.is_file(),
+    )
+}
+
+/// [`find_browser`] with the environment, the default lookup and the
+/// filesystem passed in, so every branch is testable on any host.
+fn pick_browser(
+    chrome: Option<std::ffi::OsString>,
+    default: impl FnOnce() -> Result<std::path::PathBuf, String>,
+    extra: &[std::path::PathBuf],
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Result<std::path::PathBuf, AdapterError> {
+    if let Some(chrome) = chrome.filter(|c| !c.is_empty()) {
+        let path = std::path::PathBuf::from(chrome);
+        if exists(&path) {
+            return Ok(path);
+        }
+        return Err(AdapterError::NoBrowser(format!(
+            "CHROME is set to {}, and there is no browser there. Point it at a Chrome, \
+             Edge, Chromium or Brave executable, or unset it to let flowproof look.",
+            path.display()
+        )));
+    }
+    if let Ok(path) = default() {
+        return Ok(path);
+    }
+    extra
+        .iter()
+        .find(|path| exists(path))
+        .cloned()
+        .ok_or_else(|| AdapterError::NoBrowser(NO_BROWSER_HELP.into()))
+}
+
+/// Chromium browsers headless_chrome does not look for: per-user installs of
+/// Chrome, Edge and Chromium (where they land without admin rights) and Brave.
+/// Other Chromium browsers stay out until one is seen driving a flow.
+fn extra_browser_candidates(
+    os: &str,
+    env: impl Fn(&'static str) -> Option<std::ffi::OsString>,
+) -> Vec<std::path::PathBuf> {
+    let dir = |key: &'static str| {
+        env(key)
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+    };
+    let mut candidates = Vec::new();
+    match os {
+        "macos" => {
+            // The app bundle and its executable share a name for all four.
+            let apps = [
+                "Google Chrome",
+                "Microsoft Edge",
+                "Chromium",
+                "Brave Browser",
+            ];
+            let user_apps = dir("HOME").map(|home| home.join("Applications"));
+            for root in user_apps
+                .into_iter()
+                .chain([std::path::PathBuf::from("/Applications")])
+            {
+                for app in apps {
+                    candidates.push(root.join(format!("{app}.app/Contents/MacOS/{app}")));
+                }
+            }
+        }
+        "windows" => {
+            let chrome = ["Google", "Chrome", "Application", "chrome.exe"];
+            let edge = ["Microsoft", "Edge", "Application", "msedge.exe"];
+            let brave = ["BraveSoftware", "Brave-Browser", "Application", "brave.exe"];
+            let installs: [(&str, &[[&str; 4]]); 3] = [
+                ("LOCALAPPDATA", &[chrome, edge, brave]),
+                ("ProgramFiles", &[chrome, edge, brave]),
+                ("ProgramFiles(x86)", &[chrome, brave]),
+            ];
+            for (key, browsers) in installs {
+                let Some(root) = dir(key) else { continue };
+                for parts in browsers {
+                    candidates.push(
+                        parts
+                            .iter()
+                            .fold(root.clone(), |path, part| path.join(part)),
+                    );
+                }
+            }
+        }
+        _ => {
+            if let Some(path) = env("PATH") {
+                for bin in std::env::split_paths(&path) {
+                    for name in ["brave-browser", "brave"] {
+                        candidates.push(bin.join(name));
+                    }
+                }
+            }
+        }
+    }
+    candidates
+}
+
 /// Build the launch options, split out from [`launch_browser`] so the headless
 /// decision is testable without starting a browser.
 fn launch_options_for(
     os_args: &[std::ffi::OsString],
     headed: bool,
+    path: std::path::PathBuf,
 ) -> Result<LaunchOptions<'_>, AdapterError> {
     let mut options = LaunchOptions::default_builder();
     options.headless(!headed).sandbox(false);
     options.idle_browser_timeout(BROWSER_IDLE_TIMEOUT);
     options.args(os_args.iter().map(AsRef::as_ref).collect());
-    if let Ok(path) = std::env::var("CHROME") {
-        options.path(Some(path.into()));
-    }
+    options.path(Some(path));
     options
         .build()
         .map_err(|e| AdapterError::Web(format!("building launch options: {e}")))
@@ -1052,7 +1165,7 @@ fn settled_scene(
 fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
     let headed = headed_requested();
     let os_args: Vec<std::ffi::OsString> = extra_args.iter().map(Into::into).collect();
-    let options = launch_options_for(&os_args, headed)?;
+    let options = launch_options_for(&os_args, headed, find_browser()?)?;
     Browser::new(options)
         .map_err(|e| AdapterError::Web(launch_failure_message(&e.to_string(), headed)))
 }
@@ -5978,12 +6091,106 @@ mod tests {
     #[test]
     fn headed_flips_the_headless_launch_option() {
         let no_args: Vec<std::ffi::OsString> = Vec::new();
+        let chrome = || std::path::PathBuf::from("/opt/chrome");
 
-        let headless = super::launch_options_for(&no_args, false).expect("options build");
+        let headless = super::launch_options_for(&no_args, false, chrome()).expect("options build");
         assert!(headless.headless, "default must stay headless");
+        assert_eq!(
+            headless.path,
+            Some(chrome()),
+            "the found browser is the one launched"
+        );
 
-        let headed = super::launch_options_for(&no_args, true).expect("options build");
+        let headed = super::launch_options_for(&no_args, true, chrome()).expect("options build");
         assert!(!headed.headless, "FLOWPROOF_HEADED must show the window");
+    }
+
+    /// The order the browser is chosen in, and what a person reads when there
+    /// is none. The message must start with `NO_BROWSER`: the CLI and the
+    /// desktop app recognise the failure by those words alone.
+    #[test]
+    fn a_browser_is_chosen_from_chrome_then_the_defaults_then_the_extras() {
+        use std::path::{Path, PathBuf};
+        let found = |p: &Path| p == Path::new("/set/chrome") || p == Path::new("/extra/brave");
+        let default_finds = || -> Result<PathBuf, String> { Ok(PathBuf::from("/default/chrome")) };
+        let default_misses = || -> Result<PathBuf, String> {
+            Err("Could not auto detect a chrome executable".into())
+        };
+        let extras = [
+            PathBuf::from("/extra/missing"),
+            PathBuf::from("/extra/brave"),
+        ];
+
+        let chosen = super::pick_browser(Some("/set/chrome".into()), default_finds, &extras, found);
+        assert_eq!(chosen.expect("CHROME"), PathBuf::from("/set/chrome"));
+
+        // An empty CHROME is unset, not a path.
+        let chosen = super::pick_browser(Some("".into()), default_finds, &extras, found);
+        assert_eq!(chosen.expect("default"), PathBuf::from("/default/chrome"));
+
+        // headless_chrome's own lookup still comes first, so nobody's browser
+        // changes when a second one is installed.
+        let chosen = super::pick_browser(None, default_finds, &extras, found);
+        assert_eq!(chosen.expect("default"), PathBuf::from("/default/chrome"));
+
+        let chosen = super::pick_browser(None, default_misses, &extras, found);
+        assert_eq!(chosen.expect("extra"), PathBuf::from("/extra/brave"));
+
+        let none = super::pick_browser(None, default_misses, &extras[..1], found)
+            .expect_err("nothing installed")
+            .to_string();
+        assert!(none.starts_with(crate::NO_BROWSER), "{none}");
+        assert!(none.contains("set CHROME"), "names the way out: {none}");
+
+        // A CHROME pointing nowhere is the person's choice gone wrong: say so
+        // rather than quietly launching some other browser.
+        let wrong = super::pick_browser(Some("/gone/chrome".into()), default_finds, &extras, found)
+            .expect_err("CHROME names nothing")
+            .to_string();
+        assert!(wrong.starts_with(crate::NO_BROWSER), "{wrong}");
+        assert!(
+            wrong.contains("/gone/chrome"),
+            "names the path it tried: {wrong}"
+        );
+    }
+
+    /// The per-user installs are the point: Chrome and Edge installed without
+    /// admin rights land there, and headless_chrome does not look.
+    #[test]
+    fn extra_candidates_cover_per_user_installs_and_brave() {
+        use std::ffi::OsString;
+        let env = |key: &str| -> Option<OsString> {
+            match key {
+                "HOME" => Some("/Users/ana".into()),
+                "LOCALAPPDATA" => Some("C:\\Users\\ana\\AppData\\Local".into()),
+                "PATH" => Some("/usr/bin".into()),
+                _ => None,
+            }
+        };
+        let shown = |os: &str| -> Vec<String> {
+            super::extra_browser_candidates(os, env)
+                .iter()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .collect()
+        };
+
+        let mac = shown("macos");
+        assert!(mac.contains(
+            &"/Users/ana/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string()
+        ));
+        assert!(mac
+            .contains(&"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser".to_string()));
+
+        let windows = shown("windows");
+        assert!(windows.contains(
+            &"C:/Users/ana/AppData/Local/Google/Chrome/Application/chrome.exe".to_string()
+        ));
+        assert!(
+            windows.iter().all(|p| p.starts_with("C:/Users/ana")),
+            "an unset ProgramFiles adds nothing: {windows:?}"
+        );
+
+        assert_eq!(shown("linux"), ["/usr/bin/brave-browser", "/usr/bin/brave"]);
     }
 
     /// A visible shared browser leaks its keep-alive window into the user's
@@ -6259,7 +6466,8 @@ mod startup_tab_tests {
             return;
         }
         let browser = super::Browser::new(
-            super::launch_options_for(&[], true).expect("valid launch options"),
+            super::launch_options_for(&[], true, super::find_browser().expect("a browser"))
+                .expect("valid launch options"),
         )
         .expect("browser starts");
         let first = super::private_flow_tab(&browser).expect("flow tab opens");
