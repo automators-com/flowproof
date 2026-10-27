@@ -4289,6 +4289,11 @@ mod tests {
         let _guard = INTERACTIVE_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Records a trusted agent.command it authors itself; opt the
+        // record-time exec gate in before the record, or the gate refuses,
+        // record never contacts the upstream, and `handle.join()` below
+        // deadlocks while still holding INTERACTIVE_ENV_LOCK.
+        crate::allow_suite_exec();
         let agent = write_fake_interactive_agent();
         let (url, handle) = spawn_fake_upstream(vec!["hello"]);
         std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", url);
