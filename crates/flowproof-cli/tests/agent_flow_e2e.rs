@@ -912,7 +912,7 @@ fn a_leaked_secret_fails_the_record_and_mints_no_trace() {
     let spec = write_secret_spec(&dir, &agent_py, true);
 
     let output = std::process::Command::new(FLOWPROOF_BIN)
-        .args(["record", spec.to_str().expect("utf8")])
+        .args(["record", "--allow-exec", spec.to_str().expect("utf8")])
         .env("FLOWPROOF_AGENT_UPSTREAM", secret_model())
         .env("DB_PASSWORD", SECRET)
         .output()
@@ -959,7 +959,7 @@ fn a_clean_secret_flow_records_and_replays_deterministically() {
     // RECORD: the secret is set (so the assertion resolves) but never enters
     // the corpus, so the scan finds nothing and the trace is minted.
     let record = std::process::Command::new(FLOWPROOF_BIN)
-        .args(["record", spec.to_str().expect("utf8")])
+        .args(["record", "--allow-exec", spec.to_str().expect("utf8")])
         .env("FLOWPROOF_AGENT_UPSTREAM", secret_model())
         .env("DB_PASSWORD", SECRET)
         .output()
@@ -1010,6 +1010,7 @@ fn audit_renders_the_control_map_in_yaml_and_json() {
     let record = std::process::Command::new(FLOWPROOF_BIN)
         .args([
             "record",
+            "--allow-exec",
             dir.join("secret.flow.yaml").to_str().expect("utf8"),
         ])
         .env("FLOWPROOF_AGENT_UPSTREAM", secret_model())
