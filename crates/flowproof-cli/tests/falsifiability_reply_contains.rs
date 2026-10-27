@@ -150,6 +150,7 @@ fn a_reply_missing_the_asserted_text_fails_the_record_and_mints_no_trace() {
 
     let out = std::process::Command::new(FLOWPROOF_BIN)
         .arg("record")
+        .arg("--allow-exec")
         .arg(&spec)
         .current_dir(&dir)
         .env("FLOWPROOF_AGENT_UPSTREAM", model_serving(reply_body))

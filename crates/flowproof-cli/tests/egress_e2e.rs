@@ -222,7 +222,7 @@ for _ in range(5):
 /// Returns (exit_ok, combined stdout+stderr).
 fn record(spec: &Path, model: &str) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_flowproof"))
-        .args(["record", spec.to_str().expect("utf8")])
+        .args(["record", "--allow-exec", spec.to_str().expect("utf8")])
         .env("FLOWPROOF_AGENT_UPSTREAM", model)
         .output()
         .expect("run flowproof record");

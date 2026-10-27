@@ -139,6 +139,7 @@ fn a_forbidden_tool_that_is_called_fails_the_record_and_mints_no_trace() {
 
     let out = std::process::Command::new(FLOWPROOF_BIN)
         .arg("record")
+        .arg("--allow-exec")
         .arg(&spec)
         .current_dir(&dir)
         .env(

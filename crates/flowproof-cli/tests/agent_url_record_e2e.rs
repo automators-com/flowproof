@@ -174,6 +174,7 @@ fn an_agent_url_service_records_and_replays() {
     // --- RECORD: the leg that had no test. ---
     let rec = std::process::Command::new(FLOWPROOF_BIN)
         .arg("record")
+        .arg("--allow-exec")
         .arg(&spec)
         .current_dir(&dir)
         .env("FLOWPROOF_AGENT_UPSTREAM", fake_model())
@@ -402,6 +403,7 @@ fn a_streaming_conversation_records_and_replays_over_url() {
 
     let rec = std::process::Command::new(FLOWPROOF_BIN)
         .arg("record")
+        .arg("--allow-exec")
         .arg(&spec)
         .current_dir(&dir)
         .env("FLOWPROOF_AGENT_UPSTREAM", fake_conversation_model())
