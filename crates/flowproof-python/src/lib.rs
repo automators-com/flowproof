@@ -93,6 +93,11 @@ fn record(
     let recording = recording_options(recording_detail, video, highlight_cursor)?;
     py.detach(|| {
         let mut parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
+        // An embedder drives its own, trusted suite, so opt in to running the
+        // suite.yaml's shell (env_from/hooks) that the CLI gates behind
+        // --allow-exec. The gate protects a CLI user who replays someone
+        // else's flow, not a program that chose which flow to run.
+        flowproof_cli::allow_suite_exec();
         // Suite env/data (suite.yaml env_from + env) governs MCP-driven
         // recording exactly like the CLI — including browser defaults.
         let manifest = flowproof_cli::apply_suite_context(&spec).map_err(runtime_err)?;
@@ -148,6 +153,9 @@ fn run(
 ) -> PyResult<String> {
     let recording = recording_options(recording_detail, video, highlight_cursor)?;
     py.detach(|| {
+        // An embedder drives its own, trusted suite — opt in to the suite's
+        // shell the CLI gates behind --allow-exec (see the record path above).
+        flowproof_cli::allow_suite_exec();
         flowproof_cli::apply_suite_context(&spec).map_err(runtime_err)?;
         let parsed = FlowSpec::load(&spec).map_err(runtime_err)?;
         if let Some(reason) = parsed.skip_reason() {

