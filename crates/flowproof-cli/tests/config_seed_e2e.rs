@@ -117,7 +117,7 @@ fn a_suite_less_single_flow_resolves_sap_refs_from_the_config_file() {
         // No suite.yaml anywhere above `spec`: both commands must reach the
         // API flow using only `flowproof config`'s seeded env fallback.
         assert_eq!(
-            flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]),
+            flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]),
             0,
             "record succeeds without a suite.yaml"
         );
@@ -157,7 +157,7 @@ fn a_suite_less_single_flow_resolves_business_data_from_sibling_values_file() {
     .expect("values");
 
     assert_eq!(
-        flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]),
+        flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]),
         0,
         "record succeeds from sibling values"
     );

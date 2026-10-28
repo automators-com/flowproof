@@ -290,7 +290,7 @@ fn records_and_replays_a_streaming_conversation() {
 
     // RECORD.
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_conversation_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "recording a streaming conversation should succeed");
 
     let recorded = frames(&log, 0);

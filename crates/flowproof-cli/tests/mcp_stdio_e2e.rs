@@ -384,7 +384,7 @@ fn records_and_replays_the_mcp_lane() {
     let spec = write_spec(&dir, &agent_py, &server_py, &log, &[]);
 
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "recording an MCP agent flow should succeed");
 
     let trace = dir.join("weather.trace.jsonl");
@@ -452,7 +452,7 @@ fn a_mocked_tool_is_intercepted_and_never_forwarded() {
     let spec = write_spec(&dir, &agent_py, &server_py, &log, &["send_alert"]);
 
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "recording with a mocked MCP tool should succeed");
 
     // The real server saw the non-mocked calls but NEVER the dangerous one.
@@ -508,7 +508,7 @@ fn a_divergent_argument_fails_replay_naming_the_path() {
     let spec = write_spec(&dir, &agent_py, &server_py, &log, &[]);
 
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "recording should succeed");
 
     // Replay the SAME spec, but the agent now asks for a different city.
@@ -536,7 +536,7 @@ fn a_declared_server_the_agent_ignores_fails_the_record() {
     let spec = write_spec(&dir, &agent_py, &server_py, &log, &[]);
 
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_ne!(code, 0, "an uncontacted MCP server must fail the record");
     assert!(
         !dir.join("weather.trace.jsonl").exists(),
@@ -563,7 +563,7 @@ fn records_and_replays_a_server_notification() {
     let spec = write_spec(&dir, &agent_py, &server_py, &log, &[]);
 
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "recording a notifying MCP server should succeed");
 
     // The trace lane carries the notification as an event, anchored after the
@@ -623,7 +623,7 @@ fn a_server_initiated_request_fails_the_record_loudly() {
     let spec = write_spec(&dir, &agent_py, &server_py, &log, &[]);
 
     std::env::set_var("FLOWPROOF_AGENT_UPSTREAM", fake_model());
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_ne!(
         code, 0,
         "a server-initiated request mid-record must fail the record"

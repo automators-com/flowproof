@@ -199,7 +199,7 @@ fn records_and_replays_an_anthropic_conversation() {
         "FLOWPROOF_AGENT_UPSTREAM",
         fake_anthropic_conversation_model(),
     );
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(
         code, 0,
         "recording an Anthropic conversation should succeed"

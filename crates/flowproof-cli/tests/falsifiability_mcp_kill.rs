@@ -152,6 +152,7 @@ fn an_agent_that_kills_the_stand_in_still_leaves_a_recorded_lane() {
 
     let out = std::process::Command::new(FLOWPROOF_BIN)
         .arg("record")
+        .arg("--allow-exec")
         .arg(&spec)
         .current_dir(&dir)
         .env("FLOWPROOF_AGENT_UPSTREAM", fake_model())

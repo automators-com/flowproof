@@ -202,7 +202,7 @@ mod linux_e2e {
 
     fn record(dir: &Path, spec: &Path, model: &str) -> (bool, String) {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_flowproof"))
-            .args(["record", spec.to_str().expect("utf8")])
+            .args(["record", "--allow-exec", spec.to_str().expect("utf8")])
             .current_dir(dir)
             .env("FLOWPROOF_AGENT_UPSTREAM", model)
             .output()

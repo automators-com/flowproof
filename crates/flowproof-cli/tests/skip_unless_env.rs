@@ -30,7 +30,7 @@ fn record_skips_gated_spec_without_a_trace() {
     let spec = write_gated_spec(&dir, "SUE_REC_FLAG");
     std::env::remove_var("SUE_REC_FLAG");
 
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 0, "a gated record is a pass, not an error");
     assert!(
         !flowproof_cli::default_trace_path(&spec).exists(),
@@ -79,7 +79,7 @@ fn suite_env_can_satisfy_the_gate() {
 
     // Ungated now: record proceeds past the gate to its real (network)
     // failure — proving the suite env satisfied the gate.
-    let code = flowproof_cli::run_cli(["record", spec.to_str().expect("utf8")]);
+    let code = flowproof_cli::run_cli(["record", "--allow-exec", spec.to_str().expect("utf8")]);
     assert_eq!(code, 2, "fails on the unreachable host, not skipped");
     std::env::remove_var("SUE_SAT_FLAG");
     std::fs::remove_dir_all(&dir).ok();
