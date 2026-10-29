@@ -1,0 +1,22 @@
+# cargo-deny configuration — dependency security gate (audit issue A6).
+#
+# Scope: this file configures ONLY the advisory check. CI runs
+# `cargo deny check advisories` (see .github/workflows/audit.yml); the
+# license / bans / sources checks are deliberately out of scope here so the
+# gate stays a focused "is anything we depend on known-vulnerable?" alarm and
+# does not fail on unrelated licensing policy.
+#
+# Behaviour (cargo-deny defaults, stated explicitly so the policy is readable
+# without consulting the docs):
+#   - vulnerabilities      -> always error
+#   - unmaintained = "all" -> error, including transitive dependencies
+#   - unsound    = "workspace"
+#   - yanked     = "warn"
+
+[advisories]
+# Advisories we have reviewed and consciously accept. Keep this list as close
+# to empty as possible: every entry is a hole in the alarm, so each carries a
+# reason and the condition under which it is removed.
+ignore = [
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11 is flagged *unmaintained* only (informational); the one soundness issue, RUSTSEC-2023-0075, is fixed in >=0.2.10 and we are on 0.2.11. It reaches us transitively through serde_yaml. Removed when serde_yaml is migrated to serde_norway, which uses the maintained unsafe-libyaml-norway fork instead — see the A6 migration PR.", expiry = "2026-12-31T00:00:00Z" },
+]
