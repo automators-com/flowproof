@@ -26,16 +26,6 @@
 # fixed, not ignored. Every entry below is tracked and has an owner PR.
 # ---------------------------------------------------------------------------
 ignore = [
-  # --- Cluster: TLS / certificate stack (rustls, via ureq). Highest severity.
-  #     Cleared by the "rustls/TLS bump" follow-up PR. ---
-  { id = "RUSTSEC-2026-0285", reason = "rustls: TLS 1.3 handshake accepted across encryption-level boundaries; fixed by TLS-stack bump (A6)" },
-  { id = "RUSTSEC-2026-0346", reason = "rustls: Debug impls for client session values can expose TLS secrets; fixed by TLS-stack bump (A6)" },
-  { id = "RUSTSEC-2026-0348", reason = "rustls: Brotli certificate decompression can allocate up to 1 GiB pre-auth (DoS); fixed by TLS-stack bump (A6)" },
-  { id = "RUSTSEC-2026-0349", reason = "rustls: unauthenticated ServerHello can downgrade later connections; fixed by TLS-stack bump (A6)" },
-  { id = "RUSTSEC-2026-0382", reason = "rustls-webpki: certificate verification may accept distrusted intermediates; fixed by TLS-stack bump (A6)" },
-  { id = "RUSTSEC-2026-0381", reason = "webpki-roots: bundled roots trust distrusted emSign intermediates; fixed by TLS-stack bump (A6)" },
-  { id = "RUSTSEC-2026-0383", reason = "webpki-root-certs: bundled roots trust distrusted emSign intermediates; fixed by TLS-stack bump (A6)" },
-
   # --- Cluster: zip extraction (zip 4.6.1). Cleared by the "zip bump" PR. ---
   { id = "RUSTSEC-2026-0367", reason = "zip: SUID/SGID bits preserved during extraction (privilege escalation); fixed by zip bump (A6)" },
   { id = "RUSTSEC-2026-0368", reason = "zip: ZipArchive::extract follows symlinks to targets outside the destination directory; fixed by zip bump (A6)" },
