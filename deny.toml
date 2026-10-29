@@ -26,15 +26,6 @@
 # fixed, not ignored. Every entry below is tracked and has an owner PR.
 # ---------------------------------------------------------------------------
 ignore = [
-  # --- Cluster: zip extraction (zip 4.6.1). Cleared by the "zip bump" PR. ---
-  { id = "RUSTSEC-2026-0367", reason = "zip: SUID/SGID bits preserved during extraction (privilege escalation); fixed by zip bump (A6)" },
-  { id = "RUSTSEC-2026-0368", reason = "zip: ZipArchive::extract follows symlinks to targets outside the destination directory; fixed by zip bump (A6)" },
-  { id = "RUSTSEC-2026-0369", reason = "zip: extract applies Unix permissions through symlinks without confining the target; fixed by zip bump (A6)" },
-
-  # --- Cluster: quick-xml 0.37.5 (DoS). Cleared by the "quick-xml bump" PR. ---
-  { id = "RUSTSEC-2026-0194", reason = "quick-xml: quadratic run time checking a start tag for duplicate attributes (DoS); fixed by quick-xml bump (A6)" },
-  { id = "RUSTSEC-2026-0195", reason = "quick-xml: unbounded namespace-declaration allocation in NsReader (memory-exhaustion DoS); fixed by quick-xml bump (A6)" },
-
   # --- Cluster: unmaintained crates. No upstream fix; cleared only by
   #     migrating/removing the crate. Lowest urgency, handled last. ---
   { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained-only; reaches us via serde_yaml; removed by the serde_norway migration (A6)" },
