@@ -28,7 +28,6 @@
 ignore = [
   # --- Cluster: unmaintained crates. No upstream fix; cleared only by
   #     migrating/removing the crate. Lowest urgency, handled last. ---
-  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained-only; reaches us via serde_yaml; removed by the serde_norway migration (A6)" },
   { id = "RUSTSEC-2024-0436", reason = "paste unmaintained (no fix available); transitive; revisit whether a maintained replacement is reachable (A6)" },
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained (no fix available); transitive via the vision/font stack; revisit upstream (A6)" },
 ]
