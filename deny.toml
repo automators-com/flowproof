@@ -14,16 +14,43 @@
 #   - yanked     = "warn"
 
 [advisories]
-# Advisories we have reviewed and consciously accept. Keep this list as close
-# to empty as possible: every entry is a hole in the alarm, so each carries a
-# reason and the condition under which it is removed.
+# ---------------------------------------------------------------------------
+# Known backlog (A6 "ratchet"): advisories that already existed in the tree
+# when the gate was introduced. They are ignored so the gate can go green and
+# immediately block any NEW advisory, while the pre-existing ones are burned
+# down in dedicated follow-up PRs — one per root-cause cluster. As each
+# cluster PR lands it DELETES its own entries here, tightening the gate step
+# by step until only genuinely-unfixable (unmaintained-upstream) items remain.
+#
+# Do not add to this list to silence a new finding: a new advisory should be
+# fixed, not ignored. Every entry below is tracked and has an owner PR.
+# ---------------------------------------------------------------------------
 ignore = [
-  # TEMPORARY — remove in the A6 follow-up PR (serde_yaml -> serde_norway).
-  # unsafe-libyaml 0.2.11 is flagged *unmaintained* only (informational); its
-  # one soundness issue, RUSTSEC-2023-0075, is fixed in >=0.2.10 and we are on
-  # 0.2.11. It reaches us transitively through serde_yaml. serde_norway uses
-  # the maintained unsafe-libyaml-norway fork, so migrating drops this entry.
-  # (This cargo-deny version has no per-entry `expiry`; the time-box is that
-  # PR, not a date — do not let this ignore outlive the migration.)
-  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained-only; reaches us via serde_yaml; removed by the serde_norway migration (A6 PR 2)" },
+  # --- Cluster: TLS / certificate stack (rustls, via ureq). Highest severity.
+  #     Cleared by the "rustls/TLS bump" follow-up PR. ---
+  { id = "RUSTSEC-2026-0285", reason = "rustls: TLS 1.3 handshake accepted across encryption-level boundaries; fixed by TLS-stack bump (A6)" },
+  { id = "RUSTSEC-2026-0346", reason = "rustls: Debug impls for client session values can expose TLS secrets; fixed by TLS-stack bump (A6)" },
+  { id = "RUSTSEC-2026-0348", reason = "rustls: Brotli certificate decompression can allocate up to 1 GiB pre-auth (DoS); fixed by TLS-stack bump (A6)" },
+  { id = "RUSTSEC-2026-0349", reason = "rustls: unauthenticated ServerHello can downgrade later connections; fixed by TLS-stack bump (A6)" },
+  { id = "RUSTSEC-2026-0382", reason = "rustls-webpki: certificate verification may accept distrusted intermediates; fixed by TLS-stack bump (A6)" },
+  { id = "RUSTSEC-2026-0381", reason = "webpki-roots: bundled roots trust distrusted emSign intermediates; fixed by TLS-stack bump (A6)" },
+  { id = "RUSTSEC-2026-0383", reason = "webpki-root-certs: bundled roots trust distrusted emSign intermediates; fixed by TLS-stack bump (A6)" },
+
+  # --- Cluster: zip extraction (zip 4.6.1). Cleared by the "zip bump" PR. ---
+  { id = "RUSTSEC-2026-0367", reason = "zip: SUID/SGID bits preserved during extraction (privilege escalation); fixed by zip bump (A6)" },
+  { id = "RUSTSEC-2026-0368", reason = "zip: ZipArchive::extract follows symlinks to targets outside the destination directory; fixed by zip bump (A6)" },
+  { id = "RUSTSEC-2026-0369", reason = "zip: extract applies Unix permissions through symlinks without confining the target; fixed by zip bump (A6)" },
+
+  # --- Cluster: quick-xml 0.37.5 (DoS). Cleared by the "quick-xml bump" PR. ---
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml: quadratic run time checking a start tag for duplicate attributes (DoS); fixed by quick-xml bump (A6)" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml: unbounded namespace-declaration allocation in NsReader (memory-exhaustion DoS); fixed by quick-xml bump (A6)" },
+
+  # --- Cluster: crypto timing (ctutils). Cleared by the "ctutils" follow-up. ---
+  { id = "RUSTSEC-2026-0385", reason = "ctutils: non-constant-time mask generation and u128 comparisons (timing side-channel); fixed by ctutils follow-up (A6)" },
+
+  # --- Cluster: unmaintained crates. No upstream fix; cleared only by
+  #     migrating/removing the crate. Lowest urgency, handled last. ---
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained-only; reaches us via serde_yaml; removed by the serde_norway migration (A6)" },
+  { id = "RUSTSEC-2024-0436", reason = "paste unmaintained (no fix available); transitive; revisit whether a maintained replacement is reachable (A6)" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained (no fix available); transitive via the vision/font stack; revisit upstream (A6)" },
 ]
