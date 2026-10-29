@@ -25,7 +25,7 @@ thiserror = { workspace = true }
 flowproof-trace = { workspace = true }
 ureq = { version = "3", features = ["platform-verifier", "json"], optional = true }
 postgres = { version = "0.19", optional = true }
-calamine = { version = "0.28", optional = true }
+calamine = { version = "0.37", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 uiautomation = "0.24"
