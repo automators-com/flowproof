@@ -18,5 +18,12 @@
 # to empty as possible: every entry is a hole in the alarm, so each carries a
 # reason and the condition under which it is removed.
 ignore = [
-  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11 is flagged *unmaintained* only (informational); the one soundness issue, RUSTSEC-2023-0075, is fixed in >=0.2.10 and we are on 0.2.11. It reaches us transitively through serde_yaml. Removed when serde_yaml is migrated to serde_norway, which uses the maintained unsafe-libyaml-norway fork instead — see the A6 migration PR.", expiry = "2026-12-31T00:00:00Z" },
+  # TEMPORARY — remove in the A6 follow-up PR (serde_yaml -> serde_norway).
+  # unsafe-libyaml 0.2.11 is flagged *unmaintained* only (informational); its
+  # one soundness issue, RUSTSEC-2023-0075, is fixed in >=0.2.10 and we are on
+  # 0.2.11. It reaches us transitively through serde_yaml. serde_norway uses
+  # the maintained unsafe-libyaml-norway fork, so migrating drops this entry.
+  # (This cargo-deny version has no per-entry `expiry`; the time-box is that
+  # PR, not a date — do not let this ignore outlive the migration.)
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained-only; reaches us via serde_yaml; removed by the serde_norway migration (A6 PR 2)" },
 ]
