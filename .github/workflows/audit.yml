@@ -1,0 +1,39 @@
+name: audit
+
+# Dependency security gate (audit issue A6). Cross-references every crate in
+# Cargo.lock against the RustSec advisory database and fails if any has a
+# known advisory. The policy (and the one reviewed exception) lives in
+# deny.toml.
+#
+# A standalone workflow, not a job in ci.yml, for two reasons: it matches the
+# repo's pattern of keeping focused checks separate (adversary.yml,
+# constitution.yml), and it needs its own schedule. A new advisory can be
+# published with zero change on our side, so the weekly cron is the backstop
+# that catches that case even when nothing merges.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  schedule:
+    # Mondays, 05:00 UTC — a quiet hour, same as the nightly CI cron.
+    - cron: "0 5 * * 1"
+
+# A newer push to the same branch makes the previous answer worthless; runs
+# on main are never cancelled (they gate releases), matching ci.yml.
+concurrency:
+  group: audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: cargo-deny advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check advisories
