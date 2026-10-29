@@ -2688,6 +2688,52 @@ steps:
   - assert: display shows 8
 ";
 
+    // A6 / A4 regression guard: the YAML parser must REFUSE a maliciously
+    // crafted document rather than expand it, so a hostile flow spec cannot
+    // exhaust memory or the stack. These protect the DoS defences that let us
+    // close A4, and prove they survive the serde_yaml -> serde_norway
+    // migration (`serde_yaml::` resolves to serde_norway via a workspace
+    // package rename). If a future dependency swap drops these limits, these
+    // tests fail (or the process dies) instead of shipping the regression.
+    #[test]
+    fn yaml_alias_bomb_is_refused_not_expanded() {
+        // The canonical "billion laughs": nine levels, nine aliases each, so
+        // ~9^9 nodes if expanded. serde_yaml/serde_norway cut this off with a
+        // repetition limit rather than materialising it.
+        let bomb = "\
+a: &a ~
+b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]
+c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]
+d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]
+e: &e [*d,*d,*d,*d,*d,*d,*d,*d,*d]
+f: &f [*e,*e,*e,*e,*e,*e,*e,*e,*e]
+g: &g [*f,*f,*f,*f,*f,*f,*f,*f,*f]
+h: &h [*g,*g,*g,*g,*g,*g,*g,*g,*g]
+i: &i [*h,*h,*h,*h,*h,*h,*h,*h,*h]
+";
+        let err = serde_yaml::from_str::<serde_yaml::Value>(bomb)
+            .expect_err("alias bomb must be refused, not expanded");
+        assert!(
+            err.to_string().to_lowercase().contains("limit"),
+            "expected a repetition-limit error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn yaml_deeply_nested_input_is_refused() {
+        // A deeply nested flow sequence ([[[ ... ]]]) must hit the recursion
+        // limit rather than recursing until the stack overflows. Depth far
+        // exceeds the parser's default limit.
+        let depth = 2_000;
+        let nested = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+        let err = serde_yaml::from_str::<serde_yaml::Value>(&nested)
+            .expect_err("deeply nested input must be refused");
+        assert!(
+            err.to_string().to_lowercase().contains("limit"),
+            "expected a recursion-limit error, got: {err}"
+        );
+    }
+
     #[test]
     fn parses_the_calc_spec() {
         let spec = FlowSpec::parse(CALC_SPEC).expect("spec parses");
