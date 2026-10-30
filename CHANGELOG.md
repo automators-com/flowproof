@@ -6,6 +6,25 @@ together).
 
 ## Unreleased
 
+## 0.23.29
+
+- **A suite's `env_from` and `before_each`/`after_each` hooks no longer run without consent.** Running or recording a flow discovers the nearest ancestor `suite.yaml` and executed its shell through `sh -c`, so replaying a flow inside a folder you did not control — a shared bundle, a cloned repo — silently ran that folder's suite commands, even though `run` is otherwise billed as a side-effect-free replay. flowproof now refuses a suite's shell by default and names the exact command and the file it came from. Pass `--allow-exec` to `run`/`record`, or set `FLOWPROOF_ALLOW_EXEC=1` for non-interactive callers such as CI, to allow it once you trust the suite. Embedders driving their own suite (the Python binding) are unaffected.
+
+- **Recording a flow no longer runs its `agent.command`, MCP server command, or Windows `app: { command }` without consent.** `record` spawns the programs a spec names — `agent.command`, each stdio `mcp.*.command`, and a Windows launch `app: { command, window_title }` — arbitrary executables the spec author chose, so recording a flow from a folder you didn't write ran that author's program. These now require the same consent as suite shell: `record` refuses them by default, naming the exact program, and runs them only with `--allow-exec` (or `FLOWPROOF_ALLOW_EXEC=1`). Replay is unaffected — it never spawns `agent.command`/MCP commands. (A Windows `app` command does relaunch on replay from the trace header; gating that path is a tracked follow-up.) `agent.url` and HTTP MCP servers, which flowproof does not start, are unchanged.
+
+- **A healed trace can no longer point its review page outside the recording.** The `*.heal.html` diff located and embedded filmstrip frames using the recording-bundle path from the trace header, so an imported trace that set that path to an absolute location or one containing `..` could make the page reference files outside the recording bundle. flowproof now confines that path to the trace's own directory — it must be a relative path with no traversal — and a path that escapes simply yields no frames.
+
+- **A machine with no browser says so.** A web flow on a machine without
+  Chrome, Edge or Chromium stopped with `Could not auto detect a chrome
+  executable`, which names a library's search rather than the person's next
+  step, and `record --json` filed it under `flow_setup` as if the flow were
+  wrong. It now starts with `no browser found`, names the browsers that work
+  and the two ways to fix it (install one, or set `CHROME`), and `record --json`
+  reports it as `failure.kind` `no_browser`. A `CHROME` that names a file that
+  is not there is reported the same way instead of failing at launch. Chrome,
+  Edge and Chromium installed per user (without admin rights), and Brave, are
+  now found too; where a browser was already found, the same one is used.
+
 ## 0.23.28
 
 - **`record --resume` picks up where a failed recording stopped.** A recording
