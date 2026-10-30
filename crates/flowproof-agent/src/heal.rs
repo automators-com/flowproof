@@ -6,7 +6,7 @@
 //! original as `<name>.proposed.jsonl` and is only applied on explicit
 //! request.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use flowproof_driver::AppDriver;
 use flowproof_trace::format::{Header, Step};
@@ -308,6 +308,19 @@ fn remap_selector_refs(value: &mut serde_json::Value, moved: &dyn Fn(usize) -> u
     }
 }
 
+/// A recording-bundle path from a trace header is trusted only when it stays a
+/// relative path inside the trace directory: every component must be `Normal`
+/// (which rejects an absolute root, `.`, and `..`) and it must contain no `\`,
+/// a path separator on Windows that would otherwise traverse there. Mirrors the
+/// CLI's suite-selection guard (`relative_path`).
+fn is_confined_rel(dir: &str) -> bool {
+    !dir.is_empty()
+        && !dir.contains('\\')
+        && Path::new(dir)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+}
+
 /// The step time-range → frame files of one execution's recording bundle.
 /// Derivable purely from the structured data plus the content-named files.
 fn frames_for_range(
@@ -321,6 +334,15 @@ fn frames_for_range(
     let Some(recording) = &header.recording else {
         return Vec::new();
     };
+    // `recording.dir` comes from the trace header, which may be attacker-
+    // authored (an imported trace). Confine it to a child of `trace_dir` before
+    // reading the bundle or embedding its files into the diff HTML: an absolute
+    // path, a `..`, or a `\` (a separator on Windows) would otherwise point the
+    // page at files outside the recording. A bad value yields no frames rather
+    // than reaching out of the tree.
+    if !is_confined_rel(&recording.dir) {
+        return Vec::new();
+    }
     let dir = trace_dir.join(&recording.dir);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
@@ -483,6 +505,24 @@ steps:
 
     fn calc_mock() -> MockAppDriver {
         MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8")
+    }
+
+    #[test]
+    fn recording_dir_is_confined_to_the_trace_tree() {
+        // Legitimate bundle paths: relative, forward-slashed, no traversal.
+        assert!(is_confined_rel("recording"));
+        assert!(is_confined_rel("exec-0/recording"));
+
+        // A header must not point the diff page outside the trace directory.
+        assert!(!is_confined_rel(""), "empty");
+        assert!(!is_confined_rel("../recording"), "parent traversal");
+        assert!(!is_confined_rel("a/../../etc"), "nested traversal");
+        assert!(!is_confined_rel("/etc/ssh"), "absolute (unix)");
+        assert!(!is_confined_rel("..\\recording"), "backslash traversal");
+        assert!(
+            !is_confined_rel("C:\\Windows"),
+            "backslash catches a Windows absolute path on any host"
+        );
     }
 
     #[test]
