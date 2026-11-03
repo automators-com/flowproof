@@ -6,6 +6,17 @@ together).
 
 ## Unreleased
 
+## 0.23.30
+
+- **A step with `: ` in its text now says to quote it.** YAML reads
+  `- Calculate 5+3 using the buttons: click 5, then +` as a key and a value, so
+  flowproof rejected it as an unknown step key and followed that with every
+  step form it knows. That was a paragraph of syntax for a typo, and none of it
+  named the fix. No step keyword has a space in it, so a key that does is now
+  reported as step text YAML split at its colon: the message quotes the start
+  of the step and says to put the whole step in quotes. A misspelled keyword
+  such as `assert_apy:` still lists the recognized forms.
+
 ## 0.23.29
 
 - **A suite's `env_from` and `before_each`/`after_each` hooks no longer run without consent.** Running or recording a flow discovers the nearest ancestor `suite.yaml` and executed its shell through `sh -c`, so replaying a flow inside a folder you did not control — a shared bundle, a cloned repo — silently ran that folder's suite commands, even though `run` is otherwise billed as a side-effect-free replay. flowproof now refuses a suite's shell by default and names the exact command and the file it came from. Pass `--allow-exec` to `run`/`record`, or set `FLOWPROOF_ALLOW_EXEC=1` for non-interactive callers such as CI, to allow it once you trust the suite. Embedders driving their own suite (the Python binding) are unaffected.
