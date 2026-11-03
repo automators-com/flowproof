@@ -1919,6 +1919,17 @@ impl SpecStep {
                     Some("in") => Err("`in:` names a surface and needs its own `steps:` \
                          list beside it (`- in: gui` then an indented `steps:`)"
                         .into()),
+                    // No step keyword contains a space, so a key that does is
+                    // a plain-string step YAML split at its `: `. Listing
+                    // every step form at the author would bury the one fix.
+                    Some(text) if text.contains(char::is_whitespace) => {
+                        let shown: String = text.chars().take(40).collect();
+                        let ellipsis = if shown.len() < text.len() { "…" } else { "" };
+                        Err(format!(
+                            "the step `{shown}{ellipsis}: …` contains `: `, so YAML read \
+                             it as a key and a value; put the whole step in quotes"
+                        ))
+                    }
                     _ => Err(format!(
                         "unknown step key `{}`; recognized step forms are {}",
                         keys[0],
@@ -2996,6 +3007,31 @@ i: &i [*h,*h,*h,*h,*h,*h,*h,*h,*h]
         let msg = err.to_string();
         assert!(msg.contains("assert_apy"), "names the key: {msg}");
         assert!(msg.contains("assert_api"), "lists recognized forms: {msg}");
+    }
+
+    #[test]
+    fn unquoted_step_with_colon_says_to_quote_it() {
+        let err = FlowSpec::parse(
+            "name: x\napp: vision\nsteps:\n  - Calculate 5+3 using only mouse clicks on the \
+             calculator’s on-screen buttons: click 5, then +, then 3, then =.\n",
+        )
+        .expect_err("an unquoted `: ` splits the step into a mapping");
+        let msg = err.to_string();
+        assert!(msg.contains("put the whole step in quotes"), "{msg}");
+        assert!(msg.contains("Calculate 5+3"), "names the step: {msg}");
+        assert!(!msg.contains("assert_sql"), "no list of every form: {msg}");
+        assert!(msg.len() < 200, "stays short: {msg}");
+
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nsteps:\n  - \"Calculate 5+3 using only mouse clicks on the \
+             calculator’s on-screen buttons: click 5, then +, then 3, then =.\"\n",
+        )
+        .expect("the quoted step parses");
+        assert!(
+            matches!(&spec.steps[0], SpecStep::Plain(s) if s.contains("buttons: click 5")),
+            "{:?}",
+            spec.steps[0]
+        );
     }
 
     #[test]
