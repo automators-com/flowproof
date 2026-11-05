@@ -844,7 +844,9 @@ mod tests {
         let full = junit_fixture();
         assert!(!full.to_junit_xml().contains("flowproof.selection"));
         assert!(!full.to_html().contains("partial run"));
-        assert!(!serde_json::to_string(&full).expect("serializes").contains("selection"));
+        assert!(!serde_json::to_string(&full)
+            .expect("serializes")
+            .contains("selection"));
 
         let partial = RunReport {
             selection: Some(Selection { from: 3, until: 5 }),
