@@ -320,6 +320,14 @@ already follows.
   options; other adapters leave it absent for now. An older engine's `heal`
   rewrites steps through its own model and drops the field from the steps
   it promotes.
+- `spec_step` (optional): which step of the spec's `steps:` produced this
+  one, counted from 1 the way a person reads the file. Each step inside an
+  `in:` block counts on its own; a `when:` or `repeat:` block counts once,
+  and every step it produced carries its number. One spec step can produce
+  several trace steps, and a `when:` whose condition did not hold at record
+  time produces none. `run --from/--until` uses it to find the trace steps
+  of the spec steps it was asked for. Absent on traces recorded before it
+  existed; those fall back to matching steps by intent.
 - `action.type`: one of `launch`, `focus_window`, `click`, `double_click`,
   `right_click`, `hover`, `drag`, `scroll`, `type_text`, `press_key`,
   `upload`, `capture`, `capture_download`, `set_checked`, `wait`, `assert`.
