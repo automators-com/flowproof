@@ -844,7 +844,7 @@ mod tests {
         let full = junit_fixture();
         assert!(!full.to_junit_xml().contains("flowproof.selection"));
         assert!(!full.to_html().contains("partial run"));
-        assert!(!serde_json::to_string(&full).unwrap().contains("selection"));
+        assert!(!serde_json::to_string(&full).expect("serializes").contains("selection"));
 
         let partial = RunReport {
             selection: Some(Selection { from: 3, until: 5 }),
@@ -854,7 +854,7 @@ mod tests {
             .to_junit_xml()
             .contains("<property name=\"flowproof.selection\" value=\"steps 3–5\"/>"));
         assert!(partial.to_html().contains("partial run: steps 3–5 only"));
-        let json: serde_json::Value = serde_json::to_value(&partial).unwrap();
+        let json: serde_json::Value = serde_json::to_value(&partial).expect("serializes");
         assert_eq!(
             json["selection"],
             serde_json::json!({"from": 3, "until": 5})
