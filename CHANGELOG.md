@@ -6,6 +6,35 @@ together).
 
 ## Unreleased
 
+## 0.23.31
+
+- **Recorded steps now remember which spec step wrote them.** A trace step had
+  no link back to the line of `steps:` it came from beyond its intent text, so
+  nothing could say which trace steps belong to "step 4" of a flow. Each
+  recorded step now carries an optional `spec_step`, numbered the way a person
+  reads the file: steps inside an `in:` block count one by one, and a `when:` or
+  `repeat:` block counts once, with every step it produced carrying its number.
+  The field is additive; traces recorded before it replay unchanged.
+
+- **`flowproof run --from N --until M` replays part of a flow.** Testers write a
+  flow a few steps at a time, and every run replayed it from the first step.
+  `--from` and `--until` pick the spec steps to run, counted the way the file
+  reads; the rest are reported skipped, `not selected`, and the report carries a
+  `selection` field (also a `flowproof.selection` property in `junit.xml`) so a
+  partial pass is never read as a full one. The run is refused before launch
+  when the range is outside the flow, recorded nothing, or a selected step reads
+  a capture an unselected step makes. A partial run writes no audit run record.
+
+- **A web flow's browser can stay open between runs.** A browser flowproof
+  launched always closed with its run, so running a flow from its middle started
+  over at `url:`. `run --leave-open <file>` now leaves a visible browser open
+  when the run ends, recorded in a private session file (DevTools bound to
+  127.0.0.1, file `chmod 600` and refused otherwise); `run --attach <file>`
+  carries on in it from the page it is on, without opening `url:` or applying
+  `session:`; and `flowproof session close <file>` closes it and removes its
+  profile. The kept browser runs in its own process group, so stopping a run
+  does not take it down.
+
 ## 0.23.30
 
 - **A step with `: ` in its text now says to quote it.** YAML reads
