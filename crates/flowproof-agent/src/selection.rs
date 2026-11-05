@@ -182,7 +182,7 @@ fn check_captures(steps: &[Step], numbers: &[u32], selected: &[bool]) -> Result<
         for name in used_by(step) {
             let maker = (0..i)
                 .rev()
-                .find(|&j| produced_by(&steps[j]).iter().any(|n| *n == name));
+                .find(|&j| produced_by(&steps[j]).contains(&name));
             if let Some(j) = maker.filter(|&j| !selected[j]) {
                 return Err(format!(
                     "step {} uses `captured.{name}`, made by step {}: start from step {} or \

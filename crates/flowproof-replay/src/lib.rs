@@ -2597,7 +2597,7 @@ pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
             ));
         }
     }
-    let selected = |index: usize| selection.map_or(true, |s| s.steps[index]);
+    let selected = |index: usize| selection.is_none_or(|s| s.steps[index]);
 
     let base = path
         .parent()
