@@ -46,6 +46,35 @@ fn with_keep_browser_open<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
     result
 }
 
+/// Scope `run --leave-open` / `--attach` to one CLI invocation: the web
+/// adapter reads the variable when it builds its driver.
+fn with_kept_browser<T>(
+    leave_open: Option<&Path>,
+    attach: Option<&Path>,
+    action: impl FnOnce() -> T,
+) -> T {
+    use flowproof_adapters::kept_browser::{ATTACH_ENV, LEAVE_OPEN_ENV};
+    let (key, path) = match (attach, leave_open) {
+        (Some(path), _) => (ATTACH_ENV, path),
+        (None, Some(path)) => (LEAVE_OPEN_ENV, path),
+        (None, None) => return action(),
+    };
+    let previous = std::env::var_os(key);
+    std::env::set_var(key, path);
+    let result = action();
+    match previous {
+        Some(value) => std::env::set_var(key, value),
+        None => std::env::remove_var(key),
+    }
+    result
+}
+
+/// Whether this invocation runs in a kept browser (`--leave-open`/`--attach`).
+fn kept_browser_requested() -> bool {
+    use flowproof_adapters::kept_browser::{ATTACH_ENV, LEAVE_OPEN_ENV};
+    std::env::var_os(LEAVE_OPEN_ENV).is_some() || std::env::var_os(ATTACH_ENV).is_some()
+}
+
 /// Resolve whether this invocation should show the browser: an explicit
 /// `--headed`/`--headless` flag wins outright, then an ambient
 /// `FLOWPROOF_HEADED` someone already set in their shell, then the command's
@@ -150,6 +179,17 @@ fn recording_options(
         video,
         highlight_cursor,
     }
+}
+
+/// `flowproof session <action>` — see [`Command::Session`].
+#[derive(Subcommand)]
+enum SessionAction {
+    /// Close the browser a `run --leave-open <FILE>` left open, and remove
+    /// its profile and the session file. Nothing to close is not an error.
+    Close {
+        /// The session file `--leave-open` wrote.
+        file: PathBuf,
+    },
 }
 
 /// `flowproof config <action>` — see [`Command::Config`].
@@ -274,6 +314,11 @@ enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Manage browsers `run --leave-open` kept open between runs.
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
     /// Record a flow from a YAML spec: perform it once against the live app
     /// and write a deterministic trace next to the spec.
     Record {
@@ -394,6 +439,16 @@ enum Command {
         /// Replay only up to and including this step (see `--from`).
         #[arg(long, value_name = "N")]
         until: Option<u32>,
+        /// Web flows: leave the browser open when the run ends, recorded in
+        /// this private session file, so a later `--attach` can carry on in
+        /// it. Close it with `flowproof session close <FILE>`. One flow only.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["keep_open", "headless", "attach"])]
+        leave_open: Option<PathBuf>,
+        /// Web flows: run in the browser an earlier `--leave-open` left open,
+        /// from the page it is on, instead of launching one and opening the
+        /// flow's `url:`. The browser stays open afterwards.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["keep_open", "headless"])]
+        attach: Option<PathBuf>,
         #[command(flatten)]
         recovery: suite_checkpoint::RecoveryArgs,
         /// Suite runs only: record any spec whose trace is missing, then
@@ -3709,6 +3764,24 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
     // Peek the header to pick the right driver for the recorded app.
     let (header, trace_steps) =
         flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
+    // A kept browser is a web flow's: other apps already stay open after a
+    // run, and a multi-surface flow's browser is one of several.
+    if kept_browser_requested() {
+        if !header.apps.is_empty() {
+            return Err(
+                "--leave-open/--attach keep a single web flow's browser, not a multi-surface \
+                 flow's"
+                    .into(),
+            );
+        }
+        if header.app.name != "web" && !json {
+            eprintln!(
+                "note: --leave-open/--attach only change web flows; {} is left as it is \
+                 after every run",
+                header.app.name
+            );
+        }
+    }
     // A partial run is refused BEFORE anything touches the app: a range the
     // flow does not have, or a selected step that reads a capture only an
     // unselected one makes.
@@ -4745,6 +4818,8 @@ where
             retries,
             from,
             until,
+            leave_open,
+            attach,
             record_missing,
             recovery,
             author,
@@ -4769,6 +4844,10 @@ where
                 Err("--from/--until select steps of one flow, not a suite directory".to_string())
             } else if (from.is_some() || until.is_some()) && retries > 0 {
                 Err("--from/--until cannot be combined with --retries".to_string())
+            } else if (leave_open.is_some() || attach.is_some()) && spec.is_dir() {
+                Err("--leave-open/--attach keep one flow's browser, not a suite's".to_string())
+            } else if (leave_open.is_some() || attach.is_some()) && retries > 0 {
+                Err("--leave-open/--attach cannot be combined with --retries".to_string())
             } else {
                 let missing = if record_missing {
                     MissingTrace::Record
@@ -4777,7 +4856,10 @@ where
                 } else {
                     MissingTrace::Skip
                 };
-                with_headed_mode(resolve_headed(headed, headless, false), || {
+                // A kept browser is for a person to carry on in: always shown.
+                let kept = leave_open.is_some() || attach.is_some();
+                with_headed_mode(resolve_headed(headed || kept, headless, false), || {
+                    with_kept_browser(leave_open.as_deref(), attach.as_deref(), || {
                     with_keep_browser_open(keep_open, || {
                         cmd_run(
                             &spec,
@@ -4802,9 +4884,15 @@ where
                             },
                         )
                     })
+                    })
                 })
             }
         }
+        Command::Session { action } => match action {
+            SessionAction::Close { file } => {
+                flowproof_adapters::kept_browser::close(&file).map(|()| EXIT_PASS)
+            }
+        },
         Command::Audit {
             dir,
             json,

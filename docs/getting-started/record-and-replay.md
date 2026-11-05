@@ -186,6 +186,35 @@ combined with `--retries`. Agent flows and flows that use `foreach:` cannot be
 run in part. Traces recorded before steps carried `spec_step` are matched by
 intent, and refused when two steps share one; record them again.
 
+### Carry on in the browser you left
+
+A web flow's browser closes when its run ends, so a run that starts mid-flow
+would begin back at `url:`. Keep it open with `--leave-open`, then carry on in
+it with `--attach`:
+
+```bash
+flowproof run shop.flow.yaml --until 4 --leave-open shop.session.json
+flowproof run shop.flow.yaml --from 5 --until 5 --attach shop.session.json
+flowproof session close shop.session.json
+```
+
+`--leave-open <FILE>` starts a visible browser that outlives the run and
+records it in `<FILE>`: its DevTools address (bound to 127.0.0.1), its process
+and its profile directory. The file is created private (`chmod 600`) and
+refused otherwise, because the address is full control of a signed-in
+browser; keep it out of version control. `--attach <FILE>` connects to that
+browser and runs from the page it is on: it does not open `url:` or apply
+`session:`, and the browser stays open afterwards. If the browser has been
+closed, `--attach` says so and stops. `flowproof session close <FILE>` closes
+the browser and removes its profile and the file; with nothing to close it
+does nothing.
+
+Both flags take one web flow (not a suite or a multi-surface flow), show the
+browser, and cannot be combined with `--retries`, `--keep-open` or
+`--headless`. A flow with `browser.args` cannot keep its browser, since those
+flags only apply to a browser flowproof launches itself. Other apps are left
+as they are: SAP GUI and attached windows already stay open after every run.
+
 ## Choose recording options
 
 | Goal | Option |

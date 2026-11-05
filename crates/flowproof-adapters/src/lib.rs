@@ -55,6 +55,9 @@ pub mod mcp_http;
 #[cfg(feature = "agent")]
 pub mod mcp_stdio;
 
+#[cfg(feature = "web")]
+pub mod kept_browser;
+
 #[cfg(feature = "sap-com")]
 pub mod sap_com;
 
