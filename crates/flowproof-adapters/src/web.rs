@@ -1487,6 +1487,13 @@ pub struct WebAppDriver {
     /// request ID and must not leave a phantom in-flight request behind.
     network_inflight: Arc<NetworkActivity>,
     observed_collections: Vec<serde_json::Value>,
+    /// A kept browser (`run --leave-open` / `--attach`): connected to, not
+    /// launched, so it outlives this driver. See [`crate::kept_browser`].
+    kept: bool,
+    /// Carrying on in a kept browser an earlier run left open: its page is
+    /// already where that run stopped, so `launch` neither navigates nor
+    /// stages a session.
+    attached: bool,
 }
 
 /// Shared state between the driver and the flow-wide dialog listener.
@@ -1671,6 +1678,12 @@ impl WebAppDriver {
     /// headed. Headed ownership prevents the keep-alive window from surviving
     /// after the visible flow window closes.
     pub fn new() -> Result<Self, AdapterError> {
+        if let Some(path) = std::env::var_os(crate::kept_browser::ATTACH_ENV) {
+            return Self::on_kept_browser(std::path::Path::new(&path), true);
+        }
+        if let Some(path) = std::env::var_os(crate::kept_browser::LEAVE_OPEN_ENV) {
+            return Self::on_kept_browser(std::path::Path::new(&path), false);
+        }
         if !should_share_browser(
             headed_requested(),
             std::env::var_os("FLOWPROOF_NO_SHARED_BROWSER").is_some(),
@@ -1689,6 +1702,8 @@ impl WebAppDriver {
                 claimed_downloads: Default::default(),
                 network_inflight: Default::default(),
                 observed_collections: Vec::new(),
+                kept: false,
+                attached: false,
             });
         }
         let browser = shared_browser()?;
@@ -1710,7 +1725,85 @@ impl WebAppDriver {
             claimed_downloads: Default::default(),
             network_inflight: Default::default(),
             observed_collections: Vec::new(),
+            kept: false,
+            attached: false,
         })
+    }
+
+    /// A driver on a kept browser: a new one recorded in `path`
+    /// (`run --leave-open`), or the one `path` already records (`--attach`).
+    fn on_kept_browser(path: &std::path::Path, attach: bool) -> Result<Self, AdapterError> {
+        use crate::kept_browser;
+        let session = if attach {
+            let session = kept_browser::read(path).map_err(AdapterError::Web)?;
+            if !session.is_alive() {
+                return Err(AdapterError::Web(
+                    "the browser an earlier run left open is gone (closed, or the computer \
+                     restarted); run the flow from the start"
+                        .into(),
+                ));
+            }
+            session
+        } else {
+            if std::fs::symlink_metadata(path).is_ok() {
+                return Err(AdapterError::Web(format!(
+                    "{} already records a kept browser; close it first with \
+                     `flowproof session close {}`",
+                    path.display(),
+                    path.display()
+                )));
+            }
+            let session = kept_browser::spawn(&find_browser()?).map_err(AdapterError::Web)?;
+            if let Err(e) = kept_browser::write(path, &session) {
+                kept_browser::discard(&session);
+                return Err(AdapterError::Web(e));
+            }
+            session
+        };
+        let browser =
+            Browser::connect_with_timeout(session.ws_url.clone(), BROWSER_IDLE_TIMEOUT)
+                .map_err(|e| AdapterError::Web(format!("connecting to the kept browser: {e}")))?;
+        Ok(Self {
+            browser,
+            context_id: None,
+            tab: None,
+            staged_session: None,
+            seed_script: None,
+            console: Default::default(),
+            staged_mocks: Vec::new(),
+            staged_browser: None,
+            dialogs: Default::default(),
+            downloads_dir: None,
+            claimed_downloads: Default::default(),
+            network_inflight: Default::default(),
+            observed_collections: Vec::new(),
+            kept: true,
+            attached: attach,
+        })
+    }
+
+    /// The page an attached run carries on in: the one the earlier run left.
+    fn kept_page(&self) -> anyhow::Result<Arc<Tab>> {
+        // A fresh connection learns the browser's existing pages from its
+        // target discovery events, which arrive just after connecting.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let page = self
+                .browser
+                .get_tabs()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|tab| !tab.get_url().starts_with("devtools://"))
+                .cloned();
+            if let Some(page) = page {
+                return Ok(page);
+            }
+            if Instant::now() > deadline {
+                anyhow::bail!("the kept browser has no page open");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// Apply staged session state to a fresh tab BEFORE navigation: cookies
@@ -3217,6 +3310,13 @@ impl AppDriver for WebAppDriver {
         // isolated), paying its cold start instead of sharing.
         if let Some(config) = &staged_browser {
             if !config.args.is_empty() {
+                if self.kept {
+                    return Err(DriverError::Browser(
+                        "a flow with `browser.args` cannot keep its browser open: the flags \
+                         only apply to a browser flowproof launches itself"
+                            .into(),
+                    ));
+                }
                 self.browser = launch_browser(&config.args)
                     .map_err(|e| DriverError::Browser(e.to_string()))?;
                 self.context_id = None;
@@ -3239,6 +3339,7 @@ impl AppDriver for WebAppDriver {
                 for_tab: None,
                 hidden: None,
             }),
+            None if self.attached => self.kept_page(),
             None => private_flow_tab(&self.browser),
         }
         .map_err(|e| web_err("opening tab", e))?;
@@ -3317,7 +3418,8 @@ impl AppDriver for WebAppDriver {
                 .map_err(|e| web_err("pinning randomness", e))?;
             }
         }
-        if let Some(session) = self.staged_session.take() {
+        // An attached browser is already signed in to wherever it was left.
+        if let Some(session) = self.staged_session.take().filter(|_| !self.attached) {
             self.seed_script = Self::apply_session(&tab, &session, command)?;
         }
         // Network mocks: install interception BEFORE navigation so even the
@@ -3566,10 +3668,13 @@ impl AppDriver for WebAppDriver {
             .into_iter()
             .collect();
         self.downloads_dir = Some(downloads_dir);
-        tab.navigate_to(command)
-            .map_err(|e| web_err(&format!("navigating to {command}"), e))?;
-        tab.wait_until_navigated()
-            .map_err(|e| web_err("waiting for page load", e))?;
+        // Attached: carry on from the page the earlier run left, not `url:`.
+        if !self.attached {
+            tab.navigate_to(command)
+                .map_err(|e| web_err(&format!("navigating to {command}"), e))?;
+            tab.wait_until_navigated()
+                .map_err(|e| web_err("waiting for page load", e))?;
+        }
         self.tab = Some(tab);
         // The first document has now run the seed. Drop the script so no
         // later navigation re-seeds over what the flow has since changed.
