@@ -1191,6 +1191,7 @@ fn step_for(id: usize, intent: &str, app: &str, action: &ResolvedAction) -> Step
         guards: Vec::new(),
         repeat: None,
         observed: None,
+        spec_step: None,
     }
 }
 
@@ -2348,16 +2349,53 @@ struct Queued {
     repeat: Option<Repeat>,
     /// A re-queued `repeat:` entry's own loop id, fixed on its first pass.
     own_loop: Option<u32>,
+    /// The spec step this entry is, or sits inside: see [`spec_step_numbers`].
+    number: u32,
 }
 
-fn queued(step: &crate::spec::SpecStep, guards: &[Guard], repeat: &Option<Repeat>) -> Queued {
+fn queued(
+    step: &crate::spec::SpecStep,
+    guards: &[Guard],
+    repeat: &Option<Repeat>,
+    number: u32,
+) -> Queued {
     Queued {
         step: step.clone(),
         passes: 0,
         guards: guards.to_vec(),
         repeat: repeat.clone(),
         own_loop: None,
+        number,
     }
+}
+
+/// The number each top-level spec step is known by, counted from 1 the way a
+/// person reads the file: an `in:` block's steps count one by one (the block
+/// itself takes its first step's number), while a `when:` or `repeat:` block
+/// counts once. Stamped into the trace as `spec_step`.
+pub(crate) fn spec_step_numbers(steps: &[crate::spec::SpecStep]) -> Vec<u32> {
+    let mut next = 1u32;
+    steps
+        .iter()
+        .map(|step| {
+            let number = next;
+            next += match step {
+                crate::spec::SpecStep::InSurface { block } => block.steps.len() as u32,
+                _ => 1,
+            };
+            number
+        })
+        .collect()
+}
+
+/// Stamp every trace step written since the last call with the spec step
+/// that wrote it.
+fn stamp_spec_step(steps: &mut [flowproof_trace::Step], stamped: &mut usize, number: Option<u32>) {
+    let from = (*stamped).min(steps.len());
+    for step in &mut steps[from..] {
+        step.spec_step = number;
+    }
+    *stamped = steps.len();
 }
 
 /// Record `spec` against the live app via `driver`, writing the trace to
@@ -3468,8 +3506,16 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     // `foreach` expands at parse time; it can, because its list is known
     // statically. Ids are per expansion: replay reads each guard once, and
     // re-runs a loop's first recorded pass until its condition holds.
-    let mut queue: std::collections::VecDeque<Queued> =
-        spec.steps.iter().map(|s| queued(s, &[], &None)).collect();
+    let mut queue: std::collections::VecDeque<Queued> = spec
+        .steps
+        .iter()
+        .zip(spec_step_numbers(&spec.steps))
+        .map(|(s, number)| queued(s, &[], &None, number))
+        .collect();
+    // Trace steps already stamped with their `spec_step`, and the number the
+    // next ones get: whatever the entry being processed writes is its own.
+    let mut stamped = 0usize;
+    let mut stamp_as: Option<u32> = None;
     let mut guard_ids = 0u32;
     let mut loop_ids = 0u32;
     // The surface the CURRENT step runs on (multi-surface flows): set at
@@ -3498,8 +3544,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         guards,
         repeat: loop_ctx,
         own_loop,
+        number,
     }) = queue.pop_front()
     {
+        stamp_spec_step(&mut steps, &mut stamped, stamp_as);
+        stamp_as = Some(number);
         match &owned_step {
             crate::spec::SpecStep::When { when } => {
                 let app = surface_app(&current_surface);
@@ -3508,7 +3557,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     let mut inner_guards = guards.clone();
                     inner_guards.extend(guard_for(&app, &when.when, guard_ids));
                     for (i, inner) in when.steps.iter().enumerate() {
-                        queue.insert(i, queued(inner, &inner_guards, &loop_ctx));
+                        queue.insert(i, queued(inner, &inner_guards, &loop_ctx, number));
                     }
                 }
                 continue;
@@ -3548,7 +3597,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 };
                 let mut at = 0;
                 for inner in &repeat.steps {
-                    queue.insert(at, queued(inner, &guards, &body_loop));
+                    queue.insert(at, queued(inner, &guards, &body_loop, number));
                     at += 1;
                 }
                 queue.insert(
@@ -3559,6 +3608,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                         guards: guards.clone(),
                         repeat: loop_ctx.clone(),
                         own_loop: Some(own),
+                        number,
                     },
                 );
                 continue;
@@ -3613,11 +3663,12 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                         guards: guards.clone(),
                         repeat: loop_ctx.clone(),
                         observed: None,
+                        spec_step: None,
                     });
                     continue;
                 }
                 for (i, inner) in block.steps.iter().enumerate() {
-                    queue.insert(i, queued(inner, &guards, &loop_ctx));
+                    queue.insert(i, queued(inner, &guards, &loop_ctx, number + i as u32));
                 }
                 continue;
             }
@@ -4947,9 +4998,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         if let Some(last) = prior_history.last_mut() {
             *last = step_history(&step_intent, &executed_summaries, is_check);
         }
+        stamp_spec_step(&mut steps, &mut stamped, stamp_as);
         live.keep_passed(&steps, &superseded_steps);
         live.finish("PASS");
     }
+    stamp_spec_step(&mut steps, &mut stamped, stamp_as);
 
     // The recording spans join FIRST, by the ids both sides minted while the
     // actions ran - and only then are steps dropped and renumbered. The other

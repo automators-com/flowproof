@@ -358,6 +358,13 @@ pub struct Step {
     /// nothing was observed, and on every trace recorded before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed: Option<Observed>,
+    /// Which step of the spec's `steps:` produced this one, counted from 1
+    /// the way a person reads the file: an `in:` block's steps count one by
+    /// one, a `when:` or `repeat:` block counts once and every step it
+    /// produced carries its number. How `run --from/--until` finds the trace
+    /// steps of a spec step. Absent on traces recorded before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_step: Option<u32>,
 }
 
 /// Record-time evidence about a step's target (plans/014): what the element

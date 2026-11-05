@@ -382,6 +382,11 @@
           "$ref": "#/$defs/observed",
           "description": "Record-time evidence about the target (plans/014). Advisory and never a locator: replay does not use it to find anything."
         },
+        "spec_step": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Which step of the spec's `steps:` produced this one, counted from 1: an `in:` block's steps count one by one, a `when:` or `repeat:` block counts once. Used by `run --from/--until`."
+        },
         "artifacts": {
           "type": "object",
           "additionalProperties": false,
