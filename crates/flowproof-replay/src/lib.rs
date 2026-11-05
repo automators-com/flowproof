@@ -13,7 +13,7 @@ use flowproof_driver::{numeric_value, resolve_app, AppDriver, UiaSelector};
 use flowproof_trace::format::{Action, Assertion, Condition, Header, Selector, Step};
 use flowproof_trace::{SelectorTier, TraceLine};
 
-pub use report::{RunReport, StepResult, StepStatus};
+pub use report::{RunReport, Selection, StepResult, StepStatus};
 pub use runrecord::{
     ControlRecord, ControlVerdict, Evidence, FlowRecord, FlowStatus, RunDiff, RunEnv, RunRecord,
 };
@@ -63,6 +63,8 @@ pub enum ReplayError {
     Driver(#[from] flowproof_driver::DriverError),
     #[error(transparent)]
     Secret(#[from] flowproof_trace::secret::MissingSecret),
+    #[error("{0}")]
+    Selection(String),
 }
 
 /// Parse a trace file into its header and steps.
@@ -2561,9 +2563,41 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
     scan: &SecretScan,
     recording: flowproof_driver::RecordingOptions,
     exports: &std::collections::BTreeMap<String, String>,
+    on_step: F,
+) -> Result<(RunReport, std::path::PathBuf, ResolvedExports), ReplayError> {
+    run_trace_selected(path, driver, scan, recording, exports, None, on_step)
+}
+
+/// Part of a trace to replay (`run --from/--until`): the spec steps asked
+/// for, and one flag per trace step saying whether it is among them.
+#[derive(Debug, Clone)]
+pub struct TraceSelection {
+    pub range: Selection,
+    pub steps: Vec<bool>,
+}
+
+/// [`run_trace_with_progress`] over part of the trace. Unselected steps are
+/// reported as skipped, `not selected`, never run; the report carries the
+/// range so no reader takes it for a full pass. A partial run resolves no
+/// `exports:`: its captures are only the selected steps'.
+pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
+    path: &Path,
+    driver: &mut D,
+    scan: &SecretScan,
+    recording: flowproof_driver::RecordingOptions,
+    exports: &std::collections::BTreeMap<String, String>,
+    selection: Option<&TraceSelection>,
     mut on_step: F,
 ) -> Result<(RunReport, std::path::PathBuf, ResolvedExports), ReplayError> {
     let (header, steps) = load_trace(path)?;
+    if let Some(selection) = selection {
+        if selection.steps.len() != steps.len() {
+            return Err(ReplayError::Selection(
+                "the trace changed after its steps were selected".into(),
+            ));
+        }
+    }
+    let selected = |index: usize| selection.is_none_or(|s| s.steps[index]);
 
     let base = path
         .parent()
@@ -2769,6 +2803,14 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
     let mut seen_loops: std::collections::BTreeSet<String> = Default::default();
     while let Some(item) = work.pop_front() {
         let (step, pass) = match item {
+            Work::Step { index, .. } if !selected(index) => {
+                let step = &steps[index];
+                let skipped =
+                    StepResult::skipped_with_reason(&step.id, &step.intent, "`not selected`");
+                on_step(&skipped);
+                results.push(skipped);
+                continue;
+            }
             Work::Step { index, pass } => (&steps[index], pass),
             Work::Loop {
                 first,
@@ -3003,7 +3045,7 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
     // value-free — it names the capture and what was in scope, never what
     // any capture held.
     let mut resolved_exports: ResolvedExports = Vec::new();
-    if !exports.is_empty() && !failed {
+    if !exports.is_empty() && !failed && selection.is_none() {
         for (export_name, template) in exports {
             let resolved = flowproof_trace::captures::substitute(template, &captures)
                 .and_then(|v| flowproof_trace::secret::resolve_refs(&v).map_err(|e| e.to_string()));
@@ -3033,14 +3075,20 @@ pub fn run_trace_with_progress<D: AppDriver, F: FnMut(&StepResult)>(
     let degraded = results.iter().any(|s| s.degraded);
     let duration_ms = started.elapsed().as_millis() as u64;
     let recording = recorder.and_then(|recorder| recorder.finish_with_driver(driver));
+    // A partial run passes only if a selected step actually ran and passed.
+    let ran = match selection {
+        Some(_) => results.iter().any(|r| r.status == StepStatus::Passed),
+        None => !results.is_empty(),
+    };
     let report = RunReport {
         name,
         trace_id: header.trace_id.clone(),
-        passed: !failed && !results.is_empty(),
+        passed: !failed && ran,
         degraded,
         steps: results,
         duration_ms,
         recording,
+        selection: selection.map(|s| s.range),
     };
     Ok((report, run_dir, resolved_exports))
 }

@@ -111,6 +111,30 @@ pub struct RunReport {
     /// ranges — the complete step→time mapping, embedded (no sidecar).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<flowproof_driver::Recording>,
+    /// Present only on a partial run (`run --from/--until`): the spec steps
+    /// it covered. Every other step is reported skipped, `not selected`, so
+    /// `passed` speaks for this range alone, never for the whole flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<Selection>,
+}
+
+/// The spec steps a partial run covered, both ends included, counted from 1
+/// the way the flow file reads (see `spec_step` in the trace format).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Selection {
+    pub from: u32,
+    pub until: u32,
+}
+
+impl Selection {
+    /// `step 4` or `steps 3–5`.
+    pub fn describe(&self) -> String {
+        if self.from == self.until {
+            format!("step {}", self.from)
+        } else {
+            format!("steps {}–{}", self.from, self.until)
+        }
+    }
 }
 
 impl RunReport {
@@ -135,6 +159,7 @@ impl RunReport {
             }],
             duration_ms: 0,
             recording: None,
+            selection: None,
         }
     }
 
@@ -169,6 +194,7 @@ impl RunReport {
             }],
             duration_ms,
             recording: None,
+            selection: None,
         }
     }
 
@@ -189,6 +215,7 @@ impl RunReport {
             )],
             duration_ms: 0,
             recording: None,
+            selection: None,
         }
     }
 
@@ -300,10 +327,19 @@ impl RunReport {
                 )),
             }
         }
+        // A partial run says so where CI can read it.
+        let properties = match &self.selection {
+            Some(range) => format!(
+                "    <properties>\n      <property name=\"flowproof.selection\" value=\"{}\"/>\n    \
+                 </properties>\n",
+                xml_escape(&range.describe()),
+            ),
+            None => String::new(),
+        };
         format!(
             "\x20\x20<testsuite name=\"{name}\" tests=\"{tests}\" failures=\"{failures}\" \
              errors=\"{errors}\" skipped=\"{skipped}\" time=\"{time:.3}\">\n\
-             {cases}\x20\x20</testsuite>\n",
+             {properties}{cases}\x20\x20</testsuite>\n",
             name = xml_escape(&self.name),
             tests = self.steps.len(),
         )
@@ -362,7 +398,7 @@ impl RunReport {
              details{{margin:.5rem 0}}summary{{cursor:pointer}}\
              </style></head><body>\n\
              <h1>{name}</h1>\n\
-             <p><span class=\"verdict\">{verdict}</span>{degraded}</p>\n\
+             <p><span class=\"verdict\">{verdict}</span>{degraded}{partial}</p>\n\
              <p class=\"meta\">trace {trace_id} &middot; {duration} ms &middot; \
              generated from result.json</p>\n\
              <table><thead><tr><th>Step</th><th>Status</th><th>Intent</th>\
@@ -375,6 +411,13 @@ impl RunReport {
                 " <span class=\"verdict\" style=\"background:#9a6700\">DEGRADED</span>"
             } else {
                 ""
+            },
+            partial = match &self.selection {
+                Some(range) => format!(
+                    " <span class=\"meta\">partial run: {} only</span>",
+                    escape(&range.describe())
+                ),
+                None => String::new(),
             },
             viewer = self.viewer_html(),
         )
@@ -504,6 +547,7 @@ mod tests {
                 },
             ],
             recording: None,
+            selection: None,
         };
         let html = report.to_html();
         assert!(html.contains("Add &lt;two&gt; numbers"));
@@ -537,6 +581,7 @@ mod tests {
                 degraded: true,
             }],
             recording: None,
+            selection: None,
         };
         let html = report.to_html();
         assert!(html.contains("DEGRADED"));
@@ -579,6 +624,7 @@ mod tests {
             duration_ms: 1,
             steps: vec![],
             recording: Some(recording),
+            selection: None,
         };
         let html = report.to_html();
         assert!(html.contains("src=\"recording/recording.gif\""));
@@ -634,6 +680,7 @@ mod tests {
             duration_ms: 300,
             steps: vec![step("s0001"), step("s0002"), step("s0003")],
             recording: Some(recording),
+            selection: None,
         };
         let html = report.to_html();
         assert_eq!(
@@ -659,6 +706,7 @@ mod tests {
             duration_ms: 1,
             steps: vec![],
             recording: None,
+            selection: None,
         };
         let base = std::env::temp_dir().join("flowproof-report-write");
         std::fs::create_dir_all(&base).expect("temp dir");
@@ -709,6 +757,7 @@ mod tests {
                 },
             ],
             recording: None,
+            selection: None,
         }
     }
 
@@ -788,5 +837,30 @@ mod tests {
         assert_eq!(xml.matches("<testsuites ").count(), 1);
         assert_eq!(xml.matches("</testsuites>").count(), 1);
         assert_eq!(xml.matches('"').count() % 2, 0, "attribute quotes balance");
+    }
+
+    #[test]
+    fn a_partial_run_says_which_steps_it_covered() {
+        let full = junit_fixture();
+        assert!(!full.to_junit_xml().contains("flowproof.selection"));
+        assert!(!full.to_html().contains("partial run"));
+        assert!(!serde_json::to_string(&full)
+            .expect("serializes")
+            .contains("selection"));
+
+        let partial = RunReport {
+            selection: Some(Selection { from: 3, until: 5 }),
+            ..junit_fixture()
+        };
+        assert!(partial
+            .to_junit_xml()
+            .contains("<property name=\"flowproof.selection\" value=\"steps 3–5\"/>"));
+        assert!(partial.to_html().contains("partial run: steps 3–5 only"));
+        let json: serde_json::Value = serde_json::to_value(&partial).expect("serializes");
+        assert_eq!(
+            json["selection"],
+            serde_json::json!({"from": 3, "until": 5})
+        );
+        assert_eq!(Selection { from: 4, until: 4 }.describe(), "step 4");
     }
 }

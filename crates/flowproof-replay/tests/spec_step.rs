@@ -118,3 +118,52 @@ fn steps_inside_in_blocks_count_one_by_one() {
     assert_eq!(spec_steps(&trace), [Some(1), Some(2), Some(3)]);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A partial run replays only the selected spec steps; the rest are skipped,
+/// `not selected`, never run, and the report carries the range.
+#[test]
+fn a_partial_run_replays_only_the_selected_steps() {
+    use flowproof_replay::{run_trace_selected, Selection, StepStatus, TraceSelection};
+
+    let dir = temp_dir("flowproof-spec-step-partial");
+    let spec = FlowSpec::parse(
+        "name: Add\napp: calc\nsteps:\n  - Type 5\n  - Press plus\n  - Type 3\n  - Press equals\n  - assert: display shows 8\n",
+    )
+    .expect("spec parses");
+    let mut driver =
+        MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+    let trace = dir.join("partial.trace.jsonl");
+    record(&spec, &mut driver, &trace).expect("records");
+
+    let (_, steps) = load_trace(&trace).expect("trace loads");
+    let (range, selected) =
+        flowproof_agent::selection::select(&spec, &steps, Some(2), Some(3)).expect("selects");
+    let selection = TraceSelection {
+        range: Selection {
+            from: range.from,
+            until: range.until,
+        },
+        steps: selected,
+    };
+    let mut driver =
+        MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+    let (report, _, _) = run_trace_selected(
+        &trace,
+        &mut driver,
+        &flowproof_replay::SecretScan::disabled(),
+        flowproof_driver::RecordingOptions::default(),
+        &Default::default(),
+        Some(&selection),
+        |_| {},
+    )
+    .expect("replay runs");
+
+    assert!(report.passed, "report: {report:?}");
+    assert_eq!(report.selection, Some(Selection { from: 2, until: 3 }));
+    use StepStatus::{Passed, Skipped};
+    let statuses: Vec<StepStatus> = report.steps.iter().map(|s| s.status).collect();
+    assert_eq!(statuses, [Skipped, Passed, Passed, Skipped, Skipped]);
+    assert_eq!(report.steps[0].detail.as_deref(), Some("`not selected`"));
+    assert_eq!(driver.invoked, vec!["plusButton", "num3Button"]);
+    std::fs::remove_dir_all(&dir).ok();
+}

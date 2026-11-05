@@ -384,6 +384,16 @@ enum Command {
         /// it failed — absorbs infra flakiness (default 0, no retries).
         #[arg(long, default_value_t = 0)]
         retries: u8,
+        /// Replay only from this step of the spec's `steps:`, counted from 1
+        /// as the file reads (an `in:` block's steps one by one, a `when:` or
+        /// `repeat:` block once). Earlier steps are reported skipped, `not
+        /// selected`; the app is launched as usual, so the run starts from
+        /// wherever the app opens. One flow only.
+        #[arg(long, value_name = "N")]
+        from: Option<u32>,
+        /// Replay only up to and including this step (see `--from`).
+        #[arg(long, value_name = "N")]
+        until: Option<u32>,
         #[command(flatten)]
         recovery: suite_checkpoint::RecoveryArgs,
         /// Suite runs only: record any spec whose trace is missing, then
@@ -1922,6 +1932,8 @@ fn verify_recording(
             trace: Some(trace_path.to_path_buf()),
             json,
             retries: 0,
+            from: None,
+            until: None,
             missing: MissingTrace::Error,
             author: AuthorArg::Rules,
             values,
@@ -2247,6 +2259,7 @@ fn replay_with_retries(
     recording: flowproof_driver::RecordingOptions,
     exports: &std::collections::BTreeMap<String, String>,
     spec: &FlowSpec,
+    selection: Option<&flowproof_replay::TraceSelection>,
 ) -> Result<
     (
         flowproof_replay::RunReport,
@@ -2271,12 +2284,13 @@ fn replay_with_retries(
                 .map_err(|e| e.to_string())?;
         }
         stage_replay_surface_logins(driver.as_mut(), spec, header)?;
-        let (report, run_dir, resolved) = flowproof_replay::run_trace_with_progress(
+        let (report, run_dir, resolved) = flowproof_replay::run_trace_selected(
             trace_path,
             &mut driver,
             secret_scan,
             recording,
             exports,
+            selection,
             |step| {
                 if output == ReplayOutput::Json {
                     print_step_progress(step);
@@ -2837,6 +2851,8 @@ pub fn run_suite(dir: &Path, json: bool, retries: u8, missing: MissingTrace) -> 
             trace: None,
             json,
             retries,
+            from: None,
+            until: None,
             missing,
             author: AuthorArg::Auto,
             values: ValuesArgs::default(),
@@ -2856,6 +2872,7 @@ fn run_suite_with_author(dir: &Path, options: RunOptions) -> Result<u8, String> 
         values,
         recording,
         recovery,
+        ..
     } = options;
     // Same fill-gaps-only seed `apply_suite_context` does for a single flow
     // (plans/001-credential-config.md, "How it reaches the flow") — this is
@@ -3151,6 +3168,7 @@ fn run_suite_with_author(dir: &Path, options: RunOptions) -> Result<u8, String> 
                     recording,
                     &gated_spec.exports,
                     &gated_spec,
+                    None,
                 )
             });
         // Cleanup always runs, pass, fail or error.
@@ -3520,6 +3538,9 @@ struct RunOptions {
     trace: Option<PathBuf>,
     json: bool,
     retries: u8,
+    /// `--from`/`--until`: replay part of one flow.
+    from: Option<u32>,
+    until: Option<u32>,
     missing: MissingTrace,
     author: AuthorArg,
     values: ValuesArgs,
@@ -3535,11 +3556,14 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
         trace,
         json,
         retries,
+        from,
+        until,
         values,
         recording,
         recovery,
         ..
     } = options;
+    let partial = from.is_some() || until.is_some();
     if recovery.checkpoint.is_some() || recovery.resume || recovery.stop_after.is_some() {
         return Err("checkpoint options require a suite directory".into());
     }
@@ -3581,6 +3605,15 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
         return Ok(EXIT_PASS);
     }
     let trace_path = trace.unwrap_or_else(|| default_trace_path(spec_path));
+    if partial && spec.app.id() == "agent" {
+        return Err("an agent flow replays its cassette whole; --from/--until do not apply".into());
+    }
+    if partial
+        && std::fs::read_to_string(spec_path)
+            .is_ok_and(|yaml| flowproof_agent::spec::uses_foreach(&yaml))
+    {
+        return Err("a flow that uses `foreach:` cannot be run in part yet; run it whole".into());
+    }
 
     // Agent flows replay their cassette through the model-boundary proxy,
     // not the step-replay engine. Suite hooks still apply - the same
@@ -3673,12 +3706,28 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
             spec_path.display()
         ));
     }
+    // Peek the header to pick the right driver for the recorded app.
+    let (header, trace_steps) =
+        flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
+    // A partial run is refused BEFORE anything touches the app: a range the
+    // flow does not have, or a selected step that reads a capture only an
+    // unselected one makes.
+    let selection = if partial {
+        let (range, steps) = flowproof_agent::selection::select(&spec, &trace_steps, from, until)?;
+        Some(flowproof_replay::TraceSelection {
+            range: flowproof_replay::Selection {
+                from: range.from,
+                until: range.until,
+            },
+            steps,
+        })
+    } else {
+        None
+    };
     // Seed before the flow, exactly as `run_suite` does.
     if let Some(cmd) = manifest.as_ref().and_then(|m| m.before_each.as_ref()) {
         run_hook(cmd, spec_path, "before_each")?;
     }
-    // Peek the header to pick the right driver for the recorded app.
-    let (header, _) = flowproof_replay::load_trace(&trace_path).map_err(|e| e.to_string())?;
     // The secret-leak scan is driven by the SPEC (the trace stores no
     // secret-leak steps; the feature is additive): replay re-observes the
     // corpus and scans the same names as record.
@@ -3701,6 +3750,7 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
         recording,
         &spec.exports,
         &spec,
+        selection.as_ref(),
     );
     // Cleanup always runs, pass, fail or error - the suite's rule, and the
     // reason it exists is that a flow which errors is exactly when a left
@@ -3715,10 +3765,13 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
     let result_path = report.write_into(&run_dir).map_err(|e| e.to_string())?;
 
     // Fold this single flow into a run record beside the spec, so `flowproof
-    // audit <dir>` can read its control verdict without re-replaying.
-    let dir = spec_dir(spec_path);
-    let flow = flow_record_from_report(spec_path, &dir, Some(&spec), &report);
-    write_run_record(&dir, vec![flow]);
+    // audit <dir>` can read its control verdict without re-replaying. Not a
+    // partial run: part of a flow passing is no verdict on its control.
+    if report.selection.is_none() {
+        let dir = spec_dir(spec_path);
+        let flow = flow_record_from_report(spec_path, &dir, Some(&spec), &report);
+        write_run_record(&dir, vec![flow]);
+    }
 
     if json {
         // The human-readable lines below are a rendering of this same
@@ -3779,6 +3832,12 @@ fn cmd_run(spec_path: &Path, options: RunOptions) -> Result<u8, String> {
             report.duration_ms,
             run_dir.join("report.html").display()
         );
+        if let Some(range) = &report.selection {
+            println!(
+                "PARTIAL: {} only — the rest of the flow was not run",
+                range.describe()
+            );
+        }
         if report.degraded {
             println!(
                 "DEGRADED: fallback selectors were needed — the app drifted; \
@@ -4684,6 +4743,8 @@ where
             var,
             json,
             retries,
+            from,
+            until,
             record_missing,
             recovery,
             author,
@@ -4704,6 +4765,10 @@ where
             } else if keep_open && retries > 0 {
                 Err("--keep-open cannot be combined with --retries; inspect one final run at a time"
                     .to_string())
+            } else if (from.is_some() || until.is_some()) && spec.is_dir() {
+                Err("--from/--until select steps of one flow, not a suite directory".to_string())
+            } else if (from.is_some() || until.is_some()) && retries > 0 {
+                Err("--from/--until cannot be combined with --retries".to_string())
             } else {
                 let missing = if record_missing {
                     MissingTrace::Record
@@ -4720,6 +4785,8 @@ where
                                 trace,
                                 json,
                                 retries,
+                                from,
+                                until,
                                 missing,
                                 author,
                                 recovery,

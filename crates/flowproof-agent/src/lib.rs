@@ -16,6 +16,7 @@ pub mod llm;
 pub mod recorder;
 pub mod repair;
 pub mod rules;
+pub mod selection;
 pub mod spec;
 
 pub use clarify::{Clarification, ClarifyStage};

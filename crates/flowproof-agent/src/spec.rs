@@ -2477,6 +2477,20 @@ fn has_each_token(node: &serde_yaml::Value) -> bool {
     }
 }
 
+/// Does the flow file's `steps:` use `foreach:`? Its entries are expanded at
+/// parse time, so the parsed steps no longer line up with the file's.
+pub fn uses_foreach(yaml: &str) -> bool {
+    if !yaml.contains("foreach") {
+        return false;
+    }
+    let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(yaml) else {
+        return false;
+    };
+    doc.get("steps")
+        .and_then(|s| s.as_sequence())
+        .is_some_and(|steps| steps.iter().any(is_foreach_entry))
+}
+
 /// Is this node a single-key mapping keyed `foreach`?
 fn is_foreach_entry(node: &serde_yaml::Value) -> bool {
     matches!(node, serde_yaml::Value::Mapping(map)

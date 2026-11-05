@@ -158,6 +158,34 @@ Password fields are always masked. Add `redact:` rules for other sensitive
 regions. See [Run recording](../recording.md) for capture controls and the
 artifact format.
 
+## Run part of a flow
+
+Replay only some of a flow's steps with `--from` and `--until`:
+
+```bash
+flowproof run shop.flow.yaml --from 3 --until 5
+flowproof run shop.flow.yaml --until 4     # steps 1-4
+flowproof run shop.flow.yaml --from 6      # step 6 to the end
+```
+
+Steps are counted from 1 the way the flow file reads: each step inside an
+`in:` block counts on its own, and a `when:` or `repeat:` block counts once.
+The other steps appear in the report as skipped with the reason
+`not selected`, `result.json` gains `"selection": {"from": 3, "until": 5}`,
+and `junit.xml` carries it as the `flowproof.selection` property, so a partial
+pass is never mistaken for a full one. A partial run writes no audit run
+record.
+
+The app is launched as usual, so a run that starts mid-flow begins wherever
+the app opens: a browser at the flow's `url:`, or the SAP GUI session already
+running when the flow has no `connection:`. Captured values live only in one
+run's memory, so the run is refused before anything launches when a selected
+step uses `${captured.x}` and the step that remembers `x` is not selected.
+`--from`/`--until` take one flow (not a suite directory) and cannot be
+combined with `--retries`. Agent flows and flows that use `foreach:` cannot be
+run in part. Traces recorded before steps carried `spec_step` are matched by
+intent, and refused when two steps share one; record them again.
+
 ## Choose recording options
 
 | Goal | Option |
