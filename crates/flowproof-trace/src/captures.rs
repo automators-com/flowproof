@@ -74,6 +74,72 @@ pub fn substitute_json(
     })
 }
 
+/// The capture names `text` references, in order, repeats included. An
+/// unterminated reference ends the scan; [`substitute`] reports it.
+pub fn capture_refs(text: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        let after = &rest[start + OPEN.len()..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        names.push(&after[..end]);
+        rest = &after[end + 1..];
+    }
+    names
+}
+
+/// The capture names a recorded step remembers: a `Capture` or
+/// `CaptureDownload` step's `name`, and the keys of an `assert_api` step's
+/// `expect.capture`.
+pub fn produced_by(step: &crate::Step) -> Vec<String> {
+    use crate::format::{Action, Assertion};
+    match &step.action {
+        Action::Capture(params) | Action::CaptureDownload(params) => params
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(|n| vec![n.to_string()])
+            .unwrap_or_default(),
+        Action::Assert(Assertion::Api {
+            expect: Some(expect),
+            ..
+        }) => expect
+            .get("capture")
+            .and_then(|c| c.as_object())
+            .map(|c| c.keys().cloned().collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// The capture names a recorded step reads: every `${captured.x}` anywhere
+/// in its action or the conditions it runs under, and the name an
+/// `element_state` assertion compares against (`expect.capture`).
+pub fn used_by(step: &crate::Step) -> Vec<String> {
+    use crate::format::{Action, Assertion};
+    let mut names: Vec<String> = Vec::new();
+    let mut scan = |value: serde_json::Value| {
+        let text = value.to_string();
+        for name in capture_refs(&text) {
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+        }
+    };
+    scan(serde_json::to_value(&step.action).unwrap_or_default());
+    scan(serde_json::to_value(&step.guards).unwrap_or_default());
+    scan(serde_json::to_value(&step.repeat).unwrap_or_default());
+    if let Action::Assert(Assertion::ElementState { expect, .. }) = &step.action {
+        if let Some(name) = expect.get("capture").and_then(|c| c.as_str()) {
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -178,5 +244,46 @@ mod tests {
         let err = substitute("${captured.oid", &scope(&[("oid", "1")]))
             .expect_err("unterminated must fail");
         assert!(err.contains("unterminated"), "{err}");
+    }
+
+    #[test]
+    fn capture_refs_lists_every_reference_in_order() {
+        assert_eq!(
+            capture_refs("${captured.a} then ${TOKEN} and ${captured.b}/${captured.a}"),
+            ["a", "b", "a"]
+        );
+        assert!(capture_refs("plain").is_empty());
+        assert_eq!(capture_refs("${captured.a} ${captured.open"), ["a"]);
+    }
+
+    #[test]
+    fn a_step_reports_what_it_remembers_and_what_it_reads() {
+        let step = |action: serde_json::Value| -> crate::Step {
+            serde_json::from_value(serde_json::json!({
+                "id": "s0001",
+                "intent": "x",
+                "action": action,
+                "selectors": [],
+                "sync": {"pre": [], "post": []},
+                "artifacts": {},
+            }))
+            .expect("step")
+        };
+        let capture = step(serde_json::json!({"type": "capture", "params": {"name": "order"}}));
+        assert_eq!(produced_by(&capture), ["order"]);
+        assert!(used_by(&capture).is_empty());
+
+        let typed = step(serde_json::json!({
+            "type": "type_text",
+            "params": {"text": "${captured.order}-${captured.line}"}
+        }));
+        assert!(produced_by(&typed).is_empty());
+        assert_eq!(used_by(&typed), ["order", "line"]);
+
+        let compare = step(serde_json::json!({
+            "type": "assert",
+            "params": {"kind": "element_state", "expect": {"capture": "balance"}}
+        }));
+        assert_eq!(used_by(&compare), ["balance"]);
     }
 }
