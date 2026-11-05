@@ -331,7 +331,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
         // Writing again replaces it.
@@ -344,7 +347,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let path = temp_file("perms");
         write(&path, &session()).expect("writes");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
         assert!(read(&path).expect_err("refused").contains("chmod 600"));
     }
 
@@ -361,11 +364,11 @@ mod tests {
         write(&path, &elsewhere).expect("writes");
         assert!(read(&path).expect_err("refused").contains("profile"));
 
-        std::fs::write(&path, "{\"schema\":1,\"extra\":true}").unwrap();
+        std::fs::write(&path, "{\"schema\":1,\"extra\":true}").expect("writes");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         }
         assert!(read(&path).is_err());
     }
