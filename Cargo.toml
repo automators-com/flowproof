@@ -15,7 +15,6 @@ rust-version = "1.85"
 name = "headless_chrome"
 version = "1.0.22"
 authors = ["Alistair Roche <alistair@sunburnt.country>"]
-build = "build.rs"
 autolib = false
 autobins = false
 autoexamples = false
@@ -37,7 +36,7 @@ fetch = [
 ]
 native-tls = ["tungstenite/native-tls"]
 nightly = []
-offline = ["auto_generate_cdp/offline"]
+offline = []
 rustls-tls-native-roots = [
     "tungstenite/rustls",
     "tungstenite/rustls-tls-native-roots",
@@ -211,9 +210,6 @@ version = "0.18.1"
 
 [dev-dependencies.tiny_http]
 version = "0.12.0"
-
-[build-dependencies.auto_generate_cdp]
-version = "0.4.6"
 
 [target."cfg(windows)".dependencies.winreg]
 version = "0.56.0"
