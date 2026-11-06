@@ -1261,6 +1261,73 @@ steps:
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// An out-of-band probe only ever holds resolved values, so its reasons
+/// quoted them: a `${VAR}` needle that was not in the body landed, resolved,
+/// in the failure message of both record and replay.
+#[test]
+fn api_failures_never_quote_a_resolved_secret() {
+    let dir = std::env::temp_dir().join("flowproof-replay-oob-secret");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let body = "token=alpha-ok";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    std::env::set_var("FP_LEAK_API", format!("http://127.0.0.1:{port}"));
+    std::env::set_var("FP_LEAK_NEEDLE", "alpha-ok");
+    let spec = FlowSpec::parse(
+        "name: Needle
+app: web
+url: https://e.test/x
+steps:
+  - assert_api:
+      request: GET ${FP_LEAK_API}/token
+      status: 200
+      body_contains: ${FP_LEAK_NEEDLE}
+      timeout_seconds: 1
+",
+    )
+    .expect("spec parses");
+    let trace = dir.join("needle.trace.jsonl");
+    record(&spec, &mut MockAppDriver::new(&[]), &trace).expect("records while it holds");
+
+    // The secret changes; the body does not contain it any more.
+    std::env::set_var("FP_LEAK_NEEDLE", "beta-secret-77");
+    let (report, _run_dir) = run_trace(&trace, &mut MockAppDriver::new(&[])).expect("replay runs");
+    assert!(!report.passed);
+    let detail = report.steps[0].detail.clone().unwrap_or_default();
+    assert!(
+        !detail.contains("beta-secret-77"),
+        "replay leaked: {detail}"
+    );
+    assert!(detail.contains("${FP_LEAK_NEEDLE}"), "detail: {detail}");
+
+    let err = record(
+        &spec,
+        &mut MockAppDriver::new(&[]),
+        &dir.join("again.trace.jsonl"),
+    )
+    .expect_err("the needle is not in the body");
+    let err = err.to_string();
+    assert!(!err.contains("beta-secret-77"), "record leaked: {err}");
+    assert!(err.contains("${FP_LEAK_NEEDLE}"), "err: {err}");
+
+    std::env::remove_var("FP_LEAK_API");
+    std::env::remove_var("FP_LEAK_NEEDLE");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn sql_assertions_fail_closed_without_a_configured_connection() {
     let dir = std::env::temp_dir().join("flowproof-replay-oob-sql");

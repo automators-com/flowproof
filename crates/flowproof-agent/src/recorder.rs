@@ -1989,11 +1989,13 @@ fn web_browser_from_setup(
 /// (missing connection env) fail immediately.
 /// Returns the probe's response body (an `Api` probe's response text, the
 /// corpus a secret-leak scan reads; `None` for `Sql`) once the expectation
-/// holds.
+/// holds. The probe holds only resolved values, so a reason is masked
+/// against `templates` - the step's raw `${VAR}`-bearing fields - first.
 fn poll_oob(
     probe: &flowproof_driver::oob::OobProbe,
     timeout_ms: u64,
     intent: &str,
+    templates: &[&str],
 ) -> Result<Option<String>, RecordError> {
     // A mutation is sent ONCE: re-firing it to wait for convergence would
     // deliver the write again on every tick (see oob::is_retryable).
@@ -2004,6 +2006,7 @@ fn poll_oob(
             Ok(body) => return Ok(body),
             Err(reason) => {
                 if !retryable || std::time::Instant::now() >= deadline {
+                    let reason = flowproof_trace::secret::mask_values(&reason, templates);
                     let actual = if retryable {
                         reason
                     } else {
@@ -4349,7 +4352,8 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             None => None,
                         },
                     };
-                    poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
+                    let templates = [query.as_str(), equals.as_deref().unwrap_or_default()];
+                    poll_oob(&probe, *timeout_ms, &spec_step.intent(), &templates)?;
                 }
                 ResolvedAction::AssertApi {
                     count,
@@ -4431,7 +4435,17 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             None => None,
                         },
                     };
-                    let body = poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
+                    let body_text = body.as_ref().map(|b| b.to_string()).unwrap_or_default();
+                    let equals_text = equals.as_ref().map(|e| e.to_string()).unwrap_or_default();
+                    let mut templates =
+                        vec![url.as_str(), body_text.as_str(), equals_text.as_str()];
+                    templates.extend(headers.values().map(String::as_str));
+                    templates.extend(
+                        [body_contains, header_equals, header_contains]
+                            .into_iter()
+                            .filter_map(|t| t.as_deref()),
+                    );
+                    let body = poll_oob(&probe, *timeout_ms, &spec_step.intent(), &templates)?;
                     // Kept values join this run's captures, in memory only.
                     let kept = flowproof_driver::oob::capture_json(
                         body.as_deref().unwrap_or_default(),
@@ -4481,7 +4495,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                         equals: equals.clone(),
                         contains: contains.clone(),
                     };
-                    poll_oob(&probe, *timeout_ms, &spec_step.intent())?;
+                    poll_oob(&probe, *timeout_ms, &spec_step.intent(), &[path.as_str()])?;
                 }
                 ResolvedAction::PressKey { key, modifiers } => {
                     let mods: Vec<flowproof_driver::KeyMod> =

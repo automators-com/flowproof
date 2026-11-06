@@ -106,6 +106,34 @@ pub fn resolve_refs_in_json(value: &serde_json::Value) -> Result<serde_json::Val
     })
 }
 
+/// `text` with the value of every `${VAR}` that `templates` reference put
+/// back as the reference itself. For a message built from RESOLVED values
+/// by code that never saw the templates - an out-of-band probe's failure
+/// reason, a transport error quoting the url - so it can be shown like any
+/// other: the reference, never the value. Longest value first, so a value
+/// that contains another is masked whole; an unset or empty variable has
+/// nothing to find. A short value masks every place it occurs, which can
+/// hide more than the value - the safe direction.
+pub fn mask_values(text: &str, templates: &[&str]) -> String {
+    let mut found: Vec<(String, &str)> = templates
+        .iter()
+        .flat_map(|t| ref_names(t))
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(|v| (v, name))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.1.cmp(b.1)));
+    found.dedup_by(|a, b| a.0 == b.0);
+    let mut out = text.to_string();
+    for (value, name) in found {
+        out = out.replace(&value, &format!("${{{name}}}"));
+    }
+    out
+}
+
 /// Resolve a `downloads_dir` field: `${VAR}` references resolve from the
 /// environment (see [`resolve_refs`]), `None` stays `None`. This is the one
 /// browser-setup field that resolves refs — every sibling is a literal by
@@ -123,6 +151,30 @@ pub fn resolve_downloads_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mask_values_puts_each_referenced_value_back_as_its_reference() {
+        std::env::set_var("FP_MASK_TOKEN", "tok-7f3c");
+        std::env::set_var("FP_MASK_TOKEN_LONG", "tok-7f3c-extended");
+        std::env::set_var("FP_MASK_EMPTY", "");
+        let templates = [
+            "https://api.test/x?key=${FP_MASK_TOKEN}",
+            "${FP_MASK_TOKEN_LONG}",
+            "${FP_MASK_EMPTY}",
+        ];
+        let message = "header 'x-key' is 'tok-7f3c-extended', expected equals 'tok-7f3c'";
+        assert_eq!(
+            mask_values(message, &templates),
+            "header 'x-key' is '${FP_MASK_TOKEN_LONG}', expected equals '${FP_MASK_TOKEN}'"
+        );
+        // A value the templates do not reference is not this check's secret.
+        assert_eq!(
+            mask_values("got 'tok-7f3c'", &["literal"]),
+            "got 'tok-7f3c'"
+        );
+        // Nothing to find for an unset variable.
+        assert_eq!(mask_values("got 'x'", &["${FP_MASK_NEVER_SET}"]), "got 'x'");
+    }
 
     #[test]
     fn downloads_dir_none_resolves_to_none() {
