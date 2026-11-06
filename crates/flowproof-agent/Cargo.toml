@@ -2,6 +2,7 @@
 name = "flowproof-agent"
 description = "Recording agent: planner loop with pluggable computer-use model backends"
 version.workspace = true
+publish.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

@@ -1,33 +1,68 @@
-# cargo-deny configuration — dependency security gate (audit issue A6).
+# cargo-deny policy for the Rust workspace, run by .github/workflows/audit.yml.
 #
-# Scope: this file configures ONLY the advisory check. CI runs
-# `cargo deny check advisories` (see .github/workflows/audit.yml); the
-# license / bans / sources checks are deliberately out of scope here so the
-# gate stays a focused "is anything we depend on known-vulnerable?" alarm and
-# does not fail on unrelated licensing policy.
-#
-# Behaviour (cargo-deny defaults, stated explicitly so the policy is readable
-# without consulting the docs):
-#   - vulnerabilities      -> always error
-#   - unmaintained = "all" -> error, including transitive dependencies
-#   - unsound    = "workspace"
-#   - yanked     = "warn"
+# Scope: Rust POLICY - licences, banned crates, allowed sources. Known
+# vulnerabilities are OSV-Scanner's job across Rust and Python
+# (.github/workflows/osv-scanner.yml); its exceptions live in
+# osv-scanner.toml. `advisories` is not checked here, so each finding is
+# reported once.
 
-[advisories]
-# ---------------------------------------------------------------------------
-# Known backlog (A6 "ratchet"): advisories that already existed in the tree
-# when the gate was introduced. They are ignored so the gate can go green and
-# immediately block any NEW advisory, while the pre-existing ones are burned
-# down in dedicated follow-up PRs — one per root-cause cluster. As each
-# cluster PR lands it DELETES its own entries here, tightening the gate step
-# by step until only genuinely-unfixable (unmaintained-upstream) items remain.
-#
-# Do not add to this list to silence a new finding: a new advisory should be
-# fixed, not ignored. Every entry below is tracked and has an owner PR.
-# ---------------------------------------------------------------------------
-ignore = [
-  # --- Cluster: unmaintained crates. No upstream fix; cleared only by
-  #     migrating/removing the crate. Lowest urgency, handled last. ---
-  { id = "RUSTSEC-2024-0436", reason = "paste unmaintained (no fix available); transitive; revisit whether a maintained replacement is reachable (A6)" },
-  { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained (no fix available); transitive via the vision/font stack; revisit upstream (A6)" },
+[graph]
+# The platforms we publish binaries for (npm and PyPI). A crate only another
+# platform pulls in cannot reach a user.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
 ]
+
+[licenses]
+# flowproof is Apache-2.0 and ships compiled binaries, so every dependency's
+# declared licence (the `license` field in its Cargo.toml) must allow that.
+# Copyleft licences (GPL, LGPL, AGPL) are absent on purpose: a crate under
+# one fails the check and needs a decision, not a quiet addition here.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "BSL-1.0",
+  "CC0-1.0",
+  "Unlicense",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CDLA-Permissive-2.0",
+  # File-level copyleft: the obligation covers changes to the MPL files
+  # themselves, which we never make.
+  "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# Our own crates are not published to crates.io.
+ignore = true
+
+[bans]
+# Duplicate versions are a size question, not a security one.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+  # TLS stays on rustls. OpenSSL would add a native library we would have to
+  # patch and ship ourselves on every platform.
+  { name = "openssl" },
+  { name = "openssl-sys" },
+]
+
+[sources]
+# crates.io, plus the one reviewed git patch: headless_chrome, pinned by rev
+# to an orphan branch of this repository (see [patch.crates-io] in
+# Cargo.toml). Anything else is refused.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/automators-com/flowproof"]

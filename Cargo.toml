@@ -36,6 +36,10 @@ license = "Apache-2.0"
 repository = "https://github.com/automators-com/flowproof"
 authors = ["Automators <hello@automators.com>"]
 rust-version = "1.80"
+# Nothing here goes to crates.io: the wheel and the npm package are built from
+# this workspace (publish.yml, publish-npm.yml). Saying so also lets
+# cargo-deny treat the crates as private, where path dependencies are fine.
+publish = false
 
 [workspace.dependencies]
 flowproof-driver = { path = "crates/flowproof-driver" }

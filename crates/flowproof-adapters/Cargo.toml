@@ -2,6 +2,7 @@
 name = "flowproof-adapters"
 description = "Native application adapters (SAP GUI Scripting COM, browser via CDP) behind feature flags"
 version.workspace = true
+publish.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

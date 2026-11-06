@@ -326,15 +326,26 @@ or if that version is already published. npm publication
 165, 192), genuine Sigstore-backed provenance, recorded on the public Rekor
 transparency log. Both are manual/tag-triggered only.
 
-**Not covered (real gap)**: there is no `cargo-deny` configuration and no
-automated `cargo audit` (or equivalent) CI job, confirmed absent from
-`.github/workflows/`. Dependency vulnerability handling is currently manual
-and reactive: the CHANGELOG records at least three ad hoc advisory fixes
-(a `cryptography` GHSA in a dev lock file, two PyO3 RUSTSEC advisories fixed
-by a version bump), plus two accepted-but-undocumented-outside-the-CHANGELOG
-unmaintained-crate warnings (`paste` RUSTSEC-2024-0436, `ttf-parser`
-RUSTSEC-2026-0192, both dev-dependencies). No Rust crates are published to
-crates.io. See Known limitations.
+**Dependency gates**: two CI checks run on every pull request, on every push
+to `main`, and weekly, because an advisory can be published with nothing
+changing here.
+- `.github/workflows/osv-scanner.yml` checks `Cargo.lock` and
+  `sdk/python/uv.lock` against osv.dev, which aggregates RustSec, GitHub and
+  PyPA advisories, and fails on any known vulnerability. The few accepted
+  findings are in `osv-scanner.toml`, each with a reason and, where something
+  could change, a review date. Today these are two unmaintained crates with
+  no upstream fix (`paste` RUSTSEC-2024-0436, `ttf-parser`
+  RUSTSEC-2026-0192).
+- `.github/workflows/audit.yml` runs `cargo-deny` on `deny.toml`. Every
+  dependency's declared licence must be on a permissive allow-list (no
+  GPL/LGPL/AGPL), OpenSSL is banned so TLS stays on rustls, and crates may
+  come only from crates.io or the one reviewed git patch (`headless_chrome`,
+  pinned by commit).
+
+**Not covered**: `examples/` and `spike/` lock files are not scanned, since
+neither ships. `sdk/js` has no lock file of its own; its dependencies are
+the platform binaries built here. No Rust crates are published to
+crates.io.
 
 ## Known limitations
 
@@ -357,12 +368,10 @@ named honestly, per the principle this document opened with.
 5. **No stated data-ownership/retention policy** for customer-provided flows
    and evidence archives once they leave local disk, distinct from (and not
    fixed by) the trace format's safe-by-construction design.
-6. **No automated dependency-vulnerability gate.** `cargo-deny`/`cargo audit`
-   are not run in CI; remediation has so far been manual and reactive.
-7. **Uncontained-path timeouts kill only the direct child.** A detached
+6. **Uncontained-path timeouts kill only the direct child.** A detached
    grandchild process can outlive `wait_to_deadline()`'s kill outside the
    Windows Job Object path.
-8. **`flowproof config`'s file has no Windows permission hardening.** The
+7. **`flowproof config`'s file has no Windows permission hardening.** The
    `0600` mode set on Unix (`config.rs:266-271`) has no counterpart on
    Windows, where the file can hold a plaintext SAP/Fiori password and an AI
    API key with only the OS's default ACL protecting it.

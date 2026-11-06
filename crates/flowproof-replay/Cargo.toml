@@ -2,6 +2,7 @@
 name = "flowproof-replay"
 description = "Deterministic trace executor: replays compiled traces with zero LLM calls"
 version.workspace = true
+publish.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

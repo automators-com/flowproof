@@ -2,6 +2,7 @@
 name = "flowproof-trace"
 description = "Trace format, selector ladder, and trace-to-script compiler"
 version.workspace = true
+publish.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
