@@ -154,6 +154,14 @@ configuration error. Each run bundle contains:
 | `recording/` | Inspect captured keyframes |
 | `debug/dom.html` and `debug/console.log` | Diagnose a failed web step when available |
 
+A failed step in `result.json` carries its reason in `detail`. When the step
+compared something, it also carries the two sides on their own: `expected`
+(what the flow asked for, such as `element text 'Order placed'`) and `found`
+(what the app showed, such as `'Order failed'`). A step whose target never
+appeared names it as `expected` and puts `not found`, with the closest text on
+screen, in `found`. A `${VAR}` stays a reference and its reading is shown as
+`<masked>`, exactly as in `detail`.
+
 Password fields are always masked. Add `redact:` rules for other sensitive
 regions. See [Run recording](../recording.md) for capture controls and the
 artifact format.

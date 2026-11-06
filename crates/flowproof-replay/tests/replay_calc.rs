@@ -156,6 +156,14 @@ fn replay_fails_when_display_differs() {
         "detail: {:?}",
         last.detail
     );
+    // The two sides of the sentence, on their own for a reader that shows
+    // them side by side.
+    assert_eq!(last.expected.as_deref(), Some("element text '8'"));
+    assert_eq!(last.found.as_deref(), Some("'Display is 9'"));
+    // Steps that passed carry neither.
+    assert!(report.steps[..4]
+        .iter()
+        .all(|s| s.expected.is_none() && s.found.is_none()));
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -498,6 +506,12 @@ fn failure_writes_debug_bundle_and_suggests_nearest_anchor() {
     assert!(
         detail.contains("did you mean 'Save changes'"),
         "nearest-anchor hint present: {detail}"
+    );
+    // A miss names what the step looked for and what was closest instead.
+    assert_eq!(report.steps[0].expected.as_deref(), Some("'Save change'"));
+    assert_eq!(
+        report.steps[0].found.as_deref(),
+        Some("not found; closest on screen: 'Save changes'")
     );
     assert!(
         detail.contains("debug/dom.html") && detail.contains("debug/console.log"),
@@ -1484,6 +1498,12 @@ fn url_assertions_keep_secrets_out_of_the_trace_and_the_message() {
     let detail = report.steps[0].detail.clone().unwrap_or_default();
     assert!(!detail.contains("acme-7f3c"), "failure must mask: {detail}");
     assert!(detail.contains("<masked>"), "detail: {detail}");
+    // The separate sides are masked the same way as the sentence.
+    assert_eq!(
+        report.steps[0].expected.as_deref(),
+        Some("url containing '${FP_URL_TENANT}'")
+    );
+    assert_eq!(report.steps[0].found.as_deref(), Some("'<masked>'"));
 
     std::env::remove_var("FP_URL_TENANT");
     std::fs::remove_dir_all(&dir).ok();

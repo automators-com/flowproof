@@ -308,6 +308,8 @@ def test_run_result_parses_engine_payload():
                         "status": "failed",
                         "duration_ms": 25,
                         "detail": "expected display value '8', got 'Display is 9'",
+                        "expected": "display value '8'",
+                        "found": "'Display is 9'",
                     },
                 ],
                 "degraded": True,
@@ -319,6 +321,9 @@ def test_run_result_parses_engine_payload():
     assert not result  # truthiness == passed
     assert result.steps[0].status == "passed"
     assert result.steps[1].detail is not None
+    assert result.steps[1].expected == "display value '8'"
+    assert result.steps[1].found == "'Display is 9'"
+    assert result.steps[0].expected is None
     assert result.report_path == Path("/tmp/result.json")
     assert result.html_path == Path("/tmp/report.html")
     assert result.junit_path == Path("/tmp/junit.xml")

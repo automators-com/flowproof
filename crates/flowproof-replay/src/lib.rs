@@ -206,6 +206,39 @@ fn selector_to_uia(selector: &Selector) -> Option<UiaSelector> {
     (!uia.is_empty()).then_some(uia)
 }
 
+/// Why a step failed: the sentence the report prints, and - when the step
+/// compared a reading against the flow - the two sides on their own, for
+/// `StepResult::expected` / `found`. Both sides follow the sentence's
+/// masking: the raw `${VAR}` reference, never its value.
+#[derive(Debug)]
+struct Failure {
+    reason: String,
+    expected: Option<String>,
+    found: Option<String>,
+}
+
+impl Failure {
+    fn mismatch(reason: String, expected: impl Into<String>, found: impl Into<String>) -> Self {
+        Self {
+            reason,
+            expected: Some(expected.into()),
+            found: Some(found.into()),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            expected: None,
+            found: None,
+        }
+    }
+}
+
+type Verdict = Result<(), Failure>;
+
 /// On the run's first failure, enrich the failure `reason` and the run
 /// bundle with what a human would look for next: nearest live text anchors
 /// ("did you mean …?") when an anchored element wasn't found, and the
@@ -216,8 +249,13 @@ fn augment_failure<D: AppDriver>(
     driver: &mut D,
     step: &flowproof_trace::format::Step,
     run_dir: &Path,
-    mut reason: String,
-) -> String {
+    failure: Failure,
+) -> Failure {
+    let Failure {
+        mut reason,
+        mut expected,
+        mut found,
+    } = failure;
     // Both element-miss phrasings: direct resolution failure ("not
     // found") and the sync precondition timing out ("did not appear").
     if reason.contains("not found") || reason.contains("did not appear") {
@@ -228,6 +266,7 @@ fn augment_failure<D: AppDriver>(
                 .and_then(|v| v.as_str())
         });
         if let Some(wanted) = wanted {
+            let mut seen = "not found".to_string();
             if let Ok(Some(scene)) = driver.scene() {
                 let hints = nearest_anchor_hints(wanted, &scene);
                 if !hints.is_empty() {
@@ -237,7 +276,13 @@ fn augment_failure<D: AppDriver>(
                         .collect::<Vec<_>>()
                         .join(", ");
                     reason.push_str(&format!(" — did you mean {list}?"));
+                    seen = format!("not found; closest on screen: {list}");
                 }
+            }
+            // A check that already named both sides keeps its own.
+            if expected.is_none() && found.is_none() {
+                expected = Some(format!("'{wanted}'"));
+                found = Some(seen);
             }
         }
     }
@@ -283,7 +328,11 @@ fn augment_failure<D: AppDriver>(
             }
         }
     }
-    reason
+    Failure {
+        reason,
+        expected,
+        found,
+    }
 }
 
 /// The closest visible text anchors to `wanted`, from the driver's scene:
@@ -586,7 +635,7 @@ fn check_framed_expectation<D: AppDriver>(
     query: &flowproof_driver::FrameQuery,
     deadline: Instant,
     rung: usize,
-) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
+) -> Result<(Verdict, Option<usize>), ReplayError> {
     use flowproof_driver::FrameProbe;
     let inner = query
         .inner_css
@@ -599,7 +648,7 @@ fn check_framed_expectation<D: AppDriver>(
     let expected = match text_want {
         Some((raw, _)) => match flowproof_trace::secret::resolve_refs(raw) {
             Ok(resolved) => Some(resolved),
-            Err(e) => return Ok((Err(e.to_string()), Some(rung))),
+            Err(e) => return Ok((Err(e.to_string().into()), Some(rung))),
         },
         None => None,
     };
@@ -640,7 +689,7 @@ fn check_framed_expectation<D: AppDriver>(
                     last = present.then_some(text);
                 } else {
                     return Ok((
-                        Err(format!("unsupported iframe expectation: {expect}")),
+                        Err(format!("unsupported iframe expectation: {expect}").into()),
                         Some(rung),
                     ));
                 }
@@ -656,21 +705,26 @@ fn check_framed_expectation<D: AppDriver>(
                     Err(flowproof_driver::frame_miss(
                         &query.frame,
                         &FrameProbe::NoFrame { available },
-                    )),
+                    )
+                    .into()),
                     Some(rung),
                 ));
             }
-            let reason = match (wanted_present, text_want) {
-                (Some(true), _) => format!(
-                    "expected '{inner}' inside iframe '{}', but it never appeared there",
-                    query.frame
+            let frame = &query.frame;
+            let failure = match (wanted_present, text_want) {
+                (Some(true), _) => Failure::mismatch(
+                    format!("expected '{inner}' inside iframe '{frame}', but it never appeared there"),
+                    format!("'{inner}' inside iframe '{frame}'"),
+                    "never appeared",
                 ),
-                (Some(false), _) => format!(
-                    "expected '{inner}' to be gone from iframe '{}', but it is still there",
-                    query.frame
+                (Some(false), _) => Failure::mismatch(
+                    format!("expected '{inner}' to be gone from iframe '{frame}', but it is still there"),
+                    format!("'{inner}' gone from iframe '{frame}'"),
+                    "still there",
                 ),
                 (None, Some((raw, negated))) => {
                     let verb = if negated { "no text" } else { "text" };
+                    let wanted = format!("{verb} '{raw}' inside iframe '{frame}'");
                     match &last {
                         // Named as INSIDE the frame, so a passing-looking
                         // page element outside it cannot be mistaken for
@@ -681,19 +735,22 @@ fn check_framed_expectation<D: AppDriver>(
                             } else {
                                 text.as_str()
                             };
-                            format!(
-                                "expected {verb} '{raw}' inside iframe '{}', got '{shown}'",
-                                query.frame
+                            Failure::mismatch(
+                                format!("expected {wanted}, got '{shown}'"),
+                                wanted,
+                                format!("'{shown}'"),
                             )
                         }
-                        None => {
-                            format!("'{inner}' was never found inside iframe '{}'", query.frame)
-                        }
+                        None => Failure::mismatch(
+                            format!("'{inner}' was never found inside iframe '{frame}'"),
+                            wanted,
+                            format!("'{inner}' not found"),
+                        ),
                     }
                 }
-                (None, None) => format!("unsupported iframe expectation: {expect}"),
+                (None, None) => format!("unsupported iframe expectation: {expect}").into(),
             };
-            return Ok((Err(reason), Some(rung)));
+            return Ok((Err(failure), Some(rung)));
         }
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -705,19 +762,19 @@ fn check_text_expectation<F>(
     rung: Option<usize>,
     ocr: bool,
     mut read: F,
-) -> Result<(Result<(), String>, Option<usize>), ReplayError>
+) -> Result<(Verdict, Option<usize>), ReplayError>
 where
     F: FnMut() -> Result<String, flowproof_driver::DriverError>,
 {
     let Some((raw, negated)) = text_expectation(expect) else {
         return Ok((
-            Err(format!("unsupported element_state expectation: {expect}")),
+            Err(format!("unsupported element_state expectation: {expect}").into()),
             rung,
         ));
     };
     let expected = match flowproof_trace::secret::resolve_refs(raw) {
         Ok(expected) => expected,
-        Err(e) => return Ok((Err(e.to_string()), rung)),
+        Err(e) => return Ok((Err(e.to_string().into()), rung)),
     };
     let mut fault: Option<flowproof_driver::DriverError> = None;
     let mut last_text: Option<String> = None;
@@ -746,7 +803,11 @@ where
             if let Some(n) = expect.get("count").and_then(|v| v.as_u64()) {
                 let found = flowproof_driver::text_occurrences(&expected, &text);
                 return Ok((
-                    Err(format!("expected text '{raw}' {n} times, found {found}")),
+                    Err(Failure::mismatch(
+                        format!("expected text '{raw}' {n} times, found {found}"),
+                        format!("text '{raw}' {n} times"),
+                        format!("{found} times"),
+                    )),
                     rung,
                 ));
             }
@@ -756,15 +817,30 @@ where
                 text.as_str()
             };
             if let Some(want_empty) = expect.get("value_empty").and_then(|v| v.as_bool()) {
-                let msg = if want_empty {
-                    format!("expected the target to be empty, but it shows '{shown}'")
+                let failure = if want_empty {
+                    Failure::mismatch(
+                        format!("expected the target to be empty, but it shows '{shown}'"),
+                        "empty",
+                        format!("'{shown}'"),
+                    )
                 } else {
-                    "expected the target to be non-empty, but it is empty".to_string()
+                    Failure::mismatch(
+                        "expected the target to be non-empty, but it is empty".to_string(),
+                        "not empty",
+                        "empty",
+                    )
                 };
-                return Ok((Err(msg), rung));
+                return Ok((Err(failure), rung));
             }
             let verb = if negated { "no text" } else { "text" };
-            return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), rung));
+            return Ok((
+                Err(Failure::mismatch(
+                    format!("expected {verb} '{raw}', got '{shown}'"),
+                    format!("{verb} '{raw}'"),
+                    format!("'{shown}'"),
+                )),
+                rung,
+            ));
         }
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -807,7 +883,7 @@ fn check_cookie_expectation<D: AppDriver>(
     name: &str,
     fact: &str,
     deadline: Instant,
-) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
+) -> Result<(Verdict, Option<usize>), ReplayError> {
     let mut fault: Option<flowproof_driver::DriverError> = None;
     let mut last: Option<String> = None;
     loop {
@@ -833,7 +909,7 @@ fn check_cookie_expectation<D: AppDriver>(
             let Some(reason) = last else {
                 return Err(exhausted(fault));
             };
-            return Ok((Err(reason), None));
+            return Ok((Err(reason.into()), None));
         }
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -863,13 +939,13 @@ fn check_title_expectation<F>(
     exact: bool,
     deadline: Instant,
     mut read: F,
-) -> Result<(Result<(), String>, Option<usize>), ReplayError>
+) -> Result<(Verdict, Option<usize>), ReplayError>
 where
     F: FnMut() -> Result<String, flowproof_driver::DriverError>,
 {
     let expected = match flowproof_trace::secret::resolve_refs(raw) {
         Ok(expected) => expected,
-        Err(e) => return Ok((Err(e.to_string()), None)),
+        Err(e) => return Ok((Err(e.to_string().into()), None)),
     };
     let mut fault: Option<flowproof_driver::DriverError> = None;
     let mut last: Option<String> = None;
@@ -897,8 +973,10 @@ where
             };
             if title.trim().is_empty() {
                 return Ok((
-                    Err(format!(
-                        "expected {verb} '{raw}', but the page title is empty"
+                    Err(Failure::mismatch(
+                        format!("expected {verb} '{raw}', but the page title is empty"),
+                        format!("{verb} '{raw}'"),
+                        "an empty page title",
                     )),
                     None,
                 ));
@@ -908,7 +986,14 @@ where
             } else {
                 title
             };
-            return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), None));
+            return Ok((
+                Err(Failure::mismatch(
+                    format!("expected {verb} '{raw}', got '{shown}'"),
+                    format!("{verb} '{raw}'"),
+                    format!("'{shown}'"),
+                )),
+                None,
+            ));
         }
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -920,14 +1005,14 @@ fn check_url_expectation<F>(
     exact: bool,
     deadline: Instant,
     mut read: F,
-) -> Result<(Result<(), String>, Option<usize>), ReplayError>
+) -> Result<(Verdict, Option<usize>), ReplayError>
 where
     F: FnMut() -> Result<String, flowproof_driver::DriverError>,
 {
     let _ = expect;
     let expected = match flowproof_trace::secret::resolve_refs(raw) {
         Ok(expected) => expected,
-        Err(e) => return Ok((Err(e.to_string()), None)),
+        Err(e) => return Ok((Err(e.to_string().into()), None)),
     };
     let mut fault: Option<flowproof_driver::DriverError> = None;
     let mut last: Option<String> = None;
@@ -948,7 +1033,14 @@ where
                 url
             };
             let verb = if exact { "url" } else { "url containing" };
-            return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), None));
+            return Ok((
+                Err(Failure::mismatch(
+                    format!("expected {verb} '{raw}', got '{shown}'"),
+                    format!("{verb} '{raw}'"),
+                    format!("'{shown}'"),
+                )),
+                None,
+            ));
         }
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -994,7 +1086,7 @@ fn check_assertion<D: AppDriver>(
     captures: &std::collections::HashMap<String, String>,
     api_corpus: &mut Vec<(String, String)>,
     kept: &mut Vec<(String, String)>,
-) -> Result<(Result<(), String>, Option<usize>), ReplayError> {
+) -> Result<(Verdict, Option<usize>), ReplayError> {
     match assertion {
         Assertion::ElementState {
             expect,
@@ -1090,7 +1182,14 @@ fn check_assertion<D: AppDriver>(
             // further is paid only to describe a failure.
             if let Some(wanted) = expect.get("element_count").and_then(|v| v.as_u64()) {
                 let wanted = wanted as usize;
-                let mut last = Err(String::new());
+                let count_failure = |found: String| {
+                    Failure::mismatch(
+                        format!("expected {wanted} matching elements, found {found}"),
+                        format!("{wanted} matching elements"),
+                        found,
+                    )
+                };
+                let mut last: Verdict = Err(String::new().into());
                 // Did the app ever actually answer? If every poll was a
                 // transport fault, nothing was learned and the run errors
                 // rather than reporting a count it never saw.
@@ -1112,9 +1211,7 @@ fn check_assertion<D: AppDriver>(
                         }
                         Some(found) => {
                             read_ok = true;
-                            last = Err(format!(
-                                "expected {wanted} matching elements, found {found}"
-                            ));
+                            last = Err(count_failure(found.to_string()));
                         }
                         // A transport fault says nothing about the app, so
                         // it is a miss inside the budget, not an answer.
@@ -1140,9 +1237,7 @@ fn check_assertion<D: AppDriver>(
                             } else {
                                 actual.to_string()
                             };
-                            last = Err(format!(
-                                "expected {wanted} matching elements, found {actual}"
-                            ));
+                            last = Err(count_failure(actual));
                         }
                         return Ok((last, Some(primary)));
                     }
@@ -1193,15 +1288,27 @@ fn check_assertion<D: AppDriver>(
                         if !read_ok {
                             return Err(exhausted(fault));
                         }
-                        let reason = if wanted_present && hidden {
-                            "expected element to be visible, but it is present and not rendered"
-                                .to_string()
+                        let (reason, wanted, seen) = if wanted_present && hidden {
+                            (
+                                "expected element to be visible, but it is present and not rendered",
+                                "visible",
+                                "present, not rendered",
+                            )
                         } else if wanted_present {
-                            "expected element to be visible, but it never appeared".to_string()
+                            (
+                                "expected element to be visible, but it never appeared",
+                                "visible",
+                                "never appeared",
+                            )
                         } else {
-                            "expected element to be gone, but it is still on screen".to_string()
+                            (
+                                "expected element to be gone, but it is still on screen",
+                                "gone",
+                                "still on screen",
+                            )
                         };
-                        return Ok((Err(reason), resolved.map(|(_, rung)| rung)));
+                        let failure = Failure::mismatch(reason.to_string(), wanted, seen);
+                        return Ok((Err(failure), resolved.map(|(_, rung)| rung)));
                     }
                     std::thread::sleep(POLL_INTERVAL);
                 }
@@ -1236,7 +1343,7 @@ fn check_assertion<D: AppDriver>(
                                 Ok(false) => last = Some(text),
                                 // A non-numeric side cannot become numeric
                                 // by waiting: fail now, saying which side.
-                                Err(why) => return Ok((Err(why), Some(rung))),
+                                Err(why) => return Ok((Err(why.into()), Some(rung))),
                             }
                         }
                     }
@@ -1253,7 +1360,14 @@ fn check_assertion<D: AppDriver>(
                             ),
                         };
                         let shown = last.unwrap_or_else(|| "<element not found>".to_string());
-                        return Ok((Err(format!("expected {wanted}, got '{shown}'")), None));
+                        return Ok((
+                            Err(Failure::mismatch(
+                                format!("expected {wanted}, got '{shown}'"),
+                                wanted,
+                                format!("'{shown}'"),
+                            )),
+                            None,
+                        ));
                     }
                     std::thread::sleep(POLL_INTERVAL);
                 }
@@ -1286,7 +1400,11 @@ fn check_assertion<D: AppDriver>(
                             None => "<element not found>".to_string(),
                         };
                         return Ok((
-                            Err(format!("expected checkbox {}, got {shown}", state(wanted))),
+                            Err(Failure::mismatch(
+                                format!("expected checkbox {}, got {shown}", state(wanted)),
+                                state(wanted),
+                                shown,
+                            )),
                             None,
                         ));
                     }
@@ -1318,9 +1436,13 @@ fn check_assertion<D: AppDriver>(
                             None => "<element not found>".to_string(),
                         };
                         return Ok((
-                            Err(format!(
-                                "expected element to be {}, got {shown}",
-                                state(wanted_enabled)
+                            Err(Failure::mismatch(
+                                format!(
+                                    "expected element to be {}, got {shown}",
+                                    state(wanted_enabled)
+                                ),
+                                state(wanted_enabled),
+                                shown,
                             )),
                             None,
                         ));
@@ -1342,7 +1464,7 @@ fn check_assertion<D: AppDriver>(
                 let wanted = match value_raw {
                     Some(raw) => match flowproof_trace::secret::resolve_refs(raw) {
                         Ok(v) => Some(v),
-                        Err(e) => return Ok((Err(e.to_string()), None)),
+                        Err(e) => return Ok((Err(e.to_string().into()), None)),
                     },
                     None => None,
                 };
@@ -1372,11 +1494,15 @@ fn check_assertion<D: AppDriver>(
                             return Err(exhausted(fault));
                         }
                         let word = |p: bool| if p { "present" } else { "absent" };
-                        let msg = match (present, &last) {
-                            (Some(want), Some(attr)) => format!(
-                                "expected attribute `{name}` {}, got {}",
-                                word(want),
-                                word(attr.is_some())
+                        let failure = match (present, &last) {
+                            (Some(want), Some(attr)) => Failure::mismatch(
+                                format!(
+                                    "expected attribute `{name}` {}, got {}",
+                                    word(want),
+                                    word(attr.is_some())
+                                ),
+                                format!("attribute `{name}` {}", word(want)),
+                                format!("attribute `{name}` {}", word(attr.is_some())),
                             ),
                             (None, Some(attr)) => {
                                 let raw = value_raw.unwrap_or_default();
@@ -1396,15 +1522,18 @@ fn check_assertion<D: AppDriver>(
                                         format!("attribute `{name}` = {shown}")
                                     }
                                 };
-                                format!("expected {want_phrase}, got {got}")
-                            }
-                            (_, None) => {
-                                format!(
-                                    "expected attribute `{name}`, but the element was not found"
+                                Failure::mismatch(
+                                    format!("expected {want_phrase}, got {got}"),
+                                    want_phrase,
+                                    got,
                                 )
                             }
+                            (_, None) => format!(
+                                "expected attribute `{name}`, but the element was not found"
+                            )
+                            .into(),
                         };
-                        return Ok((Err(msg), None));
+                        return Ok((Err(failure), None));
                     }
                     std::thread::sleep(POLL_INTERVAL);
                 }
@@ -1421,7 +1550,7 @@ fn check_assertion<D: AppDriver>(
                 let negate = expect.get("negate").and_then(|v| v.as_bool()) == Some(true);
                 let wanted = match flowproof_trace::secret::resolve_refs(raw) {
                     Ok(v) => v,
-                    Err(e) => return Ok((Err(e.to_string()), None)),
+                    Err(e) => return Ok((Err(e.to_string().into()), None)),
                 };
                 let mut last: Option<String> = None;
                 let mut fault: Option<flowproof_driver::DriverError> = None;
@@ -1435,7 +1564,7 @@ fn check_assertion<D: AppDriver>(
                                 Ok(false) => last = Some(actual),
                                 // Unparseable computed / non-color expected:
                                 // waiting cannot fix it, so fail now.
-                                Err(why) => return Ok((Err(why), Some(rung))),
+                                Err(why) => return Ok((Err(why.into()), Some(rung))),
                             }
                         }
                     }
@@ -1451,7 +1580,14 @@ fn check_assertion<D: AppDriver>(
                         let shown = last
                             .map(|s| format!("computed {prop} '{s}'"))
                             .unwrap_or_else(|| "<element not found>".to_string());
-                        return Ok((Err(format!("expected {want}, got {shown}")), None));
+                        return Ok((
+                            Err(Failure::mismatch(
+                                format!("expected {want}, got {shown}"),
+                                want,
+                                shown,
+                            )),
+                            None,
+                        ));
                     }
                     std::thread::sleep(POLL_INTERVAL);
                 }
@@ -1459,7 +1595,7 @@ fn check_assertion<D: AppDriver>(
 
             let Some((raw, negated)) = text_expectation(expect) else {
                 return Ok((
-                    Err(format!("unsupported element_state expectation: {expect}")),
+                    Err(format!("unsupported element_state expectation: {expect}").into()),
                     None,
                 ));
             };
@@ -1468,7 +1604,7 @@ fn check_assertion<D: AppDriver>(
             // live text is masked too, so a failure never leaks the value.
             let expected = match flowproof_trace::secret::resolve_refs(raw) {
                 Ok(expected) => expected,
-                Err(e) => return Ok((Err(e.to_string()), None)),
+                Err(e) => return Ok((Err(e.to_string().into()), None)),
             };
             let mut last: Option<(String, usize)> = None;
             let mut fault: Option<flowproof_driver::DriverError> = None;
@@ -1507,7 +1643,14 @@ fn check_assertion<D: AppDriver>(
                     } else {
                         "element text"
                     };
-                    return Ok((Err(format!("expected {verb} '{raw}', got '{shown}'")), rung));
+                    return Ok((
+                        Err(Failure::mismatch(
+                            format!("expected {verb} '{raw}', got '{shown}'"),
+                            format!("{verb} '{raw}'"),
+                            format!("'{shown}'"),
+                        )),
+                        rung,
+                    ));
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
@@ -1557,7 +1700,7 @@ fn check_assertion<D: AppDriver>(
             })();
             let (url, body, headers) = match substituted {
                 Ok(parts) => parts,
-                Err(reason) => return Ok((Err(reason), None)),
+                Err(reason) => return Ok((Err(reason.into()), None)),
             };
             let probe = flowproof_driver::oob::OobProbe::Api {
                 count: expect
@@ -1645,7 +1788,7 @@ fn check_assertion<D: AppDriver>(
                     &capture,
                 ) {
                     Ok(values) => kept.extend(values),
-                    Err(reason) => verdict = Err(reason),
+                    Err(reason) => verdict = Err(reason.into()),
                 }
             }
             // The response body joins the corpus a secret-leak scan reads, held
@@ -1669,7 +1812,7 @@ fn check_assertion<D: AppDriver>(
             // the environment — the same two-step ladder `TypeText` uses.
             let substituted = match flowproof_trace::captures::substitute(path, captures) {
                 Ok(text) => text,
-                Err(reason) => return Ok((Err(reason), None)),
+                Err(reason) => return Ok((Err(reason.into()), None)),
             };
             let path = flowproof_trace::secret::resolve_refs(&substituted)?;
             let probe = flowproof_driver::oob::OobProbe::Spreadsheet {
@@ -1693,9 +1836,7 @@ fn check_assertion<D: AppDriver>(
             Ok((verdict, rung))
         }
         other => Ok((
-            Err(format!(
-                "assertion kind not supported in this slice: {other:?}"
-            )),
+            Err(format!("assertion kind not supported in this slice: {other:?}").into()),
             None,
         )),
     }
@@ -1712,7 +1853,7 @@ fn oob_timeout(expect: Option<&serde_json::Value>) -> u64 {
 /// it matched (always `None` for OOB probes), and the probe's response body
 /// (an `Api` probe's response text, the corpus a secret-leak scan reads;
 /// `None` otherwise).
-type ProbeOutcome = (Result<(), String>, Option<usize>, Option<String>);
+type ProbeOutcome = (Verdict, Option<usize>, Option<String>);
 
 /// Auto-wait an out-of-band probe like any other assertion.
 fn poll_oob(
@@ -1729,10 +1870,10 @@ fn poll_oob(
             Err(reason) => {
                 if !retryable {
                     let reason = format!("{reason} ({})", flowproof_driver::oob::RETRY_HINT);
-                    return Ok((Err(reason), None, None));
+                    return Ok((Err(reason.into()), None, None));
                 }
                 if Instant::now() >= deadline {
-                    return Ok((Err(reason), None, None));
+                    return Ok((Err(reason.into()), None, None));
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
@@ -1899,18 +2040,82 @@ fn execute_step<D: AppDriver>(
     visual_paths: &VisualPaths,
     captures: &mut std::collections::HashMap<String, String>,
     api_corpus: &mut Vec<(String, String)>,
-    mut recorder: Option<&mut flowproof_driver::RunRecorder>,
-) -> Result<(Result<(), String>, StepMatch), ReplayError> {
+    recorder: Option<&mut flowproof_driver::RunRecorder>,
+) -> Result<(Verdict, StepMatch), ReplayError> {
     for condition in &step.sync.pre {
         if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
             return Ok((
-                Err(format!("precondition failed: {reason}")),
+                Err(format!("precondition failed: {reason}").into()),
                 StepMatch::default(),
             ));
         }
     }
 
     let (outcome, matched) = match &step.action {
+        // Visual assertions are judged with the actions, which have the
+        // filesystem context they need.
+        Action::Assert(assertion) if !matches!(assertion, Assertion::VisualDiff { .. }) => {
+            let mut kept = Vec::new();
+            let (outcome, rung) = check_assertion(
+                driver,
+                assertion,
+                &step.selectors,
+                captures,
+                api_corpus,
+                &mut kept,
+            )?;
+            captures.extend(kept);
+            let primary = match assertion {
+                Assertion::ElementState { selector_ref, .. } => selector_ref.unwrap_or(0),
+                _ => 0,
+            };
+            (
+                outcome,
+                StepMatch::from_rung(&step.selectors, rung, primary),
+            )
+        }
+        _ => {
+            let (outcome, matched) = act(driver, step, base_url, visual_paths, captures, recorder)?;
+            (outcome.map_err(Failure::from), matched)
+        }
+    };
+    // Safety net: an UNDECLARED dialog was dismissed by the flow-wide
+    // listener and fails this step deterministically, rather than hanging on
+    // an unanswered dialog. A step that already failed keeps its own reason.
+    if outcome.is_ok() {
+        if let Some(unexpected) = driver.take_unexpected_dialog() {
+            return Ok((
+                Err(format!("an unexpected dialog opened: {}", unexpected.message).into()),
+                matched,
+            ));
+        }
+    }
+    if outcome.is_err() {
+        return Ok((outcome, matched));
+    }
+
+    for condition in &step.sync.post {
+        if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
+            return Ok((
+                Err(format!("postcondition failed: {reason}").into()),
+                matched,
+            ));
+        }
+    }
+    Ok((Ok(()), matched))
+}
+
+/// Perform a step's action. Only assertions compare a reading against the
+/// flow, so an action's failure is a reason alone.
+fn act<D: AppDriver>(
+    driver: &mut D,
+    step: &Step,
+    base_url: &str,
+    visual_paths: &VisualPaths,
+    captures: &mut std::collections::HashMap<String, String>,
+    mut recorder: Option<&mut flowproof_driver::RunRecorder>,
+) -> Result<(Result<(), String>, StepMatch), ReplayError> {
+    Ok(match &step.action {
         // Mid-flow navigation: `url` (relative paths resolve against the
         // flow's origin; `${VAR}` refs resolve now) or `reload: true`.
         Action::AgentRun(params) => (
@@ -2337,55 +2542,11 @@ fn execute_step<D: AppDriver>(
             check_visual(driver, baseline, *threshold, masks, visual_paths)?,
             StepMatch::default(),
         ),
-        Action::Assert(assertion) => {
-            let mut kept = Vec::new();
-            let (outcome, rung) = check_assertion(
-                driver,
-                assertion,
-                &step.selectors,
-                captures,
-                api_corpus,
-                &mut kept,
-            )?;
-            captures.extend(kept);
-            let primary = match assertion {
-                Assertion::ElementState { selector_ref, .. } => selector_ref.unwrap_or(0),
-                _ => 0,
-            };
-            (
-                outcome,
-                StepMatch::from_rung(&step.selectors, rung, primary),
-            )
-        }
         other => (
             Err(format!("action not supported in this slice: {other:?}")),
             StepMatch::default(),
         ),
-    };
-    // Safety net: an UNDECLARED dialog was dismissed by the flow-wide
-    // listener and fails this step deterministically, rather than hanging on
-    // an unanswered dialog. A step that already failed keeps its own reason.
-    if outcome.is_ok() {
-        if let Some(unexpected) = driver.take_unexpected_dialog() {
-            return Ok((
-                Err(format!(
-                    "an unexpected dialog opened: {}",
-                    unexpected.message
-                )),
-                matched,
-            ));
-        }
-    }
-    if outcome.is_err() {
-        return Ok((outcome, matched));
-    }
-
-    for condition in &step.sync.post {
-        if let Err(reason) = wait_for_condition(driver, condition, &step.selectors)? {
-            return Ok((Err(format!("postcondition failed: {reason}")), matched));
-        }
-    }
-    Ok((Ok(()), matched))
+    })
 }
 
 /// The first of `step.guards` that does not hold, by its condition text: an
@@ -2986,14 +3147,17 @@ pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
         }
         let mut result = match outcome {
             Ok(()) => StepResult::passed(step, started_ms, duration_ms),
-            Err(reason) => {
+            Err(failure) => {
                 failed = true;
                 // First failure: capture what the app actually looked like
                 // (DOM + console into the run bundle) and suggest nearest
                 // text anchors — the questions a human asks first, answered
                 // without a re-run. Best-effort by design.
-                let reason = augment_failure(driver, step, &run_dir, reason);
-                StepResult::failed(step, started_ms, duration_ms, reason)
+                let failure = augment_failure(driver, step, &run_dir, failure);
+                let mut result = StepResult::failed(step, started_ms, duration_ms, failure.reason);
+                result.expected = failure.expected;
+                result.found = failure.found;
+                result
             }
         };
         result.selector_tier = matched.tier.map(|t| t.name().to_string());
@@ -3028,6 +3192,8 @@ pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
                 intent: "assert_no_secret_leak".to_string(),
                 status: StepStatus::Failed,
                 detail: Some(message),
+                expected: None,
+                found: None,
                 started_ms: started.elapsed().as_millis() as u64,
                 duration_ms: 0,
                 selector_tier: None,
@@ -3058,6 +3224,8 @@ pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
                         intent: format!("export {export_name}"),
                         status: StepStatus::Failed,
                         detail: Some(why),
+                        expected: None,
+                        found: None,
                         started_ms: started.elapsed().as_millis() as u64,
                         duration_ms: 0,
                         selector_tier: None,
