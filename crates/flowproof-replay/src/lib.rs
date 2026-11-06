@@ -1675,7 +1675,7 @@ fn check_assertion<D: AppDriver>(
                     None => None,
                 },
             };
-            let (verdict, rung, _) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
+            let (verdict, rung, _) = poll_oob(&probe, oob_timeout(expect.as_ref()), assertion)?;
             Ok((verdict, rung))
         }
         Assertion::Api {
@@ -1780,7 +1780,8 @@ fn check_assertion<D: AppDriver>(
                     None => None,
                 },
             };
-            let (mut verdict, rung, body) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
+            let (mut verdict, rung, body) =
+                poll_oob(&probe, oob_timeout(expect.as_ref()), assertion)?;
             if verdict.is_ok() {
                 let capture = flowproof_driver::oob::capture_paths(expect.as_ref());
                 match flowproof_driver::oob::capture_json(
@@ -1832,7 +1833,7 @@ fn check_assertion<D: AppDriver>(
                     .and_then(|v| v.as_str())
                     .map(str::to_string),
             };
-            let (verdict, rung, _) = poll_oob(&probe, oob_timeout(expect.as_ref()))?;
+            let (verdict, rung, _) = poll_oob(&probe, oob_timeout(expect.as_ref()), assertion)?;
             Ok((verdict, rung))
         }
         other => Ok((
@@ -1856,18 +1857,26 @@ fn oob_timeout(expect: Option<&serde_json::Value>) -> u64 {
 type ProbeOutcome = (Verdict, Option<usize>, Option<String>);
 
 /// Auto-wait an out-of-band probe like any other assertion.
+///
+/// The probe only ever holds resolved values, so its reasons quote them: an
+/// `equals` it compared, a needle it looked for, a url a transport error
+/// names. Each reason is masked against `assertion` - the trace's own form,
+/// which holds every `${VAR}` the probe resolved - before it leaves here.
 fn poll_oob(
     probe: &flowproof_driver::oob::OobProbe,
     timeout_ms: u64,
+    assertion: &Assertion,
 ) -> Result<ProbeOutcome, ReplayError> {
     // A mutation is sent ONCE: re-firing it to wait for convergence would
     // deliver the write again on every tick (see oob::is_retryable).
     let retryable = flowproof_driver::oob::is_retryable(probe);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let templates = serde_json::to_string(assertion).unwrap_or_default();
     loop {
         match flowproof_driver::oob::check(probe)? {
             Ok(body) => return Ok((Ok(()), None, body)),
             Err(reason) => {
+                let reason = flowproof_trace::secret::mask_values(&reason, &[&templates]);
                 if !retryable {
                     let reason = format!("{reason} ({})", flowproof_driver::oob::RETRY_HINT);
                     return Ok((Err(reason.into()), None, None));
