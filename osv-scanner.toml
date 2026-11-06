@@ -1,0 +1,18 @@
+# OSV-Scanner exceptions (.github/workflows/osv-scanner.yml).
+#
+# Every entry needs a reason and, where a fix is expected, an ignoreUntil date
+# so it is looked at again. A new finding is fixed, not added here, unless
+# there is no fix to take.
+
+# --- Unmaintained, no upstream fix, transitive. Carried over from deny.toml,
+#     where they were reviewed when the audit gate went in (A6). ---
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2027-05-01
+reason = "paste unmaintained (no fix available); transitive via imageproc/nalgebra; revisit whether a maintained replacement is reachable"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0192"
+ignoreUntil = 2027-05-01
+reason = "ttf-parser unmaintained (no fix available); transitive via pdf-extract/lopdf; revisit upstream"
