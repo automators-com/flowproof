@@ -433,6 +433,8 @@ mod tests {
                 intent: "do a thing".into(),
                 status: StepStatus::Passed,
                 detail: None,
+                expected: None,
+                found: None,
                 started_ms: 0,
                 duration_ms: 1,
                 selector_tier: None,

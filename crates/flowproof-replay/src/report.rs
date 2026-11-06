@@ -24,6 +24,15 @@ pub struct StepResult {
     pub status: StepStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// On a failed step, the two sides of `detail` on their own: what the
+    /// flow expected and what the app showed instead, so a reader can set
+    /// them side by side without parsing the sentence. Masked exactly as
+    /// `detail` is: a `${VAR}` stays a reference and its reading `<masked>`.
+    /// Absent when the failure is not a comparison.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub found: Option<String>,
     /// Offset from run start — with `duration_ms` this is the step→time
     /// mapping into the run's recording.
     #[serde(default)]
@@ -47,6 +56,8 @@ impl StepResult {
             intent: step.intent.clone(),
             status: StepStatus::Passed,
             detail: None,
+            expected: None,
+            found: None,
             started_ms,
             duration_ms,
             selector_tier: None,
@@ -60,6 +71,8 @@ impl StepResult {
             intent: step.intent.clone(),
             status: StepStatus::Failed,
             detail: Some(reason),
+            expected: None,
+            found: None,
             started_ms,
             duration_ms,
             selector_tier: None,
@@ -73,6 +86,8 @@ impl StepResult {
             intent: step.intent.clone(),
             status: StepStatus::Skipped,
             detail: Some("previous step failed".into()),
+            expected: None,
+            found: None,
             started_ms: 0,
             duration_ms: 0,
             selector_tier: None,
@@ -88,6 +103,8 @@ impl StepResult {
             intent: intent.to_string(),
             status: StepStatus::Skipped,
             detail: Some(reason.to_string()),
+            expected: None,
+            found: None,
             started_ms: 0,
             duration_ms: 0,
             selector_tier: None,
@@ -152,6 +169,8 @@ impl RunReport {
                 intent: "flow errored".into(),
                 status: StepStatus::Errored,
                 detail: Some(message.to_string()),
+                expected: None,
+                found: None,
                 started_ms: 0,
                 duration_ms: 0,
                 selector_tier: None,
@@ -187,6 +206,8 @@ impl RunReport {
                     StepStatus::Failed
                 },
                 detail: failure.map(str::to_string),
+                expected: None,
+                found: None,
                 started_ms: 0,
                 duration_ms,
                 selector_tier: None,
@@ -530,6 +551,8 @@ mod tests {
                     intent: "Type 5 & smile".into(),
                     status: StepStatus::Passed,
                     detail: None,
+                    expected: None,
+                    found: None,
                     started_ms: 0,
                     duration_ms: 10,
                     selector_tier: Some("native_id".into()),
@@ -540,6 +563,8 @@ mod tests {
                     intent: "display shows 8".into(),
                     status: StepStatus::Failed,
                     detail: Some("expected element text '8', got '<blank>'".into()),
+                    expected: None,
+                    found: None,
                     started_ms: 10,
                     duration_ms: 5,
                     selector_tier: None,
@@ -575,6 +600,8 @@ mod tests {
                 intent: "Type hello".into(),
                 status: StepStatus::Passed,
                 detail: None,
+                expected: None,
+                found: None,
                 started_ms: 0,
                 duration_ms: 20,
                 selector_tier: Some("structural".into()),
@@ -667,6 +694,8 @@ mod tests {
             intent: "step".into(),
             status: StepStatus::Passed,
             detail: None,
+            expected: None,
+            found: None,
             started_ms: 0,
             duration_ms: 1,
             selector_tier: None,
@@ -730,6 +759,8 @@ mod tests {
                     intent: "Type 5".into(),
                     status: StepStatus::Passed,
                     detail: None,
+                    expected: None,
+                    found: None,
                     started_ms: 0,
                     duration_ms: 30,
                     selector_tier: None,
@@ -740,6 +771,8 @@ mod tests {
                     intent: "display shows <8>".into(),
                     status: StepStatus::Failed,
                     detail: Some("expected '8', got '<blank>'".into()),
+                    expected: None,
+                    found: None,
                     started_ms: 30,
                     duration_ms: 25,
                     selector_tier: None,
@@ -750,6 +783,8 @@ mod tests {
                     intent: "Press equals".into(),
                     status: StepStatus::Skipped,
                     detail: Some("previous step failed".into()),
+                    expected: None,
+                    found: None,
                     started_ms: 0,
                     duration_ms: 0,
                     selector_tier: None,

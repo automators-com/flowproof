@@ -65,6 +65,11 @@ class StepResult:
     status: str
     duration_ms: int
     detail: str | None = None
+    expected: str | None = None
+    """On a failed check, what the flow expected - the first side of
+    ``detail``, masked the same way."""
+    found: str | None = None
+    """On a failed check, what the app showed instead."""
     started_ms: int = 0
     """Offset from run start — with duration_ms, the step→time mapping into
     the run's recording."""
@@ -127,6 +132,8 @@ def _parse_run_result(payload: str) -> RunResult:
                 status=s["status"],
                 duration_ms=s["duration_ms"],
                 detail=s.get("detail"),
+                expected=s.get("expected"),
+                found=s.get("found"),
                 started_ms=s.get("started_ms", 0),
                 selector_tier=s.get("selector_tier"),
                 degraded=s.get("degraded", False),
