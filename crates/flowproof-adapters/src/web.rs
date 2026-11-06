@@ -5738,12 +5738,15 @@ impl AppDriver for WebAppDriver {
                   const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim()
                     : (el.getAttribute('aria-label') || el.getAttribute('placeholder')
                       || el.getAttribute('title') || '');
+                  // As on the page itself: a password's value is never
+                  // reported, because the scene travels to a model.
+                  const password = el.tagName === 'INPUT' && el.type === 'password';
                   entries.push({
                     target: token,
                     css,
                     tag: el.tagName.toLowerCase(),
                     actionable,
-                    text: el === frameDoc.body ? undefined
+                    text: el === frameDoc.body || password ? undefined
                       : (el.value || el.textContent || '').trim().slice(0, 80) || undefined,
                     label: label || (el === frameDoc.body ? 'scroll surface' : undefined),
                     scope: { frame, inner: innerTarget },
