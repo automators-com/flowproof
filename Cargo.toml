@@ -74,8 +74,12 @@ lto = "thin"
 # read timeout drops to 1ms and responses are awaited by blocking on the channel
 # rather than polling it. A git patch is viable because nothing in this
 # workspace goes to crates.io — publish.yml builds the wheel and the npm package
-# from here. The rev lives on an orphan branch of this repository, carries no
-# flowproof code, and is not built by CI. Drop all of this once the upstream fix
-# lands; the real fix is splitting the transport's read and write halves.
+# from here. The rev lives on an orphan branch of this repository
+# (vendor/headless-chrome-1.0.22-no-codegen), carries no flowproof code, and is
+# not built by CI. On top of the transport fix, it commits the generated Chrome
+# DevTools Protocol bindings instead of generating them at build time with
+# auto_generate_cdp, which is GPL-3.0-or-later; nothing GPL is in the build.
+# Drop all of this once the upstream fix lands; the real fix is splitting the
+# transport's read and write halves.
 [patch.crates-io]
-headless_chrome = { git = "https://github.com/automators-com/flowproof", rev = "eed7bc1873f6f2beac147d66f0df7a946329e6fe" }
+headless_chrome = { git = "https://github.com/automators-com/flowproof", rev = "5fbf5deb22771a5d2ad22cda6ea8738e77981444" }
