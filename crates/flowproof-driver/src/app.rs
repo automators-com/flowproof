@@ -1431,11 +1431,14 @@ pub fn text_contains(actual: &str, expected: &str) -> bool {
 /// word only. OCR drops a trailing comma and turns `!` into `l`, so
 /// `Hello, Ada` must be found in `Hello Adal`; but punctuation INSIDE a
 /// word is kept, so `$10.00` never matches `$1000` and `1,000` never
-/// matches `1000`. Widening-only, and only for the positive form - the
-/// callers never consult it for `does not show`, an equality or a count.
+/// matches `1000`. A slashed zero, which terminal fonts draw and OCR reads
+/// as `Ø`, is zero on both sides: `ZB30` holds against `ZB3Ø`. Widening-only,
+/// and only for the positive form - the callers never consult it for `does
+/// not show`, an equality or a count.
 pub fn ocr_text_contains(actual: &str, expected: &str) -> bool {
     fn loose(text: &str) -> String {
         normalize_visible_text(text)
+            .replace('Ø', "0")
             .split_whitespace()
             .map(|word| word.trim_matches(|c: char| c.is_ascii_punctuation()))
             .filter(|word| !word.is_empty())
@@ -3131,6 +3134,16 @@ mod visible_text_tests {
 
     /// Plan 15, finding 6: the greeter page showed `Hello, Ada!` and real
     /// OCR read it back as `Hello Adal`.
+    #[test]
+    fn ocr_text_reads_a_slashed_zero_as_zero() {
+        use super::ocr_text_contains;
+        assert!(ocr_text_contains("1 ØØ1 BEL ZB3Ø", "001 BEL ZB30"));
+        assert!(
+            !ocr_text_contains("ZBO0", "ZB00"),
+            "a letter O is still not a zero"
+        );
+    }
+
     #[test]
     fn ocr_text_forgives_punctuation_at_word_edges() {
         use super::ocr_text_contains;

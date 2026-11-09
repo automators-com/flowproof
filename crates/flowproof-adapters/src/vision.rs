@@ -23,7 +23,7 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector};
 use image::RgbaImage;
 
-use crate::vision_grid::{locate_cell, reading, GridCell};
+use crate::vision_grid::{header_lines, locate_cell, reading, GridCell};
 
 mod start;
 
@@ -268,6 +268,27 @@ fn vision_log(message: impl FnOnce() -> String) {
 /// Wheel notches to bring an action point that fell past the window's edge
 /// back inside it - a couple of lines, not a page.
 const EDGE_NUDGE_NOTCHES: i32 = 2;
+
+/// Glyphs OCR reads as one another, folded to one: on Calculator's keypad
+/// `×` read as `X`, and its thin `1` as `I`, and an author writes what the
+/// key shows. Terminal fonts draw zero with a slash, and OCR reads it as
+/// `Ø`: a table's `001` read `ØØ1` through a JPEG-compressed Citrix frame.
+/// Not `O` as `0`: OCR misread Calculator's `9` as `O`, and that fold would
+/// have clicked the wrong key. Not `|` as `1`: a toolbar's separators stand
+/// alone. Case kept: the italic `x` of `x²` beside the keypad is a letter,
+/// and matched `×` when the fold lowercased.
+pub(crate) fn look_alike(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '×' | 'X' | '*' => 'X',
+            '−' | '–' | '—' => '-',
+            '÷' => '/',
+            'I' | 'l' => '1',
+            'Ø' => '0',
+            other => other,
+        })
+        .collect()
+}
 
 /// `AppDriver` over frames + OCR + injected input.
 pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
@@ -588,7 +609,17 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                     .collect();
                 format!("[{selector}] OCR lines: {read:?}")
             });
-            let cell = locate_cell(&lines, query, frame.width());
+            // Each header line naming the column is read again on its own:
+            // a column's edges come from its neighbours' headers, and a
+            // screen-wide reading drops short ones. What that finds is
+            // added after the screen's reading, which keeps precedence.
+            let mut with_headers = lines.clone();
+            for (top, height) in header_lines(&lines, &query.column) {
+                let pad = height as i32 / 4;
+                let band = (0, top - pad, frame.width(), height + 2 * pad as u32);
+                with_headers.extend(self.read_region(&frame, band));
+            }
+            let cell = locate_cell(&with_headers, query, frame.width());
             vision_log(|| format!("[{selector}] cell: {cell:?}"));
             let hit = cell.as_ref().map(|c| OcrHit {
                 text: self.read_cell(&frame, c),
@@ -879,24 +910,9 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 .join(" ")
                 .to_lowercase()
         };
-        // Last, glyphs OCR reads as one another, for whole lines and words
-        // only: on Calculator's keypad `×` read as `X`, and its thin `1` as
-        // `I`, and an author writes what the key shows. Not `O` as `0`: OCR
-        // misread Calculator's `9` as `O`, and that fold would have clicked
-        // the wrong key. Not `|` as `1`: a toolbar's separators stand alone.
-        // Case kept: the italic `x` of `x²` beside the keypad is a letter,
-        // and matched `×` when the fold lowercased.
-        let look_alike = |text: &str| {
-            text.chars()
-                .map(|c| match c {
-                    '×' | 'X' | '*' => 'X',
-                    '−' | '–' | '—' => '-',
-                    '÷' => '/',
-                    'I' | 'l' => '1',
-                    other => other,
-                })
-                .collect::<String>()
-        };
+        // Last, glyphs OCR reads as one another (see `look_alike`), for
+        // whole lines and words only.
+        let look_alike = |text: &str| look_alike(text);
         // Also ignoring spaces, for an anchor of three characters or more:
         // OCR breaks a name after its underscores, and File Explorer's
         // `ssis_pc_data` read as `ssis_ pc_ data`.
@@ -1285,18 +1301,14 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         self.screen.window_origin()
     }
 
-    /// A cell's text, read from its box alone: a value read on its own is
-    /// not merged with its neighbour, as `ZB30` was read `2ZB30` beside the
-    /// column to its left. The box is enlarged three times and set in a
-    /// margin of its own background - a text detector needs clear space
-    /// around text - and read by the same engines, with the same rules, as
-    /// the screen (see `vision_grid::reading`). Reading it with ocrs alone,
-    /// the closer engine for keys, read `ZB30` as `Z830` where Windows OCR
-    /// had it right. The screen-size words stand in when the box reads
-    /// nothing.
-    fn read_cell(&mut self, frame: &RgbaImage, cell: &GridCell) -> String {
+    /// One rectangle of the frame read on its own, by the same engines as
+    /// the screen, its boxes back in window coordinates. It is enlarged
+    /// three times and set in a margin of its own background: a text
+    /// detector needs clear space around text. A read that fails is
+    /// nothing read.
+    fn read_region(&mut self, frame: &RgbaImage, rect: PixelRect) -> Vec<OcrLine> {
         const SCALE: u32 = 3;
-        let (x, y, w, h) = cell.rect;
+        let (x, y, w, h) = rect;
         let (fw, fh) = frame.dimensions();
         let x0 = x.clamp(0, fw as i32 - 1) as u32;
         let y0 = y.clamp(0, fh as i32 - 1) as u32;
@@ -1316,12 +1328,47 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             background,
         );
         image::imageops::overlay(&mut canvas, &big, margin as i64, margin as i64);
-        let read = self.ocr.recognize(&canvas).map(|lines| reading(&lines));
-        vision_log(|| format!("cell crop {:?} read as {read:?}", (x0, y0, w, h)));
-        match read {
-            Ok(text) if !text.is_empty() => text,
-            _ => cell.words.join(" "),
+        let back = |(cx, cy, cw, ch): PixelRect| -> PixelRect {
+            let scale = SCALE as i32;
+            (
+                x0 as i32 + (cx - margin as i32) / scale,
+                y0 as i32 + (cy - margin as i32) / scale,
+                (cw / SCALE).max(1),
+                (ch / SCALE).max(1),
+            )
+        };
+        let lines = self.ocr.recognize(&canvas).unwrap_or_default();
+        lines
+            .into_iter()
+            .map(|l| OcrLine {
+                rect: back(l.rect),
+                words: l
+                    .words
+                    .into_iter()
+                    .map(|w| OcrWord {
+                        rect: back(w.rect),
+                        text: w.text,
+                    })
+                    .collect(),
+                text: l.text,
+            })
+            .collect()
+    }
+
+    /// A cell's text. The screen-size reading comes first: it is the
+    /// reading that found the cell's header and row, and on a Windows
+    /// runner it read every cell right where a crop read with ocrs alone
+    /// gave `Z830` for `ZB30`, and an enlarged crop through JPEG gave `83`.
+    /// The cell's own box is read only when that reading put nothing in it
+    /// - a short value a screen-wide pass can drop.
+    fn read_cell(&mut self, frame: &RgbaImage, cell: &GridCell) -> String {
+        if !cell.text.is_empty() {
+            return cell.text.clone();
         }
+        let lines = self.read_region(frame, cell.rect);
+        let text = reading(&lines);
+        vision_log(|| format!("cell {:?} read on its own as {text:?}", cell.rect));
+        text
     }
 
     /// Empty the cell the cursor was just put on. A terminal field has no

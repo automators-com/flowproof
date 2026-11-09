@@ -7,17 +7,37 @@
 
 use flowproof_driver::{CellQuery, PixelRect};
 
-use crate::vision::{OcrLine, OcrWord};
+use crate::vision::{look_alike, OcrLine, OcrWord};
 
 /// A located cell: its box on screen, where its first character sits, how
-/// many characters wide it is, and the words the screen-size reading put
-/// inside it.
+/// many characters wide it is, the words the screen-size reading put inside
+/// it, and their text spaced as the grid spaces them.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GridCell {
     pub rect: PixelRect,
     pub start: (i32, i32),
     pub chars: usize,
     pub words: Vec<String>,
+    pub text: String,
+}
+
+/// Words joined as the grid places them: on a monospaced screen a gap of
+/// less than half a character is no space at all. Windows OCR splits a
+/// value at its punctuation, and `104,00` read as the words `104,` `00`
+/// would otherwise come back as `104, 00`.
+fn spaced(words: &[&OcrWord], pitch: f32) -> String {
+    let mut text = String::new();
+    let mut end: Option<i32> = None;
+    for w in words {
+        if let Some(end) = end {
+            if (w.rect.0 - end) as f32 >= pitch / 2.0 {
+                text.push(' ');
+            }
+        }
+        text.push_str(&w.text);
+        end = Some(w.rect.0 + w.rect.2 as i32);
+    }
+    text
 }
 
 /// The height of one line of text on this screen: the median word box. On
@@ -98,14 +118,48 @@ fn middle(band: &[(usize, OcrWord)]) -> i32 {
     sum / band.len().max(1) as i32
 }
 
-fn same(a: &str, b: &str) -> bool {
-    let norm = |s: &str| {
+/// A header or anchor read as written, under the tiers vision matches any
+/// anchor by: case and spacing ignored, then punctuation at word edges,
+/// then glyphs OCR reads as one another (`ØØ1` for `001`; see `look_alike`).
+fn same(read: &str, wanted: &str) -> bool {
+    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let loose = |s: &str| {
         s.split_whitespace()
+            .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()))
+            .filter(|w| !w.is_empty())
             .collect::<Vec<_>>()
             .join(" ")
-            .to_lowercase()
     };
-    norm(a) == norm(b)
+    let tiers: [&dyn Fn(&str) -> String; 3] = [
+        &|s| words(s).to_lowercase(),
+        &|s| loose(s).to_lowercase(),
+        &|s| look_alike(&loose(s)).to_lowercase(),
+    ];
+    tiers.iter().any(|tier| {
+        let wanted = tier(wanted);
+        !wanted.is_empty() && tier(read) == wanted
+    })
+}
+
+/// The lines that name `column`, as `(top, height)`: the header lines a
+/// cell under that column can belong to. Read again on their own, closer,
+/// they give back the short headers a screen-wide reading drops - Windows
+/// OCR missed a two-letter `LS`, and the column to its left ran on to the
+/// next header it did read.
+pub(crate) fn header_lines(lines: &[OcrLine], column: &str) -> Vec<(i32, u32)> {
+    bands(lines)
+        .iter()
+        .filter(|band| find_run(band, column).is_some())
+        .map(|band| {
+            let top = band.iter().map(|w| w.rect.1).min().unwrap_or(0);
+            let bottom = band
+                .iter()
+                .map(|w| w.rect.1 + w.rect.3 as i32)
+                .max()
+                .unwrap_or(top);
+            (top, (bottom - top).max(1) as u32)
+        })
+        .collect()
 }
 
 /// The run of words in `band` reading `label`, as word indexes.
@@ -187,6 +241,7 @@ pub(crate) fn locate_cell(
             start: (first.rect.0 + half, top + height as i32 / 2),
             chars: ((right - left) as f32 / pitch).round().max(1.0) as usize,
             words: words.iter().map(|w| w.text.clone()).collect(),
+            text: spaced(&words, pitch),
         });
     }
     None
@@ -282,14 +337,44 @@ mod tests {
     }
 
     #[test]
+    fn a_value_split_at_its_punctuation_reads_as_one() {
+        let mut lines = vec![at(1, 1, "K  LNr RB"), at(2, 1, "2  003")];
+        // `104,00` read as two words with no gap between them.
+        lines.push(at(2, 8, "104,"));
+        lines.push(at(2, 12, "00"));
+        let cell = locate_cell(&lines, &query("RB", "003"), 800).expect("cell");
+        assert_eq!(cell.text, "104,00");
+        let multi =
+            locate_cell(&screen(), &query("Hinweis auf Entscheidung", "002"), 800).expect("cell");
+        assert_eq!(multi.text, "Kürzung nach GOZ §5", "real spaces stay");
+    }
+
+    #[test]
+    fn a_slashed_zero_still_finds_its_row() {
+        let lines = vec![at(1, 1, "K  LNr Tarif"), at(2, 1, "1  ØØ1 ZB3Ø")];
+        let cell = locate_cell(&lines, &query("Tarif", "001"), 800).expect("cell");
+        assert_eq!(
+            cell.words,
+            vec!["ZB3Ø"],
+            "the screen's own spelling is kept"
+        );
+    }
+
+    #[test]
+    fn header_lines_are_the_lines_naming_the_column() {
+        assert_eq!(header_lines(&screen(), "K"), vec![(20, 16), (100, 16)]);
+        assert_eq!(header_lines(&screen(), "Tarif"), vec![(20, 16)]);
+    }
+
+    #[test]
     fn an_empty_cell_is_still_a_cell() {
         let lines = vec![at(1, 1, "K  LNr Tarif"), at(2, 1, "1  001")];
         let cell = locate_cell(&lines, &query("Tarif", "001"), 800).expect("cell");
         assert!(cell.words.is_empty());
     }
 
-    /// Reads the whole screen, and nothing in a crop: the cell must fall
-    /// back to the words the screen-size reading put inside it.
+    /// Reads the whole screen, and nothing in any region read on its own:
+    /// the cell's text is the screen-size reading's.
     struct BlankCrops(Vec<OcrLine>);
 
     impl crate::vision::OcrEngine for BlankCrops {
@@ -297,10 +382,10 @@ mod tests {
             &mut self,
             frame: &image::RgbaImage,
         ) -> Result<Vec<OcrLine>, flowproof_driver::DriverError> {
-            Ok(if frame.width() < 400 {
-                Vec::new()
-            } else {
+            Ok(if frame.dimensions() == (800, 200) {
                 self.0.clone()
+            } else {
+                Vec::new()
             })
         }
     }
