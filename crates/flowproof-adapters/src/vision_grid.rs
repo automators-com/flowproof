@@ -7,7 +7,7 @@
 
 use flowproof_driver::{CellQuery, PixelRect};
 
-use crate::vision::{union, OcrLine, OcrWord};
+use crate::vision::{OcrLine, OcrWord};
 
 /// A located cell: its box on screen, where its first character sits, how
 /// many characters wide it is, and the words the screen-size reading put
@@ -20,30 +20,81 @@ pub(crate) struct GridCell {
     pub words: Vec<String>,
 }
 
-/// Words on one screen line: their vertical centres are within half a
-/// glyph height of each other. OCR splits a wide table row into several
-/// lines at its gaps, so rows are rebuilt from words, not lines.
-fn bands(lines: &[OcrLine]) -> Vec<Vec<OcrWord>> {
-    let mut words: Vec<OcrWord> = lines.iter().flat_map(|l| l.words.clone()).collect();
-    words.sort_by_key(|w| (w.rect.1 + w.rect.3 as i32 / 2, w.rect.0));
-    let mut bands: Vec<Vec<OcrWord>> = Vec::new();
-    for word in words {
-        let centre = word.rect.1 + word.rect.3 as i32 / 2;
-        match bands.last_mut() {
-            Some(band) if (centre - middle(band)).abs() <= word.rect.3 as i32 / 2 => {
-                band.push(word)
-            }
-            _ => bands.push(vec![word]),
-        }
-    }
-    for band in &mut bands {
-        band.sort_by_key(|w| w.rect.0);
-    }
-    bands
+/// The height of one line of text on this screen: the median word box. On
+/// a character grid every line is one glyph tall, so nearly every box
+/// agrees.
+fn text_height(words: &[OcrWord]) -> f32 {
+    let mut heights: Vec<u32> = words.iter().map(|w| w.rect.3).collect();
+    heights.sort_unstable();
+    heights.get(heights.len() / 2).copied().unwrap_or(1).max(1) as f32
 }
 
-fn middle(band: &[OcrWord]) -> i32 {
-    let sum: i32 = band.iter().map(|w| w.rect.1 + w.rect.3 as i32 / 2).sum();
+/// Two words covering more than half of the narrower one's width.
+fn overlap(a: &OcrWord, b: &OcrWord) -> bool {
+    let left = a.rect.0.max(b.rect.0);
+    let right = (a.rect.0 + a.rect.2 as i32).min(b.rect.0 + b.rect.2 as i32);
+    (right - left) * 2 > a.rect.2.min(b.rect.2) as i32
+}
+
+fn centre_y(w: &OcrWord) -> i32 {
+    w.rect.1 + w.rect.3 as i32 / 2
+}
+
+/// Words on one screen line, left to right: their vertical centres are
+/// within half a glyph height of each other. OCR splits a wide table row
+/// into several lines at its gaps, so rows are rebuilt from words.
+///
+/// Only boxes one line of text tall take part. Vision merges two engines'
+/// readings, and on a terminal screen ocrs read noise as boxes several rows
+/// tall (`D??` 99px high among 12px words): taken as part of a row, one
+/// stretched the row over five lines, the click landed a row low and the
+/// crop read six rows of noise. Where both engines read a word in the same
+/// place, the first reading stands, as it does in the merge itself.
+fn bands(lines: &[OcrLine]) -> Vec<Vec<OcrWord>> {
+    let all: Vec<OcrWord> = lines.iter().flat_map(|l| l.words.clone()).collect();
+    let line = text_height(&all);
+    let mut words: Vec<(usize, OcrWord)> = all
+        .into_iter()
+        .enumerate()
+        .filter(|(_, w)| (0.6 * line..=1.6 * line).contains(&(w.rect.3 as f32)))
+        .collect();
+    words.sort_by_key(|(_, w)| (centre_y(w), w.rect.0));
+    let mut bands: Vec<Vec<(usize, OcrWord)>> = Vec::new();
+    for (i, word) in words {
+        let centre = centre_y(&word);
+        match bands.last_mut() {
+            Some(band) if (centre - middle(band)).abs() <= (line / 2.0) as i32 => {
+                band.push((i, word))
+            }
+            _ => bands.push(vec![(i, word)]),
+        }
+    }
+    bands
+        .into_iter()
+        .map(|mut band| {
+            band.sort_by_key(|(i, _)| *i);
+            let mut kept: Vec<OcrWord> = Vec::new();
+            for (_, word) in band {
+                if !kept.iter().any(|k| overlap(k, &word)) {
+                    kept.push(word);
+                }
+            }
+            kept.sort_by_key(|w| w.rect.0);
+            kept
+        })
+        .collect()
+}
+
+/// The text of a reading under the same rules a row is built by: boxes one
+/// line tall, the first reading of a word where two engines overlap, lines
+/// top to bottom and words left to right.
+pub(crate) fn reading(lines: &[OcrLine]) -> String {
+    let words: Vec<String> = bands(lines).into_iter().flatten().map(|w| w.text).collect();
+    words.join(" ")
+}
+
+fn middle(band: &[(usize, OcrWord)]) -> i32 {
+    let sum: i32 = band.iter().map(|(_, w)| centre_y(w)).sum();
     sum / band.len().max(1) as i32
 }
 
@@ -79,7 +130,10 @@ pub(crate) fn locate_cell(
     let bands = bands(lines);
     for (r, row) in bands.iter().enumerate() {
         let holds = |label: &str| find_run(row, label).is_some();
-        if !holds(&query.anchor) || !query.also.iter().all(|a| holds(a)) {
+        let Some((a, b)) = find_run(row, &query.anchor) else {
+            continue;
+        };
+        if !query.also.iter().all(|also| holds(also)) {
             continue;
         }
         let Some((header, (i, j))) = bands[..r]
@@ -112,8 +166,11 @@ pub(crate) fn locate_cell(
             },
             |next| next.rect.0 - half,
         );
-        let top = row.iter().map(|w| w.rect.1).min().unwrap_or(0);
-        let height = row.iter().map(|w| w.rect.3).max().unwrap_or(1);
+        // The row is where its anchor is: the words that identify it, not
+        // everything else that happened to land on the line.
+        let anchor = &row[a..=b];
+        let top = anchor.iter().map(|w| w.rect.1).min().unwrap_or(0);
+        let height = anchor.iter().map(|w| w.rect.3).max().unwrap_or(1);
         let pad = height as i32 / 4;
         let rect = (
             left,
@@ -125,7 +182,6 @@ pub(crate) fn locate_cell(
             .iter()
             .filter(|w| (left..right).contains(&(w.rect.0 + w.rect.2 as i32 / 2)))
             .collect();
-        let rect = words.iter().fold(rect, |acc, w| union(acc, w.rect));
         return Some(GridCell {
             rect,
             start: (first.rect.0 + half, top + height as i32 / 2),
@@ -301,6 +357,59 @@ mod tests {
             "no select-all on a terminal"
         );
         assert_eq!(screen.typed, vec!["ZB99"]);
+    }
+
+    /// What a Windows runner read: Windows OCR's tight boxes, then ocrs's
+    /// reading of the same frame merged after them - noise in boxes several
+    /// rows tall, and its own misreading of a value Windows read right.
+    #[test]
+    fn noise_boxes_neither_move_the_row_nor_enter_the_cell() {
+        let mut lines = screen();
+        lines.push(OcrLine {
+            text: "D??".into(),
+            rect: (120, 30, 90, 75),
+            words: vec![OcrWord {
+                text: "D??".into(),
+                rect: (120, 30, 90, 75),
+            }],
+        });
+        lines.push(OcrLine {
+            text: "Z830".into(),
+            rect: (130, 41, 40, 16),
+            words: vec![OcrWord {
+                text: "Z830".into(),
+                rect: (130, 41, 40, 16),
+            }],
+        });
+        let cell = locate_cell(&lines, &query("Tarif", "001"), 800).expect("cell");
+        assert_eq!(
+            cell.words,
+            vec!["ZB30"],
+            "the first reading of a word stands"
+        );
+        assert_eq!(
+            cell.start.1, 48,
+            "on the anchor's own line, not a row below"
+        );
+        assert_eq!(cell.rect.3, 24, "one line of text tall");
+    }
+
+    #[test]
+    fn a_crop_reading_keeps_the_first_engine_and_drops_noise() {
+        let word = |text: &str, rect| OcrLine {
+            text: text.into(),
+            rect,
+            words: vec![OcrWord {
+                text: text.into(),
+                rect,
+            }],
+        };
+        let lines = vec![
+            word("ZB30", (30, 30, 120, 48)),
+            word("Z830", (32, 31, 118, 46)),
+            word("I LO L R", (0, 0, 200, 140)),
+        ];
+        assert_eq!(reading(&lines), "ZB30");
     }
 
     #[test]

@@ -23,7 +23,7 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector};
 use image::RgbaImage;
 
-use crate::vision_grid::{locate_cell, GridCell};
+use crate::vision_grid::{locate_cell, reading, GridCell};
 
 mod start;
 
@@ -1285,23 +1285,40 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         self.screen.window_origin()
     }
 
-    /// A cell's text, read from its box alone at three times the size: a
-    /// short value read on its own is not merged with its neighbour, as
-    /// `ZB30` beside `1` was read `2ZB30`. The screen-size words stand in
-    /// when the closer reading finds nothing.
+    /// A cell's text, read from its box alone: a value read on its own is
+    /// not merged with its neighbour, as `ZB30` was read `2ZB30` beside the
+    /// column to its left. The box is enlarged three times and set in a
+    /// margin of its own background - a text detector needs clear space
+    /// around text - and read by the same engines, with the same rules, as
+    /// the screen (see `vision_grid::reading`). Reading it with ocrs alone,
+    /// the closer engine for keys, read `ZB30` as `Z830` where Windows OCR
+    /// had it right. The screen-size words stand in when the box reads
+    /// nothing.
     fn read_cell(&mut self, frame: &RgbaImage, cell: &GridCell) -> String {
+        const SCALE: u32 = 3;
         let (x, y, w, h) = cell.rect;
         let (fw, fh) = frame.dimensions();
         let x0 = x.clamp(0, fw as i32 - 1) as u32;
         let y0 = y.clamp(0, fh as i32 - 1) as u32;
         let (w, h) = (w.min(fw - x0).max(1), h.min(fh - y0).max(1));
         let crop = image::imageops::crop_imm(frame, x0, y0, w, h).to_image();
-        let closer = self.ocr.recognize_closer(&crop, 3).map(|lines| {
-            let texts: Vec<&str> = lines.iter().map(|l| l.text.trim()).collect();
-            texts.join(" ").trim().to_string()
-        });
-        vision_log(|| format!("cell crop {:?} read closer as {closer:?}", (x0, y0, w, h)));
-        match closer {
+        let big = image::imageops::resize(
+            &crop,
+            w * SCALE,
+            h * SCALE,
+            image::imageops::FilterType::CatmullRom,
+        );
+        let margin = h * SCALE / 2;
+        let background = *big.get_pixel(0, 0);
+        let mut canvas = RgbaImage::from_pixel(
+            big.width() + 2 * margin,
+            big.height() + 2 * margin,
+            background,
+        );
+        image::imageops::overlay(&mut canvas, &big, margin as i64, margin as i64);
+        let read = self.ocr.recognize(&canvas).map(|lines| reading(&lines));
+        vision_log(|| format!("cell crop {:?} read as {read:?}", (x0, y0, w, h)));
+        match read {
             Ok(text) if !text.is_empty() => text,
             _ => cell.words.join(" "),
         }
