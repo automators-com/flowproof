@@ -3,7 +3,7 @@
 #
 #   powershell -File evals/terminal-grid/run.ps1 [-Engine <flowproof.exe>]
 #       [-Replica <flowproof-terminal-replica.exe>] [-Out <dir>] [-Only <flow>]
-#       [-Profile clean|citrix-light|citrix-heavy]
+#       [-Profile clean|citrix|stress]
 #
 # No model is needed: flows are recorded with --author rules. A flow passes
 # only when the engine says it passed AND the replica's own state matches
@@ -31,10 +31,15 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 # Over Citrix there is no accessibility tree; make the local window match.
 $env:FLOWPROOF_VISION_UIA = "0"
 
+# The client session's screenshot showed text sent sharp - no compression
+# blocks - through two or three nested Citrix sessions, each of which may
+# rescale. `citrix` is that: a 90% rescale and back, softening every edge.
+# `stress` is far harsher than anything seen (JPEG 35, 80% rescale, 16-bit
+# colour); it shows where OCR gives out, not what a client sees.
 $profiles = [ordered]@{
-    "clean"        = @()
-    "citrix-light" = @("--jpeg", "70")
-    "citrix-heavy" = @("--jpeg", "35", "--scale", "0.8", "--bits", "16")
+    "clean"  = @()
+    "citrix" = @("--scale", "0.9")
+    "stress" = @("--jpeg", "35", "--scale", "0.8", "--bits", "16")
 }
 
 function Start-Replica([string[]]$extra, [string]$state) {

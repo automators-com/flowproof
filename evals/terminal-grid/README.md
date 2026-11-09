@@ -50,8 +50,14 @@ powershell -File evals/terminal-grid/run.ps1 -Engine <flowproof.exe> [-Only <flo
 
 Each flow in `flows/` is recorded with `--author rules --no-repair` (no
 model is called) and then replayed, against a fresh replica each time,
-under three profiles: `clean`, `citrix-light` (JPEG 70) and `citrix-heavy`
-(JPEG 35, scale 0.8, 16-bit colour). A run passes only when the engine
+under three profiles. `clean` is the screen as drawn. `citrix` matches the
+client session's screenshot: text arrived sharp, with no compression
+blocks, through nested sessions that may each rescale, so the frame is
+shrunk to 90% and stretched back. `stress` (JPEG 35, scale 0.8, 16-bit
+colour) is far harsher than anything seen, kept to show where OCR gives
+out rather than what a client sees. The layout draws the client's font, a
+thin serif Courier whose zero has no slash, at the size measured from the
+screenshot. A run passes only when the engine
 reports a pass **and** the replica's state holds what `<flow>.expect.json`
 says. A value typed into the wrong field fails even if every assertion
 was green.
@@ -70,8 +76,11 @@ accessibility tree, so the local window must not have one either.
 
 ## Baseline: flowproof 0.23.18, 9 November 2026
 
-Windows 11, English profile (Windows OCR languages: en-GB, en-US only).
-Record and replay agreed on every row except where noted.
+The first measurement, on a laptop, before the profiles and font above:
+Consolas at 18px, and two JPEG profiles (`citrix-light` at quality 70,
+`citrix-heavy` as `stress` now) later found harsher than the client's
+screen. Windows 11, English profile (Windows OCR languages: en-GB, en-US
+only). Record and replay agreed on every row except where noted.
 
 | Flow | clean | citrix-light | citrix-heavy | Why |
 |---|---|---|---|---|

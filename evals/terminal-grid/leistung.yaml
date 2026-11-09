@@ -5,8 +5,11 @@
 title: "Leistung (replica) - [Prozess: LEA VNR: 206659640]"
 rows: 27
 cols: 80
-font: Consolas
-font_px: 18
+# The client's emulator draws a thin serif Courier-style font whose zero has
+# no slash; measured from the session screenshot, about 9px per character
+# and 19px per line on a 1920px-wide screen.
+font: Courier New
+font_px: 15
 message_row: 25
 message: "1/01 :Dokument nicht vollständig"
 keys:
