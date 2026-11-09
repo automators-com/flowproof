@@ -613,13 +613,41 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             // a column's edges come from its neighbours' headers, and a
             // screen-wide reading drops short ones. What that finds is
             // added after the screen's reading, which keeps precedence.
+            let headers = header_lines(&lines, &query.column);
             let mut with_headers = lines.clone();
-            for (top, height) in header_lines(&lines, &query.column) {
-                let pad = height as i32 / 4;
+            for (top, height) in &headers {
+                let pad = *height as i32 / 4;
                 let band = (0, top - pad, frame.width(), height + 2 * pad as u32);
                 with_headers.extend(self.read_region(&frame, band));
             }
-            let cell = locate_cell(&with_headers, query, frame.width());
+            let mut cell = locate_cell(&with_headers, query, frame.width());
+            // Not found: look closer, as any anchor is looked for again
+            // closer when the screen-size reading misses it. Through a
+            // JPEG-compressed frame Windows OCR read the row anchor `001`
+            // as `eel`. The table below each header line - the whole frame
+            // when no header was read - is read again enlarged.
+            if cell.is_none() {
+                let below: Vec<PixelRect> = if headers.is_empty() {
+                    vec![(0, 0, frame.width(), frame.height())]
+                } else {
+                    headers
+                        .iter()
+                        .map(|(top, _)| {
+                            let top = (*top).max(0);
+                            (
+                                0,
+                                top,
+                                frame.width(),
+                                frame.height().saturating_sub(top as u32),
+                            )
+                        })
+                        .collect()
+                };
+                for region in below {
+                    with_headers.extend(self.read_region(&frame, region));
+                }
+                cell = locate_cell(&with_headers, query, frame.width());
+            }
             vision_log(|| format!("[{selector}] cell: {cell:?}"));
             let hit = cell.as_ref().map(|c| OcrHit {
                 text: self.read_cell(&frame, c),

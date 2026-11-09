@@ -21,23 +21,41 @@ pub(crate) struct GridCell {
     pub text: String,
 }
 
-/// Words joined as the grid places them: on a monospaced screen a gap of
-/// less than half a character is no space at all. Windows OCR splits a
-/// value at its punctuation, and `104,00` read as the words `104,` `00`
-/// would otherwise come back as `104, 00`.
-fn spaced(words: &[&OcrWord], pitch: f32) -> String {
+/// Words joined as the grid places them. Each word starts in a character
+/// column, `(x - origin) / pitch` rounded, and a word holds as many columns
+/// as it has characters; two words are a space apart when columns lie
+/// between them, and run together when none do, as OCR text collapses runs
+/// of spaces to one. Windows OCR splits a value at its punctuation, and the
+/// narrow ink of a comma leaves more than half a character of white before
+/// the next glyph, so measuring the gap read `104,00` as `104, 00`; the
+/// columns say there is none.
+fn spaced(words: &[&OcrWord], pitch: f32, origin: i32) -> String {
     let mut text = String::new();
-    let mut end: Option<i32> = None;
+    let mut next: Option<i32> = None;
     for w in words {
-        if let Some(end) = end {
-            if (w.rect.0 - end) as f32 >= pitch / 2.0 {
-                text.push(' ');
-            }
+        let column = ((w.rect.0 - origin) as f32 / pitch).round() as i32;
+        if let Some(next) = next {
+            let gap = (column - next).clamp(0, 1);
+            text.push_str(&" ".repeat(gap as usize));
         }
         text.push_str(&w.text);
-        end = Some(w.rect.0 + w.rect.2 as i32);
+        next = Some(column + w.text.chars().count() as i32);
     }
     text
+}
+
+/// The screen's character pitch: the median width per character of the
+/// words of five or more characters. A short word's box is its ink, a
+/// glyph's side bearing short of its cells, which on a two-letter header
+/// is a tenth of the pitch.
+fn grid_pitch(words: &[OcrWord]) -> Option<f32> {
+    let mut pitches: Vec<f32> = words
+        .iter()
+        .filter(|w| w.text.chars().count() >= 5 && !w.text.contains(' '))
+        .map(|w| w.rect.2 as f32 / w.text.chars().count() as f32)
+        .collect();
+    pitches.sort_by(f32::total_cmp);
+    pitches.get(pitches.len() / 2).copied()
 }
 
 /// The height of one line of text on this screen: the median word box. On
@@ -182,6 +200,7 @@ pub(crate) fn locate_cell(
     frame_width: u32,
 ) -> Option<GridCell> {
     let bands = bands(lines);
+    let screen_pitch = grid_pitch(&bands.concat());
     for (r, row) in bands.iter().enumerate() {
         let holds = |label: &str| find_run(row, label).is_some();
         let Some((a, b)) = find_run(row, &query.anchor) else {
@@ -197,10 +216,12 @@ pub(crate) fn locate_cell(
         else {
             continue;
         };
-        // A monospaced screen: one header word's width over its length is
-        // the character pitch.
+        // A monospaced screen: the pitch from its long words, or from the
+        // header itself when the screen has none.
         let first = &header[i];
-        let pitch = (first.rect.2 as f32 / first.text.chars().count().max(1) as f32).max(1.0);
+        let pitch = screen_pitch
+            .unwrap_or(first.rect.2 as f32 / first.text.chars().count().max(1) as f32)
+            .max(1.0);
         let half = (pitch / 2.0).round() as i32;
         // The column runs from its header to the next header on the line.
         // The last one has no next header: it ends where its header or the
@@ -241,7 +262,7 @@ pub(crate) fn locate_cell(
             start: (first.rect.0 + half, top + height as i32 / 2),
             chars: ((right - left) as f32 / pitch).round().max(1.0) as usize,
             words: words.iter().map(|w| w.text.clone()).collect(),
-            text: spaced(&words, pitch),
+            text: spaced(&words, pitch, first.rect.0),
         });
     }
     None
@@ -339,9 +360,20 @@ mod tests {
     #[test]
     fn a_value_split_at_its_punctuation_reads_as_one() {
         let mut lines = vec![at(1, 1, "K  LNr RB"), at(2, 1, "2  003")];
-        // `104,00` read as two words with no gap between them.
-        lines.push(at(2, 8, "104,"));
-        lines.push(at(2, 12, "00"));
+        // `104,00` read as two words, as Windows OCR read it: the comma's
+        // narrow ink ends the first box 8px short of the next glyph, more
+        // than half a character, though no column lies between them.
+        for (text, rect) in [("104,", (80, 40, 33, 16)), ("00", (121, 40, 18, 16))] {
+            let word = OcrWord {
+                text: text.into(),
+                rect,
+            };
+            lines.push(OcrLine {
+                text: text.into(),
+                rect,
+                words: vec![word],
+            });
+        }
         let cell = locate_cell(&lines, &query("RB", "003"), 800).expect("cell");
         assert_eq!(cell.text, "104,00");
         let multi =
