@@ -154,6 +154,30 @@ fallback. The icon's label is excluded from OCR surface-text assertions.
 `Press Meta` (also `Press Win` or `Press Windows`) sends the Windows key;
 whether Citrix forwards that key depends on the client configuration.
 
+## Tables on a host terminal screen
+
+A mainframe or AS/400 screen over Citrix is a fixed character grid: a
+table is a header line with a row of input fields per screen line. OCR
+reads such a table as column blocks, so a value loses its row. Address a
+cell the way a person reads it, by its column header and a value in its
+row:
+
+```yaml
+- assert: the "Tarif" column of the row containing "002" shows BE70
+- Type ZB99 into the "Tarif" column of the row containing "001"
+- Remember the "LS" column of the row containing "001" as ls
+```
+
+The column runs from its header to the next header on the line, and the
+nearest header line above the row is its table's, so two tables sharing
+a column name each resolve their own rows. Only the cell's box is read,
+at three times the size. Typing clicks the cell's first character and
+presses Delete once per character the cell holds before typing: a
+terminal field has no select-all and typing overwrites, so this empties
+it on every emulator. Move between fields with `Press Tab` as a person
+would; the rows a table does not show are reached with its paging key
+(`Press F8` on many screens).
+
 ## Know the current limits
 
 Vision flows are Windows-only. They do not yet support visual-template matching

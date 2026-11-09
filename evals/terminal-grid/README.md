@@ -70,6 +70,8 @@ was green.
 | `write-cell` | Tab to a table cell, erase it and type over it |
 | `add-row` | Enter, wait out the locked keyboard, fill the new line |
 | `paging` | PF8 to the rows the table does not show |
+| `cell-read` | read cells by column header and a value in their row |
+| `cell-write` | fill cells by column and row, emptying each first |
 
 `FLOWPROOF_VISION_UIA=0` is set for every run: over Citrix there is no
 accessibility tree, so the local window must not have one either.
