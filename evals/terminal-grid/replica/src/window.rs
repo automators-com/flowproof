@@ -28,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect,
     GetMessageW, LoadCursorW, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage,
     CW_USEDEFAULT, IDC_ARROW, MSG, WINDOW_EX_STYLE, WM_CHAR, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_PAINT, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    WM_LBUTTONDOWN, WM_PAINT, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 use crate::screen::{Key, Screen};
@@ -171,6 +171,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             None => DefWindowProcW(hwnd, msg, wp, lp),
         },
+        WM_LBUTTONDOWN => {
+            let (x, y) = (
+                (lp.0 & 0xFFFF) as i16 as i32,
+                (lp.0 >> 16 & 0xFFFF) as i16 as i32,
+            );
+            with_app(|app| {
+                let (row, col) = ((y - MARGIN) / app.cell.1, (x - MARGIN) / app.cell.0);
+                if x >= MARGIN && y >= MARGIN {
+                    app.screen.click(row as usize, col as usize, Instant::now());
+                    app.save();
+                }
+            });
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            LRESULT(0)
+        }
         WM_CHAR => {
             if let Some(ch) = char::from_u32(wp.0 as u32).filter(|c| !c.is_control()) {
                 handle(hwnd, Key::Char(ch));

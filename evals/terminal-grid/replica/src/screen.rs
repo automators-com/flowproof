@@ -281,6 +281,14 @@ impl Screen {
         }
     }
 
+    /// A click puts the cursor on the clicked cell, as terminal emulators do.
+    /// Like a key, it is dropped while the host is busy.
+    pub fn click(&mut self, row: usize, col: usize, now: Instant) {
+        if !self.busy(now) && row < self.layout.rows && col < self.layout.cols {
+            self.cursor = (row, col);
+        }
+    }
+
     fn slot_at(&self, (row, col): (usize, usize)) -> Option<usize> {
         self.slots
             .iter()
@@ -622,6 +630,14 @@ keys: { enter_delay_ms: 100 }
         );
         s.press(Key::Char('7'), now + Duration::from_millis(150));
         assert_eq!(cell(&s, 3, "K"), "7");
+    }
+
+    #[test]
+    fn a_click_moves_the_cursor_and_typing_follows_it() {
+        let mut s = screen();
+        s.click(4, 5, Instant::now());
+        typed(&mut s, &[Key::Char('Q')]);
+        assert_eq!(cell(&s, 1, "Tarif"), "BQ70");
     }
 
     #[test]

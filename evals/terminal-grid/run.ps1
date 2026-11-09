@@ -84,7 +84,7 @@ foreach ($name in $profiles.Keys) {
         $replayed = $false; $replayMisses = @("not recorded")
         if ($recorded) {
             $p = Start-Replica $profiles[$name] "$base.run.json"
-            & $Engine run $trace *> "$base.run.log"
+            & $Engine run $spec.FullName --trace $trace *> "$base.run.log"
             $replayed = $LASTEXITCODE -eq 0
             Stop-Process $p -ErrorAction SilentlyContinue
             $replayMisses = Compare-State "$base.run.json" $expect
