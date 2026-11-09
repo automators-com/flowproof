@@ -61,7 +61,7 @@ fn grid_pitch(words: &[OcrWord]) -> Option<f32> {
 /// The height of one line of text on this screen: the median word box. On
 /// a character grid every line is one glyph tall, so nearly every box
 /// agrees.
-fn text_height(words: &[OcrWord]) -> f32 {
+pub(crate) fn text_height(words: &[OcrWord]) -> f32 {
     let mut heights: Vec<u32> = words.iter().map(|w| w.rect.3).collect();
     heights.sort_unstable();
     heights.get(heights.len() / 2).copied().unwrap_or(1).max(1) as f32

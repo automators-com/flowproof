@@ -23,7 +23,7 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector};
 use image::RgbaImage;
 
-use crate::vision_grid::{header_lines, locate_cell, reading, GridCell};
+use crate::vision_grid::{header_lines, locate_cell, reading, text_height, GridCell};
 
 mod start;
 
@@ -142,7 +142,29 @@ pub trait OcrEngine {
     ) -> Result<Vec<OcrLine>, DriverError> {
         self.recognize(frame)
     }
+
+    /// The frame read `scale` times its size because its text is too small
+    /// to read well (see [`MIN_TEXT_PX`]) - words, where
+    /// [`Self::recognize_closer`] is tuned for lone glyphs such as keys.
+    /// Coordinates are the frame's own.
+    fn recognize_small_text(
+        &mut self,
+        frame: &RgbaImage,
+        scale: u32,
+    ) -> Result<Vec<OcrLine>, DriverError> {
+        self.recognize_closer(frame, scale)
+    }
 }
+
+/// Text below this height, the median OCR box in pixels, is read again
+/// enlarged as well. Measured on a host terminal through Citrix: Windows
+/// OCR read 12px-tall Consolas right, and 9px-tall Courier - the client's
+/// font - as `ZE30` for `ZB30`, `Eingahe` for `Eingabe`, `o, oo` for
+/// `0,00`, its one-pixel strokes too thin to tell `B` from `E`.
+const MIN_TEXT_PX: f32 = 12.0;
+
+/// The text height small text is enlarged to: three times for 9px text.
+const SMALL_TEXT_TARGET_PX: f32 = 24.0;
 
 /// A control the window's accessibility tree names, window-relative.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,10 +460,36 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let lines = if scale > 1 {
             self.ocr.recognize_closer(frame, scale)?
         } else {
-            self.ocr.recognize(frame)?
+            let first = self.ocr.recognize(frame)?;
+            self.with_small_text_enlarged(frame, first)
         };
         self.read_cache[slot] = Some((frame.clone(), lines.clone()));
         Ok(lines)
+    }
+
+    /// A screen whose text is too small to read well is read again,
+    /// enlarged until its text is [`SMALL_TEXT_TARGET_PX`] tall, and that
+    /// reading leads: OCR engines lose the strokes that tell letters apart
+    /// on small text. The screen-size reading follows it (see
+    /// `merge_readings`), so whatever it read stays readable - a widening,
+    /// never a loss. Screens of ordinary text are read once, as before.
+    fn with_small_text_enlarged(&mut self, frame: &RgbaImage, first: Vec<OcrLine>) -> Vec<OcrLine> {
+        let words: Vec<OcrWord> = first.iter().flat_map(|l| l.words.clone()).collect();
+        if words.is_empty() {
+            return first;
+        }
+        let height = text_height(&words);
+        if height >= MIN_TEXT_PX {
+            return first;
+        }
+        let scale = (SMALL_TEXT_TARGET_PX / height).ceil().clamp(2.0, 3.0) as u32;
+        match self.ocr.recognize_small_text(frame, scale) {
+            Ok(enlarged) if !enlarged.is_empty() => {
+                vision_log(|| format!("text {height}px tall: also read at {scale}x"));
+                merge_readings(enlarged, first)
+            }
+            _ => first,
+        }
     }
 
     fn lines(&mut self) -> Result<Vec<OcrLine>, DriverError> {
@@ -2721,6 +2769,21 @@ impl OcrEngine for AutoOcr {
             Self::Ocrs(e) => e.recognize_closer(frame, scale),
         }
     }
+
+    /// Words go to Windows OCR, the engine that reads them: ocrs is the
+    /// closer engine for lone glyphs, and on a terminal screen it read
+    /// noise in boxes several rows tall.
+    fn recognize_small_text(
+        &mut self,
+        frame: &RgbaImage,
+        scale: u32,
+    ) -> Result<Vec<OcrLine>, DriverError> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(e) | Self::Both(e, _) => e.recognize_closer(frame, scale),
+            Self::Ocrs(e) => e.recognize_closer(frame, scale),
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -3377,6 +3440,39 @@ mod tests {
             vec![2, 3],
             "the same frame is not read again, and a hit needs no closer look"
         );
+    }
+
+    /// A terminal's 9px Courier read `ZE30` at screen size and `ZB30`
+    /// enlarged. Small text is read again, three times the size, and that
+    /// reading leads; the screen-size reading stays behind it.
+    #[test]
+    fn small_text_is_read_enlarged_and_that_reading_leads() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            CloserStill {
+                first: vec![OcrLine::new("ZE30", (40, 100, 36, 9))],
+                at_3x: vec![OcrLine::new("ZB30", (40, 100, 36, 9))],
+                scales: Vec::new(),
+            },
+        );
+        let text = d.surface_text().expect("reads");
+        let (enlarged, first) = (text.find("ZB30"), text.find("ZE30"));
+        assert!(enlarged.is_some() && enlarged < first, "{text}");
+        assert_eq!(d.ocr.scales, vec![3]);
+    }
+
+    #[test]
+    fn ordinary_text_is_read_once() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            CloserStill {
+                first: vec![OcrLine::new("ZB30", (40, 100, 48, 12))],
+                at_3x: Vec::new(),
+                scales: Vec::new(),
+            },
+        );
+        assert!(d.surface_text().expect("reads").contains("ZB30"));
+        assert!(d.ocr.scales.is_empty(), "12px text needs no second look");
     }
 
     /// OCR read Calculator's Keep-on-top icon, beside "Standard", as `5`,
