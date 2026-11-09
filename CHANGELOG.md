@@ -6,6 +6,48 @@ together).
 
 ## Unreleased
 
+## 0.23.33
+
+- **A failed database or API check no longer prints the secret it compared.**
+  The UI checks keep a `${VAR}` as a reference in their failure messages, but
+  SQL and API checks resolve their values before the probe runs, and the probe
+  quoted what it held: `expected first column 'hunter2'`, `response body does
+  not contain '<token>'`, a header's expected value, a url in a transport error.
+  That text reached the terminal, `result.json`, and anything that shows a run.
+  Their failure reasons are now masked against the step's own references, while
+  recording and on every replay, so the message shows `${VAR}` where the value
+  was.
+
+- **A password typed inside an embedded frame no longer reaches the AI
+  provider.** While recording, the engine describes the screen to the model, and
+  it already left out the text of password fields on the page itself. Fields
+  inside an iframe were described by a separate pass that kept every field's
+  value, so a password typed into a framed login form was sent to the AI
+  provider along with the rest of the screen. Password fields inside frames are
+  now left out the same way, and an end-to-end test (`framed_scene_e2e`) keeps
+  them out.
+
+- **`pip install flowproof[mcp]` no longer accepts an `mcp` with known security
+  advisories.** The extra asked for `mcp>=1.2`, so an install could resolve to a
+  release whose server accepted bearer tokens issued for a different resource
+  server, or whose HTTP client carried custom headers across a cross-origin
+  redirect. It now asks for `mcp>=1.30,<2`. 1.30.0 fixes those, and the cap
+  keeps a future 2.x, which the SDK has not been tested against, from arriving
+  unannounced.
+
+- **tokio updated for RUSTSEC-2026-0386.** `AsyncFd::new` and related
+  constructors could violate I/O safety. The engine moves from tokio 1.53.0 to
+  1.54.1, a semver-compatible release with the fix. Found by the new OSV-Scanner
+  check (#793).
+
+- **No GPL code in the build any more.** headless_chrome, which flowproof uses
+  to drive the user's installed Chrome for web flows, generated its Chrome
+  DevTools Protocol bindings at build time with auto_generate_cdp, a
+  GPL-3.0-or-later tool. The patched copy flowproof builds from now commits
+  those bindings instead: the same code, generated once from the same protocol
+  files. auto_generate_cdp and six crates only it used are gone from the
+  dependency tree, and the new cargo-deny licence check keeps GPL out.
+
 ## 0.23.32
 
 - **A failed step now says what was expected and what was found, as data.**
