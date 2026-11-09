@@ -19,6 +19,11 @@ on:
         description: "Exact released version to validate, e.g. 0.22.0 (no 'latest', no 'v' prefix)"
         required: true
 
+# Expressions are expanded into a script's text before the shell runs, so a
+# crafted input could become commands; read it from the environment instead.
+env:
+  VERSION: ${{ inputs.version }}
+
 jobs:
   # Fail in seconds if the input isn't real release evidence: "latest" or a
   # malformed string would silently test a moving target instead of the
@@ -29,7 +34,7 @@ jobs:
     steps:
       - name: reject anything that isn't X.Y.Z
         run: |
-          version='${{ inputs.version }}'
+          version="$VERSION"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::'$version' is not an exact semantic version (e.g. 0.22.0) - 'latest' is not release evidence"
             exit 1
@@ -80,7 +85,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          version='${{ inputs.version }}'
+          version="$VERSION"
           attempts=3
           delay=20
           for i in $(seq 1 "$attempts"); do
@@ -102,7 +107,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version='${{ inputs.version }}'
+          version="$VERSION"
           out="$(flowproof --version)"
           echo "$out"
           [ "$out" = "flowproof $version" ] || { echo "::error::--version printed '$out', expected 'flowproof $version'"; exit 1; }
@@ -175,16 +180,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: report result
+        env:
+          PYPI_RESULT: ${{ needs.pypi.result }}
+          NPM_RESULT: ${{ needs.npm.result }}
         run: |
-          echo "## Release smoke test — flowproof ${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Release smoke test — flowproof $VERSION" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Channel | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| PyPI (ubuntu/windows/macos-arm64) | ${{ needs.pypi.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| npm (ubuntu/windows/macos-arm64) | ${{ needs.npm.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PyPI (ubuntu/windows/macos-arm64) | $PYPI_RESULT |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| npm (ubuntu/windows/macos-arm64) | $NPM_RESULT |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Per-OS/per-arch detail is in each matrix job above; this table is the go/no-go rollup for the release checklist." >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ needs.pypi.result }}" != "success" ] || [ "${{ needs.npm.result }}" != "success" ]; then
-            echo "::error::release smoke test failed for flowproof ${{ inputs.version }} - do not announce this release"
+          if [ "$PYPI_RESULT" != "success" ] || [ "$NPM_RESULT" != "success" ]; then
+            echo "::error::release smoke test failed for flowproof $VERSION - do not announce this release"
             exit 1
           fi
