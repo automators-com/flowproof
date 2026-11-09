@@ -91,9 +91,9 @@ What this says:
   `Z`/`7`, `.`/`,` and punctuation are misread, columns separate from
   their rows (OCR groups the table into column blocks), and a short value
   next to another (`ZB30` beside `1`) merges into `2ZB30`.
-- **Assertions can pass on the wrong field.** `page shows` matches
-  anywhere on screen, so a value in the wrong place reads as success. Only
-  the replica's state caught `A129`.
+- **Assertions can pass on a wrong value.** `page shows` matches anywhere
+  on screen and leniently, so `page shows A12` held while the field read
+  `A129`. Only the replica's state caught it.
 - **A label fill does not clear a terminal field.** Writes need Erase EOF
   before typing.
 - **German needs a German OCR language.** Windows OCR follows the user's
