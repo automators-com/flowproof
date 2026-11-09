@@ -1,0 +1,50 @@
+name: vision evals
+
+# The terminal-grid evals (evals/terminal-grid): a host-terminal replica
+# driven by app: vision under clean and Citrix-like frames, each run scored
+# against the replica's own state. Windows runners have a live desktop -
+# the Notepad E2E in ci.yml drives one - so real input and capture work.
+#
+# Results are a measurement, not a gate: the baseline has known failures,
+# so the job passes when the evals RAN, and the table is in the run summary
+# and the artifact.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "evals/terminal-grid/**"
+      - "crates/flowproof-adapters/src/vision*.rs"
+      - ".github/workflows/vision-evals.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  terminal-grid:
+    name: terminal-grid evals (windows)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Release: OCR in a debug build is slow enough to time out waits.
+      - name: build the engine and the replica
+        run: cargo build --release -p flowproof-cli -p flowproof-terminal-replica
+      - name: run the evals
+        shell: powershell
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "terminal-grid"
+          powershell -NoProfile -ExecutionPolicy Bypass -File evals/terminal-grid/run.ps1 `
+            -Engine "$PWD\target\release\flowproof.exe" -Out $out
+          $rows = Import-Csv (Join-Path $out "results.csv")
+          $summary = @("## Terminal-grid evals", "", "| Profile | Flow | Record | Replay | Mismatch |", "|---|---|---|---|---|")
+          $summary += $rows | ForEach-Object { "| $($_.Profile) | $($_.Flow) | $($_.Record) | $($_.Replay) | $($_.Mismatch -replace '\|', '/') |" }
+          $summary | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+      - name: keep logs, traces and states
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal-grid-evals
+          path: ${{ runner.temp }}/terminal-grid
+          if-no-files-found: warn
