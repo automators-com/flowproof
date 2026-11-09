@@ -31,6 +31,18 @@ jobs:
       # Release: OCR in a debug build is slow enough to time out waits.
       - name: build the engine and the replica
         run: cargo build --release -p flowproof-cli -p flowproof-terminal-replica
+      # The engine's own model download (ocrs-models on S3) now answers 403
+      # to everyone, so a fresh runner has no OCR. Fetch the same models
+      # from their author's Hugging Face repository instead.
+      - name: fetch the ocrs models
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "ocrs"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $hf = "https://huggingface.co/robertknight/ocrs/resolve/main"
+          Invoke-WebRequest "$hf/text-detection-ssfbcj81.rten" -OutFile (Join-Path $dir "text-detection.rten")
+          Invoke-WebRequest "$hf/text-rec-checkpoint-s52qdbqt.rten" -OutFile (Join-Path $dir "text-recognition.rten")
+          "FLOWPROOF_OCR_MODEL_DIR=$dir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
       - name: run the evals
         shell: powershell
         run: |
