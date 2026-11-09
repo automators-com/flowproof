@@ -23,6 +23,8 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector};
 use image::RgbaImage;
 
+use crate::vision_grid::{locate_cell, GridCell};
+
 mod start;
 
 /// One recognized word, in window-relative pixel coordinates. Words are
@@ -284,6 +286,9 @@ pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     /// look, and one step looks several times.
     controls_cache: Option<(RgbaImage, Vec<AccessibleControl>)>,
     window_title: Option<String>,
+    /// The last table cell a lookup found (see `vision_grid`): where its
+    /// first character sits and how wide it is, for the action that follows.
+    last_cell: Option<GridCell>,
 }
 
 impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
@@ -296,7 +301,13 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             read_cache: [None, None, None],
             controls_cache: None,
             window_title: None,
+            last_cell: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn screen_for_tests(&self) -> &S {
+        &self.screen
     }
 
     /// How a typed value is recognised on screen: letters and digits only,
@@ -453,6 +464,11 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         self.screen.settle()?;
         let mut hit = self.require(selector)?;
         let mut point = Self::action_point(&hit, selector, default_relation);
+        // A cell is acted on at its first character: a terminal puts the
+        // cursor where the click lands, and typing starts there.
+        if let (Some(_), Some(cell)) = (&selector.cell, &self.last_cell) {
+            point = cell.start;
+        }
         for _ in 0..2 {
             // A control's box is the tree's, already inside the window.
             if hit.control {
@@ -562,6 +578,19 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let frame = self.screen.frame()?;
         self.frame_height = frame.height();
         let lines = self.read(&frame, 1)?;
+        // A table cell on a character grid: found by its header and a value
+        // in its row, then read on its own (see `vision_grid`).
+        if let Some(query) = &selector.cell {
+            let cell = locate_cell(&lines, query, frame.width());
+            let hit = cell.as_ref().map(|c| OcrHit {
+                text: self.read_cell(&frame, c),
+                rect: c.rect,
+                order: (c.rect.1, c.rect.0),
+                control: true,
+            });
+            self.last_cell = cell;
+            return Ok((lines, hit));
+        }
         // The Windows Start logo has no text to read: it is found by its
         // shape on every look, and never by OCR or the tree.
         if selector.name.as_deref().map(str::trim) == Some(start::LABEL) {
@@ -1248,6 +1277,39 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         self.screen.window_origin()
     }
 
+    /// A cell's text, read from its box alone at three times the size: a
+    /// short value read on its own is not merged with its neighbour, as
+    /// `ZB30` beside `1` was read `2ZB30`. The screen-size words stand in
+    /// when the closer reading finds nothing.
+    fn read_cell(&mut self, frame: &RgbaImage, cell: &GridCell) -> String {
+        let (x, y, w, h) = cell.rect;
+        let (fw, fh) = frame.dimensions();
+        let x0 = x.clamp(0, fw as i32 - 1) as u32;
+        let y0 = y.clamp(0, fh as i32 - 1) as u32;
+        let (w, h) = (w.min(fw - x0).max(1), h.min(fh - y0).max(1));
+        let crop = image::imageops::crop_imm(frame, x0, y0, w, h).to_image();
+        let closer = self.ocr.recognize_closer(&crop, 3).map(|lines| {
+            let texts: Vec<&str> = lines.iter().map(|l| l.text.trim()).collect();
+            texts.join(" ").trim().to_string()
+        });
+        match closer {
+            Ok(text) if !text.is_empty() => text,
+            _ => cell.words.join(" "),
+        }
+    }
+
+    /// Empty the cell the cursor was just put on. A terminal field has no
+    /// select-all and typing overwrites, so the old tail would survive:
+    /// Delete at its first character, once per character it holds, empties
+    /// it on every emulator, whatever key each maps to Erase EOF.
+    fn empty_cell(&mut self) -> Result<(), DriverError> {
+        let chars = self.last_cell.as_ref().map_or(0, |c| c.chars);
+        for _ in 0..chars {
+            self.screen.press_key("Delete", &[])?;
+        }
+        Ok(())
+    }
+
     /// The action point for a matched anchor, honoring the selector's
     /// spatial relation (`default_relation` when the trace predates it).
     fn action_point(hit: &OcrHit, selector: &UiaSelector, default_relation: &str) -> (i32, i32) {
@@ -1310,6 +1372,15 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // A field is addressed by its label; the input box sits beside it.
         let (_, (x, y)) = self.locate(selector, "right_of")?;
         self.screen.click(x, y)?;
+        if selector.cell.is_some() {
+            self.empty_cell()?;
+            if text.is_empty() {
+                self.typed_baseline = None;
+                return Ok(());
+            }
+            self.count_before_typing(text)?;
+            return self.screen.type_text(text);
+        }
         // Select what the field holds before the keystrokes land - the
         // trait's fill contract, by the same chord clear_text below already
         // uses. Pixels give no way to read the field first, which is exactly
@@ -1354,6 +1425,9 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         let (_, (x, y)) = self.locate(selector, "right_of")?;
         self.screen.click(x, y)?;
+        if selector.cell.is_some() {
+            return self.empty_cell();
+        }
         self.screen.press_key("a", &[KeyMod::Ctrl])?;
         self.screen.press_key("Delete", &[])
     }

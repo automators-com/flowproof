@@ -298,6 +298,12 @@ impl std::fmt::Display for UiaSelector {
         if let Some(nth) = self.nth {
             parts.push(format!("nth={nth}"));
         }
+        if let Some(cell) = &self.cell {
+            parts.push(format!(
+                "\"{}\" column of the row containing \"{}\"",
+                cell.column, cell.anchor
+            ));
+        }
         if let Some(scope) = &self.scope {
             let inner = scope
                 .inner_css_selector()
