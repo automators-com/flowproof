@@ -61,6 +61,8 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "FLOWPROOF_OCR_MODEL_DIR=$dir" -Encoding ascii
       - name: run the evals
         shell: powershell
+        env:
+          FLOWPROOF_VISION_LOG: "1"
         run: |
           $out = Join-Path $env:RUNNER_TEMP "terminal-grid"
           powershell -NoProfile -ExecutionPolicy Bypass -File evals/terminal-grid/run.ps1 `

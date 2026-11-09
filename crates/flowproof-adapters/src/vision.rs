@@ -581,7 +581,15 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         // A table cell on a character grid: found by its header and a value
         // in its row, then read on its own (see `vision_grid`).
         if let Some(query) = &selector.cell {
+            vision_log(|| {
+                let read: Vec<String> = lines
+                    .iter()
+                    .map(|l| format!("{:?}@{:?}", l.text, l.rect))
+                    .collect();
+                format!("[{selector}] OCR lines: {read:?}")
+            });
             let cell = locate_cell(&lines, query, frame.width());
+            vision_log(|| format!("[{selector}] cell: {cell:?}"));
             let hit = cell.as_ref().map(|c| OcrHit {
                 text: self.read_cell(&frame, c),
                 rect: c.rect,
@@ -1292,6 +1300,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             let texts: Vec<&str> = lines.iter().map(|l| l.text.trim()).collect();
             texts.join(" ").trim().to_string()
         });
+        vision_log(|| format!("cell crop {:?} read closer as {closer:?}", (x0, y0, w, h)));
         match closer {
             Ok(text) if !text.is_empty() => text,
             _ => cell.words.join(" "),
