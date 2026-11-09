@@ -355,6 +355,8 @@ mod tests {
     fn a_session_pointing_anywhere_but_loopback_or_its_own_profile_is_refused() {
         let path = temp_file("tamper");
         let mut remote = session();
+        // The test proves a non-loopback address is refused.
+        // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
         remote.ws_url = "ws://10.0.0.5:9333/devtools/browser/abc".into();
         write(&path, &remote).expect("writes");
         assert!(read(&path).expect_err("refused").contains("127.0.0.1"));
