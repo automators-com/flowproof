@@ -1,0 +1,38 @@
+# Open a new line in the lower table and fill it. Shift+Tab from the first
+# field wraps backwards: 14 fields back is the lower table's second line.
+# Enter is a round trip to the host, so the keyboard is locked until the
+# status line reads "Dialog aktiv" again. A full field skips to the next on
+# its own (K, LNr), so no Tab follows those.
+name: Add a line to the lower table
+app: vision
+window: Leistung (replica)
+steps:
+  - Press Home
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Shift+Tab
+  - Press Enter
+  - Wait until page shows Dialog aktiv
+  - Type 3
+  - Type 003
+  - Type ABZ
+  - Press Tab
+  - Type Neue Zeile
+  - Press Tab
+  - Type 5,00
+  - Press Tab
+  - Type J
+  - Press Tab
+  - Type ZE
+  - assert: page shows Neue Zeile

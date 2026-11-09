@@ -1,0 +1,12 @@
+name: Read the invoice tables
+app: vision
+window: Leistung (replica)
+steps:
+- assert: page shows 104,00
+- assert: page shows 0010
+- assert: page shows 1170
+- assert: page shows Größe der Füllung prüfen
+- assert: page shows Kürzung nach GOZ §5
+- assert: page shows PRÜF
+- assert: page shows 1250,00
+- assert: page shows K089
