@@ -1673,9 +1673,22 @@ pub struct OcrsEngine {
     engine: ocrs::OcrEngine,
 }
 
-const MODEL_BASE_URL: &str = "https://ocrs-models.s3-accelerate.amazonaws.com";
-const DETECTION_MODEL: &str = "text-detection.rten";
-const RECOGNITION_MODEL: &str = "text-recognition.rten";
+/// The ocrs author's Hugging Face repository, pinned to a commit so the
+/// bytes a model name stands for cannot change under a cached install. The
+/// S3 bucket ocrs first published to (`ocrs-models.s3-accelerate`) answers
+/// 403 to everyone, so vision could not start on a machine without a cache
+/// (#806).
+const MODEL_BASE_URL: &str =
+    "https://huggingface.co/robertknight/ocrs/resolve/df0edd170279ab971b53e094c627255a87e1a503";
+/// Each model as `(cached name, published name)`. The cached names are
+/// unchanged, so a cache filled from S3 keeps working.
+const DETECTION_MODEL: (&str, &str) = ("text-detection.rten", "text-detection-ssfbcj81.rten");
+const RECOGNITION_MODEL: (&str, &str) =
+    ("text-recognition.rten", "text-rec-checkpoint-s52qdbqt.rten");
+
+fn model_url(published: &str) -> String {
+    format!("{MODEL_BASE_URL}/{published}")
+}
 
 impl OcrsEngine {
     pub fn new() -> Result<Self, DriverError> {
@@ -1712,14 +1725,17 @@ impl OcrsEngine {
             .join("ocrs"))
     }
 
-    fn ensure_model(dir: &std::path::Path, name: &str) -> Result<std::path::PathBuf, DriverError> {
+    fn ensure_model(
+        dir: &std::path::Path,
+        (name, published): (&str, &str),
+    ) -> Result<std::path::PathBuf, DriverError> {
         let path = dir.join(name);
         if path.exists() {
             return Ok(path);
         }
         std::fs::create_dir_all(dir)
             .map_err(|e| DriverError::Uia(format!("vision: creating {}: {e}", dir.display())))?;
-        let url = format!("{MODEL_BASE_URL}/{name}");
+        let url = model_url(published);
         // One retry: model downloads are ~10 MB and a transient hiccup
         // should not fail a whole recording session.
         let mut bytes = Vec::new();
@@ -1742,7 +1758,8 @@ impl OcrsEngine {
                 Err(e) => {
                     return Err(DriverError::Uia(format!(
                         "vision: downloading OCR model {url}: {e} (first attempt: {last_err}) — \
-                         place {name} in {} manually or set FLOWPROOF_OCR_MODEL_DIR",
+                         download that file yourself and save it as {name} in {}, \
+                         or point FLOWPROOF_OCR_MODEL_DIR at a folder holding it",
                         dir.display()
                     )));
                 }
@@ -2714,6 +2731,32 @@ pub mod fake {
         fn recognize(&mut self, _frame: &RgbaImage) -> Result<Vec<OcrLine>, DriverError> {
             Ok(self.lines.clone())
         }
+    }
+}
+
+#[cfg(test)]
+mod model_source_tests {
+    use super::*;
+
+    #[test]
+    fn models_come_from_a_pinned_commit_not_the_closed_bucket() {
+        let url = model_url(DETECTION_MODEL.1);
+        assert_eq!(
+            url,
+            "https://huggingface.co/robertknight/ocrs/resolve/\
+             df0edd170279ab971b53e094c627255a87e1a503/text-detection-ssfbcj81.rten"
+        );
+        assert!(!model_url(RECOGNITION_MODEL.1).contains("s3"));
+    }
+
+    #[test]
+    fn a_cache_filled_from_the_old_bucket_is_used_without_downloading() {
+        let dir = std::env::temp_dir().join(format!("flowproof-ocrs-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("text-detection.rten"), b"cached").expect("cached model");
+        let path = OcrsEngine::ensure_model(&dir, DETECTION_MODEL).expect("no download needed");
+        assert_eq!(path, dir.join("text-detection.rten"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
