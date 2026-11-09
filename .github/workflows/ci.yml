@@ -50,12 +50,12 @@ jobs:
       - id: filter
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
             echo "engine=true" >> "$GITHUB_OUTPUT"
             echo "not a pull request: running everything"
             exit 0
           fi
-          base=$(git merge-base origin/${{ github.base_ref }} HEAD)
+          base=$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)
           changed=$(git diff --name-only "$base" HEAD)
           echo "$changed"
           # Anything outside docs, specs, and the loop's own bookkeeping can
