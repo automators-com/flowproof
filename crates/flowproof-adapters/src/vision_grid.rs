@@ -95,10 +95,23 @@ pub(crate) fn locate_cell(
         let pitch = (first.rect.2 as f32 / first.text.chars().count().max(1) as f32).max(1.0);
         let half = (pitch / 2.0).round() as i32;
         // The column runs from its header to the next header on the line.
+        // The last one has no next header: it ends where its header or the
+        // row's text does, not at the window's edge - a box that wide would
+        // read whatever else the line holds, and a fill would press Delete
+        // for every character of it.
         let left = first.rect.0 - half;
-        let right = header
-            .get(j + 1)
-            .map_or(frame_width as i32, |next| next.rect.0 - half);
+        let end = |w: &OcrWord| w.rect.0 + w.rect.2 as i32;
+        let right = header.get(j + 1).map_or_else(
+            || {
+                let text_end = row
+                    .iter()
+                    .filter(|w| w.rect.0 + w.rect.2 as i32 / 2 >= left)
+                    .map(end)
+                    .fold(end(&header[j]), i32::max);
+                (text_end + half).min(frame_width as i32)
+            },
+            |next| next.rect.0 - half,
+        );
         let top = row.iter().map(|w| w.rect.1).min().unwrap_or(0);
         let height = row.iter().map(|w| w.rect.3).max().unwrap_or(1);
         let pad = height as i32 / 4;
@@ -201,6 +214,10 @@ mod tests {
             cell.words,
             vec!["N"],
             "the upper table has no Ent column above its 002"
+        );
+        assert_eq!(
+            cell.chars, 4,
+            "the last column ends with its text, not the window"
         );
         let multi =
             locate_cell(&screen(), &query("Hinweis auf Entscheidung", "002"), 800).expect("cell");
