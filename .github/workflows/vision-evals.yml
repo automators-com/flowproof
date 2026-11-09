@@ -42,7 +42,9 @@ jobs:
           $hf = "https://huggingface.co/robertknight/ocrs/resolve/main"
           Invoke-WebRequest "$hf/text-detection-ssfbcj81.rten" -OutFile (Join-Path $dir "text-detection.rten")
           Invoke-WebRequest "$hf/text-rec-checkpoint-s52qdbqt.rten" -OutFile (Join-Path $dir "text-recognition.rten")
-          "FLOWPROOF_OCR_MODEL_DIR=$dir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          # ascii: Windows PowerShell writes utf8 with a byte-order mark,
+          # which would become part of the variable name.
+          Add-Content -Path $env:GITHUB_ENV -Value "FLOWPROOF_OCR_MODEL_DIR=$dir" -Encoding ascii
       - name: run the evals
         shell: powershell
         run: |
