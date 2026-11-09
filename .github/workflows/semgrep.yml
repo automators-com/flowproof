@@ -1,0 +1,51 @@
+name: semgrep
+
+# Static analysis of our own code (flowproof-desktop#306): injection, path
+# traversal, secrets in logs and similar pattern-shaped bugs in the Rust
+# crates, the Python SDK and the npm wrapper. CodeQL as a deeper second layer
+# is parked in flowproof-desktop#324.
+#
+# Semgrep Community Edition with the free registry rules, run from the
+# official image pinned by digest. No account, no token, and no code leaves
+# the runner; only the rule packs are downloaded.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays, 05:00 UTC, with the dependency audit and secret scan. Registry
+    # rules gain new checks over time, so a quiet week can still find one.
+    - cron: "0 5 * * 1"
+
+concurrency:
+  group: semgrep-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    container:
+      # semgrep/semgrep:1.183.0
+      image: semgrep/semgrep@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0
+    # Unpinned action tags are left to the workflow-hardening proposal (flowproof-desktop#322),
+    # which pins every action at once; drop the --exclude-rule below with it.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Scan
+        run: >
+          semgrep scan
+          --config p/default
+          --config p/rust
+          --config p/python
+          --config p/javascript
+          --metrics off
+          --exclude-rule yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+          --error
+          --severity WARNING
+          --severity ERROR
