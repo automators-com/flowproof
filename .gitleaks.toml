@@ -1,0 +1,11 @@
+# gitleaks rules: the defaults, plus values known to be fake. Allowlist an
+# exact made-up value with the test that uses it, never a whole file.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Made-up values in tests"
+regexes = [
+  # crates/flowproof-cli/tests/api_pipeline.rs: checks a session token stays out of the trace
+  '''tok-p2831-secret''',
+]
