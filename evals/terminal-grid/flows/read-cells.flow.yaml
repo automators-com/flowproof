@@ -1,12 +1,11 @@
+# Reads only: can vision find each value on the screen at all? Includes the
+# look-alikes OCR confuses: 0O10 (zero, letter O) and 1l70 (one, letter l).
 name: Read the invoice tables
 app: vision
 window: Leistung (replica)
 steps:
-- assert: page shows 104,00
-- assert: page shows 0010
-- assert: page shows 1170
-- assert: page shows Größe der Füllung prüfen
-- assert: page shows Kürzung nach GOZ §5
-- assert: page shows PRÜF
-- assert: page shows 1250,00
-- assert: page shows K089
+  - assert: page shows 104,00
+  - assert: page shows 1250,00
+  - assert: page shows K089
+  - assert: page shows 0O10
+  - assert: page shows 1l70

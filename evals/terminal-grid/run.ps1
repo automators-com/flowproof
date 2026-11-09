@@ -3,6 +3,7 @@
 #
 #   powershell -File evals/terminal-grid/run.ps1 [-Engine <flowproof.exe>]
 #       [-Replica <flowproof-terminal-replica.exe>] [-Out <dir>] [-Only <flow>]
+#       [-Profile clean|citrix-light|citrix-heavy]
 #
 # No model is needed: flows are recorded with --author rules. A flow passes
 # only when the engine says it passed AND the replica's own state matches
@@ -12,7 +13,8 @@ param(
     [string]$Engine = "flowproof",
     [string]$Replica = "",
     [string]$Out = (Join-Path $env:TEMP "flowproof-terminal-grid"),
-    [string]$Only = ""
+    [string]$Only = "",
+    [string]$Profile = ""
 )
 # Not "Stop": Windows PowerShell turns a native command's stderr into a
 # terminating error, and the engine reports progress on stderr.
@@ -63,6 +65,7 @@ function Compare-State([string]$state, [string]$expect) {
 
 $results = @()
 foreach ($name in $profiles.Keys) {
+    if ($Profile -and $name -ne $Profile) { continue }
     foreach ($spec in Get-ChildItem (Join-Path $here "flows") -Filter *.flow.yaml) {
         $flow = $spec.Name -replace '\.flow\.yaml$', ''
         if ($Only -and $flow -ne $Only) { continue }
@@ -72,7 +75,8 @@ foreach ($name in $profiles.Keys) {
         Remove-Item $trace -ErrorAction SilentlyContinue
 
         $p = Start-Replica $profiles[$name] "$base.record.json"
-        & $Engine record $spec.FullName --author rules --out $trace *> "$base.record.log"
+        # --no-repair: a failure is the measurement, and repair would edit the spec.
+        & $Engine record $spec.FullName --author rules --no-repair --out $trace *> "$base.record.log"
         $recorded = $LASTEXITCODE -eq 0
         Stop-Process $p -ErrorAction SilentlyContinue
         $recordMisses = Compare-State "$base.record.json" $expect
