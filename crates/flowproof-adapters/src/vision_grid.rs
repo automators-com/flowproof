@@ -188,6 +188,77 @@ fn extent(band: &[OcrWord]) -> (i32, u32) {
     (top, (bottom - top).max(1) as u32)
 }
 
+/// Text on screen that no reading covers: on each line of `lines`, runs of
+/// ink that no word's box reaches, as boxes to read on their own. Ink is
+/// contrast with the line's own background - its median brightness - so
+/// dark text on a light screen and light text on a dark one are both ink,
+/// and a white input field on a grey screen is not.
+///
+/// A text detector does not find every word: on a terminal's thin 9px
+/// Courier, Windows OCR never read the two-letter headers `RB` and `LS`,
+/// at any size, line by line or whole, while the headers beside them read
+/// every time. Their ink was there all along.
+pub(crate) fn unread_ink(frame: &image::RgbaImage, lines: &[OcrLine]) -> Vec<PixelRect> {
+    const CONTRAST: i32 = 90;
+    let (fw, fh) = (frame.width() as i32, frame.height() as i32);
+    let bands = bands(lines);
+    let all: Vec<OcrWord> = bands.concat();
+    let line = text_height(&all);
+    let pitch = grid_pitch(&all).unwrap_or(line * 0.6).max(2.0);
+    let luma = |x: i32, y: i32| {
+        let [r, g, b, _] = frame.get_pixel(x as u32, y as u32).0;
+        (i32::from(r) * 299 + i32::from(g) * 587 + i32::from(b) * 114) / 1000
+    };
+    let mut boxes = Vec::new();
+    for band in &bands {
+        let (top, height) = extent(band);
+        let (y0, y1) = (top.max(0), (top + height as i32).min(fh));
+        if y0 >= y1 {
+            continue;
+        }
+        let mut lumas: Vec<i32> = (y0..y1)
+            .flat_map(|y| (0..fw).map(move |x| (x, y)))
+            .map(|(x, y)| luma(x, y))
+            .collect();
+        lumas.sort_unstable();
+        let background = lumas[lumas.len() / 2];
+        let half = (pitch / 2.0).ceil() as i32;
+        let covered = |x: i32| {
+            band.iter()
+                .any(|w| x >= w.rect.0 - half && x < w.rect.0 + w.rect.2 as i32 + half)
+        };
+        let inked = |x: i32| (y0..y1).any(|y| (luma(x, y) - background).abs() > CONTRAST);
+        // Runs of unread ink, a gap under a character joining one word.
+        let mut run: Option<(i32, i32)> = None;
+        let flush = |run: Option<(i32, i32)>, boxes: &mut Vec<PixelRect>| {
+            if let Some((start, end)) = run {
+                if (end - start) as f32 >= pitch / 2.0 {
+                    let pad = height as i32 / 2;
+                    boxes.push((
+                        start - half,
+                        top - pad,
+                        (end - start + 2 * half) as u32,
+                        height + 2 * pad as u32,
+                    ));
+                }
+            }
+        };
+        for x in 0..fw {
+            if covered(x) || !inked(x) {
+                if let Some((_, end)) = run {
+                    if (x - end) as f32 > pitch {
+                        flush(run.take(), &mut boxes);
+                    }
+                }
+                continue;
+            }
+            run = Some(run.map_or((x, x + 1), |(start, _)| (start, x + 1)));
+        }
+        flush(run, &mut boxes);
+    }
+    boxes
+}
+
 /// The run of words in `band` reading `label`, as word indexes.
 fn find_run(band: &[OcrWord], label: &str) -> Option<(usize, usize)> {
     let want = label.split_whitespace().count().max(1);
@@ -432,6 +503,31 @@ mod tests {
                 rect,
                 words: vec![word],
             }])
+        }
+    }
+
+    /// A header no reading found still left its ink: dark on a light
+    /// screen or light on a dark one, beside a field a shade brighter than
+    /// the screen, which is not text.
+    #[test]
+    fn ink_no_reading_covers_is_found_on_light_and_dark_screens() {
+        for (background, ink) in [(240u8, 20u8), (10, 230)] {
+            let grey = |v: u8| image::Rgba([v, v, v, 255]);
+            let mut frame = image::RgbaImage::from_pixel(400, 60, grey(background));
+            let mut paint = |x0: u32, x1: u32, value: u8| {
+                for y in 22..34 {
+                    for x in x0..x1 {
+                        frame.put_pixel(x, y, grey(value));
+                    }
+                }
+            };
+            paint(10, 18, ink); // `K`, read
+            paint(70, 88, ink); // `RB`, never read
+            paint(200, 300, background.saturating_add(15)); // an input field
+            let boxes = unread_ink(&frame, &[at(1, 1, "K")]);
+            assert_eq!(boxes.len(), 1, "on {background}: {boxes:?}");
+            let (x, _, w, _) = boxes[0];
+            assert!(x <= 70 && x + w as i32 >= 88, "{:?}", boxes[0]);
         }
     }
 

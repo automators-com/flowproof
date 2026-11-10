@@ -23,7 +23,9 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector};
 use image::RgbaImage;
 
-use crate::vision_grid::{header_lines, locate_cell, reading, text_height, text_lines, GridCell};
+use crate::vision_grid::{
+    header_lines, locate_cell, reading, text_height, text_lines, unread_ink, GridCell,
+};
 
 mod start;
 
@@ -681,8 +683,14 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             // short word standing alone between wide gaps: the two-letter
             // headers `LS` and `RB` were never read, enlarged or not, while
             // every header beside them was; through JPEG the row anchor
-            // `001` read `eel`. Each line of text is read again as its own
-            // strip, enlarged, with nothing else in view.
+            // `001` read `eel`. First the ink no reading covered is read on
+            // its own; then each line of text as its own strip, enlarged,
+            // with nothing else in view.
+            if cell.is_none() {
+                let missed = self.read_unread_ink(&frame, &with_headers);
+                with_headers.extend(missed);
+                cell = locate_cell(&with_headers, query, frame.width());
+            }
             if cell.is_none() {
                 let strips = self.line_by_line(&frame, &with_headers);
                 with_headers.extend(strips);
@@ -840,6 +848,16 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         // drawn costs what it did.
         let words: Vec<OcrWord> = lines.iter().flat_map(|l| l.words.clone()).collect();
         if !words.is_empty() && text_height(&words) < MIN_TEXT_PX {
+            let missed = self.read_unread_ink(&frame, &lines);
+            if let Some(hit) = Self::resolve_in(&missed, selector) {
+                vision_log(|| {
+                    format!(
+                        "[{selector}] found in ink no reading covered: '{}'",
+                        hit.text
+                    )
+                });
+                return Ok((lines, Some(hit)));
+            }
             let strips = self.line_by_line(&frame, &lines);
             if let Some(hit) = Self::resolve_in(&strips, selector) {
                 vision_log(|| format!("[{selector}] found reading line by line: '{}'", hit.text));
@@ -847,6 +865,21 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             }
         }
         Ok((lines, None))
+    }
+
+    /// The ink on screen that no reading in `lines` covers (see
+    /// `vision_grid::unread_ink`), each run read on its own, enlarged.
+    fn read_unread_ink(&mut self, frame: &RgbaImage, lines: &[OcrLine]) -> Vec<OcrLine> {
+        let mut found = Vec::new();
+        for spot in unread_ink(frame, lines) {
+            let read = self.read_region(frame, spot);
+            vision_log(|| {
+                let texts: Vec<&str> = read.iter().map(|l| l.text.as_str()).collect();
+                format!("unread ink at {spot:?} reads {texts:?}")
+            });
+            found.extend(read);
+        }
+        found
     }
 
     /// Each line of text in `lines` read again as its own strip of the

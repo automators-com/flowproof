@@ -1465,15 +1465,31 @@ pub fn ocr_text_contains(actual: &str, expected: &str) -> bool {
 }
 
 /// Glyphs OCR reads as one another, folded to one for comparing what OCR
-/// read with what was meant, on both sides: a zero is read as `O`, `o`, or
-/// `Ø` when slashed as terminal fonts draw it; a one as `I`, `l` or `|`.
-/// Only for comparing: a reading is never rewritten, and what is clicked
-/// is matched by vision's own, narrower rules.
+/// read with what was meant, on both sides. Round shapes are one: a zero is
+/// read as `O`, `o`, an `ö` - or `Ø` when slashed, as terminal fonts draw
+/// it. Thin strokes are one: `1`, `I`, `l`, `i`, `|` (`Füllung` read
+/// `Füiiung`). Accents are dropped, as OCR drops them (`Kürzung` read
+/// `Kurzung`), and `§` reads as `S`. Only for comparing: a reading is never
+/// rewritten, and what is clicked is matched by vision's own, narrower
+/// rules.
 pub fn ocr_fold(text: &str) -> String {
     text.chars()
         .map(|c| match c {
-            'Ø' | 'O' | 'o' => '0',
-            'I' | 'l' | '|' => '1',
+            'Ø' | 'O' | 'o' | 'Ö' | 'ö' | 'Ò' | 'Ó' | 'Ô' | 'Õ' | 'ò' | 'ó' | 'ô' | 'õ' => {
+                '0'
+            }
+            'I' | 'l' | 'i' | '|' | 'Ì' | 'Í' | 'Î' | 'Ï' | 'ì' | 'í' | 'î' | 'ï' => '1',
+            'Ä' | 'À' | 'Á' | 'Â' | 'Ã' | 'Å' => 'A',
+            'ä' | 'à' | 'á' | 'â' | 'ã' | 'å' => 'a',
+            'Ü' | 'Ù' | 'Ú' | 'Û' => 'U',
+            'ü' | 'ù' | 'ú' | 'û' => 'u',
+            'É' | 'È' | 'Ê' | 'Ë' => 'E',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'Ç' => 'C',
+            'ç' => 'c',
+            'Ñ' => 'N',
+            'ñ' => 'n',
+            '§' => 'S',
             other => other,
         })
         .collect()
@@ -3170,6 +3186,15 @@ mod visible_text_tests {
         assert!(ocr_text_contains("GRB 1250, OO EUR", "1250,00"));
         assert!(ocr_text_contains("5, oo", "5,00"));
         assert!(ocr_text_contains("ReDat 15.12. 25", "15.12.25"));
+        assert!(ocr_text_contains(
+            "1 Kür zung nach GOZ S5",
+            "Kürzung nach GOZ §5"
+        ));
+        assert!(ocr_text_contains(
+            "GrOße der Füiiung prüfen",
+            "Größe der Füllung prüfen"
+        ));
+        assert!(ocr_text_contains("Kurzung", "Kürzung"));
         assert!(
             !ocr_text_contains("ZE30", "ZB30"),
             "a letter OCR got wrong is still wrong"
