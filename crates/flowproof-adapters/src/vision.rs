@@ -366,6 +366,11 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// like `12+30=` are an instruction to the app, not text it shows back -
     /// Calculator showed `42`, and the key `1230` failed a typing that had
     /// worked.
+    ///
+    /// Keys and the screen are compared with OCR's look-alike glyphs folded
+    /// on both sides (see `key_count` and `flowproof_driver::ocr_fold`): typed `5,00` read
+    /// back as `5, oo` on a terminal screen, and was taken for a typing
+    /// that never arrived.
     fn readback_keys(text: &str) -> Vec<String> {
         let mut keys: Vec<String> = text
             .split(['+', '*', '/', '=', '×', '÷'])
@@ -437,7 +442,8 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                     .filter(|c| c.is_alphanumeric())
                     .flat_map(char::to_lowercase)
                     .collect();
-                text.matches(key).count()
+                let key = flowproof_driver::ocr_fold(key);
+                flowproof_driver::ocr_fold(&text).matches(&key).count()
             })
             .sum()
     }
@@ -678,11 +684,8 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             // `001` read `eel`. Each line of text is read again as its own
             // strip, enlarged, with nothing else in view.
             if cell.is_none() {
-                for (top, height) in text_lines(&with_headers) {
-                    let pad = height as i32 / 2;
-                    let strip = (0, top - pad, frame.width(), height + 2 * pad as u32);
-                    with_headers.extend(self.read_region(&frame, strip));
-                }
+                let strips = self.line_by_line(&frame, &with_headers);
+                with_headers.extend(strips);
                 cell = locate_cell(&with_headers, query, frame.width());
             }
             vision_log(|| format!("[{selector}] cell: {cell:?}"));
@@ -829,7 +832,33 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 return Ok((lines, Some(hit)));
             }
         }
+        // Small text, still not found: one line at a time. A text detector
+        // given a whole screen of small text drops a short word standing
+        // alone - a terminal's `Diag` label beside its field, its two-letter
+        // headers - at every scale, while each line read on its own gives
+        // it back. Ordinary screens skip this, so a wait for text not yet
+        // drawn costs what it did.
+        let words: Vec<OcrWord> = lines.iter().flat_map(|l| l.words.clone()).collect();
+        if !words.is_empty() && text_height(&words) < MIN_TEXT_PX {
+            let strips = self.line_by_line(&frame, &lines);
+            if let Some(hit) = Self::resolve_in(&strips, selector) {
+                vision_log(|| format!("[{selector}] found reading line by line: '{}'", hit.text));
+                return Ok((lines, Some(hit)));
+            }
+        }
         Ok((lines, None))
+    }
+
+    /// Each line of text in `lines` read again as its own strip of the
+    /// frame, enlarged, with nothing else in view (see `read_region`).
+    fn line_by_line(&mut self, frame: &RgbaImage, lines: &[OcrLine]) -> Vec<OcrLine> {
+        let mut strips = Vec::new();
+        for (top, height) in text_lines(lines) {
+            let pad = height as i32 / 2;
+            let strip = (0, top - pad, frame.width(), height + 2 * pad as u32);
+            strips.extend(self.read_region(frame, strip));
+        }
+        strips
     }
 
     /// Every icon on the frame - a small shape that is not text - named by
@@ -3511,6 +3540,16 @@ mod tests {
             vec!["slowty", "emailc"]
         );
         assert_eq!(D::readback_keys("ORD-1234"), vec!["ord1234"]);
+    }
+
+    /// Typed `5,00` on a terminal screen read back as `5, oo`: the value
+    /// arrived, and is counted as on screen.
+    #[test]
+    fn a_typed_value_read_with_look_alike_glyphs_is_counted() {
+        type D = VisionAppDriver<FakeScreen, FakeOcr>;
+        let lines = vec![OcrLine::new("AbzugBtr 5, oo", (20, 20, 140, 16))];
+        let keys = D::readback_keys("5,00");
+        assert_eq!(D::key_count(&lines, &keys[0]), 1);
     }
 
     /// A keypad row OCR'd as one line: the model reaches the `8` in

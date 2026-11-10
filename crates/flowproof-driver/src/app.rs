@@ -1431,14 +1431,17 @@ pub fn text_contains(actual: &str, expected: &str) -> bool {
 /// word only. OCR drops a trailing comma and turns `!` into `l`, so
 /// `Hello, Ada` must be found in `Hello Adal`; but punctuation INSIDE a
 /// word is kept, so `$10.00` never matches `$1000` and `1,000` never
-/// matches `1000`. A slashed zero, which terminal fonts draw and OCR reads
-/// as `Ø`, is zero on both sides: `ZB30` holds against `ZB3Ø`. Widening-only,
-/// and only for the positive form - the callers never consult it for `does
-/// not show`, an equality or a count.
+/// matches `1000`.
+///
+/// Then, for three characters or more, the same with spacing ignored and
+/// glyphs OCR reads as one another folded on both sides (see [`ocr_fold`]):
+/// OCR breaks text at its punctuation and reads a plain zero as `O`, and a
+/// terminal's `1250,00` read `1250, OO`. Punctuation is still kept, so the
+/// guarantees above hold. Widening-only, and only for the positive form -
+/// the callers never consult it for `does not show`, an equality or a count.
 pub fn ocr_text_contains(actual: &str, expected: &str) -> bool {
     fn loose(text: &str) -> String {
-        normalize_visible_text(text)
-            .replace('Ø', "0")
+        ocr_fold(&normalize_visible_text(text))
             .split_whitespace()
             .map(|word| word.trim_matches(|c: char| c.is_ascii_punctuation()))
             .filter(|word| !word.is_empty())
@@ -1446,8 +1449,34 @@ pub fn ocr_text_contains(actual: &str, expected: &str) -> bool {
             .join(" ")
             .to_lowercase()
     }
-    let expected = loose(expected);
-    !expected.is_empty() && loose(actual).contains(&expected)
+    fn squeezed(text: &str) -> String {
+        let folded = ocr_fold(&normalize_visible_text(text));
+        folded.split_whitespace().collect::<String>().to_lowercase()
+    }
+    let wanted = loose(expected);
+    if wanted.is_empty() {
+        return false;
+    }
+    if loose(actual).contains(&wanted) {
+        return true;
+    }
+    let wanted = squeezed(expected);
+    wanted.chars().count() >= 3 && squeezed(actual).contains(&wanted)
+}
+
+/// Glyphs OCR reads as one another, folded to one for comparing what OCR
+/// read with what was meant, on both sides: a zero is read as `O`, `o` or
+/// - slashed, as terminal fonts draw it - `Ø`; a one as `I`, `l` or `|`.
+/// Only for comparing: a reading is never rewritten, and what is clicked
+/// is matched by vision's own, narrower rules.
+pub fn ocr_fold(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            'Ø' | 'O' | 'o' => '0',
+            'I' | 'l' | '|' => '1',
+            other => other,
+        })
+        .collect()
 }
 
 /// Does `actual` (a full URL) satisfy a `page url` expectation?
@@ -3132,18 +3161,27 @@ mod visible_text_tests {
         assert_eq!(text_occurrences(expected, actual), 1);
     }
 
-    /// Plan 15, finding 6: the greeter page showed `Hello, Ada!` and real
-    /// OCR read it back as `Hello Adal`.
+    /// A host terminal through Citrix, as Windows OCR read it: zeros as
+    /// `Ø` and `O`, its values broken at their punctuation.
     #[test]
-    fn ocr_text_reads_a_slashed_zero_as_zero() {
+    fn ocr_text_forgives_a_terminal_screens_zeros_and_breaks() {
         use super::ocr_text_contains;
         assert!(ocr_text_contains("1 ØØ1 BEL ZB3Ø", "001 BEL ZB30"));
+        assert!(ocr_text_contains("GRB 1250, OO EUR", "1250,00"));
+        assert!(ocr_text_contains("5, oo", "5,00"));
+        assert!(ocr_text_contains("ReDat 15.12. 25", "15.12.25"));
         assert!(
-            !ocr_text_contains("ZBO0", "ZB00"),
-            "a letter O is still not a zero"
+            !ocr_text_contains("ZE30", "ZB30"),
+            "a letter OCR got wrong is still wrong"
+        );
+        assert!(
+            !ocr_text_contains("1 2", "12"),
+            "two characters are not squeezed"
         );
     }
 
+    /// Plan 15, finding 6: the greeter page showed `Hello, Ada!` and real
+    /// OCR read it back as `Hello Adal`.
     #[test]
     fn ocr_text_forgives_punctuation_at_word_edges() {
         use super::ocr_text_contains;
