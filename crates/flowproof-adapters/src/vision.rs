@@ -1453,8 +1453,8 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// reading that found the cell's header and row, and on a Windows
     /// runner it read every cell right where a crop read with ocrs alone
     /// gave `Z830` for `ZB30`, and an enlarged crop through JPEG gave `83`.
-    /// The cell's own box is read only when that reading put nothing in it
-    /// - a short value a screen-wide pass can drop.
+    /// The cell's own box is read only when that reading put nothing in it,
+    /// as with a short value a screen-wide pass can drop.
     fn read_cell(&mut self, frame: &RgbaImage, cell: &GridCell) -> String {
         if !cell.text.is_empty() {
             return cell.text.clone();

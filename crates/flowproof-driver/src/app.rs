@@ -1465,8 +1465,8 @@ pub fn ocr_text_contains(actual: &str, expected: &str) -> bool {
 }
 
 /// Glyphs OCR reads as one another, folded to one for comparing what OCR
-/// read with what was meant, on both sides: a zero is read as `O`, `o` or
-/// - slashed, as terminal fonts draw it - `Ø`; a one as `I`, `l` or `|`.
+/// read with what was meant, on both sides: a zero is read as `O`, `o`, or
+/// `Ø` when slashed as terminal fonts draw it; a one as `I`, `l` or `|`.
 /// Only for comparing: a reading is never rewritten, and what is clicked
 /// is matched by vision's own, narrower rules.
 pub fn ocr_fold(text: &str) -> String {
