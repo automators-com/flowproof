@@ -484,12 +484,12 @@ impl Screen {
 
     pub fn status(&self, now: Instant) -> String {
         let dialog = if self.busy(now) {
-            "Dialog wartet"
+            "Status wartet"
         } else {
-            "Dialog aktiv"
+            "Status bereit"
         };
         format!(
-            "{dialog}      Überschreiben   {:02}, {:02}",
+            "{dialog}      Ersetzen   {:02}, {:02}",
             self.cursor.0 + 1,
             self.cursor.1 + 1
         )
@@ -547,11 +547,11 @@ tables:
     header_row: 2
     visible_rows: 2
     columns:
-      - { name: K, col: 1, len: 1 }
-      - { name: Tarif, col: 4, len: 4 }
+      - { name: T, col: 1, len: 1 }
+      - { name: Stufe, col: 4, len: 4 }
     rows:
-      - ["1", ZB30]
-      - ["2", BE70]
+      - ["1", XB30]
+      - ["2", BX70]
       - ["3", XY10]
 keys: { enter_delay_ms: 100 }
 "#;
@@ -597,9 +597,9 @@ keys: { enter_delay_ms: 100 }
             &mut s,
             &[Key::Tab, Key::Tab, Key::Char('B'), Key::Char('E')],
         );
-        assert_eq!(cell(&s, 0, "Tarif"), "BE30", "overwrite keeps the old tail");
+        assert_eq!(cell(&s, 0, "Stufe"), "BE30", "overwrite keeps the old tail");
         typed(&mut s, &[Key::Char('9'), Key::Char('9')]);
-        assert_eq!(cell(&s, 0, "Tarif"), "BE99");
+        assert_eq!(cell(&s, 0, "Stufe"), "BE99");
         assert_eq!(
             s.cursor,
             (4, 1),
@@ -611,7 +611,7 @@ keys: { enter_delay_ms: 100 }
     fn erase_eof_clears_the_rest_of_the_field() {
         let mut s = screen();
         typed(&mut s, &[Key::Tab, Key::Tab, Key::Right, Key::EraseEof]);
-        assert_eq!(cell(&s, 0, "Tarif"), "Z");
+        assert_eq!(cell(&s, 0, "Stufe"), "X");
     }
 
     #[test]
@@ -624,12 +624,12 @@ keys: { enter_delay_ms: 100 }
         assert_eq!(s.cursor, (4, 1), "the new line is the last visible one");
         s.press(Key::Char('7'), now);
         assert_eq!(
-            cell(&s, 3, "K"),
+            cell(&s, 3, "T"),
             "",
             "a key during the round trip is dropped"
         );
         s.press(Key::Char('7'), now + Duration::from_millis(150));
-        assert_eq!(cell(&s, 3, "K"), "7");
+        assert_eq!(cell(&s, 3, "T"), "7");
     }
 
     #[test]
@@ -637,7 +637,7 @@ keys: { enter_delay_ms: 100 }
         let mut s = screen();
         s.click(4, 5, Instant::now());
         typed(&mut s, &[Key::Char('Q')]);
-        assert_eq!(cell(&s, 1, "Tarif"), "BQ70");
+        assert_eq!(cell(&s, 1, "Stufe"), "BQ70");
     }
 
     #[test]
@@ -648,6 +648,6 @@ keys: { enter_delay_ms: 100 }
         typed(&mut s, &[Key::Pf(8)]);
         assert_eq!(s.message, "Letzte Seite");
         typed(&mut s, &[Key::Pf(7)]);
-        assert!(s.grid()[3].contains("ZB30"));
+        assert!(s.grid()[3].contains("XB30"));
     }
 }

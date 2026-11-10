@@ -162,7 +162,7 @@ fn same(read: &str, wanted: &str) -> bool {
 /// The lines that name `column`, as `(top, height)`: the header lines a
 /// cell under that column can belong to. Read again on their own, closer,
 /// they give back the short headers a screen-wide reading drops - Windows
-/// OCR missed a two-letter `LS`, and the column to its left ran on to the
+/// OCR missed a two-letter `St`, and the column to its left ran on to the
 /// next header it did read.
 pub(crate) fn header_lines(lines: &[OcrLine], column: &str) -> Vec<(i32, u32)> {
     bands(lines)
@@ -207,7 +207,7 @@ fn extent(band: &[OcrWord]) -> (i32, u32) {
 /// and a white input field on a grey screen is not.
 ///
 /// A text detector does not find every word: on a terminal's thin 9px
-/// Courier, Windows OCR never read the two-letter headers `RB` and `LS`,
+/// Courier, Windows OCR never read the two-letter headers `KZ` and `St`,
 /// at any size, line by line or whole, while the headers beside them read
 /// every time. Their ink was there all along.
 pub(crate) fn unread_ink(frame: &image::RgbaImage, lines: &[OcrLine]) -> Vec<PixelRect> {
@@ -405,24 +405,24 @@ mod tests {
         }
     }
 
-    /// Two tables share `K` and `LNr`; OCR split the upper table's rows at
+    /// Two tables share `T` and `Pos`; OCR split the upper table's rows at
     /// a wide gap, as it does on a real terminal screen.
     fn screen() -> Vec<OcrLine> {
         vec![
-            at(1, 1, "K  LNr LA   Tarif"),
+            at(1, 1, "T  Pos Ty   Stufe"),
             at(2, 1, "1  001 BEL"),
-            at(2, 13, "ZB30"),
+            at(2, 13, "XB30"),
             at(3, 1, "1  002 BEL"),
-            at(3, 13, "BE70"),
-            at(5, 1, "K  LNr Hinweis auf Entscheidung    Ent"),
-            at(6, 1, "1  002 Kürzung nach GOZ §5         N"),
+            at(3, 13, "BX70"),
+            at(5, 1, "T  Pos Angaben zum Lieferstatus    Frg"),
+            at(6, 1, "1  002 Kürzung nach Abs §5         N"),
         ]
     }
 
     #[test]
     fn a_cell_is_found_by_its_header_and_a_value_in_its_row() {
-        let cell = locate_cell(&screen(), &query("Tarif", "002"), 800).expect("cell");
-        assert_eq!(cell.words, vec!["BE70"]);
+        let cell = locate_cell(&screen(), &query("Stufe", "002"), 800).expect("cell");
+        assert_eq!(cell.words, vec!["BX70"]);
         assert_eq!(
             cell.start,
             (135, 68),
@@ -432,25 +432,25 @@ mod tests {
 
     #[test]
     fn each_table_resolves_its_own_rows() {
-        let cell = locate_cell(&screen(), &query("Ent", "002"), 800).expect("cell");
+        let cell = locate_cell(&screen(), &query("Frg", "002"), 800).expect("cell");
         assert_eq!(
             cell.words,
             vec!["N"],
-            "the upper table has no Ent column above its 002"
+            "the upper table has no Frg column above its 002"
         );
         assert_eq!(
             cell.chars, 4,
             "the last column ends with its text, not the window"
         );
         let multi =
-            locate_cell(&screen(), &query("Hinweis auf Entscheidung", "002"), 800).expect("cell");
-        assert_eq!(multi.words.join(" "), "Kürzung nach GOZ §5");
+            locate_cell(&screen(), &query("Angaben zum Lieferstatus", "002"), 800).expect("cell");
+        assert_eq!(multi.words.join(" "), "Kürzung nach Abs §5");
         assert_eq!(multi.chars, 28, "the column runs to the next header");
     }
 
     #[test]
     fn a_value_split_at_its_punctuation_reads_as_one() {
-        let mut lines = vec![at(1, 1, "K  LNr RB"), at(2, 1, "2  003")];
+        let mut lines = vec![at(1, 1, "T  Pos KZ"), at(2, 1, "2  003")];
         // `104,00` read as two words, as Windows OCR read it: the comma's
         // narrow ink ends the first box 8px short of the next glyph, more
         // than half a character, though no column lies between them.
@@ -465,25 +465,25 @@ mod tests {
                 words: vec![word],
             });
         }
-        let cell = locate_cell(&lines, &query("RB", "003"), 800).expect("cell");
+        let cell = locate_cell(&lines, &query("KZ", "003"), 800).expect("cell");
         assert_eq!(cell.text, "104,00");
         let multi =
-            locate_cell(&screen(), &query("Hinweis auf Entscheidung", "002"), 800).expect("cell");
-        assert_eq!(multi.text, "Kürzung nach GOZ §5", "real spaces stay");
+            locate_cell(&screen(), &query("Angaben zum Lieferstatus", "002"), 800).expect("cell");
+        assert_eq!(multi.text, "Kürzung nach Abs §5", "real spaces stay");
     }
 
     #[test]
     fn a_slashed_zero_still_finds_its_row() {
-        let lines = vec![at(1, 1, "K  LNr Tarif"), at(2, 1, "1  ØØ1 ZB3Ø")];
-        let cell = locate_cell(&lines, &query("Tarif", "001"), 800).expect("cell");
+        let lines = vec![at(1, 1, "T  Pos Stufe"), at(2, 1, "1  ØØ1 XB3Ø")];
+        let cell = locate_cell(&lines, &query("Stufe", "001"), 800).expect("cell");
         assert_eq!(
             cell.words,
-            vec!["ZB3Ø"],
+            vec!["XB3Ø"],
             "the screen's own spelling is kept"
         );
     }
 
-    /// Reads the whole screen without the two-letter header `RB`, as
+    /// Reads the whole screen without the two-letter header `KZ`, as
     /// Windows OCR did; read one line at a time, the first line - the
     /// header - gives it back. Boxes come back in the enlarged strip's own
     /// coordinates, as a real engine's do.
@@ -497,7 +497,7 @@ mod tests {
             frame: &image::RgbaImage,
         ) -> Result<Vec<OcrLine>, flowproof_driver::DriverError> {
             if frame.dimensions() == (800, 200) {
-                return Ok(vec![at(1, 1, "K  LNr"), at(2, 1, "2  003 104,00")]);
+                return Ok(vec![at(1, 1, "T  Pos"), at(2, 1, "2  003 104,00")]);
             }
             self.strips += 1;
             if self.strips > 1 {
@@ -507,11 +507,11 @@ mod tests {
             // above, three times the size, in a 48px margin.
             let rect = (48 + 70 * 3, 48 + (20 - 12) * 3, 60, 48);
             let word = OcrWord {
-                text: "RB".into(),
+                text: "KZ".into(),
                 rect,
             };
             Ok(vec![OcrLine {
-                text: "RB".into(),
+                text: "KZ".into(),
                 rect,
                 words: vec![word],
             }])
@@ -533,10 +533,10 @@ mod tests {
                     }
                 }
             };
-            paint(10, 18, ink); // `K`, read
-            paint(70, 88, ink); // `RB`, never read
+            paint(10, 18, ink); // `T`, read
+            paint(70, 88, ink); // `KZ`, never read
             paint(200, 300, background.saturating_add(15)); // an input field
-            let boxes = unread_ink(&frame, &[at(1, 1, "K")]);
+            let boxes = unread_ink(&frame, &[at(1, 1, "T")]);
             assert_eq!(boxes.len(), 1, "on {background}: {boxes:?}");
             let (x, _, w, _) = boxes[0];
             assert!(x <= 70 && x + w as i32 >= 88, "{:?}", boxes[0]);
@@ -552,21 +552,21 @@ mod tests {
             DropsShortHeader { strips: 0 },
         );
         assert_eq!(
-            d.read_text(&cell_selector("RB", "003")).expect("read"),
+            d.read_text(&cell_selector("KZ", "003")).expect("read"),
             "104,00"
         );
     }
 
     #[test]
     fn header_lines_are_the_lines_naming_the_column() {
-        assert_eq!(header_lines(&screen(), "K"), vec![(20, 16), (100, 16)]);
-        assert_eq!(header_lines(&screen(), "Tarif"), vec![(20, 16)]);
+        assert_eq!(header_lines(&screen(), "T"), vec![(20, 16), (100, 16)]);
+        assert_eq!(header_lines(&screen(), "Stufe"), vec![(20, 16)]);
     }
 
     #[test]
     fn an_empty_cell_is_still_a_cell() {
-        let lines = vec![at(1, 1, "K  LNr Tarif"), at(2, 1, "1  001")];
-        let cell = locate_cell(&lines, &query("Tarif", "001"), 800).expect("cell");
+        let lines = vec![at(1, 1, "T  Pos Stufe"), at(2, 1, "1  001")];
+        let cell = locate_cell(&lines, &query("Stufe", "001"), 800).expect("cell");
         assert!(cell.words.is_empty());
     }
 
@@ -592,8 +592,8 @@ mod tests {
         crate::vision::VisionAppDriver::with_parts(
             crate::vision::fake::FakeScreen::with_frames(vec![frame]),
             BlankCrops(vec![
-                at(1, 1, "K  LNr Tarif  LS"),
-                at(2, 1, "1  001 ZB30   1"),
+                at(1, 1, "T  Pos Stufe  St"),
+                at(2, 1, "1  001 XB30   1"),
             ]),
         )
     }
@@ -610,17 +610,17 @@ mod tests {
         use flowproof_driver::AppDriver;
         let mut d = driver();
         assert_eq!(
-            d.read_text(&cell_selector("Tarif", "001")).expect("read"),
-            "ZB30"
+            d.read_text(&cell_selector("Stufe", "001")).expect("read"),
+            "XB30"
         );
-        assert_eq!(d.read_text(&cell_selector("LS", "001")).expect("read"), "1");
+        assert_eq!(d.read_text(&cell_selector("St", "001")).expect("read"), "1");
     }
 
     #[test]
     fn typing_into_a_cell_empties_it_from_its_first_character() {
         use flowproof_driver::AppDriver;
         let mut d = driver();
-        d.type_text(&cell_selector("Tarif", "001"), "ZB99")
+        d.type_text(&cell_selector("Stufe", "001"), "XB99")
             .expect("typed");
         let screen = d.screen_for_tests();
         assert_eq!(
@@ -638,7 +638,7 @@ mod tests {
             !screen.keys.iter().any(|(k, _)| k == "a"),
             "no select-all on a terminal"
         );
-        assert_eq!(screen.typed, vec!["ZB99"]);
+        assert_eq!(screen.typed, vec!["XB99"]);
     }
 
     /// What a Windows runner read: Windows OCR's tight boxes, then ocrs's
@@ -663,10 +663,10 @@ mod tests {
                 rect: (130, 41, 40, 16),
             }],
         });
-        let cell = locate_cell(&lines, &query("Tarif", "001"), 800).expect("cell");
+        let cell = locate_cell(&lines, &query("Stufe", "001"), 800).expect("cell");
         assert_eq!(
             cell.words,
-            vec!["ZB30"],
+            vec!["XB30"],
             "the first reading of a word stands"
         );
         assert_eq!(
@@ -687,19 +687,19 @@ mod tests {
             }],
         };
         let lines = vec![
-            word("ZB30", (30, 30, 120, 48)),
+            word("XB30", (30, 30, 120, 48)),
             word("Z830", (32, 31, 118, 46)),
             word("I LO L R", (0, 0, 200, 140)),
         ];
-        assert_eq!(reading(&lines), "ZB30");
+        assert_eq!(reading(&lines), "XB30");
     }
 
     #[test]
     fn every_anchor_must_be_in_the_row() {
-        let mut q = query("Tarif", "BEL");
+        let mut q = query("Stufe", "BEL");
         q.also = vec!["002".into()];
         let cell = locate_cell(&screen(), &q, 800).expect("cell");
-        assert_eq!(cell.words, vec!["BE70"]);
+        assert_eq!(cell.words, vec!["BX70"]);
         q.also = vec!["003".into()];
         assert_eq!(locate_cell(&screen(), &q, 800), None);
     }

@@ -6,7 +6,7 @@
 #       [-Profile clean|citrix|stress] [-FontPx <size>]
 #
 # -FontPx draws the layout's font at another size, to find the smallest
-# text vision reads reliably: OCR has a floor, and a client's emulator font
+# text vision reads reliably: OCR has a floor, and an emulator's font
 # can be set above it.
 #
 # No model is needed: flows are recorded with --author rules. A flow passes
@@ -31,7 +31,7 @@ if (-not $Replica) {
         Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $Replica) { throw "build the replica first: cargo build -p flowproof-terminal-replica" }
 }
-$layout = Join-Path $here "leistung.yaml"
+$layout = Join-Path $here "host-screen.yaml"
 New-Item -ItemType Directory -Force $Out | Out-Null
 if ($FontPx -gt 0) {
     # A copy of the layout at the asked size. Read and written as UTF-8
@@ -39,17 +39,17 @@ if ($FontPx -gt 0) {
     # PowerShell's own defaults would mangle them or prepend a BOM.
     $utf8 = New-Object System.Text.UTF8Encoding $false
     $text = [System.IO.File]::ReadAllText($layout, $utf8) -replace '(?m)^font_px: *\d+', "font_px: $FontPx"
-    $layout = Join-Path $Out "leistung.$FontPx.yaml"
+    $layout = Join-Path $Out "host-screen.$FontPx.yaml"
     [System.IO.File]::WriteAllText($layout, $text, $utf8)
 }
 # Over Citrix there is no accessibility tree; make the local window match.
 $env:FLOWPROOF_VISION_UIA = "0"
 
-# The client session's screenshot showed text sent sharp - no compression
-# blocks - through two or three nested Citrix sessions, each of which may
-# rescale. `citrix` is that: a 90% rescale and back, softening every edge.
-# `stress` is far harsher than anything seen (JPEG 35, 80% rescale, 16-bit
-# colour); it shows where OCR gives out, not what a client sees.
+# Citrix sends text sharp - no compression blocks - but each of two or
+# three nested sessions may rescale. `citrix` is that: a 90% rescale and
+# back, softening every edge.
+# `stress` is far harsher (JPEG 35, 80% rescale, 16-bit
+# colour); it shows where OCR gives out.
 $profiles = [ordered]@{
     "clean"  = @()
     "citrix" = @("--scale", "0.9")

@@ -1,11 +1,11 @@
 # Open a new line in the lower table and fill it. Shift+Tab from the first
 # field wraps backwards: 14 fields back is the lower table's second line.
 # Enter is a round trip to the host, so the keyboard is locked until the
-# status line reads "Dialog aktiv" again. A full field skips to the next on
-# its own (K, LNr), so no Tab follows those.
+# status line reads "Status bereit" again. A full field skips to the next on
+# its own (T, Pos), so no Tab follows those.
 name: Add a line to the lower table
 app: vision
-window: Leistung (replica)
+window: Host screen (replica)
 steps:
   - Press Home
   - Press Shift+Tab
@@ -23,7 +23,7 @@ steps:
   - Press Shift+Tab
   - Press Shift+Tab
   - Press Enter
-  - Wait until page shows Dialog aktiv
+  - Wait until page shows Status bereit
   - Type 3
   - Type 003
   - Type ABZ
@@ -34,5 +34,5 @@ steps:
   - Press Tab
   - Type J
   - Press Tab
-  - Type ZE
+  - Type OST
   - assert: page shows Neue Zeile

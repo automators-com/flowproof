@@ -1,8 +1,8 @@
-# The client's screens are German: umlauts, ß and § must read as written.
+# German screen text: umlauts, ß and § must read as written.
 name: Read German text
 app: vision
-window: Leistung (replica)
+window: Host screen (replica)
 steps:
   - assert: page shows PRÜF
-  - assert: page shows Größe der Füllung prüfen
-  - assert: page shows Kürzung nach GOZ §5
+  - assert: page shows Größe der Rolle prüfen
+  - assert: page shows Kürzung nach Abs §5
