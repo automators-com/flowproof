@@ -1,9 +1,9 @@
 # Fill a header field by its label, the way vision fills any field: OCR
-# finds the label and the click lands right of it. The field holds K089, so
+# finds the label and the click lands right of it. The field holds Q089, so
 # a fill that does not clear first leaves A129.
 name: Fill a field by its label
 app: vision
-window: Leistung (replica)
+window: Host screen (replica)
 steps:
-  - Type A12 into the "Diag" field
+  - Type A12 into the "Kenn" field
   - assert: page shows A12

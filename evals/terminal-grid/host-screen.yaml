@@ -1,0 +1,91 @@
+# An invented host terminal screen: a header block, then two tables of
+# input fields under header lines, one screen line per row. Every name,
+# number and value here is made up. The upper table holds more rows than it
+# shows, so PF8/PF7 page it. Its headers include two-letter ones (KZ, St),
+# its values look-alike characters (0O10, 1l70, XB30), and its lower table
+# German text with umlauts and a section sign.
+title: "Host screen (replica)"
+rows: 27
+cols: 80
+# A thin serif Courier whose zero has no slash, as host emulators often
+# draw: about 9px per character and 19px per line.
+font: Courier New
+font_px: 15
+message_row: 25
+message: "1/01 :Eingabe unvollständig"
+keys:
+  enter: add_row
+  enter_delay_ms: 400
+  erase_eof: Ctrl+End
+  page_down: 8
+  page_up: 7
+text:
+  - { row: 0, col: 0, text: "T 900001-ab-cd     00000-AB123      X0001        01TST*   QQ      24/12/25 10:34" }
+  - { row: 1, col: 0, text: "AB100/CD200" }
+  - { row: 1, col: 13, text: "XY001 MUSTER-ERFASSUNG", blue: true }
+  - { row: 1, col: 64, text: "Befehl:" }
+  - { row: 2, col: 0, text: "DokNr   1 /  1" }
+  - { row: 2, col: 60, text: "A B C D E F" }
+  - { row: 3, col: 0, text: "Kd:" }
+  - { row: 3, col: 4, text: "Erika Mustermann", blue: true }
+  - { row: 3, col: 37, text: "Kat: X  Datum:" }
+  - { row: 3, col: 53, text: "01.01.1980", blue: true }
+  - { row: 3, col: 64, text: "Q12" }
+  - { row: 4, col: 0, text: "Beginn     Nr/Stufe," }
+  - { row: 4, col: 76, text: "mehr" }
+  - { row: 5, col: 0, text: "01.02.2020 01=XB30, 02=BX70", blue: true }
+  - { row: 7, col: 1, text: "T  Nr Typ Datum      Lieferant                Betrag   U Z V  S   mehr" }
+  - { row: 10, col: 0, text: "SUM" }
+  - { row: 10, col: 13, text: "EUR VonDat" }
+  - { row: 10, col: 46, text: "BisDt" }
+  - { row: 11, col: 2, text: "KD" }
+  - { row: 11, col: 30, text: "Kenn" }
+  - { row: 12, col: 0, text: "Lager" }
+  - { row: 13, col: 72, text: "mehr" }
+  - { row: 19, col: 72, text: "mehr" }
+  - { row: 23, col: 0, text: "PF3=Ende  PF7=Zurück  PF8=Vor  PF12=Abbruch  PF13=Hilfe", blue: true }
+  - { row: 24, col: 0, text: "PF24=Menü", blue: true }
+  - { row: 26, col: 30, text: "BEN: X0001  REF: TS0000000001" }
+fields:
+  - { name: Befehl, row: 1, col: 73, len: 4 }
+  - { name: SUM, row: 10, col: 4, len: 8, value: "1250,00" }
+  - { name: VonDat, row: 10, col: 24, len: 8, value: "01.12.25" }
+  - { name: BisDt, row: 10, col: 52, len: 8, value: "15.12.25" }
+  - { name: KD, row: 11, col: 5, len: 9, value: "AB123" }
+  - { name: Kenn, row: 11, col: 35, len: 5, value: "Q089" }
+  - { name: Lager, row: 12, col: 6, len: 9, value: "2463" }
+tables:
+  - name: upper
+    header_row: 13
+    visible_rows: 3
+    columns:
+      - { name: T, col: 1, len: 1 }
+      - { name: Pos, col: 4, len: 3 }
+      - { name: Ty, col: 9, len: 3 }
+      - { name: KZ, col: 14, len: 8 }
+      - { name: Code, col: 24, len: 8 }
+      - { name: Datum, col: 34, len: 8 }
+      - { name: S, col: 44, len: 1 }
+      - { name: Ref, col: 48, len: 3 }
+      - { name: Stufe, col: 53, len: 6 }
+      - { name: St, col: 62, len: 3 }
+    rows:
+      - ["1", "001", "BEL", "3,50", "0120", "01.12.25", "N", "001", "XB30", "1"]
+      - ["1", "002", "BEL", "12,80", "0O10", "01.12.25", "N", "002", "XB30", "1"]
+      - ["2", "003", "MAT", "104,00", "1l70", "03.12.25", "J", "001", "BX70", "2"]
+      - ["2", "004", "MAT", "7,25", "0120", "03.12.25", "N", "003", "BX70", "2"]
+      - ["1", "005", "BEL", "1,00", "8800", "05.12.25", "N", "001", "XB30", "1"]
+  - name: lower
+    header_row: 19
+    visible_rows: 3
+    columns:
+      - { name: T, col: 1, len: 1 }
+      - { name: Pos, col: 4, len: 3 }
+      - { name: Kat, col: 9, len: 5 }
+      - { name: Angaben zum Lieferstatus, col: 16, len: 28 }
+      - { name: Betrag, col: 46, len: 8 }
+      - { name: Frg, col: 56, len: 3 }
+      - { name: Grp, col: 61, len: 4 }
+    rows:
+      - ["1", "001", "PRÜF", "Größe der Rolle prüfen", "0,00", "J", "NRD"]
+      - ["2", "002", "ABZ", "Kürzung nach Abs §5", "12,50", "N", "OST"]

@@ -163,9 +163,9 @@ cell the way a person reads it, by its column header and a value in its
 row:
 
 ```yaml
-- assert: the "Tarif" column of the row containing "002" shows BE70
-- Type ZB99 into the "Tarif" column of the row containing "001"
-- Remember the "LS" column of the row containing "001" as ls
+- assert: the "Stufe" column of the row containing "002" shows BX70
+- Type XB99 into the "Stufe" column of the row containing "001"
+- Remember the "St" column of the row containing "001" as ls
 ```
 
 The column runs from its header to the next header on the line, and the

@@ -1,7 +1,7 @@
 # The upper table holds five lines and shows three; PF8 pages it.
 name: Page the upper table
 app: vision
-window: Leistung (replica)
+window: Host screen (replica)
 steps:
   - Press Home
   - Press Tab

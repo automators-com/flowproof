@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 90
     # The same flows with the layout's font at several sizes: OCR has a
     # floor, and this finds the smallest text vision reads reliably. 15px
-    # is the size measured from the client session's screenshot.
+    # is a typical host-emulator size.
     strategy:
       fail-fast: false
       matrix:

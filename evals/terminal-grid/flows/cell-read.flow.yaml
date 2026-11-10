@@ -2,9 +2,9 @@
 # grammar), instead of anywhere on the page.
 name: Read cells by column and row
 app: vision
-window: Leistung (replica)
+window: Host screen (replica)
 steps:
-  - assert: the "Tarif" column of the row containing "002" shows ZB30
-  - assert: the "RB" column of the row containing "003" shows 104,00
-  - assert: the "LS" column of the row containing "003" shows 2
-  - assert: the "AbzugBtr" column of the row containing "ABZ" shows 12,50
+  - assert: the "Stufe" column of the row containing "002" shows XB30
+  - assert: the "KZ" column of the row containing "003" shows 104,00
+  - assert: the "St" column of the row containing "003" shows 2
+  - assert: the "Betrag" column of the row containing "ABZ" shows 12,50
