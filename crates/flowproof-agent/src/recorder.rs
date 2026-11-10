@@ -378,7 +378,11 @@ fn selectors_for(app: &str, target: &Target, label: Option<&str>) -> Vec<Selecto
             }
             vec![Selector {
                 tier: SelectorTier::Structural,
-                provenance: flowproof_trace::format::Adapter::Web,
+                provenance: if app == "vision" {
+                    flowproof_trace::format::Adapter::Vision
+                } else {
+                    flowproof_trace::format::Adapter::Web
+                },
                 confidence: Some(0.9),
                 payload,
             }]

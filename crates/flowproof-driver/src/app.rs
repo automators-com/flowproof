@@ -298,6 +298,12 @@ impl std::fmt::Display for UiaSelector {
         if let Some(nth) = self.nth {
             parts.push(format!("nth={nth}"));
         }
+        if let Some(cell) = &self.cell {
+            parts.push(format!(
+                "\"{}\" column of the row containing \"{}\"",
+                cell.column, cell.anchor
+            ));
+        }
         if let Some(scope) = &self.scope {
             let inner = scope
                 .inner_css_selector()
@@ -1425,11 +1431,17 @@ pub fn text_contains(actual: &str, expected: &str) -> bool {
 /// word only. OCR drops a trailing comma and turns `!` into `l`, so
 /// `Hello, Ada` must be found in `Hello Adal`; but punctuation INSIDE a
 /// word is kept, so `$10.00` never matches `$1000` and `1,000` never
-/// matches `1000`. Widening-only, and only for the positive form - the
-/// callers never consult it for `does not show`, an equality or a count.
+/// matches `1000`.
+///
+/// Then, for three characters or more, the same with spacing ignored and
+/// glyphs OCR reads as one another folded on both sides (see [`ocr_fold`]):
+/// OCR breaks text at its punctuation and reads a plain zero as `O`, and a
+/// terminal's `1250,00` read `1250, OO`. Punctuation is still kept, so the
+/// guarantees above hold. Widening-only, and only for the positive form -
+/// the callers never consult it for `does not show`, an equality or a count.
 pub fn ocr_text_contains(actual: &str, expected: &str) -> bool {
     fn loose(text: &str) -> String {
-        normalize_visible_text(text)
+        ocr_fold(&normalize_visible_text(text))
             .split_whitespace()
             .map(|word| word.trim_matches(|c: char| c.is_ascii_punctuation()))
             .filter(|word| !word.is_empty())
@@ -1437,8 +1449,50 @@ pub fn ocr_text_contains(actual: &str, expected: &str) -> bool {
             .join(" ")
             .to_lowercase()
     }
-    let expected = loose(expected);
-    !expected.is_empty() && loose(actual).contains(&expected)
+    fn squeezed(text: &str) -> String {
+        let folded = ocr_fold(&normalize_visible_text(text));
+        folded.split_whitespace().collect::<String>().to_lowercase()
+    }
+    let wanted = loose(expected);
+    if wanted.is_empty() {
+        return false;
+    }
+    if loose(actual).contains(&wanted) {
+        return true;
+    }
+    let wanted = squeezed(expected);
+    wanted.chars().count() >= 3 && squeezed(actual).contains(&wanted)
+}
+
+/// Glyphs OCR reads as one another, folded to one for comparing what OCR
+/// read with what was meant, on both sides. Round shapes are one: a zero is
+/// read as `O`, `o`, an `ö` - or `Ø` when slashed, as terminal fonts draw
+/// it. Thin strokes are one: `1`, `I`, `l`, `i`, `|` (`Füllung` read
+/// `Füiiung`). Accents are dropped, as OCR drops them (`Kürzung` read
+/// `Kurzung`), and `§` reads as `S`. Only for comparing: a reading is never
+/// rewritten, and what is clicked is matched by vision's own, narrower
+/// rules.
+pub fn ocr_fold(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            'Ø' | 'O' | 'o' | 'Ö' | 'ö' | 'Ò' | 'Ó' | 'Ô' | 'Õ' | 'ò' | 'ó' | 'ô' | 'õ' => {
+                '0'
+            }
+            'I' | 'l' | 'i' | '|' | 'Ì' | 'Í' | 'Î' | 'Ï' | 'ì' | 'í' | 'î' | 'ï' => '1',
+            'Ä' | 'À' | 'Á' | 'Â' | 'Ã' | 'Å' => 'A',
+            'ä' | 'à' | 'á' | 'â' | 'ã' | 'å' => 'a',
+            'Ü' | 'Ù' | 'Ú' | 'Û' => 'U',
+            'ü' | 'ù' | 'ú' | 'û' => 'u',
+            'É' | 'È' | 'Ê' | 'Ë' => 'E',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'Ç' => 'C',
+            'ç' => 'c',
+            'Ñ' => 'N',
+            'ñ' => 'n',
+            '§' => 'S',
+            other => other,
+        })
+        .collect()
 }
 
 /// Does `actual` (a full URL) satisfy a `page url` expectation?
@@ -3121,6 +3175,34 @@ mod visible_text_tests {
         assert_eq!(normalize_visible_text(actual), expected);
         assert!(text_contains(actual, expected));
         assert_eq!(text_occurrences(expected, actual), 1);
+    }
+
+    /// A host terminal through Citrix, as Windows OCR read it: zeros as
+    /// `Ø` and `O`, its values broken at their punctuation.
+    #[test]
+    fn ocr_text_forgives_a_terminal_screens_zeros_and_breaks() {
+        use super::ocr_text_contains;
+        assert!(ocr_text_contains("1 ØØ1 BEL ZB3Ø", "001 BEL ZB30"));
+        assert!(ocr_text_contains("GRB 1250, OO EUR", "1250,00"));
+        assert!(ocr_text_contains("5, oo", "5,00"));
+        assert!(ocr_text_contains("ReDat 15.12. 25", "15.12.25"));
+        assert!(ocr_text_contains(
+            "1 Kür zung nach GOZ S5",
+            "Kürzung nach GOZ §5"
+        ));
+        assert!(ocr_text_contains(
+            "GrOße der Füiiung prüfen",
+            "Größe der Füllung prüfen"
+        ));
+        assert!(ocr_text_contains("Kurzung", "Kürzung"));
+        assert!(
+            !ocr_text_contains("ZE30", "ZB30"),
+            "a letter OCR got wrong is still wrong"
+        );
+        assert!(
+            !ocr_text_contains("1 2", "12"),
+            "two characters are not squeezed"
+        );
     }
 
     /// Plan 15, finding 6: the greeter page showed `Hello, Ada!` and real

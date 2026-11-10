@@ -1,0 +1,9 @@
+# Fill cells by column header and row: the cell is emptied first, so a
+# shorter value does not keep the old tail.
+name: Fill cells by column and row
+app: vision
+window: Leistung (replica)
+steps:
+  - Type ZB99 into the "Tarif" column of the row containing "001"
+  - Type 7 into the "RB" column of the row containing "003"
+  - assert: the "Tarif" column of the row containing "001" shows ZB99

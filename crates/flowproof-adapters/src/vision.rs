@@ -23,6 +23,11 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector};
 use image::RgbaImage;
 
+use crate::vision_grid::{
+    header_lines, lines_in_reading_order, locate_cell, reading, text_height, text_lines,
+    unread_ink, GridCell,
+};
+
 mod start;
 
 /// One recognized word, in window-relative pixel coordinates. Words are
@@ -140,7 +145,29 @@ pub trait OcrEngine {
     ) -> Result<Vec<OcrLine>, DriverError> {
         self.recognize(frame)
     }
+
+    /// The frame read `scale` times its size because its text is too small
+    /// to read well (see [`MIN_TEXT_PX`]) - words, where
+    /// [`Self::recognize_closer`] is tuned for lone glyphs such as keys.
+    /// Coordinates are the frame's own.
+    fn recognize_small_text(
+        &mut self,
+        frame: &RgbaImage,
+        scale: u32,
+    ) -> Result<Vec<OcrLine>, DriverError> {
+        self.recognize_closer(frame, scale)
+    }
 }
+
+/// Text below this height, the median OCR box in pixels, is read again
+/// enlarged as well. Measured on a host terminal through Citrix: Windows
+/// OCR read 12px-tall Consolas right, and 9px-tall Courier - the client's
+/// font - as `ZE30` for `ZB30`, `Eingahe` for `Eingabe`, `o, oo` for
+/// `0,00`, its one-pixel strokes too thin to tell `B` from `E`.
+const MIN_TEXT_PX: f32 = 12.0;
+
+/// The text height small text is enlarged to: three times for 9px text.
+const SMALL_TEXT_TARGET_PX: f32 = 24.0;
 
 /// A control the window's accessibility tree names, window-relative.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,6 +294,27 @@ fn vision_log(message: impl FnOnce() -> String) {
 /// back inside it - a couple of lines, not a page.
 const EDGE_NUDGE_NOTCHES: i32 = 2;
 
+/// Glyphs OCR reads as one another, folded to one: on Calculator's keypad
+/// `×` read as `X`, and its thin `1` as `I`, and an author writes what the
+/// key shows. Terminal fonts draw zero with a slash, and OCR reads it as
+/// `Ø`: a table's `001` read `ØØ1` through a JPEG-compressed Citrix frame.
+/// Not `O` as `0`: OCR misread Calculator's `9` as `O`, and that fold would
+/// have clicked the wrong key. Not `|` as `1`: a toolbar's separators stand
+/// alone. Case kept: the italic `x` of `x²` beside the keypad is a letter,
+/// and matched `×` when the fold lowercased.
+pub(crate) fn look_alike(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '×' | 'X' | '*' => 'X',
+            '−' | '–' | '—' => '-',
+            '÷' => '/',
+            'I' | 'l' => '1',
+            'Ø' => '0',
+            other => other,
+        })
+        .collect()
+}
+
 /// `AppDriver` over frames + OCR + injected input.
 pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     screen: S,
@@ -284,6 +332,9 @@ pub struct VisionAppDriver<S: VisionScreen, E: OcrEngine> {
     /// look, and one step looks several times.
     controls_cache: Option<(RgbaImage, Vec<AccessibleControl>)>,
     window_title: Option<String>,
+    /// The last table cell a lookup found (see `vision_grid`): where its
+    /// first character sits and how wide it is, for the action that follows.
+    last_cell: Option<GridCell>,
 }
 
 impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
@@ -296,7 +347,13 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             read_cache: [None, None, None],
             controls_cache: None,
             window_title: None,
+            last_cell: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn screen_for_tests(&self) -> &S {
+        &self.screen
     }
 
     /// How a typed value is recognised on screen: letters and digits only,
@@ -312,6 +369,11 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// like `12+30=` are an instruction to the app, not text it shows back -
     /// Calculator showed `42`, and the key `1230` failed a typing that had
     /// worked.
+    ///
+    /// Keys and the screen are compared with OCR's look-alike glyphs folded
+    /// on both sides (see `key_count` and `flowproof_driver::ocr_fold`): typed `5,00` read
+    /// back as `5, oo` on a terminal screen, and was taken for a typing
+    /// that never arrived.
     fn readback_keys(text: &str) -> Vec<String> {
         let mut keys: Vec<String> = text
             .split(['+', '*', '/', '=', '×', '÷'])
@@ -383,7 +445,8 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                     .filter(|c| c.is_alphanumeric())
                     .flat_map(char::to_lowercase)
                     .collect();
-                text.matches(key).count()
+                let key = flowproof_driver::ocr_fold(key);
+                flowproof_driver::ocr_fold(&text).matches(&key).count()
             })
             .sum()
     }
@@ -406,10 +469,36 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let lines = if scale > 1 {
             self.ocr.recognize_closer(frame, scale)?
         } else {
-            self.ocr.recognize(frame)?
+            let first = self.ocr.recognize(frame)?;
+            self.with_small_text_enlarged(frame, first)
         };
         self.read_cache[slot] = Some((frame.clone(), lines.clone()));
         Ok(lines)
+    }
+
+    /// A screen whose text is too small to read well is read again,
+    /// enlarged until its text is [`SMALL_TEXT_TARGET_PX`] tall, and that
+    /// reading leads: OCR engines lose the strokes that tell letters apart
+    /// on small text. The screen-size reading follows it (see
+    /// `merge_readings`), so whatever it read stays readable - a widening,
+    /// never a loss. Screens of ordinary text are read once, as before.
+    fn with_small_text_enlarged(&mut self, frame: &RgbaImage, first: Vec<OcrLine>) -> Vec<OcrLine> {
+        let words: Vec<OcrWord> = first.iter().flat_map(|l| l.words.clone()).collect();
+        if words.is_empty() {
+            return first;
+        }
+        let height = text_height(&words);
+        if height >= MIN_TEXT_PX {
+            return first;
+        }
+        let scale = (SMALL_TEXT_TARGET_PX / height).ceil().clamp(2.0, 3.0) as u32;
+        match self.ocr.recognize_small_text(frame, scale) {
+            Ok(enlarged) if !enlarged.is_empty() => {
+                vision_log(|| format!("text {height}px tall: also read at {scale}x"));
+                merge_readings(enlarged, first)
+            }
+            _ => first,
+        }
     }
 
     fn lines(&mut self) -> Result<Vec<OcrLine>, DriverError> {
@@ -453,6 +542,11 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         self.screen.settle()?;
         let mut hit = self.require(selector)?;
         let mut point = Self::action_point(&hit, selector, default_relation);
+        // A cell is acted on at its first character: a terminal puts the
+        // cursor where the click lands, and typing starts there.
+        if let (Some(_), Some(cell)) = (&selector.cell, &self.last_cell) {
+            point = cell.start;
+        }
         for _ in 0..2 {
             // A control's box is the tree's, already inside the window.
             if hit.control {
@@ -562,6 +656,57 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let frame = self.screen.frame()?;
         self.frame_height = frame.height();
         let lines = self.read(&frame, 1)?;
+        // A table cell on a character grid: found by its header and a value
+        // in its row, then read on its own (see `vision_grid`).
+        if let Some(query) = &selector.cell {
+            vision_log(|| {
+                let read: Vec<String> = lines
+                    .iter()
+                    .map(|l| format!("{:?}@{:?}", l.text, l.rect))
+                    .collect();
+                format!("[{selector}] OCR lines: {read:?}")
+            });
+            // Each header line naming the column is read again on its own:
+            // a column's edges come from its neighbours' headers, and a
+            // screen-wide reading drops short ones. What that finds is
+            // added after the screen's reading, which keeps precedence.
+            let headers = header_lines(&lines, &query.column);
+            let mut with_headers = lines.clone();
+            for (top, height) in &headers {
+                let pad = *height as i32 / 4;
+                let band = (0, top - pad, frame.width(), height + 2 * pad as u32);
+                with_headers.extend(self.read_region(&frame, band));
+            }
+            let mut cell = locate_cell(&with_headers, query, frame.width());
+            // Not found: look closer, as any anchor is looked for again
+            // closer when the screen-size reading misses it - and one line
+            // at a time. A text detector given the whole screen drops a
+            // short word standing alone between wide gaps: the two-letter
+            // headers `LS` and `RB` were never read, enlarged or not, while
+            // every header beside them was; through JPEG the row anchor
+            // `001` read `eel`. First the ink no reading covered is read on
+            // its own; then each line of text as its own strip, enlarged,
+            // with nothing else in view.
+            if cell.is_none() {
+                let missed = self.read_unread_ink(&frame, &with_headers);
+                with_headers.extend(missed);
+                cell = locate_cell(&with_headers, query, frame.width());
+            }
+            if cell.is_none() {
+                let strips = self.line_by_line(&frame, &with_headers);
+                with_headers.extend(strips);
+                cell = locate_cell(&with_headers, query, frame.width());
+            }
+            vision_log(|| format!("[{selector}] cell: {cell:?}"));
+            let hit = cell.as_ref().map(|c| OcrHit {
+                text: self.read_cell(&frame, c),
+                rect: c.rect,
+                order: (c.rect.1, c.rect.0),
+                control: true,
+            });
+            self.last_cell = cell;
+            return Ok((lines, hit));
+        }
         // The Windows Start logo has no text to read: it is found by its
         // shape on every look, and never by OCR or the tree.
         if selector.name.as_deref().map(str::trim) == Some(start::LABEL) {
@@ -696,7 +841,58 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 return Ok((lines, Some(hit)));
             }
         }
+        // Small text, still not found: one line at a time. A text detector
+        // given a whole screen of small text drops a short word standing
+        // alone - a terminal's `Diag` label beside its field, its two-letter
+        // headers - at every scale, while each line read on its own gives
+        // it back. Ordinary screens skip this, so a wait for text not yet
+        // drawn costs what it did.
+        let words: Vec<OcrWord> = lines.iter().flat_map(|l| l.words.clone()).collect();
+        if !words.is_empty() && text_height(&words) < MIN_TEXT_PX {
+            let missed = self.read_unread_ink(&frame, &lines);
+            if let Some(hit) = Self::resolve_in(&missed, selector) {
+                vision_log(|| {
+                    format!(
+                        "[{selector}] found in ink no reading covered: '{}'",
+                        hit.text
+                    )
+                });
+                return Ok((lines, Some(hit)));
+            }
+            let strips = self.line_by_line(&frame, &lines);
+            if let Some(hit) = Self::resolve_in(&strips, selector) {
+                vision_log(|| format!("[{selector}] found reading line by line: '{}'", hit.text));
+                return Ok((lines, Some(hit)));
+            }
+        }
         Ok((lines, None))
+    }
+
+    /// The ink on screen that no reading in `lines` covers (see
+    /// `vision_grid::unread_ink`), each run read on its own, enlarged.
+    fn read_unread_ink(&mut self, frame: &RgbaImage, lines: &[OcrLine]) -> Vec<OcrLine> {
+        let mut found = Vec::new();
+        for spot in unread_ink(frame, lines) {
+            let read = self.read_region(frame, spot);
+            vision_log(|| {
+                let texts: Vec<&str> = read.iter().map(|l| l.text.as_str()).collect();
+                format!("unread ink at {spot:?} reads {texts:?}")
+            });
+            found.extend(read);
+        }
+        found
+    }
+
+    /// Each line of text in `lines` read again as its own strip of the
+    /// frame, enlarged, with nothing else in view (see `read_region`).
+    fn line_by_line(&mut self, frame: &RgbaImage, lines: &[OcrLine]) -> Vec<OcrLine> {
+        let mut strips = Vec::new();
+        for (top, height) in text_lines(lines) {
+            let pad = height as i32 / 2;
+            let strip = (0, top - pad, frame.width(), height + 2 * pad as u32);
+            strips.extend(self.read_region(frame, strip));
+        }
+        strips
     }
 
     /// Every icon on the frame - a small shape that is not text - named by
@@ -842,24 +1038,9 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
                 .join(" ")
                 .to_lowercase()
         };
-        // Last, glyphs OCR reads as one another, for whole lines and words
-        // only: on Calculator's keypad `×` read as `X`, and its thin `1` as
-        // `I`, and an author writes what the key shows. Not `O` as `0`: OCR
-        // misread Calculator's `9` as `O`, and that fold would have clicked
-        // the wrong key. Not `|` as `1`: a toolbar's separators stand alone.
-        // Case kept: the italic `x` of `x²` beside the keypad is a letter,
-        // and matched `×` when the fold lowercased.
-        let look_alike = |text: &str| {
-            text.chars()
-                .map(|c| match c {
-                    '×' | 'X' | '*' => 'X',
-                    '−' | '–' | '—' => '-',
-                    '÷' => '/',
-                    'I' | 'l' => '1',
-                    other => other,
-                })
-                .collect::<String>()
-        };
+        // Last, glyphs OCR reads as one another (see `look_alike`), for
+        // whole lines and words only.
+        let look_alike = |text: &str| look_alike(text);
         // Also ignoring spaces, for an anchor of three characters or more:
         // OCR breaks a name after its underscores, and File Explorer's
         // `ssis_pc_data` read as `ssis_ pc_ data`.
@@ -1248,6 +1429,88 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         self.screen.window_origin()
     }
 
+    /// One rectangle of the frame read on its own, by the same engines as
+    /// the screen, its boxes back in window coordinates. It is enlarged
+    /// three times and set in a margin of its own background: a text
+    /// detector needs clear space around text. A read that fails is
+    /// nothing read.
+    fn read_region(&mut self, frame: &RgbaImage, rect: PixelRect) -> Vec<OcrLine> {
+        const SCALE: u32 = 3;
+        let (x, y, w, h) = rect;
+        let (fw, fh) = frame.dimensions();
+        let x0 = x.clamp(0, fw as i32 - 1) as u32;
+        let y0 = y.clamp(0, fh as i32 - 1) as u32;
+        let (w, h) = (w.min(fw - x0).max(1), h.min(fh - y0).max(1));
+        let crop = image::imageops::crop_imm(frame, x0, y0, w, h).to_image();
+        let big = image::imageops::resize(
+            &crop,
+            w * SCALE,
+            h * SCALE,
+            image::imageops::FilterType::CatmullRom,
+        );
+        let margin = h * SCALE / 2;
+        let background = *big.get_pixel(0, 0);
+        let mut canvas = RgbaImage::from_pixel(
+            big.width() + 2 * margin,
+            big.height() + 2 * margin,
+            background,
+        );
+        image::imageops::overlay(&mut canvas, &big, margin as i64, margin as i64);
+        let back = |(cx, cy, cw, ch): PixelRect| -> PixelRect {
+            let scale = SCALE as i32;
+            (
+                x0 as i32 + (cx - margin as i32) / scale,
+                y0 as i32 + (cy - margin as i32) / scale,
+                (cw / SCALE).max(1),
+                (ch / SCALE).max(1),
+            )
+        };
+        let lines = self.ocr.recognize(&canvas).unwrap_or_default();
+        lines
+            .into_iter()
+            .map(|l| OcrLine {
+                rect: back(l.rect),
+                words: l
+                    .words
+                    .into_iter()
+                    .map(|w| OcrWord {
+                        rect: back(w.rect),
+                        text: w.text,
+                    })
+                    .collect(),
+                text: l.text,
+            })
+            .collect()
+    }
+
+    /// A cell's text. The screen-size reading comes first: it is the
+    /// reading that found the cell's header and row, and on a Windows
+    /// runner it read every cell right where a crop read with ocrs alone
+    /// gave `Z830` for `ZB30`, and an enlarged crop through JPEG gave `83`.
+    /// The cell's own box is read only when that reading put nothing in it,
+    /// as with a short value a screen-wide pass can drop.
+    fn read_cell(&mut self, frame: &RgbaImage, cell: &GridCell) -> String {
+        if !cell.text.is_empty() {
+            return cell.text.clone();
+        }
+        let lines = self.read_region(frame, cell.rect);
+        let text = reading(&lines);
+        vision_log(|| format!("cell {:?} read on its own as {text:?}", cell.rect));
+        text
+    }
+
+    /// Empty the cell the cursor was just put on. A terminal field has no
+    /// select-all and typing overwrites, so the old tail would survive:
+    /// Delete at its first character, once per character it holds, empties
+    /// it on every emulator, whatever key each maps to Erase EOF.
+    fn empty_cell(&mut self) -> Result<(), DriverError> {
+        let chars = self.last_cell.as_ref().map_or(0, |c| c.chars);
+        for _ in 0..chars {
+            self.screen.press_key("Delete", &[])?;
+        }
+        Ok(())
+    }
+
     /// The action point for a matched anchor, honoring the selector's
     /// spatial relation (`default_relation` when the trace predates it).
     fn action_point(hit: &OcrHit, selector: &UiaSelector, default_relation: &str) -> (i32, i32) {
@@ -1310,6 +1573,15 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         // A field is addressed by its label; the input box sits beside it.
         let (_, (x, y)) = self.locate(selector, "right_of")?;
         self.screen.click(x, y)?;
+        if selector.cell.is_some() {
+            self.empty_cell()?;
+            if text.is_empty() {
+                self.typed_baseline = None;
+                return Ok(());
+            }
+            self.count_before_typing(text)?;
+            return self.screen.type_text(text);
+        }
         // Select what the field holds before the keystrokes land - the
         // trait's fill contract, by the same chord clear_text below already
         // uses. Pixels give no way to read the field first, which is exactly
@@ -1354,6 +1626,9 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     fn clear_text(&mut self, selector: &UiaSelector) -> Result<(), DriverError> {
         let (_, (x, y)) = self.locate(selector, "right_of")?;
         self.screen.click(x, y)?;
+        if selector.cell.is_some() {
+            return self.empty_cell();
+        }
         self.screen.press_key("a", &[KeyMod::Ctrl])?;
         self.screen.press_key("Delete", &[])
     }
@@ -1502,12 +1777,22 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     fn surface_text(&mut self) -> Result<String, DriverError> {
         // The OCR'd frame IS the surface - reading order, one line each.
         // Across a caret blink both readings are kept, so a check is judged
-        // against the one the caret did not garble.
-        Ok(self
-            .steady_lines()?
+        // against the one the caret did not garble. Each reading is also
+        // given as screen lines rebuilt from its words, left to right: OCR
+        // splits a line at its gaps and lists the pieces apart, and a
+        // terminal's status bar `Dialog aktiv` came back as `Dialog` and
+        // `aktiv` with other lines between, so `page shows Dialog aktiv`
+        // never held.
+        let readings = self.steady_lines()?;
+        let mut text: Vec<String> = Vec::new();
+        for lines in &readings {
+            text.extend(lines.iter().map(|l| l.text.clone()));
+        }
+        for lines in &readings {
+            text.extend(lines_in_reading_order(lines));
+        }
+        Ok(text
             .into_iter()
-            .flatten()
-            .map(|l| l.text)
             .filter(|t| !t.trim().is_empty())
             .collect::<Vec<_>>()
             .join("\n"))
@@ -2546,6 +2831,21 @@ impl OcrEngine for AutoOcr {
             Self::Ocrs(e) => e.recognize_closer(frame, scale),
         }
     }
+
+    /// Words go to Windows OCR, the engine that reads them: ocrs is the
+    /// closer engine for lone glyphs, and on a terminal screen it read
+    /// noise in boxes several rows tall.
+    fn recognize_small_text(
+        &mut self,
+        frame: &RgbaImage,
+        scale: u32,
+    ) -> Result<Vec<OcrLine>, DriverError> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(e) | Self::Both(e, _) => e.recognize_closer(frame, scale),
+            Self::Ocrs(e) => e.recognize_closer(frame, scale),
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -3204,6 +3504,59 @@ mod tests {
         );
     }
 
+    /// A terminal's status bar, as Windows OCR listed it: `Dialog` and
+    /// `aktiv` apart, another line between them. The page still shows the
+    /// words of one line together.
+    #[test]
+    fn page_text_puts_a_lines_pieces_back_together() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            FakeOcr::with_lines(vec![
+                OcrLine::new("Dialog", (10, 300, 60, 16)),
+                OcrLine::new("PF5 PF9", (10, 260, 70, 16)),
+                OcrLine::new("aktiv", (90, 301, 50, 16)),
+            ]),
+        );
+        let text = d.surface_text().expect("reads");
+        assert!(
+            flowproof_driver::ocr_text_contains(&text, "Dialog aktiv"),
+            "{text}"
+        );
+    }
+
+    /// A terminal's 9px Courier read `ZE30` at screen size and `ZB30`
+    /// enlarged. Small text is read again, three times the size, and that
+    /// reading leads; the screen-size reading stays behind it.
+    #[test]
+    fn small_text_is_read_enlarged_and_that_reading_leads() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            CloserStill {
+                first: vec![OcrLine::new("ZE30", (40, 100, 36, 9))],
+                at_3x: vec![OcrLine::new("ZB30", (40, 100, 36, 9))],
+                scales: Vec::new(),
+            },
+        );
+        let text = d.surface_text().expect("reads");
+        let (enlarged, first) = (text.find("ZB30"), text.find("ZE30"));
+        assert!(enlarged.is_some() && enlarged < first, "{text}");
+        assert_eq!(d.ocr.scales, vec![3]);
+    }
+
+    #[test]
+    fn ordinary_text_is_read_once() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            CloserStill {
+                first: vec![OcrLine::new("ZB30", (40, 100, 48, 12))],
+                at_3x: Vec::new(),
+                scales: Vec::new(),
+            },
+        );
+        assert!(d.surface_text().expect("reads").contains("ZB30"));
+        assert!(d.ocr.scales.is_empty(), "12px text needs no second look");
+    }
+
     /// OCR read Calculator's Keep-on-top icon, beside "Standard", as `5`,
     /// and missed the `5` key at screen size. The key is looked for closer
     /// before the `5` inside the phrase may stand in for it.
@@ -3251,6 +3604,16 @@ mod tests {
             vec!["slowty", "emailc"]
         );
         assert_eq!(D::readback_keys("ORD-1234"), vec!["ord1234"]);
+    }
+
+    /// Typed `5,00` on a terminal screen read back as `5, oo`: the value
+    /// arrived, and is counted as on screen.
+    #[test]
+    fn a_typed_value_read_with_look_alike_glyphs_is_counted() {
+        type D = VisionAppDriver<FakeScreen, FakeOcr>;
+        let lines = vec![OcrLine::new("AbzugBtr 5, oo", (20, 20, 140, 16))];
+        let keys = D::readback_keys("5,00");
+        assert_eq!(D::key_count(&lines, &keys[0]), 1);
     }
 
     /// A keypad row OCR'd as one line: the model reaches the `8` in

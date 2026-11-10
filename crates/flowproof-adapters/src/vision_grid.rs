@@ -1,0 +1,706 @@
+//! Table cells on a character-grid screen: the host terminals that reach
+//! vision through Citrix. A table there is a header line with rows of input
+//! fields under it, one screen line per row. General OCR reads such a table
+//! as column blocks, so a value loses the row it belongs to; a cell is
+//! instead found the way a person finds it - the column under its header,
+//! the row by a value it holds - and only that cell's box is read.
+
+use flowproof_driver::{CellQuery, PixelRect};
+
+use crate::vision::{look_alike, OcrLine, OcrWord};
+
+/// A located cell: its box on screen, where its first character sits, how
+/// many characters wide it is, the words the screen-size reading put inside
+/// it, and their text spaced as the grid spaces them.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GridCell {
+    pub rect: PixelRect,
+    pub start: (i32, i32),
+    pub chars: usize,
+    pub words: Vec<String>,
+    pub text: String,
+}
+
+/// Words joined as the grid places them. Each word starts in a character
+/// column, `(x - origin) / pitch` rounded, and a word holds as many columns
+/// as it has characters; two words are a space apart when columns lie
+/// between them, and run together when none do, as OCR text collapses runs
+/// of spaces to one. Windows OCR splits a value at its punctuation, and the
+/// narrow ink of a comma leaves more than half a character of white before
+/// the next glyph, so measuring the gap read `104,00` as `104, 00`; the
+/// columns say there is none.
+fn spaced(words: &[&OcrWord], pitch: f32, origin: i32) -> String {
+    let mut text = String::new();
+    let mut next: Option<i32> = None;
+    for w in words {
+        let column = ((w.rect.0 - origin) as f32 / pitch).round() as i32;
+        if let Some(next) = next {
+            let gap = (column - next).clamp(0, 1);
+            text.push_str(&" ".repeat(gap as usize));
+        }
+        text.push_str(&w.text);
+        next = Some(column + w.text.chars().count() as i32);
+    }
+    text
+}
+
+/// The screen's character pitch: the median width per character of the
+/// words of five or more characters. A short word's box is its ink, a
+/// glyph's side bearing short of its cells, which on a two-letter header
+/// is a tenth of the pitch.
+fn grid_pitch(words: &[OcrWord]) -> Option<f32> {
+    let mut pitches: Vec<f32> = words
+        .iter()
+        .filter(|w| w.text.chars().count() >= 5 && !w.text.contains(' '))
+        .map(|w| w.rect.2 as f32 / w.text.chars().count() as f32)
+        .collect();
+    pitches.sort_by(f32::total_cmp);
+    pitches.get(pitches.len() / 2).copied()
+}
+
+/// The height of one line of text on this screen: the median word box. On
+/// a character grid every line is one glyph tall, so nearly every box
+/// agrees.
+pub(crate) fn text_height(words: &[OcrWord]) -> f32 {
+    let mut heights: Vec<u32> = words.iter().map(|w| w.rect.3).collect();
+    heights.sort_unstable();
+    heights.get(heights.len() / 2).copied().unwrap_or(1).max(1) as f32
+}
+
+/// Two words covering more than half of the narrower one's width.
+fn overlap(a: &OcrWord, b: &OcrWord) -> bool {
+    let left = a.rect.0.max(b.rect.0);
+    let right = (a.rect.0 + a.rect.2 as i32).min(b.rect.0 + b.rect.2 as i32);
+    (right - left) * 2 > a.rect.2.min(b.rect.2) as i32
+}
+
+fn centre_y(w: &OcrWord) -> i32 {
+    w.rect.1 + w.rect.3 as i32 / 2
+}
+
+/// Words on one screen line, left to right: their vertical centres are
+/// within half a glyph height of each other. OCR splits a wide table row
+/// into several lines at its gaps, so rows are rebuilt from words.
+///
+/// Only boxes one line of text tall take part. Vision merges two engines'
+/// readings, and on a terminal screen ocrs read noise as boxes several rows
+/// tall (`D??` 99px high among 12px words): taken as part of a row, one
+/// stretched the row over five lines, the click landed a row low and the
+/// crop read six rows of noise. Where both engines read a word in the same
+/// place, the first reading stands, as it does in the merge itself.
+fn bands(lines: &[OcrLine]) -> Vec<Vec<OcrWord>> {
+    let all: Vec<OcrWord> = lines.iter().flat_map(|l| l.words.clone()).collect();
+    let line = text_height(&all);
+    let mut words: Vec<(usize, OcrWord)> = all
+        .into_iter()
+        .enumerate()
+        .filter(|(_, w)| (0.6 * line..=1.6 * line).contains(&(w.rect.3 as f32)))
+        .collect();
+    words.sort_by_key(|(_, w)| (centre_y(w), w.rect.0));
+    let mut bands: Vec<Vec<(usize, OcrWord)>> = Vec::new();
+    for (i, word) in words {
+        let centre = centre_y(&word);
+        match bands.last_mut() {
+            Some(band) if (centre - middle(band)).abs() <= (line / 2.0) as i32 => {
+                band.push((i, word))
+            }
+            _ => bands.push(vec![(i, word)]),
+        }
+    }
+    bands
+        .into_iter()
+        .map(|mut band| {
+            band.sort_by_key(|(i, _)| *i);
+            let mut kept: Vec<OcrWord> = Vec::new();
+            for (_, word) in band {
+                if !kept.iter().any(|k| overlap(k, &word)) {
+                    kept.push(word);
+                }
+            }
+            kept.sort_by_key(|w| w.rect.0);
+            kept
+        })
+        .collect()
+}
+
+/// The text of a reading under the same rules a row is built by: boxes one
+/// line tall, the first reading of a word where two engines overlap, lines
+/// top to bottom and words left to right.
+pub(crate) fn reading(lines: &[OcrLine]) -> String {
+    let words: Vec<String> = bands(lines).into_iter().flatten().map(|w| w.text).collect();
+    words.join(" ")
+}
+
+fn middle(band: &[(usize, OcrWord)]) -> i32 {
+    let sum: i32 = band.iter().map(|(_, w)| centre_y(w)).sum();
+    sum / band.len().max(1) as i32
+}
+
+/// A header or anchor read as written, under the tiers vision matches any
+/// anchor by: case and spacing ignored, then punctuation at word edges,
+/// then glyphs OCR reads as one another (`ØØ1` for `001`; see `look_alike`).
+fn same(read: &str, wanted: &str) -> bool {
+    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let loose = |s: &str| {
+        s.split_whitespace()
+            .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()))
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let tiers: [&dyn Fn(&str) -> String; 3] = [
+        &|s| words(s).to_lowercase(),
+        &|s| loose(s).to_lowercase(),
+        &|s| look_alike(&loose(s)).to_lowercase(),
+    ];
+    tiers.iter().any(|tier| {
+        let wanted = tier(wanted);
+        !wanted.is_empty() && tier(read) == wanted
+    })
+}
+
+/// The lines that name `column`, as `(top, height)`: the header lines a
+/// cell under that column can belong to. Read again on their own, closer,
+/// they give back the short headers a screen-wide reading drops - Windows
+/// OCR missed a two-letter `LS`, and the column to its left ran on to the
+/// next header it did read.
+pub(crate) fn header_lines(lines: &[OcrLine], column: &str) -> Vec<(i32, u32)> {
+    bands(lines)
+        .iter()
+        .filter(|band| find_run(band, column).is_some())
+        .map(|band| extent(band))
+        .collect()
+}
+
+/// The text of each line on screen, top to bottom, its words left to
+/// right: a reading's pieces put back on the lines they were drawn on.
+pub(crate) fn lines_in_reading_order(lines: &[OcrLine]) -> Vec<String> {
+    bands(lines)
+        .into_iter()
+        .map(|band| {
+            let words: Vec<String> = band.into_iter().map(|w| w.text).collect();
+            words.join(" ")
+        })
+        .collect()
+}
+
+/// Every line of text on screen, top to bottom, as `(top, height)`: the
+/// rows a reading built, by the same rules a cell's row is built by.
+pub(crate) fn text_lines(lines: &[OcrLine]) -> Vec<(i32, u32)> {
+    bands(lines).iter().map(|band| extent(band)).collect()
+}
+
+fn extent(band: &[OcrWord]) -> (i32, u32) {
+    let top = band.iter().map(|w| w.rect.1).min().unwrap_or(0);
+    let bottom = band
+        .iter()
+        .map(|w| w.rect.1 + w.rect.3 as i32)
+        .max()
+        .unwrap_or(top);
+    (top, (bottom - top).max(1) as u32)
+}
+
+/// Text on screen that no reading covers: on each line of `lines`, runs of
+/// ink that no word's box reaches, as boxes to read on their own. Ink is
+/// contrast with the line's own background - its median brightness - so
+/// dark text on a light screen and light text on a dark one are both ink,
+/// and a white input field on a grey screen is not.
+///
+/// A text detector does not find every word: on a terminal's thin 9px
+/// Courier, Windows OCR never read the two-letter headers `RB` and `LS`,
+/// at any size, line by line or whole, while the headers beside them read
+/// every time. Their ink was there all along.
+pub(crate) fn unread_ink(frame: &image::RgbaImage, lines: &[OcrLine]) -> Vec<PixelRect> {
+    const CONTRAST: i32 = 90;
+    let (fw, fh) = (frame.width() as i32, frame.height() as i32);
+    let bands = bands(lines);
+    let all: Vec<OcrWord> = bands.concat();
+    let line = text_height(&all);
+    let pitch = grid_pitch(&all).unwrap_or(line * 0.6).max(2.0);
+    let luma = |x: i32, y: i32| {
+        let [r, g, b, _] = frame.get_pixel(x as u32, y as u32).0;
+        (i32::from(r) * 299 + i32::from(g) * 587 + i32::from(b) * 114) / 1000
+    };
+    let mut boxes = Vec::new();
+    for band in &bands {
+        let (top, height) = extent(band);
+        let (y0, y1) = (top.max(0), (top + height as i32).min(fh));
+        if y0 >= y1 {
+            continue;
+        }
+        let mut lumas: Vec<i32> = (y0..y1)
+            .flat_map(|y| (0..fw).map(move |x| (x, y)))
+            .map(|(x, y)| luma(x, y))
+            .collect();
+        lumas.sort_unstable();
+        let background = lumas[lumas.len() / 2];
+        let half = (pitch / 2.0).ceil() as i32;
+        let covered = |x: i32| {
+            band.iter()
+                .any(|w| x >= w.rect.0 - half && x < w.rect.0 + w.rect.2 as i32 + half)
+        };
+        let inked = |x: i32| (y0..y1).any(|y| (luma(x, y) - background).abs() > CONTRAST);
+        // Runs of unread ink, a gap under a character joining one word.
+        let mut run: Option<(i32, i32)> = None;
+        let flush = |run: Option<(i32, i32)>, boxes: &mut Vec<PixelRect>| {
+            if let Some((start, end)) = run {
+                if (end - start) as f32 >= pitch / 2.0 {
+                    let pad = height as i32 / 2;
+                    boxes.push((
+                        start - half,
+                        top - pad,
+                        (end - start + 2 * half) as u32,
+                        height + 2 * pad as u32,
+                    ));
+                }
+            }
+        };
+        for x in 0..fw {
+            if covered(x) || !inked(x) {
+                if let Some((_, end)) = run {
+                    if (x - end) as f32 > pitch {
+                        flush(run.take(), &mut boxes);
+                    }
+                }
+                continue;
+            }
+            run = Some(run.map_or((x, x + 1), |(start, _)| (start, x + 1)));
+        }
+        flush(run, &mut boxes);
+    }
+    boxes
+}
+
+/// The run of words in `band` reading `label`, as word indexes.
+fn find_run(band: &[OcrWord], label: &str) -> Option<(usize, usize)> {
+    let want = label.split_whitespace().count().max(1);
+    (0..band.len()).find_map(|i| {
+        let j = i + want - 1;
+        let text: Vec<&str> = band.get(i..=j)?.iter().map(|w| w.text.as_str()).collect();
+        same(&text.join(" "), label).then_some((i, j))
+    })
+}
+
+/// The cell under the `column` header in the row holding `anchor` (and
+/// every `also`). Rows are tried top to bottom; for each, the nearest
+/// header line ABOVE it that names the column is its table's, so two
+/// tables sharing a column name each resolve their own rows.
+pub(crate) fn locate_cell(
+    lines: &[OcrLine],
+    query: &CellQuery,
+    frame_width: u32,
+) -> Option<GridCell> {
+    let bands = bands(lines);
+    let screen_pitch = grid_pitch(&bands.concat());
+    for (r, row) in bands.iter().enumerate() {
+        let holds = |label: &str| find_run(row, label).is_some();
+        let Some((a, b)) = find_run(row, &query.anchor) else {
+            continue;
+        };
+        if !query.also.iter().all(|also| holds(also)) {
+            continue;
+        }
+        let Some((header, (i, j))) = bands[..r]
+            .iter()
+            .rev()
+            .find_map(|b| find_run(b, &query.column).map(|run| (b, run)))
+        else {
+            continue;
+        };
+        // A monospaced screen: the pitch from its long words, or from the
+        // header itself when the screen has none.
+        let first = &header[i];
+        let pitch = screen_pitch
+            .unwrap_or(first.rect.2 as f32 / first.text.chars().count().max(1) as f32)
+            .max(1.0);
+        let half = (pitch / 2.0).round() as i32;
+        // The column runs from its header to the next header on the line.
+        // The last one has no next header: it ends where its header or the
+        // row's text does, not at the window's edge - a box that wide would
+        // read whatever else the line holds, and a fill would press Delete
+        // for every character of it.
+        let left = first.rect.0 - half;
+        let end = |w: &OcrWord| w.rect.0 + w.rect.2 as i32;
+        let right = header.get(j + 1).map_or_else(
+            || {
+                let text_end = row
+                    .iter()
+                    .filter(|w| w.rect.0 + w.rect.2 as i32 / 2 >= left)
+                    .map(end)
+                    .fold(end(&header[j]), i32::max);
+                (text_end + half).min(frame_width as i32)
+            },
+            |next| next.rect.0 - half,
+        );
+        // The row is where its anchor is: the words that identify it, not
+        // everything else that happened to land on the line.
+        let anchor = &row[a..=b];
+        let top = anchor.iter().map(|w| w.rect.1).min().unwrap_or(0);
+        let height = anchor.iter().map(|w| w.rect.3).max().unwrap_or(1);
+        let pad = height as i32 / 4;
+        let rect = (
+            left,
+            top - pad,
+            (right - left).max(1) as u32,
+            height + 2 * pad as u32,
+        );
+        let words: Vec<&OcrWord> = row
+            .iter()
+            .filter(|w| (left..right).contains(&(w.rect.0 + w.rect.2 as i32 / 2)))
+            .collect();
+        return Some(GridCell {
+            rect,
+            start: (first.rect.0 + half, top + height as i32 / 2),
+            chars: ((right - left) as f32 / pitch).round().max(1.0) as usize,
+            words: words.iter().map(|w| w.text.clone()).collect(),
+            text: spaced(&words, pitch, first.rect.0),
+        });
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A line of a 10px-pitch monospaced screen: `text` starting at column
+    /// `col` of screen line `row`, 20px per line, each word at its exact
+    /// character position.
+    fn at(row: i32, col: i32, text: &str) -> OcrLine {
+        let chars: Vec<char> = text.chars().collect();
+        let mut words = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == ' ' {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < chars.len() && chars[i] != ' ' {
+                i += 1;
+            }
+            words.push(OcrWord {
+                text: chars[start..i].iter().collect(),
+                rect: (
+                    (col + start as i32) * 10,
+                    row * 20,
+                    (i - start) as u32 * 10,
+                    16,
+                ),
+            });
+        }
+        let rect = (col * 10, row * 20, chars.len() as u32 * 10, 16);
+        OcrLine {
+            text: text.into(),
+            rect,
+            words,
+        }
+    }
+
+    fn query(column: &str, anchor: &str) -> CellQuery {
+        CellQuery {
+            column: column.into(),
+            anchor: anchor.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Two tables share `K` and `LNr`; OCR split the upper table's rows at
+    /// a wide gap, as it does on a real terminal screen.
+    fn screen() -> Vec<OcrLine> {
+        vec![
+            at(1, 1, "K  LNr LA   Tarif"),
+            at(2, 1, "1  001 BEL"),
+            at(2, 13, "ZB30"),
+            at(3, 1, "1  002 BEL"),
+            at(3, 13, "BE70"),
+            at(5, 1, "K  LNr Hinweis auf Entscheidung    Ent"),
+            at(6, 1, "1  002 Kürzung nach GOZ §5         N"),
+        ]
+    }
+
+    #[test]
+    fn a_cell_is_found_by_its_header_and_a_value_in_its_row() {
+        let cell = locate_cell(&screen(), &query("Tarif", "002"), 800).expect("cell");
+        assert_eq!(cell.words, vec!["BE70"]);
+        assert_eq!(
+            cell.start,
+            (135, 68),
+            "the click lands on the first character"
+        );
+    }
+
+    #[test]
+    fn each_table_resolves_its_own_rows() {
+        let cell = locate_cell(&screen(), &query("Ent", "002"), 800).expect("cell");
+        assert_eq!(
+            cell.words,
+            vec!["N"],
+            "the upper table has no Ent column above its 002"
+        );
+        assert_eq!(
+            cell.chars, 4,
+            "the last column ends with its text, not the window"
+        );
+        let multi =
+            locate_cell(&screen(), &query("Hinweis auf Entscheidung", "002"), 800).expect("cell");
+        assert_eq!(multi.words.join(" "), "Kürzung nach GOZ §5");
+        assert_eq!(multi.chars, 28, "the column runs to the next header");
+    }
+
+    #[test]
+    fn a_value_split_at_its_punctuation_reads_as_one() {
+        let mut lines = vec![at(1, 1, "K  LNr RB"), at(2, 1, "2  003")];
+        // `104,00` read as two words, as Windows OCR read it: the comma's
+        // narrow ink ends the first box 8px short of the next glyph, more
+        // than half a character, though no column lies between them.
+        for (text, rect) in [("104,", (80, 40, 33, 16)), ("00", (121, 40, 18, 16))] {
+            let word = OcrWord {
+                text: text.into(),
+                rect,
+            };
+            lines.push(OcrLine {
+                text: text.into(),
+                rect,
+                words: vec![word],
+            });
+        }
+        let cell = locate_cell(&lines, &query("RB", "003"), 800).expect("cell");
+        assert_eq!(cell.text, "104,00");
+        let multi =
+            locate_cell(&screen(), &query("Hinweis auf Entscheidung", "002"), 800).expect("cell");
+        assert_eq!(multi.text, "Kürzung nach GOZ §5", "real spaces stay");
+    }
+
+    #[test]
+    fn a_slashed_zero_still_finds_its_row() {
+        let lines = vec![at(1, 1, "K  LNr Tarif"), at(2, 1, "1  ØØ1 ZB3Ø")];
+        let cell = locate_cell(&lines, &query("Tarif", "001"), 800).expect("cell");
+        assert_eq!(
+            cell.words,
+            vec!["ZB3Ø"],
+            "the screen's own spelling is kept"
+        );
+    }
+
+    /// Reads the whole screen without the two-letter header `RB`, as
+    /// Windows OCR did; read one line at a time, the first line - the
+    /// header - gives it back. Boxes come back in the enlarged strip's own
+    /// coordinates, as a real engine's do.
+    struct DropsShortHeader {
+        strips: usize,
+    }
+
+    impl crate::vision::OcrEngine for DropsShortHeader {
+        fn recognize(
+            &mut self,
+            frame: &image::RgbaImage,
+        ) -> Result<Vec<OcrLine>, flowproof_driver::DriverError> {
+            if frame.dimensions() == (800, 200) {
+                return Ok(vec![at(1, 1, "K  LNr"), at(2, 1, "2  003 104,00")]);
+            }
+            self.strips += 1;
+            if self.strips > 1 {
+                return Ok(Vec::new());
+            }
+            // The header strip: screen line 1 (y 20, 16 tall) padded by 8
+            // above, three times the size, in a 48px margin.
+            let rect = (48 + 70 * 3, 48 + (20 - 12) * 3, 60, 48);
+            let word = OcrWord {
+                text: "RB".into(),
+                rect,
+            };
+            Ok(vec![OcrLine {
+                text: "RB".into(),
+                rect,
+                words: vec![word],
+            }])
+        }
+    }
+
+    /// A header no reading found still left its ink: dark on a light
+    /// screen or light on a dark one, beside a field a shade brighter than
+    /// the screen, which is not text.
+    #[test]
+    fn ink_no_reading_covers_is_found_on_light_and_dark_screens() {
+        for (background, ink) in [(240u8, 20u8), (10, 230)] {
+            let grey = |v: u8| image::Rgba([v, v, v, 255]);
+            let mut frame = image::RgbaImage::from_pixel(400, 60, grey(background));
+            let mut paint = |x0: u32, x1: u32, value: u8| {
+                for y in 22..34 {
+                    for x in x0..x1 {
+                        frame.put_pixel(x, y, grey(value));
+                    }
+                }
+            };
+            paint(10, 18, ink); // `K`, read
+            paint(70, 88, ink); // `RB`, never read
+            paint(200, 300, background.saturating_add(15)); // an input field
+            let boxes = unread_ink(&frame, &[at(1, 1, "K")]);
+            assert_eq!(boxes.len(), 1, "on {background}: {boxes:?}");
+            let (x, _, w, _) = boxes[0];
+            assert!(x <= 70 && x + w as i32 >= 88, "{:?}", boxes[0]);
+        }
+    }
+
+    #[test]
+    fn a_header_no_screen_wide_reading_finds_is_found_line_by_line() {
+        use flowproof_driver::AppDriver;
+        let frame = image::RgbaImage::from_pixel(800, 200, image::Rgba([255, 255, 255, 255]));
+        let mut d = crate::vision::VisionAppDriver::with_parts(
+            crate::vision::fake::FakeScreen::with_frames(vec![frame]),
+            DropsShortHeader { strips: 0 },
+        );
+        assert_eq!(
+            d.read_text(&cell_selector("RB", "003")).expect("read"),
+            "104,00"
+        );
+    }
+
+    #[test]
+    fn header_lines_are_the_lines_naming_the_column() {
+        assert_eq!(header_lines(&screen(), "K"), vec![(20, 16), (100, 16)]);
+        assert_eq!(header_lines(&screen(), "Tarif"), vec![(20, 16)]);
+    }
+
+    #[test]
+    fn an_empty_cell_is_still_a_cell() {
+        let lines = vec![at(1, 1, "K  LNr Tarif"), at(2, 1, "1  001")];
+        let cell = locate_cell(&lines, &query("Tarif", "001"), 800).expect("cell");
+        assert!(cell.words.is_empty());
+    }
+
+    /// Reads the whole screen, and nothing in any region read on its own:
+    /// the cell's text is the screen-size reading's.
+    struct BlankCrops(Vec<OcrLine>);
+
+    impl crate::vision::OcrEngine for BlankCrops {
+        fn recognize(
+            &mut self,
+            frame: &image::RgbaImage,
+        ) -> Result<Vec<OcrLine>, flowproof_driver::DriverError> {
+            Ok(if frame.dimensions() == (800, 200) {
+                self.0.clone()
+            } else {
+                Vec::new()
+            })
+        }
+    }
+
+    fn driver() -> crate::vision::VisionAppDriver<crate::vision::fake::FakeScreen, BlankCrops> {
+        let frame = image::RgbaImage::from_pixel(800, 200, image::Rgba([255, 255, 255, 255]));
+        crate::vision::VisionAppDriver::with_parts(
+            crate::vision::fake::FakeScreen::with_frames(vec![frame]),
+            BlankCrops(vec![
+                at(1, 1, "K  LNr Tarif  LS"),
+                at(2, 1, "1  001 ZB30   1"),
+            ]),
+        )
+    }
+
+    fn cell_selector(column: &str, anchor: &str) -> flowproof_driver::UiaSelector {
+        flowproof_driver::UiaSelector {
+            cell: Some(query(column, anchor)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_driver_reads_one_cell_not_its_neighbours() {
+        use flowproof_driver::AppDriver;
+        let mut d = driver();
+        assert_eq!(
+            d.read_text(&cell_selector("Tarif", "001")).expect("read"),
+            "ZB30"
+        );
+        assert_eq!(d.read_text(&cell_selector("LS", "001")).expect("read"), "1");
+    }
+
+    #[test]
+    fn typing_into_a_cell_empties_it_from_its_first_character() {
+        use flowproof_driver::AppDriver;
+        let mut d = driver();
+        d.type_text(&cell_selector("Tarif", "001"), "ZB99")
+            .expect("typed");
+        let screen = d.screen_for_tests();
+        assert_eq!(
+            screen.clicks,
+            vec![(85, 48)],
+            "on the cell's first character"
+        );
+        let deletes = screen
+            .keys
+            .iter()
+            .filter(|(k, m)| k == "Delete" && m.is_empty())
+            .count();
+        assert_eq!(deletes, 7, "once per character the cell holds");
+        assert!(
+            !screen.keys.iter().any(|(k, _)| k == "a"),
+            "no select-all on a terminal"
+        );
+        assert_eq!(screen.typed, vec!["ZB99"]);
+    }
+
+    /// What a Windows runner read: Windows OCR's tight boxes, then ocrs's
+    /// reading of the same frame merged after them - noise in boxes several
+    /// rows tall, and its own misreading of a value Windows read right.
+    #[test]
+    fn noise_boxes_neither_move_the_row_nor_enter_the_cell() {
+        let mut lines = screen();
+        lines.push(OcrLine {
+            text: "D??".into(),
+            rect: (120, 30, 90, 75),
+            words: vec![OcrWord {
+                text: "D??".into(),
+                rect: (120, 30, 90, 75),
+            }],
+        });
+        lines.push(OcrLine {
+            text: "Z830".into(),
+            rect: (130, 41, 40, 16),
+            words: vec![OcrWord {
+                text: "Z830".into(),
+                rect: (130, 41, 40, 16),
+            }],
+        });
+        let cell = locate_cell(&lines, &query("Tarif", "001"), 800).expect("cell");
+        assert_eq!(
+            cell.words,
+            vec!["ZB30"],
+            "the first reading of a word stands"
+        );
+        assert_eq!(
+            cell.start.1, 48,
+            "on the anchor's own line, not a row below"
+        );
+        assert_eq!(cell.rect.3, 24, "one line of text tall");
+    }
+
+    #[test]
+    fn a_crop_reading_keeps_the_first_engine_and_drops_noise() {
+        let word = |text: &str, rect| OcrLine {
+            text: text.into(),
+            rect,
+            words: vec![OcrWord {
+                text: text.into(),
+                rect,
+            }],
+        };
+        let lines = vec![
+            word("ZB30", (30, 30, 120, 48)),
+            word("Z830", (32, 31, 118, 46)),
+            word("I LO L R", (0, 0, 200, 140)),
+        ];
+        assert_eq!(reading(&lines), "ZB30");
+    }
+
+    #[test]
+    fn every_anchor_must_be_in_the_row() {
+        let mut q = query("Tarif", "BEL");
+        q.also = vec!["002".into()];
+        let cell = locate_cell(&screen(), &q, 800).expect("cell");
+        assert_eq!(cell.words, vec!["BE70"]);
+        q.also = vec!["003".into()];
+        assert_eq!(locate_cell(&screen(), &q, 800), None);
+    }
+}

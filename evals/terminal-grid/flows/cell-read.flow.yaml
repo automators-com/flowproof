@@ -1,0 +1,10 @@
+# Read cells by column header and a value in their row (vision's cell
+# grammar), instead of anywhere on the page.
+name: Read cells by column and row
+app: vision
+window: Leistung (replica)
+steps:
+  - assert: the "Tarif" column of the row containing "002" shows ZB30
+  - assert: the "RB" column of the row containing "003" shows 104,00
+  - assert: the "LS" column of the row containing "003" shows 2
+  - assert: the "AbzugBtr" column of the row containing "ABZ" shows 12,50

@@ -70,6 +70,9 @@ pub mod vision_bench;
 #[cfg(feature = "vision")]
 pub mod vision_elements;
 
+#[cfg(feature = "vision")]
+mod vision_grid;
+
 #[cfg(all(feature = "vision", windows))]
 pub mod vision_winocr;
 

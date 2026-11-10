@@ -23,7 +23,7 @@ pub mod window;
 
 pub use app::{
     absolute_url, attribute_value_matches, capture_matches, composed_actionability_gate,
-    cookie_verdict, count_matching, frame_miss, normalize_visible_text, numeric_value,
+    cookie_verdict, count_matching, frame_miss, normalize_visible_text, numeric_value, ocr_fold,
     ocr_text_contains, parse_css_color, resolve_app, secure_over_http_warning, split_command_line,
     style_matches, text_contains, text_occurrences, url_matches, url_origin, verify_dialog,
     visible_now, A11yHints, AppDriver, AppTarget, CellHints, CellQuery, CookieFacts, CookieProbe,

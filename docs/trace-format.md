@@ -462,7 +462,9 @@ already follows.
   path, so a row insert or a column reorder does not move the target (see
   [authoring.md](authoring/assertions.md#scoped-targets-table-cells-and-list-items-by-identity)). Record may attach
   `column_field` / `row_id` hints read from the live grid, used as fallbacks
-  if the header text or the anchor later fails to resolve.
+  if the header text or the anchor later fails to resolve. On `app: vision`
+  the rung carries `provenance: vision` and is resolved on the screen's
+  character grid (see [vision flows](getting-started/vision-flows.md#tables-on-a-host-terminal-screen)).
 
   Its sibling is the **scoped** payload, which addresses an element inside a
   container identified by an anchor:
