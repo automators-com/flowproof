@@ -23,7 +23,7 @@ use std::time::Duration;
 use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaSelector};
 use image::RgbaImage;
 
-use crate::vision_grid::{header_lines, locate_cell, reading, text_height, GridCell};
+use crate::vision_grid::{header_lines, locate_cell, reading, text_height, text_lines, GridCell};
 
 mod start;
 
@@ -670,29 +670,18 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             }
             let mut cell = locate_cell(&with_headers, query, frame.width());
             // Not found: look closer, as any anchor is looked for again
-            // closer when the screen-size reading misses it. Through a
-            // JPEG-compressed frame Windows OCR read the row anchor `001`
-            // as `eel`. The table below each header line - the whole frame
-            // when no header was read - is read again enlarged.
+            // closer when the screen-size reading misses it - and one line
+            // at a time. A text detector given the whole screen drops a
+            // short word standing alone between wide gaps: the two-letter
+            // headers `LS` and `RB` were never read, enlarged or not, while
+            // every header beside them was; through JPEG the row anchor
+            // `001` read `eel`. Each line of text is read again as its own
+            // strip, enlarged, with nothing else in view.
             if cell.is_none() {
-                let below: Vec<PixelRect> = if headers.is_empty() {
-                    vec![(0, 0, frame.width(), frame.height())]
-                } else {
-                    headers
-                        .iter()
-                        .map(|(top, _)| {
-                            let top = (*top).max(0);
-                            (
-                                0,
-                                top,
-                                frame.width(),
-                                frame.height().saturating_sub(top as u32),
-                            )
-                        })
-                        .collect()
-                };
-                for region in below {
-                    with_headers.extend(self.read_region(&frame, region));
+                for (top, height) in text_lines(&with_headers) {
+                    let pad = height as i32 / 2;
+                    let strip = (0, top - pad, frame.width(), height + 2 * pad as u32);
+                    with_headers.extend(self.read_region(&frame, strip));
                 }
                 cell = locate_cell(&with_headers, query, frame.width());
             }

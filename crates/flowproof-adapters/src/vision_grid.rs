@@ -168,16 +168,24 @@ pub(crate) fn header_lines(lines: &[OcrLine], column: &str) -> Vec<(i32, u32)> {
     bands(lines)
         .iter()
         .filter(|band| find_run(band, column).is_some())
-        .map(|band| {
-            let top = band.iter().map(|w| w.rect.1).min().unwrap_or(0);
-            let bottom = band
-                .iter()
-                .map(|w| w.rect.1 + w.rect.3 as i32)
-                .max()
-                .unwrap_or(top);
-            (top, (bottom - top).max(1) as u32)
-        })
+        .map(|band| extent(band))
         .collect()
+}
+
+/// Every line of text on screen, top to bottom, as `(top, height)`: the
+/// rows a reading built, by the same rules a cell's row is built by.
+pub(crate) fn text_lines(lines: &[OcrLine]) -> Vec<(i32, u32)> {
+    bands(lines).iter().map(|band| extent(band)).collect()
+}
+
+fn extent(band: &[OcrWord]) -> (i32, u32) {
+    let top = band.iter().map(|w| w.rect.1).min().unwrap_or(0);
+    let bottom = band
+        .iter()
+        .map(|w| w.rect.1 + w.rect.3 as i32)
+        .max()
+        .unwrap_or(top);
+    (top, (bottom - top).max(1) as u32)
 }
 
 /// The run of words in `band` reading `label`, as word indexes.
@@ -389,6 +397,55 @@ mod tests {
             cell.words,
             vec!["ZB3Ø"],
             "the screen's own spelling is kept"
+        );
+    }
+
+    /// Reads the whole screen without the two-letter header `RB`, as
+    /// Windows OCR did; read one line at a time, the first line - the
+    /// header - gives it back. Boxes come back in the enlarged strip's own
+    /// coordinates, as a real engine's do.
+    struct DropsShortHeader {
+        strips: usize,
+    }
+
+    impl crate::vision::OcrEngine for DropsShortHeader {
+        fn recognize(
+            &mut self,
+            frame: &image::RgbaImage,
+        ) -> Result<Vec<OcrLine>, flowproof_driver::DriverError> {
+            if frame.dimensions() == (800, 200) {
+                return Ok(vec![at(1, 1, "K  LNr"), at(2, 1, "2  003 104,00")]);
+            }
+            self.strips += 1;
+            if self.strips > 1 {
+                return Ok(Vec::new());
+            }
+            // The header strip: screen line 1 (y 20, 16 tall) padded by 8
+            // above, three times the size, in a 48px margin.
+            let rect = (48 + 70 * 3, 48 + (20 - 12) * 3, 60, 48);
+            let word = OcrWord {
+                text: "RB".into(),
+                rect,
+            };
+            Ok(vec![OcrLine {
+                text: "RB".into(),
+                rect,
+                words: vec![word],
+            }])
+        }
+    }
+
+    #[test]
+    fn a_header_no_screen_wide_reading_finds_is_found_line_by_line() {
+        use flowproof_driver::AppDriver;
+        let frame = image::RgbaImage::from_pixel(800, 200, image::Rgba([255, 255, 255, 255]));
+        let mut d = crate::vision::VisionAppDriver::with_parts(
+            crate::vision::fake::FakeScreen::with_frames(vec![frame]),
+            DropsShortHeader { strips: 0 },
+        );
+        assert_eq!(
+            d.read_text(&cell_selector("RB", "003")).expect("read"),
+            "104,00"
         );
     }
 
