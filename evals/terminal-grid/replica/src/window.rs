@@ -27,7 +27,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect,
     GetMessageW, LoadCursorW, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage,
-    CW_USEDEFAULT, IDC_ARROW, MSG, WINDOW_EX_STYLE, WM_CHAR, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
+    IDC_ARROW, MSG, WINDOW_EX_STYLE, WM_CHAR, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_PAINT, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
@@ -118,8 +118,12 @@ pub fn run(screen: Screen, opts: Options) -> Result<(), String> {
             class,
             &title,
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            // The top-left corner, not wherever Windows cascades it: on a
+            // 1024x768 runner a larger font's window, placed partway down,
+            // ran its status bar and lower table under the taskbar, and
+            // the evals measured the taskbar instead of the screen.
+            0,
+            0,
             rect.right - rect.left,
             rect.bottom - rect.top,
             None,

@@ -33,6 +33,13 @@ jobs:
         font_px: [13, 15, 18, 20]
     steps:
       - uses: actions/checkout@v4
+      # A runner's desktop is 1024x768; at larger fonts the replica's window
+      # would reach under the taskbar. Best effort: the replica also opens
+      # at the top-left corner.
+      - name: use a 1920x1080 desktop
+        shell: powershell
+        continue-on-error: true
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Release: OCR in a debug build is slow enough to time out waits.
