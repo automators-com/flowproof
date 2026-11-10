@@ -24,7 +24,8 @@ use flowproof_driver::{AppDriver, DriverError, KeyMod, PixelRect, ScrollTo, UiaS
 use image::RgbaImage;
 
 use crate::vision_grid::{
-    header_lines, locate_cell, reading, text_height, text_lines, unread_ink, GridCell,
+    header_lines, lines_in_reading_order, locate_cell, reading, text_height, text_lines,
+    unread_ink, GridCell,
 };
 
 mod start;
@@ -1776,12 +1777,22 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
     fn surface_text(&mut self) -> Result<String, DriverError> {
         // The OCR'd frame IS the surface - reading order, one line each.
         // Across a caret blink both readings are kept, so a check is judged
-        // against the one the caret did not garble.
-        Ok(self
-            .steady_lines()?
+        // against the one the caret did not garble. Each reading is also
+        // given as screen lines rebuilt from its words, left to right: OCR
+        // splits a line at its gaps and lists the pieces apart, and a
+        // terminal's status bar `Dialog aktiv` came back as `Dialog` and
+        // `aktiv` with other lines between, so `page shows Dialog aktiv`
+        // never held.
+        let readings = self.steady_lines()?;
+        let mut text: Vec<String> = Vec::new();
+        for lines in &readings {
+            text.extend(lines.iter().map(|l| l.text.clone()));
+        }
+        for lines in &readings {
+            text.extend(lines_in_reading_order(lines));
+        }
+        Ok(text
             .into_iter()
-            .flatten()
-            .map(|l| l.text)
             .filter(|t| !t.trim().is_empty())
             .collect::<Vec<_>>()
             .join("\n"))
@@ -3490,6 +3501,26 @@ mod tests {
             d.ocr.scales,
             vec![2, 3],
             "the same frame is not read again, and a hit needs no closer look"
+        );
+    }
+
+    /// A terminal's status bar, as Windows OCR listed it: `Dialog` and
+    /// `aktiv` apart, another line between them. The page still shows the
+    /// words of one line together.
+    #[test]
+    fn page_text_puts_a_lines_pieces_back_together() {
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![blank_frame()]),
+            FakeOcr::with_lines(vec![
+                OcrLine::new("Dialog", (10, 300, 60, 16)),
+                OcrLine::new("PF5 PF9", (10, 260, 70, 16)),
+                OcrLine::new("aktiv", (90, 301, 50, 16)),
+            ]),
+        );
+        let text = d.surface_text().expect("reads");
+        assert!(
+            flowproof_driver::ocr_text_contains(&text, "Dialog aktiv"),
+            "{text}"
         );
     }
 

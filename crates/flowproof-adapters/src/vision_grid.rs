@@ -172,6 +172,18 @@ pub(crate) fn header_lines(lines: &[OcrLine], column: &str) -> Vec<(i32, u32)> {
         .collect()
 }
 
+/// The text of each line on screen, top to bottom, its words left to
+/// right: a reading's pieces put back on the lines they were drawn on.
+pub(crate) fn lines_in_reading_order(lines: &[OcrLine]) -> Vec<String> {
+    bands(lines)
+        .into_iter()
+        .map(|band| {
+            let words: Vec<String> = band.into_iter().map(|w| w.text).collect();
+            words.join(" ")
+        })
+        .collect()
+}
+
 /// Every line of text on screen, top to bottom, as `(top, height)`: the
 /// rows a reading built, by the same rules a cell's row is built by.
 pub(crate) fn text_lines(lines: &[OcrLine]) -> Vec<(i32, u32)> {
