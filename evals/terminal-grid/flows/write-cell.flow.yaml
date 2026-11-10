@@ -1,0 +1,25 @@
+# Tab to the first line's Tarif (Home, then 15 fields on), erase to the end
+# of the field, and type over it.
+name: Overwrite a table cell by tabbing
+app: vision
+window: Leistung (replica)
+steps:
+  - Press Home
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Control+End
+  - Type ZB99
+  - assert: page shows ZB99

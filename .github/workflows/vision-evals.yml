@@ -1,0 +1,78 @@
+name: vision evals
+
+# The terminal-grid evals (evals/terminal-grid): a host-terminal replica
+# driven by app: vision under clean and Citrix-like frames, each run scored
+# against the replica's own state. Windows runners have a live desktop -
+# the Notepad E2E in ci.yml drives one - so real input and capture work.
+#
+# Results are a measurement, not a gate: the baseline has known failures,
+# so the job passes when the evals RAN, and the table is in the run summary
+# and the artifact.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "evals/terminal-grid/**"
+      - "crates/flowproof-adapters/src/vision*.rs"
+      - ".github/workflows/vision-evals.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  terminal-grid:
+    name: terminal-grid evals (windows, ${{ matrix.font_px }}px)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    # The same flows with the layout's font at several sizes: OCR has a
+    # floor, and this finds the smallest text vision reads reliably. 15px
+    # is the size measured from the client session's screenshot.
+    strategy:
+      fail-fast: false
+      matrix:
+        font_px: [13, 15, 18, 20]
+    steps:
+      - uses: actions/checkout@v4
+      # A runner's desktop is 1024x768; at larger fonts the replica's window
+      # would reach under the taskbar. Best effort: the replica also opens
+      # at the top-left corner.
+      - name: use a 1920x1080 desktop
+        shell: powershell
+        continue-on-error: true
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Release: OCR in a debug build is slow enough to time out waits.
+      - name: build the engine and the replica
+        run: cargo build --release -p flowproof-cli -p flowproof-terminal-replica
+      # The engine's own model download (ocrs-models on S3) now answers 403
+      # to everyone, so a fresh runner has no OCR. Fetch the same models
+      # from their author's Hugging Face repository instead.
+      - name: fetch the ocrs models
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "ocrs"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $hf = "https://huggingface.co/robertknight/ocrs/resolve/main"
+          Invoke-WebRequest "$hf/text-detection-ssfbcj81.rten" -OutFile (Join-Path $dir "text-detection.rten")
+          Invoke-WebRequest "$hf/text-rec-checkpoint-s52qdbqt.rten" -OutFile (Join-Path $dir "text-recognition.rten")
+          # ascii: Windows PowerShell writes utf8 with a byte-order mark,
+          # which would become part of the variable name.
+          Add-Content -Path $env:GITHUB_ENV -Value "FLOWPROOF_OCR_MODEL_DIR=$dir" -Encoding ascii
+      - name: run the evals
+        shell: powershell
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "terminal-grid"
+          powershell -NoProfile -ExecutionPolicy Bypass -File evals/terminal-grid/run.ps1 `
+            -Engine "$PWD\target\release\flowproof.exe" -Out $out -FontPx ${{ matrix.font_px }}
+          $rows = Import-Csv (Join-Path $out "results.csv")
+          $summary = @("## Terminal-grid evals, ${{ matrix.font_px }}px", "", "| Profile | Flow | Record | Replay | Mismatch |", "|---|---|---|---|---|")
+          $summary += $rows | ForEach-Object { "| $($_.Profile) | $($_.Flow) | $($_.Record) | $($_.Replay) | $($_.Mismatch -replace '\|', '/') |" }
+          $summary | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+      - name: keep logs, traces and states
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal-grid-evals-${{ matrix.font_px }}px
+          path: ${{ runner.temp }}/terminal-grid
+          if-no-files-found: warn

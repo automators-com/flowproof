@@ -1,0 +1,15 @@
+# The upper table holds five lines and shows three; PF8 pages it.
+name: Page the upper table
+app: vision
+window: Leistung (replica)
+steps:
+  - Press Home
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press Tab
+  - Press F8
+  - assert: page shows 8800
