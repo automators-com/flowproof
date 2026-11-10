@@ -12,14 +12,18 @@ inputs:
 
 runs:
   using: "composite"
+  # The version reaches each script through the environment, never pasted into
+  # its text, so a crafted input can't become commands.
   steps:
     # No checkout on purpose: a newcomer has no clone. A clean cache too, so
     # a stale local copy cannot make a broken publish look fine.
     - name: npx flowproof --version, from a clean cache
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        version='${{ inputs.version }}'
+        version="$VERSION"
         cache="$(mktemp -d)"
         out="$(npm_config_cache="$cache" npx --yes "flowproof@$version" --version 2>&1)"
         echo "$out"
@@ -30,9 +34,11 @@ runs:
     # installs but cannot exec is worse than one that fails to install.
     - name: the resolved binary runs and reports the same version
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        version='${{ inputs.version }}'
+        version="$VERSION"
         dir="$(mktemp -d)" && cd "$dir"
         npm install --silent "flowproof@$version"
         node node_modules/flowproof/bin/flowproof.js --help > help.txt 2>&1
@@ -45,9 +51,11 @@ runs:
     # corrupted by a diagnostic.
     - name: a missing platform binary fails loudly and says what to do
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
       run: |
         set -uo pipefail
-        version='${{ inputs.version }}'
+        version="$VERSION"
         dir="$(mktemp -d)" && cd "$dir"
         npm install --silent --no-optional "flowproof@$version"
         set +e
