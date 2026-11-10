@@ -3,7 +3,11 @@
 #
 #   powershell -File evals/terminal-grid/run.ps1 [-Engine <flowproof.exe>]
 #       [-Replica <flowproof-terminal-replica.exe>] [-Out <dir>] [-Only <flow>]
-#       [-Profile clean|citrix|stress]
+#       [-Profile clean|citrix|stress] [-FontPx <size>]
+#
+# -FontPx draws the layout's font at another size, to find the smallest
+# text vision reads reliably: OCR has a floor, and a client's emulator font
+# can be set above it.
 #
 # No model is needed: flows are recorded with --author rules. A flow passes
 # only when the engine says it passed AND the replica's own state matches
@@ -14,7 +18,8 @@ param(
     [string]$Replica = "",
     [string]$Out = (Join-Path $env:TEMP "flowproof-terminal-grid"),
     [string]$Only = "",
-    [string]$Profile = ""
+    [string]$Profile = "",
+    [int]$FontPx = 0
 )
 # Not "Stop": Windows PowerShell turns a native command's stderr into a
 # terminating error, and the engine reports progress on stderr.
@@ -28,6 +33,15 @@ if (-not $Replica) {
 }
 $layout = Join-Path $here "leistung.yaml"
 New-Item -ItemType Directory -Force $Out | Out-Null
+if ($FontPx -gt 0) {
+    # A copy of the layout at the asked size. Read and written as UTF-8
+    # without a byte-order mark: the layout holds umlauts, and Windows
+    # PowerShell's own defaults would mangle them or prepend a BOM.
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $text = [System.IO.File]::ReadAllText($layout, $utf8) -replace '(?m)^font_px: *\d+', "font_px: $FontPx"
+    $layout = Join-Path $Out "leistung.$FontPx.yaml"
+    [System.IO.File]::WriteAllText($layout, $text, $utf8)
+}
 # Over Citrix there is no accessibility tree; make the local window match.
 $env:FLOWPROOF_VISION_UIA = "0"
 

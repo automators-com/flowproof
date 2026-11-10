@@ -21,9 +21,16 @@ permissions:
 
 jobs:
   terminal-grid:
-    name: terminal-grid evals (windows)
+    name: terminal-grid evals (windows, ${{ matrix.font_px }}px)
     runs-on: windows-latest
     timeout-minutes: 90
+    # The same flows with the layout's font at several sizes: OCR has a
+    # floor, and this finds the smallest text vision reads reliably. 15px
+    # is the size measured from the client session's screenshot.
+    strategy:
+      fail-fast: false
+      matrix:
+        font_px: [13, 15, 18, 20]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -50,15 +57,15 @@ jobs:
         run: |
           $out = Join-Path $env:RUNNER_TEMP "terminal-grid"
           powershell -NoProfile -ExecutionPolicy Bypass -File evals/terminal-grid/run.ps1 `
-            -Engine "$PWD\target\release\flowproof.exe" -Out $out
+            -Engine "$PWD\target\release\flowproof.exe" -Out $out -FontPx ${{ matrix.font_px }}
           $rows = Import-Csv (Join-Path $out "results.csv")
-          $summary = @("## Terminal-grid evals", "", "| Profile | Flow | Record | Replay | Mismatch |", "|---|---|---|---|---|")
+          $summary = @("## Terminal-grid evals, ${{ matrix.font_px }}px", "", "| Profile | Flow | Record | Replay | Mismatch |", "|---|---|---|---|---|")
           $summary += $rows | ForEach-Object { "| $($_.Profile) | $($_.Flow) | $($_.Record) | $($_.Replay) | $($_.Mismatch -replace '\|', '/') |" }
           $summary | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
       - name: keep logs, traces and states
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: terminal-grid-evals
+          name: terminal-grid-evals-${{ matrix.font_px }}px
           path: ${{ runner.temp }}/terminal-grid
           if-no-files-found: warn
