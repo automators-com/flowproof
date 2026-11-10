@@ -1,1 +1,0 @@
-**tokio updated for RUSTSEC-2026-0386.** `AsyncFd::new` and related constructors could violate I/O safety. The engine moves from tokio 1.53.0 to 1.54.1, a semver-compatible release with the fix. Found by the new OSV-Scanner check (#793).
