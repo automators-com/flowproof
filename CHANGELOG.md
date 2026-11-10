@@ -6,6 +6,76 @@ together).
 
 ## Unreleased
 
+## 0.23.33
+
+- **Vision reads and fills table cells on a host terminal screen.** A mainframe
+  screen over Citrix is a character grid whose tables are header lines over rows
+  of input fields, and OCR reads such a table as column blocks - a value lost
+  the row it belonged to, `XB30` beside `1` read as `2XB30`, and the cell
+  grammar every other surface understands (`the "Stufe" column of the row
+  containing "002"`) was silently ignored by vision, failing as "not found".
+  Vision now finds the cell on the grid - the row by its anchor, the column from
+  its header to the next, under the nearest header above - and reads only that
+  box, closer. Typing into a cell clicks its first character and deletes once
+  per character before typing, because a terminal field has no select-all and
+  typing overwrites: `A12` typed over `Q089` used to leave `A129`.
+
+- **Small text is read enlarged as well.** A terminal's thin 9px Courier read
+  `XE30` for `XB30` and `Ahgabe` for `Abgabe`: OCR loses the strokes that tell
+  letters apart on text that small. When a screen's text measures under 12px,
+  vision also reads it enlarged with Windows OCR, and that reading leads; what
+  the screen-size reading found stays matchable behind it, and screens of
+  ordinary text are read once as before.
+
+- **Vision starts on a fresh machine again.** The ocrs OCR models were
+  downloaded from the S3 bucket ocrs first published to, which now answers 403
+  to everyone: any machine that had never run a vision flow - a new laptop, a CI
+  runner, a PC set up for Citrix - failed at the first step, told to place a
+  file it had no way to get. Machines that downloaded the models earlier kept
+  working from their cache, which hid it. The models now come from the ocrs
+  author's Hugging Face repository, pinned to a commit so the bytes cannot
+  change under a cached install, and an existing cache keeps working unchanged.
+
+- **A failed database or API check no longer prints the secret it compared.**
+  The UI checks keep a `${VAR}` as a reference in their failure messages, but
+  SQL and API checks resolve their values before the probe runs, and the probe
+  quoted what it held: `expected first column 'hunter2'`, `response body does
+  not contain '<token>'`, a header's expected value, a url in a transport error.
+  That text reached the terminal, `result.json`, and anything that shows a run.
+  Their failure reasons are now masked against the step's own references, while
+  recording and on every replay, so the message shows `${VAR}` where the value
+  was.
+
+- **A password typed inside an embedded frame no longer reaches the AI
+  provider.** While recording, the engine describes the screen to the model, and
+  it already left out the text of password fields on the page itself. Fields
+  inside an iframe were described by a separate pass that kept every field's
+  value, so a password typed into a framed login form was sent to the AI
+  provider along with the rest of the screen. Password fields inside frames are
+  now left out the same way, and an end-to-end test (`framed_scene_e2e`) keeps
+  them out.
+
+- **`pip install flowproof[mcp]` no longer accepts an `mcp` with known security
+  advisories.** The extra asked for `mcp>=1.2`, so an install could resolve to a
+  release whose server accepted bearer tokens issued for a different resource
+  server, or whose HTTP client carried custom headers across a cross-origin
+  redirect. It now asks for `mcp>=1.30,<2`. 1.30.0 fixes those, and the cap
+  keeps a future 2.x, which the SDK has not been tested against, from arriving
+  unannounced.
+
+- **tokio updated for RUSTSEC-2026-0386.** `AsyncFd::new` and related
+  constructors could violate I/O safety. The engine moves from tokio 1.53.0 to
+  1.54.1, a semver-compatible release with the fix. Found by the new OSV-Scanner
+  check (#793).
+
+- **No GPL code in the build any more.** headless_chrome, which flowproof uses
+  to drive the user's installed Chrome for web flows, generated its Chrome
+  DevTools Protocol bindings at build time with auto_generate_cdp, a
+  GPL-3.0-or-later tool. The patched copy flowproof builds from now commits
+  those bindings instead: the same code, generated once from the same protocol
+  files. auto_generate_cdp and six crates only it used are gone from the
+  dependency tree, and the new cargo-deny licence check keeps GPL out.
+
 ## 0.23.32
 
 - **A failed step now says what was expected and what was found, as data.**
