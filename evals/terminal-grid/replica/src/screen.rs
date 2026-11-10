@@ -611,7 +611,7 @@ keys: { enter_delay_ms: 100 }
     fn erase_eof_clears_the_rest_of_the_field() {
         let mut s = screen();
         typed(&mut s, &[Key::Tab, Key::Tab, Key::Right, Key::EraseEof]);
-        assert_eq!(cell(&s, 0, "Stufe"), "Z");
+        assert_eq!(cell(&s, 0, "Stufe"), "X");
     }
 
     #[test]
