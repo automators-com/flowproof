@@ -3345,6 +3345,25 @@ impl AppDriver for WebAppDriver {
         let Some(element) = self.try_find(&locator)? else {
             return Ok(None);
         };
+        // Chrome stops honouring `aria-hidden` on a subtree while focus is
+        // inside it, so a field read straight after typing into it shows in
+        // the tree even when its dialog says `aria-hidden="true"`. Replay
+        // looks before anything has focus and finds nothing: Stadtwerke
+        // Flensburg's calculator stays `aria-hidden` while open, and its
+        // postcode field recorded a hint that could never resolve again.
+        let hidden = element
+            .call_js_fn(
+                r#"function() { return !!this.closest('[aria-hidden="true"]'); }"#,
+                vec![],
+                false,
+            )
+            .map_err(|e| web_err("reading aria-hidden", e))?
+            .value
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if hidden {
+            return Ok(None);
+        }
         let tab = self.tab()?;
         // Idempotent: enabling twice is a documented no-op on the CDP side,
         // cheaper than tracking an "already enabled" flag per tab.
@@ -5512,8 +5531,18 @@ impl AppDriver for WebAppDriver {
         // bare `css` key is kept one release for older agents.
         const SCENE_JS: &str = r#"
             (() => {
+              // An id minted per page load (a PHP uniqid, a UUID, a timestamp,
+              // React's useId) is a different string on replay: a selector
+              // built on it can never match again. Stadtwerke Flensburg's
+              // postcode field was `#user-widget-location-6af44f6a60bf3` on
+              // one load and `...6af44caceba0d` on the next.
+              function generatedId(id) {
+                return /\d{6,}/.test(id)
+                  || /(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}/i.test(id)
+                  || /^:r[0-9a-z]*:$/i.test(id);
+              }
               function semanticCss(el) {
-                if (el.id) return '#' + CSS.escape(el.id);
+                if (el.id && !generatedId(el.id)) return '#' + CSS.escape(el.id);
                 for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name']) {
                   const value = el.getAttribute(attr);
                   if (value) {
@@ -5880,7 +5909,7 @@ impl AppDriver for WebAppDriver {
                     continue;
                   }
                   let css = el === frameDoc.body ? 'body' : null;
-                  if (!css && el.id) css = '#' + CSS.escape(el.id);
+                  if (!css && el.id && !generatedId(el.id)) css = '#' + CSS.escape(el.id);
                   if (!css) {
                     for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name']) {
                       const value = el.getAttribute(attr);
