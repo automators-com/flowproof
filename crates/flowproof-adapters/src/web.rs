@@ -22,6 +22,75 @@ use crate::AdapterError;
 
 const FIND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a field that has a suggestion list is given to show one after
+/// typing. Plain fields never wait; see `typed_suggestion`.
+const SUGGESTION_WAIT: Duration = Duration::from_secs(2);
+
+/// Run with the typed-into field as `this`. Answers `plain` (nothing to pick
+/// and nothing worth waiting for: no list belongs to this field, or the
+/// match is ambiguous), `pending` (it has a list, but no visible option
+/// reads the typed text yet) or `pick:<label>`.
+///
+/// The list is the field's own: named by `aria-controls`/`aria-owns`, or a
+/// `role=listbox` in the field's nearest wrapper that holds no other field.
+/// Stadtwerke Flensburg's address fields carry no ARIA at all - a bare
+/// input beside a `div role=listbox` of buttons - so the wrapper rule is
+/// load-bearing, not a fallback for the odd page.
+///
+/// Only an EXACT match (case and whitespace aside) is offered, and only when
+/// its text names no other clickable on the page: the recorder clicks it by
+/// that text, and a text target takes the first match in document order.
+/// Search boxes are left alone - picking a suggestion there runs the search.
+const TYPED_SUGGESTION_JS: &str = r#"function(typed) {
+    const norm = s => String(s || '').replace(/\u00ad/g, '').replace(/\s+/g, ' ').trim();
+    const want = norm(typed).toLowerCase();
+    if (!want || document.querySelector('#webguiPage0, #webguiform0')) { return 'plain'; }
+    if (this.type === 'search' || this.getAttribute('role') === 'searchbox'
+        || this.closest('[role=search], search')) { return 'plain'; }
+    const lists = [];
+    for (const attr of ['aria-controls', 'aria-owns']) {
+        for (const id of (this.getAttribute(attr) || '').split(/\s+/)) {
+            const el = id && document.getElementById(id);
+            if (el) { lists.push(el); }
+        }
+    }
+    if (!lists.length) {
+        const fields = 'input:not([type=hidden]):not([type=button]):not([type=submit])'
+            + ':not([type=reset]):not([type=checkbox]):not([type=radio]), textarea, select';
+        let box = this.parentElement;
+        for (let depth = 0; box && depth < 4; depth++, box = box.parentElement) {
+            if (box.querySelectorAll(fields).length > 1) { break; }
+            const found = box.querySelectorAll('[role=listbox]');
+            if (found.length) { lists.push(...found); break; }
+        }
+    }
+    if (!lists.length) { return 'plain'; }
+    const shown = el => {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) { return false; }
+        const s = getComputedStyle(el);
+        return s.visibility !== 'hidden' && s.display !== 'none';
+    };
+    const clickable = 'button, a, [role=option], [role=button]';
+    const reads = el => norm(el.textContent).toLowerCase() === want
+        || norm(el.getAttribute('aria-label')).toLowerCase() === want;
+    const hits = [];
+    for (const list of lists) {
+        if (!shown(list)) { continue; }
+        for (const el of list.querySelectorAll(clickable)) {
+            if (shown(el) && reads(el) && !el.querySelector(clickable)) { hits.push(el); }
+        }
+    }
+    // None yet may still be loading; two, or a namesake elsewhere, will not
+    // get better by waiting, and guessing between them is the wrong pick.
+    if (!hits.length) { return 'pending'; }
+    if (hits.length > 1) { return 'plain'; }
+    const namesake = Array.from(document.querySelectorAll(clickable + ', summary, [role=tab], [type=submit]'))
+        .filter(el => reads(el) && !el.querySelector(clickable));
+    if (namesake.length !== 1 || namesake[0] !== hits[0]) { return 'plain'; }
+    return 'pick:' + norm(hits[0].textContent || hits[0].getAttribute('aria-label'));
+}"#;
+
 /// WebGUI table controls use a separate draggable scrollbar. Native
 /// scrollIntoView scrolls their overflow:hidden body without updating the
 /// header or SAP's column position, so the next click edits the wrong cell.
@@ -5030,6 +5099,46 @@ impl AppDriver for WebAppDriver {
             )?;
         }
         Ok(())
+    }
+
+    fn typed_suggestion(
+        &mut self,
+        field: &UiaSelector,
+        typed: &str,
+    ) -> Result<Option<String>, DriverError> {
+        // A framed field's list lives in another document; not covered.
+        if field.frame.is_some() {
+            return Ok(None);
+        }
+        let locator = Self::locator(field)?;
+        // Suggestions usually arrive from a request the keystrokes started,
+        // so a field that HAS a list (wired by ARIA, or a listbox beside it)
+        // is polled briefly. A plain field answers `plain` at once and costs
+        // one round trip.
+        let deadline = std::time::Instant::now() + SUGGESTION_WAIT;
+        loop {
+            let status = self
+                .with_element(
+                    &locator,
+                    &format!("reading suggestions of [{field}]"),
+                    |element| {
+                        element.call_js_fn(
+                            TYPED_SUGGESTION_JS,
+                            vec![serde_json::json!(typed)],
+                            false,
+                        )
+                    },
+                )?
+                .value;
+            let status = status.as_ref().and_then(|v| v.as_str()).unwrap_or("plain");
+            if let Some(label) = status.strip_prefix("pick:") {
+                return Ok(Some(label.to_string()));
+            }
+            if status != "pending" || std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
     }
 
     fn click_at(

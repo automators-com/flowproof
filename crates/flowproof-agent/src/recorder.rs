@@ -3770,6 +3770,10 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         // Field tokens the rejected-form guard saw refused this step. The
         // superseded writes to them are dropped before the trace is minted.
         let mut superseded: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // Set when a type queued the pick of its own suggestion (see the
+        // TypeText arm); that click is the correction a red field asks for,
+        // not a walk away from it.
+        let mut suggestion_next = false;
         // A step whose remainder lives on a later screen is authored in
         // installments: perform what could be grounded here, let the page
         // change, then ask for the rest against what it became. Bounded by
@@ -3824,6 +3828,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     }
                 }
             };
+            let picking_suggestion = std::mem::take(&mut suggestion_next);
             // With no `url:`, a relative `Go to /path` (a model often
             // shortens an address on the site it can see) resolves against
             // the page the flow is on, and is recorded in full: replay
@@ -3955,7 +3960,8 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             // wizard advances regardless, leaving the section flagged behind
             // it and the offending field on a screen nothing will inventory
             // again. This is the last moment it is repairable.
-            if closed_loop && matches!(action, ResolvedAction::Press { .. }) {
+            if closed_loop && !picking_suggestion && matches!(action, ResolvedAction::Press { .. })
+            {
                 let rejected = rejected_fields(driver)?;
                 if !rejected.is_empty() {
                     let descriptors: Vec<&str> =
@@ -4181,6 +4187,33 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             expected: format!("'{value}' to appear in the field"),
                             actual: "it never appeared on screen - the click missed the field, or the keystrokes went to something else".to_string(),
                         });
+                    }
+                    // An autocomplete that only takes a value picked from its
+                    // list (Stadtwerke Flensburg's postcode and street) left
+                    // the list open over the next button and the house
+                    // number disabled: typed, never picked. The pick is
+                    // clicked as its own step, so the trace says it and
+                    // replay is a plain type and a plain click - traces
+                    // recorded before this replay exactly as they did. A
+                    // `${...}` value is never written as a click target. A
+                    // probe that cannot read the field (replaced after the
+                    // keystrokes) picks nothing; the type itself succeeded.
+                    if !referenced {
+                        if let Ok(Some(label)) = driver.typed_suggestion(targeted(), &value) {
+                            let planned = matches!(
+                                plan.front(),
+                                Some(ResolvedAction::Press { target: Target::Text(next), .. })
+                                    if next.eq_ignore_ascii_case(&label)
+                            );
+                            if !planned {
+                                plan.push_front(ResolvedAction::Press {
+                                    target: Target::Text(label.clone()),
+                                    label,
+                                    dialog: None,
+                                });
+                                suggestion_next = true;
+                            }
+                        }
                     }
                 }
                 ResolvedAction::TypeFocused { text } => {
@@ -5379,6 +5412,53 @@ mod tests {
         record(&spec("${FLOWPROOF_READBACK_TEST_PW}"), &mut driver, &out)
             .expect("a referenced value is not read back");
         std::env::remove_var("FLOWPROOF_READBACK_TEST_PW");
+        std::fs::remove_file(out).ok();
+    }
+
+    /// Stadtwerke Flensburg's postcode field only takes a value picked from
+    /// its list: typed and never picked, the list stayed open over "Preis
+    /// berechnen" and the click was refused as occluded. The pick is now
+    /// clicked, and written into the trace as its own click, so replay is
+    /// a plain type and a plain click.
+    #[test]
+    fn a_typed_value_its_field_suggests_is_picked_and_traced_as_a_click() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nurl: https://e.test/x\nsteps:\n  \
+             - Type 24944 Flensburg into the \"PLZ und Ort\" field\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&["PLZ und Ort", "24944 Flensburg"]);
+        driver
+            .suggestions
+            .insert("PLZ und Ort".into(), "24944 Flensburg".into());
+        let out = std::env::temp_dir().join("flowproof-suggestion-pick.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("records");
+        assert_eq!(driver.invoked, vec!["24944 Flensburg".to_string()]);
+        let trace = std::fs::read_to_string(&out).expect("trace written");
+        let typed = trace.find("type_text").expect("the type is traced");
+        let clicked = trace.find("\"click\"").expect("the pick is traced");
+        assert!(typed < clicked, "the pick follows the type:\n{trace}");
+        std::fs::remove_file(out).ok();
+    }
+
+    /// A `${...}` value is never written into the trace as a click target,
+    /// so its suggestion is left alone, as before.
+    #[test]
+    fn a_referenced_value_is_never_picked_from_suggestions() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nurl: https://e.test/x\nsteps:\n  \
+             - Type ${FLOWPROOF_SUGGESTION_TEST_STREET} into the \"Street\" field\n",
+        )
+        .expect("spec parses");
+        std::env::set_var("FLOWPROOF_SUGGESTION_TEST_STREET", "Schottweg");
+        let mut driver = MockAppDriver::new(&["Street", "Schottweg"]);
+        driver
+            .suggestions
+            .insert("Street".into(), "Schottweg".into());
+        let out = std::env::temp_dir().join("flowproof-suggestion-ref.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("records");
+        std::env::remove_var("FLOWPROOF_SUGGESTION_TEST_STREET");
+        assert!(driver.invoked.is_empty(), "{:?}", driver.invoked);
         std::fs::remove_file(out).ok();
     }
 
