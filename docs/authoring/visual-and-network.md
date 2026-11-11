@@ -79,6 +79,12 @@ no business agreeing to tracking on anyone's behalf, and rejecting keeps
 the site closest to a clean visit. On stadtwerke-flensburg.de, rejecting
 leaves only the site's strictly necessary purpose granted.
 
+A dialog often arrives a second or two after its page, after a fast step
+could already have opened a menu that the rejection would close again. So
+before acting on a page whose consent manager is loaded but has not decided
+yet, the step waits until the dialog has appeared and been rejected; on a
+page without one, or once a page is 8 seconds old, it does not wait.
+
 So a flow needs no cookie step, and a draft from a recording or a test
 case does not have to know whether the person who made it had already
 consented.

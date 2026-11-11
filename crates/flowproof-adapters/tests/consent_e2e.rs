@@ -39,7 +39,39 @@ setTimeout(() => {
     format!("data:text/html,{}", html.replace('\n', " "))
 }
 
+/// Stadtwerke Flensburg's race, reduced: a menu that any click outside it
+/// closes, and a consentmanager dialog - its `__cmp` API already saying no
+/// decision exists - that arrives after the flow's first click could. The
+/// rejection is such an outside click.
+fn race_fixture() -> String {
+    let html = r#"<button id='menu-button'>Produkte</button><nav id='menu' hidden><a id='item'>Haushaltsstrom</a></nav><p id='result'></p>
+<script>
+let consented = false;
+window.__cmp = (cmd) => cmd === 'getCMPData' ? { gdprApplies: true, consentExists: consented } : undefined;
+const menu = document.getElementById('menu');
+document.getElementById('menu-button').addEventListener('click', (e) => { e.stopPropagation(); menu.hidden = false; });
+document.addEventListener('click', (e) => { if (!menu.contains(e.target)) { menu.hidden = true; } });
+setTimeout(() => {
+  const host = document.createElement('div');
+  host.id = 'cmpwrapper';
+  document.body.appendChild(host);
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = "<div id='cmpbox' style='position:fixed;bottom:0;left:0;right:0;background:white'><a class='cmpboxbtn cmpboxbtnno'>Reject all</a></div>";
+  root.querySelector('.cmpboxbtnno').addEventListener('click', () => {
+    consented = true;
+    root.getElementById('cmpbox').style.display = 'none';
+    document.getElementById('result').textContent += 'consentmanager ';
+  });
+}, 1500);
+</script>"#;
+    format!("data:text/html,{}", html.replace('\n', " "))
+}
+
 fn open(reject_consent: bool) -> flowproof_adapters::WebAppDriver {
+    open_page(&fixture(), reject_consent)
+}
+
+fn open_page(url: &str, reject_consent: bool) -> flowproof_adapters::WebAppDriver {
     let mut driver = flowproof_adapters::WebAppDriver::new().expect("browser starts");
     driver
         .stage_browser(WebBrowserConfig {
@@ -48,7 +80,7 @@ fn open(reject_consent: bool) -> flowproof_adapters::WebAppDriver {
         })
         .expect("staged");
     driver
-        .launch(&fixture(), "", std::time::Duration::from_secs(10))
+        .launch(url, "", std::time::Duration::from_secs(10))
         .expect("fixture opens");
     driver
 }
@@ -109,4 +141,39 @@ fn a_flow_that_keeps_consent_dialogs_gets_them_untouched() {
     assert!(driver
         .element_exists(&UiaSelector::css("#onetrust-banner-sdk"))
         .expect("looks"));
+}
+
+/// Replay clicked "Produkte" a second before the dialog arrived, and the
+/// rejection closed the menu the click had opened. The gate before a step
+/// now lets a pending dialog in and rejects it first.
+#[test]
+fn a_dialog_still_on_its_way_is_rejected_before_the_step_not_during_it() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        return;
+    }
+    let _guard = flowproof_adapters::SharedBrowserGuard::new();
+    let mut driver = open_page(&race_fixture(), true);
+    let button = UiaSelector::css("#menu-button");
+    let started = std::time::Instant::now();
+    assert_eq!(driver.actionability_gate(&button).expect("gate"), None);
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(500),
+        "the gate did not wait for the dialog due at 1.5 s"
+    );
+    driver.invoke(&button).expect("opens the menu");
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert!(
+        driver
+            .read_text(&UiaSelector::css("#result"))
+            .expect("reads")
+            .contains("consentmanager"),
+        "the dialog was rejected"
+    );
+    assert_eq!(
+        driver
+            .element_visible(&UiaSelector::css("#item"))
+            .expect("looks"),
+        Some(true),
+        "the rejection closed the menu the step had opened"
+    );
 }
