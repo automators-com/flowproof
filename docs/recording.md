@@ -99,8 +99,11 @@ Principles this design enforces:
   timing files that can drift.
 - **Structured data is the machine surface; video is the human surface.**
   Agents reason over JSON and (later) scene-graph snapshots. Nothing
-  programmatic ever parses pixels. The visual timeline is *generated from*
-  the same run data as an additional view.
+  programmatic ever parses the pixels of a run. The visual timeline is
+  *generated from* the same run data as an additional view. Drafting a new
+  flow from a person's own screen recording (`author-from-video`) is a
+  separate, authoring-time path: there is no run and no structured session
+  to read, only the video, and the draft still has to pass a live `record`.
 - **Redaction is part of the capture path.** Frames are masked *before they
   are persisted*, by the same rule set that will govern stored screenshots.
   There is no unredacted intermediate on disk, and no post-processing step
@@ -258,6 +261,6 @@ next to the trace (path surfaced as `diff_html` in the heal report).
 ### 10. Not built
 
 Playback UI beyond the report viewer; continuous-capture sources
-(DXGI/screencast) and video-file assembly; any agent-facing video parsing
-(never planned). The healing diff view was scoped here as a seam only; it has
+(DXGI/screencast) and video-file assembly; any agent-facing parsing of a run's video
+(never planned; `author-from-video` drafts from a person's recording, not a run). The healing diff view was scoped here as a seam only; it has
 since been built, and §8 describes what shipped.

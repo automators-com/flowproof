@@ -1,6 +1,6 @@
 ---
 title: "When authoring gets stuck"
-description: "What happens when a step cannot be authored, and drafting a spec from a requirement document (author-from-doc) or from the app's code (author-from-code)."
+description: "What happens when a step cannot be authored, and drafting a spec from a requirement document (author-from-doc), from the app's code (author-from-code) or from a screen recording (author-from-video)."
 ---
 
 ## Choose the intended authoring backend
@@ -161,3 +161,43 @@ With `--json`, the report is `flow` and `steps`, each step with `kind`,
 `text`, `observed` for a flagged one, and `source` (`file`, `line`) when the
 model cited a file it was given. `reading <path>` for each picked file, then
 `drafting steps`, go to stderr.
+
+## Drafting a spec from a screen recording (`author-from-video`)
+
+A customer often has a recording of the scenario before anyone has written
+it down. `flowproof author-from-video` drafts one flow from one recording:
+
+```bash
+flowproof author-from-video order.mp4 --check
+flowproof author-from-video order.mp4 --app web --name "Electricity order" \
+  --url https://shop.example.test/ --out draft.flow.yaml
+```
+
+- `--check`: read the video and print its length and size; nothing is sent
+  to a model and nothing is written.
+- `--url`: where the flow starts, written as its first `Go to` step when the
+  recording does not start by going there.
+- `--app`, `--name` and `--out`: as for `author-from-doc`.
+
+The video is decoded in the same Chrome or Edge web flows use, so nothing
+else needs installing. It is sampled twice a second, and a frame is kept
+where the screen changed, up to 60 frames scaled to 1280 px wide. Those
+frames, each with its time, go to the configured model in one call, which
+writes the user's actions in order. The video file itself is never sent.
+
+A recording shows what happened, not what should happen, so a video draft
+never contains an `assert:`; add at least one before relying on the flow.
+A change between frames that no visible action explains is flagged as a
+`# TODO`, as above. A value typed and then picked from a suggestion list is
+written as one `Type` step with the picked value, which `record` picks from
+the list. Passwords are written as `${PASSWORD}`.
+
+A recording the browser cannot play, such as some HEVC `.mov` files, is
+refused with a message; export it as an H.264 `.mp4`. Drafting needs a
+model that reads images: Anthropic or OpenAI, not an OpenAI-compatible
+server.
+
+With `--json`, the report is `flow`, `frames`, `duration_ms` and `steps`,
+each step with `kind` and `text`, and `observed` for a flagged one.
+`finding frames: sample <n> of <total>`, then `reading <n> frames`, go to
+stderr.
