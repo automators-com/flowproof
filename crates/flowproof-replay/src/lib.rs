@@ -1272,6 +1272,38 @@ fn check_assertion<D: AppDriver>(
                 }
             }
 
+            // A reveal click's guard: the click that opened a menu while
+            // recording runs only while its target still cannot be clicked.
+            // One reading, like every guard. A target that cannot be read
+            // counts as not clickable, so the recorded click runs, as it did.
+            if let Some(wanted) = expect
+                .get("element_receives_events")
+                .and_then(|v| v.as_bool())
+            {
+                let receives = match selectors.get(primary).and_then(selector_to_uia) {
+                    Some(uia) if driver.element_exists(&uia).unwrap_or(false) => driver
+                        .element_reachable(&uia)
+                        .map(|answer| answer.unwrap_or(true))
+                        .unwrap_or(false),
+                    _ => false,
+                };
+                let verdict = if receives == wanted {
+                    Ok(())
+                } else {
+                    let (seen, wanted) = if receives {
+                        ("clickable", "not clickable yet")
+                    } else {
+                        ("not clickable", "clickable")
+                    };
+                    Err(Failure::mismatch(
+                        format!("expected the element to be {wanted}, it is {seen}"),
+                        wanted,
+                        seen,
+                    ))
+                };
+                return Ok((verdict, Some(primary)));
+            }
+
             // Presence expectations: the element being there (or gone) IS
             // the assertion — no text involved.
             if let Some(wanted_present) = expect.get("element_present").and_then(|v| v.as_bool()) {

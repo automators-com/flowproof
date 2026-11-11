@@ -24,16 +24,12 @@ jobs:
     steps:
       - name: Trigger docs site deploy hook
         env:
-          HOOK_URL: ${{ secrets.DOCS_SITE_DEPLOY_HOOK_URL }}
+          HOOK_URL: ${{ secrets.CLOUDFLARE_DOCS_DEPLOY_HOOK_URL || secrets.DOCS_SITE_DEPLOY_HOOK_URL }}
         run: |
           # A deploy that did not happen must not look like one that did —
           # see rebuild-website-docs.yml's own history of this exact bug.
           if [ -z "$HOOK_URL" ]; then
-            echo "::error::DOCS_SITE_DEPLOY_HOOK_URL is not set, so docs.automators.com was NOT rebuilt."
-            echo "The value is a Vercel deploy hook for the automators-com/docs project:"
-            echo "  Vercel -> the docs project -> Settings -> Git -> Deploy Hooks"
-            echo "Then, from a checkout of this repository:"
-            echo "  gh secret set DOCS_SITE_DEPLOY_HOOK_URL"
+            echo "::error::Set CLOUDFLARE_DOCS_DEPLOY_HOOK_URL to the production docs deploy hook and rerun this workflow."
             exit 1
           fi
           # -f turns a non-2xx into a failure; without it curl prints the error

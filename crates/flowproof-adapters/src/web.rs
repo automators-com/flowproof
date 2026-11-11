@@ -22,6 +22,61 @@ use crate::AdapterError;
 
 const FIND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Would a click at the element's centre reach it? Playwright's obscured
+/// check, run with the element as `this`: `elementFromPoint` there must be
+/// the element or a relative of it, or a label the browser forwards the
+/// click through. Shared by the gate before a click (which scrolls first)
+/// and the pure reading guards take (which never moves the page).
+const HIT_TEST_JS: &str = r#"function() {
+    const r = this.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) { return false; }
+    const t = document.elementFromPoint(
+        r.x + r.width / 2, r.y + r.height / 2);
+    if (!t) { return false; }
+    if (t === this || this.contains(t) || t.contains(this)) { return true; }
+    // A custom-styled checkbox or radio: the real input is
+    // visually replaced by a sibling inside its own label,
+    // so the hit is neither ancestor nor descendant. The
+    // browser forwards a click anywhere in the label to the
+    // input, which is exactly how a person ticks the box -
+    // and how the hand-written spec for this same form does
+    // it, by targeting the label instead. Refusing here
+    // makes every styled control unrecordable.
+    //
+    // Forwarded on the BROWSER's terms, not on the mere
+    // presence of a label, because a click the label does
+    // not forward is a click that does nothing - and
+    // recording it as a success is the false green this
+    // gate exists to prevent. Two shapes look identical
+    // from the element and behave nothing alike:
+    //
+    //  - a label labels ONE control (the `for` target,
+    //    else its first labelable descendant), so a label
+    //    wrapping several cannot lend its area to the
+    //    others. `labels` is that relation read from this
+    //    end, which is why it is asked instead of walking
+    //    up to the nearest `<label>`;
+    //  - interactive content inside a label keeps the
+    //    activation for itself. A hit on a link, a button
+    //    or the OTHER input in there follows its own
+    //    behaviour and leaves this control untouched.
+    const label = t.closest('label');
+    const labels = this.labels ? Array.from(this.labels) : [];
+    if (!label || !labels.includes(label)) { return false; }
+    // `area[href]` is interactive content too - it extends
+    // HTMLAnchorElement - and `img[usemap]` never catches it:
+    // elementFromPoint returns the AREA, whose ancestors run
+    // map -> label, so the image is a sibling never visited.
+    const INTERACTIVE = 'a[href], area[href], button, details, \
+        embed, iframe, select, textarea, audio[controls], \
+        video[controls], img[usemap], input:not([type=hidden])';
+    for (let node = t; node && node !== label;
+         node = node.parentElement) {
+        if (node.matches(INTERACTIVE)) { return false; }
+    }
+    return true;
+}"#;
+
 /// Installed before any page script when a flow rejects consent dialogs
 /// (`browser: consent: reject`, the default a web flow records with). It
 /// presses each known consent manager's own "reject all" control, found by
@@ -94,6 +149,15 @@ const CONSENT_JS: &str = r#"(() => {
 /// from before consent handling).
 const CONSENT_PENDING_JS: &str =
     "(() => { const c = window.__flowproofConsent; return !!(c && c.pending()); })()";
+
+/// The most [`WebAppDriver::settle_page`] waits for a document to finish
+/// loading. A page whose `load` never comes (a third-party resource that
+/// hangs) costs this once, then the step goes ahead as it always did.
+const PAGE_READY_WAIT: Duration = Duration::from_secs(10);
+
+/// The document's identity and whether it has finished loading.
+const PAGE_READY_JS: &str =
+    "JSON.stringify({ origin: performance.timeOrigin, ready: document.readyState === 'complete' })";
 
 /// The most [`WebAppDriver::settle_consent`] waits; the page-side cap in
 /// `pending()` normally ends it sooner.
@@ -1632,6 +1696,9 @@ pub struct WebAppDriver {
     /// Active request identities, maintained by CDP. Redirects reuse their
     /// request ID and must not leave a phantom in-flight request behind.
     network_inflight: Arc<NetworkActivity>,
+    /// The document (its `performance.timeOrigin`) already waited for by
+    /// [`Self::settle_page`], so a page is waited for once, not per step.
+    ready_document: Option<f64>,
     observed_collections: Vec<serde_json::Value>,
     /// A kept browser (`run --leave-open` / `--attach`): connected to, not
     /// launched, so it outlives this driver. See [`crate::kept_browser`].
@@ -1847,6 +1914,7 @@ impl WebAppDriver {
                 downloads_dir: None,
                 claimed_downloads: Default::default(),
                 network_inflight: Default::default(),
+                ready_document: None,
                 observed_collections: Vec::new(),
                 kept: false,
                 attached: false,
@@ -1870,6 +1938,7 @@ impl WebAppDriver {
             downloads_dir: None,
             claimed_downloads: Default::default(),
             network_inflight: Default::default(),
+            ready_document: None,
             observed_collections: Vec::new(),
             kept: false,
             attached: false,
@@ -1922,6 +1991,7 @@ impl WebAppDriver {
             downloads_dir: None,
             claimed_downloads: Default::default(),
             network_inflight: Default::default(),
+            ready_document: None,
             observed_collections: Vec::new(),
             kept: true,
             attached: attach,
@@ -2542,6 +2612,41 @@ impl WebAppDriver {
     /// Wait while a consent dialog is still to come or still on screen, so
     /// its rejection never lands in the middle of a step. One round trip when
     /// nothing is pending, which is every page without a known manager.
+    fn settle_page(&mut self) -> Result<(), DriverError> {
+        // A page's own scripts wire up its controls as it loads. Clicked
+        // while it was still `interactive`, Stadtwerke Flensburg's
+        // "Produkte" menu opened 1 time in 5; once it was `complete`, 5 in
+        // 5. Recording never saw it, because a model-authored step takes
+        // seconds; replay acts the moment the button exists.
+        let read = |driver: &Self| -> Option<(f64, bool)> {
+            let raw = driver
+                .tab()
+                .ok()?
+                .evaluate(PAGE_READY_JS, false)
+                .ok()?
+                .value?;
+            let parsed: serde_json::Value = serde_json::from_str(raw.as_str()?).ok()?;
+            Some((parsed["origin"].as_f64()?, parsed["ready"].as_bool()?))
+        };
+        let deadline = std::time::Instant::now() + PAGE_READY_WAIT;
+        loop {
+            match read(self) {
+                Some((origin, _)) if self.ready_document == Some(origin) => return Ok(()),
+                Some((origin, true)) => {
+                    self.ready_document = Some(origin);
+                    return Ok(());
+                }
+                Some((origin, false)) if std::time::Instant::now() >= deadline => {
+                    self.ready_document = Some(origin);
+                    return Ok(());
+                }
+                // Mid-navigation, a reading can fail; that is not a ready page.
+                None if std::time::Instant::now() >= deadline => return Ok(()),
+                _ => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+    }
+
     fn settle_consent(&self) -> Result<(), DriverError> {
         let deadline = std::time::Instant::now() + CONSENT_SETTLE;
         loop {
@@ -4082,6 +4187,7 @@ impl AppDriver for WebAppDriver {
     fn actionability_gate(&mut self, target: &UiaSelector) -> Result<Option<String>, DriverError> {
         // Replay's gate before every targeted step: a consent dialog due on
         // this page is let in and rejected first (#815).
+        self.settle_page()?;
         self.settle_consent()?;
         // The enabled → stable → receives-events pass in ONE round trip,
         // including the stability interval (it elapses inside the page).
@@ -4526,6 +4632,7 @@ impl AppDriver for WebAppDriver {
         }
         // Recording's check before a click; the same settling as replay's
         // gate, so the two meet the page in the same state.
+        self.settle_page()?;
         self.settle_consent()?;
         let locator = Self::locator(selector)?;
         let value =
@@ -4542,60 +4649,26 @@ impl AppDriver for WebAppDriver {
                 // Playwright's obscured check: does elementFromPoint at the
                 // element's center resolve to it (or a relative)? A toast or
                 // modal backdrop on top makes the click land elsewhere.
-                element.call_js_fn(
-                    r#"function() {
-                        const r = this.getBoundingClientRect();
-                        if (r.width === 0 || r.height === 0) { return false; }
-                        const t = document.elementFromPoint(
-                            r.x + r.width / 2, r.y + r.height / 2);
-                        if (!t) { return false; }
-                        if (t === this || this.contains(t) || t.contains(this)) { return true; }
-                        // A custom-styled checkbox or radio: the real input is
-                        // visually replaced by a sibling inside its own label,
-                        // so the hit is neither ancestor nor descendant. The
-                        // browser forwards a click anywhere in the label to the
-                        // input, which is exactly how a person ticks the box -
-                        // and how the hand-written spec for this same form does
-                        // it, by targeting the label instead. Refusing here
-                        // makes every styled control unrecordable.
-                        //
-                        // Forwarded on the BROWSER's terms, not on the mere
-                        // presence of a label, because a click the label does
-                        // not forward is a click that does nothing - and
-                        // recording it as a success is the false green this
-                        // gate exists to prevent. Two shapes look identical
-                        // from the element and behave nothing alike:
-                        //
-                        //  - a label labels ONE control (the `for` target,
-                        //    else its first labelable descendant), so a label
-                        //    wrapping several cannot lend its area to the
-                        //    others. `labels` is that relation read from this
-                        //    end, which is why it is asked instead of walking
-                        //    up to the nearest `<label>`;
-                        //  - interactive content inside a label keeps the
-                        //    activation for itself. A hit on a link, a button
-                        //    or the OTHER input in there follows its own
-                        //    behaviour and leaves this control untouched.
-                        const label = t.closest('label');
-                        const labels = this.labels ? Array.from(this.labels) : [];
-                        if (!label || !labels.includes(label)) { return false; }
-                        // `area[href]` is interactive content too - it extends
-                        // HTMLAnchorElement - and `img[usemap]` never catches it:
-                        // elementFromPoint returns the AREA, whose ancestors run
-                        // map -> label, so the image is a sibling never visited.
-                        const INTERACTIVE = 'a[href], area[href], button, details, \
-                            embed, iframe, select, textarea, audio[controls], \
-                            video[controls], img[usemap], input:not([type=hidden])';
-                        for (let node = t; node && node !== label;
-                             node = node.parentElement) {
-                            if (node.matches(INTERACTIVE)) { return false; }
-                        }
-                        return true;
-                    }"#,
-                    vec![],
-                    false,
-                )
+                element.call_js_fn(HIT_TEST_JS, vec![], false)
             })?;
+        Ok(value.value.and_then(|v| v.as_bool()))
+    }
+
+    fn element_reachable(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        // The same question as `element_receives_events`, asked of the page
+        // exactly as it is: no settling, no scrolling, no waiting. A reveal
+        // guard decides whether to click from this, and reading it must not
+        // be the thing that changes the answer.
+        if selector.frame.is_some() {
+            return Ok(None);
+        }
+        let locator = Self::locator(selector)?;
+        let Some(element) = self.try_find(&locator)? else {
+            return Ok(Some(false));
+        };
+        let value = element
+            .call_js_fn(HIT_TEST_JS, vec![], false)
+            .map_err(|e| web_err(&format!("hit-testing [{selector}] in place"), e))?;
         Ok(value.value.and_then(|v| v.as_bool()))
     }
 
@@ -5041,6 +5114,7 @@ impl AppDriver for WebAppDriver {
     }
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
+        self.settle_page()?;
         self.settle_consent()?;
         // A framed target lives in another document. For a real <input>/
         // <textarea>, FRAME_ACT hands back the element's page-absolute
