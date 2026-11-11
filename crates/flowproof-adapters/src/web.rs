@@ -22,6 +22,50 @@ use crate::AdapterError;
 
 const FIND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Installed before any page script when a flow rejects consent dialogs
+/// (`browser: consent: reject`, the default a web flow records with). It
+/// presses each known consent manager's own "reject all" control, found by
+/// the markup the manager ships, never by guessing at button text: an
+/// unknown dialog is left alone and fails the flow as it always did.
+///
+/// It keeps looking for as long as the page lives, because a dialog loads
+/// after the page (consentmanager on Stadtwerke Flensburg covered the price
+/// calculator a second after load) and appears again on another domain of
+/// the same flow (that site's order portal). Each manager is listed only
+/// once it has been seen to work on a live site: consentmanager on
+/// stadtwerke-flensburg.de (after "Reject all" only its strictly necessary
+/// purpose stays granted), OneTrust on onetrust.com, Cookiebot on
+/// cookiebot.com. `window.__flowproofConsent.handled` names what was pressed.
+const CONSENT_JS: &str = r#"(() => {
+  if (window.__flowproofConsent) { return; }
+  window.__flowproofConsent = { handled: [] };
+  const shown = el => !!el && el.getClientRects().length > 0
+    && getComputedStyle(el).visibility !== 'hidden';
+  const inShadow = (host, selector) => {
+    const el = document.querySelector(host);
+    return el && el.shadowRoot ? el.shadowRoot.querySelector(selector) : null;
+  };
+  const managers = [
+    ['consentmanager', () => inShadow('#cmpwrapper', '.cmpboxbtnno')
+      || document.querySelector('#cmpbox .cmpboxbtnno')],
+    ['onetrust', () => document.getElementById('onetrust-reject-all-handler')],
+    ['cookiebot', () => document.getElementById('CybotCookiebotDialogBodyButtonDecline')],
+  ];
+  const sweep = () => {
+    for (const [name, find] of managers) {
+      try {
+        const reject = find();
+        if (shown(reject)) {
+          reject.click();
+          window.__flowproofConsent.handled.push(name);
+        }
+      } catch (e) { /* a manager mid-render; the next sweep retries */ }
+    }
+  };
+  setInterval(sweep, 400);
+  document.addEventListener('DOMContentLoaded', sweep);
+})();"#;
+
 /// How long a field that has a suggestion list is given to show one after
 /// typing. Plain fields never wait; see `typed_suggestion`.
 const SUGGESTION_WAIT: Duration = Duration::from_secs(2);
@@ -3504,6 +3548,17 @@ impl AppDriver for WebAppDriver {
                     run_immediately: None,
                 })
                 .map_err(|e| web_err("pinning randomness", e))?;
+            }
+            // Consent dialogs (#815): on the clock's terms too, since a
+            // dialog left over the page blocks the flow's next click.
+            if config.reject_consent {
+                tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+                    source: CONSENT_JS.to_string(),
+                    world_name: None,
+                    include_command_line_api: None,
+                    run_immediately: None,
+                })
+                .map_err(|e| web_err("installing consent handling", e))?;
             }
         }
         // An attached browser is already signed in to wherever it was left.

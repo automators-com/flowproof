@@ -243,21 +243,25 @@ fn browser_config_travels_from_spec_through_trace_to_replay_staging() {
     assert_eq!(vp.device_scale_factor, 1.0, "default applied");
     assert!(vp.mobile && vp.touch);
     assert_eq!(staged.user_agent.as_deref(), Some("flowproof-e2e"));
+    // A web flow that says nothing about consent records rejecting it (#815).
+    assert!(staged.reject_consent);
 
     // Replay stages the same config from the header alone.
     let mut driver = MockAppDriver::new(&["Go"]);
     let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
     assert!(report.passed, "{report:#?}");
+    let mut expected = flowproof_driver::WebBrowserConfig::from_setup_parts(
+        Some((390, 844, None, Some(true), Some(true))),
+        Some("flowproof-e2e"),
+        &[],
+        None,
+        None,
+        None,
+    );
+    expected.reject_consent = true;
     assert_eq!(
         driver.staged_browser.expect("replay staged the browser"),
-        flowproof_driver::WebBrowserConfig::from_setup_parts(
-            Some((390, 844, None, Some(true), Some(true))),
-            Some("flowproof-e2e"),
-            &[],
-            None,
-            None,
-            None,
-        )
+        expected
     );
     std::fs::remove_dir_all(&dir).ok();
 }

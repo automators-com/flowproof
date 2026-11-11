@@ -2897,7 +2897,7 @@ pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
             // see `secret::resolve_downloads_dir`.
             let downloads_dir =
                 flowproof_trace::secret::resolve_downloads_dir(&browser.downloads_dir)?;
-            driver.stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
+            let mut config = flowproof_driver::WebBrowserConfig::from_setup_parts(
                 browser
                     .viewport
                     .as_ref()
@@ -2913,7 +2913,12 @@ pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
                     .as_ref()
                     .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
                 downloads_dir,
-            ))?;
+            );
+            // Rejected consent dialogs at record, rejected again now; a
+            // trace with no `consent` predates it and replays as recorded.
+            config.reject_consent =
+                browser.consent == Some(flowproof_trace::format::Consent::Reject);
+            driver.stage_browser(config)?;
         }
     }
     let visual_paths = VisualPaths {

@@ -1965,11 +1965,26 @@ fn mint_baseline<D: AppDriver>(
 /// `downloads_dir` is the one field here that resolves `${VAR}` (a runner's
 /// temp/download path is exactly the kind of thing that differs per
 /// environment) — see `secret::resolve_downloads_dir`.
+/// The browser setup a flow records with, and writes into its trace: its
+/// own, plus `consent: reject` for a single-surface web flow that does not
+/// say otherwise (#815). Written down rather than implied, so a trace
+/// recorded before consent handling existed replays exactly as it did.
+fn recorded_browser(spec: &FlowSpec) -> Option<flowproof_trace::format::BrowserSetup> {
+    let mut browser = spec.browser.clone();
+    if spec.apps.is_empty() && spec.app.id() == "web" {
+        browser
+            .get_or_insert_with(Default::default)
+            .consent
+            .get_or_insert(flowproof_trace::format::Consent::Reject);
+    }
+    browser
+}
+
 fn web_browser_from_setup(
     setup: &flowproof_trace::format::BrowserSetup,
 ) -> Result<flowproof_driver::WebBrowserConfig, RecordError> {
     let downloads_dir = flowproof_trace::secret::resolve_downloads_dir(&setup.downloads_dir)?;
-    Ok(flowproof_driver::WebBrowserConfig::from_setup_parts(
+    let mut config = flowproof_driver::WebBrowserConfig::from_setup_parts(
         setup
             .viewport
             .as_ref()
@@ -1985,7 +2000,9 @@ fn web_browser_from_setup(
             .as_ref()
             .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
         downloads_dir,
-    ))
+    );
+    config.reject_consent = setup.consent == Some(flowproof_trace::format::Consent::Reject);
+    Ok(config)
 }
 
 /// Poll an out-of-band probe until it holds or the bound elapses — the row
@@ -3420,7 +3437,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     if !spec.mock.is_empty() {
         driver.stage_mocks(spec.mock.iter().map(web_mock_from_rule).collect())?;
     }
-    if let Some(browser) = &spec.browser {
+    if let Some(browser) = &recorded_browser(spec) {
         if !browser.is_empty() {
             driver.stage_browser(web_browser_from_setup(browser)?)?;
         }
@@ -5126,8 +5143,9 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         // Mock rules travel with the trace: what was mocked at record MUST
         // be mocked at replay, or the two executions test different things.
         mock: spec.mock.clone(),
-        // Browser shape travels too: a flow recorded mobile replays mobile.
-        browser: spec.browser.clone(),
+        // Browser shape travels too: a flow recorded mobile replays mobile,
+        // and one recorded rejecting consent dialogs replays rejecting them.
+        browser: recorded_browser(spec),
         spec: Some(flowproof_trace::format::SpecRef {
             name: spec.name.clone(),
             path: None,
@@ -5707,6 +5725,42 @@ mod tests {
             .is_none(),
             "a reference is resolved at run time, not judged here"
         );
+    }
+
+    /// #815: a web flow that says nothing about consent records rejecting
+    /// it, and says so in its trace; `consent: keep` turns it off; a
+    /// surface without a browser gets nothing staged at all.
+    #[test]
+    fn a_web_flow_records_rejecting_consent_dialogs_unless_it_keeps_them() {
+        let record_web = |extra: &str| {
+            let spec = FlowSpec::parse(&format!(
+                "name: x\napp: web\nurl: https://e.test/x\n{extra}steps:\n  - Click the \"8\"\n"
+            ))
+            .expect("parses");
+            let mut driver = MockAppDriver::new(&["8"]);
+            let out =
+                std::env::temp_dir().join(format!("flowproof-consent-{}.trace.jsonl", extra.len()));
+            record(&spec, &mut driver, &out).expect("records");
+            let trace = std::fs::read_to_string(&out).expect("trace written");
+            std::fs::remove_file(&out).ok();
+            (driver.staged_browser, trace)
+        };
+
+        let (staged, trace) = record_web("");
+        assert!(staged.expect("browser staged").reject_consent);
+        assert!(trace.contains(r#""consent":"reject""#), "{trace}");
+
+        let (staged, trace) = record_web("browser:\n  consent: keep\n");
+        assert!(!staged.expect("browser staged").reject_consent);
+        assert!(trace.contains(r#""consent":"keep""#), "{trace}");
+
+        let spec = FlowSpec::parse("name: x\napp: vision\nwindow: W\nsteps:\n  - Type Zebra42\n")
+            .expect("parses");
+        let mut driver = MockAppDriver::new(&[]);
+        let out = std::env::temp_dir().join("flowproof-consent-vision.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("records");
+        std::fs::remove_file(out).ok();
+        assert!(driver.staged_browser.is_none());
     }
 
     /// End to end through the recorder: the warning reaches the step's

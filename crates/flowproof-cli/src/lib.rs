@@ -2237,7 +2237,7 @@ fn stage_surface_browser(
     // `secret::resolve_downloads_dir`.
     let downloads_dir = flowproof_trace::secret::resolve_downloads_dir(&browser.downloads_dir)
         .map_err(|e| flowproof_driver::DriverError::Uia(e.to_string()))?;
-    driver.stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
+    let mut config = flowproof_driver::WebBrowserConfig::from_setup_parts(
         browser
             .viewport
             .as_ref()
@@ -2253,7 +2253,9 @@ fn stage_surface_browser(
             .as_ref()
             .map(|r| flowproof_driver::WebRandom { seed: r.seed }),
         downloads_dir,
-    ))
+    );
+    config.reject_consent = browser.consent == Some(flowproof_trace::format::Consent::Reject);
+    driver.stage_browser(config)
 }
 
 /// The driver a RECORDING run gets: the single app's driver, or — for a

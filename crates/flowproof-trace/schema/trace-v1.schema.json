@@ -1324,6 +1324,11 @@
         "downloads_dir": {
           "type": "string",
           "description": "Where downloaded files land, applied at launch (record and every replay) so a `capture_download` step has a fixed place to look. Stored RAW - a ${VAR} reference resolves at launch, never here. Absent means the driver creates its own per-launch temp directory."
+        },
+        "consent": {
+          "type": "string",
+          "enum": ["reject", "keep"],
+          "description": "Cookie-consent dialogs from known consent managers: `reject` presses the manager's own reject-all control whenever a dialog appears, at record and every replay; `keep` leaves them to the flow. A single-surface web flow records with `reject` unless its spec says `keep`. Absent in traces recorded before consent handling, which replay as recorded."
         }
       }
     }

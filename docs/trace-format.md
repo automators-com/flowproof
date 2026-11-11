@@ -224,8 +224,12 @@ already follows.
   flow against a page that mints random values is deterministic), and
   `downloads_dir` (where downloaded files land, applied via CDP at launch so
   `capture_download` has a fixed place to look; absent means the driver
-  creates its own per-launch temp directory). All travel in the header so
-  record and every replay run the SAME browser shape.
+  creates its own per-launch temp directory), and `consent` (`reject`:
+  known cookie-consent dialogs are rejected whenever they appear, the value
+  a single-surface web flow records with unless its spec says `keep`;
+  absent in traces recorded before consent handling, which replay as
+  recorded). All travel in the header so record and every replay run the
+  SAME browser shape.
 - Optional `apps` is the surface map of a **multi-surface trace**
   (docs/multi-surface.md): `name -> app object`, each entry the same shape
   as `app`: `{"gui": {"name": "SAP GUI for Windows", "adapter":
