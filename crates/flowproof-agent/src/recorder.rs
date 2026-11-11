@@ -4084,10 +4084,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 (ResolvedAction::Press { .. }, Some(next)) => action_selector(next)
                     .filter(|next_selector| {
                         matches!(driver.element_exists(next_selector), Ok(true))
-                            && matches!(
-                                driver.element_receives_events(next_selector),
-                                Ok(Some(false))
-                            )
+                            && matches!(driver.element_reachable(next_selector), Ok(Some(false)))
                     })
                     .map(|next_selector| (next_selector, next.clone())),
                 _ => None,
@@ -5018,7 +5015,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 // stayed open at replay's pace is left open, not toggled shut.
                 let started = std::time::Instant::now();
                 let revealed = wait_until_receives_events(
-                    || driver.element_receives_events(next_selector),
+                    || driver.element_reachable(next_selector),
                     || std::thread::sleep(ASSERT_POLL_INTERVAL),
                     || started.elapsed(),
                     Duration::from_millis(1500),

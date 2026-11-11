@@ -1255,7 +1255,7 @@ fn check_assertion<D: AppDriver>(
             {
                 let receives = match selectors.get(primary).and_then(selector_to_uia) {
                     Some(uia) if driver.element_exists(&uia).unwrap_or(false) => driver
-                        .element_receives_events(&uia)
+                        .element_reachable(&uia)
                         .map(|answer| answer.unwrap_or(true))
                         .unwrap_or(false),
                     _ => false,
