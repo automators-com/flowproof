@@ -36,11 +36,34 @@ const FIND_TIMEOUT: Duration = Duration::from_secs(5);
 /// stadtwerke-flensburg.de (after "Reject all" only its strictly necessary
 /// purpose stays granted), OneTrust on onetrust.com, Cookiebot on
 /// cookiebot.com. `window.__flowproofConsent.handled` names what was pressed.
+///
+/// `pending()` says a dialog is on its way or on screen and not yet
+/// rejected, for [`CONSENT_PENDING_JS`]: the driver waits it out before
+/// acting, so a rejection never lands mid-step. On Stadtwerke Flensburg the
+/// dialog appeared a second after replay's first click, and rejecting it
+/// closed the "Produkte" menu that click had just opened.
 const CONSENT_JS: &str = r#"(() => {
   if (window.__flowproofConsent) { return; }
-  window.__flowproofConsent = { handled: [] };
   const shown = el => !!el && el.getClientRects().length > 0
     && getComputedStyle(el).visibility !== 'hidden';
+  window.__flowproofConsent = {
+    handled: [],
+    pending: () => {
+      // A manager that has not shown anything 8 s into a page is not
+      // coming; steps after that never wait.
+      if (performance.now() > 8000) { return false; }
+      // consentmanager's API is there before its dialog, and says whether
+      // a decision exists yet.
+      if (typeof window.__cmp === 'function') {
+        try {
+          const data = window.__cmp('getCMPData');
+          if (!data || (data.gdprApplies !== false && !data.consentExists)) { return true; }
+        } catch (e) { return true; }
+      }
+      return shown(document.getElementById('onetrust-banner-sdk'))
+        || shown(document.getElementById('CybotCookiebotDialog'));
+    },
+  };
   const inShadow = (host, selector) => {
     const el = document.querySelector(host);
     return el && el.shadowRoot ? el.shadowRoot.querySelector(selector) : null;
@@ -65,6 +88,16 @@ const CONSENT_JS: &str = r#"(() => {
   setInterval(sweep, 400);
   document.addEventListener('DOMContentLoaded', sweep);
 })();"#;
+
+/// Whether a consent dialog is still to come or still on screen; `false`
+/// where the watcher is not installed (`browser: consent: keep`, or a trace
+/// from before consent handling).
+const CONSENT_PENDING_JS: &str =
+    "(() => { const c = window.__flowproofConsent; return !!(c && c.pending()); })()";
+
+/// The most [`WebAppDriver::settle_consent`] waits; the page-side cap in
+/// `pending()` normally ends it sooner.
+const CONSENT_SETTLE: Duration = Duration::from_secs(8);
 
 /// How long a field that has a suggestion list is given to show one after
 /// typing. Plain fields never wait; see `typed_suggestion`.
@@ -2505,6 +2538,26 @@ impl WebAppDriver {
         })
         .map_err(|e| web_err(context, e))
     }
+
+    /// Wait while a consent dialog is still to come or still on screen, so
+    /// its rejection never lands in the middle of a step. One round trip when
+    /// nothing is pending, which is every page without a known manager.
+    fn settle_consent(&self) -> Result<(), DriverError> {
+        let deadline = std::time::Instant::now() + CONSENT_SETTLE;
+        loop {
+            let pending = self
+                .tab()?
+                .evaluate(CONSENT_PENDING_JS, false)
+                .ok()
+                .and_then(|r| r.value)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !pending || std::time::Instant::now() >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
 }
 
 /// "bottom" or "top", for a scroll failure message.
@@ -4027,6 +4080,9 @@ impl AppDriver for WebAppDriver {
     }
 
     fn actionability_gate(&mut self, target: &UiaSelector) -> Result<Option<String>, DriverError> {
+        // Replay's gate before every targeted step: a consent dialog due on
+        // this page is let in and rejected first (#815).
+        self.settle_consent()?;
         // The enabled → stable → receives-events pass in ONE round trip,
         // including the stability interval (it elapses inside the page).
         // Same questions, same order, same answers as the composed default
@@ -4468,6 +4524,9 @@ impl AppDriver for WebAppDriver {
         if selector.frame.is_some() {
             return Ok(None);
         }
+        // Recording's check before a click; the same settling as replay's
+        // gate, so the two meet the page in the same state.
+        self.settle_consent()?;
         let locator = Self::locator(selector)?;
         let value =
             self.with_element(&locator, &format!("hit-testing [{selector}]"), |element| {
@@ -4964,6 +5023,7 @@ impl AppDriver for WebAppDriver {
     }
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
+        self.settle_consent()?;
         // A framed target lives in another document. For a real <input>/
         // <textarea>, FRAME_ACT hands back the element's page-absolute
         // point instead of writing the value itself: a real click there,
