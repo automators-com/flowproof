@@ -357,6 +357,9 @@ impl AppDriver for MockAppDriver {
         // The click lands, THEN the screen changes — an element this click
         // hides is still the element that was clicked.
         for key in self.reveals.get(&id).cloned().unwrap_or_default() {
+            // Revealed means reachable too: a menu that opens puts its
+            // links where a click lands, not just into the page.
+            self.obscured.retain(|o| *o != key);
             if !self.elements.contains(&key) {
                 self.elements.push(key);
             }

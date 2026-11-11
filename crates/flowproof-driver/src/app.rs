@@ -1089,6 +1089,15 @@ pub trait AppDriver {
         Ok(None)
     }
 
+    /// [`Self::element_receives_events`] as a pure reading: would a click at
+    /// the element's centre reach it with the page exactly as it is, nothing
+    /// scrolled, settled or waited for. What a reveal guard is decided and
+    /// read with, since a reading that moves the page can change its own
+    /// answer. Drivers whose check moves nothing keep the default.
+    fn element_reachable(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        self.element_receives_events(selector)
+    }
+
     /// The date the application itself believes it is, `YYYY-MM-DD`.
     ///
     /// Not the recorder's clock: a flow may pin the browser's, and a form
@@ -2266,6 +2275,10 @@ impl AppDriver for Box<dyn AppDriver> {
         selector: &UiaSelector,
     ) -> Result<Option<bool>, DriverError> {
         (**self).element_receives_events(selector)
+    }
+
+    fn element_reachable(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        (**self).element_reachable(selector)
     }
 
     fn today(&mut self) -> Result<Option<String>, DriverError> {
