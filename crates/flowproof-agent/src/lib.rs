@@ -18,12 +18,13 @@ pub mod repair;
 pub mod rules;
 pub mod selection;
 pub mod spec;
+pub mod video_author;
 
 pub use clarify::{Clarification, ClarifyStage};
 pub use heal::{
     heal, heal_fallbacks, heal_with_author, proposed_path, Fallback, HealError, HealReport,
 };
-pub use llm::{HttpModelClient, ModelClient};
+pub use llm::{HttpModelClient, ImagePart, ModelClient};
 pub use recorder::{
     record, record_incremental, record_incremental_with_options, record_located,
     record_with_author, record_with_author_and_options, surface_targets, Author, FailedStep,

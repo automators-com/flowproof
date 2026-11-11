@@ -1231,7 +1231,7 @@ fn settled_scene(
 
 /// Launch a fresh Chromium (`CHROME` env var overrides the binary), optionally
 /// with extra command-line flags. Headless unless `FLOWPROOF_HEADED` is set.
-fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
+pub(crate) fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
     let headed = headed_requested();
     let os_args: Vec<std::ffi::OsString> = extra_args.iter().map(Into::into).collect();
     let options = launch_options_for(&os_args, headed, find_browser()?)?;
@@ -1241,7 +1241,7 @@ fn launch_browser(extra_args: &[String]) -> Result<Browser, AdapterError> {
 
 /// Reuse Chromium's startup page in a privately owned browser. Never use
 /// this for shared contexts: each flow there must keep its isolated storage.
-fn private_flow_tab(browser: &Browser) -> anyhow::Result<Arc<Tab>> {
+pub(crate) fn private_flow_tab(browser: &Browser) -> anyhow::Result<Arc<Tab>> {
     // This API is deprecated in favor of new_tab(), but waiting for and reusing
     // the startup target is intentional: new_tab() leaves an extra visible tab.
     #[allow(deprecated)]

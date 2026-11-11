@@ -386,6 +386,8 @@ a `.flow.yaml` from a requirement/test-case PDF, then resolve it with one
 live `record` pass ([the authoring grammar](docs/authoring/index.md)).
 `flowproof author-from-code` drafts one from an outcome and the app's source,
 each step citing the line of code it came from.
+`flowproof author-from-video` drafts one from a screen recording, read in the
+browser web flows already use.
 
 **Debug what a tool sends**: `flowproof capture` is a byte-fidelity HTTP
 capture endpoint: point a tool-under-test at it and every request is printed

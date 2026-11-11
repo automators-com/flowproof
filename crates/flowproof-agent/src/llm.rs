@@ -40,8 +40,33 @@ pub trait ModelClient {
     ) -> Result<String, AgentError> {
         self.complete(system, user)
     }
+    /// [`Self::complete`] over a sequence of pictures, each with a caption
+    /// that goes just before it: the frames of a screen recording, in order.
+    /// Unlike a single screenshot this cannot fall back to text, since the
+    /// pictures are the whole input; a client that cannot see refuses.
+    fn complete_with_images(
+        &mut self,
+        _system: &str,
+        _user: &str,
+        _images: &[ImagePart],
+    ) -> Result<String, AgentError> {
+        Err(AgentError::Config(
+            "this model backend cannot read images; drafting from a video needs \
+             Anthropic or OpenAI (`flowproof config ai`)"
+                .into(),
+        ))
+    }
     /// `backend/model` identity recorded into the trace header.
     fn identity(&self) -> (String, String);
+}
+
+/// One picture for [`ModelClient::complete_with_images`].
+pub struct ImagePart {
+    /// Text placed just before the picture, e.g. `Frame 3 at 0:12.5`.
+    pub caption: String,
+    /// `image/jpeg` or `image/png`.
+    pub media_type: &'static str,
+    pub data: Vec<u8>,
 }
 
 /// A client shown the screen with every request it makes: the authoring
@@ -251,6 +276,34 @@ impl HttpModelClient {
         ])
     }
 
+    /// Each caption, then its picture, in order; the question after them
+    /// all, as with one screenshot.
+    fn anthropic_images_content(user: &str, images: &[ImagePart]) -> serde_json::Value {
+        let mut blocks = Vec::with_capacity(images.len() * 2 + 1);
+        for image in images {
+            blocks.push(json!({"type": "text", "text": image.caption}));
+            blocks.push(json!({"type": "image", "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": base64_png(&image.data),
+            }}));
+        }
+        blocks.push(json!({"type": "text", "text": user}));
+        serde_json::Value::Array(blocks)
+    }
+
+    fn openai_images_content(user: &str, images: &[ImagePart]) -> serde_json::Value {
+        let mut parts = Vec::with_capacity(images.len() * 2 + 1);
+        for image in images {
+            parts.push(json!({"type": "text", "text": image.caption}));
+            parts.push(json!({"type": "image_url", "image_url": {
+                "url": format!("data:{};base64,{}", image.media_type, base64_png(&image.data)),
+            }}));
+        }
+        parts.push(json!({"type": "text", "text": user}));
+        serde_json::Value::Array(parts)
+    }
+
     fn complete_anthropic_content(
         &mut self,
         system: &str,
@@ -410,6 +463,28 @@ impl ModelClient for HttpModelClient {
         }
     }
 
+    fn complete_with_images(
+        &mut self,
+        system: &str,
+        user: &str,
+        images: &[ImagePart],
+    ) -> Result<String, AgentError> {
+        match self.config.kind {
+            BackendKind::Anthropic => self
+                .complete_anthropic_content(system, Self::anthropic_images_content(user, images)),
+            BackendKind::OpenAi => {
+                self.complete_openai_content(system, Self::openai_images_content(user, images))
+            }
+            // Same reason as `complete_with_image`, but with no text-only
+            // fallback: the pictures are the whole input.
+            BackendKind::OpenAiCompatible => Err(AgentError::Config(
+                "an OpenAI-compatible server is not known to read images; drafting \
+                 from a video needs Anthropic or OpenAI (`flowproof config ai`)"
+                    .into(),
+            )),
+        }
+    }
+
     fn identity(&self) -> (String, String) {
         let backend = match self.config.kind {
             BackendKind::Anthropic => "anthropic",
@@ -443,6 +518,31 @@ mod tests {
             openai[1]["image_url"]["url"],
             "data:image/png;base64,iVBORw=="
         );
+    }
+
+    #[test]
+    fn frames_go_in_order_each_after_its_caption_and_the_question_last() {
+        let frames = [
+            ImagePart {
+                caption: "Frame 1 at 0:00.0".into(),
+                media_type: "image/jpeg",
+                data: vec![0xff, 0xd8],
+            },
+            ImagePart {
+                caption: "Frame 2 at 0:03.5".into(),
+                media_type: "image/jpeg",
+                data: vec![0xff, 0xd9],
+            },
+        ];
+        let anthropic = HttpModelClient::anthropic_images_content("what happened?", &frames);
+        assert_eq!(anthropic[0]["text"], "Frame 1 at 0:00.0");
+        assert_eq!(anthropic[1]["source"]["media_type"], "image/jpeg");
+        assert_eq!(anthropic[1]["source"]["data"], "/9g=");
+        assert_eq!(anthropic[2]["text"], "Frame 2 at 0:03.5");
+        assert_eq!(anthropic[4]["text"], "what happened?");
+        let openai = HttpModelClient::openai_images_content("what happened?", &frames);
+        assert_eq!(openai[1]["image_url"]["url"], "data:image/jpeg;base64,/9g=");
+        assert_eq!(openai[4]["text"], "what happened?");
     }
 
     #[test]

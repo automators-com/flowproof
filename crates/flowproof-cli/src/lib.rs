@@ -626,6 +626,35 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// EXPERIMENTAL: draft a `.flow.yaml` from a screen recording. The video
+    /// is decoded in the Chrome or Edge web flows use, its changed frames go
+    /// to the model in one call, and the draft never asserts: a recording
+    /// shows what happened, not what should. Still needs a live `record`.
+    AuthorFromVideo {
+        /// The screen recording (mp4, mov, webm, …).
+        video: PathBuf,
+        /// Target app id (e.g. web, sap).
+        #[arg(long, required_unless_present = "check")]
+        app: Option<String>,
+        /// Flow name, written into the draft's `name:` field.
+        #[arg(long, required_unless_present = "check")]
+        name: Option<String>,
+        /// Where the flow starts, when the recording's address bar does not
+        /// show it; written as the first step.
+        #[arg(long)]
+        url: Option<String>,
+        /// The draft file.
+        #[arg(short, long, required_unless_present = "check")]
+        out: Option<PathBuf>,
+        /// Only read the video and report its length and how many frames
+        /// would be sent; nothing is sent to a model and nothing is written.
+        #[arg(long)]
+        check: bool,
+        /// Print the result as one JSON object: the draft file and every
+        /// drafted step with its kind (action, flagged, out_of_scope).
+        #[arg(long)]
+        json: bool,
+    },
     /// Convert a recorded trace to another tool's test format. Steps the
     /// target cannot express are listed on stderr, never dropped silently.
     Export {
@@ -4270,12 +4299,94 @@ fn cmd_author_from_doc(
     Ok(EXIT_PASS)
 }
 
-/// One drafted test case as `author-from-doc --json` reports it: the files
-/// written and every drafted step with its kind.
-fn doc_draft_json(result: &flowproof_agent::doc_author::DocAuthorResult) -> serde_json::Value {
+fn cmd_author_from_video(
+    video: PathBuf,
+    app: Option<String>,
+    name: Option<String>,
+    url: Option<String>,
+    out: Option<PathBuf>,
+    check: bool,
+    json: bool,
+) -> Result<u8, String> {
+    use flowproof_adapters::video_frames;
+    use flowproof_agent::video_author;
+    if check {
+        let info = video_frames::probe(&video).map_err(|e| e.to_string())?;
+        if json {
+            let report = serde_json::json!({ "duration_ms": info.duration_ms,
+                "width": info.width, "height": info.height });
+            println!("{report}");
+        } else {
+            println!(
+                "{:.1} s, {}x{} — readable; frames are chosen when drafting",
+                info.duration_ms as f64 / 1000.0,
+                info.width,
+                info.height
+            );
+        }
+        return Ok(EXIT_PASS);
+    }
+    // Like record and heal, drafting must see credentials saved by config ai.
+    config::seed_env();
+    let (Some(app), Some(name), Some(out)) = (app, name, out) else {
+        return Err("--app, --name and --out are required to draft".into());
+    };
+    let (info, frames) = video_frames::extract(
+        &video,
+        &video_frames::FrameOptions::default(),
+        &mut |done, total| eprintln!("finding frames: sample {} of {total}", done + 1),
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(k) = info.kept {
+        eprintln!(
+            "trimmed still edges of the screen, keeping {}x{} at {},{}",
+            k.width, k.height, k.x, k.y
+        );
+    }
+    eprintln!("reading {} frames", frames.len());
+    let frames: Vec<video_author::Frame> = frames
+        .into_iter()
+        .map(|f| video_author::Frame {
+            at_ms: f.at_ms,
+            jpeg: f.jpeg,
+        })
+        .collect();
+    let opts = video_author::VideoAuthorOptions {
+        video,
+        app,
+        name,
+        out,
+        url,
+        duration_ms: info.duration_ms,
+    };
+    let result = video_author::author_from_frames(&opts, &frames).map_err(|e| e.to_string())?;
+    if json {
+        let mut report = draft_steps_json(&result.lines);
+        report["flow"] = serde_json::json!(result.flow);
+        report["frames"] = frames.len().into();
+        report["duration_ms"] = info.duration_ms.into();
+        if let Some(k) = info.kept {
+            report["kept"] =
+                serde_json::json!({ "x": k.x, "y": k.y, "width": k.width, "height": k.height });
+        }
+        println!("{report}");
+        return Ok(EXIT_PASS);
+    }
+    println!(
+        "draft spec written to {} from {} frames — DRAFT; review every step (a flagged \
+         one needs the live app to resolve it) and add at least one assert, then \
+         `flowproof record`",
+        result.flow.display(),
+        frames.len()
+    );
+    Ok(EXIT_PASS)
+}
+
+/// `{"steps": [...]}`: every drafted line with its kind, the shape
+/// `author-from-doc --json` and `author-from-video --json` share.
+fn draft_steps_json(lines: &[flowproof_agent::draft_assembly::DraftLine]) -> serde_json::Value {
     use flowproof_agent::draft_assembly::DraftLine;
-    let steps: Vec<_> = result
-        .lines
+    let steps: Vec<_> = lines
         .iter()
         .map(|line| {
             let kind = match line {
@@ -4291,8 +4402,17 @@ fn doc_draft_json(result: &flowproof_agent::doc_author::DocAuthorResult) -> serd
             step
         })
         .collect();
-    serde_json::json!({ "flow": result.flow, "values": result.values,
-        "test_case": result.test_case, "steps": steps })
+    serde_json::json!({ "steps": steps })
+}
+
+/// One drafted test case as `author-from-doc --json` reports it: the files
+/// written and every drafted step with its kind.
+fn doc_draft_json(result: &flowproof_agent::doc_author::DocAuthorResult) -> serde_json::Value {
+    let mut report = draft_steps_json(&result.lines);
+    report["flow"] = serde_json::json!(result.flow);
+    report["values"] = serde_json::json!(result.values);
+    report["test_case"] = serde_json::json!(result.test_case);
+    report
 }
 
 /// Several test cases, each into its own flow. Exits 1 when some failed
@@ -4931,6 +5051,15 @@ where
             check,
             json,
         } => cmd_author_from_doc(doc, app, name, out, test_case, check, json),
+        Command::AuthorFromVideo {
+            video,
+            app,
+            name,
+            url,
+            out,
+            check,
+            json,
+        } => cmd_author_from_video(video, app, name, url, out, check, json),
         Command::AuthorFromCode {
             repo,
             goal,
@@ -5665,6 +5794,28 @@ mod tests {
             "its trace waits for the leak scan, so a checkpoint must too"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn author_from_video_checks_alone_but_drafts_only_with_app_name_and_out() {
+        assert!(
+            Cli::try_parse_from(["flowproof", "author-from-video", "demo.mp4", "--check"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["flowproof", "author-from-video", "demo.mp4"]).is_err());
+        assert!(Cli::try_parse_from([
+            "flowproof",
+            "author-from-video",
+            "demo.mp4",
+            "--app",
+            "web",
+            "--name",
+            "Order",
+            "--out",
+            "order.flow.yaml",
+            "--url",
+            "https://shop.example.test/",
+        ])
+        .is_ok());
     }
 
     #[test]
