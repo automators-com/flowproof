@@ -22,6 +22,61 @@ use crate::AdapterError;
 
 const FIND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Would a click at the element's centre reach it? Playwright's obscured
+/// check, run with the element as `this`: `elementFromPoint` there must be
+/// the element or a relative of it, or a label the browser forwards the
+/// click through. Shared by the gate before a click (which scrolls first)
+/// and the pure reading guards take (which never moves the page).
+const HIT_TEST_JS: &str = r#"function() {
+    const r = this.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) { return false; }
+    const t = document.elementFromPoint(
+        r.x + r.width / 2, r.y + r.height / 2);
+    if (!t) { return false; }
+    if (t === this || this.contains(t) || t.contains(this)) { return true; }
+    // A custom-styled checkbox or radio: the real input is
+    // visually replaced by a sibling inside its own label,
+    // so the hit is neither ancestor nor descendant. The
+    // browser forwards a click anywhere in the label to the
+    // input, which is exactly how a person ticks the box -
+    // and how the hand-written spec for this same form does
+    // it, by targeting the label instead. Refusing here
+    // makes every styled control unrecordable.
+    //
+    // Forwarded on the BROWSER's terms, not on the mere
+    // presence of a label, because a click the label does
+    // not forward is a click that does nothing - and
+    // recording it as a success is the false green this
+    // gate exists to prevent. Two shapes look identical
+    // from the element and behave nothing alike:
+    //
+    //  - a label labels ONE control (the `for` target,
+    //    else its first labelable descendant), so a label
+    //    wrapping several cannot lend its area to the
+    //    others. `labels` is that relation read from this
+    //    end, which is why it is asked instead of walking
+    //    up to the nearest `<label>`;
+    //  - interactive content inside a label keeps the
+    //    activation for itself. A hit on a link, a button
+    //    or the OTHER input in there follows its own
+    //    behaviour and leaves this control untouched.
+    const label = t.closest('label');
+    const labels = this.labels ? Array.from(this.labels) : [];
+    if (!label || !labels.includes(label)) { return false; }
+    // `area[href]` is interactive content too - it extends
+    // HTMLAnchorElement - and `img[usemap]` never catches it:
+    // elementFromPoint returns the AREA, whose ancestors run
+    // map -> label, so the image is a sibling never visited.
+    const INTERACTIVE = 'a[href], area[href], button, details, \
+        embed, iframe, select, textarea, audio[controls], \
+        video[controls], img[usemap], input:not([type=hidden])';
+    for (let node = t; node && node !== label;
+         node = node.parentElement) {
+        if (node.matches(INTERACTIVE)) { return false; }
+    }
+    return true;
+}"#;
+
 /// Installed before any page script when a flow rejects consent dialogs
 /// (`browser: consent: reject`, the default a web flow records with). It
 /// presses each known consent manager's own "reject all" control, found by
@@ -4542,60 +4597,26 @@ impl AppDriver for WebAppDriver {
                 // Playwright's obscured check: does elementFromPoint at the
                 // element's center resolve to it (or a relative)? A toast or
                 // modal backdrop on top makes the click land elsewhere.
-                element.call_js_fn(
-                    r#"function() {
-                        const r = this.getBoundingClientRect();
-                        if (r.width === 0 || r.height === 0) { return false; }
-                        const t = document.elementFromPoint(
-                            r.x + r.width / 2, r.y + r.height / 2);
-                        if (!t) { return false; }
-                        if (t === this || this.contains(t) || t.contains(this)) { return true; }
-                        // A custom-styled checkbox or radio: the real input is
-                        // visually replaced by a sibling inside its own label,
-                        // so the hit is neither ancestor nor descendant. The
-                        // browser forwards a click anywhere in the label to the
-                        // input, which is exactly how a person ticks the box -
-                        // and how the hand-written spec for this same form does
-                        // it, by targeting the label instead. Refusing here
-                        // makes every styled control unrecordable.
-                        //
-                        // Forwarded on the BROWSER's terms, not on the mere
-                        // presence of a label, because a click the label does
-                        // not forward is a click that does nothing - and
-                        // recording it as a success is the false green this
-                        // gate exists to prevent. Two shapes look identical
-                        // from the element and behave nothing alike:
-                        //
-                        //  - a label labels ONE control (the `for` target,
-                        //    else its first labelable descendant), so a label
-                        //    wrapping several cannot lend its area to the
-                        //    others. `labels` is that relation read from this
-                        //    end, which is why it is asked instead of walking
-                        //    up to the nearest `<label>`;
-                        //  - interactive content inside a label keeps the
-                        //    activation for itself. A hit on a link, a button
-                        //    or the OTHER input in there follows its own
-                        //    behaviour and leaves this control untouched.
-                        const label = t.closest('label');
-                        const labels = this.labels ? Array.from(this.labels) : [];
-                        if (!label || !labels.includes(label)) { return false; }
-                        // `area[href]` is interactive content too - it extends
-                        // HTMLAnchorElement - and `img[usemap]` never catches it:
-                        // elementFromPoint returns the AREA, whose ancestors run
-                        // map -> label, so the image is a sibling never visited.
-                        const INTERACTIVE = 'a[href], area[href], button, details, \
-                            embed, iframe, select, textarea, audio[controls], \
-                            video[controls], img[usemap], input:not([type=hidden])';
-                        for (let node = t; node && node !== label;
-                             node = node.parentElement) {
-                            if (node.matches(INTERACTIVE)) { return false; }
-                        }
-                        return true;
-                    }"#,
-                    vec![],
-                    false,
-                )
+                element.call_js_fn(HIT_TEST_JS, vec![], false)
             })?;
+        Ok(value.value.and_then(|v| v.as_bool()))
+    }
+
+    fn element_reachable(&mut self, selector: &UiaSelector) -> Result<Option<bool>, DriverError> {
+        // The same question as `element_receives_events`, asked of the page
+        // exactly as it is: no settling, no scrolling, no waiting. A reveal
+        // guard decides whether to click from this, and reading it must not
+        // be the thing that changes the answer.
+        if selector.frame.is_some() {
+            return Ok(None);
+        }
+        let locator = Self::locator(selector)?;
+        let Some(element) = self.try_find(&locator)? else {
+            return Ok(Some(false));
+        };
+        let value = element
+            .call_js_fn(HIT_TEST_JS, vec![], false)
+            .map_err(|e| web_err(&format!("hit-testing [{selector}] in place"), e))?;
         Ok(value.value.and_then(|v| v.as_bool()))
     }
 

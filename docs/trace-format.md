@@ -297,7 +297,14 @@ already follows.
   `scope: "surface"`. Replay reads each `id` once per run, before the first
   step carrying it, and skips every step whose guard did not hold, naming
   the condition. Every step of one `when:` expansion shares the id, so a
-  block that changes what its condition read still runs to its end. Absent
+  block that changes what its condition read still runs to its end. A
+  guard with an `r…` id was not authored: recording found that a click
+  brought the step's next target within reach (reopening a menu that had
+  closed while the model authored the step), and records it with condition
+  `"<target>" cannot be clicked yet` and `expect`
+  `{element_receives_events: false}` over that target's selectors, so a
+  replay that finds the target already reachable skips the click instead of
+  closing the menu again. Absent
   outside any block; an engine predating it runs the step unconditionally.
 - `repeat` (optional): the `repeat:` block the step was recorded inside,
   `{id, pass, max, condition, expect, selectors}`: the reading in the same
@@ -539,7 +546,9 @@ already follows.
   visibility, since a tree-present-but-hidden element counts as present until
   the vision mode adds a true visual check), and `timeout_ms` (the
   auto-wait bound; the resolver runs inside the poll, so the target may
-  legitimately appear or disappear during the wait).
+  legitimately appear or disappear during the wait). `element_receives_events`
+  (true/false) asks whether a click at the target's centre would reach it
+  rather than something covering it; reveal guards use it.
 
   `expect.scope: "surface"` marks a **surface-scoped** assertion: no
   selector ladder (the step's `selectors` is empty, `selector_ref` null);
