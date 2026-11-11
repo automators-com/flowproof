@@ -141,6 +141,11 @@ pub struct MockAppDriver {
     /// Field key -> the suggestion label `typed_suggestion` offers after a
     /// type into that field. Absent = no suggestion list (the default).
     pub suggestions: HashMap<String, String>,
+    /// Element key -> how many `element_exists` lookups still miss it: an
+    /// element that renders late, after a slow app has loaded.
+    pub late: HashMap<String, u32>,
+    /// What `page_loading` answers.
+    pub loading: bool,
     /// A form whose fields sit BELOW their labels: `typed_value_arrived`
     /// answers yes only for typing aimed `below`, and records each aim.
     pub fields_below: bool,
@@ -305,6 +310,12 @@ impl AppDriver for MockAppDriver {
             .or(selector.name.as_ref())
         {
             Some(id) => {
+                if let Some(misses) = self.late.get_mut(id) {
+                    if *misses > 0 {
+                        *misses -= 1;
+                        return Ok(false);
+                    }
+                }
                 if !self.elements.contains(id) {
                     return Ok(false);
                 }
@@ -492,6 +503,10 @@ impl AppDriver for MockAppDriver {
             return Ok(Some(aimed.as_deref() == Some("below")));
         }
         Ok(self.typed_arrived)
+    }
+
+    fn page_loading(&mut self) -> Result<bool, DriverError> {
+        Ok(self.loading)
     }
 
     fn typed_suggestion(

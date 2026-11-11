@@ -4599,6 +4599,24 @@ impl AppDriver for WebAppDriver {
         Ok(value.value.and_then(|v| v.as_bool()))
     }
 
+    fn page_loading(&mut self) -> Result<bool, DriverError> {
+        // A request in flight, or a document still loading. The network
+        // half matters for an app that renders after the document is
+        // complete: Stadtwerke Flensburg's order portal showed only a
+        // spinner for longer than a step's five seconds.
+        if !self.network_idle() {
+            return Ok(true);
+        }
+        let complete = self
+            .tab()?
+            .evaluate("document.readyState", false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(|state| state == "complete"))
+            .unwrap_or(true);
+        Ok(!complete)
+    }
+
     fn today(&mut self) -> Result<Option<String>, DriverError> {
         let value = self
             .tab()?
