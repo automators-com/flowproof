@@ -312,7 +312,8 @@ mod tests {
         assert!(matches!(result.lines[2], DraftLine::OutOfScope(_)));
         assert_eq!(result.lines.len(), 3);
         let yaml = std::fs::read_to_string(&out).expect("written");
-        assert!(!yaml.contains("assert:"), "{yaml}");
+        // No assert STEP; the header's own advice to add one is fine.
+        assert!(!yaml.contains("- assert:"), "{yaml}");
         assert!(yaml.contains("author-from-video"), "{yaml}");
         std::fs::remove_file(out).ok();
     }
