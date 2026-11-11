@@ -150,6 +150,15 @@ const CONSENT_JS: &str = r#"(() => {
 const CONSENT_PENDING_JS: &str =
     "(() => { const c = window.__flowproofConsent; return !!(c && c.pending()); })()";
 
+/// The most [`WebAppDriver::settle_page`] waits for a document to finish
+/// loading. A page whose `load` never comes (a third-party resource that
+/// hangs) costs this once, then the step goes ahead as it always did.
+const PAGE_READY_WAIT: Duration = Duration::from_secs(10);
+
+/// The document's identity and whether it has finished loading.
+const PAGE_READY_JS: &str =
+    "JSON.stringify({ origin: performance.timeOrigin, ready: document.readyState === 'complete' })";
+
 /// The most [`WebAppDriver::settle_consent`] waits; the page-side cap in
 /// `pending()` normally ends it sooner.
 const CONSENT_SETTLE: Duration = Duration::from_secs(8);
@@ -1687,6 +1696,9 @@ pub struct WebAppDriver {
     /// Active request identities, maintained by CDP. Redirects reuse their
     /// request ID and must not leave a phantom in-flight request behind.
     network_inflight: Arc<NetworkActivity>,
+    /// The document (its `performance.timeOrigin`) already waited for by
+    /// [`Self::settle_page`], so a page is waited for once, not per step.
+    ready_document: Option<f64>,
     observed_collections: Vec<serde_json::Value>,
     /// A kept browser (`run --leave-open` / `--attach`): connected to, not
     /// launched, so it outlives this driver. See [`crate::kept_browser`].
@@ -1902,6 +1914,7 @@ impl WebAppDriver {
                 downloads_dir: None,
                 claimed_downloads: Default::default(),
                 network_inflight: Default::default(),
+                ready_document: None,
                 observed_collections: Vec::new(),
                 kept: false,
                 attached: false,
@@ -1925,6 +1938,7 @@ impl WebAppDriver {
             downloads_dir: None,
             claimed_downloads: Default::default(),
             network_inflight: Default::default(),
+            ready_document: None,
             observed_collections: Vec::new(),
             kept: false,
             attached: false,
@@ -1977,6 +1991,7 @@ impl WebAppDriver {
             downloads_dir: None,
             claimed_downloads: Default::default(),
             network_inflight: Default::default(),
+            ready_document: None,
             observed_collections: Vec::new(),
             kept: true,
             attached: attach,
@@ -2597,6 +2612,41 @@ impl WebAppDriver {
     /// Wait while a consent dialog is still to come or still on screen, so
     /// its rejection never lands in the middle of a step. One round trip when
     /// nothing is pending, which is every page without a known manager.
+    fn settle_page(&mut self) -> Result<(), DriverError> {
+        // A page's own scripts wire up its controls as it loads. Clicked
+        // while it was still `interactive`, Stadtwerke Flensburg's
+        // "Produkte" menu opened 1 time in 5; once it was `complete`, 5 in
+        // 5. Recording never saw it, because a model-authored step takes
+        // seconds; replay acts the moment the button exists.
+        let read = |driver: &Self| -> Option<(f64, bool)> {
+            let raw = driver
+                .tab()
+                .ok()?
+                .evaluate(PAGE_READY_JS, false)
+                .ok()?
+                .value?;
+            let parsed: serde_json::Value = serde_json::from_str(raw.as_str()?).ok()?;
+            Some((parsed["origin"].as_f64()?, parsed["ready"].as_bool()?))
+        };
+        let deadline = std::time::Instant::now() + PAGE_READY_WAIT;
+        loop {
+            match read(self) {
+                Some((origin, _)) if self.ready_document == Some(origin) => return Ok(()),
+                Some((origin, true)) => {
+                    self.ready_document = Some(origin);
+                    return Ok(());
+                }
+                Some((origin, false)) if std::time::Instant::now() >= deadline => {
+                    self.ready_document = Some(origin);
+                    return Ok(());
+                }
+                // Mid-navigation, a reading can fail; that is not a ready page.
+                None if std::time::Instant::now() >= deadline => return Ok(()),
+                _ => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+    }
+
     fn settle_consent(&self) -> Result<(), DriverError> {
         let deadline = std::time::Instant::now() + CONSENT_SETTLE;
         loop {
@@ -4137,6 +4187,7 @@ impl AppDriver for WebAppDriver {
     fn actionability_gate(&mut self, target: &UiaSelector) -> Result<Option<String>, DriverError> {
         // Replay's gate before every targeted step: a consent dialog due on
         // this page is let in and rejected first (#815).
+        self.settle_page()?;
         self.settle_consent()?;
         // The enabled → stable → receives-events pass in ONE round trip,
         // including the stability interval (it elapses inside the page).
@@ -4581,6 +4632,7 @@ impl AppDriver for WebAppDriver {
         }
         // Recording's check before a click; the same settling as replay's
         // gate, so the two meet the page in the same state.
+        self.settle_page()?;
         self.settle_consent()?;
         let locator = Self::locator(selector)?;
         let value =
@@ -5044,6 +5096,7 @@ impl AppDriver for WebAppDriver {
     }
 
     fn type_text(&mut self, selector: &UiaSelector, text: &str) -> Result<(), DriverError> {
+        self.settle_page()?;
         self.settle_consent()?;
         // A framed target lives in another document. For a real <input>/
         // <textarea>, FRAME_ACT hands back the element's page-absolute
