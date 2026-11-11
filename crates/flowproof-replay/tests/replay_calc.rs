@@ -2882,3 +2882,41 @@ fn a_reveal_click_is_skipped_when_its_target_is_already_within_reach() {
     assert_eq!(closed.invoked, vec!["#produkte", "#haushaltsstrom"]);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Stadtwerke Flensburg's order portal showed a spinner for longer than the
+/// 5 s its email field was recorded with, and replay gave up while the page
+/// was plainly still loading. A page caught loading now earns more time; a
+/// quiet page without the element still fails at the step's own time.
+#[test]
+fn a_page_still_loading_earns_its_element_more_time_than_a_quiet_one() {
+    let dir = std::env::temp_dir().join("flowproof-replay-loading");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Portal\napp: web\nurl: https://e.test/x\nsteps:\n  - Press the \"Go\" button\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("portal.trace.jsonl");
+    record(&spec, &mut MockAppDriver::new(&["Go"]), &trace).expect("records");
+
+    // ~7 s of misses at replay's 200 ms poll: past the step's 5 s.
+    let slow_page = |loading: bool| {
+        let mut driver = MockAppDriver::new(&["Go"]);
+        driver.late.insert("Go".into(), 35);
+        driver.loading = loading;
+        driver
+    };
+
+    let mut loading = slow_page(true);
+    let (report, _run_dir) = run_trace(&trace, &mut loading).expect("replay runs");
+    assert!(report.passed, "{report:#?}");
+    assert_eq!(loading.invoked, vec!["Go"]);
+
+    let mut quiet = slow_page(false);
+    let (report, _run_dir) = run_trace(&trace, &mut quiet).expect("replay runs");
+    assert!(
+        !report.passed,
+        "a quiet page must not wait past the step's time"
+    );
+    assert!(quiet.invoked.is_empty());
+    std::fs::remove_dir_all(&dir).ok();
+}

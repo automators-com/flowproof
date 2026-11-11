@@ -20,6 +20,14 @@ pub use runrecord::{
 
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// How long a step's element is waited for past its own time while the page
+/// is visibly still loading (a request in flight, a document not complete).
+/// A page caught loading earns the patience; a quiet page that lacks the
+/// element fails at the step's own time, as it always did. Stadtwerke
+/// Flensburg's order portal showed a spinner for longer than the 5 s its
+/// email field was recorded with.
+const LOADING_PATIENCE_MS: u64 = 30_000;
 /// Auto-wait bound for asserts in traces recorded before timeouts existed.
 const DEFAULT_ASSERT_TIMEOUT_MS: u64 = 10_000;
 
@@ -430,8 +438,11 @@ fn wait_for_condition<D: AppDriver>(
                 }
             };
             reveal(driver);
-            let deadline = Instant::now() + Duration::from_millis(*timeout_ms);
+            let started = Instant::now();
+            let deadline = started + Duration::from_millis(*timeout_ms);
+            let patience = started + Duration::from_millis((*timeout_ms).max(LOADING_PATIENCE_MS));
             let mut last_look = false;
+            let mut kept_loading = false;
             loop {
                 for selector in &targets {
                     if let Some(uia) = selector_to_uia(selector) {
@@ -441,9 +452,25 @@ fn wait_for_condition<D: AppDriver>(
                     }
                 }
                 if last_look {
-                    return Ok(Err(format!("element did not appear within {timeout_ms}ms")));
+                    let waited = started.elapsed().as_millis();
+                    return Ok(Err(if kept_loading {
+                        format!(
+                            "element did not appear within {timeout_ms}ms, nor in the \
+                             {waited}ms the page kept loading"
+                        )
+                    } else {
+                        format!("element did not appear within {timeout_ms}ms")
+                    }));
                 }
-                if Instant::now() >= deadline {
+                let now = Instant::now();
+                if now >= deadline {
+                    // Past the step's own time: a page still loading is
+                    // waited for, up to the patience; a quiet one is not.
+                    if now < patience && driver.page_loading().unwrap_or(false) {
+                        kept_loading = true;
+                        std::thread::sleep(POLL_INTERVAL);
+                        continue;
+                    }
                     reveal(driver);
                     last_look = true;
                     continue;

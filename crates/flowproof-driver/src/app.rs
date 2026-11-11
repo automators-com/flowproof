@@ -933,6 +933,14 @@ pub trait AppDriver {
         Ok(None)
     }
 
+    /// Is the surface visibly still loading - a request in flight, a
+    /// document not yet complete? Replay gives a step's element more time
+    /// while it is, and the step's own time when it is not. `false` (the
+    /// default) for a driver that cannot tell.
+    fn page_loading(&mut self) -> Result<bool, DriverError> {
+        Ok(false)
+    }
+
     /// After [`AppDriver::type_text`] into `field`: the visible label of the
     /// one suggestion the field's own list now offers that reads exactly
     /// `typed`, if there is one. An autocomplete field that only accepts a
@@ -2196,6 +2204,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn typed_value_arrived(&mut self, text: &str) -> Result<Option<bool>, DriverError> {
         (**self).typed_value_arrived(text)
+    }
+
+    fn page_loading(&mut self) -> Result<bool, DriverError> {
+        (**self).page_loading()
     }
 
     fn typed_suggestion(
