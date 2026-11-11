@@ -18,6 +18,7 @@ pub mod repair;
 pub mod rules;
 pub mod selection;
 pub mod spec;
+pub mod video_author;
 
 pub use clarify::{Clarification, ClarifyStage};
 pub use heal::{
