@@ -252,7 +252,7 @@ jobs:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome
       - name: Browser network, accessibility, and lifecycle fixtures
-        run: cargo test -p flowproof-adapters --features web --test network_idle_e2e --test a11y_capture --test shared_browser_shutdown_e2e --test static_area_e2e --test framed_scene_e2e -- --nocapture --test-threads=1
+        run: cargo test -p flowproof-adapters --features web --test network_idle_e2e --test a11y_capture --test shared_browser_shutdown_e2e --test static_area_e2e --test framed_scene_e2e --test video_frames_e2e -- --nocapture --test-threads=1
         env:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome
