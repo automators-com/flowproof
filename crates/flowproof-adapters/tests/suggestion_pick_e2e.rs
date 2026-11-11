@@ -7,6 +7,11 @@ use flowproof_driver::{AppDriver, UiaSelector};
 /// and a house number that stays disabled until a suggestion is picked.
 /// Beside it: a plain field, a search box with a list, and a list that
 /// offers the typed text twice - none of which may answer a pick.
+///
+/// The list is filled once typing pauses, as a real autocomplete does. Filled
+/// after every keystroke instead, a late rebuild could replace the option
+/// between finding it and clicking it ("Node is detached from document"),
+/// which failed this test on main once.
 const FIXTURE: &str = "data:text/html,<form>\
 <fieldset><label for='plz'>PLZ und Ort</label><input id='plz' autocomplete='off'>\
 <div role='listbox' id='plzlist' hidden></div></fieldset>\
@@ -18,7 +23,8 @@ const FIXTURE: &str = "data:text/html,<form>\
 <div role='listbox'><button type='button'>Nordstrasse</button><button type='button'>Nordstrasse</button></div></fieldset>\
 </form><script>\
 const plz = document.getElementById('plz'), list = document.getElementById('plzlist');\
-plz.addEventListener('input', () => setTimeout(() => {\
+let pending;\
+plz.addEventListener('input', () => { clearTimeout(pending); pending = setTimeout(() => {\
   list.innerHTML = '';\
   for (const o of ['24937 Flensburg', '24939 Flensburg', '24944 Flensburg', '24955 Harrislee']) {\
     const b = document.createElement('button'); b.type = 'button'; b.textContent = o;\
@@ -26,7 +32,7 @@ plz.addEventListener('input', () => setTimeout(() => {\
     list.appendChild(b);\
   }\
   list.hidden = false;\
-}, 400));\
+}, 400); });\
 </script>";
 
 fn text(label: &str) -> UiaSelector {
