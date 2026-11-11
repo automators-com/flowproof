@@ -8,6 +8,13 @@
 //! JPEG for the model. A recording is mostly a still screen with short
 //! bursts of change, so this keeps the moments a person acted and drops the
 //! rest.
+//!
+//! The same thumbnails decide what is cut from the frames: a band at an edge
+//! of the screen that stays still the whole recording (a taskbar, a Dock, a
+//! menu bar) is trimmed before anything reaches the model. Only edges are
+//! trimmed, and never more than a tenth of the screen from each: finding
+//! "the app's window" anywhere on the screen would sooner or later cut away
+//! a label the model needs.
 
 use std::path::Path;
 
@@ -20,6 +27,18 @@ use crate::AdapterError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoInfo {
     pub duration_ms: u64,
+    pub width: u32,
+    pub height: u32,
+    /// The part of the screen the frames keep, in the frames' own pixels,
+    /// when still bands were trimmed from its edges.
+    pub kept: Option<Area>,
+}
+
+/// A rectangle, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Area {
+    pub x: u32,
+    pub y: u32,
     pub width: u32,
     pub height: u32,
 }
@@ -58,6 +77,13 @@ const THUMB_WIDTH: f64 = 128.0;
 /// short value into one field moves only a sliver of the screen.
 const CHANGE: f64 = 0.003;
 const JPEG_QUALITY: u32 = 80;
+/// A thumbnail pixel this much brighter or darker counts as changed.
+const PIXEL_CHANGE: u8 = 24;
+/// A row or column that changed this few times in the whole recording is
+/// still: a clock ticking over, a pointer passing once.
+const STILL_CHANGES: usize = 3;
+/// The most trimmed from any one edge, as a share of the screen.
+const EDGE_LIMIT: f64 = 0.10;
 
 /// Duration and size only; nothing is captured.
 pub fn probe(video: &Path) -> Result<VideoInfo, AdapterError> {
@@ -77,7 +103,7 @@ pub fn extract(
     let browser = crate::web::launch_browser(&[])?;
     let tab = crate::web::private_flow_tab(&browser)
         .map_err(|e| AdapterError::Web(format!("opening a tab for the video: {e}")))?;
-    let info = open(&tab, video)?;
+    let mut info = open(&tab, video)?;
     let width = info.width.min(opts.max_width).max(1);
     let height = ((info.height as f64) * (width as f64) / (info.width as f64))
         .round()
@@ -102,11 +128,32 @@ pub fn extract(
 
     let times = sample_times(info.duration_ms, opts.every_ms);
     let mut thumbs = Vec::with_capacity(times.len());
+    let mut thumb_size = (0, 0);
     for (i, &at) in times.iter().enumerate() {
         on_sample(i, times.len());
         seek(&tab, at)?;
-        thumbs.push(thumbnail(&tab, width, height)?);
+        let (thumb, w, h) = thumbnail(&tab, width, height)?;
+        thumb_size = (w, h);
+        thumbs.push(thumb);
     }
+    // Thumbnail pixels to page pixels, per axis.
+    info.kept = still_edges(&thumbs, thumb_size.0, thumb_size.1).map(|k| {
+        let sx = width as f64 / thumb_size.0 as f64;
+        let sy = height as f64 / thumb_size.1 as f64;
+        Area {
+            x: (k.x as f64 * sx).round() as u32,
+            y: (k.y as f64 * sy).round() as u32,
+            width: (k.width as f64 * sx).round() as u32,
+            height: (k.height as f64 * sy).round() as u32,
+        }
+    });
+    let clip = info.kept.map(|k| Page::Viewport {
+        x: k.x as f64,
+        y: k.y as f64,
+        width: k.width as f64,
+        height: k.height as f64,
+        scale: 1.0,
+    });
     let mut frames = Vec::new();
     for i in select_changes(&thumbs, opts.max_frames) {
         seek(&tab, times[i])?;
@@ -114,7 +161,7 @@ pub fn extract(
             .capture_screenshot(
                 Page::CaptureScreenshotFormatOption::Jpeg,
                 Some(JPEG_QUALITY),
-                None,
+                clip.clone(),
                 true,
             )
             .map_err(|e| AdapterError::Web(format!("capturing a frame: {e}")))?;
@@ -153,6 +200,7 @@ fn open(tab: &Tab, video: &Path) -> Result<VideoInfo, AdapterError> {
         duration_ms: (duration * 1000.0).round() as u64,
         width: read["width"].as_u64().unwrap_or(0) as u32,
         height: read["height"].as_u64().unwrap_or(0) as u32,
+        kept: None,
     })
 }
 
@@ -212,8 +260,9 @@ fn seek(tab: &Tab, at_ms: u64) -> Result<(), AdapterError> {
         .map_err(|e| AdapterError::Web(format!("seeking to {at_ms} ms: {e}")))
 }
 
-/// The page as a small greyscale picture, for the change test.
-fn thumbnail(tab: &Tab, width: u32, height: u32) -> Result<Vec<u8>, AdapterError> {
+/// The page as a small greyscale picture, for the change test, with its
+/// width and height.
+fn thumbnail(tab: &Tab, width: u32, height: u32) -> Result<(Vec<u8>, usize, usize), AdapterError> {
     let png = tab
         .capture_screenshot(
             Page::CaptureScreenshotFormatOption::Png,
@@ -228,10 +277,61 @@ fn thumbnail(tab: &Tab, width: u32, height: u32) -> Result<Vec<u8>, AdapterError
             true,
         )
         .map_err(|e| AdapterError::Web(format!("capturing a thumbnail: {e}")))?;
-    Ok(image::load_from_memory(&png)
+    let luma = image::load_from_memory(&png)
         .map_err(|e| AdapterError::Web(format!("decoding a thumbnail: {e}")))?
-        .to_luma8()
-        .into_raw())
+        .to_luma8();
+    let (w, h) = (luma.width() as usize, luma.height() as usize);
+    Ok((luma.into_raw(), w, h))
+}
+
+/// The thumbnail area left once still bands are trimmed from the edges, or
+/// `None` when nothing at an edge stayed still (or everything did: a video
+/// with no visible activity is sent whole rather than guessed at).
+fn still_edges(thumbs: &[Vec<u8>], w: usize, h: usize) -> Option<Area> {
+    if thumbs.len() < 2 || w == 0 || h == 0 || thumbs.iter().any(|t| t.len() != w * h) {
+        return None;
+    }
+    let mut row_changes = vec![0usize; h];
+    let mut col_changes = vec![0usize; w];
+    for pair in thumbs.windows(2) {
+        let mut rows = vec![false; h];
+        let mut cols = vec![false; w];
+        for y in 0..h {
+            for x in 0..w {
+                if pair[0][y * w + x].abs_diff(pair[1][y * w + x]) > PIXEL_CHANGE {
+                    rows[y] = true;
+                    cols[x] = true;
+                }
+            }
+        }
+        rows.iter()
+            .zip(&mut row_changes)
+            .for_each(|(c, n)| *n += usize::from(*c));
+        cols.iter()
+            .zip(&mut col_changes)
+            .for_each(|(c, n)| *n += usize::from(*c));
+    }
+    let band = |changes: &mut dyn Iterator<Item = &usize>, len: usize| {
+        let limit = (len as f64 * EDGE_LIMIT) as usize;
+        changes
+            .take(limit)
+            .take_while(|&&n| n <= STILL_CHANGES)
+            .count()
+    };
+    let top = band(&mut row_changes.iter(), h);
+    let bottom = band(&mut row_changes.iter().rev(), h);
+    let left = band(&mut col_changes.iter(), w);
+    let right = band(&mut col_changes.iter().rev(), w);
+    let active = row_changes.iter().any(|&n| n > STILL_CHANGES);
+    if !active || top + bottom + left + right == 0 {
+        return None;
+    }
+    Some(Area {
+        x: left as u32,
+        y: top as u32,
+        width: (w - left - right) as u32,
+        height: (h - top - bottom) as u32,
+    })
 }
 
 /// Sample times from the start to just before the end, at `every_ms` or
@@ -368,6 +468,62 @@ mod tests {
             kept.contains(&5),
             "the jump to 250 is the biggest change: {kept:?}"
         );
+    }
+
+    /// A 40x20 screen: a taskbar two rows high at the bottom whose clock
+    /// ticks once, and a page above it that changes every sample.
+    fn screen_with_taskbar(samples: usize) -> Vec<Vec<u8>> {
+        (0..samples)
+            .map(|i| {
+                let mut t = vec![200u8; 40 * 20];
+                for y in 0..18 {
+                    for x in 0..40 {
+                        t[y * 40 + x] = if (x + i) % 2 == 0 { 30 } else { 220 };
+                    }
+                }
+                // The clock in the taskbar's corner ticks over once.
+                if i >= samples / 2 {
+                    t[19 * 40 + 38] = 0;
+                }
+                t
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_still_taskbar_is_trimmed_and_the_page_kept() {
+        let kept = still_edges(&screen_with_taskbar(12), 40, 20).expect("trims");
+        assert_eq!(
+            kept,
+            Area {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 18
+            }
+        );
+    }
+
+    #[test]
+    fn no_edge_loses_more_than_a_tenth_of_the_screen() {
+        // Only a small patch in the middle ever changes.
+        let thumbs: Vec<Vec<u8>> = (0..10u8)
+            .map(|i| {
+                let mut t = vec![100u8; 40 * 20];
+                t[10 * 40 + 20] = i * 25;
+                t
+            })
+            .collect();
+        let kept = still_edges(&thumbs, 40, 20).expect("trims");
+        assert_eq!((kept.x, kept.y), (4, 2));
+        assert_eq!((kept.width, kept.height), (32, 16));
+    }
+
+    #[test]
+    fn a_screen_with_no_activity_or_no_still_edge_is_sent_whole() {
+        assert_eq!(still_edges(&vec![vec![50u8; 800]; 6], 40, 20), None);
+        let busy: Vec<Vec<u8>> = (0..6u8).map(|i| vec![i * 40; 800]).collect();
+        assert_eq!(still_edges(&busy, 40, 20), None);
     }
 
     #[test]

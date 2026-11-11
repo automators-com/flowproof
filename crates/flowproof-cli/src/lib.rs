@@ -4337,6 +4337,12 @@ fn cmd_author_from_video(
         &mut |done, total| eprintln!("finding frames: sample {} of {total}", done + 1),
     )
     .map_err(|e| e.to_string())?;
+    if let Some(k) = info.kept {
+        eprintln!(
+            "trimmed still edges of the screen, keeping {}x{} at {},{}",
+            k.width, k.height, k.x, k.y
+        );
+    }
     eprintln!("reading {} frames", frames.len());
     let frames: Vec<video_author::Frame> = frames
         .into_iter()
@@ -4359,6 +4365,10 @@ fn cmd_author_from_video(
         report["flow"] = serde_json::json!(result.flow);
         report["frames"] = frames.len().into();
         report["duration_ms"] = info.duration_ms.into();
+        if let Some(k) = info.kept {
+            report["kept"] =
+                serde_json::json!({ "x": k.x, "y": k.y, "width": k.width, "height": k.height });
+        }
         println!("{report}");
         return Ok(EXIT_PASS);
     }

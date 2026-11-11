@@ -185,6 +185,13 @@ where the screen changed, up to 60 frames scaled to 1280 px wide. Those
 frames, each with its time, go to the configured model in one call, which
 writes the user's actions in order. The video file itself is never sent.
 
+Before that, a band at an edge of the screen that stays still for the whole
+recording, such as a taskbar, a Dock or a menu bar, is trimmed from every
+frame, up to a tenth of the screen from each edge. Only edges are trimmed:
+other windows or browser toolbars visible in the recording are sent with
+the frame, so record only the app under test, with test data. With `--json`,
+`kept` gives the area the frames keep when anything was trimmed.
+
 A recording shows what happened, not what should happen, so a video draft
 never contains an `assert:`; add at least one before relying on the flow.
 A change between frames that no visible action explains is flagged as a
