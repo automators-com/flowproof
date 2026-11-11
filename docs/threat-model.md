@@ -164,6 +164,27 @@ default ACL grants, which is typically already scoped to the owning user
 account but is not something this codebase asserts or narrows itself. See
 Known limitations.
 
+### Frames from a screen recording (`author-from-video`)
+
+**Guarantee**: drafting from a recording sends the model frames, never the
+video file, and only when someone runs `author-from-video` against that
+file. The video is decoded locally, in a private tab of the browser web
+flows already use (`crates/flowproof-adapters/src/video_frames.rs`). At most
+60 frames, scaled to 1280 px wide, leave the machine, to the configured AI
+provider only, and they are held in memory: nothing but the draft
+`.flow.yaml` is written. Bands at the screen's edges that stay still for the
+whole recording (a taskbar, a Dock, a menu bar) are trimmed from every frame
+first (`still_edges`), up to a tenth of the screen from each edge.
+
+**Not covered (by design)**: frames are **not redacted**. Screenshot
+redaction (Secret handling, 2.) finds password fields in the live page; a
+recording has no page, only pixels, so a password typed in clear text,
+another window, a notification or a bookmarks bar visible in the recording
+reaches the provider. The drafting prompt asks the model to write a masked
+field as `${PASSWORD}`, which is an instruction to a model, not a guarantee.
+What protects a recording is what was recorded: the app under test, with
+test data. The desktop's security page tells users exactly that.
+
 ### Debug artifacts (`debug/dom.html`, `debug/console.log`)
 
 **Guarantee**: none currently exists for this specific artifact, stated here
