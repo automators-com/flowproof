@@ -233,6 +233,7 @@ impl AppDriver for SurfaceRegistry {
         fn current_url(&mut self) -> Result<String, DriverError>;
         fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError>;
         fn typed_value_arrived(&mut self, text: &str) -> Result<Option<bool>, DriverError>;
+        fn typed_suggestion(&mut self, field: &UiaSelector, typed: &str) -> Result<Option<String>, DriverError>;
         fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError>;
         fn probe_cookie(&mut self, name: &str) -> Result<CookieProbe, DriverError>;
         fn page_title(&mut self) -> Result<String, DriverError>;
@@ -541,6 +542,33 @@ mod tests {
         );
         reg.activate("citrix", &no_captures()).expect("activates");
         assert!(reg.reads_text_by_ocr().expect("routes"));
+    }
+
+    /// A web surface in a multi-surface flow must still offer its field's
+    /// suggestion: answering the default would leave an autocomplete typed
+    /// but never picked, only for flows that happen to use `surfaces:`.
+    #[test]
+    fn typed_suggestion_routes_through_the_registry_and_the_box() {
+        let factory: SurfaceFactory = Box::new(|_| {
+            let mut mock = MockAppDriver::new(&["#street"]);
+            mock.suggestions
+                .insert("#street".into(), "Schottweg".into());
+            Ok(Box::new(mock))
+        });
+        let target = AppTarget {
+            command: "x".into(),
+            window_name: String::new(),
+        };
+        let mut reg = SurfaceRegistry::new(
+            [("portal".to_string(), target)],
+            factory,
+            Duration::from_millis(10),
+        );
+        reg.activate("portal", &no_captures()).expect("activates");
+        let picked = reg
+            .typed_suggestion(&UiaSelector::css("#street"), "Schottweg")
+            .expect("routes");
+        assert_eq!(picked.as_deref(), Some("Schottweg"));
     }
 
     /// `fingerprint` reaches the active driver through the registry AND the

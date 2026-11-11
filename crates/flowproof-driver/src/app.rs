@@ -933,6 +933,22 @@ pub trait AppDriver {
         Ok(None)
     }
 
+    /// After [`AppDriver::type_text`] into `field`: the visible label of the
+    /// one suggestion the field's own list now offers that reads exactly
+    /// `typed`, if there is one. An autocomplete field that only accepts a
+    /// value picked from its list (a street, a postcode) leaves the list
+    /// open over the form and the dependent fields disabled until the pick
+    /// happens; the recorder clicks this label as its own traced step, so
+    /// replay needs nothing new. `None` = no list, no exact match, or more
+    /// than one (the default: a driver that cannot see suggestion lists).
+    fn typed_suggestion(
+        &mut self,
+        _field: &UiaSelector,
+        _typed: &str,
+    ) -> Result<Option<String>, DriverError> {
+        Ok(None)
+    }
+
     /// Bring `selector`'s target into view, for a driver that can only see
     /// part of the surface at once. Replay calls it before waiting for a
     /// target to exist, because existence checks must stay pure reads. A
@@ -2167,6 +2183,14 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn typed_value_arrived(&mut self, text: &str) -> Result<Option<bool>, DriverError> {
         (**self).typed_value_arrived(text)
+    }
+
+    fn typed_suggestion(
+        &mut self,
+        field: &UiaSelector,
+        typed: &str,
+    ) -> Result<Option<String>, DriverError> {
+        (**self).typed_suggestion(field, typed)
     }
 
     fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError> {
