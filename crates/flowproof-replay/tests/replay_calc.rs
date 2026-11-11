@@ -2802,3 +2802,83 @@ fn replay_takes_the_recorded_pass_that_took_the_most_branches_as_the_body() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Answers each authoring call with the next scripted reply.
+struct Scripted(std::collections::VecDeque<&'static str>);
+
+impl flowproof_agent::ModelClient for Scripted {
+    fn complete(
+        &mut self,
+        _system: &str,
+        _user: &str,
+    ) -> Result<String, flowproof_agent::AgentError> {
+        Ok(self
+            .0
+            .pop_front()
+            .unwrap_or(r#"[{"action":"step_complete"}]"#)
+            .to_string())
+    }
+    fn identity(&self) -> (String, String) {
+        ("openai-compatible".into(), "test-model".into())
+    }
+}
+
+/// A "Produkte" menu, closed unless `open`, whose "Haushaltsstrom" link a
+/// click on "Produkte" brings within reach.
+fn menu_page(open: bool) -> MockAppDriver {
+    let mut driver = MockAppDriver::new(&["#produkte", "#haushaltsstrom"])
+        .revealing("#produkte", &["#haushaltsstrom"]);
+    driver.scene = Some(
+        r##"[{"target":"css:#produkte","tag":"a","text":"Produkte"},
+             {"target":"css:#haushaltsstrom","tag":"a","text":"Haushaltsstrom"}]"##
+            .into(),
+    );
+    if !open {
+        driver.obscured = vec!["#haushaltsstrom".into()];
+    }
+    driver
+}
+
+/// Recording reopened a menu that had closed while the model authored the
+/// step; replay at its own pace finds the menu still open. The reopening
+/// click then must not run, or it closes the menu over its own target -
+/// the Stadtwerke Flensburg replay failure. Closed at replay, it still runs.
+#[test]
+fn a_reveal_click_is_skipped_when_its_target_is_already_within_reach() {
+    let dir = std::env::temp_dir().join("flowproof-replay-reveal");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Menu\napp: web\nurl: https://e.test/x\nsteps:\n  - Click Haushaltsstrom\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("menu.trace.jsonl");
+    let mut client = Scripted(
+        [r##"[{"action":"click","target":"css:#produkte"},
+              {"action":"click","target":"css:#haushaltsstrom"}]"##]
+        .into(),
+    );
+    let mut rec = menu_page(false);
+    flowproof_agent::recorder::record_with_client(
+        &spec,
+        &mut rec,
+        &trace,
+        flowproof_agent::Author::Auto,
+        Some(&mut client),
+    )
+    .expect("records");
+
+    let mut open = menu_page(true);
+    let (report, _run_dir) = run_trace(&trace, &mut open).expect("replay runs");
+    assert!(report.passed, "{report:#?}");
+    assert_eq!(
+        open.invoked,
+        vec!["#haushaltsstrom"],
+        "the open menu was left open"
+    );
+
+    let mut closed = menu_page(false);
+    let (report, _run_dir) = run_trace(&trace, &mut closed).expect("replay runs");
+    assert!(report.passed, "{report:#?}");
+    assert_eq!(closed.invoked, vec!["#produkte", "#haushaltsstrom"]);
+    std::fs::remove_dir_all(&dir).ok();
+}

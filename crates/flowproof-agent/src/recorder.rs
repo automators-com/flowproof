@@ -2349,6 +2349,32 @@ fn guard_for(app: &str, condition: &str, id: u32) -> Option<Guard> {
     })
 }
 
+/// The guard a reveal click carries: run only while the action it revealed
+/// cannot take a click. On Stadtwerke Flensburg the "Produkte" menu closed
+/// while the model authored the next step, so the step reopened it first;
+/// replay is fast enough that the menu was still open, and the recorded
+/// reopening click closed it, leaving "Haushaltsstrom" under the page.
+fn reveal_guard(app: &str, revealed: &ResolvedAction, id: usize) -> Guard {
+    let next = step_for(0, "", app, revealed);
+    // Named as the report will show it: the target's own label where the
+    // trace has one, its selector otherwise.
+    let label = next
+        .selectors
+        .iter()
+        .find_map(|s| {
+            ["name", "text", "css"]
+                .iter()
+                .find_map(|key| s.payload.get(*key)?.as_str().map(str::to_string))
+        })
+        .unwrap_or_else(|| "the next target".to_string());
+    Guard {
+        id: format!("r{id:04}"),
+        condition: format!("\"{label}\" cannot be clicked yet"),
+        expect: serde_json::json!({ "element_receives_events": false, "timeout_ms": 0 }),
+        selectors: next.selectors,
+    }
+}
+
 /// The replay-time form of a `repeat:`: its `until:` reading, the loop's
 /// id and bound, and which pass this is. Same `None` as [`guard_for`].
 fn repeat_for(app: &str, until: &str, id: u32, max: u32, pass: u32) -> Option<Repeat> {
@@ -4050,6 +4076,22 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 }
             }
             let targeted = || selector.as_ref().expect("targeted action has a selector");
+            // A click whose only job is to reveal the step's next target -
+            // reopening a menu that closed while the model was authoring.
+            // Noted now, while that target still cannot be clicked; whether
+            // the click revealed it is known once it has run.
+            let reveals = match (&action, plan.front()) {
+                (ResolvedAction::Press { .. }, Some(next)) => action_selector(next)
+                    .filter(|next_selector| {
+                        matches!(driver.element_exists(next_selector), Ok(true))
+                            && matches!(
+                                driver.element_receives_events(next_selector),
+                                Ok(Some(false))
+                            )
+                    })
+                    .map(|next_selector| (next_selector, next.clone())),
+                _ => None,
+            };
             // A folded-in dialog is armed BEFORE the trigger dispatches: a JS
             // dialog blocks JS synchronously, so the one-shot handler must be
             // in place before the click opens it. The `${VAR}` in a prompt
@@ -4969,6 +5011,24 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             // driver a step belongs to. None on single-surface flows.
             step.surface = current_surface.clone();
             step.guards = guards.clone();
+            if let Some((next_selector, next)) = &reveals {
+                // Revealed if the target takes a click now (a menu animates
+                // open, so give it a moment). Replay then runs this click
+                // only while the target is still out of reach: a menu that
+                // stayed open at replay's pace is left open, not toggled shut.
+                let started = std::time::Instant::now();
+                let revealed = wait_until_receives_events(
+                    || driver.element_receives_events(next_selector),
+                    || std::thread::sleep(ASSERT_POLL_INTERVAL),
+                    || started.elapsed(),
+                    Duration::from_millis(1500),
+                )
+                .unwrap_or(false);
+                if revealed {
+                    step.guards
+                        .push(reveal_guard(&step_app, next, steps.len() + 1));
+                }
+            }
             step.repeat = loop_ctx.clone();
             match write_token(&action) {
                 Some(token) => typed_at.push((steps.len(), token)),
@@ -5878,6 +5938,65 @@ mod tests {
             client.prompts[1]
         );
         std::fs::remove_file(&out).ok();
+    }
+
+    /// Records "Click Haushaltsstrom" where the model first reopens the
+    /// "Produkte" menu; `open` says whether the menu is already open.
+    fn record_menu_step(open: bool) -> String {
+        let spec = FlowSpec::parse(
+            "name: x\napp: web\nurl: https://e.test/x\nsteps:\n  - Click Haushaltsstrom\n",
+        )
+        .expect("spec parses");
+        let scene = r##"[{"target":"css:#produkte","tag":"a","text":"Produkte"},
+             {"target":"css:#haushaltsstrom","tag":"a","text":"Haushaltsstrom"}]"##;
+        let mut driver = MockAppDriver::new(&["#produkte", "#haushaltsstrom"])
+            .revealing("#produkte", &["#haushaltsstrom"]);
+        driver.scene = Some(scene.into());
+        if !open {
+            driver.obscured = vec!["#haushaltsstrom".into()];
+        }
+        let mut client = ScriptedClient::new(&[
+            r##"[{"action":"click","target":"css:#produkte"},
+                 {"action":"click","target":"css:#haushaltsstrom"}]"##,
+            r##"[{"action":"step_complete"}]"##,
+        ]);
+        let out = std::env::temp_dir().join(format!("flowproof-reveal-{open}.trace.jsonl"));
+        std::fs::remove_file(&out).ok();
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("records");
+        assert_eq!(driver.invoked, vec!["#produkte", "#haushaltsstrom"]);
+        let trace = std::fs::read_to_string(&out).expect("trace written");
+        std::fs::remove_file(&out).ok();
+        trace
+    }
+
+    /// The Stadtwerke Flensburg menu closed while the model authored the
+    /// next step, so the step reopened it. That click is only right while
+    /// the link it reveals cannot be clicked, and the trace now says so.
+    #[test]
+    fn a_click_that_reveals_the_next_target_runs_only_while_it_is_out_of_reach() {
+        let trace = record_menu_step(false);
+        let steps: Vec<&str> = trace.lines().filter(|l| l.contains("\"action\"")).collect();
+        let reveal = steps
+            .iter()
+            .find(|l| l.contains("#produkte"))
+            .expect("the reveal click is traced");
+        assert!(
+            reveal.contains(r#""element_receives_events":false"#)
+                && reveal.contains("cannot be clicked yet"),
+            "{reveal}"
+        );
+        let target = steps
+            .iter()
+            .find(|l| l.contains("#haushaltsstrom") && !l.contains("#produkte"))
+            .expect("the target click is traced");
+        assert!(!target.contains("guards"), "{target}");
+    }
+
+    #[test]
+    fn a_click_whose_next_target_was_already_reachable_gets_no_guard() {
+        let trace = record_menu_step(true);
+        assert!(!trace.contains("element_receives_events"), "{trace}");
     }
 
     /// The budget, spent on distinct refusals until it is gone.
