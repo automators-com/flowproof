@@ -1247,6 +1247,9 @@ pub struct WebBrowserConfig {
     /// out, only that nothing else writes there), without forcing every
     /// flow that downloads something to name a directory up front.
     pub downloads_dir: Option<std::path::PathBuf>,
+    /// Reject cookie-consent dialogs from known consent managers whenever
+    /// they appear (`browser: consent: reject`, the trace's record).
+    pub reject_consent: bool,
 }
 
 /// A pinned browser clock: the literal instant the page reads as "now" and
@@ -1302,6 +1305,7 @@ impl WebBrowserConfig {
             args: args.to_vec(),
             clock,
             downloads_dir,
+            reject_consent: false,
         }
     }
 }

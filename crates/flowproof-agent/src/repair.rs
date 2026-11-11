@@ -168,7 +168,10 @@ pub fn propose_patch<C: ModelClient + ?Sized>(
         .flow.yaml test file after a failed live recording. You may propose \
         an edit to exactly ONE step of the `steps:` list — the one that \
         failed. You must never remove or weaken a business-outcome assertion \
-        just to make the step pass. If the failure looks like a Flowproof \
+        just to make the step pass. Never write a step that accepts cookies, \
+        consent or tracking: Flowproof rejects known cookie-consent dialogs \
+        itself, so a consent dialog that still blocks the flow is an \
+        engine_gap naming that dialog. If the failure looks like a Flowproof \
         engine limitation rather than something a flow edit can fix, say so \
         instead of proposing a patch. Reply with ONLY a JSON object, no \
         markdown fences, no prose: \
@@ -211,7 +214,41 @@ pub fn propose_patch<C: ModelClient + ?Sized>(
     }
 
     let raw = client.complete(system, &user).map_err(RepairError::Model)?;
-    parse_patch(&raw)
+    let mut patch = parse_patch(&raw)?;
+    // The prompt says so; this makes it hold. Asked to repair a step that
+    // kept only the necessary cookies, the loop twice wrote "if no reject
+    // option is visible, click Alle akzeptieren" into the flow (#815).
+    if patch.step_yaml.as_deref().is_some_and(accepts_consent) {
+        patch.engine_gap = Some(format!(
+            "the repair proposed accepting a consent dialog, which a test must not do \
+             (proposed: {}); a dialog Flowproof does not reject by itself needs \
+             support for its consent manager",
+            patch.step_yaml.take().unwrap_or_default().trim()
+        ));
+        patch.widen_timeout_seconds = None;
+    }
+    Ok(patch)
+}
+
+/// A step that agrees to cookies or tracking, in English or German. Only the
+/// pairing counts: accepting terms, or rejecting cookies, is not this.
+fn accepts_consent(step: &str) -> bool {
+    let step = step.to_lowercase();
+    let about = ["cookie", "consent", "einwillig", "tracking", "datenschutz"]
+        .iter()
+        .any(|w| step.contains(w));
+    let agrees = [
+        "accept",
+        "akzeptier",
+        "allow all",
+        "alle zulassen",
+        "agree",
+        "zustimm",
+        "einverstanden",
+    ]
+    .iter()
+    .any(|w| step.contains(w));
+    about && agrees
 }
 
 fn parse_patch(raw: &str) -> Result<ProposedPatch, RepairError> {
@@ -396,6 +433,50 @@ mod tests {
             patch.engine_gap.as_deref(),
             Some("split buttons unsupported")
         );
+    }
+
+    #[test]
+    fn accepting_cookies_is_told_apart_from_rejecting_them_or_accepting_terms() {
+        // What the loop actually wrote on stadtwerke-flensburg.de (#815).
+        assert!(accepts_consent(
+            "Dismiss the cookie consent banner by clicking its button that allows only \
+             necessary cookies; if no such reject option is visible, click the banner's \
+             accept button (e.g. 'Alle akzeptieren' or 'Akzeptieren') instead"
+        ));
+        assert!(accepts_consent("Click \"Alle Cookies akzeptieren\""));
+        assert!(accepts_consent("Accept all cookies"));
+        assert!(!accepts_consent(
+            "Click \"Alle ablehnen\" in the cookie banner"
+        ));
+        assert!(!accepts_consent("Accept the terms and conditions"));
+        assert!(!accepts_consent("Press the \"Weiter\" button"));
+    }
+
+    /// Scripted to propose accepting cookies, the way the live loop did.
+    struct AcceptingModel;
+
+    impl crate::ModelClient for AcceptingModel {
+        fn complete(&mut self, _system: &str, _user: &str) -> Result<String, crate::AgentError> {
+            Ok(r#"{"step_yaml": "Click \"Alle akzeptieren\" in the cookie banner", "rationale": "the banner blocks the form"}"#.into())
+        }
+        fn identity(&self) -> (String, String) {
+            ("scripted".into(), "scripted".into())
+        }
+    }
+
+    #[test]
+    fn a_repair_that_accepts_cookies_is_turned_into_an_engine_gap() {
+        let ctx = FailureContext {
+            category: "ambiguous-step",
+            failing_intent: Some("Close the cookie banner".into()),
+            detail: "reply authored no action".into(),
+        };
+        let flow = "name: x\napp: web\nsteps:\n  - Close the cookie banner\n";
+        let patch = propose_patch(&mut AcceptingModel, flow, &ctx, &[], 1, &[])
+            .expect("a proposal comes back");
+        assert!(patch.step_yaml.is_none(), "{patch:?}");
+        let gap = patch.engine_gap.expect("reported as an engine gap");
+        assert!(gap.contains("Alle akzeptieren"), "{gap}");
     }
 
     #[test]

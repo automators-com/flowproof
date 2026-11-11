@@ -256,6 +256,11 @@ jobs:
         env:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome
+      - name: Cookie-consent dialogs are rejected, never accepted
+        run: cargo test -p flowproof-adapters --features web --test consent_e2e -- --nocapture --test-threads=1
+        env:
+          FLOWPROOF_E2E: "1"
+          CHROME: /usr/bin/google-chrome
       - name: LLM-author a freeform flow (local fake model server, zero tokens)
         run: cargo test -p flowproof-cli --test llm_author_e2e -- --nocapture --test-threads=1
         env:

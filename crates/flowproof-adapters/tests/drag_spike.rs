@@ -112,6 +112,7 @@ fn the_drag_dispatch_lands_every_time() {
                 clock: None,
                 random: None,
                 downloads_dir: None,
+                reject_consent: false,
             })
             .expect("viewport staged");
         driver

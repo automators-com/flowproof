@@ -57,6 +57,7 @@ browser:
   clock:                      # optional; pin the clock (GAP-P)
     at: "2026-01-15T12:00:00Z"   # required; RFC 3339, a mid-day time
     timezone: "Europe/Berlin"    # optional but recommended; IANA id
+  consent: reject             # optional; the default, see below. `keep` to leave dialogs alone
 ```
 
 The config travels in the trace header and applies **identically at
@@ -67,6 +68,37 @@ Chrome) become first-class. `args` forces a private (non-shared) browser
 for the flow, since flags only apply at process start; expect its cold
 start. A suite's `suite.yaml` may carry the same `browser:` block as a
 default for every flow; a flow's own block wins outright.
+
+### Cookie-consent dialogs
+
+A web flow rejects cookie-consent dialogs by itself. Whenever a dialog
+from a known consent manager appears, on any page and any domain the flow
+visits and however late it loads, Flowproof presses that manager's own
+"reject all" control and the flow carries on. It never accepts: a test has
+no business agreeing to tracking on anyone's behalf, and rejecting keeps
+the site closest to a clean visit. On stadtwerke-flensburg.de, rejecting
+leaves only the site's strictly necessary purpose granted.
+
+So a flow needs no cookie step, and a draft from a recording or a test
+case does not have to know whether the person who made it had already
+consented.
+
+Known managers, each checked against a live site: consentmanager.net
+(including its shadow-DOM dialog), OneTrust and Cookiebot. A dialog from
+any other manager is left alone and blocks the flow as it always did, with
+the error naming what is in the way; support for a manager is added by its
+own markup, never by guessing at button text.
+
+```yaml
+browser:
+  consent: keep    # leave consent dialogs to the flow, e.g. to test the dialog itself
+```
+
+A flow records with `consent: reject` unless it says `keep`, and the trace
+says which. A trace recorded before this existed has no `consent`, and
+replays as it was recorded: its own cookie steps still find their dialog.
+Single-surface web flows get the default; in a multi-surface flow, set
+`browser: consent: reject` on the web surface.
 
 ### Pinning randomness
 

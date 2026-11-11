@@ -580,6 +580,25 @@ pub struct BrowserSetup {
     /// needs "nothing else writes here," not a specific path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub downloads_dir: Option<String>,
+    /// What happens to a cookie-consent dialog from a known consent
+    /// manager. A web flow records with `reject` unless it says otherwise.
+    /// Absent: the trace predates consent handling, so replay leaves such
+    /// dialogs to the flow's own steps, as recording did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<Consent>,
+}
+
+/// `browser: consent:`. Never `accept`: a test run has no business agreeing
+/// to tracking on anyone's behalf, and rejecting keeps the site closest to a
+/// clean visit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Consent {
+    /// Choose the most privacy-preserving option the dialog offers, on
+    /// every page and every domain the flow visits.
+    Reject,
+    /// Leave consent dialogs alone, for flows that test the dialog itself.
+    Keep,
 }
 
 /// The seed for the pinned PRNG. A literal, never a `${VAR}` - a seed
@@ -598,6 +617,7 @@ impl BrowserSetup {
             && self.args.is_empty()
             && self.clock.is_none()
             && self.downloads_dir.is_none()
+            && self.consent.is_none()
     }
 }
 
