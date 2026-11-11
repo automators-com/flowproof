@@ -138,6 +138,9 @@ pub struct MockAppDriver {
     pub revealed: Vec<String>,
     /// What `typed_value_arrived` answers (None = cannot tell, the default).
     pub typed_arrived: Option<bool>,
+    /// Field key -> the suggestion label `typed_suggestion` offers after a
+    /// type into that field. Absent = no suggestion list (the default).
+    pub suggestions: HashMap<String, String>,
     /// A form whose fields sit BELOW their labels: `typed_value_arrived`
     /// answers yes only for typing aimed `below`, and records each aim.
     pub fields_below: bool,
@@ -489,6 +492,16 @@ impl AppDriver for MockAppDriver {
             return Ok(Some(aimed.as_deref() == Some("below")));
         }
         Ok(self.typed_arrived)
+    }
+
+    fn typed_suggestion(
+        &mut self,
+        field: &UiaSelector,
+        _typed: &str,
+    ) -> Result<Option<String>, DriverError> {
+        Ok(Self::id_of(field)
+            .ok()
+            .and_then(|id| self.suggestions.get(id).cloned()))
     }
 
     fn current_url(&mut self) -> Result<String, DriverError> {

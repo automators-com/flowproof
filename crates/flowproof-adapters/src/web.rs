@@ -22,6 +22,75 @@ use crate::AdapterError;
 
 const FIND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a field that has a suggestion list is given to show one after
+/// typing. Plain fields never wait; see `typed_suggestion`.
+const SUGGESTION_WAIT: Duration = Duration::from_secs(2);
+
+/// Run with the typed-into field as `this`. Answers `plain` (nothing to pick
+/// and nothing worth waiting for: no list belongs to this field, or the
+/// match is ambiguous), `pending` (it has a list, but no visible option
+/// reads the typed text yet) or `pick:<label>`.
+///
+/// The list is the field's own: named by `aria-controls`/`aria-owns`, or a
+/// `role=listbox` in the field's nearest wrapper that holds no other field.
+/// Stadtwerke Flensburg's address fields carry no ARIA at all - a bare
+/// input beside a `div role=listbox` of buttons - so the wrapper rule is
+/// load-bearing, not a fallback for the odd page.
+///
+/// Only an EXACT match (case and whitespace aside) is offered, and only when
+/// its text names no other clickable on the page: the recorder clicks it by
+/// that text, and a text target takes the first match in document order.
+/// Search boxes are left alone - picking a suggestion there runs the search.
+const TYPED_SUGGESTION_JS: &str = r#"function(typed) {
+    const norm = s => String(s || '').replace(/\u00ad/g, '').replace(/\s+/g, ' ').trim();
+    const want = norm(typed).toLowerCase();
+    if (!want || document.querySelector('#webguiPage0, #webguiform0')) { return 'plain'; }
+    if (this.type === 'search' || this.getAttribute('role') === 'searchbox'
+        || this.closest('[role=search], search')) { return 'plain'; }
+    const lists = [];
+    for (const attr of ['aria-controls', 'aria-owns']) {
+        for (const id of (this.getAttribute(attr) || '').split(/\s+/)) {
+            const el = id && document.getElementById(id);
+            if (el) { lists.push(el); }
+        }
+    }
+    if (!lists.length) {
+        const fields = 'input:not([type=hidden]):not([type=button]):not([type=submit])'
+            + ':not([type=reset]):not([type=checkbox]):not([type=radio]), textarea, select';
+        let box = this.parentElement;
+        for (let depth = 0; box && depth < 4; depth++, box = box.parentElement) {
+            if (box.querySelectorAll(fields).length > 1) { break; }
+            const found = box.querySelectorAll('[role=listbox]');
+            if (found.length) { lists.push(...found); break; }
+        }
+    }
+    if (!lists.length) { return 'plain'; }
+    const shown = el => {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) { return false; }
+        const s = getComputedStyle(el);
+        return s.visibility !== 'hidden' && s.display !== 'none';
+    };
+    const clickable = 'button, a, [role=option], [role=button]';
+    const reads = el => norm(el.textContent).toLowerCase() === want
+        || norm(el.getAttribute('aria-label')).toLowerCase() === want;
+    const hits = [];
+    for (const list of lists) {
+        if (!shown(list)) { continue; }
+        for (const el of list.querySelectorAll(clickable)) {
+            if (shown(el) && reads(el) && !el.querySelector(clickable)) { hits.push(el); }
+        }
+    }
+    // None yet may still be loading; two, or a namesake elsewhere, will not
+    // get better by waiting, and guessing between them is the wrong pick.
+    if (!hits.length) { return 'pending'; }
+    if (hits.length > 1) { return 'plain'; }
+    const namesake = Array.from(document.querySelectorAll(clickable + ', summary, [role=tab], [type=submit]'))
+        .filter(el => reads(el) && !el.querySelector(clickable));
+    if (namesake.length !== 1 || namesake[0] !== hits[0]) { return 'plain'; }
+    return 'pick:' + norm(hits[0].textContent || hits[0].getAttribute('aria-label'));
+}"#;
+
 /// WebGUI table controls use a separate draggable scrollbar. Native
 /// scrollIntoView scrolls their overflow:hidden body without updating the
 /// header or SAP's column position, so the next click edits the wrong cell.
@@ -3232,6 +3301,25 @@ impl AppDriver for WebAppDriver {
         let Some(element) = self.try_find(&locator)? else {
             return Ok(None);
         };
+        // Chrome stops honouring `aria-hidden` on a subtree while focus is
+        // inside it, so a field read straight after typing into it shows in
+        // the tree even when its dialog says `aria-hidden="true"`. Replay
+        // looks before anything has focus and finds nothing: Stadtwerke
+        // Flensburg's calculator stays `aria-hidden` while open, and its
+        // postcode field recorded a hint that could never resolve again.
+        let hidden = element
+            .call_js_fn(
+                r#"function() { return !!this.closest('[aria-hidden="true"]'); }"#,
+                vec![],
+                false,
+            )
+            .map_err(|e| web_err("reading aria-hidden", e))?
+            .value
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if hidden {
+            return Ok(None);
+        }
         let tab = self.tab()?;
         // Idempotent: enabling twice is a documented no-op on the CDP side,
         // cheaper than tracking an "already enabled" flag per tab.
@@ -5032,6 +5120,46 @@ impl AppDriver for WebAppDriver {
         Ok(())
     }
 
+    fn typed_suggestion(
+        &mut self,
+        field: &UiaSelector,
+        typed: &str,
+    ) -> Result<Option<String>, DriverError> {
+        // A framed field's list lives in another document; not covered.
+        if field.frame.is_some() {
+            return Ok(None);
+        }
+        let locator = Self::locator(field)?;
+        // Suggestions usually arrive from a request the keystrokes started,
+        // so a field that HAS a list (wired by ARIA, or a listbox beside it)
+        // is polled briefly. A plain field answers `plain` at once and costs
+        // one round trip.
+        let deadline = std::time::Instant::now() + SUGGESTION_WAIT;
+        loop {
+            let status = self
+                .with_element(
+                    &locator,
+                    &format!("reading suggestions of [{field}]"),
+                    |element| {
+                        element.call_js_fn(
+                            TYPED_SUGGESTION_JS,
+                            vec![serde_json::json!(typed)],
+                            false,
+                        )
+                    },
+                )?
+                .value;
+            let status = status.as_ref().and_then(|v| v.as_str()).unwrap_or("plain");
+            if let Some(label) = status.strip_prefix("pick:") {
+                return Ok(Some(label.to_string()));
+            }
+            if status != "pending" || std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+
     fn click_at(
         &mut self,
         selector: &UiaSelector,
@@ -5348,8 +5476,18 @@ impl AppDriver for WebAppDriver {
         // bare `css` key is kept one release for older agents.
         const SCENE_JS: &str = r#"
             (() => {
+              // An id minted per page load (a PHP uniqid, a UUID, a timestamp,
+              // React's useId) is a different string on replay: a selector
+              // built on it can never match again. Stadtwerke Flensburg's
+              // postcode field was `#user-widget-location-6af44f6a60bf3` on
+              // one load and `...6af44caceba0d` on the next.
+              function generatedId(id) {
+                return /\d{6,}/.test(id)
+                  || /(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}/i.test(id)
+                  || /^:r[0-9a-z]*:$/i.test(id);
+              }
               function semanticCss(el) {
-                if (el.id) return '#' + CSS.escape(el.id);
+                if (el.id && !generatedId(el.id)) return '#' + CSS.escape(el.id);
                 for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name']) {
                   const value = el.getAttribute(attr);
                   if (value) {
@@ -5716,7 +5854,7 @@ impl AppDriver for WebAppDriver {
                     continue;
                   }
                   let css = el === frameDoc.body ? 'body' : null;
-                  if (!css && el.id) css = '#' + CSS.escape(el.id);
+                  if (!css && el.id && !generatedId(el.id)) css = '#' + CSS.escape(el.id);
                   if (!css) {
                     for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name']) {
                       const value = el.getAttribute(attr);
