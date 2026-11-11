@@ -77,6 +77,9 @@ mod vision_grid;
 pub mod vision_winocr;
 
 #[cfg(feature = "web")]
+pub mod video_frames;
+
+#[cfg(feature = "web")]
 pub mod web;
 
 #[cfg(feature = "agent")]
