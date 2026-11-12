@@ -1,1 +1,0 @@
-**rustix updated for RUSTSEC-2026-0486.** Its extended-attribute functions could mark unwritten memory as initialized when given a zero-length buffer. flowproof never calls them (rustix arrives through `tempfile` in the browser driver), but the engine moves from rustix 1.1.4 to 1.1.6, a semver-compatible release with the fix, so the OSV-Scanner check passes again.

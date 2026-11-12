@@ -6,6 +6,110 @@ together).
 
 ## Unreleased
 
+## 0.23.34
+
+- **Draft a flow from a screen recording.** `flowproof author-from-video`
+  (experimental) turns one recording into one draft `.flow.yaml`, the way
+  `author-from-doc` does for a test-case PDF. The video is decoded in the Chrome
+  or Edge web flows already use, so nothing new is installed; the frames where
+  the screen changed (up to 60) go to the configured model in one call, which
+  writes the user's actions in order. The draft never asserts, since a recording
+  shows what happened rather than what should, and anything the frames cannot
+  explain is flagged for `record` to resolve. `--check` reads the video without
+  a model call; `--json` reports the draft's steps in the same shape as
+  `author-from-doc`.
+
+- **Web flows reject cookie-consent dialogs by themselves.** Almost every public
+  site shows one, and a flow had to carry its own step for it, which was wrong
+  more often than not: the dialog loads after the page, appears again on another
+  domain mid-flow, and is missing from recordings and test cases made by someone
+  who had already consented. A web flow now presses a known consent manager's
+  own "reject all" control whenever its dialog appears, on any page and domain,
+  and never accepts. consentmanager.net (including its shadow-DOM dialog),
+  OneTrust and Cookiebot are supported, each checked against a live site; any
+  other dialog is left alone and blocks the flow with the error naming it, as
+  before. `browser: consent: keep` turns it off for a flow that tests the
+  dialog. The trace records which, so traces recorded before this replay exactly
+  as they did. The repair loop no longer writes steps that accept cookies, and
+  reports a blocking consent dialog instead.
+
+- **A late cookie-consent dialog no longer undoes a step.** On Stadtwerke
+  Flensburg the consent dialog appeared a second after replay's first click, and
+  rejecting it closed the "Produkte" menu that click had just opened, so the
+  next step failed as obscured. Before a step acts on a page whose consent
+  manager is loaded but has not decided yet, it now waits until the dialog has
+  appeared and been rejected. A page without a known consent manager never
+  waits, and no page waits once it is 8 seconds old.
+
+- **A typed value is picked from its field's suggestion list.** An address field
+  that only accepts a value chosen from its autocomplete list (a postcode, a
+  street) was typed into and never picked: the list stayed open over the next
+  button, whose click was refused as occluded, and the fields that depend on the
+  pick stayed disabled. When recording, after typing, a suggestion list that
+  belongs to the field and offers exactly the typed text once is clicked, and
+  that click is written into the trace as its own step, so replay is a plain
+  type and a plain click and older traces replay as before. The list is the
+  field's `aria-controls`/`aria-owns` target, or a `role=listbox` beside it,
+  since many such fields carry no ARIA at all. No near match is ever picked,
+  search boxes are left alone, and a `${...}` value is never written into the
+  trace as a click target.
+
+- **A recorded web step no longer depends on an id the page mints on each load,
+  or on a field being focused.** Recording a field by an id such as
+  `user-widget-location-6af44f6a60bf3` (a PHP uniqid, a UUID, a timestamp,
+  React's `useId`) wrote a selector that matched nothing on the next load. Such
+  ids are now skipped and the field is addressed the way an element without an
+  id already is. And a field inside a dialog marked `aria-hidden="true"` showed
+  in Chrome's accessibility tree only while it had focus, which is exactly when
+  recording reads it, so its accessibility selector could never be replayed;
+  that hint is no longer recorded. Together they made a recorded price
+  calculator on Stadtwerke Flensburg's site fail on replay with "element did not
+  appear".
+
+- **A click that reopened a menu while recording no longer closes it on
+  replay.** Recording is slower than replay: on Stadtwerke Flensburg the
+  "Produkte" menu closed by itself while the model authored the next step, so
+  the step reopened it before clicking "Haushaltsstrom". Replay, a second
+  behind, still found the menu open, and the recorded reopening click closed it
+  again, leaving the link under the page. When a click brings the step's next
+  target within reach, recording now gives that click a guard, and replay runs
+  it only while the target still cannot be clicked.
+
+- **A web step waits for its page to finish loading before it acts.** A page's
+  own scripts wire up its controls as it loads, and replay acts the moment a
+  button exists. On Stadtwerke Flensburg, clicking the "Produkte" menu while the
+  page was still loading opened it 1 time in 5; once the page had loaded, 5 in
+  5. Recording never noticed, because a model-authored step takes seconds.
+  Before a step clicks or types on a page that is still loading, it now waits
+  until the page has loaded, at most 10 seconds and once per page.
+
+- **A step's element gets more time while its page is visibly still loading.**
+  Replay waits a step's recorded time, usually 5 seconds, for its element to
+  appear. On Stadtwerke Flensburg the order portal showed only a loading spinner
+  for longer than that, and replay gave up on the email field while the page was
+  plainly still loading; recording never noticed, because a model-authored step
+  takes seconds. Past a step's own time, replay now keeps waiting, up to 30
+  seconds, once it sees a request in flight or a document that has not finished
+  loading, including through a pause between requests, as that portal's spinner
+  had. A quiet page that lacks the element still fails at the step's own time,
+  and the message says when the page kept loading.
+
+- **A web flow replays at the page size it was recorded at.** A visible
+  recording window fills the screen, but a headless replay used Chrome's small
+  default window, and sites lay out by width: Stadtwerke Flensburg, recorded
+  full screen, showed its "Produkte" menu bar, and every headless replay got the
+  phone layout with the menu folded away and failed there. A single-surface web
+  flow that doesn't pin `browser.viewport` now records the size its page had,
+  and every replay, headed or headless and on any screen, lays the page out at
+  that size. A pinned viewport is kept as written, and traces recorded before
+  this replay as they did.
+
+- **rustix updated for RUSTSEC-2026-0486.** Its extended-attribute functions
+  could mark unwritten memory as initialized when given a zero-length buffer.
+  flowproof never calls them (rustix arrives through `tempfile` in the browser
+  driver), but the engine moves from rustix 1.1.4 to 1.1.6, a semver-compatible
+  release with the fix, so the OSV-Scanner check passes again.
+
 ## 0.23.33
 
 - **Vision reads and fills table cells on a host terminal screen.** A mainframe
