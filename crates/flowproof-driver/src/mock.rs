@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::app::{AppDriver, KeyMod, PixelRect, UiaSelector};
+use crate::app::{A11yHints, AppDriver, KeyMod, PixelRect, UiaSelector};
 use crate::DriverError;
 
 #[derive(Debug, Default)]
@@ -149,6 +149,8 @@ pub struct MockAppDriver {
     /// When set, `page_loading` answers `loading` this many more times and
     /// then no: a page that goes quiet for a moment while still loading.
     pub loading_reads: Option<u32>,
+    /// Element key -> what `a11y_hint` reads for it. Absent = no hint.
+    pub a11y: HashMap<String, A11yHints>,
     /// What `page_size` answers: width, height, device pixel ratio.
     pub page_size: Option<(u32, u32, f64)>,
     /// A form whose fields sit BELOW their labels: `typed_value_arrived`
@@ -511,6 +513,15 @@ impl AppDriver for MockAppDriver {
             return Ok(Some(aimed.as_deref() == Some("below")));
         }
         Ok(self.typed_arrived)
+    }
+
+    fn a11y_hint(&mut self, selector: &UiaSelector) -> Result<Option<A11yHints>, DriverError> {
+        let key = selector
+            .automation_id
+            .as_ref()
+            .or(selector.css.as_ref())
+            .or(selector.name.as_ref());
+        Ok(key.and_then(|key| self.a11y.get(key)).cloned())
     }
 
     fn page_size(&mut self) -> Result<Option<(u32, u32, f64)>, DriverError> {
