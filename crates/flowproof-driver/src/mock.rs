@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::app::{AppDriver, KeyMod, PixelRect, UiaSelector};
+use crate::app::{A11yHints, AppDriver, KeyMod, PixelRect, UiaSelector};
 use crate::DriverError;
 
 #[derive(Debug, Default)]
@@ -146,6 +146,8 @@ pub struct MockAppDriver {
     pub late: HashMap<String, u32>,
     /// What `page_loading` answers.
     pub loading: bool,
+    /// Element key -> what `a11y_hint` reads for it. Absent = no hint.
+    pub a11y: HashMap<String, A11yHints>,
     /// A form whose fields sit BELOW their labels: `typed_value_arrived`
     /// answers yes only for typing aimed `below`, and records each aim.
     pub fields_below: bool,
@@ -506,6 +508,15 @@ impl AppDriver for MockAppDriver {
             return Ok(Some(aimed.as_deref() == Some("below")));
         }
         Ok(self.typed_arrived)
+    }
+
+    fn a11y_hint(&mut self, selector: &UiaSelector) -> Result<Option<A11yHints>, DriverError> {
+        let key = selector
+            .automation_id
+            .as_ref()
+            .or(selector.css.as_ref())
+            .or(selector.name.as_ref());
+        Ok(key.and_then(|key| self.a11y.get(key)).cloned())
     }
 
     fn page_loading(&mut self) -> Result<bool, DriverError> {
