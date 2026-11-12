@@ -26,7 +26,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// A page caught loading earns the patience; a quiet page that lacks the
 /// element fails at the step's own time, as it always did. Stadtwerke
 /// Flensburg's order portal showed a spinner for longer than the 5 s its
-/// email field was recorded with.
+/// email field was recorded with, and went quiet for a moment (no request in
+/// flight, document complete) while the spinner was still up: once a page is
+/// caught loading, the patience runs to its end.
 const LOADING_PATIENCE_MS: u64 = 30_000;
 /// Auto-wait bound for asserts in traces recorded before timeouts existed.
 const DEFAULT_ASSERT_TIMEOUT_MS: u64 = 10_000;
@@ -466,7 +468,9 @@ fn wait_for_condition<D: AppDriver>(
                 if now >= deadline {
                     // Past the step's own time: a page still loading is
                     // waited for, up to the patience; a quiet one is not.
-                    if now < patience && driver.page_loading().unwrap_or(false) {
+                    // Once caught loading it stays waited for, since a page
+                    // can pause between requests with its content not yet in.
+                    if now < patience && (kept_loading || driver.page_loading().unwrap_or(false)) {
                         kept_loading = true;
                         std::thread::sleep(POLL_INTERVAL);
                         continue;
