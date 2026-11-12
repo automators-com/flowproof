@@ -2354,17 +2354,24 @@ fn guard_for(app: &str, condition: &str, id: u32) -> Option<Guard> {
 /// while the model authored the next step, so the step reopened it first;
 /// replay is fast enough that the menu was still open, and the recorded
 /// reopening click closed it, leaving "Haushaltsstrom" under the page.
-fn reveal_guard(app: &str, revealed: &ResolvedAction, id: usize) -> Guard {
+///
+/// `name` is the target's accessible name, read while it is on screen: the
+/// trace learns it only after the target's own step runs, and without it a
+/// CSS target is named by its whole selector path.
+fn reveal_guard(app: &str, revealed: &ResolvedAction, name: Option<&str>, id: usize) -> Guard {
     let next = step_for(0, "", app, revealed);
     // Named as the report will show it: the target's own label where the
     // trace has one, its selector otherwise.
-    let label = next
-        .selectors
-        .iter()
-        .find_map(|s| {
-            ["name", "text", "css"]
-                .iter()
-                .find_map(|key| s.payload.get(*key)?.as_str().map(str::to_string))
+    let label = name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            next.selectors.iter().find_map(|s| {
+                ["name", "text", "css"]
+                    .iter()
+                    .find_map(|key| s.payload.get(*key)?.as_str().map(str::to_string))
+            })
         })
         .unwrap_or_else(|| "the next target".to_string());
     Guard {
@@ -5022,8 +5029,17 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 )
                 .unwrap_or(false);
                 if revealed {
-                    step.guards
-                        .push(reveal_guard(&step_app, next, steps.len() + 1));
+                    let name = driver
+                        .a11y_hint(next_selector)
+                        .ok()
+                        .flatten()
+                        .map(|hints| hints.name);
+                    step.guards.push(reveal_guard(
+                        &step_app,
+                        next,
+                        name.as_deref(),
+                        steps.len() + 1,
+                    ));
                 }
             }
             step.repeat = loop_ctx.clone();
@@ -5949,6 +5965,15 @@ mod tests {
         let mut driver = MockAppDriver::new(&["#produkte", "#haushaltsstrom"])
             .revealing("#produkte", &["#haushaltsstrom"]);
         driver.scene = Some(scene.into());
+        driver.a11y.insert(
+            "#haushaltsstrom".into(),
+            flowproof_driver::A11yHints {
+                role: "link".into(),
+                name: "Haushaltsstrom".into(),
+                ancestor_role: Some("navigation".into()),
+                ancestor_name: Some("Hauptnavigation".into()),
+            },
+        );
         if !open {
             driver.obscured = vec!["#haushaltsstrom".into()];
         }
@@ -5979,8 +6004,12 @@ mod tests {
             .find(|l| l.contains("#produkte"))
             .expect("the reveal click is traced");
         assert!(
-            reveal.contains(r#""element_receives_events":false"#)
-                && reveal.contains("cannot be clicked yet"),
+            reveal.contains(r#""element_receives_events":false"#),
+            "{reveal}"
+        );
+        // Named as a person reads it, not by its selector.
+        assert!(
+            reveal.contains(r#"\"Haushaltsstrom\" cannot be clicked yet"#),
             "{reveal}"
         );
         let target = steps
