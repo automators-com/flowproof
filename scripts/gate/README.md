@@ -165,8 +165,7 @@ semantic conflicts described in the concept (two independently-green PRs that
 break `main` together).
 
 The required checks are the ones that always report: the five build and lint
-jobs, plus `constitution`, which gates the loops and must be required rather
-than merely present. `windows build + E2E` and
+jobs. `windows build + E2E` and
 `web E2E (ubuntu)` are deliberately excluded — they are off the PR path by
 design (~50 min), and the Integrator covers them post-merge on `main`.
 
