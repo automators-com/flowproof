@@ -217,7 +217,10 @@ already follows.
   spec and applied identically at record and replay: each rule matches a
   request-URL substring (and optionally `method`) and answers it locally.
 - Optional `browser` is the launch/emulation config (web flows):
-  `viewport` (device emulation), `user_agent`, extra Chrome `args`, and
+  `viewport` (device emulation; a single-surface web flow whose spec pins
+  none records the size its page had, so a recording made in a full-screen
+  window replays at that size headless too), `user_agent`, extra Chrome
+  `args`, and
   `clock` (`{at, timezone}`: a pinned `Date` offset plus a CDP timezone
   override, so a date-dependent flow replays deterministically), and
   `random` (`{seed}`: a seeded `Math.random`, the clock's sibling, so a

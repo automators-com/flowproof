@@ -151,6 +151,8 @@ pub struct MockAppDriver {
     pub loading_reads: Option<u32>,
     /// Element key -> what `a11y_hint` reads for it. Absent = no hint.
     pub a11y: HashMap<String, A11yHints>,
+    /// What `page_size` answers: width, height, device pixel ratio.
+    pub page_size: Option<(u32, u32, f64)>,
     /// A form whose fields sit BELOW their labels: `typed_value_arrived`
     /// answers yes only for typing aimed `below`, and records each aim.
     pub fields_below: bool,
@@ -520,6 +522,10 @@ impl AppDriver for MockAppDriver {
             .or(selector.css.as_ref())
             .or(selector.name.as_ref());
         Ok(key.and_then(|key| self.a11y.get(key)).cloned())
+    }
+
+    fn page_size(&mut self) -> Result<Option<(u32, u32, f64)>, DriverError> {
+        Ok(self.page_size)
     }
 
     fn page_loading(&mut self) -> Result<bool, DriverError> {

@@ -1980,6 +1980,36 @@ fn recorded_browser(spec: &FlowSpec) -> Option<flowproof_trace::format::BrowserS
     browser
 }
 
+/// The recorded setup plus the size the page was recorded at, for a
+/// single-surface web flow that pins no viewport. Recording runs in a window
+/// sized by the desktop (headed) or Chrome's small default (headless), and a
+/// site lays out by width: Stadtwerke Flensburg recorded full screen showed
+/// its "Produkte" menu bar, and replayed headless showed a phone layout with
+/// the menu folded away. Written down, replay lays the page out the same way.
+fn with_recorded_page_size<D: AppDriver>(
+    browser: Option<flowproof_trace::format::BrowserSetup>,
+    spec: &FlowSpec,
+    driver: &mut D,
+) -> Option<flowproof_trace::format::BrowserSetup> {
+    let pinned = browser.as_ref().is_some_and(|b| b.viewport.is_some());
+    if pinned || !spec.apps.is_empty() || spec.app.id() != "web" {
+        return browser;
+    }
+    let Ok(Some((width, height, ratio))) = driver.page_size() else {
+        return browser;
+    };
+    let mut browser = browser.unwrap_or_default();
+    browser.viewport = Some(flowproof_trace::format::ViewportSetup {
+        width,
+        height,
+        // Pixel ratio matters to screenshots, not layout; 1.0 is the default.
+        device_scale_factor: (ratio != 1.0).then_some(ratio),
+        mobile: None,
+        touch: None,
+    });
+    Some(browser)
+}
+
 fn web_browser_from_setup(
     setup: &flowproof_trace::format::BrowserSetup,
 ) -> Result<flowproof_driver::WebBrowserConfig, RecordError> {
@@ -3485,6 +3515,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     } else {
         driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
     }
+    let recorded_setup = with_recorded_page_size(recorded_browser(spec), spec, driver);
     // Shape the window BEFORE the first step, so every frame and every
     // visual baseline in this recording sees the same geometry replay will.
     let applied_geometry = match spec.window.as_ref().map(|w| w.config()) {
@@ -5217,8 +5248,9 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         // be mocked at replay, or the two executions test different things.
         mock: spec.mock.clone(),
         // Browser shape travels too: a flow recorded mobile replays mobile,
-        // and one recorded rejecting consent dialogs replays rejecting them.
-        browser: recorded_browser(spec),
+        // one recorded rejecting consent dialogs replays rejecting them, and
+        // one recorded in a full-screen window replays at that size.
+        browser: recorded_setup.clone(),
         spec: Some(flowproof_trace::format::SpecRef {
             name: spec.name.clone(),
             path: None,

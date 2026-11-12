@@ -98,3 +98,34 @@ fn a_step_waits_for_its_page_to_finish_loading_before_it_clicks() {
     assert_eq!(driver.actionability_gate(&button).expect("gate"), None);
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
 }
+
+/// The page's size is what recording writes into a trace that pins no
+/// viewport, and staging that size is how replay gets it back: a headless
+/// Chrome, whose own window is small, then lays the page out at the size a
+/// full-screen recording had.
+#[test]
+fn a_staged_page_size_is_the_size_the_page_reports() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        return;
+    }
+    let _guard = flowproof_adapters::SharedBrowserGuard::new();
+    let mut driver = flowproof_adapters::WebAppDriver::new().expect("browser starts");
+    driver
+        .stage_browser(flowproof_driver::WebBrowserConfig::from_setup_parts(
+            Some((1512, 857, Some(2.0), None, None)),
+            None,
+            &[],
+            None,
+            None,
+            None,
+        ))
+        .expect("stages");
+    driver
+        .launch(
+            "data:text/html,<p>sized</p>",
+            "",
+            std::time::Duration::from_secs(10),
+        )
+        .expect("page opens");
+    assert_eq!(driver.page_size().expect("reads"), Some((1512, 857, 2.0)));
+}
