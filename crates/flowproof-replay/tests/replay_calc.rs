@@ -2972,5 +2972,13 @@ fn a_page_still_loading_earns_its_element_more_time_than_a_quiet_one() {
         "a quiet page must not wait past the step's time"
     );
     assert!(quiet.invoked.is_empty());
+
+    // Loading when the step's time runs out, then quiet for a moment while
+    // the element is still on its way: the portal's spinner did this.
+    let mut pausing = slow_page(true);
+    pausing.loading_reads = Some(2);
+    let (report, _run_dir) = run_trace(&trace, &mut pausing).expect("replay runs");
+    assert!(report.passed, "{report:#?}");
+    assert_eq!(pausing.invoked, vec!["Go"]);
     std::fs::remove_dir_all(&dir).ok();
 }

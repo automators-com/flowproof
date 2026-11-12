@@ -146,6 +146,9 @@ pub struct MockAppDriver {
     pub late: HashMap<String, u32>,
     /// What `page_loading` answers.
     pub loading: bool,
+    /// When set, `page_loading` answers `loading` this many more times and
+    /// then no: a page that goes quiet for a moment while still loading.
+    pub loading_reads: Option<u32>,
     /// What `page_size` answers: width, height, device pixel ratio.
     pub page_size: Option<(u32, u32, f64)>,
     /// A form whose fields sit BELOW their labels: `typed_value_arrived`
@@ -515,6 +518,12 @@ impl AppDriver for MockAppDriver {
     }
 
     fn page_loading(&mut self) -> Result<bool, DriverError> {
+        if let Some(reads) = self.loading_reads.as_mut() {
+            if *reads == 0 {
+                return Ok(false);
+            }
+            *reads -= 1;
+        }
         Ok(self.loading)
     }
 
