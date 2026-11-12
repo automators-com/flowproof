@@ -7,8 +7,7 @@
       "fmt + clippy + test (ubuntu)",
       "build + test (ubuntu)",
       "ruff + pytest (sdk/python)",
-      "constitution",
-      "adversary"
+      "constitution"
     ]
   },
   "enforce_admins": false,

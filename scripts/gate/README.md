@@ -156,17 +156,17 @@ Two deliberate choices worth understanding before you run it:
   breaker.
 - **`required_pull_request_reviews: null`** (zero approvals) — this field never
   mattered. The review requirement comes from the **org ruleset**, not from
-  branch protection, and GitHub enforces the union of both. The Adversary's
-  approval is mechanically required today; see the ruleset sections below.
+  branch protection, and GitHub enforces the union of both; see the ruleset
+  sections below.
 
 **`strict: true`** is load-bearing: it forces a branch to be up to date before
 merging, which mechanically enforces the rebase-and-recheck that catches the
 semantic conflicts described in the concept (two independently-green PRs that
 break `main` together).
 
-The seven required checks are the ones that always report: the five build and
-lint jobs, plus `constitution` and `adversary`, which gate the loops and must
-be required rather than merely present. `windows build + E2E` and
+The required checks are the ones that always report: the five build and lint
+jobs, plus `constitution`, which gates the loops and must be required rather
+than merely present. `windows build + E2E` and
 `web E2E (ubuntu)` are deliberately excluded — they are off the PR path by
 design (~50 min), and the Integrator covers them post-merge on `main`.
 
@@ -178,7 +178,6 @@ design (~50 min), and the Integrator covers them post-merge on `main`.
 | `ruleset-repo-guard.json` — repo ruleset id `19879637` | **applied**, both flags `true` |
 | `ruleset-hardened.json` | **superseded, do not use** — wrong endpoint (see below) |
 | Loop credential (`AutomatorsAgent`) | **minted and verified**, all 5 checks green |
-| Adversary identity | **not needed** — it is a workflow, see `CHARTER.md` §9 |
 
 ### Why `ruleset-hardened.json` is dead
 

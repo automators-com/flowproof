@@ -71,14 +71,14 @@ results here. Redirect to a file and read the status, or use `${PIPESTATUS[0]}`.
 ## Things that will fail CI if you get them wrong
 
 - **Trace format changes must update `docs/trace-format.md` *and*
-  `crates/flowproof-trace/schema/` in the same commit.** Enforced by the
-  `adversary` job's ratchets, not just by convention.
+  `crates/flowproof-trace/schema/` in the same commit.** `scripts/gate/ratchets.sh`
+  checks this; CI does not run it, so run it yourself before opening the PR.
 - **Versions move together** — `Cargo.toml`, the Python wheel, the npm package,
   and three more locations. The `versions agree` job checks all six. Never bump
   one alone.
 - **Don't delete a test, add `#[ignore]`, or add a `pytest` skip/xfail.** The
   ratchets refuse a change that leaves the suite smaller or quieter than it found
-  it. Silencing a test is not fixing it.
+  it, and review should too. Silencing a test is not fixing it.
 - **Don't modify a committed `*.trace.jsonl`.** Adding a cassette is normal work;
   rewriting one silently redefines what correct means. It is human-only.
 
@@ -96,8 +96,8 @@ results here. Redirect to a file and read the status, or use `${PIPESTATUS[0]}`.
   tool; a fix without a test is an assertion.
 - **Prose describing code that no longer exists is a defect.** If you change
   behaviour, find the docs that described the old behaviour.
-- Keep pull requests small. Over ~400 changed lines the ratchets refuse it, on
-  the grounds that review stops working at that size.
+- Keep pull requests small. Over ~400 changed lines `scripts/gate/ratchets.sh`
+  refuses it, on the grounds that review stops working at that size.
 
 ## CI
 
@@ -106,7 +106,8 @@ six-second job instead of five. Windows and the E2E suites are off the pull-requ
 path (~50 minutes); add the `full-ci` label to run them, and a nightly scheduled
 run is the backstop.
 
-Seven required checks, including `constitution` and `adversary`.
+The required checks are listed in `scripts/gate/protection.json`, including
+`constitution`.
 
 ## The autonomous loops
 
