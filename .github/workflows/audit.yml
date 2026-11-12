@@ -5,8 +5,8 @@ name: audit
 # osv-scanner.yml, which covers Rust and Python in one place.
 #
 # A standalone workflow, not a job in ci.yml, for two reasons: it matches the
-# repo's pattern of keeping focused checks separate (adversary.yml,
-# constitution.yml), and it needs its own schedule. A crate can be yanked
+# repo's pattern of keeping focused checks separate (constitution.yml,
+# osv-scanner.yml), and it needs its own schedule. A crate can be yanked
 # or relicensed with zero change on our side, so the weekly cron is the backstop
 # that catches that case even when nothing merges.
 on:
