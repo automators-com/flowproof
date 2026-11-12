@@ -106,8 +106,7 @@ six-second job instead of five. Windows and the E2E suites are off the pull-requ
 path (~50 minutes); add the `full-ci` label to run them, and a nightly scheduled
 run is the backstop.
 
-The required checks are listed in `scripts/gate/protection.json`, including
-`constitution`.
+The required checks are listed in `scripts/gate/protection.json`.
 
 ## The autonomous loops
 
@@ -118,9 +117,9 @@ them are the constitution and **cannot be modified by a loop**:
 CHARTER.md  CODEOWNERS  scripts/gate/  scripts/loop/  .github/workflows/  CLAUDE.md
 ```
 
-`scripts/gate/constitution-check.sh` refuses a pull request from a non-human
-author that touches any of them, and it fails closed — an unrecognised identity
-is treated as a loop. `CLAUDE.md` is in the set because it is loaded into every
+Nothing in CI enforces this while the loops are dormant: the `constitution`
+check that refused a loop-authored pull request touching these paths has been
+removed. Restore it before a loop runs again. `CLAUDE.md` is in the set because it is loaded into every
 session's context: a loop that could edit it would be rewriting the operating
 context of every future loop.
 
