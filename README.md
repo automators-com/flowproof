@@ -117,11 +117,14 @@ green build actually proves:
 | never **approves** | `assert_no_tool_call` | the agent did not ask for the call, on any platform |
 | never **deletes** | `assert_no_tool_call` | same, when the delete goes through a tool, which is how an agent deletes a customer |
 | never **sends** | `assert_no_egress` | a real seccomp filter refused it, on Linux; the step fails outright anywhere it cannot be enforced, rather than passing vacuously |
+| never **touches** a file | `assert_no_side_effect` | no destructive filesystem syscall was observed attempted, on Linux; observation, not prevention, and the step fails "cannot certify" anywhere it cannot observe |
 
-What is *not* asserted: a file the agent's own process destroys directly. On
-Linux that is now **reported** (the run prints what it unlinked, renamed or
-truncated), but a report is not a control, and no build breaks on one. See
-[filesystem observation](docs/agent-testing/security.md#filesystem-observation).
+A file the agent's own process destroys directly (unlinked, renamed or
+truncated) is recorded on Linux in the trace's `side_effects` lane. Only an
+`assert_no_side_effect: fs_write` step turns that record into a verdict;
+without one the run reports it and no build breaks. See
+[side-effect assertion](docs/agent-testing/security.md#side-effect-assertion-assert_no_side_effect)
+and [filesystem observation](docs/agent-testing/security.md#filesystem-observation).
 
 Flows are plain YAML - short enough for an agent to write, readable enough
 for a human to review in a diff.
@@ -320,7 +323,13 @@ healing; auto-waiting assertions; `--retries` for infra flakes. Point
 `run` at a directory to execute a whole suite: one shared browser with an
 isolated context per flow, a `suite.yaml` manifest for shared env,
 seed/cleanup hooks, and data minted by an external CLI
-(`env_from` → `${VAR}`).
+(`env_from` → `${VAR}`). Hooks and `env_from` run shell commands, so they
+are off until you pass `--allow-exec` (or set `FLOWPROOF_ALLOW_EXEC=1` in
+CI) for a suite you trust ([suite runs](docs/getting-started/suite-runs.md)).
+Replay part of a flow with `--from N --until M`; for web flows,
+`--leave-open <file>` keeps the browser open after a run so a later
+`--attach <file>` carries on in it, and `flowproof session close <file>`
+closes it.
 
 **Review**: every run writes a bundle: `result.json`, JUnit XML,
 an HTML report, and screenshot checkpoints. GIF/video assembly is off by
@@ -350,7 +359,9 @@ before/after frames; applied only with explicit `--apply`.
 - `app: agent`: test an AI agent at the model boundary. Record its
   trajectory once against a real model, replay it deterministically with
   zero model calls, and assert the tool calls it makes
-  ([agent-boundary testing](docs/agent-testing/index.md)). On **Linux**, an
+  ([agent-boundary testing](docs/agent-testing/index.md)). A
+  `conversation:` block tests several user turns, each with its own
+  assertions. On **Linux**, an
   `agent.command` flow can be run under real, unprivileged **egress
   containment (seccomp)**: declare its network with `allow_egress` and
   certify it with `assert_no_egress`
@@ -389,6 +400,10 @@ each step citing the line of code it came from.
 `flowproof author-from-video` drafts one from a screen recording, read in the
 browser web flows already use.
 
+**Export**: `flowproof export` converts a recorded trace to another tool's
+test format (today the Tosca migrator's test-case JSON). Steps the target
+cannot express are listed on stderr, never dropped silently.
+
 **Debug what a tool sends**: `flowproof capture` is a byte-fidelity HTTP
 capture endpoint: point a tool-under-test at it and every request is printed
 and saved verbatim (method, path, all headers, raw body as text and hexdump,
@@ -424,7 +439,9 @@ run bundle                     ← result.json · junit.xml · report.html ·
 | `crates/flowproof-agent` | Spec parsing, rules + model authoring, recorder, healing |
 | `crates/flowproof-adapters` | Web (CDP), SAP GUI COM, vision adapters |
 | `crates/flowproof-cli` | `flowproof` CLI (thin wrapper over the library) |
+| `crates/flowproof-python` | PyO3 bindings behind the Python package |
 | `sdk/python` | The `flowproof` Python package (bundles the engine + MCP server) |
+| `sdk/js` | The `flowproof` npm package (runs the same binary, no Python) |
 
 ## Status
 
@@ -437,17 +454,17 @@ Windows desktop, `sap`, `vision`, `api`, `agent`), model-grounded authoring,
 healing with reviewable diffs, suites, the security-control surface
 (`flowproof audit`), the MCP server, and, at the agent boundary, the
 OpenAI-compatible proxy with `assert_tool_call`, the Anthropic Messages
-dialect, streaming replay in both dialects, plus the MCP tool boundary over
-stdio.
-
-Built, but with thinner coverage: `agent.url` services and the MCP boundary
-over streamable HTTP.
+dialect, streaming replay in both dialects, the MCP tool boundary over
+stdio and streamable HTTP, `agent.url` services, and multi-turn
+`conversation:` flows.
 [agent-testing status](docs/agent-testing/status-and-scope.md) names each gap in a
 per-capability table rather than leaving "built" to imply "tested".
 
-Two limits to know before you start: an agent flow is **one turn**, not a
-conversation, and **egress containment is Linux-only**: elsewhere a
-`command:` agent is reported "not contained" rather than silently trusted.
+Two limits to know before you start: **egress containment and side-effect
+observation are Linux-only** (elsewhere a `command:` agent is reported "not
+contained" and `assert_no_side_effect` fails "cannot certify", rather than
+either being silently trusted), and a `conversation:` flow cannot
+use them yet: one that asks for them is refused before the agent starts.
 
 **Choosing between flowproof and an existing browser-automation suite?**
 [docs/comparison.md](docs/comparison.md) is an honest read on when
