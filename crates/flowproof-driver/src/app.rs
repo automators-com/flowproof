@@ -941,6 +941,15 @@ pub trait AppDriver {
         Ok(false)
     }
 
+    /// The page's size in CSS pixels and its device pixel ratio, as the
+    /// running page reports them. A web flow that pins no viewport records
+    /// this into its trace, so replay lays the page out at the size it was
+    /// recorded at, headed or headless. `None` (the default) for a driver
+    /// without a page.
+    fn page_size(&mut self) -> Result<Option<(u32, u32, f64)>, DriverError> {
+        Ok(None)
+    }
+
     /// After [`AppDriver::type_text`] into `field`: the visible label of the
     /// one suggestion the field's own list now offers that reads exactly
     /// `typed`, if there is one. An autocomplete field that only accepts a
@@ -2208,6 +2217,10 @@ impl AppDriver for Box<dyn AppDriver> {
 
     fn page_loading(&mut self) -> Result<bool, DriverError> {
         (**self).page_loading()
+    }
+
+    fn page_size(&mut self) -> Result<Option<(u32, u32, f64)>, DriverError> {
+        (**self).page_size()
     }
 
     fn typed_suggestion(

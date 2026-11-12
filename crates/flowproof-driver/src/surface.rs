@@ -234,6 +234,7 @@ impl AppDriver for SurfaceRegistry {
         fn reveal(&mut self, selector: &UiaSelector) -> Result<(), DriverError>;
         fn typed_value_arrived(&mut self, text: &str) -> Result<Option<bool>, DriverError>;
         fn page_loading(&mut self) -> Result<bool, DriverError>;
+        fn page_size(&mut self) -> Result<Option<(u32, u32, f64)>, DriverError>;
         fn typed_suggestion(&mut self, field: &UiaSelector, typed: &str) -> Result<Option<String>, DriverError>;
         fn reads_text_by_ocr(&mut self) -> Result<bool, DriverError>;
         fn probe_cookie(&mut self, name: &str) -> Result<CookieProbe, DriverError>;

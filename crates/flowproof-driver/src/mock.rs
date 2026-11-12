@@ -146,6 +146,8 @@ pub struct MockAppDriver {
     pub late: HashMap<String, u32>,
     /// What `page_loading` answers.
     pub loading: bool,
+    /// What `page_size` answers: width, height, device pixel ratio.
+    pub page_size: Option<(u32, u32, f64)>,
     /// A form whose fields sit BELOW their labels: `typed_value_arrived`
     /// answers yes only for typing aimed `below`, and records each aim.
     pub fields_below: bool,
@@ -506,6 +508,10 @@ impl AppDriver for MockAppDriver {
             return Ok(Some(aimed.as_deref() == Some("below")));
         }
         Ok(self.typed_arrived)
+    }
+
+    fn page_size(&mut self) -> Result<Option<(u32, u32, f64)>, DriverError> {
+        Ok(self.page_size)
     }
 
     fn page_loading(&mut self) -> Result<bool, DriverError> {
