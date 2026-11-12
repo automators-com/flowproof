@@ -1048,10 +1048,10 @@ const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// still means headed, because a variable someone bothered to set is a
 /// variable they meant.
 ///
-/// **A headed recording is not pixel-identical to a headless one.** Headed
-/// Chromium sizes its window from the desktop; headless uses a fixed default.
-/// A flow with visual assertions should pin `browser.viewport` in its spec, or
-/// its baselines will be recorded at one size and replayed at another.
+/// **Headed and headless windows differ in size.** Headed Chromium sizes its
+/// window from the desktop; headless uses a small fixed default. A single-
+/// surface web flow that pins no `browser.viewport` records the size its page
+/// had, and replay emulates it, so both lay the page out the same way.
 fn headed_requested() -> bool {
     std::env::var_os("FLOWPROOF_HEADED").is_some() || keep_browser_open_requested()
 }
@@ -4688,6 +4688,27 @@ impl AppDriver for WebAppDriver {
             .and_then(|v| v.as_str().map(|state| state == "complete"))
             .unwrap_or(true);
         Ok(!complete)
+    }
+
+    fn page_size(&mut self) -> Result<Option<(u32, u32, f64)>, DriverError> {
+        let read = self
+            .tab()?
+            .evaluate(
+                "JSON.stringify([innerWidth, innerHeight, devicePixelRatio])",
+                false,
+            )
+            .map_err(|e| web_err("reading the page size", e))?;
+        let size = read
+            .value
+            .and_then(|v| v.as_str().map(str::to_string))
+            .and_then(|json| serde_json::from_str::<(f64, f64, f64)>(&json).ok());
+        Ok(size.and_then(|(width, height, ratio)| {
+            (width >= 1.0 && height >= 1.0 && ratio > 0.0).then_some((
+                width as u32,
+                height as u32,
+                ratio,
+            ))
+        }))
     }
 
     fn today(&mut self) -> Result<Option<String>, DriverError> {

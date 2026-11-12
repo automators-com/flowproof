@@ -266,6 +266,60 @@ fn browser_config_travels_from_spec_through_trace_to_replay_staging() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Stadtwerke Flensburg recorded in a full-screen window showed its
+/// "Produkte" menu bar; replayed headless, Chrome's small default window
+/// got the phone layout with the menu folded away, and every replay failed
+/// at the menu. A web flow that pins no viewport now records the size its
+/// page had, and replay lays the page out at that size. A pinned viewport
+/// is the flow's own and is kept.
+#[test]
+fn a_web_flow_replays_at_the_page_size_it_was_recorded_at() {
+    let dir = std::env::temp_dir().join("flowproof-replay-page-size");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Menu\napp: web\nurl: https://e.test/x\nsteps:\n  - Press the \"Go\" button\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("menu.trace.jsonl");
+    let mut full_screen = MockAppDriver::new(&["Go"]);
+    full_screen.page_size = Some((1512, 857, 2.0));
+    record(&spec, &mut full_screen, &trace).expect("records");
+    let header = std::fs::read_to_string(&trace).expect("trace written");
+    assert!(
+        header.contains(r#""viewport":{"width":1512,"height":857,"device_scale_factor":2.0}"#),
+        "{header}"
+    );
+
+    let mut headless = MockAppDriver::new(&["Go"]);
+    headless.page_size = Some((756, 413, 1.0));
+    let (report, _run_dir) = run_trace(&trace, &mut headless).expect("replay runs");
+    assert!(report.passed, "{report:#?}");
+    let vp = headless
+        .staged_browser
+        .expect("replay staged the browser")
+        .viewport
+        .expect("the recorded size is staged");
+    assert_eq!(
+        (vp.width, vp.height, vp.device_scale_factor),
+        (1512, 857, 2.0)
+    );
+
+    let pinned = FlowSpec::parse(
+        "name: Phone\napp: web\nurl: https://e.test/x\nbrowser:\n  viewport: {width: 390, height: 844}\nsteps:\n  - Press the \"Go\" button\n",
+    )
+    .expect("spec parses");
+    let pinned_trace = dir.join("phone.trace.jsonl");
+    let mut big = MockAppDriver::new(&["Go"]);
+    big.page_size = Some((1512, 857, 2.0));
+    record(&pinned, &mut big, &pinned_trace).expect("records");
+    let header = std::fs::read_to_string(&pinned_trace).expect("trace written");
+    assert!(
+        header.contains(r#""viewport":{"width":390,"height":844}"#),
+        "{header}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// 0.2.3 field regression: element anchors were case-insensitive but
 /// `page shows` was not. Both executions now apply the same exact-first,
 /// case-insensitive-fallback matching — and the negative form mirrors it.
