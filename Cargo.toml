@@ -36,7 +36,10 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/automators-com/flowproof"
 authors = ["Automators <hello@automators.com>"]
-rust-version = "1.80"
+# The oldest Rust the locked dependencies build on: rten and rten-simd 0.24
+# declare 1.89. Clippy's incompatible_msrv lint reads this, so CI fails if our
+# own code uses a std API newer than it. Raise it when a dependency update does.
+rust-version = "1.89"
 # Nothing here goes to crates.io: the wheel and the npm package are built from
 # this workspace (publish.yml, publish-npm.yml). Saying so also lets
 # cargo-deny treat the crates as private, where path dependencies are fine.

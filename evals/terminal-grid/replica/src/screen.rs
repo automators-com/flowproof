@@ -407,10 +407,7 @@ impl Screen {
             return;
         };
         let rows = &mut self.tables[t].rows;
-        if rows
-            .last()
-            .map_or(true, |r| r.iter().any(|v| !v.is_empty()))
-        {
+        if rows.last().is_none_or(|r| r.iter().any(|v| !v.is_empty())) {
             rows.push(Vec::new());
         }
         let index = rows.len() - 1;
