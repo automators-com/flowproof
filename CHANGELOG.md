@@ -6,6 +6,13 @@ together).
 
 ## Unreleased
 
+- **`author-from-video` refuses a video that shows no app being used.**
+  Driving footage, a film, a recorded talk or an empty screen used to come back
+  as a "draft" whose only step was the model's note that no app was visible.
+  It now fails with `the video shows no app being used: <what it shows>` and
+  writes no file. A reply with no action at all, only flagged or out-of-scope
+  lines, is refused the same way (as "no steps were read").
+
 ## 0.23.34
 
 - **Draft a flow from a screen recording.** `flowproof author-from-video`
