@@ -969,8 +969,9 @@ mod recording_ref_tests {
     fn the_recorded_dir_resolves_segment_by_segment_on_any_host() {
         // The exact shape the recorder writes, round-tripped through JSON as
         // a trace read on another machine would be.
-        let line = serde_json::to_string(&rec(".flowproof/recordings/abc/recording")).unwrap();
-        let read: RecordingRef = serde_json::from_str(&line).unwrap();
+        let line =
+            serde_json::to_string(&rec(".flowproof/recordings/abc/recording")).expect("serializes");
+        let read: RecordingRef = serde_json::from_str(&line).expect("parses");
         let base = Path::new("flows");
         assert_eq!(
             read.resolve(base),
