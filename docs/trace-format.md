@@ -210,6 +210,10 @@ already follows.
   `artifacts.recording {start_ms, end_ms}` maps it into that bundle. Optional
   `redaction` carries the masking rules copied from the spec at record time,
   so every replay masks identically without the spec (see docs/recording.md).
+  `dir` is relative to the trace's directory and always `/`-delimited, on
+  every OS, so a trace recorded on Windows finds its bundle on macOS or Linux
+  and back. A `dir` that is empty, absolute, or contains `.`, `..` or `\`
+  resolves to no bundle.
 - Optional `session` seeds pre-launch state (`cookies`, `local_storage`) so
   an authenticated flow starts without a login walk; values may be `${VAR}`
   references, resolved at apply time and never stored.
