@@ -24,6 +24,11 @@ pub enum VideoAuthorError {
     NoFrames,
     #[error("no steps were read from the video's frames — nothing to draft")]
     NoStepsInferred,
+    /// The frames show no application in use (driving footage, a talk, a
+    /// black screen): there is nothing a flow could repeat. Carries what
+    /// the model says the video shows instead.
+    #[error("the video shows no app being used: {0}")]
+    NotAnAppRecording(String),
     #[error("model produced a draft that does not parse as a flow spec: {0}")]
     DraftInvalid(#[from] crate::spec::SpecError),
     #[error(transparent)]
@@ -103,8 +108,14 @@ If an action clearly happens in a different application than the one under \
 test (an email client, a spreadsheet, a file browser), write `OUT_OF_SCOPE: ` \
 followed by a short factual description of it.
 
-Respond with ONLY STEP:/UNEXPLAINED:/OUT_OF_SCOPE: lines — no prose, no \
-numbering, no code fences."
+If no frame shows someone using an application at all (camera footage, a \
+film, slides advancing on their own, an empty screen), reply with ONE line, \
+`NOT_APP: ` followed by a short phrase saying what the video shows instead \
+(e.g. `NOT_APP: in-car footage of someone driving through a town`), and \
+nothing else.
+
+Respond with ONLY STEP:/UNEXPLAINED:/OUT_OF_SCOPE: lines, or the single \
+NOT_APP: line — no prose, no numbering, no code fences."
     )
 }
 
@@ -130,11 +141,19 @@ fn user_prompt(opts: &VideoAuthorOptions, frames: usize) -> String {
 
 /// The reply as draft lines. An assert is never kept, whatever the model
 /// wrote: see the module docs.
-fn parse_reply(reply: &str) -> Vec<DraftLine> {
+///
+/// A draft needs at least one action: flagged and out-of-scope lines alone
+/// are observations, not a flow (the model files an unrelated video under
+/// either when it does not say `NOT_APP:`). A `NOT_APP:` line is honoured
+/// only when no action came with it.
+fn parse_reply(reply: &str) -> Result<Vec<DraftLine>, VideoAuthorError> {
     let mut lines = Vec::new();
+    let mut not_app = None;
     for line in reply.lines() {
         let line = line.trim();
-        if let Some(step) = line.strip_prefix("STEP:") {
+        if let Some(shows) = line.strip_prefix("NOT_APP:") {
+            not_app.get_or_insert_with(|| shows.trim().to_string());
+        } else if let Some(step) = line.strip_prefix("STEP:") {
             let step = step.trim();
             if !step.is_empty() && step != "NO_ACTION" {
                 lines.push(DraftLine::Action(step.to_string()));
@@ -147,7 +166,13 @@ fn parse_reply(reply: &str) -> Vec<DraftLine> {
         // Any other shape (a stray ASSERT:, prose) is dropped: one ignorable
         // line is not worth failing the draft over.
     }
-    lines
+    if lines.iter().any(|l| matches!(l, DraftLine::Action(_))) {
+        return Ok(lines);
+    }
+    Err(match not_app {
+        Some(shows) if !shows.is_empty() => VideoAuthorError::NotAnAppRecording(shows),
+        _ => VideoAuthorError::NoStepsInferred,
+    })
 }
 
 fn model_client() -> Result<crate::llm::HttpModelClient, VideoAuthorError> {
@@ -190,10 +215,7 @@ pub fn draft_from_frames(
         .collect();
     let reply =
         client.complete_with_images(&system_prompt(), &user_prompt(opts, frames.len()), &images)?;
-    let mut lines = parse_reply(&reply);
-    if lines.is_empty() {
-        return Err(VideoAuthorError::NoStepsInferred);
-    }
+    let mut lines = parse_reply(&reply)?;
     if let Some(url) = &opts.url {
         let starts_there = matches!(lines.first(), Some(DraftLine::Action(step))
             if step.to_ascii_lowercase().starts_with("go to "));
@@ -367,6 +389,56 @@ mod tests {
             Err(VideoAuthorError::NoStepsInferred)
         ));
         assert!(!out.exists());
+    }
+
+    /// Driving footage, a talk, a black screen: refused with what the video
+    /// shows, never written as a draft of observations.
+    #[test]
+    fn a_video_that_shows_no_app_is_refused_not_drafted() {
+        let out = std::env::temp_dir().join("flowproof-video-not-app.flow.yaml");
+        let mut model = ScriptedModel {
+            reply: "NOT_APP: in-car footage of someone driving through a town",
+            seen: Vec::new(),
+        };
+        match draft_from_frames(&opts(&out, None), &frames(2), &mut model) {
+            Err(e @ VideoAuthorError::NotAnAppRecording(_)) => assert_eq!(
+                e.to_string(),
+                "the video shows no app being used: in-car footage of someone driving through a town"
+            ),
+            other => panic!("expected NotAnAppRecording, got {:?}", other.err()),
+        }
+
+        // Without NOT_APP the model files the same video under a flag or
+        // out-of-scope line; with no action beside it, that is no draft.
+        let mut model = ScriptedModel {
+            reply: "UNEXPLAINED: the slide changed from \"Intro\" to \"Agenda\" between 0:00.0 and 0:08.0 — no click is visible\n\
+                    OUT_OF_SCOPE: night-time highway traffic, no application on screen",
+            seen: Vec::new(),
+        };
+        assert!(matches!(
+            draft_from_frames(
+                &opts(&out, Some("https://example.com/")),
+                &frames(2),
+                &mut model
+            ),
+            Err(VideoAuthorError::NoStepsInferred)
+        ));
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn a_stray_not_app_beside_real_steps_does_not_refuse_the_draft() {
+        let out = std::env::temp_dir().join("flowproof-video-stray-not-app.flow.yaml");
+        let mut model = ScriptedModel {
+            reply: "STEP: Click \"Preise berechnen\"\nNOT_APP: a website",
+            seen: Vec::new(),
+        };
+        let result = draft_from_frames(&opts(&out, None), &frames(1), &mut model).expect("drafts");
+        assert_eq!(
+            result.lines,
+            [DraftLine::Action("Click \"Preise berechnen\"".into())]
+        );
+        std::fs::remove_file(out).ok();
     }
 
     #[test]
