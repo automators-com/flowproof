@@ -2,6 +2,8 @@
 //! `docs/trace-format.md` + `schema/trace-v1.schema.json`; a fixture test
 //! keeps these types and the schema in agreement.
 
+use std::path::{Component, Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -204,10 +206,38 @@ pub struct SessionCookie {
 pub struct RecordingRef {
     /// Bundle format discriminator (e.g. `filmstrip/1`).
     pub format: String,
-    /// Bundle directory, relative to the owning artifact's location.
+    /// Bundle directory, relative to the owning artifact's location. Always
+    /// `/`-delimited, whatever OS wrote it, so a trace recorded on Windows
+    /// resolves on macOS or Linux and back; read it with [`Self::resolve`],
+    /// never by handing it to `Path::join`.
     pub dir: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+}
+
+impl RecordingRef {
+    /// The bundle directory under `base` (the owning artifact's directory),
+    /// joined one `/`-separated segment at a time with the host's separator.
+    ///
+    /// `None` unless `dir` stays inside `base`: the header may be authored by
+    /// someone else (an imported trace), so an empty path, an empty segment,
+    /// `.`, `..`, a root or drive prefix, or a `\` (a separator on Windows,
+    /// and never written by the engine) yields nothing rather than a path
+    /// outside the trace tree.
+    pub fn resolve(&self, base: &Path) -> Option<PathBuf> {
+        if self.dir.is_empty() || self.dir.contains('\\') {
+            return None;
+        }
+        let mut path = base.to_path_buf();
+        for segment in self.dir.split('/') {
+            let mut components = Path::new(segment).components();
+            match (components.next(), components.next()) {
+                (Some(Component::Normal(part)), None) if part == segment => path.push(part),
+                _ => return None,
+            }
+        }
+        Some(path)
+    }
 }
 
 /// A step's time range within its execution's recording.
@@ -920,5 +950,56 @@ mod control_header_tests {
         assert!(!json.contains("description"), "absent metadata is omitted");
         let back: Header = serde_json::from_str(&json).expect("round-trips");
         assert_eq!(back, header);
+    }
+}
+
+#[cfg(test)]
+mod recording_ref_tests {
+    use super::*;
+
+    fn rec(dir: &str) -> RecordingRef {
+        RecordingRef {
+            format: "filmstrip/1".into(),
+            dir: dir.into(),
+            started_at: None,
+        }
+    }
+
+    #[test]
+    fn the_recorded_dir_resolves_segment_by_segment_on_any_host() {
+        // The exact shape the recorder writes, round-tripped through JSON as
+        // a trace read on another machine would be.
+        let line = serde_json::to_string(&rec(".flowproof/recordings/abc/recording")).unwrap();
+        let read: RecordingRef = serde_json::from_str(&line).unwrap();
+        let base = Path::new("flows");
+        assert_eq!(
+            read.resolve(base),
+            Some(
+                base.join(".flowproof")
+                    .join("recordings")
+                    .join("abc")
+                    .join("recording")
+            )
+        );
+        assert_eq!(rec("recording").resolve(base), Some(base.join("recording")));
+    }
+
+    #[test]
+    fn a_dir_outside_the_trace_tree_resolves_to_nothing() {
+        let base = Path::new("flows");
+        for dir in [
+            "",
+            "a//b",
+            "a/",
+            "./recording",
+            "../recording",
+            "a/../../etc",
+            "/etc/ssh",
+            "..\\recording",
+            "exec-0\\recording",
+            "C:\\Windows",
+        ] {
+            assert_eq!(rec(dir).resolve(base), None, "{dir:?}");
+        }
     }
 }
