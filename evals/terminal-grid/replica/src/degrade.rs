@@ -25,7 +25,9 @@ impl Degrade {
     /// Degrade a top-down BGRA buffer in place.
     pub fn apply(&self, bgra: &mut [u8], width: u32, height: u32) -> Result<(), String> {
         let rgb: Vec<u8> = bgra
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| [p[2], p[1], p[0]])
             .collect();
         let mut img = RgbImage::from_raw(width, height, rgb).ok_or("frame size mismatch")?;
@@ -60,7 +62,7 @@ impl Degrade {
                 .map_err(|e| e.to_string())?
                 .to_rgb8();
         }
-        for (out, p) in bgra.chunks_exact_mut(4).zip(img.pixels()) {
+        for (out, p) in bgra.as_chunks_mut::<4>().0.iter_mut().zip(img.pixels()) {
             out[..3].copy_from_slice(&[p[2], p[1], p[0]]);
         }
         Ok(())
@@ -93,7 +95,9 @@ mod tests {
         .apply(&mut px, 8, 8)
         .expect("applies");
         assert!(px
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|p| p[0].abs_diff(200) < 8 && p[1].abs_diff(100) < 8));
     }
 }
