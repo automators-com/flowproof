@@ -939,8 +939,9 @@ fn failure_hint(kind: &str, screen: Option<&flowproof_driver::FailureScreen>) ->
         "needs_clarification" => "Reword the step so it names one thing on the screen: the \
                                   field's label or the button's caption."
             .into(),
-        "page_not_ready" => "The previous step had not finished when this one started. Add a \
-                             step that waits for what the previous step should show."
+        "page_not_ready" => "The screen still shows a problem from the previous step, quoted \
+                             above. Check that step did everything it should; if the screen was \
+                             still loading, add a step that waits for what it should show."
             .into(),
         "authoring" => "flowproof could not turn this step into an action. Name the field or \
                         button exactly as the screen shows it, or configure an authoring model \

@@ -217,6 +217,12 @@ pub struct AuthorContext<'a> {
     /// left behind, with no mark on any element to find; it usually says so
     /// in words.
     pub page_text: Option<&'a str>,
+    /// What the screen read when the PREVIOUS step began, on a surface whose
+    /// standing messages can pass for that step's failure: a host terminal's
+    /// status line says "Dokument nicht vollständig" for as long as the
+    /// document is unfilled. A report quoting text that was there before the
+    /// previous step ran is not about that step, and is refused.
+    pub standing_text: Option<&'a str>,
 }
 
 fn user_prompt(ctx: &AuthorContext<'_>) -> String {
@@ -281,6 +287,14 @@ fn normalized_words(text: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Whether `evidence` was already part of `before`, compared word for word so
+/// two OCR readings of one line agree despite their spacing and punctuation.
+fn already_showing(before: &str, evidence: &str) -> bool {
+    let evidence = normalized_words(evidence);
+    !evidence.is_empty()
+        && format!(" {} ", normalized_words(before)).contains(&format!(" {evidence} "))
 }
 
 fn mentioned_captures(intent: &str, captures: &[String]) -> Vec<String> {
@@ -1346,6 +1360,21 @@ fn author_steps_inner<C: ModelClient>(
             // Retrying would only ask the same question of the same screen.
             // This is a report about the step BEFORE this one, and the
             // recorder has to hear it intact.
+            // The previous step cannot have left behind what was on the
+            // screen before it began. Ask again rather than end the recording
+            // on a message the screen shows all along.
+            Err(GroundingError::PreviousStepIncomplete(evidence))
+                if ctx
+                    .standing_text
+                    .is_some_and(|before| already_showing(before, &evidence)) =>
+            {
+                last_error = format!(
+                    "\"{evidence}\" was already on the screen before the previous step ran, so \
+                     that step did not leave it behind: it is a message this screen shows all \
+                     along, not a rejection. Author the current step"
+                );
+                kept = None;
+            }
             Err(GroundingError::PreviousStepIncomplete(evidence)) => {
                 return Err(AgentError::PreviousStepIncomplete {
                     step: ctx.intent.to_string(),
@@ -1454,6 +1483,7 @@ mod tests {
             captures: &[],
             today: None,
             page_text: None,
+            standing_text: None,
         };
         assert!(
             user_prompt(&ctx(Some(crate::recorder::BLANK_START))).contains("blank page on purpose")
@@ -1603,6 +1633,7 @@ mod tests {
         AuthorContext {
             today: None,
             page_text: None,
+            standing_text: None,
             flow_name: "Greet",
             app: "web",
             url: Some("file:///greeter.html"),
@@ -1629,6 +1660,7 @@ mod tests {
             let prompt = user_prompt(&AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: instruction,
                 ..ctx()
             });
@@ -1674,6 +1706,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Fill out all the vehicle data and click next",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1723,6 +1756,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Fill out all the vehicle data",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1792,6 +1826,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Fill out all the vehicle data and click next",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1837,6 +1872,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Fill out all the vehicle data",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1858,6 +1894,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Continue",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1889,6 +1926,7 @@ mod tests {
                 &AuthorContext {
                     today: None,
                     page_text: None,
+                    standing_text: None,
                     intent: "Fill out all the vehicle data",
                     scene: FORM_SCENE,
                     ..ctx()
@@ -1914,6 +1952,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Remember the greeting as the greeting, then put it in the name box",
                 ..ctx()
             },
@@ -2006,6 +2045,77 @@ mod tests {
             client.calls, 1,
             "a report is not a grounding failure, so it does not burn the retry"
         );
+    }
+
+    /// #846: a host terminal's status line read `1/01 :Dokument nicht
+    /// vollständig` before the flow's first step and after it, and the model
+    /// reported it as that step's failure. What was on the screen before the
+    /// previous step ran cannot be that step's doing: the report is refused
+    /// and the step authored on the retry.
+    #[test]
+    fn a_report_quoting_text_shown_before_the_previous_step_is_refused() {
+        let mut client = Recording {
+            replies: vec![
+                r#"{"action":"previous_step_incomplete","evidence":"1/01 :Dokument nicht vollständig"}"#
+                    .into(),
+                r##"{"action":"type_text","target":"css:#name","text":"Ada"}"##.into(),
+            ],
+            prompts: Vec::new(),
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                standing_text: Some("Leistung ReDat 1/01: Dokument nicht vollständig"),
+                ..ctx()
+            },
+        )
+        .expect("the standing message does not end the recording");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(client.prompts.len(), 2);
+        assert!(
+            client.prompts[1].contains("already on the screen before the previous step ran"),
+            "the retry says why the report was refused: {}",
+            client.prompts[1]
+        );
+    }
+
+    /// The other side of #846: text the screen did NOT show before the
+    /// previous step is still reported intact, on the first reply.
+    #[test]
+    fn a_report_quoting_text_the_previous_step_brought_still_stands() {
+        let mut client = Scripted {
+            replies: vec![
+                r#"{"action":"previous_step_incomplete","evidence":"Enter Vehicle Data1"}"#.into(),
+            ],
+            calls: 0,
+        };
+        let err = author_steps(
+            &mut client,
+            &AuthorContext {
+                standing_text: Some("Enter Vehicle Data7"),
+                ..ctx()
+            },
+        )
+        .expect_err("a new complaint ends the recording");
+        assert!(
+            matches!(err, AgentError::PreviousStepIncomplete { .. }),
+            "{err}"
+        );
+        assert_eq!(client.calls, 1);
+    }
+
+    #[test]
+    fn standing_text_is_matched_word_for_word() {
+        assert!(already_showing(
+            "Status 1/01: Dokument nicht vollständig",
+            "1/01 :Dokument nicht vollständig"
+        ));
+        assert!(!already_showing(
+            "Enter Vehicle Data7",
+            "Enter Vehicle Data1"
+        ));
+        assert!(!already_showing("Datum 12", "Datum 1"), "whole words only");
+        assert!(!already_showing("anything", " : "), "no words, no match");
     }
 
     /// The narrowest reading that is still useful. Everything else is
@@ -2181,6 +2291,7 @@ mod tests {
     fn the_prompt_carries_what_the_screen_reads() {
         let spoken = user_prompt(&AuthorContext {
             page_text: Some("Please, select a price option to send the quote."),
+            standing_text: None,
             ..ctx()
         });
         assert!(
@@ -2221,6 +2332,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 app: "notepad",
                 url: None,
                 scene: UIA_SCENE,
@@ -2245,6 +2357,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 app: "notepad",
                 url: None,
                 scene: UIA_SCENE,
@@ -2276,6 +2389,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 scene: legacy_scene,
                 ..ctx()
             },
@@ -2436,6 +2550,7 @@ mod tests {
         let prompt = user_prompt(&AuthorContext {
             today: None,
             page_text: None,
+            standing_text: None,
             captures: &captures,
             ..ctx()
         });
@@ -2455,6 +2570,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Remember the greeting as greeting",
                 ..ctx()
             },
@@ -2485,6 +2601,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Remember the value beside \"order id\" as the order ID",
                 scene: SCOPED_SCENE,
                 ..ctx()
@@ -2613,6 +2730,7 @@ mod tests {
                 &AuthorContext {
                     today: None,
                     page_text: None,
+                    standing_text: None,
                     intent,
                     scene: HUMAN_PRIMITIVE_SCENE,
                     ..ctx()
@@ -2666,6 +2784,7 @@ mod tests {
                 &AuthorContext {
                     today: None,
                     page_text: None,
+                    standing_text: None,
                     intent: "Close the window",
                     scene: HUMAN_PRIMITIVE_SCENE,
                     ..ctx()
@@ -2717,6 +2836,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Empty the name field",
                 ..ctx()
             },
@@ -2806,6 +2926,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Empty the text field inside the frame",
                 scene: HUMAN_PRIMITIVE_SCENE,
                 ..ctx()
@@ -2844,6 +2965,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Empty the text field inside the frame",
                 scene: HUMAN_PRIMITIVE_SCENE,
                 ..ctx()
@@ -2868,6 +2990,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Open settings",
                 scene: "[]",
                 ..ctx()
@@ -2893,6 +3016,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 flow_name: "Create an order",
                 app: "sap",
                 url: None,
@@ -2938,6 +3062,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -2965,6 +3090,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Type the literal word it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -2991,6 +3117,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -3013,6 +3140,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Remember the customer number",
                 captures: &captures,
                 ..ctx()
@@ -3037,6 +3165,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -3072,6 +3201,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -3101,6 +3231,7 @@ mod tests {
                 &AuthorContext {
                     today: None,
                     page_text: None,
+                    standing_text: None,
                     flow_name: "f",
                     app: "web",
                     url: None,
@@ -3129,6 +3260,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 flow_name: "f",
                 app: "web",
                 url: None,
@@ -3156,6 +3288,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 flow_name: "f",
                 app: "web",
                 url: None,
@@ -3185,6 +3318,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Enter it in the confirmation field",
                 captures: &captures,
                 ..ctx()
@@ -3214,6 +3348,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                standing_text: None,
                 intent: "Enter the order number in the name field",
                 captures: &captures,
                 ..ctx()

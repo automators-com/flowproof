@@ -2720,6 +2720,9 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     spec_step: &crate::spec::SpecStep,
     llm_used: &mut bool,
     reuse: &mut Option<ReuseCursor>,
+    // What the screen read when the previous step began - see
+    // [`AuthorContext::standing_text`].
+    standing_text: Option<&str>,
 ) -> Result<AuthoredActions, RecordError> {
     let intent = spec_step.intent();
     let intent = intent.as_str();
@@ -2875,6 +2878,7 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             captures,
             intent,
             scene: &scene,
+            standing_text,
         };
         let authored = match model_screenshot(driver, app_id) {
             Some((png, scale)) => {
@@ -3146,6 +3150,9 @@ fn replan_remainder<D: AppDriver, C: ModelClient>(
         captures,
         intent,
         scene: &scene,
+        // A continuation is the same step, not the next one: nothing here is
+        // weighed against what the previous step left.
+        standing_text: None,
     };
     // What the page is SAYING, not just what it contains. A wizard that
     // refuses to advance prints the reason - "Please, select a price option"
@@ -3581,6 +3588,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     // follows - see `vacuous_check`.
     let mut before_actions: Option<String> = None;
     let mut actions_since_check = false;
+    // What a vision surface read when the latest step began. Carried one
+    // step forward, it is what the screen showed before the PREVIOUS step
+    // ran - see `AuthorContext::standing_text`. Whole, unlike the model's
+    // bounded `page_text`: a terminal's status line is its last line.
+    let mut step_start_text: Option<String> = None;
     // The secret-leak corpus, held in memory for this run only, exactly like a
     // resolved `${VAR}` value: (a) the web surface text read at each step
     // boundary (the same text `page shows` reads, not the page source) and
@@ -3771,6 +3783,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             before_actions = driver.surface_text().ok();
         }
         actions_since_check = !is_check;
+        let start_text = (step_app == "vision")
+            .then(|| driver.surface_text().ok())
+            .flatten()
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "));
+        let before_previous = std::mem::replace(&mut step_start_text, start_text);
         let mut capture_names: Vec<String> = captures.keys().cloned().collect();
         capture_names.sort();
         let authored = author_actions(
@@ -3785,6 +3802,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             spec_step,
             &mut llm_used,
             &mut reuse,
+            before_previous.as_deref(),
         )
         .map_err(|err| match err {
             // An empty blank page reads as a broken one to the model.
@@ -5746,6 +5764,34 @@ mod tests {
         assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
         let warning = summary.routing[1].warning.as_deref().expect("flagged");
         assert!(warning.contains("already held before"), "{warning}");
+        std::fs::remove_file(out).ok();
+    }
+
+    /// #846: a host terminal's status line, on screen before the first step
+    /// and after it, was reported by the model as the first step's failure
+    /// and the recording stopped. The recorder now hands the model what the
+    /// screen read before the previous step, the report is refused, and the
+    /// step is authored on the retry.
+    #[test]
+    fn a_vision_status_line_shown_all_along_does_not_stop_the_recording() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: Leistung\nsteps:\n  - Type Zebra42\n  - Move keyboard focus into the editable field directly below the ReDat label\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            scene: Some(r#"[{"target":"text:ReDat","text":"ReDat"}]"#.into()),
+            ..MockAppDriver::new(&["ReDat"])
+        }
+        .with_surface_text("Leistung ReDat\n1/01 :Dokument nicht vollständig");
+        let mut client = ScriptedClient::new(&[
+            r#"{"action":"previous_step_incomplete","evidence":"1/01 :Dokument nicht vollständig"}"#,
+            r#"{"action":"click","target":"text:ReDat"}"#,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-vision-status-line.trace.jsonl");
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the status line is not the first step's failure");
+        assert_eq!(client.prompts.len(), 2, "refused once, then authored");
+        assert_eq!(driver.invoked, vec!["ReDat".to_string()]);
         std::fs::remove_file(out).ok();
     }
 
