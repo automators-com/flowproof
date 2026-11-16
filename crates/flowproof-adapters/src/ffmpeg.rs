@@ -7,6 +7,7 @@
 //! the last resort, for builds from source.
 
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -94,6 +95,109 @@ impl Ffmpeg {
         }
     }
 
+    /// Small greyscale pictures of `video`, one every `every_ms` from the
+    /// start, each `width` x `height` bytes, decoded in one pass. At most
+    /// `limit`, fewer when the video ends first. `on_thumb(n)` hears about
+    /// each one as it arrives, since this is the slow part of a long video.
+    pub fn thumbnails(
+        &self,
+        video: &Path,
+        every_ms: u64,
+        (width, height): (u32, u32),
+        limit: usize,
+        on_thumb: &mut dyn FnMut(usize),
+    ) -> Result<Vec<Vec<u8>>, AdapterError> {
+        let mut command = self.command();
+        command
+            .args(["-v", "error", "-i"])
+            .arg(input(video))
+            .args(["-map", "0:v:0", "-vf"])
+            // round=up: the thumbnail for a time is the picture showing at
+            // that time, the one picture_at() seeks to. The default (near)
+            // can take the next frame instead, so a change was found one
+            // sample early and its JPEG still showed the screen before it.
+            .arg(format!(
+                "fps=1000/{}:round=up,{}",
+                every_ms.max(1),
+                picture_filter((width, height), None, Format::Gray)
+            ))
+            .arg("-frames:v")
+            .arg(limit.to_string())
+            .args(Format::Gray.output_args())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|e| self.start_error(e))?;
+        // Read alongside stdout, so a file that makes ffmpeg complain on
+        // every frame cannot fill the pipe and stall it.
+        let mut stderr = child.stderr.take().expect("stderr is piped");
+        let complaints = std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = stderr.read_to_string(&mut text);
+            text
+        });
+        let mut stdout = child.stdout.take().expect("stdout is piped");
+        let mut thumbs = Vec::new();
+        loop {
+            let mut thumb = vec![0u8; width as usize * height as usize];
+            match stdout.read_exact(&mut thumb) {
+                Ok(()) => {
+                    on_thumb(thumbs.len());
+                    thumbs.push(thumb);
+                }
+                // The end of the video, or a part picture ffmpeg gave up on.
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => {
+                    let _ = child.kill();
+                    return Err(AdapterError::Video(format!(
+                        "reading pictures from ffmpeg: {e}"
+                    )));
+                }
+            }
+        }
+        let _ = child.wait();
+        let complaints = complaints.join().unwrap_or_default();
+        if thumbs.is_empty() {
+            return Err(AdapterError::Video(format!(
+                "could not decode {}: {}",
+                video.display(),
+                last_line(&complaints).unwrap_or("ffmpeg gave no pictures")
+            )));
+        }
+        Ok(thumbs)
+    }
+
+    /// One picture of `video` at `at_ms`, scaled to `size` and then cut to
+    /// `crop` (in the scaled picture's pixels) when one is given.
+    pub fn picture_at(
+        &self,
+        video: &Path,
+        at_ms: u64,
+        size: (u32, u32),
+        crop: Option<Crop>,
+        format: Format,
+    ) -> Result<Vec<u8>, AdapterError> {
+        let mut command = self.command();
+        command
+            .args(["-v", "error", "-ss"])
+            .arg(seconds(at_ms))
+            .arg("-i")
+            .arg(input(video))
+            .args(["-map", "0:v:0", "-frames:v", "1", "-vf"])
+            .arg(picture_filter(size, crop, format))
+            .args(format.output_args());
+        let out = self.output(command)?;
+        if out.stdout.is_empty() {
+            let why = String::from_utf8_lossy(&out.stderr);
+            return Err(AdapterError::Video(format!(
+                "could not take the picture at {} in {}: {}",
+                seconds(at_ms),
+                video.display(),
+                last_line(&why).unwrap_or("ffmpeg gave no picture")
+            )));
+        }
+        Ok(out.stdout)
+    }
+
     /// ffmpeg with the options every call shares: no banner, never reading
     /// the terminal, and no console window flashing up on Windows.
     fn command(&self) -> Command {
@@ -111,13 +215,77 @@ impl Ffmpeg {
     }
 
     fn output(&self, mut command: Command) -> Result<Output, AdapterError> {
-        command.output().map_err(|e| {
-            AdapterError::Video(format!(
-                "could not start ffmpeg at {}: {e}",
-                self.path.display()
-            ))
-        })
+        command.output().map_err(|e| self.start_error(e))
     }
+
+    fn start_error(&self, e: std::io::Error) -> AdapterError {
+        AdapterError::Video(format!(
+            "could not start ffmpeg at {}: {e}",
+            self.path.display()
+        ))
+    }
+}
+
+/// What a picture is delivered as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// One byte per pixel, rows top to bottom: what the change test reads.
+    Gray,
+    /// A JPEG, for the model.
+    Jpeg,
+}
+
+impl Format {
+    fn output_args(self) -> [&'static str; 7] {
+        match self {
+            Format::Gray => ["-f", "rawvideo", "-pix_fmt", "gray", "-an", "-sn", "pipe:1"],
+            // q 3 of mjpeg's 2 (best) to 31: text in a screenshot stays
+            // readable at a size a model call can carry 60 of.
+            Format::Jpeg => ["-c:v", "mjpeg", "-q:v", "3", "-f", "image2pipe", "pipe:1"],
+        }
+    }
+}
+
+/// A rectangle cut from a picture, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Crop {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Scale first, so `crop` is in the pixels the caller asked for. Greyscale
+/// is taken before scaling: one plane scales to any size, odd ones included.
+///
+/// A thumbnail samples pixels instead of averaging them. Averaging blurs
+/// small text away, so an address bar whose URL changes reads as still and
+/// is trimmed; sampled, it changes like it did in Chrome's screenshots, which
+/// the change test's thresholds were set against. A JPEG for the model is
+/// averaged, the sharpest way to shrink text a model has to read.
+fn picture_filter((width, height): (u32, u32), crop: Option<Crop>, format: Format) -> String {
+    let mut filter = String::new();
+    let flags = match format {
+        Format::Gray => "neighbor",
+        Format::Jpeg => "area",
+    };
+    if format == Format::Gray {
+        filter.push_str("format=gray,");
+    }
+    filter.push_str(&format!("scale={width}:{height}:flags={flags}"));
+    if let Some(c) = crop {
+        filter.push_str(&format!(",crop={}:{}:{}:{}", c.width, c.height, c.x, c.y));
+    }
+    filter
+}
+
+/// Milliseconds as the seconds ffmpeg's `-ss` takes, exactly.
+fn seconds(ms: u64) -> String {
+    format!("{}.{:03}", ms / 1000, ms % 1000)
+}
+
+fn last_line(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).rfind(|l| !l.is_empty())
 }
 
 /// What [`Ffmpeg::probe`] read from a video.
@@ -376,6 +544,34 @@ At least one output file must be specified
             input(Path::new("clip 10:30.mp4")),
             OsString::from("file:clip 10:30.mp4")
         );
+    }
+
+    #[test]
+    fn a_frame_for_the_model_is_scaled_then_cut_to_what_was_kept() {
+        let crop = Crop {
+            x: 0,
+            y: 12,
+            width: 1280,
+            height: 640,
+        };
+        assert_eq!(
+            picture_filter((1280, 718), Some(crop), Format::Jpeg),
+            "scale=1280:718:flags=area,crop=1280:640:0:12"
+        );
+    }
+
+    #[test]
+    fn a_thumbnail_turns_grey_and_is_sampled_not_averaged() {
+        assert_eq!(
+            picture_filter((128, 71), None, Format::Gray),
+            "format=gray,scale=128:71:flags=neighbor"
+        );
+    }
+
+    #[test]
+    fn a_seek_is_to_the_exact_millisecond() {
+        assert_eq!(seconds(84_270), "84.270");
+        assert_eq!(seconds(5), "0.005");
     }
 
     #[test]
