@@ -32,6 +32,10 @@ pub mod egress_linux;
 #[cfg(all(windows, any(feature = "agent", feature = "sap-com")))]
 pub mod egress_windows;
 
+// Not gated: reading a screen recording needs no browser, whatever app the
+// recording shows.
+pub mod ffmpeg;
+
 // Filesystem OBSERVATION. Cross-platform like `egress`, and for the same
 // reason: the "nothing was observed" path must compile and be exercised on
 // every OS, even though only Linux has a mechanism to observe with.
@@ -140,6 +144,10 @@ pub enum AdapterError {
     /// [`NO_BROWSER`]; the web adapter's tests hold the two together.
     #[error("no browser found: {0}")]
     NoBrowser(String),
+    /// No ffmpeg to read a video with. It ships with flowproof, so this is
+    /// an install that lost it, or a `FLOWPROOF_FFMPEG` naming nothing.
+    #[error("no ffmpeg found: {0}")]
+    NoFfmpeg(String),
 }
 
 /// Names of the adapters compiled into this build.
