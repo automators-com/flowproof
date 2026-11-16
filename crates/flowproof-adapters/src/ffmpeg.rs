@@ -251,7 +251,7 @@ mod tests {
             None,
             only(&["/opt/ff/ffmpeg", "/app/ffmpeg"]),
         );
-        assert_eq!(found.unwrap(), PathBuf::from("/opt/ff/ffmpeg"));
+        assert_eq!(found.expect("found"), PathBuf::from("/opt/ff/ffmpeg"));
     }
 
     #[test]
@@ -262,7 +262,7 @@ mod tests {
             None,
             only(&["/app/ffmpeg"]),
         )
-        .unwrap_err();
+        .expect_err("fails");
         assert!(err.to_string().contains("FLOWPROOF_FFMPEG"), "{err}");
     }
 
@@ -274,7 +274,7 @@ mod tests {
             search_path(&["/usr/bin"]),
             |p| p == Path::new("/app").join(BINARY) || p == Path::new("/usr/bin").join(BINARY),
         );
-        assert_eq!(found.unwrap(), PathBuf::from("/app").join(BINARY));
+        assert_eq!(found.expect("found"), PathBuf::from("/app").join(BINARY));
     }
 
     #[test]
@@ -285,7 +285,7 @@ mod tests {
             search_path(&["/a", "/b", "/c"]),
             |p| p == Path::new("/b").join(BINARY) || p == Path::new("/c").join(BINARY),
         );
-        assert_eq!(found.unwrap(), PathBuf::from("/b").join(BINARY));
+        assert_eq!(found.expect("found"), PathBuf::from("/b").join(BINARY));
     }
 
     /// A Windows Game Bar style recording, as ffmpeg 9 describes it.
@@ -300,7 +300,7 @@ At least one output file must be specified
     #[test]
     fn a_recording_reads_as_its_length_size_and_codec() {
         assert_eq!(
-            parse_probe(H264_MP4).unwrap(),
+            parse_probe(H264_MP4).expect("parses"),
             Probe {
                 duration_ms: 84_370,
                 width: 1914,
@@ -319,7 +319,7 @@ At least one output file must be specified
   Stream #0:0[0x1](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, stereo, fltp, 128 kb/s (default)
   Stream #0:1[0x2](und): Video: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv, bt709), 1920x1080, 7800 kb/s, 60 fps (default)
 ";
-        let read = parse_probe(text).unwrap();
+        let read = parse_probe(text).expect("parses");
         assert_eq!(
             (read.codec.as_str(), read.width, read.height),
             ("hevc", 1920, 1080)
@@ -335,7 +335,7 @@ At least one output file must be specified
   Duration: N/A, start: 0.000000, bitrate: N/A
   Stream #0:0(eng): Video: vp8, yuv420p(progressive), 320x180, SAR 1:1 DAR 16:9, 15 fps, 15 tbr, 1k tbn (default)
 ";
-        let read = parse_probe(text).unwrap();
+        let read = parse_probe(text).expect("parses");
         assert_eq!(read.duration_ms, 0);
         assert_eq!(
             (read.codec.as_str(), read.width, read.height),
@@ -347,7 +347,7 @@ At least one output file must be specified
     fn a_file_that_is_not_a_video_says_why_without_the_path() {
         let err =
             parse_probe("file:/Users/me/notes.txt: Invalid data found when processing input\n")
-                .unwrap_err();
+                .expect_err("fails");
         assert_eq!(err, "Invalid data found when processing input");
     }
 
@@ -357,7 +357,10 @@ At least one output file must be specified
   Duration: 00:00:30.00, start: 0.000000, bitrate: 128 kb/s
   Stream #0:0: Audio: mp3 (mp3float), 44100 Hz, stereo, fltp, 128 kb/s
 ";
-        assert_eq!(parse_probe(text).unwrap_err(), "it has no video in it");
+        assert_eq!(
+            parse_probe(text).expect_err("fails"),
+            "it has no video in it"
+        );
     }
 
     #[test]
@@ -377,7 +380,7 @@ At least one output file must be specified
 
     #[test]
     fn no_ffmpeg_anywhere_says_how_to_get_one() {
-        let err = pick(None, None, search_path(&["/a"]), |_| false).unwrap_err();
+        let err = pick(None, None, search_path(&["/a"]), |_| false).expect_err("fails");
         assert!(matches!(err, AdapterError::NoFfmpeg(_)));
         assert!(err.to_string().contains("Reinstall flowproof"), "{err}");
     }
