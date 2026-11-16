@@ -1,9 +1,11 @@
 #![cfg(feature = "web")]
 
 //! A recording made in the browser itself: four seconds of a canvas that
-//! changes colour once a second, captured with MediaRecorder. A webm from
-//! MediaRecorder states no length, the case `video_frames` has to visit the
-//! end of the file to learn - and it needs no video checked into the repo.
+//! changes colour once a second, captured with MediaRecorder, then read back
+//! by ffmpeg the way `author-from-video` reads one. A webm from MediaRecorder
+//! states no length, the case `video_frames` has to read the file to the end
+//! to learn - and it needs no video checked into the repo. Chrome only makes
+//! the recording; the ffmpeg comes from FLOWPROOF_FFMPEG or PATH here.
 
 const RECORDER: &str = r#"(async () => {
     const canvas = document.createElement('canvas');
