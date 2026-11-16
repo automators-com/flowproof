@@ -46,9 +46,15 @@ jobs:
             *)   echo "::error::unexpected HTTP $code from the npm registry — refusing to guess"; exit 1 ;;
           esac
 
+  # The decode-only ffmpeg each platform package carries beside its binary,
+  # where `author-from-video` looks for it first (#818).
+  ffmpeg:
+    needs: guard
+    uses: ./.github/workflows/ffmpeg.yml
+
   binaries:
     name: build + publish ${{ matrix.pkg }}
-    needs: guard
+    needs: [guard, ffmpeg]
     strategy:
       # The platform packages are SCOPED (@automators/...) because the
       # unscoped names were not publishable: npm answered
@@ -130,6 +136,10 @@ jobs:
           else
             cargo build --release -p flowproof-cli
           fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-${{ matrix.os_field }}-${{ matrix.cpu_field }}
+          path: dist-npm
       - name: Assemble the platform package
         shell: bash
         run: |
@@ -147,6 +157,12 @@ jobs:
           # publish as: a silently-native build would install and then fail
           # to exec on the user's machine.
           file dist-npm/${{ matrix.bin }} || true
+          # ffmpeg ships beside the binary; artifacts lose the execute bit.
+          ffmpeg=ffmpeg
+          if [ "$os_field" = win32 ]; then ffmpeg=ffmpeg.exe; fi
+          test -f "dist-npm/$ffmpeg" && test -f dist-npm/ffmpeg-licenses.txt
+          chmod +x "dist-npm/$ffmpeg"
+          file "dist-npm/$ffmpeg" || true
           node -e "
             const fs = require('fs');
             fs.writeFileSync('dist-npm/package.json', JSON.stringify({
@@ -155,9 +171,11 @@ jobs:
               description: 'flowproof CLI native binary for ' + '$os_field' + '-' + '$cpu_field',
               os: ['$os_field'],
               cpu: ['$cpu_field'],
-              files: ['${{ matrix.bin }}'],
+              files: ['${{ matrix.bin }}', '$ffmpeg', 'ffmpeg-licenses.txt'],
               repository: { type: 'git', url: 'git+https://github.com/automators-com/flowproof.git' },
-              license: 'Apache-2.0'
+              // flowproof is Apache-2.0; the ffmpeg beside it is LGPL and its
+              // AV1 decoder (dav1d) BSD, with both texts in ffmpeg-licenses.txt.
+              license: '(Apache-2.0 AND LGPL-2.1-or-later AND BSD-2-Clause)'
             }, null, 2));
           "
       - name: Publish the platform package
