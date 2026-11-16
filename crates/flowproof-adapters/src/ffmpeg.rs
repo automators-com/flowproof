@@ -112,8 +112,12 @@ impl Ffmpeg {
             .args(["-v", "error", "-i"])
             .arg(input(video))
             .args(["-map", "0:v:0", "-vf"])
+            // round=up: the thumbnail for a time is the picture showing at
+            // that time, the one picture_at() seeks to. The default (near)
+            // can take the next frame instead, so a change was found one
+            // sample early and its JPEG still showed the screen before it.
             .arg(format!(
-                "fps=1000/{},{}",
+                "fps=1000/{}:round=up,{}",
                 every_ms.max(1),
                 picture_filter((width, height), None, Format::Gray)
             ))
