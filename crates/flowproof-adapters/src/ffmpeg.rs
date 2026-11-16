@@ -253,12 +253,22 @@ pub struct Crop {
 
 /// Scale first, so `crop` is in the pixels the caller asked for. Greyscale
 /// is taken before scaling: one plane scales to any size, odd ones included.
+///
+/// A thumbnail samples pixels instead of averaging them. Averaging blurs
+/// small text away, so an address bar whose URL changes reads as still and
+/// is trimmed; sampled, it changes like it did in Chrome's screenshots, which
+/// the change test's thresholds were set against. A JPEG for the model is
+/// averaged, the sharpest way to shrink text a model has to read.
 fn picture_filter((width, height): (u32, u32), crop: Option<Crop>, format: Format) -> String {
     let mut filter = String::new();
+    let flags = match format {
+        Format::Gray => "neighbor",
+        Format::Jpeg => "area",
+    };
     if format == Format::Gray {
         filter.push_str("format=gray,");
     }
-    filter.push_str(&format!("scale={width}:{height}:flags=area"));
+    filter.push_str(&format!("scale={width}:{height}:flags={flags}"));
     if let Some(c) = crop {
         filter.push_str(&format!(",crop={}:{}:{}:{}", c.width, c.height, c.x, c.y));
     }
@@ -547,10 +557,10 @@ At least one output file must be specified
     }
 
     #[test]
-    fn a_thumbnail_turns_grey_before_it_is_scaled() {
+    fn a_thumbnail_turns_grey_and_is_sampled_not_averaged() {
         assert_eq!(
             picture_filter((128, 71), None, Format::Gray),
-            "format=gray,scale=128:71:flags=area"
+            "format=gray,scale=128:71:flags=neighbor"
         );
     }
 
