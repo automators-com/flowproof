@@ -1,0 +1,55 @@
+name: ffmpeg
+
+# The decode-only ffmpeg that ships beside the flowproof binary (#818), built
+# by scripts/ffmpeg/build.sh for every platform flowproof ships on. Called by
+# the npm and PyPI publish workflows and by CI's web E2E job, each of which
+# downloads the `ffmpeg-<platform>` artifact it needs. A build is cached on
+# the script's hash, so it only runs again when the script (and with it the
+# pinned versions) changes.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ffmpeg (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            os: ubuntu-latest
+          # Cross-compiled with mingw-w64: no Windows toolchain to set up.
+          - platform: win32-x64
+            os: ubuntu-latest
+          - platform: darwin-arm64
+            os: macos-latest
+          # Cross-compiled from Apple Silicon, like the CLI itself (see the
+          # darwin-x64 leg in publish-npm.yml for why not an Intel runner).
+          - platform: darwin-x64
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: dist-ffmpeg
+          key: ffmpeg-${{ matrix.platform }}-${{ hashFiles('scripts/ffmpeg/**') }}
+      - name: Install the build tools (Linux)
+        if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm meson ninja-build pkg-config mingw-w64
+      - name: Install the build tools (macOS)
+        if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'macOS'
+        run: brew install nasm meson ninja pkgconf
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: scripts/ffmpeg/build.sh ${{ matrix.platform }} dist-ffmpeg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-${{ matrix.platform }}
+          path: dist-ffmpeg/
+          if-no-files-found: error

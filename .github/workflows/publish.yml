@@ -54,9 +54,14 @@ jobs:
             *)   echo "::error::unexpected HTTP $code from PyPI — refusing to guess; re-run when the index answers"; exit 1 ;;
           esac
 
+  # The decode-only ffmpeg each wheel carries for `author-from-video` (#818).
+  ffmpeg:
+    needs: guard
+    uses: ./.github/workflows/ffmpeg.yml
+
   # The wheel embeds the Rust engine, so each platform builds its own.
   build:
-    needs: guard
+    needs: [guard, ffmpeg]
     name: build (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -64,10 +69,13 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: dist-linux
+            ffmpeg: linux-x64
           - os: windows-latest
             artifact: dist-windows
+            ffmpeg: win32-x64
           - os: macos-latest
             artifact: dist-macos
+            ffmpeg: darwin-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -89,6 +97,17 @@ jobs:
           command: sdist
           args: --out dist
 
+      # After the sdist, which stays source only. The engine runs inside
+      # Python, so there is no binary to sit beside: flowproof/__init__.py
+      # points FLOWPROOF_FFMPEG at this copy instead.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-${{ matrix.ffmpeg }}
+          path: sdk/python/flowproof/bin
+      - name: Keep ffmpeg executable
+        shell: bash
+        run: chmod +x sdk/python/flowproof/bin/ffmpeg*
+
       # maturin-action builds the Linux wheel inside a manylinux container —
       # PyPI rejects raw `linux_x86_64` platform tags. On windows/macos it
       # runs maturin natively (the manylinux input is ignored there).
@@ -99,6 +118,21 @@ jobs:
           command: build
           args: --release --out dist
           manylinux: auto
+
+      - name: The wheel carries ffmpeg
+        shell: bash
+        working-directory: sdk/python
+        run: |
+          python - <<'EOF'
+          import glob, zipfile
+          wheels = glob.glob("dist/*.whl")
+          assert wheels, "no wheel was built"
+          for wheel in wheels:
+              names = zipfile.ZipFile(wheel).namelist()
+              assert any(n.startswith("flowproof/bin/ffmpeg") for n in names), f"no ffmpeg in {wheel}"
+              assert "flowproof/bin/ffmpeg-licenses.txt" in names, f"no ffmpeg licences in {wheel}"
+              print(wheel, "carries ffmpeg")
+          EOF
 
       - uses: actions/upload-artifact@v4
         with:
