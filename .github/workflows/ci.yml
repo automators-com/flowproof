@@ -226,9 +226,21 @@ jobs:
   # 300+ tests including mock-driver record/replay) runs on every PR; this
   # real-browser/real-OCR proof runs on push to `main`, nightly, and on
   # demand for a PR labelled `full-ci`.
+  # The ffmpeg that ships with flowproof, for the video test below: it reads
+  # recordings with exactly what users get. Cached, so this costs a download
+  # unless scripts/ffmpeg/ changed.
+  ffmpeg:
+    needs: scope
+    if: >-
+      needs.scope.outputs.engine == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'schedule' ||
+       contains(github.event.pull_request.labels.*.name, 'full-ci'))
+    uses: ./.github/workflows/ffmpeg.yml
+
   e2e-web:
     name: web E2E (ubuntu)
-    needs: scope
+    needs: [scope, ffmpeg]
     if: >-
       needs.scope.outputs.engine == 'true' &&
       (github.event_name == 'push' ||
@@ -237,6 +249,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-linux-x64
+          path: ${{ runner.temp }}/ffmpeg
+      - run: chmod +x "$RUNNER_TEMP/ffmpeg/ffmpeg"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # --test-threads=1: each test launches its own Chromium; running them
@@ -256,6 +273,7 @@ jobs:
         env:
           FLOWPROOF_E2E: "1"
           CHROME: /usr/bin/google-chrome
+          FLOWPROOF_FFMPEG: ${{ runner.temp }}/ffmpeg/ffmpeg
       - name: Recorded selectors find their element again after a reload
         run: cargo test -p flowproof-adapters --features web --test replayable_selectors_e2e -- --nocapture --test-threads=1
         env:
