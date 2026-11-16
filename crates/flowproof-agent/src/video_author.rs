@@ -1,6 +1,6 @@
 //! Draft a `.flow.yaml` spec from the frames of a screen recording. The
-//! frames themselves come from the caller (the CLI decodes the video in the
-//! browser web flows already use); this module turns them into a draft with
+//! frames themselves come from the caller (the CLI decodes the video with the
+//! ffmpeg that ships with flowproof); this module turns them into a draft with
 //! one model call that sees every frame at once, so nothing that happens
 //! across two frames is lost the way it is when a video is described in
 //! separate clips.

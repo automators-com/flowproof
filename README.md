@@ -397,8 +397,8 @@ a `.flow.yaml` from a requirement/test-case PDF, then resolve it with one
 live `record` pass ([the authoring grammar](docs/authoring/index.md)).
 `flowproof author-from-code` drafts one from an outcome and the app's source,
 each step citing the line of code it came from.
-`flowproof author-from-video` drafts one from a screen recording, read in the
-browser web flows already use.
+`flowproof author-from-video` drafts one from a screen recording, read with
+the ffmpeg that ships with flowproof.
 
 **Export**: `flowproof export` converts a recorded trace to another tool's
 test format (today the Tosca migrator's test-case JSON). Steps the target
