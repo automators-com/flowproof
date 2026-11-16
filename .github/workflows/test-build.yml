@@ -1,0 +1,29 @@
+name: test build (do not merge)
+
+# Throwaway: builds the macOS arm64 CLI with the bundled ffmpeg beside it,
+# to test #841 + #842 by hand before either merges. Never merged.
+on:
+  pull_request:
+
+jobs:
+  ffmpeg:
+    if: github.head_ref == 'test/ffmpeg-cli-build'
+    uses: ./.github/workflows/ffmpeg.yml
+
+  cli:
+    needs: ffmpeg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p flowproof-cli
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-darwin-arm64
+          path: out
+      - run: cp target/release/flowproof out/ && chmod +x out/flowproof out/ffmpeg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flowproof-darwin-arm64
+          path: out/
