@@ -148,6 +148,10 @@ pub enum AdapterError {
     /// an install that lost it, or a `FLOWPROOF_FFMPEG` naming nothing.
     #[error("no ffmpeg found: {0}")]
     NoFfmpeg(String),
+    /// ffmpeg ran but could not read the video, said in words a person can
+    /// act on.
+    #[error("{0}")]
+    Video(String),
 }
 
 /// Names of the adapters compiled into this build.
