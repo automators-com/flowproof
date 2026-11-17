@@ -6,12 +6,69 @@ together).
 
 ## Unreleased
 
+## 0.23.35
+
+- **Drafting from a screen recording no longer needs a browser.**
+  `author-from-video` read a recording by playing it in Chrome or Edge, so it
+  read only what that browser could play: a Chromium build without proprietary
+  codecs could not open an H.264 `.mp4` at all (#838), OBS `.mkv` and `.avi`
+  files were hit and miss, and the error advised re-exporting as H.264 even when
+  the file already was. It also tied a recording of SAP GUI or a desktop app to
+  a browser it had nothing to do with. Recordings are now read by a decode-only
+  ffmpeg that ships with flowproof: H.264, VP8/VP9, AV1 and ProRes in `.mp4`,
+  `.mov`, `.webm`, `.mkv` or `.avi`, decoded in one pass instead of one seek and
+  screenshot per sample. HEVC (H.265) is left out of that build on purpose and
+  says to export as H.264; `--check` now fails on a file it can describe but not
+  decode. `FLOWPROOF_FFMPEG` points at another ffmpeg.
+
 - **`author-from-video` refuses a video that shows no app being used.**
   Driving footage, a film, a recorded talk or an empty screen used to come back
   as a "draft" whose only step was the model's note that no app was visible.
   It now fails with `the video shows no app being used: <what it shows>` and
   writes no file. A reply with no action at all, only flagged or out-of-scope
   lines, is refused the same way (as "no steps were read").
+
+- **Typing into a terminal's fields over pixels lands in the field, and a value
+  that never arrived fails the step.** A host terminal draws a field as a plain
+  fill on the line under its label, with no border. Vision looked for a bordered
+  box beside the label, so it typed beside the label onto protected text, where
+  the terminal drops keystrokes. The trace also recorded the field as
+  `right_of`, so replay went to the same wrong place. Such a field is now found
+  as a fill, below its label as well as beside it, and entered at its first
+  character rather than its middle: a click mid-field put the cursor halfway in,
+  and the rest of the value spilled into the next field. The recording says
+  `below`, so replay types where recording did. A click on such a label is
+  likewise a click into its field: the field has no text of its own, so the
+  model clicked the label, and the cursor sat on protected text. The model could
+  also type a value one key at a time, and no single key press is checked
+  because it may be a hotkey that shows nothing. Eight digits typed onto a label
+  then vanished, and the recording passed with the field empty. On vision, a run
+  of key presses is now typed as text, and like any typed value it must appear
+  on screen or the step fails (#846).
+
+- **A terminal's status line no longer stops a vision recording as the previous
+  step's failure.** A host screen can show a standing message for as long as its
+  input is incomplete, such as `1/01 :Eingabe unvollständig`. The authoring
+  model reported that line as a problem the previous step had left behind.
+  Recording stopped at the next step, with advice to add a wait that could never
+  help. On vision, a "previous step left a problem" report is now only believed
+  when the screen bears it out. It is refused when the quoted words were already
+  showing before the previous step ran, when the screen does not show them at
+  all, or on a flow's first step, where nothing has run yet. The comparison
+  tolerates how OCR misreads a terminal font: dropped umlauts, `0`/`O`, `1`/`l`
+  and spacing. A refused report does not use up the retry the step may need, and
+  the model is told up front that standing messages are not failures. Reports of
+  text the previous step did bring still stop the recording. Their hint no
+  longer calls them a loading race: it says the screen still shows a problem and
+  to check that step first (#846).
+
+- **A trace's recording-bundle path now resolves the same on every OS.** A trace
+  header's `recording.dir` is `/`-delimited by contract, which the format now
+  says, and `heal` reads it one `/`-separated segment at a time, joined with the
+  host's separator, instead of handing the raw string to `Path::join`. A trace
+  recorded on Windows finds its filmstrip on macOS or Linux, and the reverse,
+  without depending on how each OS parses the string. A `dir` that leaves the
+  trace directory still resolves to no frames.
 
 ## 0.23.34
 
