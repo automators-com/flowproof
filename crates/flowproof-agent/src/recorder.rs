@@ -4292,7 +4292,15 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // replay follows the recorded relation exactly.
                     let unplaced = step_app == "vision" && targeted().relation.is_none();
                     let below = || targeted().clone().with_relation(Some("below".into()));
-                    landed_below = unplaced && referenced && fields_below_labels;
+                    // A field the screen draws under its label is typed into
+                    // there first, and recorded so (#846): typing beside the
+                    // label first puts the keystrokes on a terminal's
+                    // protected text, and a trace stamped with the default
+                    // right_of sent replay there too.
+                    landed_below = unplaced
+                        && ((referenced && fields_below_labels)
+                            || driver.field_below_label(targeted())?);
+                    fields_below_labels |= landed_below;
                     if landed_below {
                         driver.type_text(&below(), &value)?;
                     } else {
@@ -4363,7 +4371,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // and is recorded so replay clears the same place.
                     landed_below = step_app == "vision"
                         && targeted().relation.is_none()
-                        && fields_below_labels;
+                        && (fields_below_labels || driver.field_below_label(targeted())?);
                     if landed_below {
                         driver
                             .clear_text(&targeted().clone().with_relation(Some("below".into())))?
@@ -5808,6 +5816,34 @@ mod tests {
             .expect("the status line is not the first step's failure");
         assert_eq!(client.prompts.len(), 2, "refused once, then authored");
         assert_eq!(driver.invoked, vec!["BelDat".to_string()]);
+        std::fs::remove_file(out).ok();
+    }
+
+    /// #846: a terminal draws a label's field on the line under it. The
+    /// recorder types there first and records `below`, so replay types in
+    /// the same place instead of beside the label, where the default
+    /// `right_of` would send it.
+    #[test]
+    fn a_field_drawn_under_its_label_is_recorded_below() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: Erfassung\nsteps:\n  - Type 120345678 into the \"BelDat\" field\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            fields_below: vec!["BelDat".into()],
+            ..MockAppDriver::new(&["BelDat"])
+        };
+        let out = std::env::temp_dir().join("flowproof-field-below-label.trace.jsonl");
+        record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Rules,
+            None::<&mut CountingClient>,
+        )
+        .expect("records");
+        let trace = std::fs::read_to_string(&out).expect("trace");
+        assert!(trace.contains(r#""relation":"below""#), "{trace}");
         std::fs::remove_file(out).ok();
     }
 

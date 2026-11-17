@@ -1838,6 +1838,20 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
         self.screen.frame().map(Some)
     }
 
+    fn field_below_label(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        if selector.relation.is_some() {
+            return Ok(false);
+        }
+        let Some(hit) = self.resolve(selector)? else {
+            return Ok(false);
+        };
+        if self.drawn_field_at(&hit, selector, "right_of")?.is_some() {
+            return Ok(false);
+        }
+        let below = selector.clone().with_relation(Some("below".into()));
+        Ok(self.drawn_field_at(&hit, &below, "below")?.is_some())
+    }
+
     fn element_rect(&mut self, selector: &UiaSelector) -> Result<Option<PixelRect>, DriverError> {
         let Some(line) = self.resolve(selector)? else {
             return Ok(None);
@@ -3317,6 +3331,10 @@ mod tests {
         let mut d = VisionAppDriver::with_parts(
             FakeScreen::with_frames(vec![frame]),
             FakeOcr::with_lines(vec![OcrLine::new("BelDat", (20, 20, 54, 14))]),
+        );
+        assert!(
+            d.field_below_label(&anchor("BelDat")).expect("asks"),
+            "the recorder is told the field is below, so the trace says so"
         );
         d.type_text(&anchor("BelDat"), "120345678").expect("types");
         let (cx, cy) = d.screen.clicks[0];

@@ -207,6 +207,7 @@ impl AppDriver for SurfaceRegistry {
     // it in step with that impl (the defaulted-method test guards one).
     route_to_active! {
         fn cell_hints(&mut self, selector: &UiaSelector) -> Result<Option<CellHints>, DriverError>;
+        fn field_below_label(&mut self, selector: &UiaSelector) -> Result<bool, DriverError>;
         fn scope_hints(&mut self, selector: &UiaSelector) -> Result<Option<ScopeHints>, DriverError>;
         fn a11y_hint(&mut self, selector: &UiaSelector) -> Result<Option<A11yHints>, DriverError>;
         fn fingerprint(&mut self, selector: &UiaSelector) -> Result<Option<flowproof_trace::format::Fingerprint>, DriverError>;
