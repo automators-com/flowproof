@@ -641,6 +641,7 @@ pub fn filled_field(frame: &RgbaImage, label: PixelRect, relation: &str) -> Opti
     let mut first = None;
     let mut fill = background;
     let mut last = None;
+    let mut ended = false;
     for at in start..limit {
         let Some((colour, share)) = line(at) else {
             break;
@@ -653,7 +654,10 @@ pub fn filled_field(frame: &RgbaImage, label: PixelRect, relation: &str) -> Opti
             }
             // Typed text inside the field thins its colour's share of a line.
             Some(_) if distance(colour, fill) <= SAME_COLOUR && share >= 0.4 => last = Some(at),
-            Some(_) => break,
+            Some(_) => {
+                ended = true;
+                break;
+            }
             None => {}
         }
     }
@@ -661,6 +665,12 @@ pub fn filled_field(frame: &RgbaImage, label: PixelRect, relation: &str) -> Opti
     let thickness = last - first + 1;
     // A field is about a line of text tall (below) - not a hairline, not a panel.
     if below && !(lh / 2..=3 * lh).contains(&thickness) {
+        return None;
+    }
+    // ...and it ends: a band that runs on past the search is the page
+    // around a button, not a field. Taken for one, a click on the button
+    // would go under it.
+    if below && !ended {
         return None;
     }
     // Beside the label, a field is a solid run at least a glyph-height wide.
@@ -808,6 +818,19 @@ mod tests {
             "text on the next line is not a field"
         );
         assert!(filled_field(&img, (20, 40, 54, 14), "inside").is_none());
+    }
+
+    /// A button's text on a page of another colour: under the text the page
+    /// runs on, and that is no field.
+    #[test]
+    fn the_page_under_a_button_is_not_a_field_below_it() {
+        let mut img = RgbaImage::from_pixel(300, 200, Rgba([255, 255, 255, 255]));
+        for y in 30..56 {
+            for x in 20..120 {
+                img.put_pixel(x, y, Rgba([40, 90, 200, 255]));
+            }
+        }
+        assert!(filled_field(&img, (40, 36, 50, 14), "below").is_none());
     }
 
     /// Characters already typed into the field do not hide it.
