@@ -573,7 +573,18 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             hit = self.require(selector)?;
             point = Self::action_point(&hit, selector, default_relation);
         }
-        if let Some(field) = self.drawn_field(&hit, selector, default_relation)? {
+        let mut field = self.drawn_field(&hit, selector, default_relation)?;
+        // A field addressed by its label, with no relation recorded, and none
+        // drawn beside the label: when one is drawn under it, that is the
+        // field. On a host terminal the field sits on the next line, and
+        // typing beside the label first put the keystrokes on protected text -
+        // which a real terminal answers by locking the keyboard, so the
+        // retry below it would type into a locked screen (#846).
+        if field.is_none() && selector.relation.is_none() && default_relation == "right_of" {
+            let below = selector.clone().with_relation(Some("below".into()));
+            field = self.drawn_field(&hit, &below, "below")?;
+        }
+        if let Some(field) = field {
             vision_log(|| format!("[{selector}] field drawn at {field:?} - acting inside it"));
             point = (field.0 + field.2 as i32 / 2, field.1 + field.3 as i32 / 2);
         }
@@ -607,9 +618,12 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let frame = self.screen.frame()?;
         let text: Vec<PixelRect> = self.read(&frame, 1)?.iter().map(|l| l.rect).collect();
         let elements = crate::vision_elements::detect(&frame, &text);
-        Ok(crate::vision_elements::field_box(
-            &elements, hit.rect, relation,
-        ))
+        // A bordered box first; failing that, a field drawn as a fill with no
+        // border - a host terminal's - which the edge map cannot see (#846).
+        Ok(
+            crate::vision_elements::field_box(&elements, hit.rect, relation)
+                .or_else(|| crate::vision_elements::filled_field(&frame, hit.rect, relation)),
+        )
     }
 
     /// Match a text anchor over BOTH granularities, strongest first:
@@ -3262,6 +3276,35 @@ mod tests {
         assert!(
             (290..=310).contains(&cx) && (24..=32).contains(&cy),
             "{cx},{cy}"
+        );
+    }
+
+    /// A host terminal's field: a white fill with no border on the line under
+    /// its label, on a grey screen (#846). Nothing is drawn beside the label,
+    /// so typing goes straight into the field below - never onto the protected
+    /// text beside the label, which a real terminal answers by locking.
+    #[test]
+    fn typing_by_a_label_with_its_field_filled_in_below_lands_in_that_field() {
+        let mut frame = RgbaImage::from_pixel(400, 200, image::Rgba([240, 240, 240, 255]));
+        for y in 22..32 {
+            for i in 0..8 {
+                frame.put_pixel(22 + i * 6, y, image::Rgba([20, 20, 20, 255]));
+            }
+        }
+        for y in 39..57 {
+            for x in 20..100 {
+                frame.put_pixel(x, y, image::Rgba([255, 255, 255, 255]));
+            }
+        }
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![frame]),
+            FakeOcr::with_lines(vec![OcrLine::new("BelDat", (20, 20, 54, 14))]),
+        );
+        d.type_text(&anchor("BelDat"), "120345678").expect("types");
+        let (cx, cy) = d.screen.clicks[0];
+        assert!(
+            (20..100).contains(&cx) && (39..57).contains(&cy),
+            "the click lands inside the white field: {cx},{cy}"
         );
     }
 

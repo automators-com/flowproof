@@ -2249,7 +2249,8 @@ mod tests {
     /// the attempt a normal grounding correction needs (#846).
     #[test]
     fn refusals_do_not_use_up_the_retry() {
-        let insist = r#"{"action":"previous_step_incomplete","evidence":"1/01 :Eingabe unvollständig"}"#;
+        let insist =
+            r#"{"action":"previous_step_incomplete","evidence":"1/01 :Eingabe unvollständig"}"#;
         let mut client = Recording {
             replies: vec![
                 insist.into(),

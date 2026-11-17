@@ -575,10 +575,230 @@ pub fn field_box(elements: &[Element], label: PixelRect, relation: &str) -> Opti
         .map(|(_, r)| r)
 }
 
+/// A borderless input field drawn as a fill - a host terminal's white field
+/// on grey - next to its label, for when [`field_box`] finds nothing. Its
+/// edge is a step of 10-20 brightness levels, under [`EDGE_STEP`], so the edge
+/// map never sees it, and `below` fell back to a web-form guess that, on a
+/// terminal, aimed at the top edge of the line UNDER the field: the click put
+/// the cursor on protected text and the typed value went nowhere (#846).
+///
+/// The field is the first run of lines (`below`: rows under the label,
+/// across its width; `right_of`: columns after it, across its height) whose
+/// dominant colour is not the label's own background, followed while that
+/// colour holds - by colour, not by edges, so Citrix's rescaling, which
+/// softens edges, does not defeat it. Text on the next line in the label's
+/// background colour is not a field: `None`, and the caller keeps its guess.
+pub fn filled_field(frame: &RgbaImage, label: PixelRect, relation: &str) -> Option<PixelRect> {
+    let (fw, fh) = (frame.width() as i32, frame.height() as i32);
+    let (lx, ly, lw, lh) = label;
+    let (lw, lh) = (lw as i32, lh as i32);
+    if lw < 1 || lh < 1 || lx < 0 || ly < 0 || lx + lw > fw || ly + lh > fh {
+        return None;
+    }
+    let pixel = |x: i32, y: i32| {
+        let [r, g, b, _] = frame.get_pixel(x as u32, y as u32).0;
+        [i32::from(r), i32::from(g), i32::from(b)]
+    };
+    let distance = |a: [i32; 3], b: [i32; 3]| (0..3).map(|i| (a[i] - b[i]).abs()).sum::<i32>();
+    // The most common colour among `points`, and its share of them, colours
+    // within `SAME_COLOUR` of each other counted as one.
+    let dominant = |points: &mut dyn Iterator<Item = (i32, i32)>| -> Option<([i32; 3], f32)> {
+        let mut seen: Vec<([i32; 3], usize)> = Vec::new();
+        let mut total = 0;
+        for (x, y) in points {
+            total += 1;
+            let c = pixel(x, y);
+            match seen
+                .iter_mut()
+                .find(|(k, _)| distance(*k, c) <= SAME_COLOUR)
+            {
+                Some((_, n)) => *n += 1,
+                None => seen.push((c, 1)),
+            }
+        }
+        let (colour, n) = seen.into_iter().max_by_key(|(_, n)| *n)?;
+        Some((colour, n as f32 / total.max(1) as f32))
+    };
+    let (background, _) =
+        dominant(&mut (ly..ly + lh).flat_map(|y| (lx..lx + lw).map(move |x| (x, y))))?;
+    // A line across the span, at `at`: rows for below, columns for right_of.
+    let below = relation == "below";
+    if !below && relation != "right_of" {
+        return None;
+    }
+    let (start, limit) = if below {
+        (ly + lh, (ly + lh + 3 * lh.max(10)).min(fh))
+    } else {
+        (lx + lw, (lx + lw + 12 * lh.max(10)).min(fw))
+    };
+    let line = |at: i32| -> Option<([i32; 3], f32)> {
+        if below {
+            dominant(&mut (lx..lx + lw).map(move |x| (x, at)))
+        } else {
+            dominant(&mut (ly..ly + lh).map(move |y| (at, y)))
+        }
+    };
+    let mut first = None;
+    let mut fill = background;
+    let mut last = None;
+    for at in start..limit {
+        let Some((colour, share)) = line(at) else {
+            break;
+        };
+        match first {
+            None if distance(colour, background) > SAME_COLOUR && share >= 0.6 => {
+                first = Some(at);
+                fill = colour;
+                last = Some(at);
+            }
+            // Typed text inside the field thins its colour's share of a line.
+            Some(_) if distance(colour, fill) <= SAME_COLOUR && share >= 0.4 => last = Some(at),
+            Some(_) => break,
+            None => {}
+        }
+    }
+    let (first, last) = (first?, last?);
+    let thickness = last - first + 1;
+    // A field is about a line of text tall (below) - not a hairline, not a panel.
+    if below && !(lh / 2..=3 * lh).contains(&thickness) {
+        return None;
+    }
+    // Along the field: from the label's span outwards while the fill holds,
+    // stepping over characters already typed into it.
+    let middle = if below {
+        (first + last) / 2
+    } else {
+        ly + lh / 2
+    };
+    let is_fill = |x: i32| distance(pixel(x, middle), fill) <= SAME_COLOUR;
+    let gap = lh.max(10);
+    let (from, to) = if below {
+        (lx, lx + lw)
+    } else {
+        (first, last + 1)
+    };
+    let mut left = from;
+    let mut miss = 0;
+    let mut x = from - 1;
+    while x >= 0 && miss <= gap {
+        if is_fill(x) {
+            left = x;
+            miss = 0;
+        } else {
+            miss += 1;
+        }
+        x -= 1;
+    }
+    let mut right = to - 1;
+    let mut miss = 0;
+    let mut x = to;
+    while x < fw && miss <= gap {
+        if is_fill(x) {
+            right = x;
+            miss = 0;
+        } else {
+            miss += 1;
+        }
+        x += 1;
+    }
+    if below {
+        // The fill itself under the label, not a background-coloured gap.
+        let (l, r) = (left.max(0), right.min(fw - 1));
+        Some((l, first, (r - l + 1) as u32, thickness as u32))
+    } else {
+        // Its height: up and down from the label's middle while the fill holds.
+        let column = (first + last) / 2;
+        let at = |y: i32| distance(pixel(column, y), fill) <= SAME_COLOUR;
+        let mut top = middle;
+        while top > 0 && at(top - 1) {
+            top -= 1;
+        }
+        let mut bottom = middle;
+        while bottom < fh - 1 && at(bottom + 1) {
+            bottom += 1;
+        }
+        let height = bottom - top + 1;
+        (lh / 2..=3 * lh).contains(&height).then_some((
+            first,
+            top,
+            (right.max(last) - first + 1) as u32,
+            height as u32,
+        ))
+    }
+}
+
+/// Two colours this close (summed over R, G and B) are one colour: a white
+/// field and its anti-aliased, rescaled edge pixels, not a grey and a white.
+const SAME_COLOUR: i32 = 12;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::Rgba;
+
+    /// A terminal-style screen: grey, a dark label, and white fields drawn as
+    /// fills with no border.
+    fn terminal() -> RgbaImage {
+        let mut img = RgbaImage::from_pixel(400, 200, Rgba([240, 240, 240, 255]));
+        let paint = |img: &mut RgbaImage, (x, y, w, h): (u32, u32, u32, u32), c: [u8; 3]| {
+            for py in y..y + h {
+                for px in x..x + w {
+                    img.put_pixel(px, py, Rgba([c[0], c[1], c[2], 255]));
+                }
+            }
+        };
+        // "BelDat": glyph strokes across a 54x14 label box at (20, 40).
+        for i in 0..9 {
+            paint(&mut img, (22 + i * 6, 42, 2, 10), [20, 20, 20]);
+        }
+        // Its field, the next line down: white, 80x18 at (20, 59).
+        paint(&mut img, (20, 59, 80, 18), [255, 255, 255]);
+        // A label whose field sits beside it: (200, 40), field at (270, 38).
+        for i in 0..4 {
+            paint(&mut img, (202 + i * 6, 42, 2, 10), [20, 20, 20]);
+        }
+        paint(&mut img, (270, 38, 60, 18), [255, 255, 255]);
+        // Plain text on the line under a third label: no field there.
+        for i in 0..4 {
+            paint(&mut img, (22 + i * 6, 122, 2, 10), [20, 20, 20]);
+            paint(&mut img, (22 + i * 6, 142, 2, 10), [20, 20, 20]);
+        }
+        img
+    }
+
+    #[test]
+    fn a_borderless_field_drawn_as_a_fill_is_found_below_or_beside_its_label() {
+        let img = terminal();
+        let below = filled_field(&img, (20, 40, 54, 14), "below").expect("the white field below");
+        assert_eq!((below.1, below.3), (59, 18), "{below:?}");
+        assert!(
+            below.0 <= 20 && below.0 + below.2 as i32 >= 100,
+            "{below:?}"
+        );
+        let beside =
+            filled_field(&img, (200, 40, 24, 14), "right_of").expect("the white field beside");
+        assert_eq!((beside.0, beside.1, beside.3), (270, 38, 18), "{beside:?}");
+        assert!(
+            filled_field(&img, (20, 120, 24, 14), "below").is_none(),
+            "text on the next line is not a field"
+        );
+        assert!(filled_field(&img, (20, 40, 54, 14), "inside").is_none());
+    }
+
+    /// Characters already typed into the field do not hide it.
+    #[test]
+    fn a_filled_field_with_text_in_it_is_still_found() {
+        let mut img = terminal();
+        for i in 0..5 {
+            for py in 62..72 {
+                for px in 24 + i * 7..26 + i * 7 {
+                    img.put_pixel(px, py, Rgba([0, 0, 0, 255]));
+                }
+            }
+        }
+        let below = filled_field(&img, (20, 40, 54, 14), "below").expect("found");
+        assert_eq!((below.1, below.3), (59, 18), "{below:?}");
+    }
 
     fn screen() -> RgbaImage {
         RgbaImage::from_pixel(400, 200, Rgba([255, 255, 255, 255]))
