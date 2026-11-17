@@ -179,8 +179,12 @@ flowproof author-from-video order.mp4 --app web --name "Electricity order" \
   recording does not start by going there.
 - `--app`, `--name` and `--out`: as for `author-from-doc`.
 
-The video is decoded in the same Chrome or Edge web flows use, so nothing
-else needs installing. It is sampled twice a second, and a frame is kept
+The video is decoded by the ffmpeg that ships with flowproof, so nothing
+else needs installing and no browser is involved, whatever app the recording
+shows. It reads H.264, VP8/VP9, AV1 and ProRes video in `.mp4`, `.mov`,
+`.webm`, `.mkv` or `.avi`: what Windows, macOS, Teams, Loom and OBS record.
+HEVC (H.265) is left out on purpose; export such a recording as H.264.
+`FLOWPROOF_FFMPEG` points flowproof at another ffmpeg. It is sampled twice a second, and a frame is kept
 where the screen changed, up to 60 frames scaled to 1280 px wide. Those
 frames, each with its time, go to the configured model in one call, which
 writes the user's actions in order. The video file itself is never sent.

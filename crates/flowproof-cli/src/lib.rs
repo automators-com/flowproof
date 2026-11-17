@@ -627,9 +627,10 @@ enum Command {
         json: bool,
     },
     /// EXPERIMENTAL: draft a `.flow.yaml` from a screen recording. The video
-    /// is decoded in the Chrome or Edge web flows use, its changed frames go
-    /// to the model in one call, and the draft never asserts: a recording
-    /// shows what happened, not what should. Still needs a live `record`.
+    /// is decoded by the ffmpeg that ships with flowproof (FLOWPROOF_FFMPEG
+    /// names another), its changed frames go to the model in one call, and
+    /// the draft never asserts: a recording shows what happened, not what
+    /// should. Still needs a live `record`.
     AuthorFromVideo {
         /// The screen recording (mp4, mov, webm, …).
         video: PathBuf,

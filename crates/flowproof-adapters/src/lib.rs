@@ -80,7 +80,6 @@ mod vision_grid;
 #[cfg(all(feature = "vision", windows))]
 pub mod vision_winocr;
 
-#[cfg(feature = "web")]
 pub mod video_frames;
 
 #[cfg(feature = "web")]

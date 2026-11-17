@@ -168,8 +168,13 @@ Known limitations.
 
 **Guarantee**: drafting from a recording sends the model frames, never the
 video file, and only when someone runs `author-from-video` against that
-file. The video is decoded locally, in a private tab of the browser web
-flows already use (`crates/flowproof-adapters/src/video_frames.rs`). At most
+file. The video is decoded locally by the decode-only ffmpeg that ships with
+flowproof (`crates/flowproof-adapters/src/ffmpeg.rs`, driven by
+`video_frames.rs`), and ffmpeg is only ever given that one file as a `file:`
+input. ffmpeg parses the file, so a crafted video is an attack on ffmpeg; the
+bundled build carries no encoders or network protocols and is kept on the
+latest ffmpeg release. A `FLOWPROOF_FFMPEG` or `PATH` ffmpeg is whatever its
+supplier built. At most
 60 frames, scaled to 1280 px wide, leave the machine, to the configured AI
 provider only, and they are held in memory: nothing but the draft
 `.flow.yaml` is written. Bands at the screen's edges that stay still for the
