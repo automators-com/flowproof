@@ -39,7 +39,10 @@ section it is still flagging - a heading carrying a count of outstanding problem
 message naming a field it would not accept - and that is the PREVIOUS step failing, \
 not this one. When you see it, author nothing: reply with exactly \
 {\"action\":\"previous_step_incomplete\",\"evidence\":\"<the page's own words>\"}. \
-A page that moved on is not proof that it accepted anything.
+A page that moved on is not proof that it accepted anything. Only a message the \
+previous step brought about counts: a status or message line the screen shows \
+throughout - before the flow's first step too - is not that step failing, and there \
+is no previous step to blame on the first step.
 - You may be asked to CONTINUE a step that is partway done, because the page changed \
 under the plan - a control vanished, or something covered it. That message lists the \
 actions already performed, which you must NEVER repeat, and says why the next one was \
@@ -217,6 +220,29 @@ pub struct AuthorContext<'a> {
     /// left behind, with no mark on any element to find; it usually says so
     /// in words.
     pub page_text: Option<&'a str>,
+    /// On a pixels-only surface, what the screen read around this step - the
+    /// evidence a `previous_step_incomplete` report is weighed against
+    /// (see [`ScreenReadings`]). `None` elsewhere: a web wizard can show the
+    /// same unfinished-section counter before and after a step that genuinely
+    /// did not finish.
+    pub readings: Option<ScreenReadings<'a>>,
+}
+
+/// What a pixels-only screen read around the step being authored, whole
+/// (unlike the bounded `page_text`: a terminal's status line is its LAST
+/// line). A host terminal shows standing messages - "1/01 :Eingabe
+/// unvollständig" for as long as the input is incomplete - and the model
+/// reported one as the previous step's failure, which ended a recording at
+/// its second step (#846). A report is only believed when the screen bears
+/// it out: see [`refused_report`].
+#[derive(Debug, Clone, Copy)]
+pub struct ScreenReadings<'a> {
+    /// The screen when the PREVIOUS step on this surface began.
+    pub before_previous: &'a str,
+    /// The screen now, as this step begins.
+    pub now: &'a str,
+    /// No step has run on this surface before this one.
+    pub first_step: bool,
 }
 
 fn user_prompt(ctx: &AuthorContext<'_>) -> String {
@@ -229,7 +255,7 @@ fn user_prompt(ctx: &AuthorContext<'_>) -> String {
     format!(
         "Flow: {name}\nApp: {app}{url}{today}\nSteps already performed: {prior}\n\
          Remembered captures in scope: {captures}\n\
-         Current step to perform: {intent}{page}{blank}\n\nInteractable elements:\n{scene}",
+         Current step to perform: {intent}{page}{standing}{blank}\n\nInteractable elements:\n{scene}",
         name = ctx.flow_name,
         app = ctx.app,
         url = ctx.url.map(|u| format!(" ({u})")).unwrap_or_default(),
@@ -253,6 +279,16 @@ fn user_prompt(ctx: &AuthorContext<'_>) -> String {
             .page_text
             .map(|t| format!("\n\nWhat the screen reads right now:\n\"{t}\""))
             .unwrap_or_default(),
+        standing = if ctx.readings.is_some() {
+            "\n\nThis screen shows standing messages: a status or message line that reads \
+             the same before and after a step (a host terminal's \"Eingabe unvollständig\" \
+             says the input is not complete yet - which is what the steps are for). A \
+             message that was already showing before the previous step ran is never that \
+             step's failure: never report previous_step_incomplete for it, and never on the \
+             flow's first step."
+        } else {
+            ""
+        },
         prior = prior,
         captures = captures,
         intent = ctx.intent,
@@ -282,6 +318,46 @@ fn normalized_words(text: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+/// Why a `previous_step_incomplete` report on a pixels-only screen is NOT
+/// believed, or `None` when the screen bears it out. A report has to quote
+/// something the previous step left behind, so it is refused when:
+///
+/// - no step has run on this screen yet - nothing can have been left;
+/// - the screen does not show the quoted words at all - a report quotes the
+///   page's own words, and a paraphrase or a guess cannot be checked;
+/// - the quoted words were already showing before the previous step began -
+///   a standing message, not that step's doing (#846).
+///
+/// Compared as OCR text is everywhere else ([`flowproof_driver::ocr_text_contains`]):
+/// the model quotes the screenshot, OCR reads the screen, and on a thin
+/// terminal font the two disagree on umlauts, `0`/`O`, `1`/`l` and spacing. Matching
+/// them exactly let the same status line through as new text.
+fn refused_report(readings: &ScreenReadings<'_>, evidence: &str) -> Option<String> {
+    if readings.first_step {
+        return Some(format!(
+            "no step has run before this one, so none can have left \"{evidence}\" behind: it \
+             is how the screen starts. Author the current step"
+        ));
+    }
+    if !flowproof_driver::ocr_text_contains(readings.now, evidence) {
+        return Some(format!(
+            "the screen does not show \"{evidence}\": a previous_step_incomplete report must \
+             quote the screen's own words, exactly as it shows them. Author the current step"
+        ));
+    }
+    flowproof_driver::ocr_text_contains(readings.before_previous, evidence).then(|| {
+        format!(
+            "\"{evidence}\" was already on the screen before the previous step ran, so that step \
+             did not leave it behind: it is a message this screen shows all along, not a \
+             rejection. Author the current step"
+        )
+    })
+}
+
+/// Refused reports the model gets to answer for, on top of the normal retry:
+/// a refusal must not use up the attempt a grounding correction needs.
+const REPORT_REFUSALS: usize = 2;
 
 fn mentioned_captures(intent: &str, captures: &[String]) -> Vec<String> {
     let intent = format!(" {} ", normalized_words(intent));
@@ -1302,8 +1378,13 @@ fn author_steps_inner<C: ModelClient>(
     // a single action, or for a sequence whose very first action was wrong:
     // in neither case is there a correct prefix to stand on.
     let mut kept: Option<(usize, usize)> = None;
-    for attempt in 0..2 {
-        let user = if attempt == 0 {
+    let mut attempts = 2;
+    let mut refused = 0;
+    let mut attempt = 0;
+    while attempt < attempts {
+        let first = attempt == 0;
+        attempt += 1;
+        let user = if first {
             prompt.clone()
         } else if let Some((grounded, total)) = kept {
             format!(
@@ -1346,6 +1427,27 @@ fn author_steps_inner<C: ModelClient>(
             // Retrying would only ask the same question of the same screen.
             // This is a report about the step BEFORE this one, and the
             // recorder has to hear it intact.
+            // The previous step cannot have left behind what was on the
+            // screen before it began. Ask again rather than end the recording
+            // on a message the screen shows all along.
+            Err(GroundingError::PreviousStepIncomplete(evidence))
+                if ctx
+                    .readings
+                    .as_ref()
+                    .and_then(|readings| refused_report(readings, &evidence))
+                    .is_some() =>
+            {
+                last_error = ctx
+                    .readings
+                    .as_ref()
+                    .and_then(|readings| refused_report(readings, &evidence))
+                    .unwrap_or_default();
+                kept = None;
+                if refused < REPORT_REFUSALS {
+                    refused += 1;
+                    attempts += 1;
+                }
+            }
             Err(GroundingError::PreviousStepIncomplete(evidence)) => {
                 return Err(AgentError::PreviousStepIncomplete {
                     step: ctx.intent.to_string(),
@@ -1454,6 +1556,7 @@ mod tests {
             captures: &[],
             today: None,
             page_text: None,
+            readings: None,
         };
         assert!(
             user_prompt(&ctx(Some(crate::recorder::BLANK_START))).contains("blank page on purpose")
@@ -1603,6 +1706,7 @@ mod tests {
         AuthorContext {
             today: None,
             page_text: None,
+            readings: None,
             flow_name: "Greet",
             app: "web",
             url: Some("file:///greeter.html"),
@@ -1629,6 +1733,7 @@ mod tests {
             let prompt = user_prompt(&AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: instruction,
                 ..ctx()
             });
@@ -1674,6 +1779,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Fill out all the vehicle data and click next",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1723,6 +1829,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Fill out all the vehicle data",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1792,6 +1899,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Fill out all the vehicle data and click next",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1837,6 +1945,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Fill out all the vehicle data",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1858,6 +1967,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Continue",
                 scene: FORM_SCENE,
                 ..ctx()
@@ -1889,6 +1999,7 @@ mod tests {
                 &AuthorContext {
                     today: None,
                     page_text: None,
+                    readings: None,
                     intent: "Fill out all the vehicle data",
                     scene: FORM_SCENE,
                     ..ctx()
@@ -1914,6 +2025,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Remember the greeting as the greeting, then put it in the name box",
                 ..ctx()
             },
@@ -2006,6 +2118,170 @@ mod tests {
             client.calls, 1,
             "a report is not a grounding failure, so it does not burn the retry"
         );
+    }
+
+    /// #846: a host terminal's status line read `1/01 :Eingabe
+    /// unvollständig` before the flow's first step and after it, and the model
+    /// reported it as that step's failure. What was on the screen before the
+    /// previous step ran cannot be that step's doing: the report is refused
+    /// and the step authored on the retry.
+    #[test]
+    fn a_report_quoting_text_shown_before_the_previous_step_is_refused() {
+        let mut client = Recording {
+            replies: vec![
+                r#"{"action":"previous_step_incomplete","evidence":"1/01 :Eingabe unvollständig"}"#
+                    .into(),
+                r##"{"action":"type_text","target":"css:#name","text":"Ada"}"##.into(),
+            ],
+            prompts: Vec::new(),
+        };
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                readings: Some(ScreenReadings {
+                    before_previous: "Erfassung BelDat 1/01: Eingabe unvollständig",
+                    now: "Erfassung BelDat 1/01: Eingabe unvollständig",
+                    first_step: false,
+                }),
+                ..ctx()
+            },
+        )
+        .expect("the standing message does not end the recording");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(client.prompts.len(), 2);
+        assert!(
+            client.prompts[1].contains("already on the screen before the previous step ran"),
+            "the retry says why the report was refused: {}",
+            client.prompts[1]
+        );
+    }
+
+    /// The other side of #846: text the screen did NOT show before the
+    /// previous step is still reported intact, on the first reply.
+    #[test]
+    fn a_report_quoting_text_the_previous_step_brought_still_stands() {
+        let mut client = Scripted {
+            replies: vec![
+                r#"{"action":"previous_step_incomplete","evidence":"Enter Vehicle Data1"}"#.into(),
+            ],
+            calls: 0,
+        };
+        let err = author_steps(
+            &mut client,
+            &AuthorContext {
+                readings: Some(ScreenReadings {
+                    before_previous: "Enter Vehicle Data7",
+                    now: "Enter Vehicle Data1",
+                    first_step: false,
+                }),
+                ..ctx()
+            },
+        )
+        .expect_err("a new complaint ends the recording");
+        assert!(
+            matches!(err, AgentError::PreviousStepIncomplete { .. }),
+            "{err}"
+        );
+        assert_eq!(client.calls, 1);
+    }
+
+    fn readings<'a>(before: &'a str, now: &'a str) -> ScreenReadings<'a> {
+        ScreenReadings {
+            before_previous: before,
+            now,
+            first_step: false,
+        }
+    }
+
+    /// The same status line, read by OCR at two moments and quoted by the
+    /// model from the screenshot, differs in exactly the ways a thin terminal
+    /// font is misread (#846): a dropped
+    /// umlaut, `0` read as `O`, spacing around the colon. It is still the same
+    /// standing line.
+    #[test]
+    fn standing_text_survives_how_ocr_misreads_a_terminal() {
+        let line = "1/01 :Eingabe unvollständig";
+        for before in [
+            "Erfassung BelDat 1/01 :Eingabe unvollständig",
+            "Erfassung BelDat 1/O1: Eingabe unvollstandig",
+            "Erfassung BelDat 1 / 01 : Eingabe unvoIlständig",
+        ] {
+            assert!(
+                refused_report(&readings(before, before), line).is_some(),
+                "{before}"
+            );
+        }
+        assert!(
+            refused_report(
+                &readings("Enter Vehicle Data7", "Enter Vehicle Data1"),
+                "Enter Vehicle Data1"
+            )
+            .is_none(),
+            "new text the previous step brought is believed"
+        );
+        assert!(
+            refused_report(&readings("Datum 12", "Datum 1 Fehler"), "Datum 1 Fehler").is_none(),
+            "a longer reading before is not the same words"
+        );
+    }
+
+    /// Nothing can be left behind before the first step, and a report must
+    /// quote what the screen shows: a paraphrase or a guess is refused.
+    #[test]
+    fn a_report_on_the_first_step_or_not_on_the_screen_is_refused() {
+        let first = ScreenReadings {
+            first_step: true,
+            ..readings("Feld ungültig", "Feld ungültig")
+        };
+        assert!(refused_report(&first, "Feld ungültig")
+            .expect("refused")
+            .contains("no step has run before this one"));
+        assert!(
+            refused_report(&readings("Erfassung", "Erfassung"), "document incomplete")
+                .expect("refused")
+                .contains("does not show")
+        );
+    }
+
+    /// A model that insists is refused again, and the refusals do not use up
+    /// the attempt a normal grounding correction needs (#846).
+    #[test]
+    fn refusals_do_not_use_up_the_retry() {
+        let insist =
+            r#"{"action":"previous_step_incomplete","evidence":"1/01 :Eingabe unvollständig"}"#;
+        let mut client = Recording {
+            replies: vec![
+                insist.into(),
+                insist.into(),
+                r##"{"action":"type_text","target":"css:#nowhere","text":"Ada"}"##.into(),
+                r##"{"action":"type_text","target":"css:#name","text":"Ada"}"##.into(),
+            ],
+            prompts: Vec::new(),
+        };
+        let line = "Erfassung 1/01 :Eingabe unvollständig";
+        let actions = author_steps(
+            &mut client,
+            &AuthorContext {
+                readings: Some(readings(line, line)),
+                ..ctx()
+            },
+        )
+        .expect("two refusals and one grounding correction, then the step");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(client.prompts.len(), 4);
+    }
+
+    /// On a pixels-only screen the model is told up front that a standing
+    /// message is not the previous step's failure; elsewhere it is not.
+    #[test]
+    fn the_prompt_explains_standing_messages_on_vision_only() {
+        let line = "1/01 :Eingabe unvollständig";
+        assert!(user_prompt(&AuthorContext {
+            readings: Some(readings(line, line)),
+            ..ctx()
+        })
+        .contains("standing messages"));
+        assert!(!user_prompt(&ctx()).contains("standing messages"));
     }
 
     /// The narrowest reading that is still useful. Everything else is
@@ -2181,6 +2457,7 @@ mod tests {
     fn the_prompt_carries_what_the_screen_reads() {
         let spoken = user_prompt(&AuthorContext {
             page_text: Some("Please, select a price option to send the quote."),
+            readings: None,
             ..ctx()
         });
         assert!(
@@ -2221,6 +2498,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 app: "notepad",
                 url: None,
                 scene: UIA_SCENE,
@@ -2245,6 +2523,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 app: "notepad",
                 url: None,
                 scene: UIA_SCENE,
@@ -2276,6 +2555,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 scene: legacy_scene,
                 ..ctx()
             },
@@ -2436,6 +2716,7 @@ mod tests {
         let prompt = user_prompt(&AuthorContext {
             today: None,
             page_text: None,
+            readings: None,
             captures: &captures,
             ..ctx()
         });
@@ -2455,6 +2736,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Remember the greeting as greeting",
                 ..ctx()
             },
@@ -2485,6 +2767,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Remember the value beside \"order id\" as the order ID",
                 scene: SCOPED_SCENE,
                 ..ctx()
@@ -2613,6 +2896,7 @@ mod tests {
                 &AuthorContext {
                     today: None,
                     page_text: None,
+                    readings: None,
                     intent,
                     scene: HUMAN_PRIMITIVE_SCENE,
                     ..ctx()
@@ -2666,6 +2950,7 @@ mod tests {
                 &AuthorContext {
                     today: None,
                     page_text: None,
+                    readings: None,
                     intent: "Close the window",
                     scene: HUMAN_PRIMITIVE_SCENE,
                     ..ctx()
@@ -2717,6 +3002,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Empty the name field",
                 ..ctx()
             },
@@ -2806,6 +3092,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Empty the text field inside the frame",
                 scene: HUMAN_PRIMITIVE_SCENE,
                 ..ctx()
@@ -2844,6 +3131,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Empty the text field inside the frame",
                 scene: HUMAN_PRIMITIVE_SCENE,
                 ..ctx()
@@ -2868,6 +3156,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Open settings",
                 scene: "[]",
                 ..ctx()
@@ -2893,6 +3182,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 flow_name: "Create an order",
                 app: "sap",
                 url: None,
@@ -2938,6 +3228,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -2965,6 +3256,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Type the literal word it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -2991,6 +3283,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -3013,6 +3306,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Remember the customer number",
                 captures: &captures,
                 ..ctx()
@@ -3037,6 +3331,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -3072,6 +3367,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Enter it in the name field",
                 captures: &captures,
                 ..ctx()
@@ -3101,6 +3397,7 @@ mod tests {
                 &AuthorContext {
                     today: None,
                     page_text: None,
+                    readings: None,
                     flow_name: "f",
                     app: "web",
                     url: None,
@@ -3129,6 +3426,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 flow_name: "f",
                 app: "web",
                 url: None,
@@ -3156,6 +3454,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 flow_name: "f",
                 app: "web",
                 url: None,
@@ -3185,6 +3484,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Enter it in the confirmation field",
                 captures: &captures,
                 ..ctx()
@@ -3214,6 +3514,7 @@ mod tests {
             &AuthorContext {
                 today: None,
                 page_text: None,
+                readings: None,
                 intent: "Enter the order number in the name field",
                 captures: &captures,
                 ..ctx()

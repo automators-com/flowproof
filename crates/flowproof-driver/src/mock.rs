@@ -30,6 +30,9 @@ pub struct MockAppDriver {
     pub frame: Option<image::RgbaImage>,
     /// Element rects by automation id / css key, for redaction tests.
     pub rects: HashMap<String, PixelRect>,
+    /// Labels whose field is drawn under them, not beside them - see
+    /// `AppDriver::field_below_label`.
+    pub fields_drawn_below: Vec<String>,
     /// Password-field rects, always masked.
     pub password_fields: Vec<PixelRect>,
     /// When set, `element_rect` fails — exercises fail-closed redaction.
@@ -297,6 +300,14 @@ impl MockAppDriver {
 }
 
 impl AppDriver for MockAppDriver {
+    fn field_below_label(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        Ok(selector.relation.is_none()
+            && selector
+                .name
+                .as_deref()
+                .is_some_and(|name| self.fields_drawn_below.iter().any(|f| f == name)))
+    }
+
     fn launch(
         &mut self,
         command: &str,

@@ -1,0 +1,37 @@
+# An invented entry screen for #846: labels on one line with their input
+# fields on the line below, and a message line that reads "Eingabe
+# unvollständig" for as long as the input is incomplete - before the first
+# step, and after it. A model once reported such a standing line as the
+# previous step's failure, which stopped the recording. Every name, number
+# and value here is made up.
+title: "Erfassung (replica)"
+rows: 27
+cols: 80
+font: Courier New
+font_px: 15
+message_row: 25
+message: "1/01 :Eingabe unvollständig"
+keys:
+  enter: submit
+  enter_delay_ms: 400
+  erase_eof: Ctrl+End
+text:
+  - { row: 0, col: 0, text: "T 900001-ab-cd     00000-AB123      X0001        01TST*   QQ      24/12/25 10:34" }
+  - { row: 1, col: 0, text: "AB100/CD200" }
+  - { row: 1, col: 13, text: "XY001 MUSTER-ERFASSUNG", blue: true }
+  - { row: 1, col: 64, text: "Befehl:" }
+  - { row: 3, col: 0, text: "Kd:" }
+  - { row: 3, col: 4, text: "Erika Mustermann", blue: true }
+  - { row: 3, col: 37, text: "Kat: X" }
+  - { row: 5, col: 2, text: "BelDat" }
+  - { row: 5, col: 16, text: "VonDat" }
+  - { row: 5, col: 30, text: "Betrag" }
+  - { row: 5, col: 44, text: "Kenn" }
+  - { row: 23, col: 0, text: "PF3=Ende  PF7=Zurück  PF8=Vor  PF12=Abbruch  PF13=Hilfe", blue: true }
+  - { row: 26, col: 30, text: "BEN: X0001  REF: TS0000000001" }
+fields:
+  - { name: Befehl, row: 1, col: 73, len: 4 }
+  - { name: BelDat, row: 6, col: 2, len: 9 }
+  - { name: VonDat, row: 6, col: 16, len: 9 }
+  - { name: Betrag, row: 6, col: 30, len: 9 }
+  - { name: Kenn, row: 6, col: 44, len: 5 }

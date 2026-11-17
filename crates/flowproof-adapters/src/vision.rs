@@ -78,6 +78,9 @@ impl OcrLine {
     }
 }
 
+/// A field a label names: its box, and the point that enters it.
+type FieldAt = (PixelRect, (i32, i32));
+
 /// A resolved anchor: the text that matched and the box it occupies. A
 /// hit is a whole line, a single word, or a run of adjacent words - the
 /// caller does not care which, it just clicks or reads the box.
@@ -573,9 +576,20 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             hit = self.require(selector)?;
             point = Self::action_point(&hit, selector, default_relation);
         }
-        if let Some(field) = self.drawn_field(&hit, selector, default_relation)? {
-            vision_log(|| format!("[{selector}] field drawn at {field:?} - acting inside it"));
-            point = (field.0 + field.2 as i32 / 2, field.1 + field.3 as i32 / 2);
+        let mut field = self.drawn_field_at(&hit, selector, default_relation)?;
+        // A field addressed by its label, with no relation recorded, and none
+        // drawn beside the label: when one is drawn under it, that is the
+        // field. On a host terminal the field sits on the next line, and
+        // typing beside the label first put the keystrokes on protected text -
+        // which a real terminal answers by locking the keyboard, so the
+        // retry below it would type into a locked screen (#846).
+        if field.is_none() && selector.relation.is_none() && default_relation == "right_of" {
+            let below = selector.clone().with_relation(Some("below".into()));
+            field = self.drawn_field_at(&hit, &below, "below")?;
+        }
+        if let Some((rect, at)) = field {
+            vision_log(|| format!("[{selector}] field drawn at {rect:?} - acting at {at:?}"));
+            point = at;
         }
         vision_log(|| {
             format!(
@@ -594,12 +608,19 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
     /// between label and field, or a tall multi-line field, put the guessed
     /// point in the gap. `None` - and the guess stands - when the hit is a
     /// control already, the relation is `inside`, or nothing is drawn there.
-    fn drawn_field(
+    ///
+    /// With the box comes where an action enters it: the middle of a
+    /// bordered box, but the FIRST character of a field drawn as a fill - a
+    /// host terminal's - because a click there puts the cursor on the
+    /// character it lands on. Live, a click in the middle of a nine-character
+    /// field put the cursor on its fifth: five digits fitted, and auto-skip
+    /// carried the rest into the next field (#846).
+    fn drawn_field_at(
         &mut self,
         hit: &OcrHit,
         selector: &UiaSelector,
         default_relation: &str,
-    ) -> Result<Option<PixelRect>, DriverError> {
+    ) -> Result<Option<FieldAt>, DriverError> {
         let relation = selector.relation.as_deref().unwrap_or(default_relation);
         if hit.control || !matches!(relation, "right_of" | "below") {
             return Ok(None);
@@ -607,9 +628,21 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         let frame = self.screen.frame()?;
         let text: Vec<PixelRect> = self.read(&frame, 1)?.iter().map(|l| l.rect).collect();
         let elements = crate::vision_elements::detect(&frame, &text);
-        Ok(crate::vision_elements::field_box(
-            &elements, hit.rect, relation,
-        ))
+        let middle = |(x, y, w, h): PixelRect| (x + w as i32 / 2, y + h as i32 / 2);
+        // A bordered box first; failing that, a field drawn as a fill with no
+        // border - a host terminal's - which the edge map cannot see (#846).
+        if let Some(rect) = crate::vision_elements::field_box(&elements, hit.rect, relation) {
+            return Ok(Some((rect, middle(rect))));
+        }
+        Ok(
+            crate::vision_elements::filled_field(&frame, hit.rect, relation).map(|rect| {
+                let (x, y, w, h) = rect;
+                // Half a character in: a terminal glyph is about 0.6 of its
+                // line height wide.
+                let inset = (h as i32 * 3 / 10).clamp(2, (w as i32 / 2).max(2));
+                (rect, (x + inset, y + h as i32 / 2))
+            }),
+        )
     }
 
     /// Match a text anchor over BOTH granularities, strongest first:
@@ -1418,10 +1451,12 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
             return Ok(None);
         };
         let point = Self::action_point(&hit, &selector, relation);
-        Ok(Some(match self.drawn_field(&hit, &selector, relation)? {
-            Some((x, y, w, h)) => (x + w as i32 / 2, y + h as i32 / 2),
-            None => point,
-        }))
+        Ok(Some(
+            match self.drawn_field_at(&hit, &selector, relation)? {
+                Some((_, at)) => at,
+                None => point,
+            },
+        ))
     }
 
     /// Screen origin of the attached window.
@@ -1804,6 +1839,20 @@ impl<S: VisionScreen, E: OcrEngine> AppDriver for VisionAppDriver<S, E> {
 
     fn capture(&mut self) -> Result<Option<RgbaImage>, DriverError> {
         self.screen.frame().map(Some)
+    }
+
+    fn field_below_label(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        if selector.relation.is_some() {
+            return Ok(false);
+        }
+        let Some(hit) = self.resolve(selector)? else {
+            return Ok(false);
+        };
+        if self.drawn_field_at(&hit, selector, "right_of")?.is_some() {
+            return Ok(false);
+        }
+        let below = selector.clone().with_relation(Some("below".into()));
+        Ok(self.drawn_field_at(&hit, &below, "below")?.is_some())
     }
 
     fn element_rect(&mut self, selector: &UiaSelector) -> Result<Option<PixelRect>, DriverError> {
@@ -3262,6 +3311,48 @@ mod tests {
         assert!(
             (290..=310).contains(&cx) && (24..=32).contains(&cy),
             "{cx},{cy}"
+        );
+    }
+
+    /// A host terminal's field: a white fill with no border on the line under
+    /// its label, on a grey screen (#846). Nothing is drawn beside the label,
+    /// so typing goes straight into the field below - never onto the protected
+    /// text beside the label, which a real terminal answers by locking.
+    #[test]
+    fn typing_by_a_label_with_its_field_filled_in_below_lands_in_that_field() {
+        let mut frame = RgbaImage::from_pixel(400, 200, image::Rgba([240, 240, 240, 255]));
+        for y in 22..32 {
+            for i in 0..8 {
+                frame.put_pixel(22 + i * 6, y, image::Rgba([20, 20, 20, 255]));
+            }
+        }
+        for y in 39..57 {
+            for x in 20..100 {
+                frame.put_pixel(x, y, image::Rgba([255, 255, 255, 255]));
+            }
+        }
+        let mut d = VisionAppDriver::with_parts(
+            FakeScreen::with_frames(vec![frame]),
+            FakeOcr::with_lines(vec![OcrLine::new("BelDat", (20, 20, 54, 14))]),
+        );
+        assert!(
+            d.field_below_label(&anchor("BelDat")).expect("asks"),
+            "the recorder is told the field is below, so the trace says so"
+        );
+        d.type_text(&anchor("BelDat"), "120345678").expect("types");
+        let (cx, cy) = d.screen.clicks[0];
+        assert!(
+            (20..30).contains(&cx) && (39..57).contains(&cy),
+            "the click lands on the white field's first character: {cx},{cy}"
+        );
+        // A click recorded below the label goes there too, not onto the label.
+        d.screen.clicks.clear();
+        d.invoke(&anchor("BelDat").with_relation(Some("below".into())))
+            .expect("clicks");
+        let (cx, cy) = d.screen.clicks[0];
+        assert!(
+            (20..30).contains(&cx) && (39..57).contains(&cy),
+            "a click below the label enters the field: {cx},{cy}"
         );
     }
 

@@ -2703,6 +2703,53 @@ fn surface_words<D: AppDriver>(driver: &mut D) -> Option<String> {
 }
 
 /// Resolve one spec step into actions per the authoring mode.
+/// On a screen read only as pixels, a value the model typed one key at a
+/// time is typed as text instead. Each key alone is not checked - a key may
+/// be a hotkey that shows nothing - so a run of them typed onto a
+/// terminal's protected text was dropped and the step still passed, the
+/// field empty (#846). Typed as text, the value must appear on screen or
+/// the step fails, and replay types it the same way. One key alone stays a
+/// key press.
+fn keys_typed_as_text(
+    actions: Vec<ResolvedAction>,
+    vision: bool,
+) -> std::collections::VecDeque<ResolvedAction> {
+    fn typed_char(action: &ResolvedAction) -> Option<char> {
+        let ResolvedAction::PressKey { key, modifiers } = action else {
+            return None;
+        };
+        let mut chars = key.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if modifiers.is_empty() && !c.is_control() => Some(c),
+            _ => None,
+        }
+    }
+    if !vision {
+        return actions.into();
+    }
+    let mut out = std::collections::VecDeque::with_capacity(actions.len());
+    let mut run: Vec<ResolvedAction> = Vec::new();
+    let flush = |run: &mut Vec<ResolvedAction>, out: &mut std::collections::VecDeque<_>| {
+        if run.len() >= 2 {
+            let text = run.iter().filter_map(typed_char).collect();
+            out.push_back(ResolvedAction::TypeFocused { text });
+            run.clear();
+        } else {
+            out.extend(run.drain(..));
+        }
+    };
+    for action in actions {
+        if typed_char(&action).is_some() {
+            run.push(action);
+        } else {
+            flush(&mut run, &mut out);
+            out.push_back(action);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
 #[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
 fn author_actions<D: AppDriver, C: ModelClient>(
     spec: &FlowSpec,
@@ -2720,6 +2767,9 @@ fn author_actions<D: AppDriver, C: ModelClient>(
     spec_step: &crate::spec::SpecStep,
     llm_used: &mut bool,
     reuse: &mut Option<ReuseCursor>,
+    // What a pixels-only screen read around this step - see
+    // [`crate::author::ScreenReadings`].
+    readings: Option<crate::author::ScreenReadings<'_>>,
 ) -> Result<AuthoredActions, RecordError> {
     let intent = spec_step.intent();
     let intent = intent.as_str();
@@ -2875,6 +2925,7 @@ fn author_actions<D: AppDriver, C: ModelClient>(
             captures,
             intent,
             scene: &scene,
+            readings,
         };
         let authored = match model_screenshot(driver, app_id) {
             Some((png, scale)) => {
@@ -3146,6 +3197,9 @@ fn replan_remainder<D: AppDriver, C: ModelClient>(
         captures,
         intent,
         scene: &scene,
+        // A continuation is the same step, not the next one: nothing here is
+        // weighed against what the previous step left.
+        readings: None,
     };
     // What the page is SAYING, not just what it contains. A wizard that
     // refuses to advance prints the reason - "Please, select a price option"
@@ -3581,6 +3635,12 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     // follows - see `vacuous_check`.
     let mut before_actions: Option<String> = None;
     let mut actions_since_check = false;
+    // What each vision surface read when its latest step began. Carried one
+    // step forward, it is what that screen showed before the PREVIOUS step
+    // on it ran - see `crate::author::ScreenReadings`. Per surface: in a
+    // multi-surface flow the previous step may have run in another window.
+    let mut step_start_text: std::collections::HashMap<Option<String>, String> =
+        std::collections::HashMap::new();
     // The secret-leak corpus, held in memory for this run only, exactly like a
     // resolved `${VAR}` value: (a) the web surface text read at each step
     // boundary (the same text `page shows` reads, not the page source) and
@@ -3771,6 +3831,26 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             before_actions = driver.surface_text().ok();
         }
         actions_since_check = !is_check;
+        let start_text = (step_app == "vision")
+            .then(|| driver.surface_text().ok())
+            .flatten()
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "));
+        // The first step on a screen is weighed against the screen as it
+        // starts: everything on it predates the flow.
+        let before_previous = match &start_text {
+            Some(now) => step_start_text
+                .insert(current_surface.clone(), now.clone())
+                .map(|before| (before, false))
+                .or_else(|| Some((now.clone(), true))),
+            None => None,
+        };
+        let readings = start_text.as_deref().zip(before_previous.as_ref()).map(
+            |(now, (before, first_step))| crate::author::ScreenReadings {
+                before_previous: before,
+                now,
+                first_step: *first_step,
+            },
+        );
         let mut capture_names: Vec<String> = captures.keys().cloned().collect();
         capture_names.sort();
         let authored = author_actions(
@@ -3785,6 +3865,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             spec_step,
             &mut llm_used,
             &mut reuse,
+            readings,
         )
         .map_err(|err| match err {
             // An empty blank page reads as a broken one to the model.
@@ -3828,7 +3909,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         // Pushed now, as `prior_intents` is, so a step that ends early is
         // still listed; filled in with what it did once it finishes.
         prior_history.push(step_intent.clone());
-        let mut plan: std::collections::VecDeque<ResolvedAction> = authored.actions.into();
+        let mut plan = keys_typed_as_text(authored.actions, step_app == "vision");
         let mut executed_summaries: Vec<String> = Vec::new();
         let mut replans = 0u32;
         // The model said the rest of this step lives on a screen that did not
@@ -3904,7 +3985,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     None => break,
                     Some((rest, continues)) => {
                         pending_continuation = continues;
-                        plan = rest.into();
+                        plan = keys_typed_as_text(rest, step_app == "vision");
                         continue;
                     }
                 }
@@ -3956,9 +4037,43 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 rec.step_started(driver, &step_id);
             }
             let selector = action_selector(&action);
+            // A click on a label whose field a terminal draws under it is a
+            // click into that field (#846). The model has no other name for
+            // a field without text of its own, and live it clicked the label
+            // itself: the cursor sat on protected text, the value typed next
+            // went nowhere. The click goes into the field, as a plain click
+            // at its first character, and is recorded `below` so replay
+            // clicks there too.
+            let into_field_below = step_app == "vision"
+                && matches!(
+                    action,
+                    ResolvedAction::Press { .. } | ResolvedAction::ClickAt { .. }
+                )
+                && match selector.as_ref() {
+                    Some(s) if s.relation.is_none() => driver.field_below_label(s)?,
+                    _ => false,
+                };
+            let (action, selector) = if into_field_below {
+                let action = match action {
+                    ResolvedAction::ClickAt { target, .. } => ResolvedAction::Press {
+                        label: selector
+                            .as_ref()
+                            .and_then(|s| s.name.clone())
+                            .unwrap_or_default(),
+                        target,
+                        dialog: None,
+                    },
+                    other => other,
+                };
+                let selector = selector.map(|s| s.with_relation(Some("below".into())));
+                (action, selector)
+            } else {
+                (action, selector)
+            };
+            fields_below_labels |= into_field_below;
             // Set when a vision field took its value BELOW its label rather
             // than beside it; stamped into the step's selector below.
-            let mut landed_below = false;
+            let mut landed_below = into_field_below;
             // Assertions do their own waiting (an element may legitimately
             // not exist yet — a toast — or be expected to be gone); every
             // other targeted action requires its element up front.
@@ -4013,7 +4128,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                                 None => break,
                                 Some((rest, continues)) => {
                                     pending_continuation = continues;
-                                    plan = rest.into();
+                                    plan = keys_typed_as_text(rest, step_app == "vision");
                                     continue;
                                 }
                             }
@@ -4086,7 +4201,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             None => break,
                             Some((rest, continues)) => {
                                 pending_continuation = continues;
-                                plan = rest.into();
+                                plan = keys_typed_as_text(rest, step_app == "vision");
                                 continue;
                             }
                         }
@@ -4202,7 +4317,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                                 None => break,
                                 Some((rest, continues)) => {
                                     pending_continuation = continues;
-                                    plan = rest.into();
+                                    plan = keys_typed_as_text(rest, step_app == "vision");
                                     continue;
                                 }
                             }
@@ -4258,7 +4373,15 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // replay follows the recorded relation exactly.
                     let unplaced = step_app == "vision" && targeted().relation.is_none();
                     let below = || targeted().clone().with_relation(Some("below".into()));
-                    landed_below = unplaced && referenced && fields_below_labels;
+                    // A field the screen draws under its label is typed into
+                    // there first, and recorded so (#846): typing beside the
+                    // label first puts the keystrokes on a terminal's
+                    // protected text, and a trace stamped with the default
+                    // right_of sent replay there too.
+                    landed_below = unplaced
+                        && ((referenced && fields_below_labels)
+                            || driver.field_below_label(targeted())?);
+                    fields_below_labels |= landed_below;
                     if landed_below {
                         driver.type_text(&below(), &value)?;
                     } else {
@@ -4329,7 +4452,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // and is recorded so replay clears the same place.
                     landed_below = step_app == "vision"
                         && targeted().relation.is_none()
-                        && fields_below_labels;
+                        && (fields_below_labels || driver.field_below_label(targeted())?);
                     if landed_below {
                         driver
                             .clear_text(&targeted().clone().with_relation(Some("below".into())))?
@@ -5746,6 +5869,119 @@ mod tests {
         assert_eq!(summary.routing[0].route, StepAuthoringRoute::Rules);
         let warning = summary.routing[1].warning.as_deref().expect("flagged");
         assert!(warning.contains("already held before"), "{warning}");
+        std::fs::remove_file(out).ok();
+    }
+
+    /// #846: a host terminal's status line, on screen before the first step
+    /// and after it, was reported by the model as the first step's failure
+    /// and the recording stopped. The recorder now hands the model what the
+    /// screen read before the previous step, the report is refused, and the
+    /// step is authored on the retry.
+    #[test]
+    fn a_vision_status_line_shown_all_along_does_not_stop_the_recording() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: Erfassung\nsteps:\n  - Type Zebra42\n  - Move keyboard focus into the editable field directly below the BelDat label\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            scene: Some(r#"[{"target":"text:BelDat","text":"BelDat"}]"#.into()),
+            ..MockAppDriver::new(&["BelDat"])
+        }
+        .with_surface_text("Erfassung BelDat\n1/01 :Eingabe unvollständig");
+        let mut client = ScriptedClient::new(&[
+            r#"{"action":"previous_step_incomplete","evidence":"1/01 :Eingabe unvollständig"}"#,
+            r#"{"action":"click","target":"text:BelDat"}"#,
+        ]);
+        let out = std::env::temp_dir().join("flowproof-vision-status-line.trace.jsonl");
+        record_with_client(&spec, &mut driver, &out, Author::Auto, Some(&mut client))
+            .expect("the status line is not the first step's failure");
+        assert_eq!(client.prompts.len(), 2, "refused once, then authored");
+        assert_eq!(driver.invoked, vec!["BelDat".to_string()]);
+        std::fs::remove_file(out).ok();
+    }
+
+    /// #846: told to move focus into the field under a label, the model
+    /// clicked the label itself - protected text. The click goes into the
+    /// field and the trace says `below`.
+    #[test]
+    fn a_click_on_a_label_with_its_field_under_it_goes_into_the_field() {
+        let spec = FlowSpec::parse(
+            "name: x
+app: vision
+window: Erfassung
+steps:
+  - Click \"BelDat\"
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            fields_drawn_below: vec!["BelDat".into()],
+            ..MockAppDriver::new(&["BelDat"])
+        };
+        let out = std::env::temp_dir().join("flowproof-click-field-below.trace.jsonl");
+        record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Rules,
+            None::<&mut CountingClient>,
+        )
+        .expect("records");
+        let trace = std::fs::read_to_string(&out).expect("trace");
+        assert!(trace.contains(r#""relation":"below""#), "{trace}");
+        std::fs::remove_file(out).ok();
+    }
+
+    /// #846: the model typed a value one key at a time onto a terminal's
+    /// protected text; no key alone is checked, so the step passed with the
+    /// field empty. A run of keys is typed as text and must appear.
+    #[test]
+    fn keys_pressed_one_by_one_are_typed_as_text_on_vision() {
+        let key = |k: &str| ResolvedAction::PressKey {
+            key: k.into(),
+            modifiers: Vec::new(),
+        };
+        let plan = keys_typed_as_text(
+            vec![key("1"), key("2"), key("3"), key("Enter"), key("y")],
+            true,
+        );
+        assert_eq!(
+            Vec::from(plan),
+            vec![
+                ResolvedAction::TypeFocused { text: "123".into() },
+                key("Enter"),
+                key("y"),
+            ]
+        );
+        let plan = keys_typed_as_text(vec![key("1"), key("2")], false);
+        assert_eq!(Vec::from(plan), vec![key("1"), key("2")], "only on vision");
+    }
+
+    /// #846: a terminal draws a label's field on the line under it. The
+    /// recorder types there first and records `below`, so replay types in
+    /// the same place instead of beside the label, where the default
+    /// `right_of` would send it.
+    #[test]
+    fn a_field_drawn_under_its_label_is_recorded_below() {
+        let spec = FlowSpec::parse(
+            "name: x\napp: vision\nwindow: Erfassung\nsteps:\n  - Type 120345678 into the \"BelDat\" field\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            fields_drawn_below: vec!["BelDat".into()],
+            ..MockAppDriver::new(&["BelDat"])
+        };
+        let out = std::env::temp_dir().join("flowproof-field-below-label.trace.jsonl");
+        record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Rules,
+            None::<&mut CountingClient>,
+        )
+        .expect("records");
+        let trace = std::fs::read_to_string(&out).expect("trace");
+        assert!(trace.contains(r#""relation":"below""#), "{trace}");
         std::fs::remove_file(out).ok();
     }
 

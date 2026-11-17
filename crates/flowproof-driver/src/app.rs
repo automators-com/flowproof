@@ -605,6 +605,17 @@ pub trait AppDriver {
         Ok(None)
     }
 
+    /// Record-time, pixels-only: whether the field a label names is drawn
+    /// UNDER the label and not beside it - a host terminal's layout. The
+    /// recorder then types there first and records `below`, so replay types
+    /// in the same place; a trace stamped with the default `right_of` sent
+    /// replay beside the label, onto protected text (#846). The default -
+    /// every driver that finds a field by something other than pixels -
+    /// answers no.
+    fn field_below_label(&mut self, _selector: &UiaSelector) -> Result<bool, DriverError> {
+        Ok(false)
+    }
+
     /// Record-time hints and failure diagnostics for a scoped-container
     /// target. Web-only for the same reason `cell_hints` is: a container is
     /// a DOM concept. The default harvests nothing, which is valid - a
@@ -2045,6 +2056,10 @@ pub fn resolve_app(app_id: &str) -> Option<AppTarget> {
 impl AppDriver for Box<dyn AppDriver> {
     fn cell_hints(&mut self, selector: &UiaSelector) -> Result<Option<CellHints>, DriverError> {
         (**self).cell_hints(selector)
+    }
+
+    fn field_below_label(&mut self, selector: &UiaSelector) -> Result<bool, DriverError> {
+        (**self).field_below_label(selector)
     }
 
     // Every trait method needs its delegation here: a missing one silently
