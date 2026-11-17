@@ -5830,7 +5830,7 @@ mod tests {
         )
         .expect("spec parses");
         let mut driver = MockAppDriver {
-            fields_below: vec!["BelDat".into()],
+            fields_drawn_below: vec!["BelDat".into()],
             ..MockAppDriver::new(&["BelDat"])
         };
         let out = std::env::temp_dir().join("flowproof-field-below-label.trace.jsonl");

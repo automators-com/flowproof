@@ -32,7 +32,7 @@ pub struct MockAppDriver {
     pub rects: HashMap<String, PixelRect>,
     /// Labels whose field is drawn under them, not beside them - see
     /// `AppDriver::field_below_label`.
-    pub fields_below: Vec<String>,
+    pub fields_drawn_below: Vec<String>,
     /// Password-field rects, always masked.
     pub password_fields: Vec<PixelRect>,
     /// When set, `element_rect` fails — exercises fail-closed redaction.
@@ -305,7 +305,7 @@ impl AppDriver for MockAppDriver {
             && selector
                 .name
                 .as_deref()
-                .is_some_and(|name| self.fields_below.iter().any(|f| f == name)))
+                .is_some_and(|name| self.fields_drawn_below.iter().any(|f| f == name)))
     }
 
     fn launch(
