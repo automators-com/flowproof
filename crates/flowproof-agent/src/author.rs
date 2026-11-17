@@ -255,7 +255,7 @@ fn user_prompt(ctx: &AuthorContext<'_>) -> String {
     format!(
         "Flow: {name}\nApp: {app}{url}{today}\nSteps already performed: {prior}\n\
          Remembered captures in scope: {captures}\n\
-         Current step to perform: {intent}{page}{blank}\n\nInteractable elements:\n{scene}",
+         Current step to perform: {intent}{page}{standing}{blank}\n\nInteractable elements:\n{scene}",
         name = ctx.flow_name,
         app = ctx.app,
         url = ctx.url.map(|u| format!(" ({u})")).unwrap_or_default(),
@@ -275,22 +275,20 @@ fn user_prompt(ctx: &AuthorContext<'_>) -> String {
                  its past is rejected and the page will refuse to move on."
             ))
             .unwrap_or_default(),
-        page = format!(
-            "{}{}",
-            ctx.page_text
-                .map(|t| format!("\n\nWhat the screen reads right now:\n\"{t}\""))
-                .unwrap_or_default(),
-            if ctx.readings.is_some() {
-                "\n\nThis screen shows standing messages: a status or message line that \
-                 reads the same before and after a step (a host terminal's \"Eingabe \
-                 unvollständig\" says the input is not complete yet - which is what the \
-                 steps are for). A message that was already showing before the previous \
-                 step ran is never that step's failure: never report previous_step_incomplete \
-                 for it, and never on the flow's first step."
-            } else {
-                ""
-            }
-        ),
+        page = ctx
+            .page_text
+            .map(|t| format!("\n\nWhat the screen reads right now:\n\"{t}\""))
+            .unwrap_or_default(),
+        standing = if ctx.readings.is_some() {
+            "\n\nThis screen shows standing messages: a status or message line that reads \
+             the same before and after a step (a host terminal's \"Eingabe unvollständig\" \
+             says the input is not complete yet - which is what the steps are for). A \
+             message that was already showing before the previous step ran is never that \
+             step's failure: never report previous_step_incomplete for it, and never on the \
+             flow's first step."
+        } else {
+            ""
+        },
         prior = prior,
         captures = captures,
         intent = ctx.intent,
