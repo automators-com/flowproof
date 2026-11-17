@@ -3345,6 +3345,15 @@ mod tests {
             (20..30).contains(&cx) && (39..57).contains(&cy),
             "the click lands on the white field's first character: {cx},{cy}"
         );
+        // A click recorded below the label goes there too, not onto the label.
+        d.screen.clicks.clear();
+        d.invoke(&anchor("BelDat").with_relation(Some("below".into())))
+            .expect("clicks");
+        let (cx, cy) = d.screen.clicks[0];
+        assert!(
+            (20..30).contains(&cx) && (39..57).contains(&cy),
+            "a click below the label enters the field: {cx},{cy}"
+        );
     }
 
     fn desktop() -> RgbaImage {

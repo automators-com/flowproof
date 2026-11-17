@@ -4037,9 +4037,43 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 rec.step_started(driver, &step_id);
             }
             let selector = action_selector(&action);
+            // A click on a label whose field a terminal draws under it is a
+            // click into that field (#846). The model has no other name for
+            // a field without text of its own, and live it clicked the label
+            // itself: the cursor sat on protected text, the value typed next
+            // went nowhere. The click goes into the field, as a plain click
+            // at its first character, and is recorded `below` so replay
+            // clicks there too.
+            let into_field_below = step_app == "vision"
+                && matches!(
+                    action,
+                    ResolvedAction::Press { .. } | ResolvedAction::ClickAt { .. }
+                )
+                && match selector.as_ref() {
+                    Some(s) if s.relation.is_none() => driver.field_below_label(s)?,
+                    _ => false,
+                };
+            let (action, selector) = if into_field_below {
+                let action = match action {
+                    ResolvedAction::ClickAt { target, .. } => ResolvedAction::Press {
+                        label: selector
+                            .as_ref()
+                            .and_then(|s| s.name.clone())
+                            .unwrap_or_default(),
+                        target,
+                        dialog: None,
+                    },
+                    other => other,
+                };
+                let selector = selector.map(|s| s.with_relation(Some("below".into())));
+                (action, selector)
+            } else {
+                (action, selector)
+            };
+            fields_below_labels |= into_field_below;
             // Set when a vision field took its value BELOW its label rather
             // than beside it; stamped into the step's selector below.
-            let mut landed_below = false;
+            let mut landed_below = into_field_below;
             // Assertions do their own waiting (an element may legitimately
             // not exist yet — a toast — or be expected to be gone); every
             // other targeted action requires its element up front.
@@ -5863,6 +5897,38 @@ mod tests {
             .expect("the status line is not the first step's failure");
         assert_eq!(client.prompts.len(), 2, "refused once, then authored");
         assert_eq!(driver.invoked, vec!["BelDat".to_string()]);
+        std::fs::remove_file(out).ok();
+    }
+
+    /// #846: told to move focus into the field under a label, the model
+    /// clicked the label itself - protected text. The click goes into the
+    /// field and the trace says `below`.
+    #[test]
+    fn a_click_on_a_label_with_its_field_under_it_goes_into_the_field() {
+        let spec = FlowSpec::parse(
+            "name: x
+app: vision
+window: Erfassung
+steps:
+  - Click \"BelDat\"
+",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver {
+            fields_drawn_below: vec!["BelDat".into()],
+            ..MockAppDriver::new(&["BelDat"])
+        };
+        let out = std::env::temp_dir().join("flowproof-click-field-below.trace.jsonl");
+        record_with_client(
+            &spec,
+            &mut driver,
+            &out,
+            Author::Rules,
+            None::<&mut CountingClient>,
+        )
+        .expect("records");
+        let trace = std::fs::read_to_string(&out).expect("trace");
+        assert!(trace.contains(r#""relation":"below""#), "{trace}");
         std::fs::remove_file(out).ok();
     }
 
