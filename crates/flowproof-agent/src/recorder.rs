@@ -2704,6 +2704,53 @@ fn surface_words<D: AppDriver>(driver: &mut D) -> Option<String> {
 
 /// Resolve one spec step into actions per the authoring mode.
 #[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
+/// On a screen read only as pixels, a value the model typed one key at a
+/// time is typed as text instead. Each key alone is not checked - a key may
+/// be a hotkey that shows nothing - so a run of them typed onto a
+/// terminal's protected text was dropped and the step still passed, the
+/// field empty (#846). Typed as text, the value must appear on screen or
+/// the step fails, and replay types it the same way. One key alone stays a
+/// key press.
+fn keys_typed_as_text(
+    actions: Vec<ResolvedAction>,
+    vision: bool,
+) -> std::collections::VecDeque<ResolvedAction> {
+    fn typed_char(action: &ResolvedAction) -> Option<char> {
+        let ResolvedAction::PressKey { key, modifiers } = action else {
+            return None;
+        };
+        let mut chars = key.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if modifiers.is_empty() && !c.is_control() => Some(c),
+            _ => None,
+        }
+    }
+    if !vision {
+        return actions.into();
+    }
+    let mut out = std::collections::VecDeque::with_capacity(actions.len());
+    let mut run: Vec<ResolvedAction> = Vec::new();
+    let flush = |run: &mut Vec<ResolvedAction>, out: &mut std::collections::VecDeque<_>| {
+        if run.len() >= 2 {
+            let text = run.iter().filter_map(typed_char).collect();
+            out.push_back(ResolvedAction::TypeFocused { text });
+            run.clear();
+        } else {
+            out.extend(run.drain(..));
+        }
+    };
+    for action in actions {
+        if typed_char(&action).is_some() {
+            run.push(action);
+        } else {
+            flush(&mut run, &mut out);
+            out.push_back(action);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
 fn author_actions<D: AppDriver, C: ModelClient>(
     spec: &FlowSpec,
     // The app id this step authors against: the ACTIVE surface's on a
@@ -3862,7 +3909,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         // Pushed now, as `prior_intents` is, so a step that ends early is
         // still listed; filled in with what it did once it finishes.
         prior_history.push(step_intent.clone());
-        let mut plan: std::collections::VecDeque<ResolvedAction> = authored.actions.into();
+        let mut plan = keys_typed_as_text(authored.actions, step_app == "vision");
         let mut executed_summaries: Vec<String> = Vec::new();
         let mut replans = 0u32;
         // The model said the rest of this step lives on a screen that did not
@@ -3938,7 +3985,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     None => break,
                     Some((rest, continues)) => {
                         pending_continuation = continues;
-                        plan = rest.into();
+                        plan = keys_typed_as_text(rest, step_app == "vision");
                         continue;
                     }
                 }
@@ -4047,7 +4094,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                                 None => break,
                                 Some((rest, continues)) => {
                                     pending_continuation = continues;
-                                    plan = rest.into();
+                                    plan = keys_typed_as_text(rest, step_app == "vision");
                                     continue;
                                 }
                             }
@@ -4120,7 +4167,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             None => break,
                             Some((rest, continues)) => {
                                 pending_continuation = continues;
-                                plan = rest.into();
+                                plan = keys_typed_as_text(rest, step_app == "vision");
                                 continue;
                             }
                         }
@@ -4236,7 +4283,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                                 None => break,
                                 Some((rest, continues)) => {
                                     pending_continuation = continues;
-                                    plan = rest.into();
+                                    plan = keys_typed_as_text(rest, step_app == "vision");
                                     continue;
                                 }
                             }
@@ -5817,6 +5864,31 @@ mod tests {
         assert_eq!(client.prompts.len(), 2, "refused once, then authored");
         assert_eq!(driver.invoked, vec!["BelDat".to_string()]);
         std::fs::remove_file(out).ok();
+    }
+
+    /// #846: the model typed a value one key at a time onto a terminal's
+    /// protected text; no key alone is checked, so the step passed with the
+    /// field empty. A run of keys is typed as text and must appear.
+    #[test]
+    fn keys_pressed_one_by_one_are_typed_as_text_on_vision() {
+        let key = |k: &str| ResolvedAction::PressKey {
+            key: k.into(),
+            modifiers: Vec::new(),
+        };
+        let plan = keys_typed_as_text(
+            vec![key("1"), key("2"), key("3"), key("Enter"), key("y")],
+            true,
+        );
+        assert_eq!(
+            Vec::from(plan),
+            vec![
+                ResolvedAction::TypeFocused { text: "123".into() },
+                key("Enter"),
+                key("y"),
+            ]
+        );
+        let plan = keys_typed_as_text(vec![key("1"), key("2")], false);
+        assert_eq!(Vec::from(plan), vec![key("1"), key("2")], "only on vision");
     }
 
     /// #846: a terminal draws a label's field on the line under it. The
