@@ -1,0 +1,12 @@
+# #846, against invoice-status.yaml: its message line reads "1/01 :Eingabe
+# unvollständig" before step 1 and after it. A model once reported that
+# standing line as step 1's failure and the recording stopped at step 2.
+# Plain-English steps, so this flow needs an authoring model: it is
+# recorded with one, not by run.ps1's rules-only sweep.
+name: Standing status line
+app: vision
+window: Erfassung (replica)
+steps:
+  - set focus to the window Erfassung
+  - Move keyboard focus into the editable field directly below the BelDat label
+  - enter 120345678
