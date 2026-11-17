@@ -663,6 +663,14 @@ pub fn filled_field(frame: &RgbaImage, label: PixelRect, relation: &str) -> Opti
     if below && !(lh / 2..=3 * lh).contains(&thickness) {
         return None;
     }
+    // Beside the label, a field is a solid run at least a glyph-height wide.
+    // The strokes of the NEXT label's letters are runs of a pixel or two:
+    // live, "VonDat" beside "BelDat" was taken for a field, and nine digits
+    // were typed onto protected text - which a real terminal answers by
+    // locking the keyboard.
+    if !below && thickness < lh {
+        return None;
+    }
     // Along the field: from the label's span outwards while the fill holds,
     // stepping over characters already typed into it.
     let middle = if below {
@@ -764,6 +772,23 @@ mod tests {
             paint(&mut img, (22 + i * 6, 142, 2, 10), [20, 20, 20]);
         }
         img
+    }
+
+    /// The next label's letters beside a label are not a field: their
+    /// strokes are runs of a pixel or two, not a solid fill.
+    #[test]
+    fn the_next_labels_letters_are_not_a_field_beside_a_label() {
+        let mut img = RgbaImage::from_pixel(400, 200, Rgba([240, 240, 240, 255]));
+        for (x0, n) in [(22u32, 6u32), (130, 6)] {
+            for i in 0..n {
+                for py in 42..52 {
+                    for px in x0 + i * 6..x0 + i * 6 + 2 {
+                        img.put_pixel(px, py, Rgba([20, 20, 20, 255]));
+                    }
+                }
+            }
+        }
+        assert!(filled_field(&img, (20, 40, 38, 14), "right_of").is_none());
     }
 
     #[test]
