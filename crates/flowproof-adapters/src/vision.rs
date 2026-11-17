@@ -78,6 +78,9 @@ impl OcrLine {
     }
 }
 
+/// A field a label names: its box, and the point that enters it.
+type FieldAt = (PixelRect, (i32, i32));
+
 /// A resolved anchor: the text that matched and the box it occupies. A
 /// hit is a whole line, a single word, or a run of adjacent words - the
 /// caller does not care which, it just clicks or reads the box.
@@ -617,7 +620,7 @@ impl<S: VisionScreen, E: OcrEngine> VisionAppDriver<S, E> {
         hit: &OcrHit,
         selector: &UiaSelector,
         default_relation: &str,
-    ) -> Result<Option<(PixelRect, (i32, i32))>, DriverError> {
+    ) -> Result<Option<FieldAt>, DriverError> {
         let relation = selector.relation.as_deref().unwrap_or(default_relation);
         if hit.control || !matches!(relation, "right_of" | "below") {
             return Ok(None);

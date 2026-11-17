@@ -2703,7 +2703,6 @@ fn surface_words<D: AppDriver>(driver: &mut D) -> Option<String> {
 }
 
 /// Resolve one spec step into actions per the authoring mode.
-#[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
 /// On a screen read only as pixels, a value the model typed one key at a
 /// time is typed as text instead. Each key alone is not checked - a key may
 /// be a hotkey that shows nothing - so a run of them typed onto a
@@ -2751,6 +2750,7 @@ fn keys_typed_as_text(
     out
 }
 
+#[allow(clippy::too_many_arguments)] // internal plumbing fn; grouping would obscure it
 fn author_actions<D: AppDriver, C: ModelClient>(
     spec: &FlowSpec,
     // The app id this step authors against: the ACTIVE surface's on a
