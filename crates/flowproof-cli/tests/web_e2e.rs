@@ -778,6 +778,101 @@ fn session_seeding_and_navigation_drive_real_pages() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A secret inside a URL never reaches a navigation error (#351 in the
+/// desktop repo). The driver only sees the resolved address, so record and
+/// replay mask its error against the flow's `${VAR}` templates - on the
+/// first launch and on a mid-flow `Go to`, at an address that can't be
+/// reached.
+#[test]
+fn a_secret_in_an_unreachable_url_is_masked_in_the_error() {
+    if std::env::var("FLOWPROOF_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping web URL secret E2E test: set FLOWPROOF_E2E=1 to run it");
+        return;
+    }
+    const PAGE: &str = "<!doctype html><html><body>Signed in</body></html>";
+    const UNREACHABLE: &str = "http://fp-user:fp-url-s3cret@portal.invalid/?token=fp-url-s3cret";
+    let base = serve_site(&[("/home", PAGE), ("/next", PAGE)]);
+    let leaked = |message: &str| message.contains("fp-url-s3cret") || message.contains("fp-user");
+    let dir = std::env::temp_dir().join("flowproof-web-url-secret-e2e");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("url.trace.jsonl");
+    let spec = |url: &str| flowproof_agent::FlowSpec {
+        name: "URL secret".into(),
+        app: "web".into(),
+        url: Some(url.into()),
+        redact: vec![],
+        connection: None,
+        login: None,
+        window: None,
+        session: None,
+        skip_unless_env: Vec::new(),
+        mock: Vec::new(),
+        browser: None,
+        agent: None,
+        tools: Vec::new(),
+        mcp: Vec::new(),
+        strict: false,
+        control: None,
+        exports: Default::default(),
+        apps: Default::default(),
+        steps: vec![
+            flowproof_agent::SpecStep::Plain("Go to ${FLOWPROOF_E2E_NEXT}".into()),
+            flowproof_agent::SpecStep::Assert {
+                assert: "page shows Signed in".into(),
+            },
+        ],
+    };
+
+    // Record: the launch address holds the secret.
+    std::env::set_var("FLOWPROOF_E2E_START", UNREACHABLE);
+    std::env::set_var("FLOWPROOF_E2E_NEXT", format!("{base}/next"));
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let err = flowproof_agent::record(&spec("${FLOWPROOF_E2E_START}"), &mut driver, &trace_path)
+        .expect_err("the host can't be reached")
+        .to_string();
+    drop(driver);
+    assert!(!leaked(&err), "record error quotes the secret: {err}");
+    assert!(err.contains("${FLOWPROOF_E2E_START}"), "{err}");
+
+    // Record a working flow, then replay it with each address unreachable.
+    std::env::set_var("FLOWPROOF_E2E_START", format!("{base}/home"));
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    flowproof_agent::record(&spec("${FLOWPROOF_E2E_START}"), &mut driver, &trace_path)
+        .expect("recording succeeds");
+    drop(driver);
+
+    // Mid-flow `Go to`.
+    std::env::set_var("FLOWPROOF_E2E_NEXT", UNREACHABLE);
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let err = flowproof_replay::run_trace(&trace_path, &mut driver)
+        .expect_err("the host can't be reached")
+        .to_string();
+    drop(driver);
+    assert!(
+        !leaked(&err),
+        "replay navigate error quotes the secret: {err}"
+    );
+    assert!(err.contains("${FLOWPROOF_E2E_NEXT}"), "{err}");
+
+    // First launch.
+    std::env::set_var("FLOWPROOF_E2E_START", UNREACHABLE);
+    let mut driver = flowproof_cli::driver_for("web").expect("browser launches");
+    let err = flowproof_replay::run_trace(&trace_path, &mut driver)
+        .expect_err("the host can't be reached")
+        .to_string();
+    drop(driver);
+    assert!(
+        !leaked(&err),
+        "replay launch error quotes the secret: {err}"
+    );
+    assert!(err.contains("${FLOWPROOF_E2E_START}"), "{err}");
+
+    std::env::remove_var("FLOWPROOF_E2E_START");
+    std::env::remove_var("FLOWPROOF_E2E_NEXT");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Redaction proof against a real browser: a page with a password field and
 /// a css-masked region — the PERSISTED frames must show both as solid black.
 #[test]
