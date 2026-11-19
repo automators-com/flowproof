@@ -1467,6 +1467,12 @@ fn names_an_address(text: &str) -> bool {
     text.contains("://") || flowproof_trace::secret::has_refs(text)
 }
 
+/// The spec as text: every `${VAR}` its `url`, `connection` and steps
+/// reference, for masking a driver error that quotes a resolved address.
+fn spec_templates(spec: &FlowSpec) -> String {
+    serde_json::to_string(spec).unwrap_or_default()
+}
+
 fn launch_target(spec: &FlowSpec) -> Result<flowproof_driver::AppTarget, RecordError> {
     if spec.app.id() == "web" {
         let Some(url) = spec.url.as_deref() else {
@@ -3567,7 +3573,9 @@ fn record_steps<D: AppDriver, C: ModelClient>(
             driver.activate_surface(&block.surface, &captures)?;
         }
     } else {
-        driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+        driver
+            .launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)
+            .map_err(|e| e.masked(&[&spec_templates(spec)]))?;
     }
     let recorded_setup = with_recorded_page_size(recorded_browser(spec), spec, driver);
     // Shape the window BEFORE the first step, so every frame and every
@@ -4766,7 +4774,9 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             intent: spec_step.intent().to_string(),
                         });
                     }
-                    driver.navigate(&flowproof_driver::absolute_url(&path, &target.command))?
+                    driver
+                        .navigate(&flowproof_driver::absolute_url(&path, &target.command))
+                        .map_err(|e| e.masked(&[&spec_templates(spec)]))?
                 }
                 ResolvedAction::Reload => driver.reload()?,
                 ResolvedAction::AssertText {

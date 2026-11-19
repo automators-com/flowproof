@@ -2990,8 +2990,13 @@ pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
     };
     let started = Instant::now();
     let multi = header.app.name == "multi";
+    // The header's raw `url` / `command` / `window_title`: what a driver
+    // error quoting the resolved address is masked against.
+    let app_templates = serde_json::to_string(&header.app).unwrap_or_default();
     if !multi {
-        driver.launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)?;
+        driver
+            .launch(&target.command, &target.window_name, LAUNCH_TIMEOUT)
+            .map_err(|e| e.masked(&[&app_templates]))?;
     }
     // Reproduce the recording's window shape before the first step. The
     // header stores what was APPLIED then, including a position the spec
@@ -3209,7 +3214,16 @@ pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
             &mut captures,
             &mut secret_corpus,
             recorder.as_mut(),
-        )?;
+        )
+        .map_err(|e| match e {
+            // A `url:` step navigates to its resolved address, joined to
+            // the flow's own: mask against both templates.
+            ReplayError::Driver(e) => {
+                let step_templates = serde_json::to_string(step).unwrap_or_default();
+                ReplayError::Driver(e.masked(&[&app_templates, &step_templates]))
+            }
+            e => e,
+        })?;
         let duration_ms = step_started.elapsed().as_millis() as u64;
         if let Some(rec) = recorder.as_mut() {
             rec.step_finished(driver);

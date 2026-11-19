@@ -301,6 +301,23 @@ impl DriverError {
     pub fn is_transient(&self) -> bool {
         matches!(self, DriverError::Transport(_))
     }
+
+    /// The same error with every `${VAR}` value `templates` reference put
+    /// back as its reference (see `secret::mask_values`). A driver is only
+    /// handed resolved values, so an error that quotes one - `navigating to
+    /// https://user:token@host/` - is masked by the caller holding the
+    /// templates, before it reaches a report, stdout or the repair loop.
+    pub fn masked(self, templates: &[&str]) -> Self {
+        let mask = |message: String| flowproof_trace::secret::mask_values(&message, templates);
+        match self {
+            DriverError::UnsupportedPlatform => DriverError::UnsupportedPlatform,
+            DriverError::Capture(m) => DriverError::Capture(mask(m)),
+            DriverError::Input(m) => DriverError::Input(mask(m)),
+            DriverError::Uia(m) => DriverError::Uia(mask(m)),
+            DriverError::Browser(m) => DriverError::Browser(mask(m)),
+            DriverError::Transport(m) => DriverError::Transport(mask(m)),
+        }
+    }
 }
 
 /// Screen/window capture source.
@@ -335,6 +352,26 @@ mod tests {
             assert_eq!(virtual_key(name), Some(modifier_virtual_key(&KeyMod::Meta)));
         }
         assert_eq!(virtual_key("not-a-key"), None);
+    }
+
+    #[test]
+    fn masked_puts_a_url_secret_back_as_its_reference() {
+        std::env::set_var("FP_DRIVER_MASK_USER", "alice");
+        std::env::set_var("FP_DRIVER_MASK_TOKEN", "s3cr3t-tok");
+        let template = "https://${FP_DRIVER_MASK_USER}:${FP_DRIVER_MASK_TOKEN}@portal.invalid/?t=${FP_DRIVER_MASK_TOKEN}";
+        let err = DriverError::Browser(
+            "navigating to https://alice:s3cr3t-tok@portal.invalid/?t=s3cr3t-tok: Navigate failed"
+                .into(),
+        )
+        .masked(&[template]);
+        assert_eq!(
+            err.to_string(),
+            "browser driver failed: navigating to https://${FP_DRIVER_MASK_USER}:${FP_DRIVER_MASK_TOKEN}@portal.invalid/?t=${FP_DRIVER_MASK_TOKEN}: Navigate failed"
+        );
+        // The variant survives, so a transport fault is still retried.
+        assert!(DriverError::Transport("x".into())
+            .masked(&[template])
+            .is_transient());
     }
 
     #[test]
