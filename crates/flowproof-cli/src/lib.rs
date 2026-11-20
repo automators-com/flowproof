@@ -1051,7 +1051,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
     if author == AuthorArg::Auto
         && spec.has_plain_steps()
         && matches!(
-            flowproof_agent::HttpModelClient::from_env_result(),
+            flowproof_agent::ConfiguredModel::from_env_result(),
             Ok(None)
         )
     {
@@ -1502,7 +1502,7 @@ fn run_repair_loop(
     if first_err.error.is_setup_error() {
         return RepairLoopOutcome::NotRepaired(first_err);
     }
-    let Some(mut client) = flowproof_agent::HttpModelClient::from_env() else {
+    let Some(mut client) = flowproof_agent::ConfiguredModel::from_env() else {
         return RepairLoopOutcome::NotRepaired(first_err);
     };
     let mut attempts = Vec::new();
@@ -2851,7 +2851,7 @@ fn record_one(
     let fallback = author == AuthorArg::Auto
         && spec.has_plain_steps()
         && matches!(
-            flowproof_agent::HttpModelClient::from_env_result(),
+            flowproof_agent::ConfiguredModel::from_env_result(),
             Ok(None)
         );
     let mut driver = record_driver(&spec)?;
@@ -4534,7 +4534,7 @@ fn cmd_heal(
     if author == AuthorArg::Auto
         && spec.has_plain_steps()
         && matches!(
-            flowproof_agent::HttpModelClient::from_env_result(),
+            flowproof_agent::ConfiguredModel::from_env_result(),
             Ok(None)
         )
     {
