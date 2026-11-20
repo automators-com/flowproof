@@ -108,12 +108,14 @@ $ flowproof config ai
 AI provider:
   1) anthropic
   2) openai
+  3) claude-code (your Claude subscription, experimental)
+  4) codex (your ChatGPT subscription, experimental)
 Choose provider [default: anthropic]:
 AI API key: ****************
 wrote /Users/you/Library/Application Support/flowproof/config.yaml
 ```
 
-Only `anthropic` and `openai` are accepted; a misspelled provider fails
+Only `anthropic`, `openai`, `claude-code` and `codex` are accepted; a misspelled provider fails
 before anything is written, rather than being stored and failing later at
 record time. One neutral `ai.api_key` is stored; at runtime it seeds
 `FLOWPROOF_AI_API_KEY` first, then the provider-specific compatibility
@@ -135,6 +137,30 @@ id next to the key; it is not a secret) and it is sent as the
 `anthropic-workspace-id` header on every model call. `FLOWPROOF_AI_WORKSPACE_ID`
 in the environment does the same, and `--clear-workspace-id` removes it. A
 key created inside a workspace needs none of this.
+
+#### Using your Claude or ChatGPT subscription (experimental)
+
+`claude-code` and `codex` need no API key. flowproof starts your own Claude
+Code or Codex, through its ACP adapter, and uses it as the model, so the calls
+count against the subscription you are already signed in with. Sign in once by
+running `claude` (or `codex login`) in a terminal, then check it with
+`flowproof doctor --ai`:
+
+```console
+$ flowproof config ai --provider claude-code
+$ flowproof doctor --ai
+```
+
+The adapter is `claude-agent-acp` or `codex-acp` when it is installed, and
+otherwise fetched with `npx` at a pinned version, so Node needs to be
+installed. `FLOWPROOF_AI_AGENT_COMMAND` points at an adapter that is not on
+PATH. flowproof never reads or stores the agent's login. The agent runs in an
+empty temporary folder, its environment leaves out `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY` and every secret flowproof holds (Claude Code would
+otherwise bill a key it finds instead of your subscription), and any request
+it makes to use a tool, read a file or open a terminal is refused. The agent
+picks the model; `--model` does not apply. Every call is a full agent turn,
+so expect it to be slower than an API key, and it uses up your plan's limits.
 
 ### Business data values
 
