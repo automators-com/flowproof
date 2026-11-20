@@ -5448,11 +5448,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         agent: (llm_used && client.is_some()).then(|| {
             let (backend, model) = client.as_ref().map(|c| c.identity()).unwrap_or_default();
             flowproof_trace::format::AgentInfo {
-                backend: if backend == "anthropic" {
-                    flowproof_trace::format::AgentBackend::Anthropic
-                } else {
-                    flowproof_trace::format::AgentBackend::OpenaiCompatible
-                },
+                backend: agent_backend(&backend),
                 model: Some(model),
             }
         }),
@@ -5519,12 +5515,34 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     })
 }
 
+/// The trace's name for the backend a client calls itself. Anything that is
+/// not Anthropic or an agent speaks the OpenAI-compatible shape, which is
+/// what the trace has always called OpenAI's own API too.
+fn agent_backend(backend: &str) -> flowproof_trace::format::AgentBackend {
+    use flowproof_trace::format::AgentBackend;
+    match backend {
+        "anthropic" => AgentBackend::Anthropic,
+        "claude-code" => AgentBackend::ClaudeCode,
+        "codex" => AgentBackend::Codex,
+        _ => AgentBackend::OpenaiCompatible,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use flowproof_driver::mock::MockAppDriver;
     use flowproof_trace::TraceLine;
 
     use super::*;
+
+    #[test]
+    fn a_trace_names_the_agent_that_authored_it() {
+        use flowproof_trace::format::AgentBackend;
+        assert_eq!(agent_backend("claude-code"), AgentBackend::ClaudeCode);
+        assert_eq!(agent_backend("codex"), AgentBackend::Codex);
+        assert_eq!(agent_backend("anthropic"), AgentBackend::Anthropic);
+        assert_eq!(agent_backend("openai"), AgentBackend::OpenaiCompatible);
+    }
     use crate::spec::FlowSpec;
 
     /// A carousel mid-rotation: covered for the first few probes, then not.
