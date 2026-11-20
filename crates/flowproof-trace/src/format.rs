@@ -346,6 +346,12 @@ pub struct AgentInfo {
 pub enum AgentBackend {
     Anthropic,
     OpenaiCompatible,
+    /// The user's own Claude Code, on their Claude subscription, over ACP.
+    /// An engine that predates it fails to parse the header, as with any
+    /// new variant here; replay itself never reads `agent`.
+    ClaudeCode,
+    /// The user's own Codex, on their ChatGPT subscription, over ACP.
+    Codex,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
