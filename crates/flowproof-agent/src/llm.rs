@@ -495,7 +495,7 @@ impl ModelClient for HttpModelClient {
     }
 }
 
-fn base64_png(png: &[u8]) -> String {
+pub(crate) fn base64_png(png: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(png)
 }
