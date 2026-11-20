@@ -115,7 +115,9 @@ impl SurfaceRegistry {
         let command = resolve_launch_template(&slot.target.command, captures)?;
         let window_name = resolve_launch_template(&slot.target.window_name, captures)?;
         let driver = slot.driver.as_mut().expect("just ensured");
-        driver.launch(&command, &window_name, self.launch_timeout)?;
+        driver
+            .launch(&command, &window_name, self.launch_timeout)
+            .map_err(|e| e.masked(&[&slot.target.command, &slot.target.window_name]))?;
         self.active = Some(name.to_string());
         Ok(())
     }
