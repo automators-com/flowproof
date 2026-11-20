@@ -21,6 +21,7 @@ pub mod selection;
 pub mod spec;
 pub mod video_author;
 
+pub use acp::{AcpModelClient, AgentKind};
 pub use clarify::{Clarification, ClarifyStage};
 pub use heal::{
     heal, heal_fallbacks, heal_with_author, proposed_path, Fallback, HealError, HealReport,
