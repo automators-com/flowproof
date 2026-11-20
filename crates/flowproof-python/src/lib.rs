@@ -112,7 +112,7 @@ fn record(
         let mut driver = flowproof_cli::driver_for(parsed.app.id()).map_err(runtime_err)?;
         let fallback = author == flowproof_agent::Author::Auto
             && parsed.has_plain_steps()
-            && matches!(flowproof_agent::HttpModelClient::from_env_result(), Ok(None));
+            && matches!(flowproof_agent::ConfiguredModel::from_env_result(), Ok(None));
         match flowproof_agent::record_with_author_and_options(
             &parsed, &mut driver, &out, author, recording,
         ) {

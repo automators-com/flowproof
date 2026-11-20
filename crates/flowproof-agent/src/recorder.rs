@@ -13,7 +13,7 @@ use flowproof_trace::format::{
 use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 
 use crate::author::AuthorContext;
-use crate::llm::{HttpModelClient, ModelClient};
+use crate::llm::{ConfiguredModel, ModelClient};
 use crate::rules::{
     resolve_step, AttrCheck, ResolvedAction, ScrollTo, Target, TextMatch, NOTEPAD_EDITOR_ID,
 };
@@ -2544,7 +2544,7 @@ pub fn record<D: AppDriver>(
     driver: &mut D,
     out: &Path,
 ) -> Result<RecordSummary, RecordError> {
-    let mut client = HttpModelClient::from_env_result()?;
+    let mut client = ConfiguredModel::from_env_result()?;
     record_with_client(spec, driver, out, Author::Auto, client.as_mut())
 }
 
@@ -2572,7 +2572,7 @@ pub fn record_with_author_and_options<D: AppDriver>(
     author: Author,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, RecordError> {
-    let mut client = HttpModelClient::from_env_result()?;
+    let mut client = ConfiguredModel::from_env_result()?;
     record_with_client_and_options(spec, driver, out, author, client.as_mut(), recording)
 }
 
@@ -2604,7 +2604,7 @@ pub fn record_incremental_with_options<D: AppDriver>(
     old_steps: &[Step],
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, RecordError> {
-    let mut client = HttpModelClient::from_env_result()?;
+    let mut client = ConfiguredModel::from_env_result()?;
     record_with_reuse_and_options(
         spec,
         driver,
@@ -3468,7 +3468,7 @@ pub fn record_located<D: AppDriver>(
     old_steps: Option<&[Step]>,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, LocatedRecordError> {
-    let mut client = HttpModelClient::from_env_result().map_err(RecordError::from)?;
+    let mut client = ConfiguredModel::from_env_result().map_err(RecordError::from)?;
     record_with_reuse_located(
         spec,
         driver,

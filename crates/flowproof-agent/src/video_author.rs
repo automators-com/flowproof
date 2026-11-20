@@ -175,7 +175,7 @@ fn parse_reply(reply: &str) -> Result<Vec<DraftLine>, VideoAuthorError> {
     })
 }
 
-fn model_client() -> Result<crate::llm::HttpModelClient, VideoAuthorError> {
+fn model_client() -> Result<crate::llm::ConfiguredModel, VideoAuthorError> {
     let config = BackendConfig::from_env()?;
     if !config.is_usable() {
         return Err(VideoAuthorError::Agent(AgentError::Config(
@@ -183,7 +183,7 @@ fn model_client() -> Result<crate::llm::HttpModelClient, VideoAuthorError> {
                 .into(),
         )));
     }
-    Ok(crate::llm::HttpModelClient::new(config))
+    Ok(crate::llm::ConfiguredModel::new(config))
 }
 
 pub fn author_from_frames(
