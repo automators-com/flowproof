@@ -280,16 +280,23 @@ mod tests {
                 "error": {"code": AUTH_REQUIRED, "message": "Authentication required"}})],
             _ => vec![],
         });
-        let soon = || Instant::now() + Duration::from_millis(200);
+        // Generous for the answered request, so a busy CI machine scheduling
+        // the agent thread late is not a failure; short for the silent one.
+        let answered = Instant::now() + Duration::from_secs(5);
         assert_eq!(
-            conn.request("session/new", json!({}), soon(), &mut |_| {}),
+            conn.request("session/new", json!({}), answered, &mut |_| {}),
             Err(Failure::Rpc {
                 code: AUTH_REQUIRED,
                 message: "Authentication required".into()
             })
         );
         assert_eq!(
-            conn.request("session/prompt", json!({}), soon(), &mut |_| {}),
+            conn.request(
+                "session/prompt",
+                json!({}),
+                Instant::now() + Duration::from_millis(200),
+                &mut |_| {}
+            ),
             Err(Failure::TimedOut)
         );
     }
