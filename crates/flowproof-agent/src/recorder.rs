@@ -4357,21 +4357,25 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 }
                 ResolvedAction::TypeText { text, .. } => {
                     // `${captured.x}` and `${VAR}` both resolve at the moment
-                    // of typing; the trace only ever stores the reference
-                    // (see step_for). Captures first: a `${VAR}` name cannot
-                    // contain a dot, so the secret resolver would pass a
-                    // capture reference through as literal text.
-                    let text = flowproof_trace::captures::substitute(text, &captures).map_err(
-                        |reason| RecordError::AssertMismatch {
-                            intent: spec_step.intent().to_string(),
-                            expected: "a remembered capture to type".to_string(),
-                            actual: reason,
-                        },
-                    )?;
-                    let value = flowproof_trace::secret::resolve_refs(&text)?;
-                    // A value from a `${...}` reference is not read back: a
+                    // of typing, in one pass, so a captured value is never
+                    // read for references; the trace only ever stores the
+                    // reference (see step_for).
+                    let value = match flowproof_trace::captures::resolve(text, &captures) {
+                        Ok(value) => value,
+                        Err(flowproof_trace::captures::Unresolved::Capture(reason)) => {
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: "a remembered capture to type".to_string(),
+                                actual: reason,
+                            })
+                        }
+                        Err(flowproof_trace::captures::Unresolved::Secret(missing)) => {
+                            return Err(missing.into())
+                        }
+                    };
+                    // A value from a `${VAR}` reference is not read back: a
                     // masked password field never shows what was typed.
-                    let referenced = text.contains("${");
+                    let referenced = flowproof_trace::secret::has_refs(text);
                     // Plan 15, finding 14: a vision field types beside its
                     // label (the SAP GUI layout), but most web forms put the
                     // label ABOVE the box. A referenced value follows the
@@ -4638,36 +4642,37 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // Resolved like `equals` above: the trace keeps the raw
                     // ${VAR}; only the live probe sees values — including
                     // header tokens and body string leaves. Earlier captures
-                    // resolve first, the same ladder `TypeText` uses.
-                    let captured_ref = |reason: String| RecordError::AssertMismatch {
-                        intent: spec_step.intent().to_string(),
-                        expected: "a remembered capture in the request".to_string(),
-                        actual: reason,
-                    };
-                    let url = flowproof_trace::captures::substitute(url, &captures)
-                        .map_err(captured_ref)?;
-                    let body = match body {
-                        Some(b) => Some(
-                            flowproof_trace::captures::substitute_json(b, &captures)
-                                .map_err(captured_ref)?,
-                        ),
-                        None => None,
+                    // resolve in the same pass, as `TypeText` does, so a
+                    // captured value is never read for references.
+                    let unresolved = |e: flowproof_trace::captures::Unresolved| match e {
+                        flowproof_trace::captures::Unresolved::Capture(reason) => {
+                            RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: "a remembered capture in the request".to_string(),
+                                actual: reason,
+                            }
+                        }
+                        flowproof_trace::captures::Unresolved::Secret(missing) => missing.into(),
                     };
                     let probe = flowproof_driver::oob::OobProbe::Api {
                         count: array_count(*count, *count_at_least),
                         retry: *retry,
                         method: method.clone(),
-                        url: flowproof_trace::secret::resolve_refs(&url)?,
-                        body: match &body {
-                            Some(b) => Some(flowproof_trace::secret::resolve_refs_in_json(b)?),
+                        url: flowproof_trace::captures::resolve(url, &captures)
+                            .map_err(unresolved)?,
+                        body: match body {
+                            Some(b) => Some(
+                                flowproof_trace::captures::resolve_json(b, &captures)
+                                    .map_err(unresolved)?,
+                            ),
                             None => None,
                         },
                         headers: headers
                             .iter()
                             .map(|(k, v)| {
-                                let v = flowproof_trace::captures::substitute(v, &captures)
-                                    .map_err(captured_ref)?;
-                                Ok((k.clone(), flowproof_trace::secret::resolve_refs(&v)?))
+                                let v = flowproof_trace::captures::resolve(v, &captures)
+                                    .map_err(unresolved)?;
+                                Ok((k.clone(), v))
                             })
                             .collect::<Result<_, RecordError>>()?,
                         status: *status,
@@ -4740,16 +4745,24 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // The trace stores references, never values: a
                     // `${captured.x}` (the downloaded export's own path is
                     // the common case) resolves from this run's captures,
-                    // then a `${VAR}` from the environment — the same
-                    // two-step ladder `TypeText` resolves with.
-                    let substituted = flowproof_trace::captures::substitute(path, &captures)
-                        .map_err(|reason| RecordError::AssertMismatch {
-                            intent: spec_step.intent().to_string(),
-                            expected: "a remembered capture in the spreadsheet path".to_string(),
-                            actual: reason,
-                        })?;
+                    // and a `${VAR}` from the environment, in one pass like
+                    // `TypeText`.
+                    let resolved = match flowproof_trace::captures::resolve(path, &captures) {
+                        Ok(resolved) => resolved,
+                        Err(flowproof_trace::captures::Unresolved::Capture(reason)) => {
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: "a remembered capture in the spreadsheet path"
+                                    .to_string(),
+                                actual: reason,
+                            })
+                        }
+                        Err(flowproof_trace::captures::Unresolved::Secret(missing)) => {
+                            return Err(missing.into())
+                        }
+                    };
                     let probe = flowproof_driver::oob::OobProbe::Spreadsheet {
-                        path: flowproof_trace::secret::resolve_refs(&substituted)?,
+                        path: resolved,
                         sheet: sheet.clone(),
                         at: at.clone(),
                         column: column.clone(),

@@ -19,9 +19,23 @@ impl AgentSurface {
         }
     }
 }
+/// Fill earlier captures into an agent block's spec. The agent resolves
+/// `${VAR}` over that spec later, so a captured value holding a `${VAR}`
+/// reference is refused: the app under test would otherwise choose which
+/// environment variable, secrets included, the agent fills in.
 fn substitute(value: &mut Value, captures: &HashMap<String, String>) -> Result<(), DriverError> {
     match value {
         Value::String(s) => {
+            for name in flowproof_trace::captures::capture_refs(s) {
+                if captures
+                    .get(name)
+                    .is_some_and(|v| flowproof_trace::secret::has_refs(v))
+                {
+                    return Err(DriverError::Uia(format!(
+                        "capture '{name}' holds a ${{…}} reference, which the agent block would fill in from the environment"
+                    )));
+                }
+            }
             *s = flowproof_trace::captures::substitute(s, captures).map_err(DriverError::Uia)?
         }
         Value::Array(a) => {
@@ -104,5 +118,25 @@ impl AppDriver for AgentSurface {
         outcome.map_err(error)?;
         serde_json::from_slice(&std::fs::read(path).map_err(|e| error(e.to_string()))?)
             .map_err(|e| error(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_captured_env_reference_is_refused_not_passed_on() {
+        let captures = HashMap::from([
+            ("note".to_string(), "${SOME_SECRET}".to_string()),
+            ("oid".to_string(), "1060049".to_string()),
+        ]);
+        let mut spec = serde_json::json!({"steps": ["Type ${captured.oid}"]});
+        substitute(&mut spec, &captures).expect("a plain capture fills in");
+        assert_eq!(spec, serde_json::json!({"steps": ["Type 1060049"]}));
+        let mut spec = serde_json::json!({"steps": ["Type ${captured.note}"]});
+        let err = substitute(&mut spec, &captures).expect_err("refused");
+        assert!(err.to_string().contains("note"), "{err}");
+        assert!(!err.to_string().contains("SOME_SECRET"), "{err}");
     }
 }

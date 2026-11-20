@@ -1850,6 +1850,37 @@ fn a_bare_capture_reference_compares_text() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A captured value is text the app under test showed, so a `${VAR}` inside
+/// it is typed as that text. Resolving it from the environment would let
+/// the app name any variable, secrets included, and have its value typed
+/// back into the page.
+#[test]
+fn a_captured_value_is_typed_as_text_not_resolved_from_the_environment() {
+    let dir = std::env::temp_dir().join("flowproof-replay-capture-env-ref");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::env::set_var("FLOWPROOF_TEST_CAPTURED_SECRET", "hunter2");
+    let spec = FlowSpec::parse(
+        "name: Order\napp: web\nurl: x\nsteps:\n  - Remember the \"Order\" as order\n  - Type ${captured.order} into the \"Search\" field\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/o".into()),
+        ..spec
+    };
+    let trace = dir.join("env-ref.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Order", "Search"]).with_text("Order", "ORD-4711");
+    record(&spec, &mut rec, &trace).expect("records");
+
+    let mut driver = MockAppDriver::new(&["Order", "Search"])
+        .with_text("Order", "${FLOWPROOF_TEST_CAPTURED_SECRET}");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    let typed: Vec<&str> = driver.typed.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(typed, ["${FLOWPROOF_TEST_CAPTURED_SECRET}"]);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Referencing a capture that was never taken is a spec ERROR, not a failed
 /// expectation: the flow cannot be judged at all, and the message must name
 /// what is in scope so the author can fix the typo.
