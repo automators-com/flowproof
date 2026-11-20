@@ -244,3 +244,23 @@ fn repeat_fixture_lines_parse_and_validate() {
     }
     assert_eq!(passes, [1, 2], "two recorded passes, then a plain step");
 }
+
+/// A trace authored on the user's own agent names it: the schema and the
+/// typed model both take `claude-code` and `codex` as the backend.
+#[test]
+fn an_agent_authored_header_validates_and_parses() {
+    let validator = validator();
+    let header_line = FIXTURE.lines().next().expect("fixture has a header line");
+    for backend in ["claude-code", "codex"] {
+        let mut header: serde_json::Value =
+            serde_json::from_str(header_line).expect("header is JSON");
+        header["agent"] = serde_json::json!({"backend": backend, "model": "default"});
+        assert!(
+            validator.validate(&header).is_ok(),
+            "{backend} header failed schema validation: {:?}",
+            validator.iter_errors(&header).next()
+        );
+        let parsed = TraceLine::parse(&header.to_string()).expect("header parses");
+        assert!(matches!(parsed, TraceLine::Header(_)));
+    }
+}
