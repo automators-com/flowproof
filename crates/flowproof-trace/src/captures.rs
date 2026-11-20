@@ -16,6 +16,10 @@ pub const OPEN: &str = "${captured.";
 /// resolution deliberately does not do this: its names may not contain a
 /// dot, so `${captured.x}` passes through it untouched, and before this
 /// existed that literal was what got typed.
+///
+/// Captures only: `${VAR}` is left as written. Where a template can hold
+/// both, use [`resolve`]; substituting here and then resolving `${VAR}`
+/// over the result would read references out of captured values.
 pub fn substitute(
     text: &str,
     captures: &std::collections::HashMap<String, String>,
@@ -31,44 +35,108 @@ pub fn substitute(
         let Some(end) = after.find('}') else {
             return Err(format!("unterminated {OPEN}…}} reference in '{text}'"));
         };
-        let name = &after[..end];
-        let Some(value) = captures.get(name) else {
-            let mut names: Vec<&str> = captures.keys().map(String::as_str).collect();
-            names.sort_unstable();
-            return Err(format!(
-                "capture '{name}' was never remembered ({})",
-                if names.is_empty() {
-                    "no captures in scope".to_string()
-                } else {
-                    format!("in scope: {}", names.join(", "))
-                }
-            ));
-        };
-        out.push_str(value);
+        out.push_str(lookup(&after[..end], captures)?);
         rest = &after[end + 1..];
     }
     out.push_str(rest);
     Ok(out)
 }
 
-/// [`substitute`] every string leaf of a JSON value (an `assert_api` body),
-/// leaving keys and non-string leaves untouched.
-pub fn substitute_json(
+/// The value remembered as `name`, or an error naming what IS in scope.
+fn lookup<'a>(
+    name: &str,
+    captures: &'a std::collections::HashMap<String, String>,
+) -> Result<&'a str, String> {
+    captures.get(name).map(String::as_str).ok_or_else(|| {
+        let mut names: Vec<&str> = captures.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        format!(
+            "capture '{name}' was never remembered ({})",
+            if names.is_empty() {
+                "no captures in scope".to_string()
+            } else {
+                format!("in scope: {}", names.join(", "))
+            }
+        )
+    })
+}
+
+/// Why [`resolve`] could not fill a template in.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Unresolved {
+    /// An unknown or unterminated `${captured.<name>}`.
+    #[error("{0}")]
+    Capture(String),
+    /// A `${VAR}` that is not set in the environment.
+    #[error(transparent)]
+    Secret(#[from] crate::secret::MissingSecret),
+}
+
+/// Fill in `${captured.<name>}` from the flow's captures and `${VAR}` from
+/// the environment, in ONE pass over the template. What goes in is never
+/// scanned again: a captured value is text the app under test showed, so a
+/// `${SECRET}` inside one is that text, not a reference. Substituting
+/// captures and then resolving `${VAR}` over the result let the app under
+/// test name any environment variable, secrets included, and have its value
+/// typed back or sent on. A secret's value is likewise never read for
+/// `${captured.…}`. Use this, not [`substitute`] followed by
+/// [`crate::secret::resolve_refs`], wherever a template can hold both.
+pub fn resolve(
+    text: &str,
+    captures: &std::collections::HashMap<String, String>,
+) -> Result<String, Unresolved> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        if let Some(after) = rest[start..].strip_prefix(OPEN) {
+            let Some(end) = after.find('}') else {
+                return Err(Unresolved::Capture(format!(
+                    "unterminated {OPEN}…}} reference in '{text}'"
+                )));
+            };
+            out.push_str(lookup(&after[..end], captures).map_err(Unresolved::Capture)?);
+            rest = &after[end + 1..];
+            continue;
+        }
+        let after = &rest[start + 2..];
+        match crate::secret::parse_ref(after) {
+            Some((name, consumed)) => {
+                let value = std::env::var(name).map_err(|_| crate::secret::MissingSecret {
+                    var: name.to_string(),
+                })?;
+                out.push_str(&value);
+                rest = &after[consumed..];
+            }
+            None => {
+                out.push_str("${");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// [`resolve`] every string leaf of a JSON value (an `assert_api` body),
+/// leaving keys and non-string leaves untouched. Leaf by leaf, so a value
+/// containing `"` or `\` lands as data and never changes the structure.
+pub fn resolve_json(
     value: &serde_json::Value,
     captures: &std::collections::HashMap<String, String>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, Unresolved> {
     Ok(match value {
-        serde_json::Value::String(s) => serde_json::Value::String(substitute(s, captures)?),
+        serde_json::Value::String(s) => serde_json::Value::String(resolve(s, captures)?),
         serde_json::Value::Array(items) => serde_json::Value::Array(
             items
                 .iter()
-                .map(|v| substitute_json(v, captures))
+                .map(|v| resolve_json(v, captures))
                 .collect::<Result<_, _>>()?,
         ),
         serde_json::Value::Object(map) => serde_json::Value::Object(
             map.iter()
-                .map(|(k, v)| Ok((k.clone(), substitute_json(v, captures)?)))
-                .collect::<Result<_, String>>()?,
+                .map(|(k, v)| Ok((k.clone(), resolve_json(v, captures)?)))
+                .collect::<Result<_, Unresolved>>()?,
         ),
         other => other.clone(),
     })
@@ -224,19 +292,20 @@ mod tests {
 
     #[test]
     fn json_string_leaves_resolve_and_the_rest_is_kept() {
+        std::env::set_var("FLOWPROOF_TEST_CAPTURE_JSON_TOKEN", "tok-123");
         let c = scope(&[("oid", "1060049")]);
         let body = serde_json::json!({
-            "env": {"ORDER": "${captured.oid}", "TOKEN": "${TOKEN}"},
+            "env": {"ORDER": "${captured.oid}", "TOKEN": "${FLOWPROOF_TEST_CAPTURE_JSON_TOKEN}"},
             "ids": ["x-${captured.oid}", 7, true],
         });
         assert_eq!(
-            substitute_json(&body, &c).expect("resolves"),
+            resolve_json(&body, &c).expect("resolves"),
             serde_json::json!({
-                "env": {"ORDER": "1060049", "TOKEN": "${TOKEN}"},
+                "env": {"ORDER": "1060049", "TOKEN": "tok-123"},
                 "ids": ["x-1060049", 7, true],
             })
         );
-        assert!(substitute_json(&serde_json::json!(["${captured.nope}"]), &c).is_err());
+        assert!(resolve_json(&serde_json::json!(["${captured.nope}"]), &c).is_err());
     }
 
     #[test]
@@ -285,5 +354,73 @@ mod tests {
             "params": {"kind": "element_state", "expect": {"capture": "balance"}}
         }));
         assert_eq!(used_by(&compare), ["balance"]);
+    }
+
+    /// The app under test decides what a capture holds, so a `${SECRET}` in
+    /// a captured value must reach the field as that text. Resolving it
+    /// would let the app name any environment variable and have its value
+    /// typed back or sent on to an API host.
+    #[test]
+    fn a_captured_value_is_never_read_for_env_references() {
+        std::env::set_var("FLOWPROOF_TEST_CAPTURE_SECRET", "hunter2");
+        let c = scope(&[
+            ("note", "${FLOWPROOF_TEST_CAPTURE_SECRET}"),
+            ("file", "report-${date}.xlsx"),
+        ]);
+        assert_eq!(
+            resolve("${captured.note}", &c).expect("resolves"),
+            "${FLOWPROOF_TEST_CAPTURE_SECRET}",
+            "the value is text, not a reference"
+        );
+        // A legitimate `${…}` in captured text no longer fails as an unset
+        // secret.
+        assert_eq!(
+            resolve("/downloads/${captured.file}", &c).expect("resolves"),
+            "/downloads/report-${date}.xlsx"
+        );
+        // A reference the flow itself wrote still resolves beside a capture.
+        assert_eq!(
+            resolve("${FLOWPROOF_TEST_CAPTURE_SECRET}:${captured.note}", &c).expect("resolves"),
+            "hunter2:${FLOWPROOF_TEST_CAPTURE_SECRET}"
+        );
+        let body = serde_json::json!({"memo": "${captured.note}", "n": 1});
+        assert_eq!(
+            resolve_json(&body, &c).expect("resolves"),
+            serde_json::json!({"memo": "${FLOWPROOF_TEST_CAPTURE_SECRET}", "n": 1})
+        );
+    }
+
+    #[test]
+    fn a_secret_value_is_never_read_for_capture_references() {
+        std::env::set_var("FLOWPROOF_TEST_CAPTURE_REF_IN_SECRET", "${captured.oid}");
+        let c = scope(&[("oid", "1060049")]);
+        assert_eq!(
+            resolve("${FLOWPROOF_TEST_CAPTURE_REF_IN_SECRET}", &c).expect("resolves"),
+            "${captured.oid}"
+        );
+    }
+
+    #[test]
+    fn resolve_fails_by_kind() {
+        let c = scope(&[("oid", "1")]);
+        assert!(matches!(
+            resolve("${captured.typo}", &c),
+            Err(Unresolved::Capture(why)) if why.contains("typo") && why.contains("oid")
+        ));
+        assert!(matches!(
+            resolve("${captured.oid", &c),
+            Err(Unresolved::Capture(why)) if why.contains("unterminated")
+        ));
+        assert_eq!(
+            resolve("${FLOWPROOF_TEST_CAPTURE_UNSET}", &c),
+            Err(Unresolved::Secret(crate::secret::MissingSecret {
+                var: "FLOWPROOF_TEST_CAPTURE_UNSET".to_string()
+            }))
+        );
+        // Not a reference of either kind: kept as written.
+        assert_eq!(
+            resolve("$X ${ ${1BAD}", &c).expect("literal"),
+            "$X ${ ${1BAD}"
+        );
     }
 }

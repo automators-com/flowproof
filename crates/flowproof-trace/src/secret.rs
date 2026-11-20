@@ -19,7 +19,7 @@ pub struct MissingSecret {
     pub var: String,
 }
 
-fn parse_ref(text: &str) -> Option<(&str, usize)> {
+pub(crate) fn parse_ref(text: &str) -> Option<(&str, usize)> {
     // `text` starts right after `${`; returns (name, chars consumed incl `}`).
     let end = text.find('}')?;
     let name = &text[..end];
