@@ -1798,6 +1798,14 @@ fn check_assertion<D: AppDriver>(
                     return Err(missing.into())
                 }
             };
+            // A substring check against blank text holds on any response,
+            // leaving only the status to fail the step.
+            if let Some(blank) = expect
+                .as_ref()
+                .and_then(|e| blank_expectation(e, &["body_contains", "header_contains"]))
+            {
+                return Ok((Err(blank.to_string().into()), None));
+            }
             let probe = flowproof_driver::oob::OobProbe::Api {
                 count: expect
                     .as_ref()

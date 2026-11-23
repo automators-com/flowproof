@@ -3118,3 +3118,66 @@ fn a_when_whose_variable_is_unset_stops_the_replay_by_name() {
     assert!(driver.invoked.is_empty(), "the branch did not run");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A `body_contains` whose `${VAR}` arrives blank would hold on any body,
+/// leaving only the status to fail the step: a 200 with the wrong body
+/// passed. Record and replay both fail it, naming the variable.
+#[test]
+fn an_api_body_check_whose_reference_is_blank_fails_by_name() {
+    let dir = std::env::temp_dir().join("flowproof-replay-oob-blank");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"order":"A-1"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    std::env::set_var("FP_BLANK_API", format!("http://127.0.0.1:{port}"));
+    std::env::set_var("FP_BLANK_API_ORDER", "A-1");
+    let spec = FlowSpec::parse(
+        "name: Blank body check
+app: web
+url: https://e.test/x
+steps:
+  - assert_api:
+      request: GET ${FP_BLANK_API}/orders
+      body_contains: ${FP_BLANK_API_ORDER}
+",
+    )
+    .expect("spec parses");
+    let trace = dir.join("blank-api.trace.jsonl");
+    record(&spec, &mut MockAppDriver::new(&[]), &trace).expect("recording succeeds");
+
+    std::env::set_var("FP_BLANK_API_ORDER", "");
+    let (report, _) = run_trace(&trace, &mut MockAppDriver::new(&[])).expect("replay runs");
+    assert!(!report.passed, "a blank needle must not pass");
+    let detail = report.steps[0].detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("${FP_BLANK_API_ORDER} is empty"),
+        "detail: {detail}"
+    );
+
+    let err = record(
+        &spec,
+        &mut MockAppDriver::new(&[]),
+        &dir.join("again.trace.jsonl"),
+    )
+    .expect_err("recording refuses a blank needle");
+    assert!(
+        err.to_string().contains("${FP_BLANK_API_ORDER} is empty"),
+        "{err}"
+    );
+    std::env::remove_var("FP_BLANK_API");
+    std::env::remove_var("FP_BLANK_API_ORDER");
+    std::fs::remove_dir_all(&dir).ok();
+}
