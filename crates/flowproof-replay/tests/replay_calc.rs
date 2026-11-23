@@ -3086,3 +3086,35 @@ fn a_when_whose_reference_is_blank_stops_the_replay_by_name() {
     std::env::remove_var("FP_BLANK_WHEN");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A `when:` whose variable is unset at replay stops the run by name. It
+/// used to read as "did not hold", so the block was skipped, its checks
+/// never ran, and the run passed.
+#[test]
+fn a_when_whose_variable_is_unset_stops_the_replay_by_name() {
+    std::env::set_var("FP_UNSET_WHEN", "Error");
+    let dir = std::env::temp_dir().join("flowproof-replay-unset-when");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Unset when\napp: calc\nsteps:\n  - when: page shows ${FP_UNSET_WHEN}\n    \
+         steps:\n      - Press plus\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("unset-when.trace.jsonl");
+    record(
+        &spec,
+        &mut MockAppDriver::new(&CALC_ELEMENTS).with_surface_text("Error"),
+        &trace,
+    )
+    .expect("recording succeeds");
+
+    std::env::remove_var("FP_UNSET_WHEN");
+    let mut driver = MockAppDriver::new(&CALC_ELEMENTS).with_surface_text("Error");
+    let err = run_trace(&trace, &mut driver).expect_err("an unset variable stops the run");
+    assert!(
+        err.to_string().contains("${FP_UNSET_WHEN}") && err.to_string().contains("not set"),
+        "{err}"
+    );
+    assert!(driver.invoked.is_empty(), "the branch did not run");
+    std::fs::remove_dir_all(&dir).ok();
+}
