@@ -2278,8 +2278,11 @@ fn condition_holds<D: AppDriver>(
         ("the page does not show ", false),
     ] {
         if let Some(rest) = text.strip_prefix(prefix) {
+            // `${VAR}` resolves for the comparison only, as replay's
+            // `check_assertion` does: the guard keeps the reference.
+            let expected = flowproof_trace::secret::resolve_refs(rest.trim())?;
             let surface = driver.surface_text()?;
-            return Ok(flowproof_driver::text_contains(&surface, rest.trim()) == positive);
+            return Ok(flowproof_driver::text_contains(&surface, &expected) == positive);
         }
     }
     // `the "<a>" is greater/less than the "<b>"` - the one condition that
@@ -2327,6 +2330,9 @@ fn condition_holds<D: AppDriver>(
                 return Ok(false);
             };
             let _ = target;
+            // Resolved before the element is looked for, so an unset
+            // variable fails the recording whether or not it is there.
+            let expected = flowproof_trace::secret::resolve_refs(expected)?;
             if !driver.element_exists(&selector)? {
                 // A missing element makes a positive `shows` false and a
                 // negative one true - the same reading replay takes.
@@ -2335,7 +2341,7 @@ fn condition_holds<D: AppDriver>(
             let actual = driver.read_text(&selector)?;
             Ok(assert_holds(
                 &actual,
-                expected,
+                &expected,
                 *matcher,
                 driver.reads_text_by_ocr()?,
             ))
@@ -7405,6 +7411,57 @@ steps:
         assert_eq!(guard.expect["scope"], "surface");
         assert_eq!(guard.expect["timeout_ms"], 0, "a condition never waits");
         assert!(step(2).guards.is_empty(), "the assert is outside the block");
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// A condition reads `${VAR}` the way replay's guard does. Recording
+    /// compared the raw `${X}` against the page, so `when: page shows ${X}`
+    /// never held, its block was never recorded, and replay passed without
+    /// ever running the checks inside it.
+    #[test]
+    fn a_condition_resolves_its_references_and_the_guard_keeps_them() {
+        std::env::set_var("FP_RECORDER_WHEN_ERROR", "Error");
+        std::env::set_var("FP_RECORDER_WHEN_DISPLAY", "Display is 8");
+        let spec = FlowSpec::parse(
+            "name: x\napp: calc\nsteps:\n  \
+             - when: page shows ${FP_RECORDER_WHEN_ERROR}\n    steps:\n      - Press plus\n  \
+             - when: display shows ${FP_RECORDER_WHEN_DISPLAY}\n    steps:\n      - Press equals\n",
+        )
+        .expect("spec parses");
+        let mut driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+        surface_reads(&mut driver, &["Error"]);
+        let out = std::env::temp_dir().join("flowproof-recorder-when-ref.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("recording succeeds");
+        std::env::remove_var("FP_RECORDER_WHEN_ERROR");
+        std::env::remove_var("FP_RECORDER_WHEN_DISPLAY");
+
+        assert_eq!(driver.invoked, vec!["plusButton", "equalButton"]);
+        let contents = std::fs::read_to_string(&out).expect("trace written");
+        assert!(
+            contents.contains("page shows ${FP_RECORDER_WHEN_ERROR}")
+                && !contents.contains("\"value_contains\":\"Error\""),
+            "the guard keeps the reference, not the value:\n{contents}"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// An unset variable in a condition fails the recording by name, as it
+    /// does in any other step, instead of quietly not taking the branch.
+    #[test]
+    fn a_condition_naming_an_unset_variable_fails_the_recording() {
+        std::env::remove_var("FP_RECORDER_WHEN_UNSET");
+        let spec = FlowSpec::parse(
+            "name: x\napp: calc\nsteps:\n  \
+             - when: page shows ${FP_RECORDER_WHEN_UNSET}\n    steps:\n      - Press plus\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&CALC_ELEMENTS);
+        surface_reads(&mut driver, &["anything"]);
+        let out = std::env::temp_dir().join("flowproof-recorder-when-unset.trace.jsonl");
+        let err = record(&spec, &mut driver, &out).expect_err("an unset variable fails");
+        assert!(err.to_string().contains("FP_RECORDER_WHEN_UNSET"), "{err}");
+        assert!(driver.invoked.is_empty());
         std::fs::remove_file(&out).ok();
     }
 
