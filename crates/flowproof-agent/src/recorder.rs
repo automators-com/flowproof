@@ -7463,7 +7463,7 @@ steps:
         let spec = FlowSpec::parse(
             "name: x\napp: calc\nsteps:\n  \
              - when: page shows ${FP_RECORDER_WHEN_ERROR}\n    steps:\n      - Press plus\n  \
-             - when: display shows ${FP_RECORDER_WHEN_DISPLAY}\n    steps:\n      - Press equals\n",
+             - when: the \"id:CalculatorResults\" shows ${FP_RECORDER_WHEN_DISPLAY}\n    steps:\n      - Press equals\n",
         )
         .expect("spec parses");
         let mut driver =
