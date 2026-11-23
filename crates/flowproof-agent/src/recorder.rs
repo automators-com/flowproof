@@ -4720,7 +4720,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             .collect::<Result<_, RecordError>>()?,
                         status: *status,
                         body_contains: match body_contains {
-                            Some(needle) => Some(flowproof_trace::secret::resolve_refs(needle)?),
+                            Some(needle) => {
+                                let resolved = flowproof_trace::secret::resolve_refs(needle)?;
+                                refuse_blank(&spec_step.intent(), needle, &resolved)?;
+                                Some(resolved)
+                            }
                             None => None,
                         },
                         body_json: body_json.clone(),
@@ -4741,7 +4745,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             None => None,
                         },
                         header_contains: match header_contains {
-                            Some(want) => Some(flowproof_trace::secret::resolve_refs(want)?),
+                            Some(want) => {
+                                let resolved = flowproof_trace::secret::resolve_refs(want)?;
+                                refuse_blank(&spec_step.intent(), want, &resolved)?;
+                                Some(resolved)
+                            }
                             None => None,
                         },
                     };
