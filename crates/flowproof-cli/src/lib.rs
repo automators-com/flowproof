@@ -952,8 +952,9 @@ fn failure_hint(kind: &str, screen: Option<&flowproof_driver::FailureScreen>) ->
                          revoked, or not be allowed to use this model. Set a working key with \
                          `flowproof config ai`, then record again."
             .into(),
-        "missing_value" => "A value the flow uses is not set. Add it to the environment or the \
-                            flow's values, then record again."
+        "missing_value" => "A value the flow uses is not set, or is empty where a check needs \
+                            text. Set it in the environment or the flow's values, then record \
+                            again."
             .into(),
         "secret_leak" => "A secret value showed up where the flow asserts it must not. That is \
                           a finding about the app, not a problem with the flow."

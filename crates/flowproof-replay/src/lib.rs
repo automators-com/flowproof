@@ -73,6 +73,10 @@ pub enum ReplayError {
     Driver(#[from] flowproof_driver::DriverError),
     #[error(transparent)]
     Secret(#[from] flowproof_trace::secret::MissingSecret),
+    /// A condition whose `${VAR}` arrived blank: it would decide its branch
+    /// or loop without reading the app at all.
+    #[error("condition: {0}")]
+    BlankRefs(#[from] flowproof_trace::secret::BlankRefs),
     #[error("{0}")]
     Selection(String),
 }
@@ -596,6 +600,25 @@ fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
             .and_then(|v| v.as_str())
             .map(|e| (e, false))
     }
+}
+
+/// The expectations blank text would satisfy on any page: a positive
+/// contains (a count rides on `value_contains`) and the non-exact url and
+/// title forms.
+const NEEDLE_KEYS: [&str; 3] = ["value_contains", "url_contains", "title_contains"];
+
+/// [`BlankRefs`](flowproof_trace::secret::BlankRefs) for the first of
+/// `keys` whose expected text only its `${VAR}` references made blank. An
+/// unset variable is left to the check itself, which names it.
+fn blank_expectation(
+    expect: &serde_json::Value,
+    keys: &[&str],
+) -> Option<flowproof_trace::secret::BlankRefs> {
+    keys.iter().find_map(|key| {
+        let raw = expect.get(*key)?.as_str()?;
+        let resolved = flowproof_trace::secret::resolve_refs(raw).ok()?;
+        flowproof_trace::secret::blank_refs(raw, &resolved)
+    })
 }
 
 /// Whether `text` satisfies the expectation — one predicate for every
@@ -1123,6 +1146,9 @@ fn check_assertion<D: AppDriver>(
             expect,
             selector_ref,
         } => {
+            if let Some(blank) = blank_expectation(expect, &NEEDLE_KEYS) {
+                return Ok((Err(blank.to_string().into()), None));
+            }
             // A text assertion immediately after navigation can otherwise
             // spend its whole recorded poll budget reading a real but
             // transitional shell state. Web's `scene` is network-aware and
@@ -1772,6 +1798,14 @@ fn check_assertion<D: AppDriver>(
                     return Err(missing.into())
                 }
             };
+            // A substring check against blank text holds on any response,
+            // leaving only the status to fail the step.
+            if let Some(blank) = expect
+                .as_ref()
+                .and_then(|e| blank_expectation(e, &["body_contains", "header_contains"]))
+            {
+                return Ok((Err(blank.to_string().into()), None));
+            }
             let probe = flowproof_driver::oob::OobProbe::Api {
                 count: expect
                     .as_ref()
@@ -2664,6 +2698,13 @@ fn reading_holds<D: AppDriver>(
     captures: &std::collections::HashMap<String, String>,
     api_corpus: &mut Vec<(String, String)>,
 ) -> Result<bool, ReplayError> {
+    // Either polarity: `page does not show` blank text never holds, so a
+    // blank reference would skip its branch as silently as the positive
+    // form takes it.
+    let keys = [&NEEDLE_KEYS[..], &["value_not_contains"][..]].concat();
+    if let Some(blank) = blank_expectation(expect, &keys) {
+        return Err(blank.into());
+    }
     let assertion = Assertion::ElementState {
         expect: expect.clone(),
         selector_ref: (!selectors.is_empty()).then_some(0),

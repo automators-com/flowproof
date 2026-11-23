@@ -144,6 +144,13 @@ pub enum RecordError {
     Dialog { intent: String, reason: String },
     #[error(transparent)]
     Secret(#[from] flowproof_trace::secret::MissingSecret),
+    /// A check or condition whose `${VAR}` arrived blank, which would hold
+    /// (or fail) without reading the app. Names the variables.
+    #[error("step '{intent}': {blank}")]
+    BlankRefs {
+        intent: String,
+        blank: flowproof_trace::secret::BlankRefs,
+    },
     /// A declared secret leaked into the run's observable corpus, or the
     /// corpus could not be scanned (a too-short secret, a corpus-less flow
     /// kind). Names variables and the corpus element, never the value.
@@ -174,13 +181,15 @@ pub enum RecordError {
 }
 
 impl RecordError {
-    /// The flow cannot run as configured: a `${VAR}` with no value, no app
+    /// The flow cannot run as configured: a `${VAR}` with no value (or a
+    /// blank one a check or condition cannot use), no app
     /// to drive, or a model key the provider refuses. Rewording a step or starting over cannot change that, so
     /// the repair loop and its fresh retry must not spend a second run on it.
     pub fn is_setup_error(&self) -> bool {
         matches!(
             self,
             Self::Secret(_)
+                | Self::BlankRefs { .. }
                 | Self::UnknownApp(_)
                 | Self::MissingUrl
                 | Self::MissingWindow
@@ -202,7 +211,7 @@ impl RecordError {
             Self::Rules(_) | Self::Agent(_) | Self::NoAuthor { .. } | Self::NoScene(_) => {
                 "authoring"
             }
-            Self::Secret(_) => "missing_value",
+            Self::Secret(_) | Self::BlankRefs { .. } => "missing_value",
             Self::SecretLeak(_) => "secret_leak",
             Self::UnknownApp(_)
             | Self::MissingUrl
@@ -2264,6 +2273,29 @@ fn condition_selector<D: AppDriver>(
         })
 }
 
+/// The matchers blank expected text would satisfy on any page, the
+/// recorder's side of replay's `NEEDLE_KEYS`.
+fn is_needle(matcher: TextMatch) -> bool {
+    matches!(
+        matcher,
+        TextMatch::Contains
+            | TextMatch::CountEquals(_)
+            | TextMatch::UrlContains
+            | TextMatch::TitleContains
+    )
+}
+
+/// Refuse expected text that only its `${VAR}` references made blank.
+fn refuse_blank(intent: &str, raw: &str, resolved: &str) -> Result<(), RecordError> {
+    match flowproof_trace::secret::blank_refs(raw, resolved) {
+        Some(blank) => Err(RecordError::BlankRefs {
+            intent: intent.to_string(),
+            blank,
+        }),
+        None => Ok(()),
+    }
+}
+
 fn condition_holds<D: AppDriver>(
     driver: &mut D,
     app: &str,
@@ -2281,6 +2313,7 @@ fn condition_holds<D: AppDriver>(
             // `${VAR}` resolves for the comparison only, as replay's
             // `check_assertion` does: the guard keeps the reference.
             let expected = flowproof_trace::secret::resolve_refs(rest.trim())?;
+            refuse_blank(text, rest.trim(), &expected)?;
             let surface = driver.surface_text()?;
             return Ok(flowproof_driver::text_contains(&surface, &expected) == positive);
         }
@@ -2332,7 +2365,11 @@ fn condition_holds<D: AppDriver>(
             let _ = target;
             // Resolved before the element is looked for, so an unset
             // variable fails the recording whether or not it is there.
-            let expected = flowproof_trace::secret::resolve_refs(expected)?;
+            let resolved = flowproof_trace::secret::resolve_refs(expected)?;
+            if matches!(matcher, TextMatch::NotContains) || is_needle(*matcher) {
+                refuse_blank(text, expected, &resolved)?;
+            }
+            let expected = resolved;
             if !driver.element_exists(&selector)? {
                 // A missing element makes a positive `shows` false and a
                 // negative one true - the same reading replay takes.
@@ -4683,7 +4720,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             .collect::<Result<_, RecordError>>()?,
                         status: *status,
                         body_contains: match body_contains {
-                            Some(needle) => Some(flowproof_trace::secret::resolve_refs(needle)?),
+                            Some(needle) => {
+                                let resolved = flowproof_trace::secret::resolve_refs(needle)?;
+                                refuse_blank(&spec_step.intent(), needle, &resolved)?;
+                                Some(resolved)
+                            }
                             None => None,
                         },
                         body_json: body_json.clone(),
@@ -4704,7 +4745,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             None => None,
                         },
                         header_contains: match header_contains {
-                            Some(want) => Some(flowproof_trace::secret::resolve_refs(want)?),
+                            Some(want) => {
+                                let resolved = flowproof_trace::secret::resolve_refs(want)?;
+                                refuse_blank(&spec_step.intent(), want, &resolved)?;
+                                Some(resolved)
+                            }
                             None => None,
                         },
                     };
@@ -4811,6 +4856,9 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // so existence is part of the same poll. A surface-
                     // scoped assert (no selector) reads the whole surface.
                     let wanted = flowproof_trace::secret::resolve_refs(expected)?;
+                    if is_needle(*matcher) {
+                        refuse_blank(&spec_step.intent(), expected, &wanted)?;
+                    }
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
                         // ONE chain over every surface reading the grammar
@@ -7463,6 +7511,40 @@ steps:
         assert!(err.to_string().contains("FP_RECORDER_WHEN_UNSET"), "{err}");
         assert!(driver.invoked.is_empty());
         std::fs::remove_file(&out).ok();
+    }
+
+    /// A condition whose reference arrives blank fails the recording by
+    /// name: `page shows` blank text would always take the branch, and
+    /// `page does not show` it would never take it.
+    #[test]
+    fn a_condition_whose_reference_is_blank_fails_the_recording() {
+        std::env::set_var("FP_RECORDER_WHEN_BLANK", "  ");
+        for condition in [
+            "page shows ${FP_RECORDER_WHEN_BLANK}",
+            "page does not show ${FP_RECORDER_WHEN_BLANK}",
+            "the \"id:CalculatorResults\" shows ${FP_RECORDER_WHEN_BLANK}",
+        ] {
+            let spec = FlowSpec::parse(&format!(
+                "name: x\napp: calc\nsteps:\n  - when: {condition}\n    steps:\n      - Press plus\n"
+            ))
+            .expect("spec parses");
+            let mut driver =
+                MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+            surface_reads(&mut driver, &["anything"]);
+            let out = std::env::temp_dir().join("flowproof-recorder-when-blank.trace.jsonl");
+            let err = record(&spec, &mut driver, &out).expect_err("a blank reference fails");
+            assert!(
+                err.to_string()
+                    .contains("${FP_RECORDER_WHEN_BLANK} is empty"),
+                "{condition}: {err}"
+            );
+            assert!(
+                driver.invoked.is_empty(),
+                "{condition}: the branch did not run"
+            );
+            std::fs::remove_file(&out).ok();
+        }
+        std::env::remove_var("FP_RECORDER_WHEN_BLANK");
     }
 
     /// Every recorded pass carries the loop: same id, its own pass number,
