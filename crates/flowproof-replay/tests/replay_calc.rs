@@ -3013,3 +3013,76 @@ fn a_page_still_loading_earns_its_element_more_time_than_a_quiet_one() {
     assert_eq!(pausing.invoked, vec!["Go"]);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A `${VAR}` that arrives blank would make `shows` hold on any page:
+/// blank text is contained in everything. Record and replay both fail the
+/// check by naming the variable, rather than passing it unread.
+#[test]
+fn a_check_whose_reference_is_blank_fails_by_name() {
+    std::env::set_var("FP_BLANK_CHECK", "Display is 8");
+    let dir = std::env::temp_dir().join("flowproof-replay-blank-check");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Blank check\napp: calc\nsteps:\n  - assert: display shows ${FP_BLANK_CHECK}\n",
+    )
+    .expect("spec parses");
+    let display = || MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Error");
+    let trace = dir.join("blank-check.trace.jsonl");
+    record(
+        &spec,
+        &mut MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8"),
+        &trace,
+    )
+    .expect("recording succeeds");
+
+    std::env::set_var("FP_BLANK_CHECK", " ");
+    let (report, _) = run_trace(&trace, &mut display()).expect("replay runs");
+    assert!(!report.passed, "a blank reference must not pass");
+    let detail = report.steps[0].detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("${FP_BLANK_CHECK} is empty"),
+        "detail: {detail}"
+    );
+
+    let err = record(&spec, &mut display(), &dir.join("again.trace.jsonl"))
+        .expect_err("recording refuses a blank reference");
+    assert!(
+        err.to_string().contains("${FP_BLANK_CHECK} is empty"),
+        "{err}"
+    );
+    std::env::remove_var("FP_BLANK_CHECK");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A `when:` whose reference arrives blank would take its branch on any
+/// page (`does not show` would skip it on any page). Replay stops on it by
+/// name instead of deciding the branch without reading the app.
+#[test]
+fn a_when_whose_reference_is_blank_stops_the_replay_by_name() {
+    std::env::set_var("FP_BLANK_WHEN", "Error");
+    let dir = std::env::temp_dir().join("flowproof-replay-blank-when");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Blank when\napp: calc\nsteps:\n  - when: page shows ${FP_BLANK_WHEN}\n    \
+         steps:\n      - Press plus\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("blank-when.trace.jsonl");
+    record(
+        &spec,
+        &mut MockAppDriver::new(&CALC_ELEMENTS).with_surface_text("Error"),
+        &trace,
+    )
+    .expect("recording succeeds");
+
+    std::env::set_var("FP_BLANK_WHEN", "");
+    let mut driver = MockAppDriver::new(&CALC_ELEMENTS).with_surface_text("all is well");
+    let err = run_trace(&trace, &mut driver).expect_err("a blank condition stops the run");
+    assert!(
+        err.to_string().contains("${FP_BLANK_WHEN} is empty"),
+        "{err}"
+    );
+    assert!(driver.invoked.is_empty(), "the branch did not run");
+    std::env::remove_var("FP_BLANK_WHEN");
+    std::fs::remove_dir_all(&dir).ok();
+}

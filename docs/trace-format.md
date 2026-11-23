@@ -354,7 +354,10 @@ already follows.
   **secret references**: the engine resolves them from the environment at
   execution time (recording and every replay) and the trace only ever
   stores the reference, never the value. An unset variable fails closed
-  with an error naming it.
+  with an error naming it. So does one that resolves to blank text in a
+  positive contains, count, `url_contains` or `title_contains` expectation,
+  or in a `when:` / `repeat: until:` condition of either polarity: blank
+  text is contained in everything, so the check would hold on any page.
   A `type_text` text may also contain a `${captured.<name>}` **capture
   reference**, resolved the same way but from the flow's own captures
   (`action.type == "capture"`) rather than the environment. This is what
