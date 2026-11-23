@@ -2693,7 +2693,7 @@ fn reading_holds<D: AppDriver>(
     // Either polarity: `page does not show` blank text never holds, so a
     // blank reference would skip its branch as silently as the positive
     // form takes it.
-    let keys = [NEEDLE_KEYS.as_slice(), &["value_not_contains"]].concat();
+    let keys = [&NEEDLE_KEYS[..], &["value_not_contains"][..]].concat();
     if let Some(blank) = blank_expectation(expect, &keys) {
         return Err(blank.into());
     }

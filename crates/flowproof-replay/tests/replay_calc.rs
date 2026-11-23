@@ -3023,7 +3023,7 @@ fn a_check_whose_reference_is_blank_fails_by_name() {
     let dir = std::env::temp_dir().join("flowproof-replay-blank-check");
     std::fs::create_dir_all(&dir).expect("temp dir");
     let spec = FlowSpec::parse(
-        "name: Blank check\napp: calc\nsteps:\n  - assert: display shows ${FP_BLANK_CHECK}\n",
+        "name: Blank check\napp: calc\nsteps:\n  - assert: the \"id:CalculatorResults\" shows ${FP_BLANK_CHECK}\n",
     )
     .expect("spec parses");
     let display = || MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Error");

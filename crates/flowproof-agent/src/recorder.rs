@@ -181,13 +181,15 @@ pub enum RecordError {
 }
 
 impl RecordError {
-    /// The flow cannot run as configured: a `${VAR}` with no value, no app
+    /// The flow cannot run as configured: a `${VAR}` with no value (or a
+    /// blank one a check or condition cannot use), no app
     /// to drive, or a model key the provider refuses. Rewording a step or starting over cannot change that, so
     /// the repair loop and its fresh retry must not spend a second run on it.
     pub fn is_setup_error(&self) -> bool {
         matches!(
             self,
             Self::Secret(_)
+                | Self::BlankRefs { .. }
                 | Self::UnknownApp(_)
                 | Self::MissingUrl
                 | Self::MissingWindow
@@ -209,7 +211,7 @@ impl RecordError {
             Self::Rules(_) | Self::Agent(_) | Self::NoAuthor { .. } | Self::NoScene(_) => {
                 "authoring"
             }
-            Self::Secret(_) => "missing_value",
+            Self::Secret(_) | Self::BlankRefs { .. } => "missing_value",
             Self::SecretLeak(_) => "secret_leak",
             Self::UnknownApp(_)
             | Self::MissingUrl
@@ -7512,7 +7514,7 @@ steps:
         for condition in [
             "page shows ${FP_RECORDER_WHEN_BLANK}",
             "page does not show ${FP_RECORDER_WHEN_BLANK}",
-            "display shows ${FP_RECORDER_WHEN_BLANK}",
+            "the \"id:CalculatorResults\" shows ${FP_RECORDER_WHEN_BLANK}",
         ] {
             let spec = FlowSpec::parse(&format!(
                 "name: x\napp: calc\nsteps:\n  - when: {condition}\n    steps:\n      - Press plus\n"
