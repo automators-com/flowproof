@@ -2698,6 +2698,23 @@ fn reading_holds<D: AppDriver>(
     captures: &std::collections::HashMap<String, String>,
     api_corpus: &mut Vec<(String, String)>,
 ) -> Result<bool, ReplayError> {
+    // An unset variable stops the run by name. The check itself reports
+    // it as a failed verdict, which a condition reads as "does not hold":
+    // a `when:` block would be skipped with its checks unrun, and a
+    // `repeat:` would run every pass before blaming the app.
+    for key in [
+        "value_contains",
+        "value_not_contains",
+        "value_equals",
+        "url_contains",
+        "url_equals",
+        "title_contains",
+        "title_equals",
+    ] {
+        if let Some(raw) = expect.get(key).and_then(|v| v.as_str()) {
+            flowproof_trace::secret::resolve_refs(raw)?;
+        }
+    }
     // Either polarity: `page does not show` blank text never holds, so a
     // blank reference would skip its branch as silently as the positive
     // form takes it.
