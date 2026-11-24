@@ -181,6 +181,10 @@ flowproof author-from-video order.mp4 --app web --name "Electricity order" \
   and how many changed moments the 60-frame budget dropped. Nothing is
   sent to a model and no draft is written. Use it to see what the model
   would see when a draft misses a step.
+- `--frames-dir <dir>`: draft from a folder `--frames-out` wrote, in place
+  of a video, with `--app`, `--name` and `--out` as usual. No ffmpeg is
+  needed, and the same frames can be drafted again to compare two prompts
+  or two models.
 - `--url`: where the flow starts, written as its first `Go to` step when the
   recording does not start by going there.
 - `--app`, `--name` and `--out`: as for `author-from-doc`.
