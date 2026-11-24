@@ -198,6 +198,31 @@ the frame, so record only the app under test, with test data. With `--json`,
 
 A recording shows what happened, not what should happen, so a video draft
 never contains an `assert:`; add at least one before relying on the flow.
+
+### What a video draft misses
+
+Measured on generated recordings with a known answer and on real screen
+recordings (`evals/video-to-flow`), so expect these and check for them:
+
+- **Typing can fall between frames.** A frame is kept where the screen
+  changed enough, and a few characters typed into one field often change
+  too little to count. In the generated recordings, most typed values had
+  no frame of their own; the model then sees a filled field appear, or
+  sees nothing, and flags the step rather than guessing. Real recordings
+  keep more, because a screen recorder's click highlight and its encoding
+  noise count as change too.
+- **Still edges are trimmed, and a short recording has a lot of them.** In
+  a recording of a minute or less, little at the screen's edges changes, so
+  up to a tenth of the screen can be cut from each edge, including the
+  app's own header or the start of its field labels. Use `--frames-out` to
+  see what was kept.
+- **Long recordings are sampled more thinly.** Past six minutes, samples
+  are further apart than half a second (about every 1.7 seconds at twenty
+  minutes), and at most 60 frames reach the model. `--frames-out` reports
+  in `manifest.json` how many changed moments the 60-frame budget dropped.
+- **Text at 10 px is near the limit.** Frames are 1280 px wide, so a
+  Retina recording is halved first, and small grey labels may not survive.
+  Record at a normal zoom level.
 A change between frames that no visible action explains is flagged as a
 `# TODO`, as above. A value typed and then picked from a suggestion list is
 written as one `Type` step with the picked value, which `record` picks from
