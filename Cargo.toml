@@ -9,6 +9,7 @@ members = [
     "crates/flowproof-cli",
     "crates/flowproof-python",
     "evals/terminal-grid/replica",
+    "evals/video-to-flow/generator",
 ]
 
 # The Windows containment spike is deliberately NOT a member.
