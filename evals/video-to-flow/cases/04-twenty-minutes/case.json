@@ -1,0 +1,25 @@
+{
+  "app": "web",
+  "bands_css_px": {
+    "bottom": 0,
+    "top": 0
+  },
+  "catches": "The frame budget on a twenty-minute recording. Sampling thins out past six minutes, so a short action between long still stretches can fall between two samples.",
+  "duration_ms": 1168800,
+  "expect": {
+    "masked_literals": [
+      "otter-lantern-42"
+    ],
+    "not_app": false,
+    "out_of_scope": 0
+  },
+  "fixture": "app.html",
+  "id": "04-twenty-minutes",
+  "name": "Order with long pauses",
+  "start_url": "http://127.0.0.1:8765/app.html",
+  "viewport": {
+    "height": 800,
+    "scale": 1.0,
+    "width": 1280
+  }
+}

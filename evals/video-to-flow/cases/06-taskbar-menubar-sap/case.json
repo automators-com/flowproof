@@ -1,0 +1,23 @@
+{
+  "app": "web",
+  "bands_css_px": {
+    "bottom": 40,
+    "top": 26
+  },
+  "catches": "Edge trimming. A still menu bar should be cut, a taskbar whose clock ticks every second stays and spends frames, and the app's own still title must not be cut with them.",
+  "duration_ms": 10700,
+  "expect": {
+    "masked_literals": [],
+    "not_app": false,
+    "out_of_scope": 0
+  },
+  "fixture": "sap-form.html",
+  "id": "06-taskbar-menubar-sap",
+  "name": "Check a transfer under a desktop's bars",
+  "start_url": "http://127.0.0.1:8765/sap-form.html",
+  "viewport": {
+    "height": 800,
+    "scale": 1.0,
+    "width": 1280
+  }
+}

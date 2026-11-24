@@ -1,0 +1,25 @@
+{
+  "app": "web",
+  "bands_css_px": {
+    "bottom": 0,
+    "top": 0
+  },
+  "catches": "Steps lost from an ordinary twelve-step form, a typeahead whose picked entry differs from what was typed, and a street and house number folded into one line.",
+  "duration_ms": 34500,
+  "expect": {
+    "masked_literals": [
+      "otter-lantern-42"
+    ],
+    "not_app": false,
+    "out_of_scope": 0
+  },
+  "fixture": "app.html",
+  "id": "02-order-form",
+  "name": "Order a desk lamp",
+  "start_url": "http://127.0.0.1:8765/app.html",
+  "viewport": {
+    "height": 800,
+    "scale": 1.0,
+    "width": 1280
+  }
+}

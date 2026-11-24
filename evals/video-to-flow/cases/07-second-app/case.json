@@ -1,0 +1,25 @@
+{
+  "app": "web",
+  "bands_css_px": {
+    "bottom": 0,
+    "top": 0
+  },
+  "catches": "An action in another app. A mail client covers the shop for a few seconds and something is clicked in it, which must come back as out of scope rather than as a step.",
+  "duration_ms": 20800,
+  "expect": {
+    "masked_literals": [
+      "otter-lantern-42"
+    ],
+    "not_app": false,
+    "out_of_scope": 1
+  },
+  "fixture": "app.html",
+  "id": "07-second-app",
+  "name": "Sign in, check mail, open orders",
+  "start_url": "http://127.0.0.1:8765/app.html",
+  "viewport": {
+    "height": 800,
+    "scale": 1.0,
+    "width": 1280
+  }
+}

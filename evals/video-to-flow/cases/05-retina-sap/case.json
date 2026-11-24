@@ -1,0 +1,23 @@
+{
+  "app": "web",
+  "bands_css_px": {
+    "bottom": 0,
+    "top": 0
+  },
+  "catches": "The scaling floor. A 2560px recording of 10px grey labels arrives at the model as 1280px, the first place text should stop being readable.",
+  "duration_ms": 21600,
+  "expect": {
+    "masked_literals": [],
+    "not_app": false,
+    "out_of_scope": 0
+  },
+  "fixture": "sap-form.html",
+  "id": "05-retina-sap",
+  "name": "Transfer stock on a Retina screen",
+  "start_url": "http://127.0.0.1:8765/sap-form.html",
+  "viewport": {
+    "height": 800,
+    "scale": 2.0,
+    "width": 1280
+  }
+}
