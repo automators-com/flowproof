@@ -102,5 +102,20 @@ class InvariantTest(unittest.TestCase):
         self.assertEqual(draft_eval.invariants(case, self.ok_run, "steps: []", []), {"refused_as_not_an_app": False})
 
 
+class RoundTripTest(unittest.TestCase):
+    def test_every_variable_a_draft_uses_is_given_once(self):
+        text = 'steps:\n  - "Type ${PASSWORD} into the \\"Password\\" field"\n  - "Type ${PASSWORD} again"\n  - "${USER_NAME}"\n'
+        self.assertEqual(draft_eval.variables(text),
+                         ["--var", "PASSWORD=video-eval", "--var", "USER_NAME=video-eval"])
+
+    def test_a_draft_with_no_variables_gets_none(self):
+        self.assertEqual(draft_eval.variables('steps:\n  - "Click \\"Sign in\\""\n'), [])
+
+    def test_the_rate_counts_only_cases_that_were_recorded(self):
+        results = [{"round_trip": {"recorded": True}}, {"round_trip": {"recorded": False}}, {}]
+        self.assertEqual(draft_eval.first_attempt_rate(results), 0.5)
+        self.assertIsNone(draft_eval.first_attempt_rate([{}]))
+
+
 if __name__ == "__main__":
     unittest.main()

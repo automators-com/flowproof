@@ -56,8 +56,8 @@ jobs:
           name: ffmpeg-linux-x64
           path: ${{ runner.temp }}/ffmpeg
       - run: chmod +x "$RUNNER_TEMP/ffmpeg/ffmpeg"
-      - name: install an ffmpeg that can encode
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: install an ffmpeg that can encode, and PyYAML
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-yaml
       - name: scoring tests
         run: python3 scripts/test_video_frames_eval.py
       - uses: dtolnay/rust-toolchain@stable
@@ -79,6 +79,10 @@ jobs:
           status=${PIPESTATUS[0]}
           { echo "## Video frame selection"; echo; cat "$RUNNER_TEMP/table.md"; } >> "$GITHUB_STEP_SUMMARY"
           exit $status
+      # Layer C's control, with no model: every expected flow must record
+      # against its fixture, or a fixture or the harness is broken.
+      - name: the expected flows record against their fixtures
+        run: python3 scripts/video-draft-eval.py control
       - name: keep videos, frames and the scoreboard
         if: always()
         uses: actions/upload-artifact@v4
@@ -131,12 +135,14 @@ jobs:
       - run: cargo build -p flowproof-cli
       # A measurement, not a gate: the job fails only when the engine could
       # not draft at all (exit 2), never on a score.
-      - name: draft and score every case
+      # Layer C rides along: each draft is recorded against its served
+      # fixture with --no-repair, headless, for a first-attempt rate.
+      - name: draft, score and record every case
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           set +e
-          uv run --no-project --with pyyaml --with anthropic python scripts/video-draft-eval.py score \
+          uv run --no-project --with pyyaml --with anthropic python scripts/video-draft-eval.py score --record \
             --out "$RUNNER_TEMP/drafts.json" | tee "$RUNNER_TEMP/table.md"
           status=${PIPESTATUS[0]}
           { echo "## Video drafts"; echo; cat "$RUNNER_TEMP/table.md"; } >> "$GITHUB_STEP_SUMMARY"

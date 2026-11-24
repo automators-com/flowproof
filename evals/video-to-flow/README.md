@@ -81,6 +81,35 @@ failing to keep frames they should, and the point is to see that number
 move when sampling is changed on purpose (`--write-baseline` records new
 numbers, and the diff to the file is the argument for them).
 
+## Layer B: the draft
+
+`cases/<case>/frames/` holds the frames `--frames-out` chose from each
+generated video, committed by `scripts/video-draft-eval.py import`, so a
+prompt or model change is scored with no ffmpeg, Chrome or generator in the
+loop. `video-draft-eval.py score` drafts each case with
+`author-from-video --frames-dir` and keeps two kinds of result apart:
+
+- **invariants**, pass or fail: the draft parses, has no `assert:`, never
+  contains a masked field's typed value, writes `${PASSWORD}` for it,
+  flags only with what it observed, puts the mail client's action out of
+  scope, and refuses the slideshow.
+- **the step sequence**, graded: recall, precision, steps out of order and
+  drafted / expected count, from an alignment of normalised steps. A model
+  judge looks at the steps that did not align and says which drafted steps
+  do each expected one; its verdicts are in the scoreboard, beside the
+  score, never in it.
+
+It runs weekly on `main` and on dispatch, reporting, and one case runs on
+pull requests that touch the prompt.
+
+## Layer C: the round trip
+
+`score --record` serves `fixture/` where it was filmed and records each
+draft against it with `flowproof record --no-repair`, headless: the share
+that record to the end on the first attempt is the feature's real number.
+`control` does the same with each case's expected flow and no model, so a
+broken fixture is never mistaken for a bad draft; it runs with layer A.
+
 ## What is deliberately unrealistic
 
 - The fixtures are cleaner than real apps: no web fonts, no animation, no

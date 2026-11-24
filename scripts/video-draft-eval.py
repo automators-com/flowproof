@@ -27,6 +27,14 @@ committed frames with no ffmpeg, Chrome or generator in the loop.
   aligned steps, asking only which drafted steps do each expected one. The
   judge's answers are reported beside the score and never decide it.
 
+`score --record` adds layer C, the round trip: the fixture is served on the
+address the case was filmed at and each draft is recorded against it with
+`flowproof record --no-repair`, headless. A draft that records to the end on
+the first attempt is the video analogue of the Fiori corpus's FAA, and the
+only number that says the feature works rather than that the text looks
+plausible. `control` records each case's *expected* flow the same way, with
+no model, which proves the fixtures and the harness before a draft is blamed.
+
 Exits 1 when an invariant breaks, or with `--min-recall` when a case's step
 recall is below it; 2 when the engine could not draft at all for a reason
 other than the model's reading (no key, no binary).
@@ -34,6 +42,8 @@ other than the model's reading (no key, no binary).
 from __future__ import annotations
 
 import argparse
+import functools
+import http.server
 import json
 import os
 import re
@@ -41,6 +51,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -49,6 +60,9 @@ import yaml
 REPO = Path(__file__).resolve().parent.parent
 CASES = REPO / "evals/video-to-flow/cases"
 SCOREBOARDS = REPO / "evals/video-to-flow"
+FIXTURES = REPO / "evals/video-to-flow/fixture"
+# The generator films at this address, and the drafts' `Go to` names it.
+PORT = 8765
 # A refusal the engine raises for a recording of no app.
 NOT_APP = "shows no app being used"
 # Engine failures that are about the setup, not the model's reading.
@@ -273,7 +287,7 @@ def draft(binary: str, case_dir: Path, case: dict, out: Path) -> dict:
             "seconds": round(time.monotonic() - started, 1)}
 
 
-def score_case(binary: str, case_dir: Path, judge, work: Path) -> dict:
+def score_case(binary: str, case_dir: Path, judge, work: Path, round_trip: bool = False) -> dict:
     case = load_case(case_dir)
     out = work / f"{case['id']}.flow.yaml"
     run = draft(binary, case_dir, case, out)
@@ -294,7 +308,57 @@ def score_case(binary: str, case_dir: Path, judge, work: Path) -> dict:
             scores["judged_recall"], scores["judge"] = judged_recall(scores, case["expected_steps"], drafted, judge)
         scores.pop("pairs")
         result["steps"] = scores
+    if round_trip and text is not None:
+        result["round_trip"] = record(binary, out, work)
     return result
+
+
+# --- layer C: the round trip -------------------------------------------------
+
+def serve_fixtures(port: int = PORT) -> http.server.ThreadingHTTPServer:
+    """The fixtures on 127.0.0.1, as the generator served them while filming."""
+    handler = functools.partial(_QuietHandler, directory=str(FIXTURES))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+
+def variables(spec_text: str) -> list[str]:
+    """`--var NAME=…` for every `${NAME}` a spec uses: the fixtures accept
+    any password, so the value only has to be there."""
+    names = sorted(set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)\}", spec_text)))
+    return [arg for name in names for arg in ("--var", f"{name}=video-eval")]
+
+
+def record(binary: str, spec: Path, work: Path) -> dict:
+    """One first attempt: `record --no-repair`, headless, no screenshots."""
+    trace = work / (spec.name.removesuffix(".flow.yaml") + ".trace.jsonl")
+    cmd = [binary, "record", str(spec), "--no-repair", "--headless", "--recording-detail", "off",
+           "-o", str(trace), *variables(spec.read_text())]
+    started = time.monotonic()
+    run = subprocess.run(cmd, capture_output=True, text=True, cwd=work)
+    last = (run.stderr.strip().splitlines() or [""])[-1]
+    return {"recorded": run.returncode == 0, "error": None if run.returncode == 0 else last,
+            "seconds": round(time.monotonic() - started, 1)}
+
+
+def control(binary: str, dirs: list[Path], work: Path) -> list[dict]:
+    """Records every expected flow: if one fails, the fixture or the
+    harness is wrong, not the draft."""
+    results = []
+    for case_dir in dirs:
+        expected = case_dir / "expected.flow.yaml"
+        if not expected.exists():
+            continue
+        spec = work / f"{case_dir.name}.flow.yaml"
+        shutil.copy2(expected, spec)
+        results.append({"case": case_dir.name, **record(binary, spec, work)})
+    return results
 
 
 def import_generated(generated: Path) -> int:
@@ -313,19 +377,26 @@ def import_generated(generated: Path) -> int:
 
 
 def table(results: list[dict]) -> str:
-    rows = ["| Case | Invariants | Recall | Judged | Precision | Order | Drafted/expected |",
-            "|---|---|---|---|---|---|---|"]
+    rows = ["| Case | Invariants | Recall | Judged | Precision | Order | Drafted/expected | Records |",
+            "|---|---|---|---|---|---|---|---|"]
     for r in results:
         broken = [k for k, ok in r["invariants"].items() if not ok]
         inv = "ok" if not broken else "**" + ", ".join(broken) + "**"
+        trip = r.get("round_trip")
+        records = "-" if trip is None else ("yes" if trip["recorded"] else "no")
         s = r.get("steps")
         if s:
             judged = f"{s['judged_recall']:.2f}" if "judged_recall" in s else "-"
             rows.append(f"| {r['case']} | {inv} | {s['recall']:.2f} | {judged} | {s['precision']:.2f} "
-                        f"| {s['out_of_order']} | {s['drafted']}/{s['expected']} |")
+                        f"| {s['out_of_order']} | {s['drafted']}/{s['expected']} | {records} |")
         else:
-            rows.append(f"| {r['case']} | {inv} | - | - | - | - | - |")
+            rows.append(f"| {r['case']} | {inv} | - | - | - | - | - | {records} |")
     return "\n".join(rows)
+
+
+def first_attempt_rate(results: list[dict]) -> float | None:
+    trips = [r["round_trip"]["recorded"] for r in results if "round_trip" in r]
+    return round(sum(trips) / len(trips), 4) if trips else None
 
 
 def main() -> int:
@@ -340,9 +411,26 @@ def main() -> int:
     sc.add_argument("--no-judge", action="store_true", help="score the alignment only")
     sc.add_argument("--min-recall", type=float, help="fail a case whose step recall is below this")
     sc.add_argument("--out", type=Path, help="scoreboard JSON (default: a timestamped file in evals/video-to-flow)")
+    sc.add_argument("--record", action="store_true",
+                    help="layer C: record each draft against the served fixture with --no-repair")
+    ctl = sub.add_parser("control", help="record every expected flow against its fixture, with no model")
+    ctl.add_argument("--bin", default=os.environ.get("FLOWPROOF", "target/debug/flowproof"))
+    ctl.add_argument("--case", action="append", help="only these case ids (repeatable)")
     args = parser.parse_args()
     if args.command == "import":
         return import_generated(args.generated)
+    args.bin = str(Path(args.bin).resolve())
+    if args.command == "control":
+        dirs = sorted(p for p in CASES.iterdir() if (p / "case.json").exists() and (not args.case or p.name in args.case))
+        server = serve_fixtures()
+        try:
+            with tempfile.TemporaryDirectory() as work:
+                results = control(args.bin, dirs, Path(work))
+        finally:
+            server.shutdown()
+        for r in results:
+            print(f"{r['case']}: {'records' if r['recorded'] else 'FAILS: ' + (r['error'] or '')}")
+        return 0 if all(r["recorded"] for r in results) else 1
 
     judge = None
     if not args.no_judge:
@@ -355,14 +443,22 @@ def main() -> int:
     if not dirs:
         print("no cases with committed frames; run `import` first", file=sys.stderr)
         return 2
-    with tempfile.TemporaryDirectory() as work:
-        results = [score_case(args.bin, d, judge, Path(work)) for d in dirs]
+    server = serve_fixtures() if args.record else None
+    try:
+        with tempfile.TemporaryDirectory() as work:
+            results = [score_case(args.bin, d, judge, Path(work), args.record) for d in dirs]
+    finally:
+        if server:
+            server.shutdown()
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    board = {"timestamp": stamp, "layer": "B", "judge_model": None if args.no_judge else args.judge_model,
-             "cases": results}
+    board = {"timestamp": stamp, "layer": "B+C" if args.record else "B",
+             "judge_model": None if args.no_judge else args.judge_model,
+             "first_attempt_rate": first_attempt_rate(results), "cases": results}
     out = args.out or SCOREBOARDS / f"drafts-{stamp}.json"
     out.write_text(json.dumps(board, indent=2) + "\n")
     print(table(results))
+    if board["first_attempt_rate"] is not None:
+        print(f"\nfirst-attempt record rate: {board['first_attempt_rate']:.2f}")
     print(f"\nscoreboard: {out}")
     if any(r["setup_error"] for r in results):
         print("the engine could not draft: " + next(r["error"] for r in results if r["setup_error"]), file=sys.stderr)
