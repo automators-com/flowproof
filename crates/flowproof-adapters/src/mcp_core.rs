@@ -215,26 +215,36 @@ pub(crate) fn mock_tool_result(mock: &Value) -> Value {
 }
 
 /// The JSON-RPC success envelope for a request id and result. Shared so the
-/// stdio writer and the HTTP body builder never disagree on shape.
-pub(crate) fn result_envelope(id: &Value, result: &Value) -> Value {
+/// stdio writer, the HTTP body builder and `flowproof mcp` (flowproof as the
+/// agent's own tool server) never disagree on shape.
+pub fn result_envelope(id: &Value, result: &Value) -> Value {
     serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
 
 /// The JSON-RPC error envelope a diverged or past-the-end request gets, so
 /// the agent is answered rather than left waiting forever. In-band on the
-/// stdio pipe and in the HTTP 200 body alike.
-pub(crate) fn error_envelope(id: &Value, detail: &str) -> Value {
+/// stdio pipe and in the HTTP 200 body alike. Always the implementation-
+/// defined server error, `-32000`; see [`coded_error_envelope`] for the
+/// spec-defined codes.
+pub fn error_envelope(id: &Value, detail: &str) -> Value {
+    coded_error_envelope(id, -32000, detail)
+}
+
+/// A JSON-RPC error envelope with an explicit code, for the spec-defined
+/// errors a real server answers with: `-32700` parse error, `-32600` invalid
+/// request, `-32601` method not found, `-32602` invalid params.
+pub fn coded_error_envelope(id: &Value, code: i64, message: &str) -> Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
-        "error": { "code": -32000, "message": detail },
+        "error": { "code": code, "message": message },
     })
 }
 
 /// The JSON-RPC notification envelope (a method and params, NO id) a
-/// recorded server event is re-emitted as at replay. Shared so the stdio
-/// pipe writer and the HTTP SSE framer never disagree on shape.
-pub(crate) fn notification_envelope(method: &str, params: &Value) -> Value {
+/// recorded server event is re-emitted as at replay, and `flowproof mcp`
+/// sends progress as. Shared so every writer agrees on shape.
+pub fn notification_envelope(method: &str, params: &Value) -> Value {
     serde_json::json!({ "jsonrpc": "2.0", "method": method, "params": params })
 }
 
@@ -370,5 +380,26 @@ mod tests {
         let err = match_call(&recorded, "tools/call", Some(&incoming)).expect_err("must diverge");
         assert!(err.contains("arguments.b"), "{err}");
         assert!(err.contains("missing"), "{err}");
+    }
+
+    #[test]
+    fn error_envelope_keeps_the_server_error_code() {
+        let env = error_envelope(&serde_json::json!(7), "diverged");
+        assert_eq!(env["error"]["code"], -32000);
+        assert_eq!(env["error"]["message"], "diverged");
+        assert_eq!(env["id"], 7);
+    }
+
+    #[test]
+    fn coded_error_envelope_carries_the_given_code() {
+        let env = coded_error_envelope(&serde_json::json!("a"), -32601, "no such method");
+        assert_eq!(
+            env,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "a",
+                "error": { "code": -32601, "message": "no such method" },
+            })
+        );
     }
 }
