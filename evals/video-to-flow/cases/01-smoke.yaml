@@ -1,0 +1,8 @@
+name: Sign in and open orders
+catches: A draft that fails outright. Four steps on a still page, the one case cheap enough to run on every pull request that touches the prompt.
+fixture: app.html
+actions:
+  - type: {field: "#username", text: mara.lind}
+  - type: {field: "#password", text: otter-lantern-42, secret: PASSWORD}
+  - click: "#sign-in"
+  - click: "#tab-orders"
