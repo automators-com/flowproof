@@ -21,6 +21,13 @@ impl Server {
             .current_dir(cwd)
             .env_remove("MCP_E2E_FLAG")
             .env_remove("FLOWPROOF_MCP_EXE")
+            // No authoring model, whatever this machine has configured.
+            .env("HOME", cwd)
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("FLOWPROOF_AI_API_KEY")
+            .env_remove("FLOWPROOF_AI_PROVIDER")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -54,7 +61,11 @@ impl Server {
     }
 
     fn run(&mut self, id: u64, arguments: Value) -> Value {
-        let params = json!({ "name": "flowproof_run", "arguments": arguments });
+        self.call(id, "flowproof_run", arguments)
+    }
+
+    fn call(&mut self, id: u64, tool: &str, arguments: Value) -> Value {
+        let params = json!({ "name": tool, "arguments": arguments });
         self.request(id, "tools/call", params)["result"].clone()
     }
 }
@@ -106,7 +117,7 @@ fn handshake_lists_run_and_answers_protocol_errors() {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    assert_eq!(names, ["flowproof_run"]);
+    assert_eq!(names, ["flowproof_run", "flowproof_record"]);
 
     server.send("not json");
     assert_eq!(server.next()["error"]["code"], -32700);
@@ -174,5 +185,43 @@ fn bad_input_and_engine_errors_are_tool_results() {
     for (id, arguments) in [(2, json!({})), (3, unknown), (4, missing)] {
         assert_eq!(server.run(id, arguments)["isError"], true);
     }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_step_that_needs_clarifying_is_a_result_not_an_error() {
+    let dir = work_dir("clarify");
+    std::fs::write(
+        dir.join("flows/vague.flow.yaml"),
+        "name: Vague\napp: api\nsteps:\n  - make required field changes\n",
+    )
+    .expect("spec");
+    let mut server = Server::start(&dir);
+
+    let result = server.call(
+        1,
+        "flowproof_record",
+        json!({ "spec": "flows/vague.flow.yaml" }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["recorded"], false, "{structured}");
+    let clarification = &structured["result"]["needs_clarification"];
+    assert_eq!(
+        clarification["step"], "make required field changes",
+        "{structured}"
+    );
+    assert_eq!(clarification["stage"], "no_model", "{structured}");
+    assert!(!dir.join("flows/vague.trace.jsonl").exists());
+
+    // A gated flow records as skipped, and an unknown author is the
+    // engine's own refusal, passed back as an error.
+    let gated = json!({ "spec": "flows/gated.flow.yaml", "no_repair": true });
+    let result = server.call(2, "flowproof_record", gated);
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["recorded"], false, "{result}");
+    assert!(result["structuredContent"]["result"]["skipped"].is_string());
+    let bad = json!({ "spec": "flows/gated.flow.yaml", "author": "--allow-exec" });
+    assert_eq!(server.call(3, "flowproof_record", bad)["isError"], true);
     std::fs::remove_dir_all(&dir).ok();
 }

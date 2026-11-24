@@ -5,7 +5,7 @@ description: "Let a coding agent replay your flows itself: Claude Code, Codex CL
 
 `flowproof mcp` is flowproof as **your coding agent's tool server**: Claude
 Code, Codex CLI, Cursor, VS Code or any MCP client starts it over stdio and
-replays flows itself. It is not a flow's `mcp:` block, where flowproof
+records and replays flows itself. It is not a flow's `mcp:` block, where flowproof
 **stands in for the tool server of an agent you are testing** (see
 [agent testing](agent-testing/index.md)).
 
@@ -31,6 +31,16 @@ whatever `FLOWPROOF_HEADED` says) and `cwd`, the folder to run in for this
 call only. Every result echoes the `cwd` it used. A failing flow is a result
 with `passed: false` and its report; only an engine error, such as a spec that
 does not parse, is marked as an error.
+
+**`flowproof_record`** performs a flow once against the live app and writes its
+trace, as `flowproof record --json` does, so it does whatever the flow does: use
+test accounts. It takes `spec`, `out`, `vars`, `var`, `author`, `reuse`,
+`resume`, `no_repair`, `headed` and `cwd`. Plain steps are authored by the model
+set with `flowproof config ai`, falling back to grammar without one. A step
+that cannot be authored comes back with `needs_clarification`, the payload
+described in [the outside-in loop](self-help.md). That is a result, not an
+error: the agent rewords the step and records again. Its scene inventory is
+screen content, and it goes to whichever model your MCP client uses.
 
 There are no file tools, because your agent has better ones and traces are
 [plain JSONL](trace-format.md), and no configuration tools: credentials and the
