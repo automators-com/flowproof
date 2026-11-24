@@ -1,0 +1,50 @@
+{
+  "changes": 8,
+  "duration_ms": 46700,
+  "frame_height": 800,
+  "frame_width": 1280,
+  "frames": [
+    {
+      "at_ms": 0,
+      "file": "001.jpg"
+    },
+    {
+      "at_ms": 10500,
+      "file": "002.jpg"
+    },
+    {
+      "at_ms": 12000,
+      "file": "003.jpg"
+    },
+    {
+      "at_ms": 12500,
+      "file": "004.jpg"
+    },
+    {
+      "at_ms": 14500,
+      "file": "005.jpg"
+    },
+    {
+      "at_ms": 28000,
+      "file": "006.jpg"
+    },
+    {
+      "at_ms": 30000,
+      "file": "007.jpg"
+    },
+    {
+      "at_ms": 46600,
+      "file": "008.jpg"
+    }
+  ],
+  "height": 800,
+  "kept": {
+    "height": 640,
+    "width": 1110,
+    "x": 50,
+    "y": 80
+  },
+  "max_frames": 60,
+  "samples": 95,
+  "width": 1280
+}

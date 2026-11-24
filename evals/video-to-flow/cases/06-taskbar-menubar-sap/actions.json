@@ -1,0 +1,26 @@
+[
+  {
+    "at_ms": 1800,
+    "end_ms": 3600,
+    "kind": "type",
+    "step": "Type KX-55120-B into the \"Material\" field"
+  },
+  {
+    "at_ms": 5600,
+    "end_ms": 6200,
+    "kind": "type",
+    "step": "Type NH01 into the \"Plant\" field"
+  },
+  {
+    "at_ms": 7600,
+    "end_ms": 7600,
+    "kind": "press",
+    "step": "Press Enter"
+  },
+  {
+    "at_ms": 9300,
+    "end_ms": 9300,
+    "kind": "click",
+    "step": "Click \"Hold\""
+  }
+]

@@ -1,0 +1,68 @@
+[
+  {
+    "at_ms": 1800,
+    "end_ms": 3400,
+    "kind": "type",
+    "step": "Type mara.lind into the \"Username\" field"
+  },
+  {
+    "at_ms": 5400,
+    "end_ms": 8400,
+    "kind": "type",
+    "step": "Type ${PASSWORD} into the \"Password\" field"
+  },
+  {
+    "at_ms": 10200,
+    "end_ms": 10200,
+    "kind": "click",
+    "step": "Click \"Sign in\""
+  },
+  {
+    "at_ms": 11600,
+    "end_ms": 431600,
+    "kind": "wait",
+    "step": null
+  },
+  {
+    "at_ms": 433400,
+    "end_ms": 435400,
+    "kind": "pick",
+    "step": "Type Tinsmith's rivets, 200 into the \"Find a product\" field"
+  },
+  {
+    "at_ms": 437200,
+    "end_ms": 437200,
+    "kind": "click",
+    "step": "Click \"+\""
+  },
+  {
+    "at_ms": 438600,
+    "end_ms": 858600,
+    "kind": "wait",
+    "step": null
+  },
+  {
+    "at_ms": 860400,
+    "end_ms": 862200,
+    "kind": "type",
+    "step": "Type Kranichweg into the \"Street\" field"
+  },
+  {
+    "at_ms": 864200,
+    "end_ms": 864400,
+    "kind": "type",
+    "step": "Type 17 into the \"House number\" field"
+  },
+  {
+    "at_ms": 865800,
+    "end_ms": 1165800,
+    "kind": "wait",
+    "step": null
+  },
+  {
+    "at_ms": 1167400,
+    "end_ms": 1167400,
+    "kind": "click",
+    "step": "Click \"Orders\""
+  }
+]

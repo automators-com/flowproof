@@ -1,0 +1,38 @@
+{
+  "changes": 5,
+  "duration_ms": 20000,
+  "frame_height": 800,
+  "frame_width": 1280,
+  "frames": [
+    {
+      "at_ms": 0,
+      "file": "001.jpg"
+    },
+    {
+      "at_ms": 4000,
+      "file": "002.jpg"
+    },
+    {
+      "at_ms": 8000,
+      "file": "003.jpg"
+    },
+    {
+      "at_ms": 12000,
+      "file": "004.jpg"
+    },
+    {
+      "at_ms": 19900,
+      "file": "005.jpg"
+    }
+  ],
+  "height": 800,
+  "kept": {
+    "height": 640,
+    "width": 1040,
+    "x": 120,
+    "y": 80
+  },
+  "max_frames": 60,
+  "samples": 41,
+  "width": 1280
+}

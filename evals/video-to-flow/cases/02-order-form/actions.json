@@ -1,0 +1,74 @@
+[
+  {
+    "at_ms": 1800,
+    "end_ms": 3400,
+    "kind": "type",
+    "step": "Type mara.lind into the \"Username\" field"
+  },
+  {
+    "at_ms": 5400,
+    "end_ms": 8400,
+    "kind": "type",
+    "step": "Type ${PASSWORD} into the \"Password\" field"
+  },
+  {
+    "at_ms": 10200,
+    "end_ms": 10200,
+    "kind": "click",
+    "step": "Click \"Sign in\""
+  },
+  {
+    "at_ms": 12200,
+    "end_ms": 14000,
+    "kind": "pick",
+    "step": "Type Lampwick Desk Lamp 40W into the \"Find a product\" field"
+  },
+  {
+    "at_ms": 15800,
+    "end_ms": 15800,
+    "kind": "click",
+    "step": "Click \"+\""
+  },
+  {
+    "at_ms": 17600,
+    "end_ms": 17600,
+    "kind": "click",
+    "step": "Click \"+\""
+  },
+  {
+    "at_ms": 19600,
+    "end_ms": 21400,
+    "kind": "type",
+    "step": "Type Kranichweg into the \"Street\" field"
+  },
+  {
+    "at_ms": 23400,
+    "end_ms": 23600,
+    "kind": "type",
+    "step": "Type 17 into the \"House number\" field"
+  },
+  {
+    "at_ms": 25600,
+    "end_ms": 26400,
+    "kind": "type",
+    "step": "Type 24937 into the \"Postcode\" field"
+  },
+  {
+    "at_ms": 28400,
+    "end_ms": 30000,
+    "kind": "type",
+    "step": "Type Nordhafen into the \"City\" field"
+  },
+  {
+    "at_ms": 31400,
+    "end_ms": 31400,
+    "kind": "press",
+    "step": "Press Enter"
+  },
+  {
+    "at_ms": 33100,
+    "end_ms": 33100,
+    "kind": "click",
+    "step": "Click \"Confirm order\""
+  }
+]
