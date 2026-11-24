@@ -7,6 +7,7 @@ mod capture;
 pub mod config;
 mod doctor;
 mod mcp_server;
+mod mcp_tools;
 mod suite;
 mod suite_checkpoint;
 mod suite_inputs;
@@ -498,7 +499,6 @@ enum Command {
     /// itself. The client spawns this command; it is not run by hand. Not to
     /// be confused with a flow's `mcp:` block, where flowproof stands in for
     /// the tool server of the agent under test.
-    #[command(hide = true)]
     Mcp,
     /// Internal: the stdio MCP stand-in the agent spawns as its server
     /// command. Not run by hand - flowproof injects
@@ -4960,6 +4960,7 @@ where
         });
     }
 
+    let embedded = engine_path.is_some();
     if let Command::Run { recovery, .. } = &mut cli.command {
         recovery.engine_path = engine_path;
     }
@@ -5282,7 +5283,7 @@ where
             flowproof_adapters::mcp_stdio::run_stand_in(&server).map(|()| EXIT_PASS)
         }
         // Same stdout contract as the stand-in: JSON-RPC and nothing else.
-        Command::Mcp => mcp_server::serve().map(|()| EXIT_PASS),
+        Command::Mcp => mcp_server::serve(embedded).map(|()| EXIT_PASS),
     };
     // Skipped for mcp-stdio and mcp: those commands' contract is stdout
     // speaks JSON-RPC and nothing else, and their stderr is read by a
