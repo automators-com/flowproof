@@ -1,0 +1,71 @@
+name: video evals
+
+# The video-to-flow evals (evals/video-to-flow, plans/016-video-to-flow-evals.md).
+#
+# Layer A, frame selection: the corpus is generated from invented HTML
+# fixtures, each video's frames are chosen by `author-from-video
+# --frames-out`, and each case is scored for whether a kept frame shows
+# every known action. No model is called, so it gates: a case that drops
+# below evals/video-to-flow/frames-baseline.json fails the job.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/flowproof-adapters/src/video_frames.rs"
+      - "crates/flowproof-adapters/src/ffmpeg.rs"
+      - "evals/video-to-flow/**"
+      - "scripts/video-frames-eval.py"
+      - "scripts/test_video_frames_eval.py"
+      - ".github/workflows/video-evals.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  # The decode-only ffmpeg that ships with flowproof: frames are chosen by
+  # what users run, while the generator muxes with the runner's own ffmpeg.
+  ffmpeg:
+    uses: ./.github/workflows/ffmpeg.yml
+
+  frames:
+    name: frame selection (layer A)
+    needs: ffmpeg
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-linux-x64
+          path: ${{ runner.temp }}/ffmpeg
+      - run: chmod +x "$RUNNER_TEMP/ffmpeg/ffmpeg"
+      - name: install an ffmpeg that can encode
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: scoring tests
+        run: python3 scripts/test_video_frames_eval.py
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build the engine and the generator
+        run: cargo build -p flowproof-cli -p flowproof-video-fixture
+      # Chrome is on the runner image; headless_chrome finds it.
+      - name: generate the corpus
+        run: target/debug/flowproof-video-fixture evals/video-to-flow/cases --out "$RUNNER_TEMP/generated"
+      - name: score frame selection
+        env:
+          FLOWPROOF_FFMPEG: ${{ runner.temp }}/ffmpeg/ffmpeg
+        run: |
+          # Keep going past a failed gate so the table still reaches the summary.
+          set +e
+          python3 scripts/video-frames-eval.py "$RUNNER_TEMP/generated" \
+            --out "$RUNNER_TEMP/generated/frames-scoreboard.json" \
+            --write-baseline "$RUNNER_TEMP/generated/frames-baseline.json" | tee "$RUNNER_TEMP/table.md"
+          status=${PIPESTATUS[0]}
+          { echo "## Video frame selection"; echo; cat "$RUNNER_TEMP/table.md"; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - name: keep videos, frames and the scoreboard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-evals-frames
+          path: ${{ runner.temp }}/generated
+          if-no-files-found: warn
