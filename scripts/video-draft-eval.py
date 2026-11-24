@@ -410,6 +410,8 @@ def main() -> int:
     sc.add_argument("--judge-model", default=os.environ.get("VIDEO_EVAL_JUDGE_MODEL", "claude-opus-5-5"))
     sc.add_argument("--no-judge", action="store_true", help="score the alignment only")
     sc.add_argument("--min-recall", type=float, help="fail a case whose step recall is below this")
+    sc.add_argument("--cases-dir", type=Path, default=CASES,
+                    help="where the cases are: evals/video-to-flow/captured for the captured set")
     sc.add_argument("--out", type=Path, help="scoreboard JSON (default: a timestamped file in evals/video-to-flow)")
     sc.add_argument("--record", action="store_true",
                     help="layer C: record each draft against the served fixture with --no-repair")
@@ -437,7 +439,7 @@ def main() -> int:
         import anthropic  # only the judge needs it
         client = anthropic.Anthropic()
         judge = lambda e, d: judge_gap(client, args.judge_model, e, d)  # noqa: E731
-    dirs = sorted(p for p in CASES.iterdir() if (p / "case.json").exists())
+    dirs = sorted(p for p in args.cases_dir.iterdir() if (p / "case.json").exists())
     if args.case:
         dirs = [d for d in dirs if d.name in args.case]
     if not dirs:
@@ -452,6 +454,7 @@ def main() -> int:
             server.shutdown()
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     board = {"timestamp": stamp, "layer": "B+C" if args.record else "B",
+             "set": "captured" if args.cases_dir.resolve() != CASES.resolve() else "generated",
              "judge_model": None if args.no_judge else args.judge_model,
              "first_attempt_rate": first_attempt_rate(results), "cases": results}
     out = args.out or SCOREBOARDS / f"drafts-{stamp}.json"
