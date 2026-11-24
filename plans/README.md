@@ -32,6 +32,7 @@ instead so they're easy to find as a set.
 | 12 | [012-agent-multiturn-conversations.md](012-agent-multiturn-conversations.md) | Interactive multi-turn `record`: a human converses live with the running agent, flowproof captures each delivery only after the prior trajectory settles, and writes a `conversation:` block with delivery-local and conversation-wide assertions added afterward — issue #375, `CHARTER.md` Milestone 3 |
 | 13 | [013-fiori-ci-outage-resilience.md](013-fiori-ci-outage-resilience.md) | A fast-fail `FIORI_BASE_URL` reachability pre-check for `fiori-e2e.yml`/`sap-e2e.yml`, with shared concurrency and dedicated CI credentials deferred to separate follow-ups |
 | 14 | [014-element-fingerprint.md](014-element-fingerprint.md) | Record what each target was (kind, name, label, page title) and where a `page shows` check found its text, as advisory trace evidence for drift warnings, repair ranking and exporters such as Tosca |
+| 16 | [016-video-to-flow-evals.md](016-video-to-flow-evals.md) | An eval corpus for `author-from-video`, which has only ever been tried on one recording: generated fixture videos with a known answer key, frame selection scored with no model at all as the CI gate, the draft scored against an expected `.flow.yaml` by rubric, and the round trip back through `record` |
 
 ## How to read and amend these
 
