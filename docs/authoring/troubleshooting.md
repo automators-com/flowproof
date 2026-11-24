@@ -175,6 +175,12 @@ flowproof author-from-video order.mp4 --app web --name "Electricity order" \
 
 - `--check`: read the video and print its length and size; nothing is sent
   to a model and nothing is written.
+- `--frames-out <dir>`: choose the frames a draft would be made from and
+  write them into a new or empty folder as `001.jpg`, `002.jpg`, …, with a
+  `manifest.json` giving each frame's time, the part of the screen kept,
+  and how many changed moments the 60-frame budget dropped. Nothing is
+  sent to a model and no draft is written. Use it to see what the model
+  would see when a draft misses a step.
 - `--url`: where the flow starts, written as its first `Go to` step when the
   recording does not start by going there.
 - `--app`, `--name` and `--out`: as for `author-from-doc`.

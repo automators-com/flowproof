@@ -635,18 +635,25 @@ enum Command {
         /// The screen recording (mp4, mov, webm, …).
         video: PathBuf,
         /// Target app id (e.g. web, sap).
-        #[arg(long, required_unless_present = "check")]
+        #[arg(long, required_unless_present_any = ["check", "frames_out"])]
         app: Option<String>,
         /// Flow name, written into the draft's `name:` field.
-        #[arg(long, required_unless_present = "check")]
+        #[arg(long, required_unless_present_any = ["check", "frames_out"])]
         name: Option<String>,
         /// Where the flow starts, when the recording's address bar does not
         /// show it; written as the first step.
         #[arg(long)]
         url: Option<String>,
         /// The draft file.
-        #[arg(short, long, required_unless_present = "check")]
+        #[arg(short, long, required_unless_present_any = ["check", "frames_out"])]
         out: Option<PathBuf>,
+        /// Only choose the frames a draft would be made from and write them
+        /// into this (new or empty) folder as JPEGs, with `manifest.json`
+        /// giving each one's time; nothing is sent to a model and no draft
+        /// is written. For looking at what the model would see, and for the
+        /// evals in `evals/video-to-flow`.
+        #[arg(long, value_name = "DIR", conflicts_with = "check")]
+        frames_out: Option<PathBuf>,
         /// Only read the video and report its length and how many frames
         /// would be sent; nothing is sent to a model and nothing is written.
         #[arg(long)]
@@ -4387,6 +4394,73 @@ fn cmd_author_from_video(
     Ok(EXIT_PASS)
 }
 
+/// `author-from-video --frames-out`: the frames a draft would be made from,
+/// written as `001.jpg`, `002.jpg`, … beside a `manifest.json` that says when
+/// each was taken, what part of the screen was kept, and how many changed
+/// moments there were before `max_frames` capped them.
+fn cmd_video_frames_out(video: &Path, dir: &Path, json: bool) -> Result<u8, String> {
+    use flowproof_adapters::video_frames;
+    if std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some()) {
+        return Err(format!(
+            "{} is not empty; --frames-out writes into a new or empty folder so \
+             frames from two videos never mix",
+            dir.display()
+        ));
+    }
+    let opts = video_frames::FrameOptions::default();
+    let (info, frames) = video_frames::extract(video, &opts, &mut |done, total| {
+        eprintln!("finding frames: sample {} of {total}", done + 1)
+    })
+    .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut listed = Vec::new();
+    for (i, frame) in frames.iter().enumerate() {
+        let file = format!("{:03}.jpg", i + 1);
+        std::fs::write(dir.join(&file), &frame.jpeg)
+            .map_err(|e| format!("{}: {e}", dir.join(&file).display()))?;
+        listed.push(serde_json::json!({ "file": file, "at_ms": frame.at_ms }));
+    }
+    let frame_width = info.width.min(opts.max_width).max(1);
+    let frame_height = ((info.height as f64) * (frame_width as f64) / (info.width.max(1) as f64))
+        .round()
+        .max(1.0) as u32;
+    let manifest = serde_json::json!({
+        "duration_ms": info.duration_ms,
+        "width": info.width,
+        "height": info.height,
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+        "kept": info.kept.map(|k| serde_json::json!(
+            { "x": k.x, "y": k.y, "width": k.width, "height": k.height })),
+        "samples": info.samples,
+        "changes": info.changes,
+        "max_frames": opts.max_frames,
+        "frames": listed,
+    });
+    let text = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("manifest.json"), text + "\n")
+        .map_err(|e| format!("{}: {e}", dir.join("manifest.json").display()))?;
+    if json {
+        println!("{manifest}");
+    } else {
+        let dropped = info.changes.saturating_sub(frames.len());
+        println!(
+            "{} frames written to {}{}",
+            frames.len(),
+            dir.display(),
+            if dropped > 0 {
+                format!(
+                    " ({dropped} more changed moments were past the {}-frame budget)",
+                    opts.max_frames
+                )
+            } else {
+                String::new()
+            }
+        );
+    }
+    Ok(EXIT_PASS)
+}
+
 /// `{"steps": [...]}`: every drafted line with its kind, the shape
 /// `author-from-doc --json` and `author-from-video --json` share.
 fn draft_steps_json(lines: &[flowproof_agent::draft_assembly::DraftLine]) -> serde_json::Value {
@@ -5063,8 +5137,12 @@ where
             url,
             out,
             check,
+            frames_out,
             json,
-        } => cmd_author_from_video(video, app, name, url, out, check, json),
+        } => match frames_out {
+            Some(dir) => cmd_video_frames_out(&video, &dir, json),
+            None => cmd_author_from_video(video, app, name, url, out, check, json),
+        },
         Command::AuthorFromCode {
             repo,
             goal,
@@ -5821,6 +5899,34 @@ mod tests {
             "https://shop.example.test/",
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn author_from_video_writes_frames_alone_and_never_with_check() {
+        let frames = |extra: &[&str]| {
+            let mut args = vec![
+                "flowproof",
+                "author-from-video",
+                "demo.mp4",
+                "--frames-out",
+                "f",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        assert!(frames(&[]).is_ok());
+        assert!(frames(&["--json"]).is_ok());
+        assert!(frames(&["--check"]).is_err());
+    }
+
+    #[test]
+    fn frames_out_refuses_a_folder_that_already_holds_files() {
+        let dir = std::env::temp_dir().join(format!("flowproof-frames-out-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("001.jpg"), b"old").expect("file");
+        let err = cmd_video_frames_out(Path::new("missing.mp4"), &dir, false).expect_err("refused");
+        assert!(err.contains("not empty"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
