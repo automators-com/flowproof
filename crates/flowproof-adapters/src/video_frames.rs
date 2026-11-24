@@ -29,6 +29,12 @@ pub struct VideoInfo {
     /// The part of the screen the frames keep, in the frames' own pixels,
     /// when still bands were trimmed from its edges.
     pub kept: Option<Area>,
+    /// How many samples were compared, and how many of them changed the
+    /// screen enough to keep before `max_frames` capped them: when
+    /// `changes` is past the cap, frames were dropped. Both 0 from
+    /// [`probe`], which compares nothing.
+    pub samples: usize,
+    pub changes: usize,
 }
 
 /// A rectangle, in pixels.
@@ -138,6 +144,8 @@ pub fn extract(
         width: k.width,
         height: k.height,
     });
+    info.samples = thumbs.len();
+    info.changes = select_changes(&thumbs, usize::MAX).len();
     let mut frames = Vec::new();
     for i in select_changes(&thumbs, opts.max_frames) {
         let jpeg = ffmpeg.picture_at(video, times[i], (width, height), crop, Format::Jpeg)?;
@@ -179,6 +187,8 @@ fn video_info(read: &Probe) -> VideoInfo {
         width: read.width,
         height: read.height,
         kept: None,
+        samples: 0,
+        changes: 0,
     }
 }
 
@@ -333,6 +343,15 @@ mod tests {
         let thumbs: Vec<Vec<u8>> = (0..10u8).map(|i| flat(100 + i / 3)).collect();
         let kept = select_changes(&thumbs, 60);
         assert!(kept.len() > 2, "{kept:?}");
+    }
+
+    /// What `changes` reports: with no cap, every change is kept, so a
+    /// count past `max_frames` means the cap dropped some.
+    #[test]
+    fn with_no_cap_every_change_counts() {
+        let thumbs: Vec<Vec<u8>> = (0..10).map(|i| flat(i * 20)).collect();
+        assert_eq!(select_changes(&thumbs, usize::MAX).len(), 10);
+        assert_eq!(select_changes(&thumbs, 4).len(), 4);
     }
 
     #[test]
