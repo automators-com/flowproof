@@ -1,0 +1,10 @@
+name: Sign in, check mail, open orders
+catches: An action in another app. A mail client covers the shop for a few seconds and something is clicked in it, which must come back as out of scope rather than as a step.
+fixture: app.html
+actions:
+  - type: {field: "#username", text: mara.lind}
+  - type: {field: "#password", text: otter-lantern-42, secret: PASSWORD}
+  - click: "#sign-in"
+  - mail: {click: "#mail-archive", for_ms: 3000}
+  - click: "#tab-orders"
+  - click: "#tab-account"

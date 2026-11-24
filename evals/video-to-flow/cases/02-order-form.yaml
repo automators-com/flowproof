@@ -1,0 +1,16 @@
+name: Order a desk lamp
+catches: Steps lost from an ordinary twelve-step form, a typeahead whose picked entry differs from what was typed, and a street and house number folded into one line.
+fixture: app.html
+actions:
+  - type: {field: "#username", text: mara.lind}
+  - type: {field: "#password", text: otter-lantern-42, secret: PASSWORD}
+  - click: "#sign-in"
+  - pick: {field: "#search", text: desk, entry: Lampwick Desk Lamp 40W}
+  - click: "#more"
+  - click: "#more"
+  - type: {field: "#street", text: Kranichweg}
+  - type: {field: "#house", text: "17"}
+  - type: {field: "#postcode", text: "24937"}
+  - type: {field: "#city", text: Nordhafen}
+  - press: Enter
+  - click: "#confirm"

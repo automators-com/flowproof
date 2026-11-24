@@ -1,0 +1,17 @@
+name: Order by keyboard
+catches: Actions with no visible click. The focus moves by keyboard, and both the review dialog and the confirmation come from Enter, so the model must read the change without seeing a click.
+fixture: app.html
+actions:
+  - type: {field: "#username", text: mara.lind}
+  - tab
+  - keys: {text: otter-lantern-42, secret: PASSWORD}
+  - press: Enter
+  - type: {field: "#street", text: Kranichweg}
+  - tab
+  - keys: {text: "17"}
+  - tab
+  - keys: {text: "24937"}
+  - tab
+  - keys: {text: Nordhafen}
+  - press: Enter
+  - press: Enter
