@@ -1,11 +1,26 @@
-"""flowproof as MCP tools: record, run, get_trace, heal over stdio.
+"""ARCHIVED: flowproof as MCP tools, record / run / get_trace / heal over stdio.
 
-Lets any MCP-capable agent (Claude, opencode, DataMaker, ...) drive
-flowproof directly. Thin wrappers over the same engine the CLI uses;
-every tool takes and returns JSON-serializable data.
+Archived by rename, not removed. Nothing in this repository, in flowproof
+desktop, or in DataMaker calls it — DataMaker uses flowproof the other way
+round, as the thing that tests its agent — and no external user is known to
+have installed it. It is also the only MCP surface written in Python, which
+makes it the one that needs a Python install and an extra to reach, and a
+native ``flowproof mcp`` subcommand is planned to replace it.
+
+So this module keeps working exactly as before: ``flowproof-mcp`` still runs
+it, the ``mcp`` extra still installs what it needs, and ``tests/test_mcp.py``
+still exercises it in CI. Only the file name says "do not build on this".
+Reviving it is one ``git mv``; deleting it is a separate decision, once the
+native server has shipped and been used in anger.
+
+One thing to know before that decision: ``_native.record`` opts this process
+in to running suite-authored shell and spec-authored programs
+(``flowproof_cli::allow_suite_exec``), which is defensible for an embedder
+driving its own suite and is not what a coding agent pointed at a freshly
+cloned repository should get. The native server refuses by default instead.
 
 Requires the ``mcp`` extra: ``pip install flowproof[mcp]`` (Python 3.10+).
-Run with ``flowproof-mcp`` or ``python -m flowproof.mcp_server``.
+Run with ``flowproof-mcp`` or ``python -m flowproof._archived_mcp_server``.
 """
 
 from __future__ import annotations
@@ -99,7 +114,7 @@ if FastMCP is not None:
 def main() -> None:
     if FastMCP is None:
         raise SystemExit(
-            "flowproof-mcp requires the 'mcp' extra (Python 3.10+): "
+            "flowproof-mcp (archived) requires the 'mcp' extra (Python 3.10+): "
             f"pip install 'flowproof[mcp]' ({_IMPORT_ERROR})"
         )
     mcp.run()
