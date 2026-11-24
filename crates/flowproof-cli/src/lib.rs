@@ -633,7 +633,8 @@ enum Command {
     /// should. Still needs a live `record`.
     AuthorFromVideo {
         /// The screen recording (mp4, mov, webm, …).
-        video: PathBuf,
+        #[arg(required_unless_present = "frames_dir")]
+        video: Option<PathBuf>,
         /// Target app id (e.g. web, sap).
         #[arg(long, required_unless_present_any = ["check", "frames_out"])]
         app: Option<String>,
@@ -654,6 +655,15 @@ enum Command {
         /// evals in `evals/video-to-flow`.
         #[arg(long, value_name = "DIR", conflicts_with = "check")]
         frames_out: Option<PathBuf>,
+        /// Draft from frames `--frames-out` wrote earlier instead of from a
+        /// video: no ffmpeg is needed, and the same frames can be drafted
+        /// again after a prompt change (the evals in `evals/video-to-flow`).
+        #[arg(
+            long,
+            value_name = "DIR",
+            conflicts_with_all = ["video", "check", "frames_out"]
+        )]
+        frames_dir: Option<PathBuf>,
         /// Only read the video and report its length and how many frames
         /// would be sent; nothing is sent to a model and nothing is written.
         #[arg(long)]
@@ -4355,7 +4365,6 @@ fn cmd_author_from_video(
             k.width, k.height, k.x, k.y
         );
     }
-    eprintln!("reading {} frames", frames.len());
     let frames: Vec<video_author::Frame> = frames
         .into_iter()
         .map(|f| video_author::Frame {
@@ -4371,15 +4380,84 @@ fn cmd_author_from_video(
         url,
         duration_ms: info.duration_ms,
     };
-    let result = video_author::author_from_frames(&opts, &frames).map_err(|e| e.to_string())?;
+    let kept = info
+        .kept
+        .map(|k| serde_json::json!({ "x": k.x, "y": k.y, "width": k.width, "height": k.height }));
+    draft_from_video_frames(&opts, &frames, kept, json)
+}
+
+/// `author-from-video --frames-dir`: the same draft, from the JPEGs and
+/// `manifest.json` that `--frames-out` wrote.
+fn cmd_author_from_frames_dir(
+    dir: &Path,
+    app: Option<String>,
+    name: Option<String>,
+    url: Option<String>,
+    out: Option<PathBuf>,
+    json: bool,
+) -> Result<u8, String> {
+    use flowproof_agent::video_author;
+    config::seed_env();
+    let (Some(app), Some(name), Some(out)) = (app, name, out) else {
+        return Err("--app, --name and --out are required to draft".into());
+    };
+    let manifest_path = dir.join("manifest.json");
+    let manifest: serde_json::Value = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))
+        .and_then(|text| {
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", manifest_path.display()))
+        })?;
+    let listed = manifest["frames"]
+        .as_array()
+        .ok_or_else(|| format!("{} lists no frames", manifest_path.display()))?;
+    let mut frames = Vec::new();
+    for entry in listed {
+        let (Some(file), Some(at_ms)) = (entry["file"].as_str(), entry["at_ms"].as_u64()) else {
+            return Err(format!(
+                "{}: a frame needs a file and an at_ms",
+                manifest_path.display()
+            ));
+        };
+        // Only a file name: a manifest never reaches outside its folder.
+        if file.contains(['/', '\\']) || file.starts_with('.') {
+            return Err(format!(
+                "{}: {file} is not a file in that folder",
+                manifest_path.display()
+            ));
+        }
+        let jpeg = std::fs::read(dir.join(file))
+            .map_err(|e| format!("{}: {e}", dir.join(file).display()))?;
+        frames.push(video_author::Frame { at_ms, jpeg });
+    }
+    let opts = video_author::VideoAuthorOptions {
+        video: dir.to_path_buf(),
+        app,
+        name,
+        out,
+        url,
+        duration_ms: manifest["duration_ms"].as_u64().unwrap_or_default(),
+    };
+    let kept = Some(manifest["kept"].clone()).filter(|k| !k.is_null());
+    draft_from_video_frames(&opts, &frames, kept, json)
+}
+
+/// The model call and the report, shared by a video and a frames folder.
+fn draft_from_video_frames(
+    opts: &flowproof_agent::video_author::VideoAuthorOptions,
+    frames: &[flowproof_agent::video_author::Frame],
+    kept: Option<serde_json::Value>,
+    json: bool,
+) -> Result<u8, String> {
+    use flowproof_agent::video_author;
+    eprintln!("reading {} frames", frames.len());
+    let result = video_author::author_from_frames(opts, frames).map_err(|e| e.to_string())?;
     if json {
         let mut report = draft_steps_json(&result.lines);
         report["flow"] = serde_json::json!(result.flow);
         report["frames"] = frames.len().into();
-        report["duration_ms"] = info.duration_ms.into();
-        if let Some(k) = info.kept {
-            report["kept"] =
-                serde_json::json!({ "x": k.x, "y": k.y, "width": k.width, "height": k.height });
+        report["duration_ms"] = opts.duration_ms.into();
+        if let Some(kept) = kept {
+            report["kept"] = kept;
         }
         println!("{report}");
         return Ok(EXIT_PASS);
@@ -5138,10 +5216,15 @@ where
             out,
             check,
             frames_out,
+            frames_dir,
             json,
-        } => match frames_out {
-            Some(dir) => cmd_video_frames_out(&video, &dir, json),
-            None => cmd_author_from_video(video, app, name, url, out, check, json),
+        } => match (video, frames_out, frames_dir) {
+            (_, _, Some(dir)) => cmd_author_from_frames_dir(&dir, app, name, url, out, json),
+            (Some(video), Some(dir), None) => cmd_video_frames_out(&video, &dir, json),
+            (Some(video), None, None) => {
+                cmd_author_from_video(video, app, name, url, out, check, json)
+            }
+            (None, _, None) => Err("name a video, or --frames-dir".into()),
         },
         Command::AuthorFromCode {
             repo,
@@ -5917,6 +6000,46 @@ mod tests {
         assert!(frames(&[]).is_ok());
         assert!(frames(&["--json"]).is_ok());
         assert!(frames(&["--check"]).is_err());
+    }
+
+    #[test]
+    fn frames_dir_drafts_without_a_video_and_never_with_one() {
+        let draft = ["--app", "web", "--name", "N", "--out", "n.flow.yaml"];
+        let mut args = vec!["flowproof", "author-from-video", "--frames-dir", "f"];
+        args.extend_from_slice(&draft);
+        assert!(Cli::try_parse_from(&args).is_ok());
+        args.push("demo.mp4");
+        assert!(Cli::try_parse_from(&args).is_err());
+        assert!(Cli::try_parse_from([
+            "flowproof",
+            "author-from-video",
+            "--frames-dir",
+            "f",
+            "--check"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn frames_dir_reads_only_files_inside_its_folder() {
+        let dir = std::env::temp_dir().join(format!("flowproof-frames-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join("manifest.json"),
+            r#"{"duration_ms": 1000, "frames": [{"file": "../secret.jpg", "at_ms": 0}]}"#,
+        )
+        .expect("manifest");
+        let err = cmd_author_from_frames_dir(
+            &dir,
+            Some("web".into()),
+            Some("n".into()),
+            None,
+            Some(dir.join("n.flow.yaml")),
+            false,
+        )
+        .expect_err("refused");
+        assert!(err.contains("not a file in that folder"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
