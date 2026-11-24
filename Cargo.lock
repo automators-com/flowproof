@@ -1015,6 +1015,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "flowproof-video-fixture"
+version = "0.23.35"
+dependencies = [
+ "anyhow",
+ "flowproof-driver",
+ "headless_chrome",
+ "image",
+ "serde",
+ "serde_json",
+ "serde_norway",
+]
+
+[[package]]
 name = "fluent-uri"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
