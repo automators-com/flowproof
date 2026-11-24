@@ -647,8 +647,9 @@ enum Command {
         /// The draft file.
         #[arg(short, long, required_unless_present = "check")]
         out: Option<PathBuf>,
-        /// Only read the video and report its length and how many frames
-        /// would be sent; nothing is sent to a model and nothing is written.
+        /// Only read the video and report its length and picture size; which
+        /// frames are sent is decided when drafting. Nothing is sent to a
+        /// model and nothing is written.
         #[arg(long)]
         check: bool,
         /// Print the result as one JSON object: the draft file and every
