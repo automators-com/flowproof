@@ -6,6 +6,7 @@ mod agent_surface;
 mod capture;
 pub mod config;
 mod doctor;
+mod mcp_server;
 mod suite;
 mod suite_checkpoint;
 mod suite_inputs;
@@ -492,6 +493,13 @@ enum Command {
         #[arg(long = "allow-exec")]
         allow_exec: bool,
     },
+    /// Serve flowproof to a coding agent (Claude Code, Codex CLI, Cursor, VS
+    /// Code) as an MCP tool server over stdio, so the agent can replay flows
+    /// itself. The client spawns this command; it is not run by hand. Not to
+    /// be confused with a flow's `mcp:` block, where flowproof stands in for
+    /// the tool server of the agent under test.
+    #[command(hide = true)]
+    Mcp,
     /// Internal: the stdio MCP stand-in the agent spawns as its server
     /// command. Not run by hand - flowproof injects
     /// `FLOWPROOF_MCP_SERVER_<NAME>` into the agent's environment pointing
@@ -4955,7 +4963,7 @@ where
     if let Command::Run { recovery, .. } = &mut cli.command {
         recovery.engine_path = engine_path;
     }
-    let is_mcp_stdio = matches!(cli.command, Command::McpStdio { .. });
+    let is_mcp_stdio = matches!(cli.command, Command::McpStdio { .. } | Command::Mcp);
     let result = match cli.command {
         Command::Config { action } => match action {
             ConfigAction::Sap {
@@ -5273,10 +5281,12 @@ where
         Command::McpStdio { server } => {
             flowproof_adapters::mcp_stdio::run_stand_in(&server).map(|()| EXIT_PASS)
         }
+        // Same stdout contract as the stand-in: JSON-RPC and nothing else.
+        Command::Mcp => mcp_server::serve().map(|()| EXIT_PASS),
     };
-    // Skipped for mcp-stdio: that command's contract is stdout speaks
-    // JSON-RPC and nothing else, and its stderr is read by an orchestrator
-    // that has no use for a human upgrade notice.
+    // Skipped for mcp-stdio and mcp: those commands' contract is stdout
+    // speaks JSON-RPC and nothing else, and their stderr is read by a
+    // client that has no use for a human upgrade notice.
     if !is_mcp_stdio {
         update_check::notify_if_outdated(env!("CARGO_PKG_VERSION"));
     }
