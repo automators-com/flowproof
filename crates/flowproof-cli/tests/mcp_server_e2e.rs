@@ -16,8 +16,14 @@ struct Server {
 
 impl Server {
     fn start(cwd: &Path) -> Self {
+        Self::start_with(cwd, &[])
+    }
+
+    fn start_with(cwd: &Path, env: &[(&str, &str)]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_flowproof"))
             .arg("mcp")
+            .env_remove("FLOWPROOF_ALLOW_EXEC")
+            .envs(env.iter().copied())
             .current_dir(cwd)
             .env_remove("MCP_E2E_FLAG")
             .env_remove("FLOWPROOF_MCP_EXE")
@@ -223,5 +229,44 @@ fn a_step_that_needs_clarifying_is_a_result_not_an_error() {
     assert!(result["structuredContent"]["result"]["skipped"].is_string());
     let bad = json!({ "spec": "flows/gated.flow.yaml", "author": "--allow-exec" });
     assert_eq!(server.call(3, "flowproof_record", bad)["isError"], true);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Plan 17, decision 4: the server never consents on anyone's behalf. Suite
+/// shell is refused unless the call itself passes `allow_exec`, even when
+/// the client's environment carries `FLOWPROOF_ALLOW_EXEC=1`.
+#[test]
+fn suite_shell_runs_only_when_the_call_consents() {
+    let dir = work_dir("consent");
+    std::fs::write(
+        dir.join("flows/suite.yaml"),
+        "env_from: |\n  touch hook-ran\n  echo MCP_E2E_MARK=1\n",
+    )
+    .expect("suite");
+    let mut server = Server::start_with(&dir, &[("FLOWPROOF_ALLOW_EXEC", "1")]);
+    let ran = dir.join("flows/hook-ran");
+
+    for (id, tool) in [(1, "flowproof_record"), (2, "flowproof_run")] {
+        let result = server.call(id, tool, json!({ "spec": "flows/gated.flow.yaml" }));
+        assert_eq!(result["isError"], true, "{tool}: {result}");
+        let error = result["structuredContent"]["error"]
+            .as_str()
+            .expect("error");
+        assert!(
+            error.contains("touch hook-ran"),
+            "names the command: {error}"
+        );
+        assert!(error.contains("suite.yaml"), "names its file: {error}");
+        assert!(
+            result["structuredContent"]["consent"].is_string(),
+            "{result}"
+        );
+        assert!(!ran.exists(), "{tool} ran suite shell without consent");
+    }
+
+    let consented = json!({ "spec": "flows/gated.flow.yaml", "allow_exec": true });
+    let result = server.call(3, "flowproof_record", consented);
+    assert_eq!(result["isError"], false, "{result}");
+    assert!(ran.exists(), "consented call runs the hook");
     std::fs::remove_dir_all(&dir).ok();
 }

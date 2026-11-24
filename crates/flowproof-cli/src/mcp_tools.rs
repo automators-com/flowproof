@@ -23,6 +23,12 @@ pub(crate) fn list() -> Value {
                 from `flowproof config` or the environment.",
         });
         properties["headed"] = switch("Show the browser. Headless otherwise.");
+        properties["allow_exec"] = switch(
+            "Let this call run commands the flow's files author: a suite.yaml's env_from, \
+            before_each and after_each shell, a spec's agent or MCP server command, a Windows \
+            app's launch command. Off by default, and the refusal names the command and the \
+            file it came from. Show the person that command and pass true only if they agree.",
+        );
         properties["cwd"] = path(
             "The folder to run in, for this call only (default: the folder the server was \
             started in). The result echoes the folder used.",
@@ -125,14 +131,15 @@ fn argv(
     table: &[(&str, Kind)],
     args: &Map<String, Value>,
 ) -> Result<Vec<String>, String> {
-    let shared = ["spec", "vars", "var", "headed", "cwd"];
+    let shared = ["spec", "vars", "var", "headed", "cwd", "allow_exec"];
     let known = |k: &str| shared.contains(&k) || table.iter().any(|(name, _)| *name == k);
     if let Some(unknown) = args.keys().find(|k| !known(k)) {
         return Err(format!("unknown argument `{unknown}`"));
     }
     let spec = string(args, "spec")?.ok_or("`spec` is required")?;
     let mut argv = vec![command.to_string(), "--json".to_string()];
-    for &(name, kind) in [("vars", Kind::Text)].iter().chain(table) {
+    let shared = [("vars", Kind::Text), ("allow_exec", Kind::Switch)];
+    for &(name, kind) in shared.iter().chain(table) {
         let flag = name.replace('_', "-");
         let Some(value) = args.get(name).filter(|v| !v.is_null()) else {
             continue;
@@ -221,6 +228,9 @@ fn supervise(cwd: &Path, argv: &[String]) -> Result<Outcome, String> {
         .args(argv)
         .current_dir(cwd)
         .env("FLOWPROOF_NO_UPDATE_CHECK", "1")
+        // Consent is per call, as `allow_exec` (plan 17, decision 4): an
+        // opt-in the client happened to inherit must not stand in for it.
+        .env_remove("FLOWPROOF_ALLOW_EXEC")
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("starting {}: {e}", exe.display()))?;
@@ -276,6 +286,12 @@ fn engine_error(
     stderr: String,
 ) -> Value {
     result["exit_code"] = json!(code);
+    if stderr.contains("without consent") {
+        result["consent"] = json!(
+            "Nothing ran. Show the person the command above and where it comes from; \
+            call again with allow_exec: true only if they agree to run it."
+        );
+    }
     result["error"] = json!(stderr);
     if let Some(json) = json {
         result["result"] = json;
