@@ -1,0 +1,22 @@
+[package]
+name = "flowproof-video-fixture"
+description = "Generates the video-to-flow eval corpus: invented apps driven in Chrome, filmed with the pointer drawn in (evals/video-to-flow)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+# The run filmstrip's pointer, so a generated recording shows one.
+flowproof-driver.workspace = true
+# Patched at the workspace root, like the engine's own copy.
+headless_chrome = "1"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

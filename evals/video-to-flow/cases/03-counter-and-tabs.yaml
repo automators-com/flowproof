@@ -1,0 +1,14 @@
+name: Count up and switch tabs
+catches: The prompt's rule that a count going from 2 to 3 to 4 is two clicks, with clicks close enough together that few frames fall between them.
+fixture: app.html
+gap_ms: 500
+actions:
+  - type: {field: "#username", text: mara.lind}
+  - type: {field: "#password", text: otter-lantern-42, secret: PASSWORD}
+  - click: "#sign-in"
+  - click: "#more"
+  - click: "#more"
+  - click: "#more"
+  - click: "#less"
+  - click: "#tab-account"
+  - click: "#tab-catalogue"

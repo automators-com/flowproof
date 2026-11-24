@@ -1,0 +1,23 @@
+{
+  "app": "web",
+  "bands_css_px": {
+    "bottom": 0,
+    "top": 0
+  },
+  "catches": "A recording with no app being used. Slides advance on their own with no pointer, and the draft must refuse it rather than describe it.",
+  "duration_ms": 16000,
+  "expect": {
+    "masked_literals": [],
+    "not_app": true,
+    "out_of_scope": 0
+  },
+  "fixture": "slides.html",
+  "id": "08-slideshow",
+  "name": "A slideshow",
+  "start_url": null,
+  "viewport": {
+    "height": 800,
+    "scale": 1.0,
+    "width": 1280
+  }
+}

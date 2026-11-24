@@ -1,0 +1,10 @@
+name: Check a transfer under a desktop's bars
+catches: Edge trimming. A still menu bar should be cut, a taskbar whose clock ticks every second stays and spends frames, and the app's own still title must not be cut with them.
+fixture: sap-form.html
+menubar: true
+taskbar: true
+actions:
+  - type: {field: "#material", text: KX-55120-B}
+  - type: {field: "#plant", text: NH01}
+  - press: Enter
+  - click: "#hold"

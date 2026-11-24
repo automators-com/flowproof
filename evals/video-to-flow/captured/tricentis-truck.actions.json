@@ -1,0 +1,72 @@
+[
+  {
+    "step": "Click \"Truck\"",
+    "at_ms": 2310,
+    "end_ms": 3369
+  },
+  {
+    "step": "Select BMW from the \"Make\" field",
+    "at_ms": 4875,
+    "end_ms": 6756
+  },
+  {
+    "step": "Type 150 into the \"Engine Performance [kW]\" field",
+    "at_ms": 8264,
+    "end_ms": 10031
+  },
+  {
+    "step": "Type 01/15/2020 into the \"Date of Manufacture\" field",
+    "at_ms": 11542,
+    "end_ms": 14314
+  },
+  {
+    "step": "Select 2 from the \"Number of Seats\" field",
+    "at_ms": 15825,
+    "end_ms": 17590
+  },
+  {
+    "step": "Select Diesel from the \"Fuel Type\" field",
+    "at_ms": 19096,
+    "end_ms": 21120
+  },
+  {
+    "step": "Type 500 into the \"Payload [kg]\" field",
+    "at_ms": 22629,
+    "end_ms": 24398
+  },
+  {
+    "step": "Type 3500 into the \"Total Weight [kg]\" field",
+    "at_ms": 25908,
+    "end_ms": 27823
+  },
+  {
+    "step": "Type 50000 into the \"List Price [$]\" field",
+    "at_ms": 29335,
+    "end_ms": 31370
+  },
+  {
+    "step": "Type TRUCK1 into the \"License Plate Number\" field",
+    "at_ms": 32873,
+    "end_ms": 35045
+  },
+  {
+    "step": "Type 12000 into the \"Annual Mileage [mi]\" field",
+    "at_ms": 36553,
+    "end_ms": 38619
+  },
+  {
+    "step": "Click \"Next \u00bb\"",
+    "at_ms": 40128,
+    "end_ms": 41154
+  },
+  {
+    "step": "Type Nikolai into the \"First Name\" field",
+    "at_ms": 42661,
+    "end_ms": 44991
+  },
+  {
+    "step": "Type Tester into the \"Last Name\" field",
+    "at_ms": 46502,
+    "end_ms": 48681
+  }
+]

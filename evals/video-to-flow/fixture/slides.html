@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- A slideshow that advances on its own, for the video-to-flow evals'
+     not-an-app case: nobody uses anything, so a draft must refuse it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Quarterly review</title>
+<style>
+  html, body { margin: 0; height: 100%; font: 28px Georgia, serif; background: #101820; color: #f2efe6; }
+  section { height: 100%; display: flex; flex-direction: column; justify-content: center; padding: 0 12%; }
+  h1 { font-size: 54px; margin: 0 0 24px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<section><h1>Quarterly review</h1><p>Harbour Logistics, third quarter</p></section>
+<section hidden><h1>Deliveries</h1><p>Up eleven percent on the second quarter.</p></section>
+<section hidden><h1>Next quarter</h1><p>Two new depots and a winter timetable.</p></section>
+<section hidden><h1>Thank you</h1><p>Questions afterwards, over coffee.</p></section>
+<script>
+  let at = 0;
+  // The generator advances the slides on the recording's clock.
+  window.__next = () => {
+    const all = document.querySelectorAll("section");
+    all[at].hidden = true;
+    at = Math.min(at + 1, all.length - 1);
+    all[at].hidden = false;
+  };
+</script>
+</body>
+</html>

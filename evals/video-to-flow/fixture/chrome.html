@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- Deformations drawn around a fixture for the video-to-flow evals: a menu
+     bar, a taskbar whose clock ticks, and a full-screen fake mail client
+     that can cover the app for a few seconds. Load as
+     chrome.html?app=app.html&menubar=1&taskbar=1. All invented. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Desktop</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 13px Helvetica, Arial, sans-serif; }
+  body { display: flex; flex-direction: column; background: #2b2f36; }
+  #menubar { height: 26px; background: #ececec; border-bottom: 1px solid #bcbcbc; display: flex; gap: 18px; align-items: center; padding: 0 14px; color: #222; }
+  #menubar b { margin-right: 6px; }
+  #app { flex: 1; border: 0; width: 100%; background: #fff; }
+  #taskbar { height: 40px; background: #1f2329; color: #e6e6e6; display: flex; align-items: center; gap: 14px; padding: 0 14px; }
+  #taskbar .item { background: #343a43; padding: 5px 12px; border-radius: 4px; }
+  #clock { margin-left: auto; font-variant-numeric: tabular-nums; }
+  #mail { position: fixed; inset: 0; background: #fafafa; display: flex; }
+  #mail .folders { width: 200px; background: #eef1f5; padding: 16px; line-height: 2; }
+  #mail .list { flex: 1; padding: 16px 22px; }
+  #mail .msg { padding: 10px 0; border-bottom: 1px solid #ddd; }
+  #mail button { font: inherit; padding: 6px 14px; margin-top: 12px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="menubar" hidden><b>Browser</b><span>File</span><span>Edit</span><span>View</span><span>History</span><span>Window</span><span>Help</span></div>
+<iframe id="app" title="app"></iframe>
+<div id="taskbar" hidden><span class="item">Start</span><span class="item">Browser</span><span class="item">Mail</span><span id="clock">09:00:00</span></div>
+<div id="mail" hidden>
+  <div class="folders">Inbox<br>Sent<br>Drafts<br>Archive</div>
+  <div class="list">
+    <div class="msg"><b>Harbour Logistics</b> &middot; Your delivery slot</div>
+    <div class="msg"><b>Kestrel Supplies</b> &middot; Your account statement</div>
+    <button id="mail-archive">Archive</button>
+  </div>
+</div>
+<script>
+  const q = new URLSearchParams(location.search);
+  document.getElementById("app").src = q.get("app") || "app.html";
+  document.getElementById("menubar").hidden = q.get("menubar") !== "1";
+  document.getElementById("taskbar").hidden = q.get("taskbar") !== "1";
+  // The generator sets the clock from the recording's own time, so a
+  // regenerated video is the same video.
+  window.__clock = (ms) => {
+    const s = 9 * 3600 + Math.floor(ms / 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    document.getElementById("clock").textContent =
+      `${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+  };
+  window.__mail = (shown) => { document.getElementById("mail").hidden = !shown; };
+</script>
+</body>
+</html>

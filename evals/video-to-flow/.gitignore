@@ -1,0 +1,8 @@
+# Videos the generator writes; only frames are committed (PR 2).
+generated/
+captured/*
+!captured/README.md
+!captured/*.drive.flow.yaml
+!captured/*.expected.flow.yaml
+!captured/*.py
+!captured/*.actions.json

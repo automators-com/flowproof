@@ -1,0 +1,68 @@
+[
+  {
+    "at_ms": 1800,
+    "end_ms": 3400,
+    "kind": "type",
+    "step": "Type mara.lind into the \"Username\" field"
+  },
+  {
+    "at_ms": 5400,
+    "end_ms": 8400,
+    "kind": "type",
+    "step": "Type ${PASSWORD} into the \"Password\" field"
+  },
+  {
+    "at_ms": 10200,
+    "end_ms": 10200,
+    "kind": "click",
+    "step": "Click \"Sign in\""
+  },
+  {
+    "at_ms": 12200,
+    "end_ms": 14200,
+    "kind": "pick",
+    "step": "Type Lamp shade, linen into the \"Find a product\" field"
+  },
+  {
+    "at_ms": 16200,
+    "end_ms": 18000,
+    "kind": "type",
+    "step": "Type Kranichweg into the \"Street\" field"
+  },
+  {
+    "at_ms": 20000,
+    "end_ms": 20200,
+    "kind": "type",
+    "step": "Type 17 into the \"House number\" field"
+  },
+  {
+    "at_ms": 22200,
+    "end_ms": 23000,
+    "kind": "type",
+    "step": "Type 24937 into the \"Postcode\" field"
+  },
+  {
+    "at_ms": 25000,
+    "end_ms": 26600,
+    "kind": "type",
+    "step": "Type Nordhafen into the \"City\" field"
+  },
+  {
+    "at_ms": 28000,
+    "end_ms": 28000,
+    "kind": "press",
+    "step": "Press Enter"
+  },
+  {
+    "at_ms": 29700,
+    "end_ms": 29700,
+    "kind": "click",
+    "step": "Click \"Confirm order\""
+  },
+  {
+    "at_ms": 31100,
+    "end_ms": 37100,
+    "kind": "wait",
+    "step": null
+  }
+]

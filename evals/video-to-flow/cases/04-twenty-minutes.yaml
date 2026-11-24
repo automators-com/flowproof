@@ -1,0 +1,15 @@
+name: Order with long pauses
+catches: The frame budget on a twenty-minute recording. Sampling thins out past six minutes, so a short action between long still stretches can fall between two samples.
+fixture: app.html
+actions:
+  - type: {field: "#username", text: mara.lind}
+  - type: {field: "#password", text: otter-lantern-42, secret: PASSWORD}
+  - click: "#sign-in"
+  - wait: 420000
+  - pick: {field: "#search", text: rivet, entry: "Tinsmith's rivets, 200"}
+  - click: "#more"
+  - wait: 420000
+  - type: {field: "#street", text: Kranichweg}
+  - type: {field: "#house", text: "17"}
+  - wait: 300000
+  - click: "#tab-orders"

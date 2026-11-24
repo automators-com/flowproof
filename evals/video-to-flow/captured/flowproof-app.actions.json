@@ -1,0 +1,27 @@
+[
+  {
+    "step": "Click \"Runs\"",
+    "at_ms": 2503,
+    "end_ms": 3573
+  },
+  {
+    "step": "Click \"Environments\"",
+    "at_ms": 5577,
+    "end_ms": 6615
+  },
+  {
+    "step": "Click \"Flows\"",
+    "at_ms": 8615,
+    "end_ms": 9639
+  },
+  {
+    "step": "Type kanban into the \"Search flows\" field",
+    "at_ms": 11640,
+    "end_ms": 13852
+  },
+  {
+    "step": "Click \"Settings\"",
+    "at_ms": 15853,
+    "end_ms": 16867
+  }
+]

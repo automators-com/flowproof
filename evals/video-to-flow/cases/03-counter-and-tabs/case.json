@@ -1,0 +1,25 @@
+{
+  "app": "web",
+  "bands_css_px": {
+    "bottom": 0,
+    "top": 0
+  },
+  "catches": "The prompt's rule that a count going from 2 to 3 to 4 is two clicks, with clicks close enough together that few frames fall between them.",
+  "duration_ms": 15400,
+  "expect": {
+    "masked_literals": [
+      "otter-lantern-42"
+    ],
+    "not_app": false,
+    "out_of_scope": 0
+  },
+  "fixture": "app.html",
+  "id": "03-counter-and-tabs",
+  "name": "Count up and switch tabs",
+  "start_url": "http://127.0.0.1:8765/app.html",
+  "viewport": {
+    "height": 800,
+    "scale": 1.0,
+    "width": 1280
+  }
+}

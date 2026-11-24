@@ -1,0 +1,164 @@
+<!doctype html>
+<!-- An invented supplies shop for the video-to-flow evals. Every name,
+     product and number in it is made up, and it reaches no network: it is
+     the app a generated recording shows (evals/video-to-flow/README.md). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kestrel Supplies</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.4 Helvetica, Arial, sans-serif; color: #1d2430; background: #f4f6f8; }
+  header { background: #20364f; color: #fff; padding: 14px 28px; font-size: 18px; font-weight: bold; }
+  main { padding: 24px 28px; }
+  .panel { background: #fff; border: 1px solid #d5dbe2; border-radius: 6px; padding: 20px 24px; max-width: 760px; }
+  [hidden] { display: none !important; }
+  label { display: block; font-size: 13px; color: #4a5566; margin: 12px 0 4px; }
+  input { font: inherit; padding: 7px 9px; width: 320px; border: 1px solid #b8c1cc; border-radius: 4px; }
+  input:focus { outline: 2px solid #3b82f6; outline-offset: 0; }
+  button { font: inherit; padding: 8px 16px; border: 1px solid #20364f; border-radius: 4px; background: #20364f; color: #fff; cursor: pointer; margin-top: 16px; }
+  button.plain { background: #fff; color: #20364f; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 18px; }
+  .tabs button { margin: 0; background: #e3e8ee; color: #20364f; border-color: #c5ced8; }
+  .tabs button[aria-selected="true"] { background: #fff; border-bottom-color: #fff; font-weight: bold; }
+  .row { display: flex; gap: 16px; }
+  .row input { width: 220px; }
+  .row .short input { width: 110px; }
+  #suggestions { list-style: none; margin: 0; padding: 0; width: 320px; border: 1px solid #b8c1cc; border-top: 0; background: #fff; }
+  #suggestions li { padding: 7px 9px; cursor: pointer; }
+  #suggestions li:hover { background: #e8f0fb; }
+  .stepper { display: flex; align-items: center; gap: 10px; }
+  .stepper button { margin: 0; width: 38px; padding: 6px 0; }
+  #quantity { font-size: 20px; min-width: 28px; text-align: center; }
+  #banner { margin-top: 18px; padding: 14px 18px; background: #e5f6ea; border: 1px solid #8fd1a3; border-radius: 6px; font-size: 16px; }
+  #dialog { position: fixed; inset: 0; background: rgba(20, 30, 45, .45); display: flex; align-items: center; justify-content: center; }
+  #dialog .panel { width: 420px; }
+  table { border-collapse: collapse; margin-top: 8px; }
+  td { padding: 6px 14px 6px 0; }
+</style>
+</head>
+<body>
+<header>Kestrel Supplies</header>
+<main>
+  <section id="login" class="panel">
+    <form id="login-form">
+      <label for="username">Username</label>
+      <input id="username" autocomplete="off">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="off">
+      <div><button id="sign-in" type="submit">Sign in</button></div>
+    </form>
+  </section>
+
+  <section id="shop" class="panel" hidden>
+    <div class="tabs" role="tablist">
+      <button id="tab-catalogue" role="tab" aria-selected="true">Catalogue</button>
+      <button id="tab-orders" role="tab" aria-selected="false">Orders</button>
+      <button id="tab-account" role="tab" aria-selected="false">Account</button>
+    </div>
+
+    <div id="catalogue">
+      <label for="search">Find a product</label>
+      <input id="search" autocomplete="off">
+      <ul id="suggestions" hidden></ul>
+      <label>Quantity</label>
+      <div class="stepper">
+        <button id="less" class="plain" aria-label="Fewer">&minus;</button>
+        <span id="quantity">1</span>
+        <button id="more" class="plain" aria-label="More">+</button>
+      </div>
+      <form id="address-form">
+        <div class="row">
+          <div><label for="street">Street</label><input id="street" autocomplete="off"></div>
+          <div class="short"><label for="house">House number</label><input id="house" autocomplete="off"></div>
+        </div>
+        <div class="row">
+          <div class="short"><label for="postcode">Postcode</label><input id="postcode" autocomplete="off"></div>
+          <div><label for="city">City</label><input id="city" autocomplete="off"></div>
+        </div>
+        <button type="submit" hidden></button>
+      </form>
+      <div id="banner" hidden></div>
+    </div>
+
+    <div id="orders" hidden>
+      <table>
+        <tr><td>KS-40117</td><td>Linen lamp shade</td><td>Delivered</td></tr>
+        <tr><td>KS-40392</td><td>Tinsmith's rivets, 200</td><td>On its way</td></tr>
+      </table>
+    </div>
+
+    <div id="account" hidden>
+      <p>Signed in as <b id="who"></b>. Deliveries go to the address on your last order.</p>
+    </div>
+  </section>
+
+  <div id="dialog" hidden>
+    <div class="panel">
+      <b>Review your order</b>
+      <p id="review"></p>
+      <button id="confirm">Confirm order</button>
+      <button id="back" class="plain">Back</button>
+    </div>
+  </div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const products = [
+    "Lampwick Desk Lamp 40W", "Lamp shade, linen", "Lanyard clips, 50",
+    "Tinsmith's rivets, 200", "Tarred twine, 80 m", "Copper wire, 2.5 mm"
+  ];
+  // Sign in on Enter or on the button: either is a submit.
+  $("login-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    $("who").textContent = $("username").value;
+    $("login").hidden = true;
+    $("shop").hidden = false;
+  });
+  for (const name of ["catalogue", "orders", "account"]) {
+    $("tab-" + name).addEventListener("click", () => {
+      for (const other of ["catalogue", "orders", "account"]) {
+        $(other).hidden = other !== name;
+        $("tab-" + other).setAttribute("aria-selected", String(other === name));
+      }
+    });
+  }
+  // A typeahead whose picked entry is longer than what was typed.
+  function pick(entry) { $("search").value = entry; $("suggestions").hidden = true; }
+  $("search").addEventListener("input", () => {
+    const typed = $("search").value.toLowerCase();
+    const list = $("suggestions");
+    list.innerHTML = "";
+    const hits = typed.length < 2 ? [] : products.filter((p) => p.toLowerCase().includes(typed));
+    for (const p of hits) {
+      const li = document.createElement("li");
+      li.textContent = p;
+      li.addEventListener("click", () => pick(p));
+      list.appendChild(li);
+    }
+    list.hidden = hits.length === 0;
+  });
+  // Enter in the search box takes the first suggestion.
+  $("search").addEventListener("keydown", (e) => {
+    const first = $("suggestions").querySelector("li");
+    if (e.key === "Enter" && first) { e.preventDefault(); pick(first.textContent); }
+  });
+  $("more").addEventListener("click", () => { $("quantity").textContent = +$("quantity").textContent + 1; });
+  $("less").addEventListener("click", () => { $("quantity").textContent = Math.max(1, +$("quantity").textContent - 1); });
+  // Enter in the address form opens the review: no visible click.
+  $("address-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    $("review").textContent = `${$("quantity").textContent} x ${$("search").value || "nothing yet"} to ${$("street").value} ${$("house").value}, ${$("postcode").value} ${$("city").value}`;
+    $("dialog").hidden = false;
+    $("confirm").focus();
+  });
+  $("back").addEventListener("click", () => { $("dialog").hidden = true; });
+  // Reads like an expected result on purpose: a draft must not assert it.
+  $("confirm").addEventListener("click", () => {
+    $("dialog").hidden = true;
+    $("banner").textContent = "Order KS-48213 placed. Delivery expected Thursday.";
+    $("banner").hidden = false;
+  });
+</script>
+</body>
+</html>
