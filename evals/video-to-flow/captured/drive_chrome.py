@@ -19,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
+import http.client
 from pathlib import Path
 
 import Quartz
@@ -76,7 +76,11 @@ FIND = r"""(() => {
 
 class Page:
     def __init__(self):
-        targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json"))
+        # Chrome's debugging endpoint, on the loopback address only.
+        conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=5)
+        conn.request("GET", "/json")
+        targets = json.loads(conn.getresponse().read())
+        conn.close()
         page = next(t for t in targets if t["type"] == "page")
         self.ws = websocket.create_connection(page["webSocketDebuggerUrl"])
         self.id = 0
