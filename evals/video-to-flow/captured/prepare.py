@@ -2,7 +2,7 @@
 score (`score --cases-dir evals/video-to-flow/captured`): the frames
 `--frames-out` chooses, and the case, actions and expected flow beside them.
 
-    python3 prepare.py [path/to/flowproof]
+    python3 prepare.py          (uses target/debug/flowproof: cargo build -p flowproof-cli)
 """
 import json
 import shutil
@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ENGINE = sys.argv[1] if len(sys.argv) > 1 else str(HERE.parents[2] / "target/debug/flowproof")
+ENGINE = HERE.parents[2] / "target/debug/flowproof"
 CASES = {
     "tricentis-truck": ("web", "https://sampleapp.tricentis.com/101",
                         "A real screen recorder: macOS window chrome, a real pointer path and native select menus."),
@@ -21,6 +21,9 @@ CASES = {
                       "A desktop app rather than a web page: the Flowproof app's own navigation."),
 }
 
+if not ENGINE.is_file():
+    sys.exit(f"build the engine first: {ENGINE} is not there")
+
 for name, (app, url, catches) in CASES.items():
     video = HERE / f"{name}.mp4"
     if not video.exists():
@@ -28,7 +31,7 @@ for name, (app, url, catches) in CASES.items():
         continue
     case = HERE / name
     shutil.rmtree(case, ignore_errors=True)
-    subprocess.run([ENGINE, "author-from-video", str(video), "--frames-out", str(case / "frames")],
+    subprocess.run([str(ENGINE), "author-from-video", str(video), "--frames-out", str(case / "frames")],
                    check=True, stderr=subprocess.DEVNULL)
     shutil.copy2(HERE / f"{name}.expected.flow.yaml", case / "expected.flow.yaml")
     shutil.copy2(HERE / f"{name}.actions.json", case / "actions.json")
