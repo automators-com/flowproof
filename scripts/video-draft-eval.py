@@ -339,6 +339,8 @@ def main() -> int:
     sc.add_argument("--judge-model", default=os.environ.get("VIDEO_EVAL_JUDGE_MODEL", "claude-opus-5-5"))
     sc.add_argument("--no-judge", action="store_true", help="score the alignment only")
     sc.add_argument("--min-recall", type=float, help="fail a case whose step recall is below this")
+    sc.add_argument("--cases-dir", type=Path, default=CASES,
+                    help="where the cases are: evals/video-to-flow/captured for the captured set")
     sc.add_argument("--out", type=Path, help="scoreboard JSON (default: a timestamped file in evals/video-to-flow)")
     args = parser.parse_args()
     if args.command == "import":
@@ -349,7 +351,7 @@ def main() -> int:
         import anthropic  # only the judge needs it
         client = anthropic.Anthropic()
         judge = lambda e, d: judge_gap(client, args.judge_model, e, d)  # noqa: E731
-    dirs = sorted(p for p in CASES.iterdir() if (p / "case.json").exists())
+    dirs = sorted(p for p in args.cases_dir.iterdir() if (p / "case.json").exists())
     if args.case:
         dirs = [d for d in dirs if d.name in args.case]
     if not dirs:
@@ -358,7 +360,9 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as work:
         results = [score_case(args.bin, d, judge, Path(work)) for d in dirs]
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    board = {"timestamp": stamp, "layer": "B", "judge_model": None if args.no_judge else args.judge_model,
+    board = {"timestamp": stamp, "layer": "B",
+             "set": "captured" if args.cases_dir.resolve() != CASES.resolve() else "generated",
+             "judge_model": None if args.no_judge else args.judge_model,
              "cases": results}
     out = args.out or SCOREBOARDS / f"drafts-{stamp}.json"
     out.write_text(json.dumps(board, indent=2) + "\n")
