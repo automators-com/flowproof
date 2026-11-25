@@ -5,7 +5,7 @@ description: "Let a coding agent replay your flows itself: Claude Code, Codex CL
 
 `flowproof mcp` is flowproof as **your coding agent's tool server**: Claude
 Code, Codex CLI, Cursor, VS Code or any MCP client starts it over stdio and
-records and replays flows itself, and can check its own setup. It is not a flow's `mcp:` block, where flowproof
+records, replays and repairs flows itself, and can check its own setup. It is not a flow's `mcp:` block, where flowproof
 **stands in for the tool server of an agent you are testing** (see
 [agent testing](agent-testing/index.md)).
 
@@ -41,6 +41,13 @@ that cannot be authored comes back with `needs_clarification`, the payload
 described in [the outside-in loop](self-help.md). That is a result, not an
 error: the agent rewords the step and records again. Its scene inventory is
 screen content, and it goes to whichever model your MCP client uses.
+
+**`flowproof_heal`** re-drives a flow whose app has drifted and writes a
+`.proposed.jsonl` beside the trace, as `flowproof heal --json` does; the trace
+itself is left alone. It takes `spec`, `trace`, `vars`, `var`, `author`,
+`headed`, `from_run` and `step`, plus `apply` and `apply_proposal`, which
+overwrite the trace. An agent should pass those only after you have reviewed
+the proposal.
 
 **`flowproof_doctor`** takes `check`: `ai` (is an authoring model configured)
 or `sap` (can SAP GUI Scripting be reached). A failed check is a result with the

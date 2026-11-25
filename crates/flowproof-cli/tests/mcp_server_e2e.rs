@@ -128,6 +128,7 @@ fn handshake_lists_run_and_answers_protocol_errors() {
         [
             "flowproof_run",
             "flowproof_record",
+            "flowproof_heal",
             "flowproof_doctor",
             "flowproof_audit"
         ]
@@ -280,7 +281,7 @@ fn suite_shell_runs_only_when_the_call_consents() {
 }
 
 #[test]
-fn doctor_and_audit_answer_as_data() {
+fn doctor_audit_and_heal_answer_as_data() {
     let dir = work_dir("doctor");
     let mut server = Server::start(&dir);
 
@@ -314,5 +315,15 @@ fn doctor_and_audit_answer_as_data() {
     assert_eq!(result["isError"], false, "{result}");
     assert_eq!(result["structuredContent"]["report"]["suite"], "flows");
 
+    let heal = json!({ "spec": "flows/gated.flow.yaml" });
+    let result = server.call(7, "flowproof_heal", heal);
+    assert_eq!(result["isError"], true, "{result}");
+    let error = result["structuredContent"]["error"]
+        .as_str()
+        .expect("error");
+    assert!(
+        error.contains("gated.trace.jsonl"),
+        "names the missing trace: {error}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }

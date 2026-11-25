@@ -75,6 +75,23 @@ pub(crate) fn list() -> Value {
                 patch the failing step and retry."),
         }), &["spec"]),
     }, {
+        "name": "flowproof_heal",
+        "title": "Propose a repair",
+        "description": "Re-drive a flow whose app has drifted and propose an updated trace. \
+            The proposal is written beside the trace as .proposed.jsonl and the trace is left \
+            alone; the result says what changed. `apply` and `apply_proposal` overwrite the \
+            trace: pass them only after the person has reviewed the proposal and said to.",
+        "inputSchema": schema(json!({
+            "spec": spec, "vars": vars, "var": var, "headed": headed, "author": author,
+            "trace": path("The trace to heal (default: the one `record` wrote for the spec)."),
+            "apply": switch("Overwrite the trace with the proposal if anything changed."),
+            "apply_proposal": switch("Apply the .proposed.jsonl an earlier heal wrote."),
+            "from_run": path("Heal only the steps a run's report flagged, from that run's \
+                folder, without driving the app."),
+            "step": { "type": "array", "items": { "type": "string" },
+                "description": "With from_run: only these step ids." },
+        }), &["spec"]),
+    }, {
         "name": "flowproof_doctor",
         "title": "Check the setup",
         "description": "Check that flowproof can work on this machine. `ai`: is an authoring \
@@ -105,9 +122,11 @@ enum Kind {
     Switch,
     /// `var`: an object of KEY: VALUE, one `--var` each.
     Vars,
+    /// A list of strings, one flag each.
+    List,
     /// Always `--headed` or `--headless`: `record` shows the browser by
     /// default, and an ambient FLOWPROOF_HEADED must not open one on
-    /// someone's screen.
+    /// someone's screen. Left off when `from_run` means no app is driven.
     Headed,
     /// `doctor`'s `check`, which becomes `--ai` or `--sap`.
     Check,
@@ -153,6 +172,22 @@ fn tool(name: &str) -> Option<Tool> {
                 ("var", Vars),
                 ("headed", Headed),
                 ("allow_exec", Switch),
+            ],
+            record_result,
+        ),
+        "flowproof_heal" => (
+            "heal",
+            Some("spec"),
+            &[
+                ("trace", Text),
+                ("apply", Switch),
+                ("apply_proposal", Switch),
+                ("author", Text),
+                ("from_run", Text),
+                ("step", List),
+                ("vars", Text),
+                ("var", Vars),
+                ("headed", Headed),
             ],
             record_result,
         ),
@@ -236,7 +271,7 @@ fn argv(tool: &Tool, args: &Map<String, Value>) -> Result<Vec<String>, String> {
             Some(v) => v.as_bool().ok_or(format!("`{name}` must be true or false")),
         };
         match (kind, value) {
-            (Kind::Headed, value) => {
+            (Kind::Headed, value) if !args.contains_key("from_run") => {
                 argv.push(
                     if switch(value)? {
                         "--headed"
@@ -247,7 +282,7 @@ fn argv(tool: &Tool, args: &Map<String, Value>) -> Result<Vec<String>, String> {
                 );
             }
             (Kind::Check, None) => return Err("`check` is required: ai or sap".into()),
-            (_, None) => {}
+            (_, None) | (Kind::Headed, _) => {}
             (Kind::Text, Some(v)) => argv.push(format!("--{flag}={}", text(v)?)),
             (Kind::Number, Some(v)) => {
                 let n = v.as_u64().ok_or(format!("`{name}` must be a number"))?;
@@ -265,6 +300,12 @@ fn argv(tool: &Tool, args: &Map<String, Value>) -> Result<Vec<String>, String> {
                         .as_str()
                         .ok_or(format!("`var.{key}` must be a string"))?;
                     argv.push(format!("--var={key}={value}"));
+                }
+            }
+            (Kind::List, Some(v)) => {
+                let items = v.as_array().ok_or(format!("`{name}` must be a list"))?;
+                for item in items {
+                    argv.push(format!("--{flag}={}", text(item)?));
                 }
             }
             (Kind::Check, Some(v)) => match text(v)?.as_str() {
@@ -357,8 +398,9 @@ fn report_result(mut result: Value, outcome: Outcome) -> Value {
     }
 }
 
-/// Exit 0 is a trace written (or a flow skipped by its gate). A step that
-/// needs clarifying is data for the agent to act on, not an error.
+/// Exit 0 is a trace written (or a flow skipped by its gate), or for `heal`
+/// a proposal. A step that needs clarifying is data for the agent to act
+/// on, not an error.
 fn record_result(mut result: Value, outcome: Outcome) -> Value {
     match (outcome.code, outcome.json) {
         (Some(0), Some(payload)) => {
@@ -424,4 +466,32 @@ fn tool_result(structured: Value, is_error: bool) -> Value {
 
 fn tool_error(message: &str) -> Value {
     tool_result(json!({ "error": message }), true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn heal_argv(args: Value) -> Vec<String> {
+        let tool = tool("flowproof_heal").expect("heal");
+        argv(&tool, args.as_object().expect("object")).expect("argv")
+    }
+
+    #[test]
+    fn heal_from_a_run_drives_no_app_so_passes_no_browser_flag() {
+        let live = heal_argv(json!({ "spec": "a.flow.yaml" }));
+        assert_eq!(live, ["heal", "--json", "--headless", "--", "a.flow.yaml"]);
+        let from_run = heal_argv(json!({ "spec": "a.flow.yaml", "from_run": "r", "step": ["s1"] }));
+        assert_eq!(
+            from_run,
+            [
+                "heal",
+                "--json",
+                "--from-run=r",
+                "--step=s1",
+                "--",
+                "a.flow.yaml"
+            ]
+        );
+    }
 }
