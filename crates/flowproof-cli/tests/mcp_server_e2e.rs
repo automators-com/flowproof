@@ -123,7 +123,15 @@ fn handshake_lists_run_and_answers_protocol_errors() {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    assert_eq!(names, ["flowproof_run", "flowproof_record"]);
+    assert_eq!(
+        names,
+        [
+            "flowproof_run",
+            "flowproof_record",
+            "flowproof_doctor",
+            "flowproof_audit"
+        ]
+    );
 
     server.send("not json");
     assert_eq!(server.next()["error"]["code"], -32700);
@@ -268,5 +276,43 @@ fn suite_shell_runs_only_when_the_call_consents() {
     let result = server.call(3, "flowproof_record", consented);
     assert_eq!(result["isError"], false, "{result}");
     assert!(ran.exists(), "consented call runs the hook");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn doctor_and_audit_answer_as_data() {
+    let dir = work_dir("doctor");
+    let mut server = Server::start(&dir);
+
+    // No model is configured here: a failed check is the answer.
+    let result = server.call(1, "flowproof_doctor", json!({ "check": "ai" }));
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["passed"], false, "{result}");
+    assert!(result["structuredContent"]["report"]["checks"].is_array());
+    assert!(result["structuredContent"]["cwd"].is_string());
+
+    // fiori logs in for real and agent runs a caller's command: refused,
+    // with the reason, and nothing is spawned.
+    for (id, check, reason) in [(2, "fiori", "live Fiori"), (3, "agent", "supplies")] {
+        let result = server.call(id, "flowproof_doctor", json!({ "check": check }));
+        assert_eq!(result["isError"], true, "{result}");
+        let error = result["structuredContent"]["error"]
+            .as_str()
+            .expect("error");
+        assert!(error.contains(reason), "{check}: {error}");
+        assert!(result["structuredContent"].get("exit_code").is_none());
+    }
+
+    // Audit reads the record a run wrote; with none yet, the engine says so.
+    let audit = json!({ "dir": "flows" });
+    assert_eq!(
+        server.call(4, "flowproof_audit", audit.clone())["isError"],
+        true
+    );
+    server.run(5, json!({ "spec": "flows" }));
+    let result = server.call(6, "flowproof_audit", audit);
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["report"]["suite"], "flows");
+
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -5,7 +5,7 @@ description: "Let a coding agent replay your flows itself: Claude Code, Codex CL
 
 `flowproof mcp` is flowproof as **your coding agent's tool server**: Claude
 Code, Codex CLI, Cursor, VS Code or any MCP client starts it over stdio and
-records and replays flows itself. It is not a flow's `mcp:` block, where flowproof
+records and replays flows itself, and can check its own setup. It is not a flow's `mcp:` block, where flowproof
 **stands in for the tool server of an agent you are testing** (see
 [agent testing](agent-testing/index.md)).
 
@@ -42,7 +42,17 @@ described in [the outside-in loop](self-help.md). That is a result, not an
 error: the agent rewords the step and records again. Its scene inventory is
 screen content, and it goes to whichever model your MCP client uses.
 
-Both tools take `allow_exec`, off by default. Without it, a flow whose
+**`flowproof_doctor`** takes `check`: `ai` (is an authoring model configured)
+or `sap` (can SAP GUI Scripting be reached). A failed check is a result with the
+fix in its message. `fiori` and `agent` are refused with the reason: `doctor
+--fiori` logs in to a live system for real, and `doctor --agent` runs a command
+the caller supplies, so a person runs those.
+
+**`flowproof_audit`** returns the control-coverage report for a suite
+directory, `dir`, from the run record `flowproof_run` wrote, with `run` or
+`since` as on the CLI.
+
+`flowproof_run` and `flowproof_record` take `allow_exec`, off by default. Without it, a flow whose
 `suite.yaml` hooks, `agent.command` or Windows launch command would run a
 program is refused, and the result names that command, the file it came from
 and a `consent` note. The agent should show you the command and pass `allow_exec:

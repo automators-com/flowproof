@@ -13,27 +13,30 @@ pub(crate) fn list() -> Value {
     let path = |what: &str| json!({ "type": "string", "description": what });
     let step = |what: &str| json!({ "type": "integer", "minimum": 1, "description": what });
     let switch = |what: &str| json!({ "type": "boolean", "description": what });
-    let common = |mut properties: Value| {
-        properties["spec"] = path("A *.flow.yaml. Relative to `cwd`.");
-        properties["vars"] = path("A business-data values file to load before resolving ${VAR}s.");
-        properties["var"] = json!({
-            "type": "object",
-            "additionalProperties": { "type": "string" },
-            "description": "Business-data overrides, KEY: VALUE. Never secrets: those come \
-                from `flowproof config` or the environment.",
-        });
-        properties["headed"] = switch("Show the browser. Headless otherwise.");
-        properties["allow_exec"] = switch(
-            "Let this call run commands the flow's files author: a suite.yaml's env_from, \
-            before_each and after_each shell, a spec's agent or MCP server command, a Windows \
-            app's launch command. Off by default, and the refusal names the command and the \
-            file it came from. Show the person that command and pass true only if they agree.",
-        );
+    let spec = path("A *.flow.yaml. Relative to `cwd`.");
+    let vars = path("A business-data values file to load before resolving ${VAR}s.");
+    let var = json!({
+        "type": "object",
+        "additionalProperties": { "type": "string" },
+        "description": "Business-data overrides, KEY: VALUE. Never secrets: those come from \
+            `flowproof config` or the environment.",
+    });
+    let headed = switch("Show the browser. Headless otherwise.");
+    let author = json!({ "type": "string", "enum": ["auto", "rules", "llm"],
+        "description": "auto (default): the model, falling back to grammar; rules: grammar \
+            only; llm: the model for every plain step." });
+    let allow_exec = switch(
+        "Let this call run commands the flow's files author: a suite.yaml's env_from, \
+        before_each and after_each shell, a spec's agent or MCP server command, a Windows app's \
+        launch command. Off by default, and the refusal names the command and the file it came \
+        from. Show the person that command and pass true only if they agree.",
+    );
+    let schema = |mut properties: Value, required: &[&str]| {
         properties["cwd"] = path(
             "The folder to run in, for this call only (default: the folder the server was \
             started in). The result echoes the folder used.",
         );
-        json!({ "type": "object", "properties": properties, "required": ["spec"],
+        json!({ "type": "object", "properties": properties, "required": required,
             "additionalProperties": false })
     };
     json!([{
@@ -43,13 +46,14 @@ pub(crate) fn list() -> Value {
             `spec` at a directory to run every *.flow.yaml under it as a suite, which can take \
             many minutes. A failing flow comes back as a result with `passed: false` and the \
             report saying which step failed and why; that is not a tool error.",
-        "inputSchema": common(json!({
+        "inputSchema": schema(json!({
+            "spec": spec, "vars": vars, "var": var, "headed": headed, "allow_exec": allow_exec,
             "trace": path("The trace to replay (default: the one `record` wrote for the spec)."),
             "from": step("Replay only from this step, counted from 1. One flow only."),
             "until": step("Replay only up to and including this step. One flow only."),
             "retries": { "type": "integer", "minimum": 0, "maximum": 255,
                 "description": "Re-run a failed flow up to this many extra times." },
-        })),
+        }), &["spec"]),
     }, {
         "name": "flowproof_record",
         "title": "Record a flow",
@@ -60,17 +64,37 @@ pub(crate) fn list() -> Value {
             with `needs_clarification`: what was ambiguous and what the screen offered. That is \
             a result, not an error: reword that step in the .flow.yaml and record again, or ask \
             the person for missing business data rather than guessing it.",
-        "inputSchema": common(json!({
+        "inputSchema": schema(json!({
+            "spec": spec, "vars": vars, "var": var, "headed": headed, "allow_exec": allow_exec,
+            "author": author,
             "out": path("Where to write the trace (default: next to the spec)."),
-            "author": { "type": "string", "enum": ["auto", "rules", "llm"],
-                "description": "auto (default): the model, falling back to grammar; rules: \
-                    grammar only; llm: the model for every plain step." },
             "reuse": switch("Reuse every old step whose target still resolves; re-author only \
                 what drifted. Needs an existing trace."),
             "resume": switch("Pick up where the last recording of this flow stopped."),
             "no_repair": switch("On a failure, stop and report instead of letting the model \
                 patch the failing step and retry."),
-        })),
+        }), &["spec"]),
+    }, {
+        "name": "flowproof_doctor",
+        "title": "Check the setup",
+        "description": "Check that flowproof can work on this machine. `ai`: is an authoring \
+            model configured and reachable (record falls back to grammar without one). `sap`: \
+            can SAP GUI Scripting be reached. A failed check is a result, with the fix in its \
+            message; the fix is for the person to make with `flowproof config`.",
+        "inputSchema": schema(json!({
+            "check": { "type": "string", "enum": ["ai", "sap"], "description": "What to check." },
+        }), &["check"]),
+    }, {
+        "name": "flowproof_audit",
+        "title": "Report control coverage",
+        "description": "The control-coverage report for a suite: each `control:` block with its \
+            pass, fail or capability-error verdict, read from the run record `flowproof_run` \
+            wrote for that directory. Nothing is replayed.",
+        "inputSchema": schema(json!({
+            "dir": path("The suite directory. Relative to `cwd`."),
+            "run": path("Report this run id instead of the latest."),
+            "since": path("Diff the latest run against this run id."),
+        }), &["dir"]),
     }])
 }
 
@@ -79,107 +103,184 @@ enum Kind {
     Text,
     Number,
     Switch,
+    /// `var`: an object of KEY: VALUE, one `--var` each.
+    Vars,
+    /// Always `--headed` or `--headless`: `record` shows the browser by
+    /// default, and an ambient FLOWPROOF_HEADED must not open one on
+    /// someone's screen.
+    Headed,
+    /// `doctor`'s `check`, which becomes `--ai` or `--sap`.
+    Check,
 }
 
-/// The arguments each tool takes beyond the shared `spec`, `vars`, `var`,
-/// `headed` and `cwd`, and how each becomes a flag (`no_repair` →
-/// `--no-repair`).
-const RUN: &[(&str, Kind)] = &[
-    ("trace", Kind::Text),
-    ("from", Kind::Number),
-    ("until", Kind::Number),
-    ("retries", Kind::Number),
-];
-const RECORD: &[(&str, Kind)] = &[
-    ("out", Kind::Text),
-    ("author", Kind::Text),
-    ("reuse", Kind::Switch),
-    ("resume", Kind::Switch),
-    ("no_repair", Kind::Switch),
-];
+/// One tool: the command it runs, the argument passed after `--`, and how
+/// each other argument becomes a flag (`no_repair` → `--no-repair`).
+struct Tool {
+    command: &'static str,
+    positional: Option<&'static str>,
+    args: &'static [(&'static str, Kind)],
+    read: fn(Value, Outcome) -> Value,
+}
+
+fn tool(name: &str) -> Option<Tool> {
+    use Kind::*;
+    let (command, positional, args, read): (_, _, &'static [_], fn(_, _) -> _) = match name {
+        "flowproof_run" => (
+            "run",
+            Some("spec"),
+            &[
+                ("trace", Text),
+                ("from", Number),
+                ("until", Number),
+                ("retries", Number),
+                ("vars", Text),
+                ("var", Vars),
+                ("headed", Headed),
+                ("allow_exec", Switch),
+            ],
+            report_result,
+        ),
+        "flowproof_record" => (
+            "record",
+            Some("spec"),
+            &[
+                ("out", Text),
+                ("author", Text),
+                ("reuse", Switch),
+                ("resume", Switch),
+                ("no_repair", Switch),
+                ("vars", Text),
+                ("var", Vars),
+                ("headed", Headed),
+                ("allow_exec", Switch),
+            ],
+            record_result,
+        ),
+        "flowproof_doctor" => ("doctor", None, &[("check", Check)], checked_result),
+        "flowproof_audit" => (
+            "audit",
+            Some("dir"),
+            &[("run", Text), ("since", Text)],
+            report_result,
+        ),
+        _ => return None,
+    };
+    Some(Tool {
+        command,
+        positional,
+        args,
+        read,
+    })
+}
+
+/// Why `doctor` checks other than `ai` and `sap` are not tools (plan 17,
+/// decision 3).
+fn refused_check(check: &str) -> Option<&'static str> {
+    match check {
+        "fiori" => Some(
+            "doctor --fiori logs in to a live Fiori system for real and must never \
+            run on a repeated trigger. Ask the person to run `flowproof doctor --fiori`.",
+        ),
+        "agent" => Some(
+            "doctor --agent runs a command the caller supplies. Ask the person to \
+            run `flowproof doctor --agent` themselves.",
+        ),
+        _ => None,
+    }
+}
 
 /// A JSON-RPC error for a call that names no known tool; everything wrong
 /// with a known tool's input is a tool result, so the model can correct it.
 pub(crate) fn call(params: &Value) -> Result<Value, String> {
-    let name = params.get("name").and_then(Value::as_str);
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or("tools/call needs a tool name")?;
+    let tool = tool(name).ok_or(format!("unknown tool: {name}"))?;
     let empty = Map::new();
     let args = match params.get("arguments") {
         None | Some(Value::Null) => &empty,
         Some(Value::Object(args)) => args,
         Some(_) => return Ok(tool_error("arguments must be an object")),
     };
-    let (command, table, interpret): (_, _, fn(Value, Outcome) -> Value) = match name {
-        Some("flowproof_run") => ("run", RUN, run_result),
-        Some("flowproof_record") => ("record", RECORD, record_result),
-        Some(other) => return Err(format!("unknown tool: {other}")),
-        None => return Err("tools/call needs a tool name".into()),
-    };
     let outcome = resolve_cwd(args).and_then(|cwd| {
-        let argv = argv(command, table, args)?;
+        let argv = argv(&tool, args)?;
         Ok((cwd.clone(), supervise(&cwd, &argv)?))
     });
     Ok(match outcome {
-        Ok((cwd, outcome)) => interpret(json!({ "cwd": cwd.display().to_string() }), outcome),
+        Ok((cwd, outcome)) => (tool.read)(json!({ "cwd": cwd.display().to_string() }), outcome),
         Err(message) => tool_error(&message),
     })
 }
 
 /// The command line for one call. Every value goes in `--flag=value` form
-/// and the spec after `--`, so no argument can be read as a flag of its own.
-fn argv(
-    command: &str,
-    table: &[(&str, Kind)],
-    args: &Map<String, Value>,
-) -> Result<Vec<String>, String> {
-    let shared = ["spec", "vars", "var", "headed", "cwd", "allow_exec"];
-    let known = |k: &str| shared.contains(&k) || table.iter().any(|(name, _)| *name == k);
+/// and the positional after `--`, so no argument can become a flag.
+fn argv(tool: &Tool, args: &Map<String, Value>) -> Result<Vec<String>, String> {
+    let known = |k: &str| {
+        k == "cwd" || Some(k) == tool.positional || tool.args.iter().any(|(name, _)| *name == k)
+    };
     if let Some(unknown) = args.keys().find(|k| !known(k)) {
         return Err(format!("unknown argument `{unknown}`"));
     }
-    let spec = string(args, "spec")?.ok_or("`spec` is required")?;
-    let mut argv = vec![command.to_string(), "--json".to_string()];
-    let shared = [("vars", Kind::Text), ("allow_exec", Kind::Switch)];
-    for &(name, kind) in shared.iter().chain(table) {
+    let mut argv = vec![tool.command.to_string(), "--json".to_string()];
+    for &(name, kind) in tool.args {
         let flag = name.replace('_', "-");
-        let Some(value) = args.get(name).filter(|v| !v.is_null()) else {
-            continue;
+        let value = args.get(name).filter(|v| !v.is_null());
+        let text = |v: &Value| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or(format!("`{name}` must be a string"))
         };
-        match kind {
-            Kind::Text => {
-                let text = value.as_str().ok_or(format!("`{name}` must be a string"))?;
-                argv.push(format!("--{flag}={text}"));
+        let switch = |v: Option<&Value>| match v {
+            None => Ok(false),
+            Some(v) => v.as_bool().ok_or(format!("`{name}` must be true or false")),
+        };
+        match (kind, value) {
+            (Kind::Headed, value) => {
+                argv.push(
+                    if switch(value)? {
+                        "--headed"
+                    } else {
+                        "--headless"
+                    }
+                    .into(),
+                );
             }
-            Kind::Number => {
-                let n = value.as_u64().ok_or(format!("`{name}` must be a number"))?;
+            (Kind::Check, None) => return Err("`check` is required: ai or sap".into()),
+            (_, None) => {}
+            (Kind::Text, Some(v)) => argv.push(format!("--{flag}={}", text(v)?)),
+            (Kind::Number, Some(v)) => {
+                let n = v.as_u64().ok_or(format!("`{name}` must be a number"))?;
                 argv.push(format!("--{flag}={n}"));
             }
-            Kind::Switch => {
-                if value
-                    .as_bool()
-                    .ok_or(format!("`{name}` must be true or false"))?
-                {
+            (Kind::Switch, value) => {
+                if switch(value)? {
                     argv.push(format!("--{flag}"));
                 }
             }
+            (Kind::Vars, Some(v)) => {
+                let vars = v.as_object().ok_or("`var` must be an object")?;
+                for (key, value) in vars {
+                    let value = value
+                        .as_str()
+                        .ok_or(format!("`var.{key}` must be a string"))?;
+                    argv.push(format!("--var={key}={value}"));
+                }
+            }
+            (Kind::Check, Some(v)) => match text(v)?.as_str() {
+                check @ ("ai" | "sap") => argv.push(format!("--{check}")),
+                other => {
+                    return Err(refused_check(other)
+                        .map(str::to_string)
+                        .unwrap_or(format!("`check` must be ai or sap, not `{other}`")))
+                }
+            },
         }
     }
-    if let Some(vars) = args.get("var").filter(|v| !v.is_null()) {
-        let vars = vars.as_object().ok_or("`var` must be an object")?;
-        for (key, value) in vars {
-            let value = value
-                .as_str()
-                .ok_or(format!("`var.{key}` must be a string"))?;
-            argv.push(format!("--var={key}={value}"));
-        }
+    if let Some(positional) = tool.positional {
+        let value = string(args, positional)?.ok_or(format!("`{positional}` is required"))?;
+        argv.extend(["--".to_string(), value]);
     }
-    // Always one or the other: `record` shows the browser by default, and
-    // an ambient FLOWPROOF_HEADED must not open one on someone's screen.
-    let headed = match args.get("headed") {
-        None | Some(Value::Null) => false,
-        Some(b) => b.as_bool().ok_or("`headed` must be true or false")?,
-    };
-    argv.push(if headed { "--headed" } else { "--headless" }.into());
-    argv.extend(["--".to_string(), spec]);
     Ok(argv)
 }
 
@@ -243,8 +344,8 @@ fn supervise(cwd: &Path, argv: &[String]) -> Result<Outcome, String> {
     })
 }
 
-/// Exit 0 and 1 with a report are a pass and a fail.
-fn run_result(mut result: Value, outcome: Outcome) -> Value {
+/// Exit 0 and 1 with a report are a pass and a fail (`run`, `audit`).
+fn report_result(mut result: Value, outcome: Outcome) -> Value {
     match (outcome.code, outcome.json) {
         (Some(code @ (0 | 1)), Some(report)) => {
             result["exit_code"] = json!(code);
@@ -273,6 +374,20 @@ fn record_result(mut result: Value, outcome: Outcome) -> Value {
             tool_result(result, false)
         }
         (code, payload) => engine_error(result, code, payload, outcome.stderr),
+    }
+}
+
+/// `doctor` prints its verdict, `pass` and the checks behind it, whatever
+/// it exits with: a failed check is the answer, not an error.
+fn checked_result(mut result: Value, outcome: Outcome) -> Value {
+    match outcome.json {
+        Some(verdict) if verdict.get("pass").is_some() => {
+            result["exit_code"] = json!(outcome.code);
+            result["passed"] = verdict["pass"].clone();
+            result["report"] = verdict;
+            tool_result(result, false)
+        }
+        json => engine_error(result, outcome.code, json, outcome.stderr),
     }
 }
 
