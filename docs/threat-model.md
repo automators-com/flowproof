@@ -190,6 +190,32 @@ field as `${PASSWORD}`, which is an instruction to a model, not a guarantee.
 What protects a recording is what was recorded: the app under test, with
 test data. The desktop's security page tells users exactly that.
 
+### A coding agent as the model (`claude-code`, `codex`)
+
+**Guarantee**: with `ai.provider: claude-code` or `codex`, flowproof holds no
+credential for the model. It starts the agent's ACP adapter
+(`claude-agent-acp` / `codex-acp` from PATH, or a pinned version through
+`npx`), and the agent signs in with its own stored login, which flowproof
+never reads. The agent's process gets an allowlisted environment
+(`crates/flowproof-agent/src/acp/mod.rs`, `PASSED_ENV`): enough to find its
+login, config and network, and never `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`FLOWPROOF_AI_API_KEY`, or the SAP, Fiori and flow secrets flowproof holds in
+its own environment. It runs in an empty temporary folder that is deleted
+when it exits. `initialize` offers it no file system and no terminal. Every
+request it makes is refused (`acp/wire.rs`, `answer`): a permission request
+gets the agent's own reject option, and any other method gets
+method-not-found. What it is sent is what the HTTP backends send.
+
+**Not covered (by design)**: the refusals bind only requests the agent routes
+through the client. An agent's built-in tools that don't ask permission, such
+as Claude Code reading files in its working folder, are outside flowproof's
+control. The empty folder and the preamble ("do not use tools") keep them
+pointless, but they are an instruction to a model and a choice of folder, not
+a sandbox. The adapter is third-party code run with the user's privileges. A
+`npx`-fetched version is pinned, but an adapter already on PATH is whatever
+its installer put there. The agent also reads its own user-level instructions
+(for example `~/.claude/CLAUDE.md`), which can colour its answers.
+
 ### Debug artifacts (`debug/dom.html`, `debug/console.log`)
 
 **Guarantee**: none currently exists for this specific artifact, stated here
