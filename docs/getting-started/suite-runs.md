@@ -137,7 +137,8 @@ The command receives resolvable values from the suite's `env:` block. Values it
 returns are then available to flows and hooks as `${VAR}`. Flow input precedence
 remains process environment, then `env_from`, then suite `env:`.
 
-Hooks are for effects; their stdout is not captured. Use `env_from` for values a
+Hooks are for effects; their output is not captured. It is shown on stderr,
+so `--json` output on stdout stays a single report. Use `env_from` for values a
 flow must consume. See [The outside-in loop](../self-help.md) for an example of
 using live system data during authoring.
 

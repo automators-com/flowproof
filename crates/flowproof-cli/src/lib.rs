@@ -2859,10 +2859,15 @@ fn run_hook(command: &str, spec_path: &Path, phase: &str) -> Result<(), String> 
         command,
         &format!("the suite.yaml governing {}", spec_path.display()),
     )?;
+    // The hook's stdout goes to our stderr: our stdout is `--json`'s
+    // report, and one `echo` from a hook in front of it made the output
+    // unparseable for every caller (the desktop app, `flowproof mcp`, CI).
+    // Still visible, like `env_from`'s stderr.
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(command)
         .env("FLOWPROOF_SPEC", spec_path)
+        .stdout(std::process::Stdio::from(std::io::stderr()))
         .status()
         .map_err(|e| format!("{phase} hook failed to start: {e}"))?;
     if !status.success() {
