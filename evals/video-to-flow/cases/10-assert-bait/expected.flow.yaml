@@ -1,0 +1,16 @@
+# Expected draft for the 10-assert-bait case, written by flowproof-video-fixture from
+# the actions that made its video. Regenerate rather than edit it.
+name: "Place an order and read the banner"
+app: "web"
+steps:
+  - "Go to http://127.0.0.1:8765/app.html"
+  - "Type mara.lind into the \"Username\" field"
+  - "Type ${PASSWORD} into the \"Password\" field"
+  - "Click \"Sign in\""
+  - "Type Lamp shade, linen into the \"Find a product\" field"
+  - "Type Kranichweg into the \"Street\" field"
+  - "Type 17 into the \"House number\" field"
+  - "Type 24937 into the \"Postcode\" field"
+  - "Type Nordhafen into the \"City\" field"
+  - "Press Enter"
+  - "Click \"Confirm order\""

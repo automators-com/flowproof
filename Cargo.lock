@@ -940,6 +940,7 @@ dependencies = [
  "flowproof-trace",
  "image",
  "imageproc",
+ "libc",
  "rpassword",
  "serde",
  "serde_json",
@@ -1012,6 +1013,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "flowproof-video-fixture"
+version = "0.23.35"
+dependencies = [
+ "anyhow",
+ "flowproof-driver",
+ "headless_chrome",
+ "image",
+ "serde",
+ "serde_json",
+ "serde_norway",
 ]
 
 [[package]]

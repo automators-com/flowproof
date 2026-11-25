@@ -1,0 +1,38 @@
+[
+  {
+    "at_ms": 1800,
+    "end_ms": 3400,
+    "kind": "type",
+    "step": "Type mara.lind into the \"Username\" field"
+  },
+  {
+    "at_ms": 5400,
+    "end_ms": 8400,
+    "kind": "type",
+    "step": "Type ${PASSWORD} into the \"Password\" field"
+  },
+  {
+    "at_ms": 10200,
+    "end_ms": 10200,
+    "kind": "click",
+    "step": "Click \"Sign in\""
+  },
+  {
+    "at_ms": 11600,
+    "end_ms": 16000,
+    "kind": "out_of_scope",
+    "step": null
+  },
+  {
+    "at_ms": 17600,
+    "end_ms": 17600,
+    "kind": "click",
+    "step": "Click \"Orders\""
+  },
+  {
+    "at_ms": 19400,
+    "end_ms": 19400,
+    "kind": "click",
+    "step": "Click \"Account\""
+  }
+]

@@ -1,0 +1,46 @@
+{
+  "timestamp": "20261124T094812Z",
+  "window_ms": 1500,
+  "cases": {
+    "01-smoke": {
+      "min_action_recall": 0.5,
+      "max_over_trim_px": 360
+    },
+    "02-order-form": {
+      "min_action_recall": 0.4167,
+      "max_over_trim_px": 330
+    },
+    "03-counter-and-tabs": {
+      "min_action_recall": 0.5556,
+      "max_over_trim_px": 330
+    },
+    "04-twenty-minutes": {
+      "min_action_recall": 0.375,
+      "max_over_trim_px": 330
+    },
+    "05-retina-sap": {
+      "min_action_recall": 0.125,
+      "max_over_trim_px": 400
+    },
+    "06-taskbar-menubar-sap": {
+      "min_action_recall": 0.25,
+      "max_over_trim_px": 334
+    },
+    "07-second-app": {
+      "min_action_recall": 0.6667,
+      "max_over_trim_px": 330
+    },
+    "08-slideshow": {
+      "min_action_recall": 1.0,
+      "max_over_trim_px": 400
+    },
+    "09-keyboard-only": {
+      "min_action_recall": 0.4444,
+      "max_over_trim_px": 330
+    },
+    "10-assert-bait": {
+      "min_action_recall": 0.5,
+      "max_over_trim_px": 330
+    }
+  }
+}

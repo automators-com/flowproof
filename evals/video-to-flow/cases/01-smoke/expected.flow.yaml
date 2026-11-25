@@ -1,0 +1,10 @@
+# Expected draft for the 01-smoke case, written by flowproof-video-fixture from
+# the actions that made its video. Regenerate rather than edit it.
+name: "Sign in and open orders"
+app: "web"
+steps:
+  - "Go to http://127.0.0.1:8765/app.html"
+  - "Type mara.lind into the \"Username\" field"
+  - "Type ${PASSWORD} into the \"Password\" field"
+  - "Click \"Sign in\""
+  - "Click \"Orders\""

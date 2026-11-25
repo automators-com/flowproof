@@ -349,6 +349,21 @@ impl RunRecorder {
     }
 }
 
+/// The filmstrip's pointer drawn into any picture: the arrow with its tip at
+/// `(x, y)`, and the two rings around it when `clicked`. The video-to-flow
+/// evals draw it into generated recordings, whose screenshots have no
+/// pointer of their own (`evals/video-to-flow`).
+pub fn draw_cursor(frame: &mut image::RgbaImage, x: i32, y: i32, clicked: bool) {
+    draw_pointer(
+        frame,
+        PointerMarker {
+            x,
+            y,
+            highlighted: clicked,
+        },
+    );
+}
+
 fn draw_pointer(frame: &mut image::RgbaImage, marker: PointerMarker) {
     if marker.highlighted {
         // Two high-contrast rings survive GIF downscaling and remain visible

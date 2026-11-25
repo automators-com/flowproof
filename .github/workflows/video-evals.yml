@@ -1,0 +1,156 @@
+name: video evals
+
+# The video-to-flow evals (evals/video-to-flow, plans/016-video-to-flow-evals.md).
+#
+# Layer A, frame selection: the corpus is generated from invented HTML
+# fixtures, each video's frames are chosen by `author-from-video
+# --frames-out`, and each case is scored for whether a kept frame shows
+# every known action. No model is called, so it gates: a case that drops
+# below evals/video-to-flow/frames-baseline.json fails the job.
+#
+# Layer B, the draft: a model drafts each case from its committed frames
+# (evals/video-to-flow/cases/<case>/frames) and the draft is scored against
+# the expected flow. The full pass with the judge runs weekly on main and on
+# dispatch, and reports rather than gates: a provider changing its model
+# under us shows up here. One case runs on pull requests that touch the
+# prompt or the harness, and fails only on a broken invariant or a draft
+# that matches nothing. The model key is a secret, so neither runs for a
+# pull request from a fork.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+  pull_request:
+    paths:
+      - "crates/flowproof-agent/src/video_author.rs"
+      - "crates/flowproof-agent/src/draft_assembly.rs"
+      - "scripts/video-draft-eval.py"
+      - "scripts/test_video_draft_eval.py"
+      - "crates/flowproof-adapters/src/video_frames.rs"
+      - "crates/flowproof-adapters/src/ffmpeg.rs"
+      - "evals/video-to-flow/**"
+      - "scripts/video-frames-eval.py"
+      - "scripts/test_video_frames_eval.py"
+      - ".github/workflows/video-evals.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  # The decode-only ffmpeg that ships with flowproof: frames are chosen by
+  # what users run, while the generator muxes with the runner's own ffmpeg.
+  ffmpeg:
+    if: github.event_name != 'schedule'
+    uses: ./.github/workflows/ffmpeg.yml
+
+  frames:
+    name: frame selection (layer A)
+    needs: ffmpeg
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-linux-x64
+          path: ${{ runner.temp }}/ffmpeg
+      - run: chmod +x "$RUNNER_TEMP/ffmpeg/ffmpeg"
+      - name: install an ffmpeg that can encode, and PyYAML
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-yaml
+      - name: scoring tests
+        run: python3 scripts/test_video_frames_eval.py
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build the engine and the generator
+        run: cargo build -p flowproof-cli -p flowproof-video-fixture
+      # Chrome is on the runner image; headless_chrome finds it.
+      - name: generate the corpus
+        run: target/debug/flowproof-video-fixture evals/video-to-flow/cases --out "$RUNNER_TEMP/generated"
+      - name: score frame selection
+        env:
+          FLOWPROOF_FFMPEG: ${{ runner.temp }}/ffmpeg/ffmpeg
+        run: |
+          # Keep going past a failed gate so the table still reaches the summary.
+          set +e
+          python3 scripts/video-frames-eval.py "$RUNNER_TEMP/generated" \
+            --out "$RUNNER_TEMP/generated/frames-scoreboard.json" \
+            --write-baseline "$RUNNER_TEMP/generated/frames-baseline.json" | tee "$RUNNER_TEMP/table.md"
+          status=${PIPESTATUS[0]}
+          { echo "## Video frame selection"; echo; cat "$RUNNER_TEMP/table.md"; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      # Layer C's control, with no model: every expected flow must record
+      # against its fixture, or a fixture or the harness is broken.
+      - name: the expected flows record against their fixtures
+        run: python3 scripts/video-draft-eval.py control
+      - name: keep videos, frames and the scoreboard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-evals-frames
+          path: ${{ runner.temp }}/generated
+          if-no-files-found: warn
+
+  draft-smoke:
+    name: one draft (layer B smoke)
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: scoring tests
+        run: uv run --no-project --with pyyaml python scripts/test_video_draft_eval.py
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p flowproof-cli
+      - name: draft the smoke case
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set +e
+          uv run --no-project --with pyyaml python scripts/video-draft-eval.py score \
+            --case 01-smoke --no-judge --min-recall 0.01 \
+            --out "$RUNNER_TEMP/drafts-smoke.json" | tee "$RUNNER_TEMP/table.md"
+          status=${PIPESTATUS[0]}
+          { echo "## Video draft smoke"; echo; cat "$RUNNER_TEMP/table.md"; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-evals-draft-smoke
+          path: ${{ runner.temp }}/drafts-smoke.json
+          if-no-files-found: warn
+
+  drafts:
+    name: every draft (layer B)
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p flowproof-cli
+      # A measurement, not a gate: the job fails only when the engine could
+      # not draft at all (exit 2), never on a score.
+      # Layer C rides along: each draft is recorded against its served
+      # fixture with --no-repair, headless, for a first-attempt rate.
+      - name: draft, score and record every case
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set +e
+          uv run --no-project --with pyyaml --with anthropic python scripts/video-draft-eval.py score --record \
+            --out "$RUNNER_TEMP/drafts.json" | tee "$RUNNER_TEMP/table.md"
+          status=${PIPESTATUS[0]}
+          { echo "## Video drafts"; echo; cat "$RUNNER_TEMP/table.md"; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$status" -eq 2 ] && exit 2
+          exit 0
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-evals-drafts
+          path: ${{ runner.temp }}/drafts.json
+          if-no-files-found: warn

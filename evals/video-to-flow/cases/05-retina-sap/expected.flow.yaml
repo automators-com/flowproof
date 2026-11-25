@@ -1,0 +1,14 @@
+# Expected draft for the 05-retina-sap case, written by flowproof-video-fixture from
+# the actions that made its video. Regenerate rather than edit it.
+name: "Transfer stock on a Retina screen"
+app: "web"
+steps:
+  - "Go to http://127.0.0.1:8765/sap-form.html"
+  - "Type KX-55120-B into the \"Material\" field"
+  - "Type NH01 into the \"Plant\" field"
+  - "Type 0004 into the \"Storage location\" field"
+  - "Type NH02 into the \"Receiving plant\" field"
+  - "Type 0011 into the \"Receiving storage location\" field"
+  - "Type 36 into the \"Quantity in unit of entry\" field"
+  - "Type PC into the \"Unit of entry\" field"
+  - "Click \"Post\""

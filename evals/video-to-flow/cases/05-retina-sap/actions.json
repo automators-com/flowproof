@@ -1,0 +1,50 @@
+[
+  {
+    "at_ms": 1800,
+    "end_ms": 3600,
+    "kind": "type",
+    "step": "Type KX-55120-B into the \"Material\" field"
+  },
+  {
+    "at_ms": 5600,
+    "end_ms": 6200,
+    "kind": "type",
+    "step": "Type NH01 into the \"Plant\" field"
+  },
+  {
+    "at_ms": 8200,
+    "end_ms": 8800,
+    "kind": "type",
+    "step": "Type 0004 into the \"Storage location\" field"
+  },
+  {
+    "at_ms": 10800,
+    "end_ms": 11400,
+    "kind": "type",
+    "step": "Type NH02 into the \"Receiving plant\" field"
+  },
+  {
+    "at_ms": 13400,
+    "end_ms": 14000,
+    "kind": "type",
+    "step": "Type 0011 into the \"Receiving storage location\" field"
+  },
+  {
+    "at_ms": 16000,
+    "end_ms": 16200,
+    "kind": "type",
+    "step": "Type 36 into the \"Quantity in unit of entry\" field"
+  },
+  {
+    "at_ms": 18200,
+    "end_ms": 18400,
+    "kind": "type",
+    "step": "Type PC into the \"Unit of entry\" field"
+  },
+  {
+    "at_ms": 20200,
+    "end_ms": 20200,
+    "kind": "click",
+    "step": "Click \"Post\""
+  }
+]

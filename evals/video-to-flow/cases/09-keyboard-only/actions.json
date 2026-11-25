@@ -1,0 +1,80 @@
+[
+  {
+    "at_ms": 1800,
+    "end_ms": 3400,
+    "kind": "type",
+    "step": "Type mara.lind into the \"Username\" field"
+  },
+  {
+    "at_ms": 4800,
+    "end_ms": 4800,
+    "kind": "tab",
+    "step": null
+  },
+  {
+    "at_ms": 6100,
+    "end_ms": 9100,
+    "kind": "keys",
+    "step": "Type ${PASSWORD} into the \"Password\" field"
+  },
+  {
+    "at_ms": 10500,
+    "end_ms": 10500,
+    "kind": "press",
+    "step": "Press Enter"
+  },
+  {
+    "at_ms": 12400,
+    "end_ms": 14200,
+    "kind": "type",
+    "step": "Type Kranichweg into the \"Street\" field"
+  },
+  {
+    "at_ms": 15600,
+    "end_ms": 15600,
+    "kind": "tab",
+    "step": null
+  },
+  {
+    "at_ms": 16900,
+    "end_ms": 17100,
+    "kind": "keys",
+    "step": "Type 17 into the \"House number\" field"
+  },
+  {
+    "at_ms": 18500,
+    "end_ms": 18500,
+    "kind": "tab",
+    "step": null
+  },
+  {
+    "at_ms": 19800,
+    "end_ms": 20600,
+    "kind": "keys",
+    "step": "Type 24937 into the \"Postcode\" field"
+  },
+  {
+    "at_ms": 22000,
+    "end_ms": 22000,
+    "kind": "tab",
+    "step": null
+  },
+  {
+    "at_ms": 23300,
+    "end_ms": 24900,
+    "kind": "keys",
+    "step": "Type Nordhafen into the \"City\" field"
+  },
+  {
+    "at_ms": 26300,
+    "end_ms": 26300,
+    "kind": "press",
+    "step": "Press Enter"
+  },
+  {
+    "at_ms": 27600,
+    "end_ms": 27600,
+    "kind": "press",
+    "step": "Press Enter"
+  }
+]

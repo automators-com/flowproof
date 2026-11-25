@@ -1,0 +1,11 @@
+name: A slideshow
+catches: A recording with no app being used. Slides advance on their own with no pointer, and the draft must refuse it rather than describe it.
+fixture: slides.html
+pointer: false
+go_to: false
+not_app: true
+gap_ms: 4000
+actions:
+  - slide
+  - slide
+  - slide

@@ -6,6 +6,9 @@ mod agent_surface;
 mod capture;
 pub mod config;
 mod doctor;
+mod mcp_install;
+mod mcp_server;
+mod mcp_tools;
 mod suite;
 mod suite_checkpoint;
 mod suite_inputs;
@@ -302,6 +305,34 @@ enum ConfigAction {
     },
 }
 
+/// `flowproof mcp <action>`; with none, `flowproof mcp` serves.
+#[derive(Subcommand)]
+enum McpAction {
+    /// Register `flowproof mcp` with the coding agents this project uses:
+    /// `.mcp.json` (Claude Code, GitHub Copilot) always, plus
+    /// `.cursor/mcp.json` and `.gemini/settings.json` where those folders
+    /// exist. `--claude`, `--cursor` and `--gemini` narrow it to those.
+    Install {
+        /// Write only `.mcp.json` (Claude Code, GitHub Copilot).
+        #[arg(long)]
+        claude: bool,
+        /// Write only `.cursor/mcp.json`.
+        #[arg(long)]
+        cursor: bool,
+        /// Write only `.gemini/settings.json`.
+        #[arg(long)]
+        gemini: bool,
+        /// Print the entry for a client this command does not know, and
+        /// write nothing.
+        #[arg(long)]
+        print: bool,
+        /// Replace a `flowproof` entry that is already there with
+        /// different content.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Manage flowproof's own global, per-machine config file: SAP GUI and
@@ -492,6 +523,15 @@ enum Command {
         #[arg(long = "allow-exec")]
         allow_exec: bool,
     },
+    /// Serve flowproof to a coding agent (Claude Code, Codex CLI, Cursor, VS
+    /// Code) as an MCP tool server over stdio, so the agent can replay flows
+    /// itself. The client spawns this command; it is not run by hand. Not to
+    /// be confused with a flow's `mcp:` block, where flowproof stands in for
+    /// the tool server of the agent under test.
+    Mcp {
+        #[command(subcommand)]
+        action: Option<McpAction>,
+    },
     /// Internal: the stdio MCP stand-in the agent spawns as its server
     /// command. Not run by hand - flowproof injects
     /// `FLOWPROOF_MCP_SERVER_<NAME>` into the agent's environment pointing
@@ -633,20 +673,37 @@ enum Command {
     /// should. Still needs a live `record`.
     AuthorFromVideo {
         /// The screen recording (mp4, mov, webm, …).
-        video: PathBuf,
+        #[arg(required_unless_present = "frames_dir")]
+        video: Option<PathBuf>,
         /// Target app id (e.g. web, sap).
-        #[arg(long, required_unless_present = "check")]
+        #[arg(long, required_unless_present_any = ["check", "frames_out"])]
         app: Option<String>,
         /// Flow name, written into the draft's `name:` field.
-        #[arg(long, required_unless_present = "check")]
+        #[arg(long, required_unless_present_any = ["check", "frames_out"])]
         name: Option<String>,
         /// Where the flow starts, when the recording's address bar does not
         /// show it; written as the first step.
         #[arg(long)]
         url: Option<String>,
         /// The draft file.
-        #[arg(short, long, required_unless_present = "check")]
+        #[arg(short, long, required_unless_present_any = ["check", "frames_out"])]
         out: Option<PathBuf>,
+        /// Only choose the frames a draft would be made from and write them
+        /// into this (new or empty) folder as JPEGs, with `manifest.json`
+        /// giving each one's time; nothing is sent to a model and no draft
+        /// is written. For looking at what the model would see, and for the
+        /// evals in `evals/video-to-flow`.
+        #[arg(long, value_name = "DIR", conflicts_with = "check")]
+        frames_out: Option<PathBuf>,
+        /// Draft from frames `--frames-out` wrote earlier instead of from a
+        /// video: no ffmpeg is needed, and the same frames can be drafted
+        /// again after a prompt change (the evals in `evals/video-to-flow`).
+        #[arg(
+            long,
+            value_name = "DIR",
+            conflicts_with_all = ["video", "check", "frames_out"]
+        )]
+        frames_dir: Option<PathBuf>,
         /// Only read the video and report its length and how many frames
         /// would be sent; nothing is sent to a model and nothing is written.
         #[arg(long)]
@@ -1052,7 +1109,7 @@ fn cmd_record(spec_path: &Path, options: RecordOptions) -> Result<u8, String> {
     if author == AuthorArg::Auto
         && spec.has_plain_steps()
         && matches!(
-            flowproof_agent::HttpModelClient::from_env_result(),
+            flowproof_agent::ConfiguredModel::from_env_result(),
             Ok(None)
         )
     {
@@ -1503,7 +1560,7 @@ fn run_repair_loop(
     if first_err.error.is_setup_error() {
         return RepairLoopOutcome::NotRepaired(first_err);
     }
-    let Some(mut client) = flowproof_agent::HttpModelClient::from_env() else {
+    let Some(mut client) = flowproof_agent::ConfiguredModel::from_env() else {
         return RepairLoopOutcome::NotRepaired(first_err);
     };
     let mut attempts = Vec::new();
@@ -2852,7 +2909,7 @@ fn record_one(
     let fallback = author == AuthorArg::Auto
         && spec.has_plain_steps()
         && matches!(
-            flowproof_agent::HttpModelClient::from_env_result(),
+            flowproof_agent::ConfiguredModel::from_env_result(),
             Ok(None)
         );
     let mut driver = record_driver(&spec)?;
@@ -4348,7 +4405,6 @@ fn cmd_author_from_video(
             k.width, k.height, k.x, k.y
         );
     }
-    eprintln!("reading {} frames", frames.len());
     let frames: Vec<video_author::Frame> = frames
         .into_iter()
         .map(|f| video_author::Frame {
@@ -4364,15 +4420,84 @@ fn cmd_author_from_video(
         url,
         duration_ms: info.duration_ms,
     };
-    let result = video_author::author_from_frames(&opts, &frames).map_err(|e| e.to_string())?;
+    let kept = info
+        .kept
+        .map(|k| serde_json::json!({ "x": k.x, "y": k.y, "width": k.width, "height": k.height }));
+    draft_from_video_frames(&opts, &frames, kept, json)
+}
+
+/// `author-from-video --frames-dir`: the same draft, from the JPEGs and
+/// `manifest.json` that `--frames-out` wrote.
+fn cmd_author_from_frames_dir(
+    dir: &Path,
+    app: Option<String>,
+    name: Option<String>,
+    url: Option<String>,
+    out: Option<PathBuf>,
+    json: bool,
+) -> Result<u8, String> {
+    use flowproof_agent::video_author;
+    config::seed_env();
+    let (Some(app), Some(name), Some(out)) = (app, name, out) else {
+        return Err("--app, --name and --out are required to draft".into());
+    };
+    let manifest_path = dir.join("manifest.json");
+    let manifest: serde_json::Value = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))
+        .and_then(|text| {
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", manifest_path.display()))
+        })?;
+    let listed = manifest["frames"]
+        .as_array()
+        .ok_or_else(|| format!("{} lists no frames", manifest_path.display()))?;
+    let mut frames = Vec::new();
+    for entry in listed {
+        let (Some(file), Some(at_ms)) = (entry["file"].as_str(), entry["at_ms"].as_u64()) else {
+            return Err(format!(
+                "{}: a frame needs a file and an at_ms",
+                manifest_path.display()
+            ));
+        };
+        // Only a file name: a manifest never reaches outside its folder.
+        if file.contains(['/', '\\']) || file.starts_with('.') {
+            return Err(format!(
+                "{}: {file} is not a file in that folder",
+                manifest_path.display()
+            ));
+        }
+        let jpeg = std::fs::read(dir.join(file))
+            .map_err(|e| format!("{}: {e}", dir.join(file).display()))?;
+        frames.push(video_author::Frame { at_ms, jpeg });
+    }
+    let opts = video_author::VideoAuthorOptions {
+        video: dir.to_path_buf(),
+        app,
+        name,
+        out,
+        url,
+        duration_ms: manifest["duration_ms"].as_u64().unwrap_or_default(),
+    };
+    let kept = Some(manifest["kept"].clone()).filter(|k| !k.is_null());
+    draft_from_video_frames(&opts, &frames, kept, json)
+}
+
+/// The model call and the report, shared by a video and a frames folder.
+fn draft_from_video_frames(
+    opts: &flowproof_agent::video_author::VideoAuthorOptions,
+    frames: &[flowproof_agent::video_author::Frame],
+    kept: Option<serde_json::Value>,
+    json: bool,
+) -> Result<u8, String> {
+    use flowproof_agent::video_author;
+    eprintln!("reading {} frames", frames.len());
+    let result = video_author::author_from_frames(opts, frames).map_err(|e| e.to_string())?;
     if json {
         let mut report = draft_steps_json(&result.lines);
         report["flow"] = serde_json::json!(result.flow);
         report["frames"] = frames.len().into();
-        report["duration_ms"] = info.duration_ms.into();
-        if let Some(k) = info.kept {
-            report["kept"] =
-                serde_json::json!({ "x": k.x, "y": k.y, "width": k.width, "height": k.height });
+        report["duration_ms"] = opts.duration_ms.into();
+        if let Some(kept) = kept {
+            report["kept"] = kept;
         }
         println!("{report}");
         return Ok(EXIT_PASS);
@@ -4384,6 +4509,73 @@ fn cmd_author_from_video(
         result.flow.display(),
         frames.len()
     );
+    Ok(EXIT_PASS)
+}
+
+/// `author-from-video --frames-out`: the frames a draft would be made from,
+/// written as `001.jpg`, `002.jpg`, … beside a `manifest.json` that says when
+/// each was taken, what part of the screen was kept, and how many changed
+/// moments there were before `max_frames` capped them.
+fn cmd_video_frames_out(video: &Path, dir: &Path, json: bool) -> Result<u8, String> {
+    use flowproof_adapters::video_frames;
+    if std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some()) {
+        return Err(format!(
+            "{} is not empty; --frames-out writes into a new or empty folder so \
+             frames from two videos never mix",
+            dir.display()
+        ));
+    }
+    let opts = video_frames::FrameOptions::default();
+    let (info, frames) = video_frames::extract(video, &opts, &mut |done, total| {
+        eprintln!("finding frames: sample {} of {total}", done + 1)
+    })
+    .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut listed = Vec::new();
+    for (i, frame) in frames.iter().enumerate() {
+        let file = format!("{:03}.jpg", i + 1);
+        std::fs::write(dir.join(&file), &frame.jpeg)
+            .map_err(|e| format!("{}: {e}", dir.join(&file).display()))?;
+        listed.push(serde_json::json!({ "file": file, "at_ms": frame.at_ms }));
+    }
+    let frame_width = info.width.min(opts.max_width).max(1);
+    let frame_height = ((info.height as f64) * (frame_width as f64) / (info.width.max(1) as f64))
+        .round()
+        .max(1.0) as u32;
+    let manifest = serde_json::json!({
+        "duration_ms": info.duration_ms,
+        "width": info.width,
+        "height": info.height,
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+        "kept": info.kept.map(|k| serde_json::json!(
+            { "x": k.x, "y": k.y, "width": k.width, "height": k.height })),
+        "samples": info.samples,
+        "changes": info.changes,
+        "max_frames": opts.max_frames,
+        "frames": listed,
+    });
+    let text = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("manifest.json"), text + "\n")
+        .map_err(|e| format!("{}: {e}", dir.join("manifest.json").display()))?;
+    if json {
+        println!("{manifest}");
+    } else {
+        let dropped = info.changes.saturating_sub(frames.len());
+        println!(
+            "{} frames written to {}{}",
+            frames.len(),
+            dir.display(),
+            if dropped > 0 {
+                format!(
+                    " ({dropped} more changed moments were past the {}-frame budget)",
+                    opts.max_frames
+                )
+            } else {
+                String::new()
+            }
+        );
+    }
     Ok(EXIT_PASS)
 }
 
@@ -4535,7 +4727,7 @@ fn cmd_heal(
     if author == AuthorArg::Auto
         && spec.has_plain_steps()
         && matches!(
-            flowproof_agent::HttpModelClient::from_env_result(),
+            flowproof_agent::ConfiguredModel::from_env_result(),
             Ok(None)
         )
     {
@@ -4800,10 +4992,11 @@ where
         });
     }
 
+    let embedded = engine_path.is_some();
     if let Command::Run { recovery, .. } = &mut cli.command {
         recovery.engine_path = engine_path;
     }
-    let is_mcp_stdio = matches!(cli.command, Command::McpStdio { .. });
+    let is_mcp_stdio = matches!(cli.command, Command::McpStdio { .. } | Command::Mcp { .. });
     let result = match cli.command {
         Command::Config { action } => match action {
             ConfigAction::Sap {
@@ -5063,8 +5256,17 @@ where
             url,
             out,
             check,
+            frames_out,
+            frames_dir,
             json,
-        } => cmd_author_from_video(video, app, name, url, out, check, json),
+        } => match (video, frames_out, frames_dir) {
+            (_, _, Some(dir)) => cmd_author_from_frames_dir(&dir, app, name, url, out, json),
+            (Some(video), Some(dir), None) => cmd_video_frames_out(&video, &dir, json),
+            (Some(video), None, None) => {
+                cmd_author_from_video(video, app, name, url, out, check, json)
+            }
+            (None, _, None) => Err("name a video, or --frames-dir".into()),
+        },
         Command::AuthorFromCode {
             repo,
             goal,
@@ -5112,10 +5314,30 @@ where
         Command::McpStdio { server } => {
             flowproof_adapters::mcp_stdio::run_stand_in(&server).map(|()| EXIT_PASS)
         }
+        // Same stdout contract as the stand-in: JSON-RPC and nothing else.
+        Command::Mcp { action: None } => mcp_server::serve(embedded).map(|()| EXIT_PASS),
+        Command::Mcp {
+            action:
+                Some(McpAction::Install {
+                    claude,
+                    cursor,
+                    gemini,
+                    print,
+                    force,
+                }),
+        } => mcp_install::cmd_install(
+            &mcp_install::Clients {
+                claude,
+                cursor,
+                gemini,
+            },
+            print,
+            force,
+        ),
     };
-    // Skipped for mcp-stdio: that command's contract is stdout speaks
-    // JSON-RPC and nothing else, and its stderr is read by an orchestrator
-    // that has no use for a human upgrade notice.
+    // Skipped for mcp-stdio and mcp: those commands' contract is stdout
+    // speaks JSON-RPC and nothing else, and their stderr is read by a
+    // client that has no use for a human upgrade notice.
     if !is_mcp_stdio {
         update_check::notify_if_outdated(env!("CARGO_PKG_VERSION"));
     }
@@ -5821,6 +6043,74 @@ mod tests {
             "https://shop.example.test/",
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn author_from_video_writes_frames_alone_and_never_with_check() {
+        let frames = |extra: &[&str]| {
+            let mut args = vec![
+                "flowproof",
+                "author-from-video",
+                "demo.mp4",
+                "--frames-out",
+                "f",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        assert!(frames(&[]).is_ok());
+        assert!(frames(&["--json"]).is_ok());
+        assert!(frames(&["--check"]).is_err());
+    }
+
+    #[test]
+    fn frames_dir_drafts_without_a_video_and_never_with_one() {
+        let draft = ["--app", "web", "--name", "N", "--out", "n.flow.yaml"];
+        let mut args = vec!["flowproof", "author-from-video", "--frames-dir", "f"];
+        args.extend_from_slice(&draft);
+        assert!(Cli::try_parse_from(&args).is_ok());
+        args.push("demo.mp4");
+        assert!(Cli::try_parse_from(&args).is_err());
+        assert!(Cli::try_parse_from([
+            "flowproof",
+            "author-from-video",
+            "--frames-dir",
+            "f",
+            "--check"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn frames_dir_reads_only_files_inside_its_folder() {
+        let dir = std::env::temp_dir().join(format!("flowproof-frames-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join("manifest.json"),
+            r#"{"duration_ms": 1000, "frames": [{"file": "../secret.jpg", "at_ms": 0}]}"#,
+        )
+        .expect("manifest");
+        let err = cmd_author_from_frames_dir(
+            &dir,
+            Some("web".into()),
+            Some("n".into()),
+            None,
+            Some(dir.join("n.flow.yaml")),
+            false,
+        )
+        .expect_err("refused");
+        assert!(err.contains("not a file in that folder"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn frames_out_refuses_a_folder_that_already_holds_files() {
+        let dir = std::env::temp_dir().join(format!("flowproof-frames-out-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("001.jpg"), b"old").expect("file");
+        let err = cmd_video_frames_out(Path::new("missing.mp4"), &dir, false).expect_err("refused");
+        assert!(err.contains("not empty"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

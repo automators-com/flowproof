@@ -13,7 +13,7 @@ use flowproof_trace::format::{
 use flowproof_trace::{SelectorTier, FORMAT_NAME, FORMAT_VERSION};
 
 use crate::author::AuthorContext;
-use crate::llm::{HttpModelClient, ModelClient};
+use crate::llm::{ConfiguredModel, ModelClient};
 use crate::rules::{
     resolve_step, AttrCheck, ResolvedAction, ScrollTo, Target, TextMatch, NOTEPAD_EDITOR_ID,
 };
@@ -2544,7 +2544,7 @@ pub fn record<D: AppDriver>(
     driver: &mut D,
     out: &Path,
 ) -> Result<RecordSummary, RecordError> {
-    let mut client = HttpModelClient::from_env_result()?;
+    let mut client = ConfiguredModel::from_env_result()?;
     record_with_client(spec, driver, out, Author::Auto, client.as_mut())
 }
 
@@ -2572,7 +2572,7 @@ pub fn record_with_author_and_options<D: AppDriver>(
     author: Author,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, RecordError> {
-    let mut client = HttpModelClient::from_env_result()?;
+    let mut client = ConfiguredModel::from_env_result()?;
     record_with_client_and_options(spec, driver, out, author, client.as_mut(), recording)
 }
 
@@ -2604,7 +2604,7 @@ pub fn record_incremental_with_options<D: AppDriver>(
     old_steps: &[Step],
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, RecordError> {
-    let mut client = HttpModelClient::from_env_result()?;
+    let mut client = ConfiguredModel::from_env_result()?;
     record_with_reuse_and_options(
         spec,
         driver,
@@ -3468,7 +3468,7 @@ pub fn record_located<D: AppDriver>(
     old_steps: Option<&[Step]>,
     recording: flowproof_driver::RecordingOptions,
 ) -> Result<RecordSummary, LocatedRecordError> {
-    let mut client = HttpModelClient::from_env_result().map_err(RecordError::from)?;
+    let mut client = ConfiguredModel::from_env_result().map_err(RecordError::from)?;
     record_with_reuse_located(
         spec,
         driver,
@@ -5515,11 +5515,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         agent: (llm_used && client.is_some()).then(|| {
             let (backend, model) = client.as_ref().map(|c| c.identity()).unwrap_or_default();
             flowproof_trace::format::AgentInfo {
-                backend: if backend == "anthropic" {
-                    flowproof_trace::format::AgentBackend::Anthropic
-                } else {
-                    flowproof_trace::format::AgentBackend::OpenaiCompatible
-                },
+                backend: agent_backend(&backend),
                 model: Some(model),
             }
         }),
@@ -5586,12 +5582,34 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     })
 }
 
+/// The trace's name for the backend a client calls itself. Anything that is
+/// not Anthropic or an agent speaks the OpenAI-compatible shape, which is
+/// what the trace has always called OpenAI's own API too.
+fn agent_backend(backend: &str) -> flowproof_trace::format::AgentBackend {
+    use flowproof_trace::format::AgentBackend;
+    match backend {
+        "anthropic" => AgentBackend::Anthropic,
+        "claude-code" => AgentBackend::ClaudeCode,
+        "codex" => AgentBackend::Codex,
+        _ => AgentBackend::OpenaiCompatible,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use flowproof_driver::mock::MockAppDriver;
     use flowproof_trace::TraceLine;
 
     use super::*;
+
+    #[test]
+    fn a_trace_names_the_agent_that_authored_it() {
+        use flowproof_trace::format::AgentBackend;
+        assert_eq!(agent_backend("claude-code"), AgentBackend::ClaudeCode);
+        assert_eq!(agent_backend("codex"), AgentBackend::Codex);
+        assert_eq!(agent_backend("anthropic"), AgentBackend::Anthropic);
+        assert_eq!(agent_backend("openai"), AgentBackend::OpenaiCompatible);
+    }
     use crate::spec::FlowSpec;
 
     /// A carousel mid-rotation: covered for the first few probes, then not.
