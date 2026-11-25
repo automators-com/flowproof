@@ -38,9 +38,12 @@ args = ["mcp"]
 
 The server runs in the folder the client was started in.
 
-Under the Python package, `flowproof` runs the engine inside Python and the
-server cannot spawn it. Set `FLOWPROOF_MCP_EXE` to a `flowproof` binary from
-npm or `cargo install` instead.
+The client starts the bare `flowproof` command, so it must be on the PATH the
+client starts with: install it with `npm install -g flowproof`. A project's own `npm install` puts it in `node_modules/.bin`, which
+clients do not search; there, change the entry's `command` to `npx` and its
+`args` to `["flowproof", "mcp"]`. Under the Python package, `flowproof` runs
+the engine inside Python and the server cannot spawn it, so set
+`FLOWPROOF_MCP_EXE` to the `flowproof` binary from the npm package.
 
 ## Tools
 

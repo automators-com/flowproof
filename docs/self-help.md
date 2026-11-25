@@ -7,7 +7,8 @@ A spec step like **"make required field changes"** cannot be authored: it
 names no fields, and no amount of grounding fixes that. flowproof's answer
 is deliberately *not* an in-loop conversation: recording stops and hands
 the **driving agent** (you, or any MCP-capable agent: DataMaker's agent,
-Claude, a CI bot) everything it needs to resolve the ambiguity itself,
+Claude, a CI bot; coding agents reach flowproof through
+[`flowproof mcp`](mcp-server.md)) everything it needs to resolve the ambiguity itself,
 rewrite the step into concrete grammar, and record again. flowproof stays
 deterministic; the intelligence stays outside.
 
@@ -64,7 +65,7 @@ one self-correcting retry) can author a step, recording fails with data:
 | Surface | Shape |
 | --- | --- |
 | `flowproof record --json` | the JSON above on stdout, exit code 2 |
-| MCP `flowproof_record` | the same dict as a normal (non-error) tool result |
+| MCP `flowproof_record` | a normal (non-error) tool result with `recorded: false` and the same dict under `result` |
 | Python `Flow.record()` / `flowproof.record()` | raises `ClarificationNeeded`, payload on `.clarification` |
 
 ## The worked example: "make required field changes"

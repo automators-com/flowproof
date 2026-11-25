@@ -44,7 +44,7 @@ pub fn serve(embedded: bool) -> Result<(), String> {
         return Err(
             "flowproof mcp needs the flowproof executable to run its tools, and \
             inside the Python package it cannot find one. Set FLOWPROOF_MCP_EXE to a \
-            flowproof binary, or install flowproof from npm or cargo."
+            flowproof binary, or install flowproof from npm."
                 .into(),
         );
     }
