@@ -4,8 +4,12 @@
 //! reach the protocol, and the tool surface tracks the CLI instead of
 //! copying it.
 
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 
@@ -231,9 +235,17 @@ fn refused_check(check: &str) -> Option<&'static str> {
     }
 }
 
+/// What a running call shares with the server's read loop.
+pub(crate) struct Call<'a> {
+    /// Set by `notifications/cancelled`; the child is then stopped.
+    pub cancelled: &'a AtomicBool,
+    /// Called with each line the engine prints to stderr.
+    pub progress: &'a (dyn Fn(&str) + Sync),
+}
+
 /// A JSON-RPC error for a call that names no known tool; everything wrong
 /// with a known tool's input is a tool result, so the model can correct it.
-pub(crate) fn call(params: &Value) -> Result<Value, String> {
+pub(crate) fn call(params: &Value, call: &Call) -> Result<Value, String> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -247,7 +259,7 @@ pub(crate) fn call(params: &Value) -> Result<Value, String> {
     };
     let outcome = resolve_cwd(args).and_then(|cwd| {
         let argv = argv(&tool, args)?;
-        Ok((cwd.clone(), supervise(&cwd, &argv)?))
+        Ok((cwd.clone(), supervise(&cwd, &argv, call)?))
     });
     Ok(match outcome {
         Ok((cwd, outcome)) => (tool.read)(json!({ "cwd": cwd.display().to_string() }), outcome),
@@ -385,9 +397,10 @@ struct Outcome {
     stderr: String,
 }
 
-fn supervise(cwd: &Path, argv: &[String]) -> Result<Outcome, String> {
+fn supervise(cwd: &Path, argv: &[String], call: &Call) -> Result<Outcome, String> {
     let exe = flowproof_exe()?;
-    let output = Command::new(&exe)
+    let mut command = Command::new(&exe);
+    command
         .args(argv)
         .current_dir(cwd)
         .env("FLOWPROOF_NO_UPDATE_CHECK", "1")
@@ -395,16 +408,101 @@ fn supervise(cwd: &Path, argv: &[String]) -> Result<Outcome, String> {
         // opt-in the client happened to inherit must not stand in for it.
         .env_remove("FLOWPROOF_ALLOW_EXEC")
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Its own process group, so a cancel also reaches the browser and the
+    // suite shell the engine started.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command
+        .spawn()
         .map_err(|e| format!("starting {}: {e}", exe.display()))?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let lines: Vec<&str> = stderr.lines().collect();
-    Ok(Outcome {
-        code: output.status.code(),
-        json: serde_json::from_slice(&output.stdout).ok(),
-        stderr: lines[lines.len().saturating_sub(20)..].join("\n"),
+    let (Some(mut stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        return Err("the engine's output was not piped".into());
+    };
+    std::thread::scope(|scope| {
+        let json = scope.spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stdout.read_to_end(&mut bytes);
+            serde_json::from_slice(&bytes).ok()
+        });
+        // Each stderr line is the engine's own progress output, the same
+        // lines the desktop shows while a job runs.
+        let tail = scope.spawn(move || {
+            let mut tail = VecDeque::new();
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                (call.progress)(&line);
+                if tail.len() == 20 {
+                    tail.pop_front();
+                }
+                tail.push_back(line);
+            }
+            Vec::from(tail).join("\n")
+        });
+        let code = wait(&mut child, call.cancelled)?.code();
+        Ok(Outcome {
+            code,
+            json: json.join().unwrap_or(None),
+            stderr: tail.join().unwrap_or_default(),
+        })
     })
 }
+
+/// How long a cancelled engine gets to close its browser and exit before its
+/// whole process group is killed.
+const CANCEL_GRACE: Duration = Duration::from_secs(5);
+
+/// Wait for the child, stopping it once the call is cancelled. The same
+/// sequence as the desktop's cancel: SIGTERM to the engine so it can close
+/// its shared browser, then to what is left in its group (a browser `record`
+/// launched for itself, a suite shell), and SIGKILL to the group if the
+/// engine outlives the grace.
+fn wait(child: &mut Child, cancelled: &AtomicBool) -> Result<ExitStatus, String> {
+    let mut stopping: Option<Instant> = None;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| format!("waiting: {e}"))? {
+            if stopping.is_some() {
+                signal(child.id(), true, false);
+            }
+            return Ok(status);
+        }
+        match stopping {
+            None if cancelled.load(Ordering::SeqCst) => {
+                signal(child.id(), false, false);
+                if cfg!(not(unix)) {
+                    let _ = child.kill();
+                }
+                stopping = Some(Instant::now());
+            }
+            Some(since) if since.elapsed() > CANCEL_GRACE => {
+                signal(child.id(), true, true);
+                let _ = child.kill();
+            }
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(unix)]
+fn signal(pid: u32, group: bool, kill: bool) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    let signal = if kill { libc::SIGKILL } else { libc::SIGTERM };
+    // SAFETY: kill(2) on a child this call spawned, and on the process group
+    // it leads (spawned with `process_group(0)`). Neither touches memory.
+    unsafe {
+        if group {
+            libc::killpg(pid, signal);
+        } else {
+            libc::kill(pid, signal);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn signal(_pid: u32, _group: bool, _kill: bool) {}
 
 /// Exit 0 and 1 with a report are a pass and a fail (`run`, `audit`).
 fn report_result(mut result: Value, outcome: Outcome) -> Value {

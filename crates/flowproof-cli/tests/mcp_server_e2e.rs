@@ -327,3 +327,110 @@ fn doctor_audit_and_heal_answer_as_data() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Plan 17, step 7: the engine's stderr lines reach a client that asked for
+/// progress with a token, numbered, and no client that did not.
+#[test]
+fn progress_reaches_only_a_client_that_asked() {
+    let dir = work_dir("progress");
+    std::fs::write(
+        dir.join("flows/suite.yaml"),
+        "env_from: |\n  echo minting test data >&2\n  echo MCP_E2E_MARK=1\n",
+    )
+    .expect("suite");
+    let mut server = Server::start(&dir);
+    let arguments = json!({ "spec": "flows/gated.flow.yaml", "allow_exec": true });
+
+    // `request` checks that the next message is the reply: no progress.
+    let quiet = server.call(1, "flowproof_record", arguments.clone());
+    assert_eq!(quiet["isError"], false, "{quiet}");
+
+    let params = json!({
+        "name": "flowproof_record",
+        "arguments": arguments,
+        "_meta": { "progressToken": "t" },
+    });
+    let message = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": params });
+    server.send(&message.to_string());
+    let mut lines = Vec::new();
+    let reply = loop {
+        let message = server.next();
+        if message["method"] != "notifications/progress" {
+            break message;
+        }
+        assert_eq!(message["params"]["progressToken"], "t", "{message}");
+        assert_eq!(message["params"]["progress"], lines.len() + 1, "{message}");
+        let line = message["params"]["message"].as_str().expect("message");
+        lines.push(line.to_string());
+    };
+    assert_eq!(reply["id"], 2, "{reply}");
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert!(
+        lines.iter().any(|line| line.contains("minting test data")),
+        "{lines:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Plan 17, step 7: `notifications/cancelled` stops the call's engine and
+/// everything it started, here a suite shell and its `sleep`, and the
+/// cancelled call gets no reply.
+#[cfg(unix)]
+#[test]
+fn a_cancelled_record_leaves_no_process_behind() {
+    let dir = work_dir("cancel");
+    std::fs::write(
+        dir.join("flows/suite.yaml"),
+        "env_from: |\n  echo $$ > shell.pid\n  sleep 120 &\n  echo $! > sleep.pid\n  \
+         wait\n  echo MCP_E2E_MARK=1\n",
+    )
+    .expect("suite");
+    let mut server = Server::start(&dir);
+    let arguments = json!({ "spec": "flows/gated.flow.yaml", "allow_exec": true });
+    let params = json!({ "name": "flowproof_record", "arguments": arguments });
+    let message = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": params });
+    server.send(&message.to_string());
+    let pids = ["shell.pid", "sleep.pid"].map(|file| pid_in(&dir.join("flows").join(file)));
+
+    let cancel = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": { "requestId": 7, "reason": "test" },
+    });
+    server.send(&cancel.to_string());
+    for pid in &pids {
+        assert!(exits(pid), "process {pid} outlived the cancel");
+    }
+    // `request` checks that the next message is the ping's reply.
+    server.request(8, "ping", json!({}));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The pid a suite shell wrote to `path`, once it has.
+#[cfg(unix)]
+fn pid_in(path: &Path) -> String {
+    for _ in 0..600 {
+        let pid = std::fs::read_to_string(path).unwrap_or_default();
+        if pid.ends_with('\n') {
+            return pid.trim().to_string();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("{} was never written", path.display());
+}
+
+/// Whether `pid` exits within 15 seconds, past the server's 5-second grace.
+#[cfg(unix)]
+fn exits(pid: &str) -> bool {
+    (0..300).any(|_| {
+        let alive = Command::new("kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if alive {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        !alive
+    })
+}

@@ -67,6 +67,20 @@ and a `consent` note. The agent should show you the command and pass `allow_exec
 true` only if you agree. An ambient `FLOWPROOF_ALLOW_EXEC` does not count: the
 server removes it from every child, so consent is always per call.
 
+## Progress and cancelling
+
+A recording can take minutes. A client that sends a progress token with a call
+gets the engine's progress lines as `notifications/progress`, as they are
+printed: the same lines `flowproof record` shows in a terminal.
+
+Cancelling a call stops it. The engine is asked to close its browser and exit,
+then the server stops everything it started, such as a browser or a suite
+shell. On Windows only the engine itself is stopped. A cancelled call gets no
+result. When the client closes the server, calls still running are cancelled
+the same way.
+
+## What there is no tool for
+
 There are no file tools, because your agent has better ones and traces are
 [plain JSONL](trace-format.md), and no configuration tools: credentials and the
 authoring model are set by a person with `flowproof config`, so they never
