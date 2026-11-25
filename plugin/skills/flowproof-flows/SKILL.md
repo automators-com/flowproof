@@ -35,8 +35,9 @@ are headless unless the user asks to watch.
 ## Read results; don't retry blindly
 
 - **A failing run is a result, not an error.** `passed: false` comes with a
-  `report`: find the step with a failed `status` and read its `detail`,
-  `expected` and `found`. Then decide with the user which it is: the app has
+  `report`: find the step in `report.steps` (for a folder, in each
+  `report.flows[].report.steps`) with a failed `status` and read its
+  `detail`, `expected` and `found`. Then decide with the user which it is: the app has
   a bug (report it, change nothing), the app changed on purpose (heal), or
   the flow's step is wrong (edit the `.flow.yaml` and record again).
 - **`isError: true` means the engine could not do the job**, for example a

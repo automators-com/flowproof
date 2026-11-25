@@ -504,13 +504,38 @@ fn signal(pid: u32, group: bool, kill: bool) {
 #[cfg(not(unix))]
 fn signal(_pid: u32, _group: bool, _kill: bool) {}
 
+/// A single flow's `run --json` is `{report, report_path, ...}`; lift the
+/// report so its steps are at `report.steps`, not `report.report.steps`,
+/// and return the other fields (`report_path`, `skipped`) to sit beside it.
+/// A suite's summary (each flow in `flows` keeps its own `report`) and
+/// `audit`'s report pass through as they are.
+fn lift_single_flow(json: Value) -> (Value, Map<String, Value>) {
+    match json {
+        Value::Object(mut fields)
+            if fields.get("report").is_some_and(Value::is_object)
+                && fields.contains_key("report_path")
+                && !fields.contains_key("flows") =>
+        {
+            let report = fields.remove("report").unwrap_or_default();
+            (report, fields)
+        }
+        other => (other, Map::new()),
+    }
+}
+
 /// Exit 0 and 1 with a report are a pass and a fail (`run`, `audit`).
 fn report_result(mut result: Value, outcome: Outcome) -> Value {
     match (outcome.code, outcome.json) {
         (Some(code @ (0 | 1)), Some(report)) => {
             result["exit_code"] = json!(code);
             result["passed"] = json!(code == 0);
+            let (report, beside) = lift_single_flow(report);
             result["report"] = report;
+            for (key, value) in beside {
+                if result.get(&key).is_none() {
+                    result[key] = value;
+                }
+            }
             tool_result(result, false)
         }
         (code, report) => engine_error(result, code, report, outcome.stderr),
@@ -638,5 +663,23 @@ mod tests {
                 "a.flow.yaml"
             ]
         );
+    }
+
+    #[test]
+    fn a_single_flow_report_is_lifted_and_a_suite_is_not() {
+        let single = json!({ "report": { "steps": [] }, "report_path": "r/result.json" });
+        let (report, beside) = lift_single_flow(single);
+        assert_eq!(report, json!({ "steps": [] }));
+        assert_eq!(
+            Value::Object(beside),
+            json!({ "report_path": "r/result.json" })
+        );
+        let skipped = json!({ "report": {}, "report_path": null, "skipped": "env not set" });
+        let (_, beside) = lift_single_flow(skipped);
+        assert_eq!(beside["skipped"], "env not set");
+        let suite = json!({ "passed": true, "flows": [{ "report": {}, "report_path": null }] });
+        assert_eq!(lift_single_flow(suite.clone()), (suite, Map::new()));
+        let audit = json!({ "suite": "flows", "checks": [] });
+        assert_eq!(lift_single_flow(audit.clone()), (audit, Map::new()));
     }
 }

@@ -158,10 +158,8 @@ fn run_uses_a_per_call_cwd_without_moving_the_server() {
     let structured = &result["structuredContent"];
     assert_eq!(structured["passed"], true, "{structured}");
     assert_eq!(structured["exit_code"], 0);
-    assert_eq!(
-        structured["report"]["report"]["name"], "Gated",
-        "{structured}"
-    );
+    assert_eq!(structured["report"]["name"], "Gated", "{structured}");
+    assert!(structured.get("report_path").is_some(), "{structured}");
     assert!(
         Path::new(structured["cwd"].as_str().expect("cwd")).ends_with("flows"),
         "{structured}"
