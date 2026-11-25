@@ -2587,13 +2587,25 @@ mod tests {
         }
     }
 
-    /// A free localhost port: bind ephemeral, read the number, release it.
-    /// A tiny race, acceptable in a test - the proxy re-binds it immediately.
+    /// A localhost port for a server the test starts by number. Binding port 0
+    /// and releasing it raced: another test's own port-0 bind could take the
+    /// number first, failing the run with "port N is taken". Ports here come
+    /// from below the ephemeral range, once each per process.
     fn free_port() -> u16 {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        drop(listener);
-        port
+        static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+        // 20000..=29999: below every OS's ephemeral range (Linux starts at
+        // 32768, macOS and Windows at 49152), so no port-0 bind lands here. Each
+        // process gets its own window of 100, so parallel test binaries miss
+        // each other too.
+        let base = 20_000 + u16::try_from(std::process::id() % 100).unwrap_or(0) * 100;
+        for _ in 0..100 {
+            let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let port = base + next % 100;
+            if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                return port;
+            }
+        }
+        panic!("no free test port in {base}..{}", base + 100);
     }
 
     fn read_prompt(stream: &mut TcpStream) -> String {
