@@ -1,0 +1,12 @@
+{
+  "name": "flowproof",
+  "description": "flowproof's Claude Code plugin",
+  "owner": { "name": "Automators" },
+  "plugins": [
+    {
+      "name": "flowproof",
+      "source": "./plugin",
+      "description": "The flowproof MCP server and its skills: record, replay, repair and audit end-to-end flows."
+    }
+  ]
+}

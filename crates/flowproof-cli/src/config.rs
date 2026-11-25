@@ -108,20 +108,25 @@ pub enum AiProvider {
     #[default]
     Anthropic,
     Openai,
+    /// The user's own Claude Code, on their Claude subscription. Experimental.
+    ClaudeCode,
+    /// The user's own Codex, on their ChatGPT subscription. Experimental.
+    Codex,
 }
 
 impl AiProvider {
     fn env_value(self) -> &'static str {
-        match self {
-            AiProvider::Anthropic => "anthropic",
-            AiProvider::Openai => "openai",
-        }
+        self.label()
     }
 
-    fn compatibility_api_key_var(self) -> &'static str {
+    /// `None` for an agent: it signs in on its own, and a key left in the
+    /// profile from another provider must not reach `ANTHROPIC_API_KEY`,
+    /// where Claude Code would bill it instead of the subscription.
+    fn compatibility_api_key_var(self) -> Option<&'static str> {
         match self {
-            AiProvider::Anthropic => "ANTHROPIC_API_KEY",
-            AiProvider::Openai => "OPENAI_API_KEY",
+            AiProvider::Anthropic => Some("ANTHROPIC_API_KEY"),
+            AiProvider::Openai => Some("OPENAI_API_KEY"),
+            AiProvider::ClaudeCode | AiProvider::Codex => None,
         }
     }
 
@@ -129,6 +134,8 @@ impl AiProvider {
         match self {
             AiProvider::Anthropic => "anthropic",
             AiProvider::Openai => "openai",
+            AiProvider::ClaudeCode => "claude-code",
+            AiProvider::Codex => "codex",
         }
     }
 }
@@ -159,7 +166,9 @@ impl AiProfile {
         }
         if let Some(v) = &self.api_key {
             pairs.push(("FLOWPROOF_AI_API_KEY", v.clone()));
-            pairs.push((provider.compatibility_api_key_var(), v.clone()));
+            if let Some(var) = provider.compatibility_api_key_var() {
+                pairs.push((var, v.clone()));
+            }
         }
         if let Some(v) = &self.model {
             pairs.push(("FLOWPROOF_AI_MODEL", v.clone()));
@@ -604,6 +613,8 @@ fn prompt_ai_provider(current: Option<AiProvider>) -> Result<AiProvider, String>
     println!("AI provider:");
     println!("  1) anthropic");
     println!("  2) openai");
+    println!("  3) claude-code (your Claude subscription, experimental)");
+    println!("  4) codex (your ChatGPT subscription, experimental)");
     print!("Choose provider [default: {}]: ", current.label());
     std::io::stdout()
         .flush()
@@ -616,8 +627,10 @@ fn prompt_ai_provider(current: Option<AiProvider>) -> Result<AiProvider, String>
         "" => Ok(current),
         "1" => Ok(AiProvider::Anthropic),
         "2" => Ok(AiProvider::Openai),
+        "3" => Ok(AiProvider::ClaudeCode),
+        "4" => Ok(AiProvider::Codex),
         other => Err(format!(
-            "invalid provider '{other}' (expected one of: anthropic, openai)"
+            "invalid provider '{other}' (expected one of: anthropic, openai, claude-code, codex)"
         )),
     }
 }
@@ -667,9 +680,18 @@ pub fn cmd_ai(args: AiArgs) -> Result<u8, String> {
             "flowproof config ai",
             &["--provider", "--api-key", "--model", "--workspace-id"],
         )?;
-        profile.provider = Some(prompt_ai_provider(profile.provider)?);
-        profile.api_key =
-            prompt_password("AI API key", profile.api_key.is_some())?.or(profile.api_key);
+        let provider = prompt_ai_provider(profile.provider)?;
+        profile.provider = Some(provider);
+        if provider.compatibility_api_key_var().is_some() {
+            profile.api_key =
+                prompt_password("AI API key", profile.api_key.is_some())?.or(profile.api_key);
+        } else {
+            println!(
+                "{} signs in on its own: run it once in a terminal if you have not, \
+                 then check with `flowproof doctor --ai`",
+                provider.label()
+            );
+        }
     }
 
     config.ai = Some(profile);
@@ -748,7 +770,7 @@ pub fn cmd_skill(
 
     for root in roots {
         let path = root.join("flowproof-config").join("SKILL.md");
-        if write_skill_file(&path, force)? {
+        if write_skill_file(&path, SKILL_MD, force)? {
             println!("wrote {}", path.display());
         } else {
             println!("up to date: {}", path.display());
@@ -757,16 +779,16 @@ pub fn cmd_skill(
     Ok(EXIT_PASS)
 }
 
-/// Writes [`SKILL_MD`] to `path` unless it's already there verbatim.
+/// Writes a skill's `content` to `path` unless it's already there verbatim.
 /// Returns `true` if a write happened, `false` for a no-op — re-running
 /// `flowproof config skill` is safe and silent once the file is current. A
 /// target that exists with DIFFERENT content is refused without `--force`:
 /// it may have been hand-edited, and clobbering it silently would be worse
 /// than a named refusal (plans/003-agent-config-skill.md, "Idempotent, not
 /// silently destructive").
-fn write_skill_file(path: &Path, force: bool) -> Result<bool, String> {
+pub(crate) fn write_skill_file(path: &Path, content: &str, force: bool) -> Result<bool, String> {
     if let Ok(existing) = std::fs::read_to_string(path) {
-        if existing == SKILL_MD {
+        if existing == content {
             return Ok(false);
         }
         if !force {
@@ -780,7 +802,7 @@ fn write_skill_file(path: &Path, force: bool) -> Result<bool, String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     }
-    std::fs::write(path, SKILL_MD)
+    std::fs::write(path, content)
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
     Ok(true)
 }
@@ -1078,6 +1100,27 @@ mod tests {
             .iter()
             .any(|(name, _)| *name == "FLOWPROOF_AI_BASE_URL"));
         assert_eq!(pairs.len(), 4, "no extra, no missing: {pairs:?}");
+    }
+
+    #[test]
+    fn ai_agent_profile_never_seeds_a_providers_key_variable() {
+        // A key left behind from switching off `anthropic` must not reach
+        // ANTHROPIC_API_KEY, where Claude Code would bill it.
+        let config = Config {
+            sap: None,
+            fiori: None,
+            ai: Some(AiProfile {
+                provider: Some(AiProvider::ClaudeCode),
+                api_key: Some("sk-ant-left-behind".into()),
+                model: None,
+                workspace_id: None,
+            }),
+        };
+        let pairs = config.env_pairs();
+        assert!(pairs.contains(&("FLOWPROOF_AI_PROVIDER", "claude-code".to_string())));
+        assert!(!pairs
+            .iter()
+            .any(|(name, _)| *name == "ANTHROPIC_API_KEY" || *name == "OPENAI_API_KEY"));
     }
 
     #[test]

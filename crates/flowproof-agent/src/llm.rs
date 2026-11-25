@@ -5,6 +5,7 @@
 
 use serde_json::json;
 
+use crate::acp::{AcpModelClient, AgentKind};
 use crate::{AgentError, BackendConfig, BackendKind};
 
 // Sonnet 5 can spend more than 1K tokens reasoning before it emits the small
@@ -179,7 +180,18 @@ impl HttpModelClient {
                 BackendKind::OpenAi | BackendKind::OpenAiCompatible => {
                     DEFAULT_OPENAI_MODEL.to_string()
                 }
+                BackendKind::ClaudeCode | BackendKind::Codex => "default".to_string(),
             })
+    }
+
+    /// An agent backend reached the HTTP client: [`ConfiguredModel`] routes
+    /// it to [`AcpModelClient`], so only a caller building this type by hand
+    /// for an agent gets here.
+    fn not_http(&self) -> AgentError {
+        AgentError::Config(format!(
+            "{} is not an HTTP model backend",
+            self.identity().0
+        ))
     }
 
     fn http_err(context: &str, err: impl std::fmt::Display) -> AgentError {
@@ -440,6 +452,7 @@ impl ModelClient for HttpModelClient {
             BackendKind::OpenAi | BackendKind::OpenAiCompatible => {
                 self.complete_openai(system, user)
             }
+            BackendKind::ClaudeCode | BackendKind::Codex => Err(self.not_http()),
         }
     }
 
@@ -460,6 +473,7 @@ impl ModelClient for HttpModelClient {
                 self.complete_openai_content(system, Self::openai_image_content(user, png))
             }
             BackendKind::OpenAiCompatible => self.complete_openai(system, user),
+            BackendKind::ClaudeCode | BackendKind::Codex => Err(self.not_http()),
         }
     }
 
@@ -482,6 +496,7 @@ impl ModelClient for HttpModelClient {
                  from a video needs Anthropic or OpenAI (`flowproof config ai`)"
                     .into(),
             )),
+            BackendKind::ClaudeCode | BackendKind::Codex => Err(self.not_http()),
         }
     }
 
@@ -490,12 +505,87 @@ impl ModelClient for HttpModelClient {
             BackendKind::Anthropic => "anthropic",
             BackendKind::OpenAi => "openai",
             BackendKind::OpenAiCompatible => "openai-compatible",
+            BackendKind::ClaudeCode => "claude-code",
+            BackendKind::Codex => "codex",
         };
         (backend.to_string(), self.model())
     }
 }
 
-fn base64_png(png: &[u8]) -> String {
+/// The client for whichever backend is configured: a model API over HTTP,
+/// or the user's own coding agent over ACP. What every caller that builds a
+/// client from configuration builds.
+pub enum ConfiguredModel {
+    Http(HttpModelClient),
+    Agent(AcpModelClient),
+}
+
+impl ConfiguredModel {
+    /// Build from environment configuration. `None` when no usable backend
+    /// is configured (the recorder then stays rules-only).
+    pub fn from_env() -> Option<Self> {
+        Self::from_env_result().ok().flatten()
+    }
+
+    /// Like [`Self::from_env`], but preserves invalid configuration as an
+    /// error. Never starts an agent: that waits for the first call.
+    pub fn from_env_result() -> Result<Option<Self>, AgentError> {
+        let config = BackendConfig::from_env()?;
+        Ok(config.is_usable().then(|| Self::new(config)))
+    }
+
+    pub fn new(config: BackendConfig) -> Self {
+        let agent = |kind| {
+            let command = std::env::var("FLOWPROOF_AI_AGENT_COMMAND").ok();
+            Self::Agent(AcpModelClient::new(kind, command))
+        };
+        match config.kind {
+            BackendKind::ClaudeCode => agent(AgentKind::ClaudeCode),
+            BackendKind::Codex => agent(AgentKind::Codex),
+            _ => Self::Http(HttpModelClient::new(config)),
+        }
+    }
+
+    fn inner(&mut self) -> &mut dyn ModelClient {
+        match self {
+            Self::Http(client) => client,
+            Self::Agent(client) => client,
+        }
+    }
+}
+
+impl ModelClient for ConfiguredModel {
+    fn complete(&mut self, system: &str, user: &str) -> Result<String, AgentError> {
+        self.inner().complete(system, user)
+    }
+
+    fn complete_with_image(
+        &mut self,
+        system: &str,
+        user: &str,
+        png: &[u8],
+    ) -> Result<String, AgentError> {
+        self.inner().complete_with_image(system, user, png)
+    }
+
+    fn complete_with_images(
+        &mut self,
+        system: &str,
+        user: &str,
+        images: &[ImagePart],
+    ) -> Result<String, AgentError> {
+        self.inner().complete_with_images(system, user, images)
+    }
+
+    fn identity(&self) -> (String, String) {
+        match self {
+            Self::Http(client) => client.identity(),
+            Self::Agent(client) => client.identity(),
+        }
+    }
+}
+
+pub(crate) fn base64_png(png: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(png)
 }
@@ -503,6 +593,23 @@ fn base64_png(png: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_provider_builds_the_agent_client_without_starting_it() {
+        let config = BackendConfig {
+            kind: BackendKind::ClaudeCode,
+            base_url: None,
+            model: None,
+            api_key: None,
+            workspace_id: None,
+        };
+        let client = ConfiguredModel::new(config);
+        assert!(matches!(client, ConfiguredModel::Agent(_)));
+        assert_eq!(
+            client.identity(),
+            ("claude-code".to_string(), "default".to_string())
+        );
+    }
 
     #[test]
     fn a_screenshot_goes_ahead_of_the_text_for_anthropic_and_after_it_for_openai() {

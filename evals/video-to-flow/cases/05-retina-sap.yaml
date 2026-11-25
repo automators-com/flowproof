@@ -1,0 +1,13 @@
+name: Transfer stock on a Retina screen
+catches: The scaling floor. A 2560px recording of 10px grey labels arrives at the model as 1280px, the first place text should stop being readable.
+fixture: sap-form.html
+viewport: {width: 1280, height: 800, scale: 2}
+actions:
+  - type: {field: "#material", text: KX-55120-B}
+  - type: {field: "#plant", text: NH01}
+  - type: {field: "#sloc", text: "0004"}
+  - type: {field: "#to-plant", text: NH02}
+  - type: {field: "#to-sloc", text: "0011"}
+  - type: {field: "#qty", text: "36"}
+  - type: {field: "#unit", text: PC}
+  - click: "#post"

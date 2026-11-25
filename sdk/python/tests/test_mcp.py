@@ -1,4 +1,9 @@
-"""Integration test: the flowproof MCP server over real stdio."""
+"""Integration test: the archived Python MCP server over real stdio.
+
+The server is archived, not removed (`flowproof/_archived_mcp_server.py`), so
+this keeps running: what is still shipped is still proven, and the day it is
+deleted this test is what says so out loud.
+"""
 
 import json
 import sys
@@ -23,7 +28,9 @@ async def test_mcp_server_lists_and_calls_tools(tmp_path):
     trace_path = tmp_path / "calc.trace.jsonl"
     _write_sample_trace(trace_path)
 
-    params = StdioServerParameters(command=sys.executable, args=["-m", "flowproof.mcp_server"])
+    params = StdioServerParameters(
+        command=sys.executable, args=["-m", "flowproof._archived_mcp_server"]
+    )
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
 
@@ -58,7 +65,9 @@ async def test_mcp_record_returns_clarification_as_data(tmp_path, monkeypatch):
     spec = tmp_path / "vague.flow.yaml"
     spec.write_text("name: Vague\napp: api\nsteps:\n  - Frobnicate the widget\n")
 
-    params = StdioServerParameters(command=sys.executable, args=["-m", "flowproof.mcp_server"])
+    params = StdioServerParameters(
+        command=sys.executable, args=["-m", "flowproof._archived_mcp_server"]
+    )
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         result = await session.call_tool("flowproof_record", {"spec": str(spec)})

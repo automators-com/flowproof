@@ -4,6 +4,7 @@
 //! author ([`author`]) handles arbitrary steps by observing the live app's
 //! scene graph. The replayer never touches this crate.
 
+pub mod acp;
 pub mod agent_steps;
 pub mod author;
 pub mod clarify;
@@ -20,11 +21,12 @@ pub mod selection;
 pub mod spec;
 pub mod video_author;
 
+pub use acp::{AcpModelClient, AgentKind};
 pub use clarify::{Clarification, ClarifyStage};
 pub use heal::{
     heal, heal_fallbacks, heal_with_author, proposed_path, Fallback, HealError, HealReport,
 };
-pub use llm::{HttpModelClient, ImagePart, ModelClient};
+pub use llm::{ConfiguredModel, HttpModelClient, ImagePart, ModelClient};
 pub use recorder::{
     record, record_incremental, record_incremental_with_options, record_located,
     record_with_author, record_with_author_and_options, surface_targets, Author, FailedStep,
@@ -74,6 +76,12 @@ pub enum BackendKind {
     OpenAi,
     /// Any custom OpenAI-compatible endpoint (e.g. vLLM serving a local model).
     OpenAiCompatible,
+    /// The user's own Claude Code, on their Claude subscription, over ACP
+    /// ([`crate::acp`]). Experimental.
+    ClaudeCode,
+    /// The user's own Codex, on their ChatGPT subscription, over ACP.
+    /// Experimental.
+    Codex,
 }
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -81,13 +89,15 @@ const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 /// Backend configuration, resolved from the environment.
 ///
 /// Env names mirror the conventions used across Automators products:
-/// `FLOWPROOF_AI_PROVIDER` (`anthropic` | `openai`),
+/// `FLOWPROOF_AI_PROVIDER` (`anthropic` | `openai` | `claude-code` | `codex`),
 /// `FLOWPROOF_AI_BASE_URL`, `FLOWPROOF_AI_API_KEY`, `FLOWPROOF_AI_MODEL`,
 /// and `FLOWPROOF_AI_WORKSPACE_ID` (Anthropic only: an organization-level key
 /// must name the workspace it bills to, sent as `anthropic-workspace-id`).
 /// The API key falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. The old
 /// `openai-compatible` provider spelling remains accepted for custom endpoints
-/// that set `FLOWPROOF_AI_BASE_URL`.
+/// that set `FLOWPROOF_AI_BASE_URL`. `claude-code` and `codex` need no key:
+/// the agent signs in on its own, and `FLOWPROOF_AI_AGENT_COMMAND` names its
+/// ACP adapter when it is not on PATH.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConfig {
     pub kind: BackendKind,
@@ -114,6 +124,7 @@ impl BackendConfig {
                             BackendKind::OpenAi | BackendKind::OpenAiCompatible => {
                                 env::var("OPENAI_API_KEY").ok()
                             }
+                            BackendKind::ClaudeCode | BackendKind::Codex => None,
                         });
                 config
             },
@@ -122,11 +133,14 @@ impl BackendConfig {
 
     /// Whether this configuration can actually make calls: Anthropic and the
     /// public OpenAI API need a key; a custom OpenAI-compatible endpoint needs
-    /// a base url (key optional — local vLLM commonly runs without one).
+    /// a base url (key optional — local vLLM commonly runs without one); an
+    /// agent needs nothing here, since whether it is installed and signed in
+    /// is only known by starting it.
     pub fn is_usable(&self) -> bool {
         match self.kind {
             BackendKind::Anthropic | BackendKind::OpenAi => self.api_key.is_some(),
             BackendKind::OpenAiCompatible => self.base_url.is_some(),
+            BackendKind::ClaudeCode | BackendKind::Codex => true,
         }
     }
 
@@ -160,8 +174,19 @@ impl BackendConfig {
                     workspace_id: None,
                 })
             }
+            "claude-code" | "codex" => Ok(Self {
+                kind: if provider == "codex" {
+                    BackendKind::Codex
+                } else {
+                    BackendKind::ClaudeCode
+                },
+                base_url: None,
+                model: None,
+                api_key: None,
+                workspace_id: None,
+            }),
             other => Err(AgentError::Config(format!(
-                "unknown FLOWPROOF_AI_PROVIDER '{other}' (expected 'anthropic', 'openai', or legacy 'openai-compatible')"
+                "unknown FLOWPROOF_AI_PROVIDER '{other}' (expected 'anthropic', 'openai', 'claude-code', 'codex', or legacy 'openai-compatible')"
             ))),
         }
     }
@@ -215,5 +240,18 @@ mod tests {
         assert!(message.contains("anthropic"));
         assert!(message.contains("openai"));
         assert!(message.contains("openai-compatible"));
+        assert!(message.contains("claude-code"));
+    }
+
+    #[test]
+    fn an_agent_provider_needs_no_key_and_ignores_one_left_behind() {
+        for (name, kind) in [
+            ("claude-code", BackendKind::ClaudeCode),
+            ("codex", BackendKind::Codex),
+        ] {
+            let config = BackendConfig::from_provider_name(name, None).expect("agent config");
+            assert_eq!(config.kind, kind);
+            assert!(config.is_usable(), "{name} signs in on its own");
+        }
     }
 }

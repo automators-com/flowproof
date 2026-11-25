@@ -1,0 +1,66 @@
+<!doctype html>
+<!-- An invented, SAP-shaped transaction form for the video-to-flow evals:
+     dense grey fields with 10px labels and a function-key bar. Every
+     material, plant and document number is made up and nothing real is
+     reached. It exists to find where text stops being readable once a
+     recording is scaled to 1280px (evals/video-to-flow/README.md). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Transfer Stock: Initial Screen</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 11px Tahoma, Verdana, sans-serif; color: #222; background: #d4d0c8; }
+  .title { background: #e8e6e1; border-bottom: 1px solid #a7a39b; padding: 6px 10px; font-size: 13px; }
+  .tools { background: #dfdcd5; border-bottom: 1px solid #a7a39b; padding: 3px 10px; display: flex; gap: 6px; }
+  .tools button, .actions button { font: 10px Tahoma, Verdana, sans-serif; padding: 2px 8px; background: #ece9e2; border: 1px solid #8d8980; color: #222; cursor: pointer; }
+  fieldset { margin: 10px; border: 1px solid #a7a39b; padding: 8px 10px; }
+  legend { font-size: 10px; color: #444; }
+  .grid { display: grid; grid-template-columns: 150px 180px 150px 180px; gap: 4px 8px; align-items: center; }
+  label { font-size: 10px; color: #555; }
+  input { font: 11px Tahoma, Verdana, sans-serif; height: 18px; padding: 1px 3px; border: 1px solid #8d8980; background: #fffff4; width: 100%; }
+  .actions { margin: 0 10px; }
+  .keys { position: fixed; left: 0; right: 0; bottom: 22px; background: #c9c5bc; border-top: 1px solid #a7a39b; padding: 3px 10px; font-size: 10px; color: #333; }
+  .status { position: fixed; left: 0; right: 0; bottom: 0; height: 22px; background: #e8e6e1; border-top: 1px solid #a7a39b; padding: 4px 10px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="title">Transfer Stock: Initial Screen</div>
+<div class="tools">
+  <button id="hold">Hold</button><button id="check">Check</button><button id="post">Post</button>
+</div>
+<form id="form">
+  <fieldset>
+    <legend>Material</legend>
+    <div class="grid">
+      <label for="material">Material</label><input id="material" autocomplete="off">
+      <label for="batch">Batch</label><input id="batch" autocomplete="off">
+      <label for="plant">Plant</label><input id="plant" autocomplete="off">
+      <label for="sloc">Storage location</label><input id="sloc" autocomplete="off">
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>Destination</legend>
+    <div class="grid">
+      <label for="to-plant">Receiving plant</label><input id="to-plant" autocomplete="off">
+      <label for="to-sloc">Receiving storage location</label><input id="to-sloc" autocomplete="off">
+      <label for="qty">Quantity in unit of entry</label><input id="qty" autocomplete="off">
+      <label for="unit">Unit of entry</label><input id="unit" autocomplete="off">
+    </div>
+  </fieldset>
+  <button type="submit" hidden></button>
+</form>
+<div class="keys">F3 Back &nbsp; F5 New item &nbsp; F8 Execute &nbsp; F12 Cancel</div>
+<div class="status" id="status"></div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  // Enter checks the entries, Post posts them; both answer in the status bar.
+  $("form").addEventListener("submit", (e) => { e.preventDefault(); $("status").textContent = "Check complete: no errors"; });
+  $("check").addEventListener("click", () => { $("status").textContent = "Check complete: no errors"; });
+  $("hold").addEventListener("click", () => { $("status").textContent = "Document held"; });
+  $("post").addEventListener("click", () => {
+    $("status").textContent = `Material document 4917730021 posted (${$("qty").value} ${$("unit").value} of ${$("material").value})`;
+  });
+</script>
+</body>
+</html>

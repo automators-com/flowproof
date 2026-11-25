@@ -53,9 +53,13 @@ flowproof is a sibling of DataMaker, not a component of it.
   (screenshot → ground → act via driver → record step); it talks to model
   APIs directly through its pluggable backends and stays a single Rust
   binary with no Node sidecar.
-- **MCP surface** (shipped: `flowproof-mcp` in the Python SDK, `pip
-  install flowproof[mcp]`): `record` / `run` / `get_trace` / `heal` as MCP
-  tools, following the `datamaker-mcp` / `datamaker-api` MCP patterns.
+- **MCP surface** (shipped: `flowproof mcp`, a subcommand of the engine
+  binary, plans/017-flowproof-mcp-server.md): `flowproof_run`,
+  `flowproof_record`, `flowproof_heal`, `flowproof_doctor` and
+  `flowproof_audit` as MCP tools, each a supervised `flowproof <cmd> --json`
+  child, with `flowproof mcp install` writing the client's config. The
+  Python SDK's `flowproof-mcp` (`pip install flowproof[mcp]`) came first and
+  is archived.
   This is the integration path by which DataMaker's agent — or any coding
   agent — drives flowproof. Large tool results (screenshots, traces)
   should follow the spill-to-object-storage + presigned URL + summary

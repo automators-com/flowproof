@@ -1,0 +1,10 @@
+# Expected draft for the 06-taskbar-menubar-sap case, written by flowproof-video-fixture from
+# the actions that made its video. Regenerate rather than edit it.
+name: "Check a transfer under a desktop's bars"
+app: "web"
+steps:
+  - "Go to http://127.0.0.1:8765/sap-form.html"
+  - "Type KX-55120-B into the \"Material\" field"
+  - "Type NH01 into the \"Plant\" field"
+  - "Press Enter"
+  - "Click \"Hold\""
