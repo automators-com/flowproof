@@ -267,7 +267,9 @@ report on stdout.
 Claude Code, GitHub Copilot, Cursor or Gemini CLI in your project. After a
 restart, the agent records, replays, heals and audits flows itself, asking you
 before a flow runs any command of its own
-([flowproof as an MCP server](docs/mcp-server.md)).
+([flowproof as an MCP server](docs/mcp-server.md)). In Claude Code, the
+plugin does the same for every project:
+`/plugin install flowproof --marketplace automators-com/flowproof`.
 
 ## Upgrading
 

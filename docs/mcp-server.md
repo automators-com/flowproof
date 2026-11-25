@@ -45,6 +45,23 @@ args = ["mcp"]
 
 The server runs in the folder the client was started in.
 
+## Claude Code plugin
+
+In Claude Code you can install flowproof as a plugin instead, once for every
+project:
+
+```text
+/plugin marketplace add automators-com/flowproof
+/plugin install flowproof@flowproof
+```
+
+The plugin starts the bare `flowproof mcp`, so install flowproof globally
+first (`npm install -g flowproof`), and carries the `flowproof-flows` and
+`flowproof-config` skills. Its tools are named
+`mcp__plugin_flowproof_flowproof__…`. Use the plugin or `flowproof mcp install`
+in a project, not both: Claude Code then starts only the project's server, but
+loads both sets of skills.
+
 The client has to find `flowproof` when it starts the server. If the project
 installs flowproof itself (`npm install --save-dev flowproof`), the entry runs
 it through `npx --no flowproof mcp`, because clients do not search
