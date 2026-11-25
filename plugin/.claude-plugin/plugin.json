@@ -1,0 +1,9 @@
+{
+  "name": "flowproof",
+  "description": "Record, replay, repair and audit end-to-end flows from Claude Code: the flowproof MCP server plus the skills that say when to use each tool and when to ask you first.",
+  "author": { "name": "Automators" },
+  "homepage": "https://github.com/automators-com/flowproof/blob/main/docs/mcp-server.md",
+  "repository": "https://github.com/automators-com/flowproof",
+  "license": "Apache-2.0",
+  "keywords": ["testing", "e2e", "mcp", "sap", "web"]
+}
