@@ -18,8 +18,8 @@ flowproof mcp install
 That writes `.mcp.json`, which Claude Code and GitHub Copilot in VS Code read,
 and `.cursor/mcp.json` or `.gemini/settings.json` if the project has a
 `.cursor` or `.gemini` folder. `--claude`, `--cursor` and `--gemini` write only
-those. The entry runs the bare `flowproof` command, so the files can be
-committed for the whole team. Other servers and settings in the file are kept,
+those. The entry names a command, not a path on your machine, so the files can
+be committed for the whole team. Other servers and settings in the file are kept,
 with their keys rewritten in alphabetical order. A file with comments is left
 alone, and a `flowproof` entry that differs is replaced only with `--force`.
 Running it again changes nothing. Restart the client afterwards. Claude Code
@@ -38,12 +38,16 @@ args = ["mcp"]
 
 The server runs in the folder the client was started in.
 
-The client starts the bare `flowproof` command, so it must be on the PATH the
-client starts with: install it with `npm install -g flowproof`. A project's own `npm install` puts it in `node_modules/.bin`, which
-clients do not search; there, change the entry's `command` to `npx` and its
-`args` to `["flowproof", "mcp"]`. Under the Python package, `flowproof` runs
-the engine inside Python and the server cannot spawn it, so set
-`FLOWPROOF_MCP_EXE` to the `flowproof` binary from the npm package.
+The client has to find `flowproof` when it starts the server. If the project
+installs flowproof itself (`npm install --save-dev flowproof`), the entry runs
+it through `npx --no flowproof mcp`, because clients do not search
+`node_modules/.bin`; `--no` makes it fail rather than download a copy when
+`npm install` has not run yet. Otherwise the entry runs the bare `flowproof`,
+which needs a global install (`npm install -g flowproof`).
+
+Under the Python package, `flowproof` runs the engine inside Python and the
+server cannot spawn it, so set `FLOWPROOF_MCP_EXE` to the `flowproof` binary
+from the npm package.
 
 ## Tools
 

@@ -59,7 +59,7 @@ pub(crate) fn cmd_install(clients: &Clients, print: bool, force: bool) -> Result
     if print {
         println!(
             "{}",
-            render(&json!({ "mcpServers": { "flowproof": entry(true) } }))
+            render(&json!({ "mcpServers": { "flowproof": entry(true, npx(Path::new("."))) } }))
         );
         return Ok(EXIT_PASS);
     }
@@ -69,7 +69,8 @@ pub(crate) fn cmd_install(clients: &Clients, print: bool, force: bool) -> Result
 
 fn install_in(root: &Path, clients: &Clients, force: bool) -> Result<(), String> {
     for target in targets(root, clients) {
-        if install(&root.join(target.path), &entry(target.typed), force)? {
+        let entry = entry(target.typed, npx(root));
+        if install(&root.join(target.path), &entry, force)? {
             println!("wrote {}", target.path);
         } else {
             println!("up to date: {}", target.path);
@@ -95,10 +96,24 @@ fn targets(root: &Path, clients: &Clients) -> Vec<&'static Target> {
     .collect()
 }
 
-/// The bare `flowproof` command, not this binary's path: these files are
-/// meant to be committed, and a teammate's `flowproof` is somewhere else.
-fn entry(typed: bool) -> Value {
-    let mut entry = json!({ "command": "flowproof", "args": ["mcp"] });
+/// Whether the project installs flowproof itself (`npm install --save-dev`,
+/// as the README's quick start does): its `node_modules/.bin` is on no
+/// client's PATH, so the entry goes through `npx`.
+fn npx(root: &Path) -> bool {
+    root.join("node_modules/flowproof/package.json").is_file()
+}
+
+/// A command, not this binary's path: these files are meant to be
+/// committed, and a teammate's `flowproof` is somewhere else. The bare
+/// `flowproof` for a global install; for a project's own, `npx --no`, which
+/// runs the project's copy and fails rather than download one when
+/// `npm install` has not run yet.
+fn entry(typed: bool, npx: bool) -> Value {
+    let mut entry = if npx {
+        json!({ "command": "npx", "args": ["--no", "flowproof", "mcp"] })
+    } else {
+        json!({ "command": "flowproof", "args": ["mcp"] })
+    };
     if typed {
         entry["type"] = json!("stdio");
     }
@@ -203,7 +218,7 @@ mod tests {
             serde_json::from_str::<Value>(&written).expect("json"),
             expected
         );
-        assert!(!install(&dir.join(".mcp.json"), &entry(true), false).expect("again"));
+        assert!(!install(&dir.join(".mcp.json"), &entry(true, false), false).expect("again"));
         let again = std::fs::read_to_string(dir.join(".mcp.json")).expect("read");
         assert_eq!(again, written);
         std::fs::remove_dir_all(&dir).ok();
@@ -216,11 +231,11 @@ mod tests {
         std::fs::create_dir_all(dir.join(".gemini")).expect("gemini");
         let before = json!({ "theme": "dark", "mcpServers": { "other": { "command": "x" } } });
         std::fs::write(&path, before.to_string()).expect("write");
-        assert!(install(&path, &entry(false), false).expect("install"));
+        assert!(install(&path, &entry(false, false), false).expect("install"));
         let after = read(&path);
         assert_eq!(after["theme"], "dark");
         assert_eq!(after["mcpServers"]["other"]["command"], "x");
-        assert_eq!(after["mcpServers"]["flowproof"], entry(false));
+        assert_eq!(after["mcpServers"]["flowproof"], entry(false, false));
         assert!(after["mcpServers"]["flowproof"].get("type").is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -231,11 +246,27 @@ mod tests {
         let path = dir.join(".mcp.json");
         let custom = json!({ "mcpServers": { "flowproof": { "command": "/opt/flowproof" } } });
         std::fs::write(&path, custom.to_string()).expect("write");
-        let refused = install(&path, &entry(true), false).expect_err("refused");
+        let refused = install(&path, &entry(true, false), false).expect_err("refused");
         assert!(refused.contains("--force"), "{refused}");
         assert_eq!(read(&path), custom);
-        assert!(install(&path, &entry(true), true).expect("forced"));
-        assert_eq!(read(&path)["mcpServers"]["flowproof"], entry(true));
+        assert!(install(&path, &entry(true, false), true).expect("forced"));
+        assert_eq!(read(&path)["mcpServers"]["flowproof"], entry(true, false));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_project_with_its_own_flowproof_runs_it_through_npx() {
+        let dir = temp_dir("npx");
+        std::fs::create_dir_all(dir.join("node_modules/flowproof")).expect("package");
+        std::fs::write(dir.join("node_modules/flowproof/package.json"), "{}").expect("write");
+        install_in(&dir, &NONE, false).expect("install");
+        let written = read(&dir.join(".mcp.json"))["mcpServers"]["flowproof"].clone();
+        assert_eq!(written["command"], "npx");
+        assert_eq!(written["args"], json!(["--no", "flowproof", "mcp"]));
+        // A bare entry from before is a different entry: replaced only with --force.
+        let path = dir.join(".mcp.json");
+        install(&path, &entry(true, false), true).expect("bare");
+        assert!(install_in(&dir, &NONE, false).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -245,7 +276,7 @@ mod tests {
         let path = dir.join(".mcp.json");
         let text = "{\n  // ours\n  \"mcpServers\": {}\n}\n";
         std::fs::write(&path, text).expect("write");
-        let refused = install(&path, &entry(true), true).expect_err("refused");
+        let refused = install(&path, &entry(true, false), true).expect_err("refused");
         assert!(refused.contains("--print"), "{refused}");
         assert_eq!(std::fs::read_to_string(&path).expect("read"), text);
         std::fs::remove_dir_all(&dir).ok();
