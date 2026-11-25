@@ -143,6 +143,7 @@ Product page: [automators.ai/flowproof](https://automators.ai/flowproof)
 | Run multiple flows with shared data or dependencies | [Run a suite](docs/getting-started/suite-runs.md) |
 | Look up exact action and assertion syntax | [Authoring grammar](docs/authoring/index.md) |
 | Test model calls, tool calls, or agent containment | [Agent-boundary testing](docs/agent-testing/index.md) |
+| Let your coding agent record and replay flows itself | [flowproof as an MCP server](docs/mcp-server.md) |
 | Choose between web, desktop, SAP, Citrix, API, and agent flows | [Live application tests](docs/getting-started/live-app-tests.md) |
 
 ## How it works
@@ -158,7 +159,7 @@ flowproof is built **agent-native**: the primary caller is a program
 (usually an AI agent), with humans in an oversight role. Every operation
 is a library call returning structured results, including a structured
 "here is what I'd need to know" payload when a step is too ambiguous to
-author. The CLI and [MCP server](docs/self-help.md) are thin renderings
+author. The CLI and [MCP server](docs/mcp-server.md) are thin renderings
 over the same code paths.
 
 Open-source automation has moved in steps: Selenium made browsers
@@ -262,6 +263,14 @@ walkthrough lives in [Record and replay](docs/getting-started/record-and-replay.
 is the complete version of this section. Add `--json` for the structured
 report on stdout.
 
+**From your coding agent.** `flowproof mcp install` registers flowproof with
+Claude Code, GitHub Copilot, Cursor or Gemini CLI in your project. After a
+restart, the agent records, replays, heals and audits flows itself, asking you
+before a flow runs any command of its own
+([flowproof as an MCP server](docs/mcp-server.md)). In Claude Code, the
+plugin does the same for every project:
+`/plugin install flowproof --marketplace automators-com/flowproof`.
+
 ## Upgrading
 
 ```bash
@@ -298,8 +307,10 @@ result.report_path               # result.json artifact for this run
 trace = flow.get_trace()         # inspect the recorded trace programmatically
 ```
 
-Agents can drive the same four operations (record, run, get_trace, heal)
-over MCP: `pip install flowproof[mcp]`, run `flowproof-mcp`.
+Coding agents drive flowproof through `flowproof mcp`, the MCP server built
+into the binary ([flowproof as an MCP server](docs/mcp-server.md)). The older
+Python server, `flowproof-mcp` from `pip install flowproof[mcp]`, still works
+but is archived.
 
 ## What works today
 

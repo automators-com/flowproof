@@ -524,7 +524,7 @@ fn flow_file_name(
     format!("{stem}.flow.yaml")
 }
 
-fn model_client() -> Result<crate::llm::HttpModelClient, DocAuthorError> {
+fn model_client() -> Result<crate::llm::ConfiguredModel, DocAuthorError> {
     let config = BackendConfig::from_env().map_err(DocAuthorError::from)?;
     if !config.is_usable() {
         return Err(DocAuthorError::Agent(AgentError::Config(
@@ -532,7 +532,7 @@ fn model_client() -> Result<crate::llm::HttpModelClient, DocAuthorError> {
                 .into(),
         )));
     }
-    Ok(crate::llm::HttpModelClient::new(config))
+    Ok(crate::llm::ConfiguredModel::new(config))
 }
 
 fn draft_case(

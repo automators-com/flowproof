@@ -940,6 +940,7 @@ dependencies = [
  "flowproof-trace",
  "image",
  "imageproc",
+ "libc",
  "rpassword",
  "serde",
  "serde_json",

@@ -420,48 +420,63 @@ pub fn cmd_doctor_ai(json: bool) -> Result<u8, String> {
         flowproof_agent::BackendKind::Anthropic => "anthropic",
         flowproof_agent::BackendKind::OpenAi => "openai",
         flowproof_agent::BackendKind::OpenAiCompatible => "openai-compatible",
+        flowproof_agent::BackendKind::ClaudeCode => "claude-code",
+        flowproof_agent::BackendKind::Codex => "codex",
     };
     if !json {
         println!("provider: {provider_str}");
     }
     report.check("ok", "provider", provider_str);
-    match config.base_url.as_deref() {
-        Some(base_url) => {
-            if !json {
-                println!("endpoint: {base_url}");
-            }
-            report.check("ok", "endpoint", base_url);
+    let agent = matches!(
+        config.kind,
+        flowproof_agent::BackendKind::ClaudeCode | flowproof_agent::BackendKind::Codex
+    );
+    if agent {
+        // No endpoint and no key: the agent signs in on its own, and the
+        // model call below is what shows it is installed and signed in.
+        if !json {
+            println!("sign-in: the agent's own login (experimental)");
         }
-        None => {
-            if !json {
-                println!("endpoint: built-in provider default");
+        report.check("ok", "sign-in", "the agent's own login");
+    } else {
+        match config.base_url.as_deref() {
+            Some(base_url) => {
+                if !json {
+                    println!("endpoint: {base_url}");
+                }
+                report.check("ok", "endpoint", base_url);
             }
-            report.check("ok", "endpoint", "built-in provider default");
+            None => {
+                if !json {
+                    println!("endpoint: built-in provider default");
+                }
+                report.check("ok", "endpoint", "built-in provider default");
+            }
         }
-    }
-    let key_configured = config
-        .api_key
-        .as_ref()
-        .is_some_and(|v| !v.trim().is_empty());
-    if !json {
-        println!(
-            "api key: {}",
+        let key_configured = config
+            .api_key
+            .as_ref()
+            .is_some_and(|v| !v.trim().is_empty());
+        if !json {
+            println!(
+                "api key: {}",
+                if key_configured {
+                    "configured"
+                } else {
+                    "not configured"
+                }
+            );
+        }
+        report.check(
+            if key_configured { "ok" } else { "fail" },
+            "api key",
             if key_configured {
                 "configured"
             } else {
                 "not configured"
-            }
+            },
         );
     }
-    report.check(
-        if key_configured { "ok" } else { "fail" },
-        "api key",
-        if key_configured {
-            "configured"
-        } else {
-            "not configured"
-        },
-    );
 
     if !config.is_usable() {
         if !json {
@@ -478,7 +493,7 @@ pub fn cmd_doctor_ai(json: bool) -> Result<u8, String> {
         return Ok(EXIT_FAIL);
     }
 
-    let mut client = flowproof_agent::HttpModelClient::new(config);
+    let mut client = flowproof_agent::ConfiguredModel::new(config);
     let (backend, model) = client.identity();
     if !json {
         println!("model: {backend}/{model}");

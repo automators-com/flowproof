@@ -277,6 +277,37 @@ are explicitly unsupported and fail the recording loudly rather than being
 silently mis-recorded (`server_request_named`, `mcp_core.rs:80`), a named
 limitation, not a silent gap.
 
+### `flowproof mcp`: a coding agent driving flowproof
+
+Not the stand-ins above: here flowproof is the tool server, and the client is
+the user's own coding agent (Claude Code, Codex CLI, Cursor, VS Code).
+
+**Guarantee**: a tool call never runs a command a flow's files author unless
+that call passed `allow_exec: true`. This covers suite shell (`env_from`,
+`before_each`, `after_each`), a spec's `agent.command` or `mcp.*.command`, and a
+Windows `app:` launch command. Without it, the call returns the engine's refusal,
+which names the command and the file it came from, and nothing runs. No tool
+reads or writes configuration, so no credential passes through a tool argument
+or a tool result.
+
+**Mechanism**: the server (`crates/flowproof-cli/src/mcp_server.rs`) answers
+each call by spawning `flowproof <command> --json` (`mcp_tools.rs`) and never
+calls `allow_suite_exec()`. The child gets `--allow-exec` only from the call's
+own `allow_exec` argument, and the server removes `FLOWPROOF_ALLOW_EXEC` from
+the child's environment, so an opt-in the client inherited cannot stand in for
+it. Every value is passed as `--flag=value` with the spec after `--`, so no
+argument can become a flag. The server is a stdio child of the client. It runs
+as the user who started that client, opens no listener, and has no
+authentication, because there is no one else to authenticate.
+
+**Not covered**: what the client's model sees. A `needs_clarification` scene
+inventory and a failure's screen description are live-screen content, and they
+go to whichever model the MCP client uses, which flowproof cannot see or choose.
+Recording through an MCP client is like recording with an API key: use test
+accounts and test data. A call with `allow_exec: true` runs what it names. The
+server cannot tell whether a person agreed or the agent decided on its own; the
+tool description asks the agent to show the command first.
+
 ### Subprocesses, timeouts, and process-tree teardown
 
 **Guarantee**: an agent process that hangs past its deadline is killed; a
