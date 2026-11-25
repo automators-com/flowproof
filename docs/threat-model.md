@@ -190,6 +190,32 @@ field as `${PASSWORD}`, which is an instruction to a model, not a guarantee.
 What protects a recording is what was recorded: the app under test, with
 test data. The desktop's security page tells users exactly that.
 
+### A coding agent as the model (`claude-code`, `codex`)
+
+**Guarantee**: with `ai.provider: claude-code` or `codex`, flowproof holds no
+credential for the model. It starts the agent's ACP adapter
+(`claude-agent-acp` / `codex-acp` from PATH, or a pinned version through
+`npx`), and the agent signs in with its own stored login, which flowproof
+never reads. The agent's process gets an allowlisted environment
+(`crates/flowproof-agent/src/acp/mod.rs`, `PASSED_ENV`): enough to find its
+login, config and network, and never `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`FLOWPROOF_AI_API_KEY`, or the SAP, Fiori and flow secrets flowproof holds in
+its own environment. It runs in an empty temporary folder that is deleted
+when it exits. `initialize` offers it no file system and no terminal. Every
+request it makes is refused (`acp/wire.rs`, `answer`): a permission request
+gets the agent's own reject option, and any other method gets
+method-not-found. What it is sent is what the HTTP backends send.
+
+**Not covered (by design)**: the refusals bind only requests the agent routes
+through the client. An agent's built-in tools that don't ask permission, such
+as Claude Code reading files in its working folder, are outside flowproof's
+control. The empty folder and the preamble ("do not use tools") keep them
+pointless, but they are an instruction to a model and a choice of folder, not
+a sandbox. The adapter is third-party code run with the user's privileges. A
+`npx`-fetched version is pinned, but an adapter already on PATH is whatever
+its installer put there. The agent also reads its own user-level instructions
+(for example `~/.claude/CLAUDE.md`), which can colour its answers.
+
 ### Debug artifacts (`debug/dom.html`, `debug/console.log`)
 
 **Guarantee**: none currently exists for this specific artifact, stated here
@@ -286,9 +312,12 @@ the user's own coding agent (Claude Code, Codex CLI, Cursor, VS Code).
 that call passed `allow_exec: true`. This covers suite shell (`env_from`,
 `before_each`, `after_each`), a spec's `agent.command` or `mcp.*.command`, and a
 Windows `app:` launch command. Without it, the call returns the engine's refusal,
-which names the command and the file it came from, and nothing runs. No tool
-reads or writes configuration, so no credential passes through a tool argument
-or a tool result.
+which names the command and the file it came from, and nothing runs. Likewise,
+`flowproof_heal` overwrites a committed trace only when the call passes
+`reviewed: true` with `apply` or `apply_proposal`; without it nothing is
+applied and the proposal stays beside the trace. No tool reads or writes
+configuration, so no credential passes through a tool argument or a tool
+result.
 
 **Mechanism**: the server (`crates/flowproof-cli/src/mcp_server.rs`) answers
 each call by spawning `flowproof <command> --json` (`mcp_tools.rs`) and never
@@ -296,17 +325,41 @@ calls `allow_suite_exec()`. The child gets `--allow-exec` only from the call's
 own `allow_exec` argument, and the server removes `FLOWPROOF_ALLOW_EXEC` from
 the child's environment, so an opt-in the client inherited cannot stand in for
 it. Every value is passed as `--flag=value` with the spec after `--`, so no
-argument can become a flag. The server is a stdio child of the client. It runs
-as the user who started that client, opens no listener, and has no
-authentication, because there is no one else to authenticate.
+argument can become a flag. `apply` and `apply_proposal` are refused before
+any child starts unless `reviewed` is true (`mcp_tools.rs`, `UNREVIEWED`).
+The server is a stdio child of the client. It runs as the user who started that
+client, opens no listener, and has no authentication, because there is no one
+else to authenticate. Each child is started in its own process group, so a
+cancelled call (`notifications/cancelled`) stops what it started: SIGTERM to
+the engine so it can close its browser, SIGTERM to the rest of its group (a
+browser `record` launched, a suite shell), and SIGKILL to the group if the
+engine has not exited within five seconds. Closing the server's stdin cancels every call still running the same
+way.
+
+`flowproof mcp install` writes `.mcp.json`, `.cursor/mcp.json` or
+`.gemini/settings.json`, and the `flowproof-flows` skill, into the project,
+meant to be reviewed and committed. The entry names a command, never a path or
+a credential: the bare `flowproof`, or `npx --no flowproof mcp` when the
+project installs flowproof itself, which fails rather than download a copy.
+The Claude Code plugin in `plugin/` registers the same entry and skills from
+this repository's marketplace file. The skills are instructions to the agent;
+the consent checks above are enforced by the server, not by the skills.
 
 **Not covered**: what the client's model sees. A `needs_clarification` scene
 inventory and a failure's screen description are live-screen content, and they
 go to whichever model the MCP client uses, which flowproof cannot see or choose.
+So does the engine's stderr: each line as a progress notification when the
+client asks for progress, and the last 20 lines with every error. That
+includes what a suite's `env_from`, `before_each` and `after_each` commands
+print to stderr, which the engine passes through, so a script that prints a
+token there sends it to the client's model.
 Recording through an MCP client is like recording with an API key: use test
 accounts and test data. A call with `allow_exec: true` runs what it names. The
 server cannot tell whether a person agreed or the agent decided on its own; the
-tool description asks the agent to show the command first.
+tool description asks the agent to show the command first. The same holds for
+`reviewed: true`. On Windows a cancel stops only the engine, so a browser it
+launched can outlive the call, and a server killed outright (SIGKILL) leaves
+its children running in their own process groups.
 
 ### Subprocesses, timeouts, and process-tree teardown
 
