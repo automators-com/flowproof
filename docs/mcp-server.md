@@ -9,13 +9,34 @@ records, replays and repairs flows itself, and can check its own setup. It is no
 **stands in for the tool server of an agent you are testing** (see
 [agent testing](agent-testing/index.md)).
 
-Register it with your client. Most take an entry like the one below, but the
-file and key differ, so check the client's documentation. The server runs in
-the folder the client was started in.
+Register it from your project's root folder:
 
-```json
-{ "mcpServers": { "flowproof": { "command": "flowproof", "args": ["mcp"] } } }
+```bash
+flowproof mcp install
 ```
+
+That writes `.mcp.json`, which Claude Code and GitHub Copilot in VS Code read,
+and `.cursor/mcp.json` or `.gemini/settings.json` if the project has a
+`.cursor` or `.gemini` folder. `--claude`, `--cursor` and `--gemini` write only
+those. The entry runs the bare `flowproof` command, so the files can be
+committed for the whole team. Other servers and settings in the file are kept,
+with their keys rewritten in alphabetical order. A file with comments is left
+alone, and a `flowproof` entry that differs is replaced only with `--force`.
+Running it again changes nothing. Restart the client afterwards. Claude Code
+asks you to approve a project's servers, and Gemini CLI starts them only in a
+folder you have trusted (`gemini trust`).
+
+For another client, `flowproof mcp install --print` prints the entry to copy.
+Codex CLI takes it as TOML, in `~/.codex/config.toml` or, for a trusted
+project, `.codex/config.toml`:
+
+```toml
+[mcp_servers.flowproof]
+command = "flowproof"
+args = ["mcp"]
+```
+
+The server runs in the folder the client was started in.
 
 Under the Python package, `flowproof` runs the engine inside Python and the
 server cannot spawn it. Set `FLOWPROOF_MCP_EXE` to a `flowproof` binary from

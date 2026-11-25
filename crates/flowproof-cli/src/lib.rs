@@ -6,6 +6,7 @@ mod agent_surface;
 mod capture;
 pub mod config;
 mod doctor;
+mod mcp_install;
 mod mcp_server;
 mod mcp_tools;
 mod suite;
@@ -304,6 +305,34 @@ enum ConfigAction {
     },
 }
 
+/// `flowproof mcp <action>`; with none, `flowproof mcp` serves.
+#[derive(Subcommand)]
+enum McpAction {
+    /// Register `flowproof mcp` with the coding agents this project uses:
+    /// `.mcp.json` (Claude Code, GitHub Copilot) always, plus
+    /// `.cursor/mcp.json` and `.gemini/settings.json` where those folders
+    /// exist. `--claude`, `--cursor` and `--gemini` narrow it to those.
+    Install {
+        /// Write only `.mcp.json` (Claude Code, GitHub Copilot).
+        #[arg(long)]
+        claude: bool,
+        /// Write only `.cursor/mcp.json`.
+        #[arg(long)]
+        cursor: bool,
+        /// Write only `.gemini/settings.json`.
+        #[arg(long)]
+        gemini: bool,
+        /// Print the entry for a client this command does not know, and
+        /// write nothing.
+        #[arg(long)]
+        print: bool,
+        /// Replace a `flowproof` entry that is already there with
+        /// different content.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Manage flowproof's own global, per-machine config file: SAP GUI and
@@ -499,7 +528,10 @@ enum Command {
     /// itself. The client spawns this command; it is not run by hand. Not to
     /// be confused with a flow's `mcp:` block, where flowproof stands in for
     /// the tool server of the agent under test.
-    Mcp,
+    Mcp {
+        #[command(subcommand)]
+        action: Option<McpAction>,
+    },
     /// Internal: the stdio MCP stand-in the agent spawns as its server
     /// command. Not run by hand - flowproof injects
     /// `FLOWPROOF_MCP_SERVER_<NAME>` into the agent's environment pointing
@@ -4964,7 +4996,7 @@ where
     if let Command::Run { recovery, .. } = &mut cli.command {
         recovery.engine_path = engine_path;
     }
-    let is_mcp_stdio = matches!(cli.command, Command::McpStdio { .. } | Command::Mcp);
+    let is_mcp_stdio = matches!(cli.command, Command::McpStdio { .. } | Command::Mcp { .. });
     let result = match cli.command {
         Command::Config { action } => match action {
             ConfigAction::Sap {
@@ -5283,7 +5315,25 @@ where
             flowproof_adapters::mcp_stdio::run_stand_in(&server).map(|()| EXIT_PASS)
         }
         // Same stdout contract as the stand-in: JSON-RPC and nothing else.
-        Command::Mcp => mcp_server::serve(embedded).map(|()| EXIT_PASS),
+        Command::Mcp { action: None } => mcp_server::serve(embedded).map(|()| EXIT_PASS),
+        Command::Mcp {
+            action:
+                Some(McpAction::Install {
+                    claude,
+                    cursor,
+                    gemini,
+                    print,
+                    force,
+                }),
+        } => mcp_install::cmd_install(
+            &mcp_install::Clients {
+                claude,
+                cursor,
+                gemini,
+            },
+            print,
+            force,
+        ),
     };
     // Skipped for mcp-stdio and mcp: those commands' contract is stdout
     // speaks JSON-RPC and nothing else, and their stderr is read by a
