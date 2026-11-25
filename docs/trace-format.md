@@ -205,6 +205,10 @@ already follows.
   the flow took whatever session was open, from `SAP_USER`/`SAP_PASSWORD`
   or from a human's own login.
 - `agent` records provenance of authorship only; replay never uses it.
+  `backend` is `anthropic`, `openai-compatible` (OpenAI's API or a custom
+  endpoint), or `claude-code` / `codex` when the user's own agent authored
+  the trace on their subscription; `model` is then the one the agent named,
+  or `default`.
 - Optional `recording` references the authoring execution's recording bundle
   (`{"format": "filmstrip/1", "dir": "...", "started_at"?}`); each step's
   `artifacts.recording {start_ms, end_ms}` maps it into that bundle. Optional

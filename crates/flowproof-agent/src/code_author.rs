@@ -285,7 +285,7 @@ pub fn author_from_code_with_progress(
             opts.repo.display().to_string(),
         ));
     }
-    let mut client = crate::llm::HttpModelClient::new(config);
+    let mut client = crate::llm::ConfiguredModel::new(config);
     let url = opts.url.as_deref();
     let picked = pick_files(&opts.goal, url, &files, &mut client)?;
     if picked.is_empty() {

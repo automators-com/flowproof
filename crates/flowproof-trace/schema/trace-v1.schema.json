@@ -245,7 +245,9 @@
             "backend": {
               "enum": [
                 "anthropic",
-                "openai-compatible"
+                "openai-compatible",
+                "claude-code",
+                "codex"
               ]
             },
             "model": {
