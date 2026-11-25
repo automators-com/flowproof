@@ -73,6 +73,10 @@ pub enum ReplayError {
     Driver(#[from] flowproof_driver::DriverError),
     #[error(transparent)]
     Secret(#[from] flowproof_trace::secret::MissingSecret),
+    /// A condition whose `${VAR}` arrived blank: it would decide its branch
+    /// or loop without reading the app at all.
+    #[error("condition: {0}")]
+    BlankRefs(#[from] flowproof_trace::secret::BlankRefs),
     #[error("{0}")]
     Selection(String),
 }
@@ -596,6 +600,25 @@ fn text_expectation(expect: &serde_json::Value) -> Option<(&str, bool)> {
             .and_then(|v| v.as_str())
             .map(|e| (e, false))
     }
+}
+
+/// The expectations blank text would satisfy on any page: a positive
+/// contains (a count rides on `value_contains`) and the non-exact url and
+/// title forms.
+const NEEDLE_KEYS: [&str; 3] = ["value_contains", "url_contains", "title_contains"];
+
+/// [`BlankRefs`](flowproof_trace::secret::BlankRefs) for the first of
+/// `keys` whose expected text only its `${VAR}` references made blank. An
+/// unset variable is left to the check itself, which names it.
+fn blank_expectation(
+    expect: &serde_json::Value,
+    keys: &[&str],
+) -> Option<flowproof_trace::secret::BlankRefs> {
+    keys.iter().find_map(|key| {
+        let raw = expect.get(*key)?.as_str()?;
+        let resolved = flowproof_trace::secret::resolve_refs(raw).ok()?;
+        flowproof_trace::secret::blank_refs(raw, &resolved)
+    })
 }
 
 /// Whether `text` satisfies the expectation — one predicate for every
@@ -1123,6 +1146,9 @@ fn check_assertion<D: AppDriver>(
             expect,
             selector_ref,
         } => {
+            if let Some(blank) = blank_expectation(expect, &NEEDLE_KEYS) {
+                return Ok((Err(blank.to_string().into()), None));
+            }
             // A text assertion immediately after navigation can otherwise
             // spend its whole recorded poll budget reading a real but
             // transitional shell state. Web's `scene` is network-aware and
@@ -1746,25 +1772,40 @@ fn check_assertion<D: AppDriver>(
             status,
             expect,
         } => {
-            // Captures from earlier steps resolve before `${VAR}`s, the same
-            // ladder `TypeText` uses; an unknown one fails the step.
-            let sub = |text: &str| flowproof_trace::captures::substitute(text, captures);
-            let substituted = (|| {
-                let body = request.body.as_ref();
+            // Captures from earlier steps and `${VAR}`s resolve in one
+            // pass, the same as `TypeText`: a captured value is never read
+            // for references. An unknown capture fails the step.
+            let sub = |text: &str| flowproof_trace::captures::resolve(text, captures);
+            let resolved = (|| {
                 let headers: std::collections::BTreeMap<_, _> = request
                     .headers
                     .iter()
                     .map(|(k, v)| Ok((k.clone(), sub(v)?)))
-                    .collect::<Result<_, String>>()?;
-                let body = body
-                    .map(|b| flowproof_trace::captures::substitute_json(b, captures))
+                    .collect::<Result<_, flowproof_trace::captures::Unresolved>>()?;
+                let body = request
+                    .body
+                    .as_ref()
+                    .map(|b| flowproof_trace::captures::resolve_json(b, captures))
                     .transpose()?;
-                Ok::<_, String>((sub(&request.url)?, body, headers))
+                Ok::<_, flowproof_trace::captures::Unresolved>((sub(&request.url)?, body, headers))
             })();
-            let (url, body, headers) = match substituted {
+            let (url, body, headers) = match resolved {
                 Ok(parts) => parts,
-                Err(reason) => return Ok((Err(reason.into()), None)),
+                Err(flowproof_trace::captures::Unresolved::Capture(reason)) => {
+                    return Ok((Err(reason.into()), None))
+                }
+                Err(flowproof_trace::captures::Unresolved::Secret(missing)) => {
+                    return Err(missing.into())
+                }
             };
+            // A substring check against blank text holds on any response,
+            // leaving only the status to fail the step.
+            if let Some(blank) = expect
+                .as_ref()
+                .and_then(|e| blank_expectation(e, &["body_contains", "header_contains"]))
+            {
+                return Ok((Err(blank.to_string().into()), None));
+            }
             let probe = flowproof_driver::oob::OobProbe::Api {
                 count: expect
                     .as_ref()
@@ -1783,17 +1824,11 @@ fn check_assertion<D: AppDriver>(
                     .and_then(|e| e.get("retry"))
                     .and_then(|v| v.as_bool()),
                 method: request.method.clone(),
-                url: flowproof_trace::secret::resolve_refs(&url)?,
-                // Trace carries raw ${VAR} refs in body leaves and header
-                // values; the probe gets the resolved data.
-                body: match &body {
-                    Some(b) => Some(flowproof_trace::secret::resolve_refs_in_json(b)?),
-                    None => None,
-                },
-                headers: headers
-                    .iter()
-                    .map(|(k, v)| Ok((k.clone(), flowproof_trace::secret::resolve_refs(v)?)))
-                    .collect::<Result<_, flowproof_trace::secret::MissingSecret>>()?,
+                // Trace carries raw ${VAR} refs in the url, body leaves and
+                // header values; the probe gets the resolved data.
+                url,
+                body,
+                headers,
                 status: *status,
                 // Resolved like `equals` above: the trace carries the raw
                 // ${VAR}; only the live probe sees the value.
@@ -1873,12 +1908,16 @@ fn check_assertion<D: AppDriver>(
             // The trace stores references, never values: `${captured.x}`
             // (the export this checks is often itself a captured download
             // path) resolves from this run's captures, then `${VAR}` from
-            // the environment — the same two-step ladder `TypeText` uses.
-            let substituted = match flowproof_trace::captures::substitute(path, captures) {
+            // the environment, in one pass like `TypeText`.
+            let path = match flowproof_trace::captures::resolve(path, captures) {
                 Ok(text) => text,
-                Err(reason) => return Ok((Err(reason.into()), None)),
+                Err(flowproof_trace::captures::Unresolved::Capture(reason)) => {
+                    return Ok((Err(reason.into()), None))
+                }
+                Err(flowproof_trace::captures::Unresolved::Secret(missing)) => {
+                    return Err(missing.into())
+                }
             };
-            let path = flowproof_trace::secret::resolve_refs(&substituted)?;
             let probe = flowproof_driver::oob::OobProbe::Spreadsheet {
                 path,
                 sheet: sheet.clone(),
@@ -2378,14 +2417,9 @@ fn act<D: AppDriver>(
                 // The trace stores references, never values. A
                 // `${captured.x}` resolves from this run's captures and a
                 // `${VAR}` from the environment, both at the moment of
-                // typing. Captures first: a `${VAR}` name may not contain a
-                // dot, so the secret resolver passes a capture reference
-                // through as literal text.
-                let typed = match flowproof_trace::captures::substitute(&params.text, captures) {
-                    Ok(text) => text,
-                    Err(reason) => return Ok((Err(reason), matched)),
-                };
-                match flowproof_trace::secret::resolve_refs(&typed) {
+                // typing, in one pass: a captured value is text the app
+                // showed and is never read for `${VAR}` references.
+                match flowproof_trace::captures::resolve(&params.text, captures) {
                     Ok(value) => {
                         // `replace: true` marks fill semantics: clear the
                         // current value first (`Clear the … field` records
@@ -2397,9 +2431,10 @@ fn act<D: AppDriver>(
                         }
                         if !value.is_empty() {
                             driver.type_text(&target, &value)?;
-                            // Read back unless the value came from a reference:
-                            // a masked password field never shows it.
-                            if !typed.contains("${")
+                            // Read back unless the value came from a `${VAR}`
+                            // reference: a masked password field never shows
+                            // it. A captured value is read back like any other.
+                            if !flowproof_trace::secret::has_refs(&params.text)
                                 && driver.typed_value_arrived(&value)? == Some(false)
                             {
                                 return Ok((
@@ -2663,6 +2698,30 @@ fn reading_holds<D: AppDriver>(
     captures: &std::collections::HashMap<String, String>,
     api_corpus: &mut Vec<(String, String)>,
 ) -> Result<bool, ReplayError> {
+    // An unset variable stops the run by name. The check itself reports
+    // it as a failed verdict, which a condition reads as "does not hold":
+    // a `when:` block would be skipped with its checks unrun, and a
+    // `repeat:` would run every pass before blaming the app.
+    for key in [
+        "value_contains",
+        "value_not_contains",
+        "value_equals",
+        "url_contains",
+        "url_equals",
+        "title_contains",
+        "title_equals",
+    ] {
+        if let Some(raw) = expect.get(key).and_then(|v| v.as_str()) {
+            flowproof_trace::secret::resolve_refs(raw)?;
+        }
+    }
+    // Either polarity: `page does not show` blank text never holds, so a
+    // blank reference would skip its branch as silently as the positive
+    // form takes it.
+    let keys = [&NEEDLE_KEYS[..], &["value_not_contains"][..]].concat();
+    if let Some(blank) = blank_expectation(expect, &keys) {
+        return Err(blank.into());
+    }
     let assertion = Assertion::ElementState {
         expect: expect.clone(),
         selector_ref: (!selectors.is_empty()).then_some(0),
@@ -3304,8 +3363,8 @@ pub fn run_trace_selected<D: AppDriver, F: FnMut(&StepResult)>(
     let mut resolved_exports: ResolvedExports = Vec::new();
     if !exports.is_empty() && !failed && selection.is_none() {
         for (export_name, template) in exports {
-            let resolved = flowproof_trace::captures::substitute(template, &captures)
-                .and_then(|v| flowproof_trace::secret::resolve_refs(&v).map_err(|e| e.to_string()));
+            let resolved =
+                flowproof_trace::captures::resolve(template, &captures).map_err(|e| e.to_string());
             match resolved {
                 Ok(value) => resolved_exports.push((export_name.clone(), value)),
                 Err(why) => {

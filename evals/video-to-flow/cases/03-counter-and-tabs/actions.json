@@ -1,0 +1,56 @@
+[
+  {
+    "at_ms": 1100,
+    "end_ms": 2700,
+    "kind": "type",
+    "step": "Type mara.lind into the \"Username\" field"
+  },
+  {
+    "at_ms": 4000,
+    "end_ms": 7000,
+    "kind": "type",
+    "step": "Type ${PASSWORD} into the \"Password\" field"
+  },
+  {
+    "at_ms": 8100,
+    "end_ms": 8100,
+    "kind": "click",
+    "step": "Click \"Sign in\""
+  },
+  {
+    "at_ms": 9200,
+    "end_ms": 9200,
+    "kind": "click",
+    "step": "Click \"+\""
+  },
+  {
+    "at_ms": 10300,
+    "end_ms": 10300,
+    "kind": "click",
+    "step": "Click \"+\""
+  },
+  {
+    "at_ms": 11400,
+    "end_ms": 11400,
+    "kind": "click",
+    "step": "Click \"+\""
+  },
+  {
+    "at_ms": 12500,
+    "end_ms": 12500,
+    "kind": "click",
+    "step": "Click \"−\""
+  },
+  {
+    "at_ms": 13600,
+    "end_ms": 13600,
+    "kind": "click",
+    "step": "Click \"Account\""
+  },
+  {
+    "at_ms": 14700,
+    "end_ms": 14700,
+    "kind": "click",
+    "step": "Click \"Catalogue\""
+  }
+]

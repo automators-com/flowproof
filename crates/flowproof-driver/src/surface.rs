@@ -36,19 +36,18 @@ struct SurfaceSlot {
     driver: Option<Box<dyn AppDriver>>,
 }
 
-/// Resolve `${captured.x}` from THIS run's captures, then `${VAR}` from the
-/// environment — the identical two-step ladder `TypeText` resolves with
+/// Resolve `${captured.x}` from THIS run's captures and `${VAR}` from the
+/// environment in one pass, exactly as `TypeText` resolves
 /// (`crates/flowproof-replay/src/lib.rs`), so a surface's launch command
-/// means the same thing a step's typed text does. `Err` names whichever
-/// side failed: an unresolved capture (the block that mints it never ran,
-/// or ran on a later surface) or a missing environment variable.
+/// means the same thing a step's typed text does and a captured value is
+/// never read for references. `Err` names whichever side failed: an
+/// unresolved capture (the block that mints it never ran, or ran on a later
+/// surface) or a missing environment variable.
 fn resolve_launch_template(
     text: &str,
     captures: &std::collections::HashMap<String, String>,
 ) -> Result<String, DriverError> {
-    let substituted =
-        flowproof_trace::captures::substitute(text, captures).map_err(DriverError::Uia)?;
-    flowproof_trace::secret::resolve_refs(&substituted).map_err(|e| DriverError::Uia(e.to_string()))
+    flowproof_trace::captures::resolve(text, captures).map_err(|e| DriverError::Uia(e.to_string()))
 }
 
 pub struct SurfaceRegistry {

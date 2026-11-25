@@ -1,0 +1,10 @@
+# Expected draft for the captured flowproof-app recording, written by drive_app.py
+# from the steps it performed. Regenerate rather than edit it.
+name: "Look around the Flowproof app"
+app: "flowproof-desktop"
+steps:
+  - "Click \"Runs\""
+  - "Click \"Environments\""
+  - "Click \"Flows\""
+  - "Type kanban into the \"Search flows\" field"
+  - "Click \"Settings\""

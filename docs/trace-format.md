@@ -205,6 +205,10 @@ already follows.
   the flow took whatever session was open, from `SAP_USER`/`SAP_PASSWORD`
   or from a human's own login.
 - `agent` records provenance of authorship only; replay never uses it.
+  `backend` is `anthropic`, `openai-compatible` (OpenAI's API or a custom
+  endpoint), or `claude-code` / `codex` when the user's own agent authored
+  the trace on their subscription; `model` is then the one the agent named,
+  or `default`.
 - Optional `recording` references the authoring execution's recording bundle
   (`{"format": "filmstrip/1", "dir": "...", "started_at"?}`); each step's
   `artifacts.recording {start_ms, end_ms}` maps it into that bundle. Optional
@@ -354,7 +358,11 @@ already follows.
   **secret references**: the engine resolves them from the environment at
   execution time (recording and every replay) and the trace only ever
   stores the reference, never the value. An unset variable fails closed
-  with an error naming it.
+  with an error naming it. So does one that resolves to blank text in a
+  positive contains, count, `url_contains` or `title_contains` expectation,
+  an API check's `body_contains` or `header_contains`, or a `when:` /
+  `repeat: until:` condition of either polarity: blank text is contained in
+  everything, so the check would hold on any page or response.
   A `type_text` text may also contain a `${captured.<name>}` **capture
   reference**, resolved the same way but from the flow's own captures
   (`action.type == "capture"`) rather than the environment. This is what

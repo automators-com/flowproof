@@ -1,0 +1,20 @@
+# Expected draft for the captured tricentis-truck recording, written by drive_chrome.py
+# from the steps it performed. Regenerate rather than edit it.
+name: "Truck quote, vehicle data"
+app: "web"
+steps:
+  - "Go to https://sampleapp.tricentis.com/101"
+  - "Click \"Truck\""
+  - "Select BMW from the \"Make\" field"
+  - "Type 150 into the \"Engine Performance [kW]\" field"
+  - "Type 01/15/2020 into the \"Date of Manufacture\" field"
+  - "Select 2 from the \"Number of Seats\" field"
+  - "Select Diesel from the \"Fuel Type\" field"
+  - "Type 500 into the \"Payload [kg]\" field"
+  - "Type 3500 into the \"Total Weight [kg]\" field"
+  - "Type 50000 into the \"List Price [$]\" field"
+  - "Type TRUCK1 into the \"License Plate Number\" field"
+  - "Type 12000 into the \"Annual Mileage [mi]\" field"
+  - "Click \"Next »\""
+  - "Type Nikolai into the \"First Name\" field"
+  - "Type Tester into the \"Last Name\" field"

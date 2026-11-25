@@ -50,6 +50,11 @@ sha2 = "0.10"
 # new crate compiles.
 ureq = { version = "3", features = ["platform-verifier"] }
 
+# `flowproof mcp` stops a cancelled call's whole process group, as the desktop
+# does. Already in the build graph via flowproof-adapters.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true
 

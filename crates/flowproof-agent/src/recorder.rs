@@ -144,6 +144,13 @@ pub enum RecordError {
     Dialog { intent: String, reason: String },
     #[error(transparent)]
     Secret(#[from] flowproof_trace::secret::MissingSecret),
+    /// A check or condition whose `${VAR}` arrived blank, which would hold
+    /// (or fail) without reading the app. Names the variables.
+    #[error("step '{intent}': {blank}")]
+    BlankRefs {
+        intent: String,
+        blank: flowproof_trace::secret::BlankRefs,
+    },
     /// A declared secret leaked into the run's observable corpus, or the
     /// corpus could not be scanned (a too-short secret, a corpus-less flow
     /// kind). Names variables and the corpus element, never the value.
@@ -174,13 +181,15 @@ pub enum RecordError {
 }
 
 impl RecordError {
-    /// The flow cannot run as configured: a `${VAR}` with no value, no app
+    /// The flow cannot run as configured: a `${VAR}` with no value (or a
+    /// blank one a check or condition cannot use), no app
     /// to drive, or a model key the provider refuses. Rewording a step or starting over cannot change that, so
     /// the repair loop and its fresh retry must not spend a second run on it.
     pub fn is_setup_error(&self) -> bool {
         matches!(
             self,
             Self::Secret(_)
+                | Self::BlankRefs { .. }
                 | Self::UnknownApp(_)
                 | Self::MissingUrl
                 | Self::MissingWindow
@@ -202,7 +211,7 @@ impl RecordError {
             Self::Rules(_) | Self::Agent(_) | Self::NoAuthor { .. } | Self::NoScene(_) => {
                 "authoring"
             }
-            Self::Secret(_) => "missing_value",
+            Self::Secret(_) | Self::BlankRefs { .. } => "missing_value",
             Self::SecretLeak(_) => "secret_leak",
             Self::UnknownApp(_)
             | Self::MissingUrl
@@ -2264,6 +2273,29 @@ fn condition_selector<D: AppDriver>(
         })
 }
 
+/// The matchers blank expected text would satisfy on any page, the
+/// recorder's side of replay's `NEEDLE_KEYS`.
+fn is_needle(matcher: TextMatch) -> bool {
+    matches!(
+        matcher,
+        TextMatch::Contains
+            | TextMatch::CountEquals(_)
+            | TextMatch::UrlContains
+            | TextMatch::TitleContains
+    )
+}
+
+/// Refuse expected text that only its `${VAR}` references made blank.
+fn refuse_blank(intent: &str, raw: &str, resolved: &str) -> Result<(), RecordError> {
+    match flowproof_trace::secret::blank_refs(raw, resolved) {
+        Some(blank) => Err(RecordError::BlankRefs {
+            intent: intent.to_string(),
+            blank,
+        }),
+        None => Ok(()),
+    }
+}
+
 fn condition_holds<D: AppDriver>(
     driver: &mut D,
     app: &str,
@@ -2278,8 +2310,12 @@ fn condition_holds<D: AppDriver>(
         ("the page does not show ", false),
     ] {
         if let Some(rest) = text.strip_prefix(prefix) {
+            // `${VAR}` resolves for the comparison only, as replay's
+            // `check_assertion` does: the guard keeps the reference.
+            let expected = flowproof_trace::secret::resolve_refs(rest.trim())?;
+            refuse_blank(text, rest.trim(), &expected)?;
             let surface = driver.surface_text()?;
-            return Ok(flowproof_driver::text_contains(&surface, rest.trim()) == positive);
+            return Ok(flowproof_driver::text_contains(&surface, &expected) == positive);
         }
     }
     // `the "<a>" is greater/less than the "<b>"` - the one condition that
@@ -2327,6 +2363,13 @@ fn condition_holds<D: AppDriver>(
                 return Ok(false);
             };
             let _ = target;
+            // Resolved before the element is looked for, so an unset
+            // variable fails the recording whether or not it is there.
+            let resolved = flowproof_trace::secret::resolve_refs(expected)?;
+            if matches!(matcher, TextMatch::NotContains) || is_needle(*matcher) {
+                refuse_blank(text, expected, &resolved)?;
+            }
+            let expected = resolved;
             if !driver.element_exists(&selector)? {
                 // A missing element makes a positive `shows` false and a
                 // negative one true - the same reading replay takes.
@@ -2335,7 +2378,7 @@ fn condition_holds<D: AppDriver>(
             let actual = driver.read_text(&selector)?;
             Ok(assert_holds(
                 &actual,
-                expected,
+                &expected,
                 *matcher,
                 driver.reads_text_by_ocr()?,
             ))
@@ -4357,21 +4400,25 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                 }
                 ResolvedAction::TypeText { text, .. } => {
                     // `${captured.x}` and `${VAR}` both resolve at the moment
-                    // of typing; the trace only ever stores the reference
-                    // (see step_for). Captures first: a `${VAR}` name cannot
-                    // contain a dot, so the secret resolver would pass a
-                    // capture reference through as literal text.
-                    let text = flowproof_trace::captures::substitute(text, &captures).map_err(
-                        |reason| RecordError::AssertMismatch {
-                            intent: spec_step.intent().to_string(),
-                            expected: "a remembered capture to type".to_string(),
-                            actual: reason,
-                        },
-                    )?;
-                    let value = flowproof_trace::secret::resolve_refs(&text)?;
-                    // A value from a `${...}` reference is not read back: a
+                    // of typing, in one pass, so a captured value is never
+                    // read for references; the trace only ever stores the
+                    // reference (see step_for).
+                    let value = match flowproof_trace::captures::resolve(text, &captures) {
+                        Ok(value) => value,
+                        Err(flowproof_trace::captures::Unresolved::Capture(reason)) => {
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: "a remembered capture to type".to_string(),
+                                actual: reason,
+                            })
+                        }
+                        Err(flowproof_trace::captures::Unresolved::Secret(missing)) => {
+                            return Err(missing.into())
+                        }
+                    };
+                    // A value from a `${VAR}` reference is not read back: a
                     // masked password field never shows what was typed.
-                    let referenced = text.contains("${");
+                    let referenced = flowproof_trace::secret::has_refs(text);
                     // Plan 15, finding 14: a vision field types beside its
                     // label (the SAP GUI layout), but most web forms put the
                     // label ABOVE the box. A referenced value follows the
@@ -4638,41 +4685,46 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // Resolved like `equals` above: the trace keeps the raw
                     // ${VAR}; only the live probe sees values — including
                     // header tokens and body string leaves. Earlier captures
-                    // resolve first, the same ladder `TypeText` uses.
-                    let captured_ref = |reason: String| RecordError::AssertMismatch {
-                        intent: spec_step.intent().to_string(),
-                        expected: "a remembered capture in the request".to_string(),
-                        actual: reason,
-                    };
-                    let url = flowproof_trace::captures::substitute(url, &captures)
-                        .map_err(captured_ref)?;
-                    let body = match body {
-                        Some(b) => Some(
-                            flowproof_trace::captures::substitute_json(b, &captures)
-                                .map_err(captured_ref)?,
-                        ),
-                        None => None,
+                    // resolve in the same pass, as `TypeText` does, so a
+                    // captured value is never read for references.
+                    let unresolved = |e: flowproof_trace::captures::Unresolved| match e {
+                        flowproof_trace::captures::Unresolved::Capture(reason) => {
+                            RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: "a remembered capture in the request".to_string(),
+                                actual: reason,
+                            }
+                        }
+                        flowproof_trace::captures::Unresolved::Secret(missing) => missing.into(),
                     };
                     let probe = flowproof_driver::oob::OobProbe::Api {
                         count: array_count(*count, *count_at_least),
                         retry: *retry,
                         method: method.clone(),
-                        url: flowproof_trace::secret::resolve_refs(&url)?,
-                        body: match &body {
-                            Some(b) => Some(flowproof_trace::secret::resolve_refs_in_json(b)?),
+                        url: flowproof_trace::captures::resolve(url, &captures)
+                            .map_err(unresolved)?,
+                        body: match body {
+                            Some(b) => Some(
+                                flowproof_trace::captures::resolve_json(b, &captures)
+                                    .map_err(unresolved)?,
+                            ),
                             None => None,
                         },
                         headers: headers
                             .iter()
                             .map(|(k, v)| {
-                                let v = flowproof_trace::captures::substitute(v, &captures)
-                                    .map_err(captured_ref)?;
-                                Ok((k.clone(), flowproof_trace::secret::resolve_refs(&v)?))
+                                let v = flowproof_trace::captures::resolve(v, &captures)
+                                    .map_err(unresolved)?;
+                                Ok((k.clone(), v))
                             })
                             .collect::<Result<_, RecordError>>()?,
                         status: *status,
                         body_contains: match body_contains {
-                            Some(needle) => Some(flowproof_trace::secret::resolve_refs(needle)?),
+                            Some(needle) => {
+                                let resolved = flowproof_trace::secret::resolve_refs(needle)?;
+                                refuse_blank(&spec_step.intent(), needle, &resolved)?;
+                                Some(resolved)
+                            }
                             None => None,
                         },
                         body_json: body_json.clone(),
@@ -4693,7 +4745,11 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                             None => None,
                         },
                         header_contains: match header_contains {
-                            Some(want) => Some(flowproof_trace::secret::resolve_refs(want)?),
+                            Some(want) => {
+                                let resolved = flowproof_trace::secret::resolve_refs(want)?;
+                                refuse_blank(&spec_step.intent(), want, &resolved)?;
+                                Some(resolved)
+                            }
                             None => None,
                         },
                     };
@@ -4740,16 +4796,24 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // The trace stores references, never values: a
                     // `${captured.x}` (the downloaded export's own path is
                     // the common case) resolves from this run's captures,
-                    // then a `${VAR}` from the environment — the same
-                    // two-step ladder `TypeText` resolves with.
-                    let substituted = flowproof_trace::captures::substitute(path, &captures)
-                        .map_err(|reason| RecordError::AssertMismatch {
-                            intent: spec_step.intent().to_string(),
-                            expected: "a remembered capture in the spreadsheet path".to_string(),
-                            actual: reason,
-                        })?;
+                    // and a `${VAR}` from the environment, in one pass like
+                    // `TypeText`.
+                    let resolved = match flowproof_trace::captures::resolve(path, &captures) {
+                        Ok(resolved) => resolved,
+                        Err(flowproof_trace::captures::Unresolved::Capture(reason)) => {
+                            return Err(RecordError::AssertMismatch {
+                                intent: spec_step.intent().to_string(),
+                                expected: "a remembered capture in the spreadsheet path"
+                                    .to_string(),
+                                actual: reason,
+                            })
+                        }
+                        Err(flowproof_trace::captures::Unresolved::Secret(missing)) => {
+                            return Err(missing.into())
+                        }
+                    };
                     let probe = flowproof_driver::oob::OobProbe::Spreadsheet {
-                        path: flowproof_trace::secret::resolve_refs(&substituted)?,
+                        path: resolved,
                         sheet: sheet.clone(),
                         at: at.clone(),
                         column: column.clone(),
@@ -4792,6 +4856,9 @@ fn record_steps<D: AppDriver, C: ModelClient>(
                     // so existence is part of the same poll. A surface-
                     // scoped assert (no selector) reads the whole surface.
                     let wanted = flowproof_trace::secret::resolve_refs(expected)?;
+                    if is_needle(*matcher) {
+                        refuse_blank(&spec_step.intent(), expected, &wanted)?;
+                    }
                     let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                     loop {
                         // ONE chain over every surface reading the grammar
@@ -5448,11 +5515,7 @@ fn record_steps<D: AppDriver, C: ModelClient>(
         agent: (llm_used && client.is_some()).then(|| {
             let (backend, model) = client.as_ref().map(|c| c.identity()).unwrap_or_default();
             flowproof_trace::format::AgentInfo {
-                backend: if backend == "anthropic" {
-                    flowproof_trace::format::AgentBackend::Anthropic
-                } else {
-                    flowproof_trace::format::AgentBackend::OpenaiCompatible
-                },
+                backend: agent_backend(&backend),
                 model: Some(model),
             }
         }),
@@ -5519,12 +5582,34 @@ fn record_steps<D: AppDriver, C: ModelClient>(
     })
 }
 
+/// The trace's name for the backend a client calls itself. Anything that is
+/// not Anthropic or an agent speaks the OpenAI-compatible shape, which is
+/// what the trace has always called OpenAI's own API too.
+fn agent_backend(backend: &str) -> flowproof_trace::format::AgentBackend {
+    use flowproof_trace::format::AgentBackend;
+    match backend {
+        "anthropic" => AgentBackend::Anthropic,
+        "claude-code" => AgentBackend::ClaudeCode,
+        "codex" => AgentBackend::Codex,
+        _ => AgentBackend::OpenaiCompatible,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use flowproof_driver::mock::MockAppDriver;
     use flowproof_trace::TraceLine;
 
     use super::*;
+
+    #[test]
+    fn a_trace_names_the_agent_that_authored_it() {
+        use flowproof_trace::format::AgentBackend;
+        assert_eq!(agent_backend("claude-code"), AgentBackend::ClaudeCode);
+        assert_eq!(agent_backend("codex"), AgentBackend::Codex);
+        assert_eq!(agent_backend("anthropic"), AgentBackend::Anthropic);
+        assert_eq!(agent_backend("openai"), AgentBackend::OpenaiCompatible);
+    }
     use crate::spec::FlowSpec;
 
     /// A carousel mid-rotation: covered for the first few probes, then not.
@@ -7393,6 +7478,91 @@ steps:
         assert_eq!(guard.expect["timeout_ms"], 0, "a condition never waits");
         assert!(step(2).guards.is_empty(), "the assert is outside the block");
         std::fs::remove_file(&out).ok();
+    }
+
+    /// A condition reads `${VAR}` the way replay's guard does. Recording
+    /// compared the raw `${X}` against the page, so `when: page shows ${X}`
+    /// never held, its block was never recorded, and replay passed without
+    /// ever running the checks inside it.
+    #[test]
+    fn a_condition_resolves_its_references_and_the_guard_keeps_them() {
+        std::env::set_var("FP_RECORDER_WHEN_ERROR", "Error");
+        std::env::set_var("FP_RECORDER_WHEN_DISPLAY", "Display is 8");
+        let spec = FlowSpec::parse(
+            "name: x\napp: calc\nsteps:\n  \
+             - when: page shows ${FP_RECORDER_WHEN_ERROR}\n    steps:\n      - Press plus\n  \
+             - when: the \"id:CalculatorResults\" shows ${FP_RECORDER_WHEN_DISPLAY}\n    steps:\n      - Press equals\n",
+        )
+        .expect("spec parses");
+        let mut driver =
+            MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+        surface_reads(&mut driver, &["Error"]);
+        let out = std::env::temp_dir().join("flowproof-recorder-when-ref.trace.jsonl");
+        record(&spec, &mut driver, &out).expect("recording succeeds");
+        std::env::remove_var("FP_RECORDER_WHEN_ERROR");
+        std::env::remove_var("FP_RECORDER_WHEN_DISPLAY");
+
+        assert_eq!(driver.invoked, vec!["plusButton", "equalButton"]);
+        let contents = std::fs::read_to_string(&out).expect("trace written");
+        assert!(
+            contents.contains("page shows ${FP_RECORDER_WHEN_ERROR}")
+                && !contents.contains("\"value_contains\":\"Error\""),
+            "the guard keeps the reference, not the value:\n{contents}"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// An unset variable in a condition fails the recording by name, as it
+    /// does in any other step, instead of quietly not taking the branch.
+    #[test]
+    fn a_condition_naming_an_unset_variable_fails_the_recording() {
+        std::env::remove_var("FP_RECORDER_WHEN_UNSET");
+        let spec = FlowSpec::parse(
+            "name: x\napp: calc\nsteps:\n  \
+             - when: page shows ${FP_RECORDER_WHEN_UNSET}\n    steps:\n      - Press plus\n",
+        )
+        .expect("spec parses");
+        let mut driver = MockAppDriver::new(&CALC_ELEMENTS);
+        surface_reads(&mut driver, &["anything"]);
+        let out = std::env::temp_dir().join("flowproof-recorder-when-unset.trace.jsonl");
+        let err = record(&spec, &mut driver, &out).expect_err("an unset variable fails");
+        assert!(err.to_string().contains("FP_RECORDER_WHEN_UNSET"), "{err}");
+        assert!(driver.invoked.is_empty());
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// A condition whose reference arrives blank fails the recording by
+    /// name: `page shows` blank text would always take the branch, and
+    /// `page does not show` it would never take it.
+    #[test]
+    fn a_condition_whose_reference_is_blank_fails_the_recording() {
+        std::env::set_var("FP_RECORDER_WHEN_BLANK", "  ");
+        for condition in [
+            "page shows ${FP_RECORDER_WHEN_BLANK}",
+            "page does not show ${FP_RECORDER_WHEN_BLANK}",
+            "the \"id:CalculatorResults\" shows ${FP_RECORDER_WHEN_BLANK}",
+        ] {
+            let spec = FlowSpec::parse(&format!(
+                "name: x\napp: calc\nsteps:\n  - when: {condition}\n    steps:\n      - Press plus\n"
+            ))
+            .expect("spec parses");
+            let mut driver =
+                MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8");
+            surface_reads(&mut driver, &["anything"]);
+            let out = std::env::temp_dir().join("flowproof-recorder-when-blank.trace.jsonl");
+            let err = record(&spec, &mut driver, &out).expect_err("a blank reference fails");
+            assert!(
+                err.to_string()
+                    .contains("${FP_RECORDER_WHEN_BLANK} is empty"),
+                "{condition}: {err}"
+            );
+            assert!(
+                driver.invoked.is_empty(),
+                "{condition}: the branch did not run"
+            );
+            std::fs::remove_file(&out).ok();
+        }
+        std::env::remove_var("FP_RECORDER_WHEN_BLANK");
     }
 
     /// Every recorded pass carries the loop: same id, its own pass number,

@@ -1,0 +1,14 @@
+# Expected draft for the 04-twenty-minutes case, written by flowproof-video-fixture from
+# the actions that made its video. Regenerate rather than edit it.
+name: "Order with long pauses"
+app: "web"
+steps:
+  - "Go to http://127.0.0.1:8765/app.html"
+  - "Type mara.lind into the \"Username\" field"
+  - "Type ${PASSWORD} into the \"Password\" field"
+  - "Click \"Sign in\""
+  - "Type Tinsmith's rivets, 200 into the \"Find a product\" field"
+  - "Click \"+\""
+  - "Type Kranichweg into the \"Street\" field"
+  - "Type 17 into the \"House number\" field"
+  - "Click \"Orders\""

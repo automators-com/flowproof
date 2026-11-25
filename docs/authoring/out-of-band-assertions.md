@@ -139,7 +139,8 @@ Paths use the `body_json` grammar and must reach a scalar leaf (a number or
 boolean is kept as its text); names follow `Remember`, `[a-z][a-z0-9_]*`. A
 missing path, or one that lands on an object or array, fails the step and
 names the capture. The `url`, header values and `body` strings may carry
-earlier `${captured.<name>}` refs, resolved before `${VAR}`. The step runs on
+earlier `${captured.<name>}` refs, resolved with `${VAR}` in one pass: a
+captured value is used as written, never read for references. The step runs on
 record and every replay, so each run gets fresh values; the trace stores
 names and paths, never values, and `exports` can pass them to later flows.
 
@@ -161,8 +162,8 @@ Reads the file directly (`calamine`) rather than through UI Automation over
 Excel's own grid; the manual test's own second check ("open the file and
 review it") is a screen a person can look at, but its GRID support over UIA
 is untested and known-flaky, so the out-of-band read is the one that must
-hold. `path` resolves `${captured.x}` then `${VAR}`, exactly like a typed
-field; the common case is a path a `Wait until the download completes as
+hold. `path` resolves `${captured.x}` and `${VAR}` in one pass, exactly like
+a typed field; the common case is a path a `Wait until the download completes as
 <name>` step captured moments earlier in another surface.
 
 The cell is addressed EITHER by `at` (an absolute `A1` reference) OR by

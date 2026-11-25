@@ -1,0 +1,15 @@
+name: Place an order and read the banner
+catches: The negative control. The run ends on a banner that reads like an expected result, and the draft must still contain no assertion.
+fixture: app.html
+actions:
+  - type: {field: "#username", text: mara.lind}
+  - type: {field: "#password", text: otter-lantern-42, secret: PASSWORD}
+  - click: "#sign-in"
+  - pick: {field: "#search", text: shade, entry: "Lamp shade, linen"}
+  - type: {field: "#street", text: Kranichweg}
+  - type: {field: "#house", text: "17"}
+  - type: {field: "#postcode", text: "24937"}
+  - type: {field: "#city", text: Nordhafen}
+  - press: Enter
+  - click: "#confirm"
+  - wait: 6000

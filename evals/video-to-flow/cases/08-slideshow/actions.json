@@ -1,0 +1,20 @@
+[
+  {
+    "at_ms": 4000,
+    "end_ms": 4000,
+    "kind": "slide",
+    "step": null
+  },
+  {
+    "at_ms": 8000,
+    "end_ms": 8000,
+    "kind": "slide",
+    "step": null
+  },
+  {
+    "at_ms": 12000,
+    "end_ms": 12000,
+    "kind": "slide",
+    "step": null
+  }
+]

@@ -19,7 +19,7 @@ pub struct MissingSecret {
     pub var: String,
 }
 
-fn parse_ref(text: &str) -> Option<(&str, usize)> {
+pub(crate) fn parse_ref(text: &str) -> Option<(&str, usize)> {
     // `text` starts right after `${`; returns (name, chars consumed incl `}`).
     let end = text.find('}')?;
     let name = &text[..end];
@@ -53,6 +53,46 @@ pub fn ref_names(text: &str) -> Vec<&str> {
         }
     }
     names
+}
+
+/// Expected text that only `${VAR}` references made blank. Blank text is
+/// contained in everything, so a `shows`, `url contains` or count check
+/// against it holds on any page, and a condition would always take (or
+/// never take) its branch. The grammar refuses blank literal text; this is
+/// the same refusal for a value that arrives blank at run time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlankRefs {
+    pub vars: Vec<String>,
+}
+
+impl std::fmt::Display for BlankRefs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let refs: Vec<String> = self.vars.iter().map(|v| format!("${{{v}}}")).collect();
+        let verb = if refs.len() == 1 { "is" } else { "are" };
+        write!(
+            f,
+            "{} {verb} empty, so this check would hold whatever the app shows",
+            refs.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for BlankRefs {}
+
+/// [`BlankRefs`] when `resolved`, the resolution of `raw`, is blank only
+/// because of its references. `None` for text without references, which
+/// the grammar has already judged.
+pub fn blank_refs(raw: &str, resolved: &str) -> Option<BlankRefs> {
+    if !resolved.trim().is_empty() || !has_refs(raw) {
+        return None;
+    }
+    let mut vars: Vec<String> = Vec::new();
+    for name in ref_names(raw) {
+        if !vars.iter().any(|v| v == name) {
+            vars.push(name.to_string());
+        }
+    }
+    Some(BlankRefs { vars })
 }
 
 /// Resolve every `${VAR}` reference in `text` from the environment.
@@ -151,6 +191,25 @@ pub fn resolve_downloads_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blank_refs_names_the_references_that_made_the_text_blank() {
+        let blank = blank_refs("${FP_BLANK_A} ${FP_BLANK_B} ${FP_BLANK_A}", " ")
+            .expect("blank because of its references");
+        assert_eq!(blank.vars, ["FP_BLANK_A", "FP_BLANK_B"]);
+        assert_eq!(
+            blank.to_string(),
+            "${FP_BLANK_A}, ${FP_BLANK_B} are empty, so this check would hold whatever the app shows"
+        );
+        assert_eq!(
+            blank_refs("${FP_BLANK_A}", "")
+                .map(|b| b.to_string())
+                .as_deref(),
+            Some("${FP_BLANK_A} is empty, so this check would hold whatever the app shows")
+        );
+        assert!(blank_refs("${FP_BLANK_A}", "42").is_none(), "not blank");
+        assert!(blank_refs(" ", " ").is_none(), "no references");
+    }
 
     #[test]
     fn mask_values_puts_each_referenced_value_back_as_its_reference() {

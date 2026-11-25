@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "flowproof": {
+      "type": "stdio",
+      "command": "flowproof",
+      "args": ["mcp"]
+    }
+  }
+}

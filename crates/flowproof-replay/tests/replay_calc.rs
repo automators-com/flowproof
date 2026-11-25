@@ -1850,6 +1850,37 @@ fn a_bare_capture_reference_compares_text() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A captured value is text the app under test showed, so a `${VAR}` inside
+/// it is typed as that text. Resolving it from the environment would let
+/// the app name any variable, secrets included, and have its value typed
+/// back into the page.
+#[test]
+fn a_captured_value_is_typed_as_text_not_resolved_from_the_environment() {
+    let dir = std::env::temp_dir().join("flowproof-replay-capture-env-ref");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::env::set_var("FLOWPROOF_TEST_CAPTURED_SECRET", "hunter2");
+    let spec = FlowSpec::parse(
+        "name: Order\napp: web\nurl: x\nsteps:\n  - Remember the \"Order\" as order\n  - Type ${captured.order} into the \"Search\" field\n",
+    )
+    .expect("spec parses");
+    let spec = FlowSpec {
+        url: Some("https://app.test/o".into()),
+        ..spec
+    };
+    let trace = dir.join("env-ref.trace.jsonl");
+    let mut rec = MockAppDriver::new(&["Order", "Search"]).with_text("Order", "ORD-4711");
+    record(&spec, &mut rec, &trace).expect("records");
+
+    let mut driver = MockAppDriver::new(&["Order", "Search"])
+        .with_text("Order", "${FLOWPROOF_TEST_CAPTURED_SECRET}");
+    let (report, _run_dir) = run_trace(&trace, &mut driver).expect("replay runs");
+    assert!(report.passed, "report: {report:#?}");
+    let typed: Vec<&str> = driver.typed.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(typed, ["${FLOWPROOF_TEST_CAPTURED_SECRET}"]);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Referencing a capture that was never taken is a spec ERROR, not a failed
 /// expectation: the flow cannot be judged at all, and the message must name
 /// what is in scope so the author can fix the typo.
@@ -2980,5 +3011,173 @@ fn a_page_still_loading_earns_its_element_more_time_than_a_quiet_one() {
     let (report, _run_dir) = run_trace(&trace, &mut pausing).expect("replay runs");
     assert!(report.passed, "{report:#?}");
     assert_eq!(pausing.invoked, vec!["Go"]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A `${VAR}` that arrives blank would make `shows` hold on any page:
+/// blank text is contained in everything. Record and replay both fail the
+/// check by naming the variable, rather than passing it unread.
+#[test]
+fn a_check_whose_reference_is_blank_fails_by_name() {
+    std::env::set_var("FP_BLANK_CHECK", "Display is 8");
+    let dir = std::env::temp_dir().join("flowproof-replay-blank-check");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Blank check\napp: calc\nsteps:\n  - assert: the \"id:CalculatorResults\" shows ${FP_BLANK_CHECK}\n",
+    )
+    .expect("spec parses");
+    let display = || MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Error");
+    let trace = dir.join("blank-check.trace.jsonl");
+    record(
+        &spec,
+        &mut MockAppDriver::new(&CALC_ELEMENTS).with_text("CalculatorResults", "Display is 8"),
+        &trace,
+    )
+    .expect("recording succeeds");
+
+    std::env::set_var("FP_BLANK_CHECK", " ");
+    let (report, _) = run_trace(&trace, &mut display()).expect("replay runs");
+    assert!(!report.passed, "a blank reference must not pass");
+    let detail = report.steps[0].detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("${FP_BLANK_CHECK} is empty"),
+        "detail: {detail}"
+    );
+
+    let err = record(&spec, &mut display(), &dir.join("again.trace.jsonl"))
+        .expect_err("recording refuses a blank reference");
+    assert!(
+        err.to_string().contains("${FP_BLANK_CHECK} is empty"),
+        "{err}"
+    );
+    std::env::remove_var("FP_BLANK_CHECK");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A `when:` whose reference arrives blank would take its branch on any
+/// page (`does not show` would skip it on any page). Replay stops on it by
+/// name instead of deciding the branch without reading the app.
+#[test]
+fn a_when_whose_reference_is_blank_stops_the_replay_by_name() {
+    std::env::set_var("FP_BLANK_WHEN", "Error");
+    let dir = std::env::temp_dir().join("flowproof-replay-blank-when");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Blank when\napp: calc\nsteps:\n  - when: page shows ${FP_BLANK_WHEN}\n    \
+         steps:\n      - Press plus\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("blank-when.trace.jsonl");
+    record(
+        &spec,
+        &mut MockAppDriver::new(&CALC_ELEMENTS).with_surface_text("Error"),
+        &trace,
+    )
+    .expect("recording succeeds");
+
+    std::env::set_var("FP_BLANK_WHEN", "");
+    let mut driver = MockAppDriver::new(&CALC_ELEMENTS).with_surface_text("all is well");
+    let err = run_trace(&trace, &mut driver).expect_err("a blank condition stops the run");
+    assert!(
+        err.to_string().contains("${FP_BLANK_WHEN} is empty"),
+        "{err}"
+    );
+    assert!(driver.invoked.is_empty(), "the branch did not run");
+    std::env::remove_var("FP_BLANK_WHEN");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A `when:` whose variable is unset at replay stops the run by name. It
+/// used to read as "did not hold", so the block was skipped, its checks
+/// never ran, and the run passed.
+#[test]
+fn a_when_whose_variable_is_unset_stops_the_replay_by_name() {
+    std::env::set_var("FP_UNSET_WHEN", "Error");
+    let dir = std::env::temp_dir().join("flowproof-replay-unset-when");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = FlowSpec::parse(
+        "name: Unset when\napp: calc\nsteps:\n  - when: page shows ${FP_UNSET_WHEN}\n    \
+         steps:\n      - Press plus\n",
+    )
+    .expect("spec parses");
+    let trace = dir.join("unset-when.trace.jsonl");
+    record(
+        &spec,
+        &mut MockAppDriver::new(&CALC_ELEMENTS).with_surface_text("Error"),
+        &trace,
+    )
+    .expect("recording succeeds");
+
+    std::env::remove_var("FP_UNSET_WHEN");
+    let mut driver = MockAppDriver::new(&CALC_ELEMENTS).with_surface_text("Error");
+    let err = run_trace(&trace, &mut driver).expect_err("an unset variable stops the run");
+    assert!(
+        err.to_string().contains("${FP_UNSET_WHEN}") && err.to_string().contains("not set"),
+        "{err}"
+    );
+    assert!(driver.invoked.is_empty(), "the branch did not run");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A `body_contains` whose `${VAR}` arrives blank would hold on any body,
+/// leaving only the status to fail the step: a 200 with the wrong body
+/// passed. Record and replay both fail it, naming the variable.
+#[test]
+fn an_api_body_check_whose_reference_is_blank_fails_by_name() {
+    let dir = std::env::temp_dir().join("flowproof-replay-oob-blank");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"order":"A-1"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    std::env::set_var("FP_BLANK_API", format!("http://127.0.0.1:{port}"));
+    std::env::set_var("FP_BLANK_API_ORDER", "A-1");
+    let spec = FlowSpec::parse(
+        "name: Blank body check
+app: web
+url: https://e.test/x
+steps:
+  - assert_api:
+      request: GET ${FP_BLANK_API}/orders
+      body_contains: ${FP_BLANK_API_ORDER}
+",
+    )
+    .expect("spec parses");
+    let trace = dir.join("blank-api.trace.jsonl");
+    record(&spec, &mut MockAppDriver::new(&[]), &trace).expect("recording succeeds");
+
+    std::env::set_var("FP_BLANK_API_ORDER", "");
+    let (report, _) = run_trace(&trace, &mut MockAppDriver::new(&[])).expect("replay runs");
+    assert!(!report.passed, "a blank needle must not pass");
+    let detail = report.steps[0].detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("${FP_BLANK_API_ORDER} is empty"),
+        "detail: {detail}"
+    );
+
+    let err = record(
+        &spec,
+        &mut MockAppDriver::new(&[]),
+        &dir.join("again.trace.jsonl"),
+    )
+    .expect_err("recording refuses a blank needle");
+    assert!(
+        err.to_string().contains("${FP_BLANK_API_ORDER} is empty"),
+        "{err}"
+    );
+    std::env::remove_var("FP_BLANK_API");
+    std::env::remove_var("FP_BLANK_API_ORDER");
     std::fs::remove_dir_all(&dir).ok();
 }
