@@ -6,6 +6,145 @@ together).
 
 ## Unreleased
 
+## 0.24.0
+
+- **A coding agent can record, replay and repair your flows itself, with
+  `flowproof mcp`.** The only way for Claude Code, Codex CLI, Cursor or VS Code to
+  drive flowproof was the Python `flowproof-mcp` server, behind a pip extra that
+  most installs never had. `flowproof mcp` is a stdio MCP server in the binary you
+  already have, with five tools:
+
+  - `flowproof_record` performs a flow against the live app and writes its trace,
+    headless unless asked. A step it cannot author comes back as
+    `needs_clarification` (what was ambiguous and what the screen offered) as an
+    ordinary result, so the agent can reword the step and record again.
+  - `flowproof_run` replays a flow, or every flow in a folder, with no model
+    calls. A failing flow is a result to read, with its steps at `report.steps`,
+    not an error.
+  - `flowproof_heal` writes a repair proposal beside the trace. It overwrites the
+    trace only when the call passes `reviewed: true`, which the agent sends after
+    you have reviewed the proposal and said to apply it.
+  - `flowproof_doctor` checks whether an authoring model is configured or SAP GUI
+    can be reached, and `flowproof_audit` returns a suite's control coverage.
+
+  A flow whose files would run a command (suite hooks, a spec's `agent.command`,
+  a Windows launch command) is refused, with the command and its file named,
+  unless the call passes `allow_exec: true`. A `FLOWPROOF_ALLOW_EXEC` the client
+  inherited does not count. Each call can name the folder it runs in, a client
+  that asks gets the engine's progress lines, and cancelling a call stops the
+  engine and everything it started, such as its browser.
+
+  `flowproof mcp install` registers the server in `.mcp.json` (Claude Code,
+  GitHub Copilot), and in `.cursor/mcp.json` or `.gemini/settings.json` when the
+  project has those folders. When the project installs flowproof itself, the
+  entry runs `npx --no flowproof mcp`. It also writes a `flowproof-flows` skill
+  that tells the agent when to use each tool and when to ask you first. In Claude
+  Code, `/plugin install flowproof --marketplace automators-com/flowproof` sets up
+  the server and skills for every project instead. See `docs/mcp-server.md`.
+
+  The Python `flowproof-mcp` still works, unchanged, but is archived as
+  `_archived_mcp_server.py`. If you use it, say so before it is removed.
+
+- **Your Claude or ChatGPT subscription can drive authoring instead of an API key (experimental).**
+  Recording, repair, heal, and drafting from a video, a document or a codebase
+  all needed an Anthropic or OpenAI API key, so someone who already pays for
+  Claude or ChatGPT had to set up and pay for API access as well.
+  `flowproof config ai --provider claude-code` (or `codex`) now uses your own
+  Claude Code or Codex, through its ACP adapter and under the login it already
+  has, as the model. flowproof never touches that login: the agent runs in an
+  empty folder, sees none of flowproof's secrets or API keys, and is refused
+  any tool, file or terminal it asks for. `flowproof doctor --ai` shows whether
+  it is installed and signed in. Replay is unchanged and still calls no model.
+
+- **A trace recorded on your Claude or ChatGPT subscription says so.** The
+  trace header's `agent.backend` knew only `anthropic` and `openai-compatible`,
+  so a recording made through `claude-code` or `codex` was labelled
+  `openai-compatible`, an API it never called. It is now `claude-code` or
+  `codex`, and the schema and `docs/trace-format.md` list both. An older
+  engine cannot read such a header; replay never uses it.
+
+- **`author-from-video --frames-out <dir>` shows what the model would see.**
+  When a video draft missed a step there was no way to tell whether the model
+  misread a frame or never got one. `--frames-out` chooses the frames a draft
+  would be made from and writes them as JPEGs beside a `manifest.json` with each
+  frame's time, the part of the screen kept after trimming, and how many changed
+  moments the 60-frame budget dropped. No model is called and no draft is
+  written. It is also how the new video-to-flow evals read frame selection.
+
+- **`author-from-video --frames-dir <dir>` drafts from frames chosen earlier.**
+  Drafting the same recording twice meant decoding it twice, and a change to
+  frame selection between the two runs made them incomparable. `--frames-dir`
+  takes the folder `--frames-out` wrote and drafts from exactly those frames,
+  with no ffmpeg involved. The video-to-flow evals use it to score prompt and
+  model changes against committed frames.
+
+- **`author-from-video --help` no longer says `--check` reports how many frames would be sent.**
+  `--check` only probes the video for its length and picture size; frames are
+  chosen when drafting. The help text now says so, matching the authoring docs.
+
+- **A `${VAR}` that resolves to blank no longer makes a check pass on any page.**
+  The grammar refuses blank expected text, but a reference got past it, and a
+  value that arrived empty at run time (`--var ORDER_ID=`, an `env_from` or
+  DataMaker line with nothing after the `=`, a blank values-file entry) left
+  `page shows ${ORDER_ID}` checking for blank text, which every page contains.
+  A data source that returned nothing turned the check into a silent pass.
+  Positive `shows`, count, `url contains` and `title contains` checks now fail
+  on record and replay, naming the variable. A `when:` or `repeat: until:`
+  condition fails the same way in either polarity, rather than taking or
+  skipping its branch without reading the app.
+
+- **An API check's `body_contains` or `header_contains` no longer passes on a blank `${VAR}`.**
+  A value that arrived empty left the check looking for blank text, which
+  every response contains, so only the status could fail the step: a 200 with
+  the wrong body passed. Recording and replay now fail the check, naming the
+  variable, as they already do for a blank `shows` or `url contains`.
+
+- **A `when:` or `repeat: until:` whose `${VAR}` is unset at replay now stops the run by name.**
+  Every other step fails closed on an unset variable, but a condition read the
+  failed check as "does not hold". A flow recorded where the variable was set
+  and replayed where it was not (CI, another machine, another environment)
+  skipped the `when:` block with its checks unrun and passed, and a `repeat:`
+  ran every pass against the app before reporting that its condition never
+  held. Replay now names the missing variable before reading the condition.
+
+- **A `when:` or `repeat: until:` condition now reads `${VAR}` while recording.**
+  Recording compared the condition's raw text against the app, so
+  `when: page shows ${ORDER_ID}` looked for the literal `${ORDER_ID}` and never
+  held: the block was never recorded, and every replay passed without running
+  the checks inside it. A `repeat:` whose `until:` named a variable ran to its
+  bound. Replay already resolved the reference, so record and replay read the
+  same condition differently. Recording now resolves it for the comparison, the
+  trace keeps the reference, and an unset variable fails the recording by name.
+
+- **A captured value is no longer read for `${VAR}` references.** A value a
+  flow remembered from the app under test (`Remember … as`, an `assert_api`
+  `expect.capture`, or a downloaded file's name) was put into a step and the
+  result was then scanned for `${VAR}`. A page or API that returned
+  `${SOME_SECRET}` had that environment variable's value, secrets included,
+  typed into the app or sent in a later `assert_api` request, and captured
+  text that legitimately held `${…}`, such as `report-${date}.xlsx`, failed as
+  an unset secret. Typed text, `assert_api` requests, spreadsheet paths,
+  `exports:` and a surface's launch command now fill in captures and `${VAR}`
+  in one pass, on record and replay, so a captured value is used as written.
+  An agent block refuses a captured value holding a `${VAR}` reference rather
+  than passing it on.
+
+- **A secret in a flow's address no longer shows up in a navigation error.**
+  When a web flow's `url:` or a `Go to` step held a `${VAR}`, such as
+  `https://${API_USER}:${API_TOKEN}@host/` or `?token=${TOKEN}`, and the host
+  couldn't be reached, the `navigating to …` error quoted the resolved
+  address, secret included, on stdout, in result.json and junit.xml, and in
+  the record repair loop. Record and replay now write each such value back as
+  its `${NAME}`, on the first launch and on a mid-flow `Go to`, and so does a
+  multi-surface flow when it launches a surface.
+
+- **A suite hook that prints no longer breaks `--json`.** `before_each` and
+  `after_each` wrote to the same stdout as `flowproof run --json`'s report, so a
+  single `echo` in a hook put text in front of the JSON. The desktop app,
+  `flowproof mcp` and CI scripts then could not parse the run's result, and a run
+  that passed could be reported as an error. Hook output now goes to stderr,
+  where it is still shown, and stdout carries only the report.
+
 ## 0.23.35
 
 - **Drafting from a screen recording no longer needs a browser.**

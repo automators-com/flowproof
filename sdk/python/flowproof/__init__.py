@@ -35,7 +35,7 @@ from flowproof.flow import (  # noqa: E402
     run,
 )
 
-__version__ = "0.23.35"
+__version__ = "0.24.0"
 
 __all__ = [
     "ClarificationNeeded",
