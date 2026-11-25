@@ -263,6 +263,12 @@ walkthrough lives in [Record and replay](docs/getting-started/record-and-replay.
 is the complete version of this section. Add `--json` for the structured
 report on stdout.
 
+A UI flow's plain steps are authored by a model when you record. That can be
+an API key from `flowproof config ai`, or, experimentally, the Claude or
+ChatGPT subscription you already use, with no key:
+`flowproof config ai --provider claude-code` (or `codex`). See
+[Using your Claude or ChatGPT subscription](docs/getting-started/secrets-and-config.md#using-your-claude-or-chatgpt-subscription-experimental).
+
 **From your coding agent.** `flowproof mcp install` registers flowproof with
 Claude Code, GitHub Copilot, Cursor or Gemini CLI in your project. After a
 restart, the agent records, replays, heals and audits flows itself, asking you
