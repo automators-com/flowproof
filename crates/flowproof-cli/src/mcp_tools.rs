@@ -38,7 +38,9 @@ pub(crate) fn list() -> Value {
     let schema = |mut properties: Value, required: &[&str]| {
         properties["cwd"] = path(
             "The folder to run in, for this call only (default: the folder the server was \
-            started in). The result echoes the folder used.",
+            started in). Pass the project's folder when the server was not started in it: \
+            the Claude desktop app starts local servers in /. A leading ~ is the home \
+            folder. The result echoes the folder used.",
         );
         json!({ "type": "object", "properties": properties, "required": required,
             "additionalProperties": false })
@@ -261,10 +263,43 @@ pub(crate) fn call(params: &Value, call: &Call) -> Result<Value, String> {
         let argv = argv(&tool, args)?;
         Ok((cwd.clone(), supervise(&cwd, &argv, call)?))
     });
-    Ok(match outcome {
+    let result = match outcome {
         Ok((cwd, outcome)) => (tool.read)(json!({ "cwd": cwd.display().to_string() }), outcome),
         Err(message) => tool_error(&message),
+    };
+    let in_root =
+        args.get("cwd").is_none() && std::env::current_dir().is_ok_and(|dir| dir == Path::new("/"));
+    Ok(if in_root {
+        with_root_hint(result)
+    } else {
+        result
     })
+}
+
+/// A client that starts the server in `/` (the Claude desktop app does) has
+/// no project folder, so a relative path resolves against `/` and fails.
+/// Say what to pass rather than leave the agent to guess.
+fn with_root_hint(result: Value) -> Value {
+    if result["isError"] != json!(true) {
+        return result;
+    }
+    let mut structured = result["structuredContent"].clone();
+    structured["hint"] = json!(
+        "This server is running in /, which is not a project: your client started it \
+        there. Call again with cwd set to the project's folder, or use absolute paths."
+    );
+    tool_result(structured, true)
+}
+
+/// `~` or `~/...` as the home folder: an agent writes paths the way the
+/// person said them, and nothing expands `~` before the server sees it.
+fn expand_home(path: &str) -> String {
+    match (path.strip_prefix('~'), dirs::home_dir()) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
+            format!("{}{rest}", home.display())
+        }
+        _ => path.to_string(),
+    }
 }
 
 /// The command line for one call. Every value goes in `--flag=value` form
@@ -347,7 +382,7 @@ fn argv(tool: &Tool, args: &Map<String, Value>) -> Result<Vec<String>, String> {
     }
     if let Some(positional) = tool.positional {
         let value = string(args, positional)?.ok_or(format!("`{positional}` is required"))?;
-        argv.extend(["--".to_string(), value]);
+        argv.extend(["--".to_string(), expand_home(&value)]);
     }
     Ok(argv)
 }
@@ -371,7 +406,7 @@ fn string(args: &Map<String, Value>, name: &str) -> Result<Option<String>, Strin
 fn resolve_cwd(args: &Map<String, Value>) -> Result<PathBuf, String> {
     let here = std::env::current_dir().map_err(|e| format!("reading the working folder: {e}"))?;
     let cwd = match string(args, "cwd")? {
-        Some(dir) => here.join(dir),
+        Some(dir) => here.join(expand_home(&dir)),
         None => here,
     };
     if !cwd.is_dir() {
@@ -681,5 +716,17 @@ mod tests {
         assert_eq!(lift_single_flow(suite.clone()), (suite, Map::new()));
         let audit = json!({ "suite": "flows", "checks": [] });
         assert_eq!(lift_single_flow(audit.clone()), (audit, Map::new()));
+    }
+
+    #[test]
+    fn a_leading_tilde_is_the_home_folder() {
+        let home = dirs::home_dir().expect("home").display().to_string();
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(
+            expand_home("~/flows/a.flow.yaml"),
+            format!("{home}/flows/a.flow.yaml")
+        );
+        assert_eq!(expand_home("~bob/x"), "~bob/x");
+        assert_eq!(expand_home("flows/~/x"), "flows/~/x");
     }
 }

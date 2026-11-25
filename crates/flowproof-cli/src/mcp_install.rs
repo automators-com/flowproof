@@ -15,6 +15,12 @@
 //!
 //! Codex reads TOML, from `.codex/config.toml` in trusted projects only, so
 //! it is left to `--print` and the docs rather than edited here.
+//!
+//! The Claude desktop app has no project files: it reads one per-user
+//! `claude_desktop_config.json` (`mcpServers`, no `type`) from its folder
+//! under the platform config directory, and starts every local server in
+//! `/` with the user's login-shell PATH (seen in its MCP log on macOS,
+//! 2026-11-25). `--claude-desktop` writes that file instead.
 
 use std::path::Path;
 
@@ -31,12 +37,14 @@ const SKILL_PATHS: [&str; 2] = [
     ".agents/skills/flowproof-flows/SKILL.md",
 ];
 
-/// Which clients `--claude`, `--cursor` and `--gemini` asked for. None
-/// asked means `.mcp.json` plus each client whose folder exists.
+/// Which clients `--claude`, `--cursor`, `--gemini` and `--claude-desktop`
+/// asked for. None of the project ones asked means `.mcp.json` plus each
+/// client whose folder exists, unless only `--claude-desktop` was given.
 pub(crate) struct Clients {
     pub claude: bool,
     pub cursor: bool,
     pub gemini: bool,
+    pub claude_desktop: bool,
 }
 
 struct Target {
@@ -72,8 +80,45 @@ pub(crate) fn cmd_install(clients: &Clients, print: bool, force: bool) -> Result
         );
         return Ok(EXIT_PASS);
     }
-    install_in(Path::new("."), clients, force)?;
+    let named = clients.claude || clients.cursor || clients.gemini;
+    if named || !clients.claude_desktop {
+        install_in(Path::new("."), clients, force)?;
+    }
+    if clients.claude_desktop {
+        let dir = dirs::config_dir().ok_or("could not find this machine's config folder")?;
+        let path = desktop_config(&dir);
+        let verb = if install_desktop(&dir, force)? {
+            "wrote"
+        } else {
+            "up to date:"
+        };
+        println!("{verb} {}", path.display());
+        if !on_path("flowproof") {
+            eprintln!(
+                "note: `flowproof` is not on your PATH, so the Claude desktop app cannot start \
+                it. Install it with `npm install -g flowproof`."
+            );
+        }
+        println!("Quit and reopen the Claude desktop app to load it.");
+    }
     Ok(EXIT_PASS)
+}
+
+fn desktop_config(config_dir: &Path) -> std::path::PathBuf {
+    config_dir.join("Claude").join("claude_desktop_config.json")
+}
+
+/// The Claude desktop app's entry: the bare command, which it finds on the
+/// user's PATH, and no `type`, which its docs never use.
+fn install_desktop(config_dir: &Path, force: bool) -> Result<bool, String> {
+    install(&desktop_config(config_dir), &entry(false, false), force)
+}
+
+fn on_path(name: &str) -> bool {
+    let names = [name.to_string(), format!("{name}.exe")];
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| names.iter().any(|n| dir.join(n).is_file()))
+    })
 }
 
 fn install_in(root: &Path, clients: &Clients, force: bool) -> Result<(), String> {
@@ -191,6 +236,7 @@ mod tests {
         claude: false,
         cursor: false,
         gemini: false,
+        claude_desktop: false,
     };
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -300,6 +346,23 @@ mod tests {
         let path = dir.join(".mcp.json");
         install(&path, &entry(true, false), true).expect("bare");
         assert!(install_in(&dir, &NONE, false).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_claude_desktop_entry_joins_the_apps_own_settings() {
+        let dir = temp_dir("desktop");
+        let path = desktop_config(&dir);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("folder");
+        std::fs::write(&path, r#"{"preferences":{"sidebarMode":"chat"}}"#).expect("write");
+        assert!(install_desktop(&dir, false).expect("install"));
+        let config = read(&path);
+        assert_eq!(config["preferences"]["sidebarMode"], "chat");
+        assert_eq!(
+            config["mcpServers"]["flowproof"],
+            json!({ "command": "flowproof", "args": ["mcp"] })
+        );
+        assert!(!install_desktop(&dir, false).expect("again"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

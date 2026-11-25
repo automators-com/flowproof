@@ -322,6 +322,11 @@ enum McpAction {
         /// Write only `.gemini/settings.json`.
         #[arg(long)]
         gemini: bool,
+        /// Register the server with the Claude desktop app, in its
+        /// per-user `claude_desktop_config.json`. On its own, writes
+        /// nothing into the project.
+        #[arg(long)]
+        claude_desktop: bool,
         /// Print the entry for a client this command does not know, and
         /// write nothing.
         #[arg(long)]
@@ -5328,6 +5333,7 @@ where
                     claude,
                     cursor,
                     gemini,
+                    claude_desktop,
                     print,
                     force,
                 }),
@@ -5336,6 +5342,7 @@ where
                 claude,
                 cursor,
                 gemini,
+                claude_desktop,
             },
             print,
             force,
