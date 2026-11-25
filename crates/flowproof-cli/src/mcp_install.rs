@@ -22,6 +22,15 @@ use serde_json::{json, Map, Value};
 
 use crate::EXIT_PASS;
 
+/// The `flowproof-flows` skill: when to call which tool, and where the
+/// person decides (plan 17, step 10). The server and its guide go in
+/// together, into the same two conventions `flowproof config skill` uses.
+const FLOWS_SKILL: &str = include_str!("../skills/flowproof-flows/SKILL.md");
+const SKILL_PATHS: [&str; 2] = [
+    ".claude/skills/flowproof-flows/SKILL.md",
+    ".agents/skills/flowproof-flows/SKILL.md",
+];
+
 /// Which clients `--claude`, `--cursor` and `--gemini` asked for. None
 /// asked means `.mcp.json` plus each client whose folder exists.
 pub(crate) struct Clients {
@@ -74,6 +83,13 @@ fn install_in(root: &Path, clients: &Clients, force: bool) -> Result<(), String>
             println!("wrote {}", target.path);
         } else {
             println!("up to date: {}", target.path);
+        }
+    }
+    for path in SKILL_PATHS {
+        if crate::config::write_skill_file(&root.join(path), FLOWS_SKILL, force)? {
+            println!("wrote {path}");
+        } else {
+            println!("up to date: {path}");
         }
     }
     Ok(())
@@ -203,6 +219,23 @@ mod tests {
             ..NONE
         };
         assert_eq!(paths(&dir, &gemini), [".gemini/settings.json"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn writes_the_flows_skill_for_both_conventions() {
+        let dir = temp_dir("skill");
+        install_in(&dir, &NONE, false).expect("install");
+        for path in SKILL_PATHS {
+            let written = std::fs::read_to_string(dir.join(path)).expect("skill");
+            assert_eq!(written, FLOWS_SKILL, "{path}");
+        }
+        // The open spec: `name` matches the skill's folder.
+        assert!(FLOWS_SKILL.starts_with("---\nname: flowproof-flows\n"));
+        std::fs::write(dir.join(SKILL_PATHS[0]), "edited").expect("edit");
+        let refused = install_in(&dir, &NONE, false).expect_err("refused");
+        assert!(refused.contains("--force"), "{refused}");
+        install_in(&dir, &NONE, true).expect("forced");
         std::fs::remove_dir_all(&dir).ok();
     }
 

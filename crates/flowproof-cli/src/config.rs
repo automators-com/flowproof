@@ -770,7 +770,7 @@ pub fn cmd_skill(
 
     for root in roots {
         let path = root.join("flowproof-config").join("SKILL.md");
-        if write_skill_file(&path, force)? {
+        if write_skill_file(&path, SKILL_MD, force)? {
             println!("wrote {}", path.display());
         } else {
             println!("up to date: {}", path.display());
@@ -779,16 +779,16 @@ pub fn cmd_skill(
     Ok(EXIT_PASS)
 }
 
-/// Writes [`SKILL_MD`] to `path` unless it's already there verbatim.
+/// Writes a skill's `content` to `path` unless it's already there verbatim.
 /// Returns `true` if a write happened, `false` for a no-op — re-running
 /// `flowproof config skill` is safe and silent once the file is current. A
 /// target that exists with DIFFERENT content is refused without `--force`:
 /// it may have been hand-edited, and clobbering it silently would be worse
 /// than a named refusal (plans/003-agent-config-skill.md, "Idempotent, not
 /// silently destructive").
-fn write_skill_file(path: &Path, force: bool) -> Result<bool, String> {
+pub(crate) fn write_skill_file(path: &Path, content: &str, force: bool) -> Result<bool, String> {
     if let Ok(existing) = std::fs::read_to_string(path) {
-        if existing == SKILL_MD {
+        if existing == content {
             return Ok(false);
         }
         if !force {
@@ -802,7 +802,7 @@ fn write_skill_file(path: &Path, force: bool) -> Result<bool, String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     }
-    std::fs::write(path, SKILL_MD)
+    std::fs::write(path, content)
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
     Ok(true)
 }

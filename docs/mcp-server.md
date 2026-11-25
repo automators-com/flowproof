@@ -26,6 +26,13 @@ Running it again changes nothing. Restart the client afterwards. Claude Code
 asks you to approve a project's servers, and Gemini CLI starts them only in a
 folder you have trusted (`gemini trust`).
 
+It also writes the `flowproof-flows` skill to
+`.claude/skills/flowproof-flows/SKILL.md` and
+`.agents/skills/flowproof-flows/SKILL.md`. The skill tells the agent which tool
+to call, how to read a failing run, and to ask you before it applies a repair
+or lets a flow run a command of its own. Like the config entry, an edited copy
+is replaced only with `--force`.
+
 For another client, `flowproof mcp install --print` prints the entry to copy.
 Codex CLI takes it as TOML, in `~/.codex/config.toml` or, for a trusted
 project, `.codex/config.toml`:
