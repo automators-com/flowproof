@@ -80,12 +80,15 @@ pub(crate) fn list() -> Value {
         "description": "Re-drive a flow whose app has drifted and propose an updated trace. \
             The proposal is written beside the trace as .proposed.jsonl and the trace is left \
             alone; the result says what changed. `apply` and `apply_proposal` overwrite the \
-            trace: pass them only after the person has reviewed the proposal and said to.",
+            trace and are refused without `reviewed: true`: pass that only after the person \
+            has reviewed the proposal and said to apply it.",
         "inputSchema": schema(json!({
             "spec": spec, "vars": vars, "var": var, "headed": headed, "author": author,
             "trace": path("The trace to heal (default: the one `record` wrote for the spec)."),
             "apply": switch("Overwrite the trace with the proposal if anything changed."),
             "apply_proposal": switch("Apply the .proposed.jsonl an earlier heal wrote."),
+            "reviewed": switch("The person has reviewed the proposal and said to apply it. \
+                Required with apply or apply_proposal."),
             "from_run": path("Heal only the steps a run's report flagged, from that run's \
                 folder, without driving the app."),
             "step": { "type": "array", "items": { "type": "string" },
@@ -130,6 +133,9 @@ enum Kind {
     Headed,
     /// `doctor`'s `check`, which becomes `--ai` or `--sap`.
     Check,
+    /// heal's `reviewed`: no flag of its own; `apply` and `apply_proposal`
+    /// are refused without it.
+    Reviewed,
 }
 
 /// One tool: the command it runs, the argument passed after `--`, and how
@@ -182,6 +188,7 @@ fn tool(name: &str) -> Option<Tool> {
                 ("trace", Text),
                 ("apply", Switch),
                 ("apply_proposal", Switch),
+                ("reviewed", Reviewed),
                 ("author", Text),
                 ("from_run", Text),
                 ("step", List),
@@ -282,6 +289,14 @@ fn argv(tool: &Tool, args: &Map<String, Value>) -> Result<Vec<String>, String> {
                 );
             }
             (Kind::Check, None) => return Err("`check` is required: ai or sap".into()),
+            (Kind::Reviewed, value) => {
+                let applies = argv
+                    .iter()
+                    .any(|a| a == "--apply" || a == "--apply-proposal");
+                if applies && !switch(value)? {
+                    return Err(UNREVIEWED.into());
+                }
+            }
             (_, None) | (Kind::Headed, _) => {}
             (Kind::Text, Some(v)) => argv.push(format!("--{flag}={}", text(v)?)),
             (Kind::Number, Some(v)) => {
@@ -324,6 +339,12 @@ fn argv(tool: &Tool, args: &Map<String, Value>) -> Result<Vec<String>, String> {
     }
     Ok(argv)
 }
+
+/// Applying overwrites a committed trace, so the person decides, as with
+/// `allow_exec` (plan 17, decision 4).
+const UNREVIEWED: &str = "Nothing was applied: `apply` and `apply_proposal` overwrite the \
+    committed trace. Heal without them, show the person the proposal, and call again with \
+    reviewed: true only if they say to apply it.";
 
 fn string(args: &Map<String, Value>, name: &str) -> Result<Option<String>, String> {
     match args.get(name) {
@@ -489,6 +510,32 @@ mod tests {
                 "--json",
                 "--from-run=r",
                 "--step=s1",
+                "--",
+                "a.flow.yaml"
+            ]
+        );
+    }
+
+    #[test]
+    fn applying_needs_the_person_to_have_reviewed_the_proposal() {
+        let tool = tool("flowproof_heal").expect("heal");
+        for apply in ["apply", "apply_proposal"] {
+            let mut unreviewed = json!({ "spec": "a.flow.yaml" });
+            unreviewed[apply] = json!(true);
+            let refused = argv(&tool, unreviewed.as_object().expect("object"));
+            assert_eq!(refused, Err(UNREVIEWED.to_string()), "{apply}");
+            let mut said_no = unreviewed.clone();
+            said_no["reviewed"] = json!(false);
+            assert!(argv(&tool, said_no.as_object().expect("object")).is_err());
+        }
+        let reviewed = heal_argv(json!({ "spec": "a.flow.yaml", "apply": true, "reviewed": true }));
+        assert_eq!(
+            reviewed,
+            [
+                "heal",
+                "--json",
+                "--apply",
+                "--headless",
                 "--",
                 "a.flow.yaml"
             ]

@@ -46,8 +46,9 @@ screen content, and it goes to whichever model your MCP client uses.
 `.proposed.jsonl` beside the trace, as `flowproof heal --json` does; the trace
 itself is left alone. It takes `spec`, `trace`, `vars`, `var`, `author`,
 `headed`, `from_run` and `step`, plus `apply` and `apply_proposal`, which
-overwrite the trace. An agent should pass those only after you have reviewed
-the proposal.
+overwrite the trace. Those two are refused unless the call also passes
+`reviewed: true`, which the agent should send only after you have reviewed the
+proposal and said to apply it.
 
 **`flowproof_doctor`** takes `check`: `ai` (is an authoring model configured)
 or `sap` (can SAP GUI Scripting be reached). A failed check is a result with the
