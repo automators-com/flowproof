@@ -64,6 +64,17 @@ when you ask, and the agent passes it as each call's `cwd`; a call that uses a
 relative path without one comes back with a hint saying so. A `~` in `cwd` or a
 flow's path is your home folder. Skills are not installed for the app.
 
+If the engine is not on your PATH, name it with `--command` and an absolute
+path; Flowproof Desktop does this with the engine it bundles:
+
+```bash
+flowproof mcp install --claude-desktop --command /path/to/flowproof
+```
+
+`--remove` takes the entry out again, for the app or for a project's files. It
+only removes the entry install would write (with the same `--command`, if you
+gave one); pass `--force` to remove a different one. The skill files stay.
+
 ## Claude Code plugin
 
 In Claude Code you can install flowproof as a plugin instead, once for every
