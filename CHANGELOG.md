@@ -22,6 +22,11 @@ together).
   Desktop bundles. `--remove` takes the `flowproof` entry out again, keeping
   every other server and setting, and leaves an entry it did not write alone
   unless you pass `--force`.
+- **The MCP server's "pass `cwd`" hint now works on Windows.** A client that
+  starts `flowproof mcp` in a filesystem root, with no project, gets a hint to
+  pass the project's folder as `cwd` when a call fails. The check only knew the
+  Unix root `/`, so a server started in `C:\` never gave the hint. The hint now
+  names the folder the server is running in.
 
 ## 0.24.0
 
