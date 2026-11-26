@@ -322,14 +322,30 @@ enum McpAction {
         /// Write only `.gemini/settings.json`.
         #[arg(long)]
         gemini: bool,
+        /// Register the server with the Claude desktop app, in its
+        /// per-user `claude_desktop_config.json`. On its own, writes
+        /// nothing into the project.
+        #[arg(long)]
+        claude_desktop: bool,
         /// Print the entry for a client this command does not know, and
         /// write nothing.
         #[arg(long)]
         print: bool,
         /// Replace a `flowproof` entry that is already there with
-        /// different content.
+        /// different content, or with `--remove`, remove one that does not
+        /// match.
         #[arg(long)]
         force: bool,
+        /// Start this engine instead of `flowproof` from PATH: an absolute
+        /// path, for an engine that is not on PATH (Flowproof Desktop passes
+        /// the one it bundles).
+        #[arg(long, value_name = "PATH")]
+        command: Option<String>,
+        /// Take the `flowproof` entry out instead of adding it. An entry
+        /// other than the one install would write stays unless `--force`.
+        /// Skill files are left in place.
+        #[arg(long, conflicts_with = "print")]
+        remove: bool,
     },
 }
 
@@ -5328,17 +5344,25 @@ where
                     claude,
                     cursor,
                     gemini,
+                    claude_desktop,
                     print,
                     force,
+                    command,
+                    remove,
                 }),
         } => mcp_install::cmd_install(
             &mcp_install::Clients {
                 claude,
                 cursor,
                 gemini,
+                claude_desktop,
             },
-            print,
-            force,
+            &mcp_install::Options {
+                print,
+                force,
+                remove,
+                command: command.as_deref(),
+            },
         ),
     };
     // Skipped for mcp-stdio and mcp: those commands' contract is stdout

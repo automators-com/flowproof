@@ -45,6 +45,36 @@ args = ["mcp"]
 
 The server runs in the folder the client was started in.
 
+## Claude desktop app
+
+The Claude desktop app (macOS and Windows) runs local MCP servers too, from
+one config file for your whole account rather than per project:
+
+```bash
+npm install -g flowproof
+flowproof mcp install --claude-desktop
+```
+
+That adds `flowproof` to `claude_desktop_config.json` in the app's folder
+(`~/Library/Application Support/Claude/` on macOS, `%APPDATA%\Claude\` on
+Windows), keeping your other settings. Quit and reopen the app to load it. The
+app starts local servers with your login shell's PATH, so the global install is
+found, and it starts them in `/`, not in a project. Name the project's folder
+when you ask, and the agent passes it as each call's `cwd`; a call that uses a
+relative path without one comes back with a hint saying so. A `~` in `cwd` or a
+flow's path is your home folder. Skills are not installed for the app.
+
+If the engine is not on your PATH, name it with `--command` and an absolute
+path; Flowproof Desktop does this with the engine it bundles:
+
+```bash
+flowproof mcp install --claude-desktop --command /path/to/flowproof
+```
+
+`--remove` takes the entry out again, for the app or for a project's files. It
+only removes the entry install would write (with the same `--command`, if you
+gave one); pass `--force` to remove a different one. The skill files stay.
+
 ## Claude Code plugin
 
 In Claude Code you can install flowproof as a plugin instead, once for every

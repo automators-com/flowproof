@@ -25,7 +25,9 @@ const ACCEPTED_VERSIONS: [&str; 3] = [PROTOCOL_VERSION, "2025-06-18", "2025-03-2
 const INSTRUCTIONS: &str = "flowproof records, replays and repairs end-to-end flows. \
 A failing flow is a result to read, not an error. Credentials and the authoring model are \
 set by a human with `flowproof config`; no tool here changes configuration, so stop and \
-ask rather than work around a missing value.";
+ask rather than work around a missing value. Paths are relative to the folder this server \
+runs in: pass `cwd`, the project's folder, when that is not the project (the Claude desktop \
+app starts local servers in /).";
 
 type Out = Arc<Mutex<std::io::Stdout>>;
 /// The cancel flag of each call still running, by its request id as JSON.

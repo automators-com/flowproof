@@ -20,11 +20,18 @@ impl Server {
     }
 
     fn start_with(cwd: &Path, env: &[(&str, &str)]) -> Self {
+        Self::start_in(cwd, cwd, env)
+    }
+
+    /// Started in `run_dir`, with `home` as HOME (and the work dir for
+    /// everything else), the way the Claude desktop app starts it in `/`.
+    fn start_in(run_dir: &Path, home: &Path, env: &[(&str, &str)]) -> Self {
+        let cwd = home;
         let mut child = Command::new(env!("CARGO_BIN_EXE_flowproof"))
             .arg("mcp")
             .env_remove("FLOWPROOF_ALLOW_EXEC")
             .envs(env.iter().copied())
-            .current_dir(cwd)
+            .current_dir(run_dir)
             .env_remove("MCP_E2E_FLAG")
             .env_remove("FLOWPROOF_MCP_EXE")
             // No authoring model, whatever this machine has configured.
@@ -431,4 +438,30 @@ fn exits(pid: &str) -> bool {
         }
         !alive
     })
+}
+
+/// The Claude desktop app starts local servers in `/`, with no project. A
+/// relative path then fails with a hint to pass `cwd`, and a `~` in `cwd`
+/// or the spec is the home folder (the agent's first call in a real
+/// Claude desktop chat passed `cwd: "~/..."`).
+#[test]
+fn a_server_started_in_root_says_to_pass_cwd_and_expands_tilde() {
+    let dir = work_dir("root");
+    let mut server = Server::start_in(Path::new("/"), &dir, &[]);
+
+    let result = server.run(1, json!({ "spec": "flows/gated.flow.yaml" }));
+    assert_eq!(result["isError"], true, "{result}");
+    let hint = result["structuredContent"]["hint"].as_str().expect("hint");
+    assert!(hint.contains("cwd"), "{hint}");
+
+    let result = server.run(2, json!({ "spec": "flows/gated.flow.yaml", "cwd": "~" }));
+    assert_eq!(result["structuredContent"]["passed"], true, "{result}");
+    assert!(
+        result["structuredContent"].get("hint").is_none(),
+        "{result}"
+    );
+
+    let result = server.run(3, json!({ "spec": "~/flows/gated.flow.yaml" }));
+    assert_eq!(result["structuredContent"]["passed"], true, "{result}");
+    std::fs::remove_dir_all(&dir).ok();
 }
