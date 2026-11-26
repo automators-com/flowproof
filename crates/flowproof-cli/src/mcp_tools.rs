@@ -267,27 +267,33 @@ pub(crate) fn call(params: &Value, call: &Call) -> Result<Value, String> {
         Ok((cwd, outcome)) => (tool.read)(json!({ "cwd": cwd.display().to_string() }), outcome),
         Err(message) => tool_error(&message),
     };
-    let in_root =
-        args.get("cwd").is_none() && std::env::current_dir().is_ok_and(|dir| dir == Path::new("/"));
-    Ok(if in_root {
-        with_root_hint(result)
-    } else {
-        result
+    let root = std::env::current_dir()
+        .ok()
+        .filter(|dir| args.get("cwd").is_none() && is_root(dir));
+    Ok(match root {
+        Some(root) => with_root_hint(result, &root),
+        None => result,
     })
 }
 
-/// A client that starts the server in `/` (the Claude desktop app does) has
-/// no project folder, so a relative path resolves against `/` and fails.
-/// Say what to pass rather than leave the agent to guess.
-fn with_root_hint(result: Value) -> Value {
+/// A filesystem root: `/`, or a drive such as `C:\` on Windows.
+fn is_root(dir: &Path) -> bool {
+    dir.parent().is_none()
+}
+
+/// A client that starts the server in a filesystem root (the Claude desktop
+/// app uses `/`) has no project folder, so a relative path resolves against
+/// the root and fails. Say what to pass rather than leave the agent to guess.
+fn with_root_hint(result: Value, root: &Path) -> Value {
     if result["isError"] != json!(true) {
         return result;
     }
     let mut structured = result["structuredContent"].clone();
-    structured["hint"] = json!(
-        "This server is running in /, which is not a project: your client started it \
-        there. Call again with cwd set to the project's folder, or use absolute paths."
-    );
+    structured["hint"] = json!(format!(
+        "This server is running in {}, which is not a project: your client started it \
+        there. Call again with cwd set to the project's folder, or use absolute paths.",
+        root.display()
+    ));
     tool_result(structured, true)
 }
 
@@ -650,6 +656,17 @@ fn tool_error(message: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_filesystem_root_is_not_a_project() {
+        let root = if cfg!(windows) {
+            Path::new("C:\\")
+        } else {
+            Path::new("/")
+        };
+        assert!(is_root(root));
+        assert!(!is_root(&std::env::temp_dir()));
+    }
 
     fn heal_argv(args: Value) -> Vec<String> {
         let tool = tool("flowproof_heal").expect("heal");
