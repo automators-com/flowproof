@@ -178,8 +178,11 @@ fn run_uses_a_per_call_cwd_without_moving_the_server() {
     // The next call, with no cwd, still runs where the server started.
     let result = server.run(2, json!({ "spec": "flows/gated.flow.yaml" }));
     assert_eq!(result["structuredContent"]["passed"], true, "{result}");
+    // Canonical on both sides: on Windows `dir` is the `\\?\C:\...` form.
     assert_eq!(
-        Path::new(result["structuredContent"]["cwd"].as_str().expect("cwd")),
+        Path::new(result["structuredContent"]["cwd"].as_str().expect("cwd"))
+            .canonicalize()
+            .expect("cwd exists"),
         dir
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -454,6 +457,12 @@ fn a_server_started_in_root_says_to_pass_cwd_and_expands_tilde() {
     let hint = result["structuredContent"]["hint"].as_str().expect("hint");
     assert!(hint.contains("cwd"), "{hint}");
 
+    // `~` is checked where the test can point the home folder at `dir`:
+    // Windows reads it from the user profile, not `HOME`.
+    if cfg!(windows) {
+        std::fs::remove_dir_all(&dir).ok();
+        return;
+    }
     let result = server.run(2, json!({ "spec": "flows/gated.flow.yaml", "cwd": "~" }));
     assert_eq!(result["structuredContent"]["passed"], true, "{result}");
     assert!(
