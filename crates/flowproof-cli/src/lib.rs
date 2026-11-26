@@ -6,6 +6,7 @@ mod agent_surface;
 mod capture;
 pub mod config;
 mod doctor;
+mod mcp_codex;
 mod mcp_install;
 mod mcp_server;
 mod mcp_tools;
@@ -327,6 +328,11 @@ enum McpAction {
         /// nothing into the project.
         #[arg(long)]
         claude_desktop: bool,
+        /// Register the server with Codex (CLI, IDE extension and desktop
+        /// app), in its per-user `config.toml` under `$CODEX_HOME` or
+        /// `~/.codex`. On its own, writes nothing into the project.
+        #[arg(long)]
+        codex: bool,
         /// Print the entry for a client this command does not know, and
         /// write nothing.
         #[arg(long)]
@@ -5345,6 +5351,7 @@ where
                     cursor,
                     gemini,
                     claude_desktop,
+                    codex,
                     print,
                     force,
                     command,
@@ -5356,6 +5363,7 @@ where
                 cursor,
                 gemini,
                 claude_desktop,
+                codex,
             },
             &mcp_install::Options {
                 print,

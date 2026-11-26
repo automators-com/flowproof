@@ -13,8 +13,9 @@
 //!   settings (gemini-cli docs/tools/mcp-server.md). Its entries carry no
 //!   `type`.
 //!
-//! Codex reads TOML, from `.codex/config.toml` in trusted projects only, so
-//! it is left to `--print` and the docs rather than edited here.
+//! Codex reads TOML, and its project `.codex/config.toml` only in trusted
+//! projects, so the project file is left to the docs. `--codex` writes the
+//! per-user one instead (`mcp_codex.rs`).
 //!
 //! The Claude desktop app has no project files: it reads one per-user
 //! `claude_desktop_config.json` (`mcpServers`, no `type`) from its folder
@@ -41,14 +42,16 @@ const SKILL_PATHS: [&str; 2] = [
     ".agents/skills/flowproof-flows/SKILL.md",
 ];
 
-/// Which clients `--claude`, `--cursor`, `--gemini` and `--claude-desktop`
-/// asked for. None of the project ones asked means `.mcp.json` plus each
-/// client whose folder exists, unless only `--claude-desktop` was given.
+/// Which clients `--claude`, `--cursor`, `--gemini`, `--claude-desktop` and
+/// `--codex` asked for. None of the project ones asked means `.mcp.json`
+/// plus each client whose folder exists, unless only per-user ones
+/// (`--claude-desktop`, `--codex`) were given.
 pub(crate) struct Clients {
     pub claude: bool,
     pub cursor: bool,
     pub gemini: bool,
     pub claude_desktop: bool,
+    pub codex: bool,
 }
 
 struct Target {
@@ -101,6 +104,13 @@ pub(crate) fn cmd_install(clients: &Clients, options: &Options) -> Result<u8, St
         check_command(command)?;
     }
     let root = Path::new(".");
+    if options.print && clients.codex {
+        print!(
+            "{}",
+            crate::mcp_codex::render_entry(options.command.unwrap_or("flowproof"))
+        );
+        return Ok(EXIT_PASS);
+    }
     if options.print {
         let launch = launch(root, options.command);
         println!(
@@ -110,7 +120,7 @@ pub(crate) fn cmd_install(clients: &Clients, options: &Options) -> Result<u8, St
         return Ok(EXIT_PASS);
     }
     let named = clients.claude || clients.cursor || clients.gemini;
-    if named || !clients.claude_desktop {
+    if named || !(clients.claude_desktop || clients.codex) {
         if options.remove {
             remove_in(root, clients, options.command, options.force)?;
         } else {
@@ -135,9 +145,30 @@ pub(crate) fn cmd_install(clients: &Clients, options: &Options) -> Result<u8, St
                 "up to date:"
             };
             println!("{verb} {}", path.display());
-            warn_if_missing(launch);
+            warn_if_missing(launch, "the Claude desktop app");
         }
         println!("Quit and reopen the Claude desktop app to load the change.");
+    }
+    if clients.codex {
+        let path = crate::mcp_codex::config_path()?;
+        let command = options.command.unwrap_or("flowproof");
+        if options.remove {
+            let verb = if crate::mcp_codex::uninstall(&path, command, options.force)? {
+                "removed flowproof from"
+            } else {
+                "no flowproof entry in"
+            };
+            println!("{verb} {}", path.display());
+        } else {
+            let verb = if crate::mcp_codex::install(&path, command, options.force)? {
+                "wrote"
+            } else {
+                "up to date:"
+            };
+            println!("{verb} {}", path.display());
+            warn_if_missing(options.command.map_or(Launch::Bare, Launch::Path), "Codex");
+        }
+        println!("Restart Codex to load the change.");
     }
     Ok(EXIT_PASS)
 }
@@ -159,18 +190,16 @@ fn check_command(command: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn warn_if_missing(launch: Launch) {
+fn warn_if_missing(launch: Launch, client: &str) {
     match launch {
         Launch::Bare if !on_path("flowproof") => eprintln!(
-            "note: `flowproof` is not on your PATH, so the Claude desktop app cannot start \
-             it. Install it with `npm install -g flowproof`."
+            "note: `flowproof` is not on your PATH, so {client} cannot start it. Install it \
+             with `npm install -g flowproof`."
         ),
         Launch::Path(command)
             if Path::new(command).is_absolute() && !Path::new(command).is_file() =>
         {
-            eprintln!(
-                "note: `{command}` does not exist, so the Claude desktop app cannot start it."
-            )
+            eprintln!("note: `{command}` does not exist, so {client} cannot start it.")
         }
         _ => {}
     }
@@ -368,6 +397,7 @@ mod tests {
         cursor: false,
         gemini: false,
         claude_desktop: false,
+        codex: false,
     };
 
     fn temp_dir(name: &str) -> PathBuf {
