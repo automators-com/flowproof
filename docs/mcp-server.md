@@ -34,8 +34,18 @@ or lets a flow run a command of its own. Like the config entry, an edited copy
 is replaced only with `--force`.
 
 For another client, `flowproof mcp install --print` prints the entry to copy.
-Codex CLI takes it as TOML, in `~/.codex/config.toml` or, for a trusted
-project, `.codex/config.toml`:
+
+## Codex
+
+Codex (its CLI, IDE extension and desktop app) reads TOML from one file for
+your whole account:
+
+```bash
+flowproof mcp install --codex
+```
+
+That adds this table to `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`
+when that is set), and writes nothing into the project:
 
 ```toml
 [mcp_servers.flowproof]
@@ -43,7 +53,13 @@ command = "flowproof"
 args = ["mcp"]
 ```
 
-The server runs in the folder the client was started in.
+Your comments, other servers and settings stay as they were. Keys you add to
+the table yourself, such as `env` or a timeout, are kept too. A `flowproof`
+table that starts a different command is replaced only with `--force`.
+Restart Codex afterwards. The server runs in the folder Codex was started in.
+`--command` and `--remove` work as for the Claude desktop app below, and
+`--codex --print` prints the table instead of writing it, for a trusted
+project's own `.codex/config.toml`.
 
 ## Claude desktop app
 
